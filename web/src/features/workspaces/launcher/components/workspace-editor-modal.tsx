@@ -37,6 +37,7 @@ interface WorkspaceEditorModalProps {
   repositoryState?: WorkspaceRepositoryState | null
   repositoryBusy?: boolean
   repositoryHelpBusy?: boolean
+  repositoryHelpLink?: ReactNode
   onInitializeRepository?: () => void
   onAskSwarmForRepositoryHelp?: () => void
   personalizing?: boolean
@@ -50,6 +51,7 @@ interface WorkspaceEditorModalProps {
   useExternalMobileFolderPicker?: boolean
   onRequestMobileFolderPicker?: (mode: Exclude<FolderPickerMode, null>) => void
   onCreateFolder?: (parentPath: string, name: string) => Promise<string>
+  onAddCreatedFolder?: (path: string, name: string) => void
   onSelectWorkspace?: (path: string) => void
   onMoveWorkspaceToIndex?: (path: string, index: number) => void
   onDeleteWorkspace?: (path: string) => void
@@ -112,6 +114,7 @@ export function WorkspaceEditorModal({
   repositoryState = null,
   repositoryBusy = false,
   repositoryHelpBusy = false,
+  repositoryHelpLink,
   onInitializeRepository,
   onAskSwarmForRepositoryHelp,
   personalizing = false,
@@ -125,6 +128,7 @@ export function WorkspaceEditorModal({
   useExternalMobileFolderPicker = false,
   onRequestMobileFolderPicker,
   onCreateFolder,
+  onAddCreatedFolder,
   onSelectWorkspace,
   onMoveWorkspaceToIndex,
   onDeleteWorkspace,
@@ -139,6 +143,8 @@ export function WorkspaceEditorModal({
   const [folderPickerMode, setFolderPickerMode] = useState<FolderPickerMode>(null)
   const [folderPickerSearch, setFolderPickerSearch] = useState('')
   const [createdFolderName, setCreatedFolderName] = useState<string | null>(null)
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [createFolderError, setCreateFolderError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -155,7 +161,6 @@ export function WorkspaceEditorModal({
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
   const repositoryReady = mode === 'edit' || repositoryState?.state === 'ready'
-  const repositoryKnownNotReady = mode === 'create' && Boolean(repositoryState && repositoryState.state !== 'ready')
   const currentPath = browser?.resolvedPath ?? ''
   const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
   const visiblePickerEntries = useMemo(() => {
@@ -189,19 +194,28 @@ export function WorkspaceEditorModal({
   }
 
   const createFolder = async () => {
-    if (!currentPath || !onCreateFolder) {
+    if (!currentPath || !onCreateFolder || creatingFolder) {
       return
     }
     const folderName = window.prompt(`Name the new folder in ${currentPath}`)?.trim() ?? ''
     if (!folderName) {
       return
     }
-    const createdPath = await onCreateFolder(currentPath, folderName)
-    if (createdPath) {
-      setCreatedFolderName(folderName)
-      window.setTimeout(() => {
-        setCreatedFolderName((value) => (value === folderName ? null : value))
-      }, 3500)
+    setCreatingFolder(true)
+    setCreateFolderError(null)
+    try {
+      const createdPath = await onCreateFolder(currentPath, folderName)
+      if (createdPath) {
+        setCreatedFolderName(folderName)
+        if (onAddCreatedFolder) onAddCreatedFolder(createdPath, folderName)
+        else if (onPickWorkspaceFolder) onPickWorkspaceFolder(createdPath)
+        else onWorkspacePathChange(createdPath)
+        closeFolderPicker()
+      }
+    } catch (error) {
+      setCreateFolderError(error instanceof Error ? error.message : 'Could not create folder. Try again or choose another location.')
+    } finally {
+      setCreatingFolder(false)
     }
   }
 
@@ -263,6 +277,7 @@ export function WorkspaceEditorModal({
             </label>
           </div>
 
+          {createFolderError ? <p role="alert" className="text-sm text-[var(--app-danger)]">{createFolderError}</p> : null}
           {createdFolderName ? <div className="px-1 text-xs text-[var(--app-text-muted)]">Created “{createdFolderName}”</div> : null}
           {browserError ? <div className="rounded-lg border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">{browserError}</div> : null}
           {browserLoading && !browser ? <div className="px-1 text-sm text-[var(--app-text-muted)]">Loading folders…</div> : null}
@@ -271,11 +286,11 @@ export function WorkspaceEditorModal({
             <button
               type="button"
               onClick={() => void createFolder()}
-              disabled={browserLoading || !currentPath || !onCreateFolder}
+              disabled={creatingFolder || browserLoading || !currentPath || !onCreateFolder}
               className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-xs text-[var(--app-text-muted)] transition-colors hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FolderPlus size={14} className="shrink-0" />
-              <span className="truncate">New folder</span>
+              <span className="truncate">{creatingFolder ? 'Creating…' : 'Create and add workspace'}</span>
             </button>
 
             <div className="mt-2 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
@@ -432,10 +447,10 @@ export function WorkspaceEditorModal({
                       value={workspacePath}
                       onChange={(event) => onWorkspacePathChange(event.target.value)}
                       placeholder="/path/to/folder"
-                      disabled={!workspacePathEditable}
+                      disabled={!workspacePathEditable || saving || repositoryBusy || repositoryHelpBusy}
                       className={inputClass}
                     />
-                    <Button type="button" variant="outline" onClick={() => openFolderPicker('workspace-folder')} disabled={!workspacePathEditable || !onBrowsePath}>
+                    <Button type="button" variant="outline" onClick={() => openFolderPicker('workspace-folder')} disabled={!workspacePathEditable || saving || repositoryBusy || repositoryHelpBusy || !onBrowsePath}>
                       Browse
                     </Button>
                   </div>
@@ -462,7 +477,7 @@ export function WorkspaceEditorModal({
                     {repositoryReady ? <GitBranch size={18} className="mt-0.5 shrink-0 text-[var(--app-success)]" /> : <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />}
                     <div className="grid gap-1">
                       <h3 className="text-sm font-semibold text-[var(--app-text)]">
-                        {repositoryReady ? 'Git repository ready' : 'A committed Git repository is required'}
+                        {repositoryReady ? 'Git repository ready' : repositoryState.state === 'git_unavailable' ? 'Git is not installed or available' : repositoryState.state === 'needs_initial_commit' ? 'Create the first Git commit' : 'A committed Git repository is required'}
                       </h3>
                       <p className="text-sm leading-6 text-[var(--app-text-muted)]">
                         {repositoryReady
@@ -474,15 +489,16 @@ export function WorkspaceEditorModal({
                   {!repositoryReady && repositoryState?.canSetup && onInitializeRepository ? (
                     <Button type="button" onClick={onInitializeRepository} disabled={repositoryBusy || repositoryHelpBusy}>
                       {repositoryBusy ? <RefreshCw size={14} className="animate-spin" /> : <GitBranch size={14} />}
-                      {repositoryBusy ? 'Initializing…' : 'Initialize Git repository'}
+                      {repositoryBusy ? 'Initializing…' : 'Initialize Git repository and add workspace'}
                     </Button>
                   ) : null}
-                  {!repositoryReady && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && onAskSwarmForRepositoryHelp ? (
+                  {!repositoryReady && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && repositoryState.state !== 'not_repository' && !repositoryHelpLink && onAskSwarmForRepositoryHelp ? (
                     <Button type="button" variant="outline" onClick={onAskSwarmForRepositoryHelp} disabled={repositoryBusy || repositoryHelpBusy}>
                       {repositoryHelpBusy ? <RefreshCw size={14} className="animate-spin" /> : <Bot size={14} />}
                       {repositoryHelpBusy ? 'Starting session…' : 'Ask Swarm to help set up this repository'}
                     </Button>
                   ) : null}
+                  {repositoryHelpLink ? <p className="text-sm underline">{repositoryHelpLink}. Return here to recheck and add this same folder.</p> : null}
                   {!repositoryReady && repositoryState?.state === 'git_unavailable' ? (
                     <p className="text-sm font-medium text-[var(--app-warning)]">Repair or reinstall Swarm so the mandatory Git prerequisite is available, then retry.</p>
                   ) : null}
@@ -612,8 +628,8 @@ export function WorkspaceEditorModal({
                 Use as workspace folder
               </Button>
             ) : (
-              <Button type="button" onClick={onSubmit} disabled={saving || repositoryKnownNotReady || repositoryBusy || repositoryHelpBusy}>
-                {saving ? 'Saving…' : mode === 'create' ? 'Create workspace' : 'Save workspace'}
+              <Button type="button" onClick={onSubmit} disabled={saving || repositoryBusy || repositoryHelpBusy}>
+                {saving ? 'Saving…' : mode === 'create' ? repositoryState && !repositoryReady ? 'Recheck and add workspace' : 'Create workspace' : 'Save workspace'}
               </Button>
             )}
           </div>

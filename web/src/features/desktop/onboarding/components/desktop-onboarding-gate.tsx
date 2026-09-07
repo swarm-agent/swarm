@@ -301,6 +301,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
   const [workspaceRepositoryState, setWorkspaceRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
+  const [pendingFolder, setPendingFolder] = useState<Pick<WorkspaceDiscoverEntry, 'path' | 'name'> | null>(null)
   const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
   const [onboardingAssistant, setOnboardingAssistant] = useState<WorkspaceOnboardingAssistantResume | null>(() => loadWorkspaceOnboardingAssistantResume())
   const [repositoryRecheckBusy, setRepositoryRecheckBusy] = useState(false)
@@ -640,10 +641,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
+    setPendingFolder(null)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
       setWorkspaceError(null)
+      setWorkspaceExplorerOpen(false)
+      setWorkspaceRepositoryState(null)
       transitionToSetup()
       try {
         const resolution = await openWorkspace(path)
@@ -666,10 +670,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (submitting) {
       return
     }
+    setPendingFolder(entry)
     void (async () => {
       setPendingAction('workspace')
       setError(null)
       setWorkspaceError(null)
+      setWorkspaceExplorerOpen(false)
+      setWorkspaceRepositoryState(null)
       transitionToSetup()
       try {
         const selectedResolution = await saveAndOpenReadyWorkspace(
@@ -693,18 +700,22 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const initializeOnboardingRepository = async () => {
     const repository = workspaceRepositoryState
-    if (!repository?.path || !repository.canSetup) return
+    if (submitting || repositoryHelpBusy || !repository?.path || !repository.canSetup) return
+    if (!window.confirm(`Initialize Git in ${repository.path} and create an empty first commit? No existing files will be staged or committed. Swarm will then add this workspace.`)) return
     setPendingAction('workspace')
     setWorkspaceError(null)
     try {
       const ready = await setupWorkspaceRepository(repository.path, repository.path)
       setWorkspaceRepositoryState(ready)
+      if (ready.state !== 'ready') throw new WorkspaceRepositoryPrerequisiteError(ready)
       const selectedResolution = await saveAndOpenReadyWorkspace(
         ready.path,
         fallbackWorkspaceNameFromPath(ready.path),
       )
       await finishWithWorkspace(selectedResolution, ready.path)
     } catch (error) {
+      setClosing(false)
+      transitionToStep('workspace')
       if (error instanceof WorkspaceRepositoryPrerequisiteError) setWorkspaceRepositoryState(error.repository)
       setWorkspaceError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
     } finally {
@@ -768,9 +779,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       transitionToStep('workspace')
       if (error instanceof WorkspaceRepositoryPrerequisiteError) {
         setWorkspaceRepositoryState(error.repository)
-        saveWorkspaceOnboardingAssistantResume(null)
-        setOnboardingAssistant(null)
-        setWorkspaceError(`Repository is not ready yet. ${error.repository.message}`)
+        setRepositoryRecheckError(`Repository is not ready yet. ${error.repository.message}`)
       } else {
         setRepositoryRecheckError(error instanceof Error ? error.message : 'Could not verify and add this repository. Retry after the first commit exists.')
       }
@@ -780,6 +789,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const openWorkspaceExplorer = () => {
+    setPendingFolder(null)
     setWorkspaceError(null)
     setWorkspaceExplorerOpen(true)
     if (!browser && !browserLoading) {
@@ -1334,48 +1344,49 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       />
                     ) : null}
 
+                    {pendingFolder && (!workspaceRepositoryState || workspaceRepositoryState.state === 'ready') ? <div className="grid gap-2">
+                      <p className="break-all text-sm">Selected folder: {pendingFolder.path}</p>
+                      <Button type="button" disabled={submitting} onClick={() => handleSaveAndOpenFolder(pendingFolder)}>Retry adding this folder</Button>
+                    </div> : null}
                     {workspaceRepositoryState && workspaceRepositoryState.state !== 'ready' ? (
                       <section className="grid gap-3 rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4" role="alert" aria-live="polite">
                         <div className="flex items-start gap-3">
                           <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
                           <div className="grid gap-1">
-                            <h2 className="text-sm font-semibold text-[var(--app-text)]">A committed Git repository is required</h2>
+                            <h2 className="text-sm font-semibold text-[var(--app-text)]">{workspaceRepositoryState.state === 'git_unavailable' ? 'Git is not installed or available' : workspaceRepositoryState.state === 'needs_initial_commit' ? 'Create the first Git commit' : 'A committed Git repository is required'}</h2>
+                            <p className="break-all font-mono text-xs text-[var(--app-text)]">{workspaceRepositoryState.path}</p>
                             <p className="text-sm leading-6 text-[var(--app-text-muted)]">Swarm isolates agent work in managed worktrees. {workspaceRepositoryState.message}</p>
                           </div>
                         </div>
                         {workspaceRepositoryState.canSetup ? (
                           <Button type="button" onClick={() => void initializeOnboardingRepository()} disabled={submitting || repositoryHelpBusy}>
                             <GitBranch size={15} />
-                            Initialize Git repository
+                            Initialize Git repository and add workspace
                           </Button>
                         ) : workspaceRepositoryState.state === 'git_unavailable' ? (
                           <div className="grid gap-2 text-sm text-[var(--app-warning)]">
                             <p className="font-medium">Git is a mandatory Swarm runtime prerequisite. Repair or reinstall Swarm, then retry this folder.</p>
-                            <Button type="button" variant="outline" onClick={() => handleSaveAndOpenFolder({ path: workspaceRepositoryState.path, name: fallbackWorkspaceNameFromPath(workspaceRepositoryState.path) })} disabled={submitting || repositoryHelpBusy}>
-                              Retry folder
-                            </Button>
                           </div>
                         ) : (
                           <div className="grid gap-3">
                             <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                              Onboarding Swarm can inspect this exact unsaved folder and recommend ignore rules. Git initialization, staging, and the first commit still require your explicit approval.
+                              {workspaceRepositoryState.state === 'needs_assisted_setup' ? 'Onboarding Swarm can inspect this exact unsaved folder and recommend ignore rules. Git initialization, staging, and the first commit still require your explicit approval.' : 'Review this folder manually before retrying. For an existing repository without a commit, review ignore rules and stage only intended files before creating the first commit. For a nested folder, choose the repository root instead.'}
                             </p>
                             <div className="flex flex-wrap gap-2">
-                              <Button type="button" onClick={() => void askSwarmForOnboardingRepositoryHelp()} disabled={submitting || repositoryHelpBusy || !canUseOnboardingAssistant}>
+                              {workspaceRepositoryState.state === 'needs_assisted_setup' ? <Button type="button" onClick={() => void askSwarmForOnboardingRepositoryHelp()} disabled={submitting || repositoryHelpBusy || !canUseOnboardingAssistant}>
                                 <Bot size={15} />
                                 {repositoryHelpBusy ? 'Starting Onboarding Swarm…' : 'Talk to Onboarding Swarm'}
-                              </Button>
-                              <Button type="button" variant="outline" onClick={() => handleSaveAndOpenFolder({ path: workspaceRepositoryState.path, name: fallbackWorkspaceNameFromPath(workspaceRepositoryState.path) })} disabled={submitting || repositoryHelpBusy}>
-                                Fix manually and retry
-                              </Button>
+                              </Button> : null}
                             </div>
-                            {!canUseOnboardingAssistant ? (
+                            {!canUseOnboardingAssistant && workspaceRepositoryState.state === 'needs_assisted_setup' ? (
                               <p className="text-sm font-medium text-[var(--app-warning)]">Connect a provider in the previous step to use Onboarding Swarm. You can still run git init, review .gitignore, stage only intended files, create the first commit, and retry.</p>
                             ) : (
                               <p className="text-xs leading-5 text-[var(--app-text-muted)]">Manual requirements: this selected folder must be the repository root and HEAD must resolve to an initial commit.</p>
                             )}
                           </div>
                         )}
+                        <Button type="button" variant="outline" disabled={submitting || repositoryHelpBusy} onClick={() => handleSaveAndOpenFolder({ path: workspaceRepositoryState.path, name: fallbackWorkspaceNameFromPath(workspaceRepositoryState.path) })}>Recheck and add this folder</Button>
+                        <Button type="button" variant="outline" disabled={submitting || repositoryHelpBusy} onClick={() => { setWorkspaceRepositoryState(null); openWorkspaceExplorer() }}>Choose another folder</Button>
                       </section>
                     ) : null}
 
@@ -1484,7 +1495,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
             <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">
               <div className="grid gap-1">
                 <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Add workspace</h2>
-                <p className="text-sm leading-6 text-[var(--app-text-muted)]">Browse to a folder, create one if needed, then add it to continue.</p>
+                <p className="text-sm leading-6 text-[var(--app-text-muted)]">Add an existing folder or create and add a new one. We’ll guide you through any Git prerequisites.</p>
               </div>
               <ModalCloseButton onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
             </div>

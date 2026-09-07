@@ -356,13 +356,19 @@ function MobileExplorerDrawer({
   const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
 
   const createFolder = async () => {
-    if (!currentPath) return
+    if (!currentPath || savingPath) return
     const name = window.prompt(`Name the new folder in ${currentPath}`)?.trim() ?? ''
     if (!name) return
-    const createdPath = await onCreateFolder(currentPath, name)
-    if (createdPath) {
-      setCreatedFolderName(name)
-      window.setTimeout(() => setCreatedFolderName((value) => (value === name ? null : value)), 3500)
+    try {
+      const createdPath = await onCreateFolder(currentPath, name)
+      if (createdPath) {
+        setCreatedFolderName(name)
+        onCreateWorkspace({ path: createdPath, name, isGitRepo: false, hasClaude: false, hasSwarm: false, lastModified: 0 })
+        onClose()
+      }
+    } catch (error) {
+      setCreatedFolderName(null)
+      window.alert(error instanceof Error ? error.message : 'Could not create folder. Try again or choose another location.')
     }
   }
 
@@ -426,7 +432,7 @@ function MobileExplorerDrawer({
           <div className="flex min-h-0 flex-1 flex-col border-t border-[color-mix(in_oklab,var(--app-border)_34%,transparent)] pt-2">
             <button type="button" className="flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] disabled:opacity-50" disabled={browserLoading || !currentPath} onClick={() => void createFolder()}>
               <FolderPlus size={16} />
-              <span>New folder</span>
+              <span>Create and add workspace</span>
             </button>
             <div className="mt-2 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">
               <span>Folders</span>
@@ -538,6 +544,7 @@ export function WorkspaceHomePage() {
   const [modalError, setModalError] = useState<string | null>(null)
   const [modalRepositoryState, setModalRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
   const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
+  const [repositoryHelpSession, setRepositoryHelpSession] = useState<{ workspaceSlug: string; sessionId: string } | null>(null)
   const [deleteTargetPath, setDeleteTargetPath] = useState<string | null>(null)
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [allWorkspacesVisible, setAllWorkspacesVisible] = useState(true)
@@ -621,6 +628,7 @@ export function WorkspaceHomePage() {
       themeId: 'inherit',
     })
     setDraftName(initialName)
+    setRepositoryHelpSession(null)
     setWorkspaceNameTouched(false)
     setModalError(null)
     setModalRepositoryState(null)
@@ -653,10 +661,12 @@ export function WorkspaceHomePage() {
     setModalError(null)
     setModalRepositoryState(null)
     setRepositoryHelpBusy(false)
+    setRepositoryHelpSession(null)
     setDeleteTargetPath(null)
   }
 
   const pickWorkspaceFolder = (path: string) => {
+    setRepositoryHelpSession(null)
     setModalRepositoryState(null)
     setModalState((current) => {
       if (!current) {
@@ -676,11 +686,14 @@ export function WorkspaceHomePage() {
   const initializeRepositoryForDraft = async () => {
     const path = modalState?.workspacePath.trim() || ''
     const expected = modalRepositoryState?.path || path
-    if (!path || !expected) return
+    if (!path || !expected || !modalRepositoryState?.canSetup || savingPath || repositoryHelpBusy) return
+    if (!window.confirm(`Initialize Git in ${expected} and create an empty first commit? No existing files will be staged or committed. Swarm will then add this workspace.`)) return
     try {
       const ready = await setupWorkspaceRepository(path, expected)
       setModalRepositoryState(ready)
       setModalError(null)
+      if (ready.state !== 'ready') throw new WorkspaceRepositoryPrerequisiteError(ready)
+      await submitModal()
     } catch (error) {
       if (error instanceof WorkspaceRepositoryPrerequisiteError) setModalRepositoryState(error.repository)
       setModalError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
@@ -688,6 +701,7 @@ export function WorkspaceHomePage() {
   }
 
   const askSwarmForRepositoryHelp = async () => {
+    if (repositoryHelpBusy || repositoryHelpSession) return
     const repository = modalRepositoryState
     const workspace = workspaces.find((candidate) => candidate.localWorkspaceBindingId && candidate.topologyRoutes.length > 0)
     if (!repository || !workspace) {
@@ -720,8 +734,7 @@ export function WorkspaceHomePage() {
       })
       const workspaceSlug = workspaceSlugByPath.get(workspace.path)
         ?? workspaceRouteSlugBase({ path: workspace.path, workspaceName: workspace.workspaceName })
-      closeModal()
-      await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId: launched.session_id } })
+      setRepositoryHelpSession({ workspaceSlug, sessionId: launched.session_id })
     } catch (error) {
       setModalError(error instanceof Error ? error.message : 'Could not start repository setup session')
     } finally {
@@ -792,6 +805,18 @@ export function WorkspaceHomePage() {
         }
       }
     })()
+  }
+
+  const addFolder = async (entry: Pick<WorkspaceDiscoverEntry, 'path' | 'name'>) => {
+    openCreateModal(entry.path, [entry.path], entry.name)
+    setExplorerDrawerMode(null)
+    try {
+      await saveWorkspace({ path: entry.path, name: entry.name, themeId: 'inherit', makeCurrent: false })
+      closeModal()
+    } catch (error) {
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) setModalRepositoryState(error.repository)
+      else setModalError(error instanceof Error ? error.message : 'Could not add this folder. Retry without creating it again.')
+    }
   }
 
   const submitModal = async () => {
@@ -879,7 +904,7 @@ export function WorkspaceHomePage() {
                   void browsePath(path)
                 }}
                 onOpenWorkspace={handleOpenWorkspace}
-                onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
+                onCreateWorkspace={(entry) => { void addFolder(entry) }}
                 onCreateFolder={createFolder}
               />
             </div>
@@ -1011,7 +1036,7 @@ export function WorkspaceHomePage() {
                               busy={savingPath === entry.path || selectingPath === entry.path}
                               onBrowse={(path) => void browsePath(path)}
                               onOpen={handleOpenWorkspace}
-                              onCreate={(row) => openCreateModal(row.path, [row.path], row.name)}
+                              onCreate={(row) => { void addFolder(row) }}
                             />
                           ))
                         )}
@@ -1057,6 +1082,7 @@ export function WorkspaceHomePage() {
         repositoryState={modalRepositoryState}
         repositoryBusy={Boolean(savingPath && modalState?.workspacePath && savingPath === modalState.workspacePath)}
         repositoryHelpBusy={repositoryHelpBusy}
+        repositoryHelpLink={repositoryHelpSession ? <Link to="/$workspaceSlug/$sessionId" params={repositoryHelpSession} target="_blank" rel="noopener noreferrer">Open repository setup chat in a new tab</Link> : null}
         onInitializeRepository={() => { void initializeRepositoryForDraft() }}
         onAskSwarmForRepositoryHelp={() => { void askSwarmForRepositoryHelp() }}
         personalizing={personalizing}
@@ -1068,6 +1094,7 @@ export function WorkspaceHomePage() {
           })
         }}
         onWorkspacePathChange={(value) => {
+          setRepositoryHelpSession(null)
           setModalRepositoryState(null)
           setModalState((current) => (current ? { ...current, workspacePath: value } : current))
         }}
@@ -1080,6 +1107,7 @@ export function WorkspaceHomePage() {
         useExternalMobileFolderPicker={!isDesktopExplorer}
         onRequestMobileFolderPicker={(mode) => openMobileExplorer(mode)}
         onCreateFolder={createFolder}
+        onAddCreatedFolder={(path, name) => { void addFolder({ path, name: workspaceNameTouched ? draftName : name }) }}
         onSelectWorkspace={startEdit}
         onMoveWorkspaceToIndex={(path, index) => {
           void moveWorkspaceToIndex(path, index)
@@ -1089,7 +1117,7 @@ export function WorkspaceHomePage() {
         deletingWorkspacePath={savingPath}
         onCancelDeleteWorkspace={() => setDeleteTargetPath(null)}
         onConfirmDeleteWorkspace={handleConfirmDelete}
-        onClose={closeModal}
+        onClose={() => { if (!savingPath && !repositoryHelpBusy) closeModal() }}
         onSubmit={() => {
           void submitModal()
         }}
@@ -1107,7 +1135,7 @@ export function WorkspaceHomePage() {
         onClose={closeMobileExplorer}
         onBrowsePath={(path) => void browsePath(path)}
         onOpenWorkspace={handleOpenWorkspace}
-        onCreateWorkspace={(entry) => openCreateModal(entry.path, [entry.path], entry.name)}
+        onCreateWorkspace={(entry) => { void addFolder(entry) }}
         onPickWorkspaceFolder={pickWorkspaceFolder}
         onCreateFolder={createFolder}
       />

@@ -28,7 +28,9 @@ test('explorer workspace additions fade directly into the stable setup view', ()
     source.indexOf('const handleSaveAndOpenFolder'),
     source.indexOf('const initializeOnboardingRepository'),
   )
-  assert.doesNotMatch(addFolderHandler, /setWorkspaceExplorerOpen\(false\)/)
+  // The prerequisite panel must not be hidden under a reopened Explorer.
+  assert.match(addFolderHandler, /setWorkspaceExplorerOpen\(false\)/)
+  assert.doesNotMatch(addFolderHandler, /setWorkspaceExplorerOpen\(true\)/)
   assert.match(addFolderHandler, /setPendingAction\('workspace'\)[\s\S]*?transitionToSetup\(\)[\s\S]*?await saveAndOpenReadyWorkspace/)
   assert.match(addFolderHandler, /WorkspaceRepositoryPrerequisiteError[\s\S]*?setWorkspaceRepositoryState\(err\.repository\)/)
 })
@@ -46,7 +48,8 @@ test('onboarding does not gate saved workspaces on definition state or show pers
   assert.match(source, /A committed Git repository is required/)
   assert.match(source, /Initialize Git repository/)
   assert.match(source, /Talk to Onboarding Swarm/)
-  assert.match(source, /Fix manually and retry/)
+  assert.match(source, /Recheck and add this folder/)
+  assert.match(source, /Choose another folder/)
   assert.match(source, /canUseOnboardingAssistant = status\.auth\.credentialCount > 0 && status\.auth\.activeProviders\.length > 0/)
   assert.match(source, /if \(!onboardingAssistant \|\| canUseOnboardingAssistant\) return[\s\S]*?active provider credential/)
   assert.match(source, /startWorkspaceOnboardingSession\(\{/)
@@ -80,7 +83,12 @@ test('existing-file onboarding stays in its dedicated assistant and admits the w
   assert.match(source, /const saveAndOpenReadyWorkspace[\s\S]*?await saveWorkspace\([\s\S]*?await refreshWorkspaces\(\)[\s\S]*?return openWorkspace\(path\)/)
   const recheckHandler = source.slice(source.indexOf('const recheckOnboardingRepository'), source.indexOf('const openWorkspaceExplorer'))
   assert.match(recheckHandler, /saveAndOpenReadyWorkspace\([\s\S]*?assistant\.path[\s\S]*?await finishWithWorkspace/)
-  assert.match(recheckHandler, /WorkspaceRepositoryPrerequisiteError[\s\S]*?saveWorkspaceOnboardingAssistantResume\(null\)[\s\S]*?Repository is not ready yet/)
+  // Requirement: recheck failure must retain the assistant resume identity; clearing
+  // it strands an unfinished review. This is a narrow source-wiring guard for
+  // recheckOnboardingRepository, not runtime or security evidence.
+  const failure = recheckHandler.slice(recheckHandler.indexOf('catch (error)'))
+  assert.match(failure, /WorkspaceRepositoryPrerequisiteError[\s\S]*?Repository is not ready yet/)
+  assert.doesNotMatch(failure, /saveWorkspaceOnboardingAssistantResume\(null\)|setOnboardingAssistant\(null\)/)
   assert.doesNotMatch(assistantSource, /patchDesktopOnboarding|desktopOnboardingComplete/)
 })
 
