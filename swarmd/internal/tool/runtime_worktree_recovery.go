@@ -54,12 +54,17 @@ func (r *Runtime) manageWorktreeRecoveryDestination(scope WorkspaceScope, parent
 	}
 	var lane pebblestore.TaskProgramRepositoryLane
 	seed := parent.ID
+	primaryLane := false
 	if parent.WorktreeEnabled && requested != "" && filepath.Clean(requested) == filepath.Clean(parent.WorktreeRootPath) {
 		if runtimePath := strings.TrimSpace(asString(parent.Metadata["swarm_v3_runtime_workspace_path"])); runtimePath != "" && filepath.Clean(runtimePath) != filepath.Clean(requested) {
 			return "", errors.New("parent lane disagrees with authenticated runtime workspace")
 		}
 		if parent.WorktreeBranch == parent.WorktreeBaseBranch {
 			return "", errors.New("parent lane cannot use its captured base branch")
+		}
+		primaryLane = true
+		if owner := asString(parent.Metadata["swarm_v3_worktree_owner_session_id"]); owner != "" && owner != parent.ID {
+			return "", errors.New("parent worktree owner disagrees with session")
 		}
 		lane = pebblestore.TaskProgramRepositoryLane{SourcePath: asString(parent.Metadata["swarm_v3_source_workspace_path"]), WorkspacePath: parent.WorktreeRootPath, Branch: parent.WorktreeBranch, BaseCommit: asString(parent.Metadata["base_commit"])}
 	} else {
@@ -116,7 +121,17 @@ func (r *Runtime) manageWorktreeRecoveryDestination(scope WorkspaceScope, parent
 	if !ok {
 		return "", errors.New("task repository lane ownership validator unavailable")
 	}
-	if err := validator.ValidateTaskRepositoryLane(lane.SourcePath, lane.WorkspacePath, seed, lane.Branch); err != nil {
+	if primaryLane {
+		primaryValidator, ok := r.worktrees.(interface {
+			ValidateSessionRepositoryLane(string, string, string, string) error
+		})
+		if !ok {
+			return "", errors.New("session repository lane ownership validator unavailable")
+		}
+		if err := primaryValidator.ValidateSessionRepositoryLane(lane.SourcePath, lane.WorkspacePath, parent.ID, lane.Branch); err != nil {
+			return "", err
+		}
+	} else if err := validator.ValidateTaskRepositoryLane(lane.SourcePath, lane.WorkspacePath, seed, lane.Branch); err != nil {
 		return "", err
 	}
 	if lane.BaseCommit != "" {

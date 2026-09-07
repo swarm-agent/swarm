@@ -448,3 +448,31 @@ executed tests. The installed recovery commit authority rejected blocked child
 status, so no failed child's work was force-committed or discarded. Exact lineage
 and recovery diagnostics stay in private checkpoint evidence. The environment
 pivot is deferred; current workspace/UI/live acceptance retains priority.
+
+## Named-primary recovery correction (R2)
+
+Manual integration exposed an allocator mismatch: `manageWorktreeRecoveryDestination`
+used the Task Program seed-derived validator for a named primary session. Named
+session allocation derives the directory from the requested branch slug, not the
+session ID. Added `ValidateSessionRepositoryLane` for the two canonical primary
+allocation forms; program lanes retain the exact seed-bound validator. The caller
+still authenticates parent/child, exact durable destination, source account, branch,
+cleanliness and base ancestry; symlink/path substitution is rejected.
+
+Parent validation (source based on `4c5bfa07`, not installed runtime):
+
+```sh
+cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/worktree ./internal/tool -run '^(TestSessionRepositoryLaneNamedAllocation|TestManageWorktreeNamedPrimaryRecovery|TestManageWorktreePrimaryRecovery|TestManageWorktreeProgramRecovery|TestManageWorktreeProgramRecoveryRejectsUnsafeContext|TestManageWorktreeRecoverySavedSourceAuthority)$' -count=2 -timeout=120s
+```
+
+Passed: worktree 0.135s, tool 17.732s. Named-primary integration consumes the child
+commit while leaving captured source and dirty sibling unchanged; existing stale,
+foreign and revoked-source negatives pass. No claim of installed-tool correction.
+
+Replacement implementation workers now return clean committed code and authored
+tests without running commands. Parent validated the exact filesystem commit
+`62515b727f2526874d433eba68ae6f56f3eb1840` (WorkspaceTarget/GenericFilesystem,
+count=2, 0.099s) and task commit `fccdcd7270aad40035c968bfb49549660bda25d9`
+(four named target/lane/stage tests, count=2, 3.845s). Canonical integration remains
+rejected by the installed old validator. Both commits and earlier dirty children
+are preserved; no raw cherry-pick or forced blocked-child commit was performed.
