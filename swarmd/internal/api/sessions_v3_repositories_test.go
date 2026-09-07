@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"encoding/base64"
+	"strings"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -59,6 +61,13 @@ func TestSessionRepositoriesPaginationIsolationAndCancellation(t *testing.T) {
 			if item.WorkspacePath == repoB && (item.Status.UntrackedCount != 1 || item.Default) { t.Fatalf("wrong selected status: %+v", item) }
 		}
 		cursor = page.NextCursor
+		if n == 0 {
+			for _, suffix := range []string{"limit=2&cursor="+url.QueryEscape(cursor), "limit=1&cursor="+base64.RawURLEncoding.EncodeToString([]byte(`{"phase":"sessions","offset":1}`)), "limit=1&cursor="+strings.Repeat("a", 24001)} {
+				bad := httptest.NewRecorder()
+				server.handleSessionV3Repositories(bad, httptest.NewRequest(http.MethodGet, "/?"+suffix, nil), principal, owner.ID)
+				if bad.Code == http.StatusOK { t.Fatal("forged/limit-changed continuation accepted") }
+			}
+		}
 		if cursor == "" { break }
 	}
 	if len(seen) != 2 || cursor != "" { t.Fatalf("incomplete inventory: %d", len(seen)) }
@@ -82,6 +91,12 @@ func TestSessionRepositoriesPaginationIsolationAndCancellation(t *testing.T) {
 	if err != nil || got != repoB { t.Fatalf("commit switched selection: %q %v", got, err) }
 	stale := sessionRepositoryItem{WorkspaceID: entries[1].WorkspaceID, WorkspaceGeneration: entries[1].WorkspaceGeneration + 1, SourcePath: repoB, WorkspacePath: repoB}
 	if err := server.authorizeRepositoryItem(principal, stale); err == nil { t.Fatal("stale generation accepted") }
+	// Detached history remains inspectable, but cannot authorize a commit.
+	owner.WorkspaceGrants = owner.WorkspaceGrants[:1]
+	_, err = sessions.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: owner.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: pebblestore.V3SessionMutationUpdateMetadata, Session: &owner, IdempotencyKey: "detach", RequestHash: "detach", NowUnixMs: 200})
+	if err != nil { t.Fatal(err) }
+	if item, err := server.selectedSessionRepository(principal, owner.ID, repoB); err != nil || item.WorkspacePath != repoB { t.Fatalf("retained exact lookup: %+v %v", item, err) }
+	if path, err := server.resolveGitCommitWorkspacePath(workspaceGitCommitRequest{WorkspacePath: repoB}, principal, owner.ID); err == nil || path != "" { t.Fatal("retained row authorized mutation") }
 	if after := runGitCommitTestCommand(t, repoB, "rev-parse", "HEAD"); after != headBefore { t.Fatal("read changed HEAD") }
 	if after := runGitCommitTestCommand(t, repoB, "diff", "--cached"); after != indexBefore { t.Fatal("read staged files") }
 }
@@ -94,6 +109,11 @@ func TestSessionRepositoriesRetainedWorkerIdentity(t *testing.T) {
 	source, lane := filepath.Join(root, "source"), filepath.Join(root, "lane")
 	owner := pebblestore.SessionSnapshot{ID: "worker", WorkspacePath: source, WorktreeEnabled: true, WorktreeRootPath: lane, WorktreeBranch: "agent/worker", Metadata: map[string]any{"base_commit": "base", "integration_status": "dirty-recoverable"}, WorkspaceGrants: []pebblestore.WorkspaceGrant{{Kind: "primary", Path: source, WorkspaceID: "a", WorkspaceGeneration: 1}, {Kind: "additional", Path: source, WorkspaceID: "b", WorkspaceGeneration: 1}, {Kind: "worktree", Path: lane}}}
 	items := repositorySessionItems(pebblestore.SessionRepositoryHistory{Session: owner, ContextID: "retained"}, "parent")
+	changed := owner
+	changed.WorkspaceGrants = append([]pebblestore.WorkspaceGrant(nil), owner.WorkspaceGrants...)
+	changed.WorkspaceGrants[0].Kind = pebblestore.WorkspaceGrantAdditional
+	again := repositorySessionItems(pebblestore.SessionRepositoryHistory{Session: changed, ContextID: "new-default"}, "parent")
+	if items[0].ID != again[0].ID || items[2].ID != again[2].ID { t.Fatal("context/default changed logical identity") }
 	if len(items) != 3 || items[0].ID == items[1].ID { t.Fatalf("collapsed attachments: %+v", items) }
 	worker := items[2]
 	if worker.Kind != "worker" || worker.BaseCommit != "base" || worker.SourcePath != source || worker.WorkspacePath != lane || worker.Lifecycle != "dirty-recoverable" { t.Fatalf("lost worker provenance: %+v", worker) }

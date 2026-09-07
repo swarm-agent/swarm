@@ -33,3 +33,13 @@ func (s *Service) BackfillRepositoryHistory(limit int) (bool, error) {
 	}
 	return s.store.BackfillRepositoryHistory(limit)
 }
+
+func (s *Service) RepositoryContinuation(query pebblestore.RepositoryHistoryQuery, token string, payload []byte) ([]byte, string, error) {
+	if s == nil || s.store == nil { return nil, "", errors.New("session store unavailable") }
+	return s.store.RepositoryContinuation(query, token, payload)
+}
+
+func (s *Service) ExactRepositoryHistory(query pebblestore.RepositoryHistoryQuery, path string) (pebblestore.RepositoryHistoryPage, error) {
+	if s == nil || s.store == nil { return pebblestore.RepositoryHistoryPage{}, errors.New("session store unavailable") }
+	return s.store.ExactRepositoryHistory(query, path)
+}

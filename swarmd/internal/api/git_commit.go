@@ -89,7 +89,9 @@ func (s *Server) resolveGitCommitWorkspacePath(req workspaceGitCommitRequest, pr
 	}
 	if sessionID != "" {
 		item, err := s.selectedSessionRepository(principal, sessionID, workspacePath)
-		return item.WorkspacePath, err
+		if err != nil { return "", err }
+		if !item.currentAuthority { return "", errors.New("historical repository is read-only; use current owning session or canonical integration authority") }
+		return item.WorkspacePath, nil
 	}
 	if workspacePath == "" && s != nil && s.workspace != nil {
 		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)

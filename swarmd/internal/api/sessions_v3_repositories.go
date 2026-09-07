@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,6 +41,7 @@ type sessionRepositoryItem struct {
 	Status *gitstatus.Snapshot `json:"status,omitempty"`
 	FilesTruncated bool `json:"files_truncated"`
 	grant pebblestore.WorkspaceGrant
+	currentAuthority bool
 }
 
 type sessionRepositoriesResponse struct {
@@ -51,8 +51,8 @@ type sessionRepositoriesResponse struct {
 	HistoryCoverage string `json:"history_coverage"`
 }
 
-// The opaque storage cursor binds principal, revision and parent. Offset only
-// slices one already-authorized context; it never grants filesystem access.
+// The entire continuation is sealed by the store against principal, parent,
+// inventory revision and HTTP page limit. It never grants filesystem access.
 type sessionRepositoryCursor struct {
 	Phase string `json:"phase"`
 	Cursor string `json:"cursor"`
@@ -76,7 +76,8 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 	if row.Archived { lifecycle = "archived" }
 	if row.Deleted { lifecycle = "deleted" }
 	grants := pebblestore.NormalizeSessionWorkspaceGrants(owner)
-	if owner.WorktreeEnabled && owner.WorktreeRootPath != "" {
+	if row.Projected { grants = row.Grants }
+	if !row.Projected && owner.WorktreeEnabled && owner.WorktreeRootPath != "" {
 		found := false
 		for _, grant := range grants { if grant.Path == owner.WorktreeRootPath { found = true } }
 		if !found { grants = append(grants, pebblestore.WorkspaceGrant{Kind: pebblestore.WorkspaceGrantWorktree, Path: owner.WorktreeRootPath}) }
@@ -99,14 +100,14 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 				if sourceGrant.Path == source && sourceGrant.WorkspaceID != "" { item.grant = sourceGrant; item.WorkspaceID = sourceGrant.WorkspaceID; item.WorkspaceGeneration = sourceGrant.WorkspaceGeneration; item.WorkspaceName = sourceGrant.Name; break }
 			}
 		}
-		item.ID = repositoryItemID(owner.ID, row.ContextID, grant.Kind, grant.WorkspaceID, grant.Path)
+		item.ID = repositoryItemID(owner.ID, grant.WorkspaceID, grant.Path)
 		items = append(items, item)
 	}
 	// Captured source is often metadata-only for managed child sessions.
 	found := false
 	for _, item := range items { if item.WorkspacePath == source { found = true } }
-	if source != "" && !found {
-		items = append(items, sessionRepositoryItem{ID: repositoryItemID(owner.ID, row.ContextID, "source", source), SessionID: owner.ID, SourcePath: source, WorkspacePath: source, Kind: "source", Lifecycle: lifecycle, Retained: true})
+	if !row.Projected && source != "" && !found {
+		items = append(items, sessionRepositoryItem{ID: repositoryItemID(owner.ID, "", source), SessionID: owner.ID, SourcePath: source, WorkspacePath: source, Kind: "source", Lifecycle: lifecycle, Retained: true})
 	}
 	return items
 }
@@ -150,9 +151,16 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 		if err != nil || limit < 1 || limit > sessionRepositoryPageLimit { writeError(w, http.StatusBadRequest, errors.New("limit must be 1..20")); return }
 	}
 	cursor := sessionRepositoryCursor{Phase: "sessions"}
-	if raw := r.URL.Query().Get("cursor"); raw != "" {
-		data, err := base64.RawURLEncoding.DecodeString(raw)
-		if len(raw) > 16384 || err != nil || json.Unmarshal(data, &cursor) != nil || cursor.Offset < 0 || cursor.Offset > 1024 || (cursor.Phase != "sessions" && cursor.Phase != "programs") { writeError(w, http.StatusBadRequest, pebblestore.ErrRepositoryHistoryCursor); return }
+	continuationQuery := pebblestore.RepositoryHistoryQuery{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ParentSessionID: sessionID, Limit: limit}
+	raw := r.URL.Query().Get("cursor")
+	data, anchor, err := s.sessions.RepositoryContinuation(continuationQuery, raw, nil)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, pebblestore.ErrRepositoryHistoryNotReady) { status = http.StatusServiceUnavailable }
+		writeError(w, status, err); return
+	}
+	if raw != "" {
+		if json.Unmarshal(data, &cursor) != nil || cursor.Offset < 0 || cursor.Offset > 1024 || (cursor.Phase != "sessions" && cursor.Phase != "programs") { writeError(w, http.StatusBadRequest, pebblestore.ErrRepositoryHistoryCursor); return }
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -191,6 +199,9 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 						if grant.Path == items[i].WorkspacePath && grant.WorkspaceID == items[i].WorkspaceID {
 							items[i].Attached = row.Session.ID == sessionID
 							items[i].Default = items[i].Attached && grant.Kind == pebblestore.WorkspaceGrantPrimary
+							if primary := sessionsV3MetadataString(current.Metadata, "swarm_v3_source_workspace_id"); primary != "" {
+								items[i].Default = items[i].Attached && items[i].Kind == "source" && items[i].WorkspaceID == primary
+							}
 						}
 					}
 				}
@@ -198,9 +209,9 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 		}
 		if len(page.Programs) > 0 {
 			program := page.Programs[0]
-			contextID = program.ProgramID + ":" + strconv.Itoa(program.Revision)
+			contextID = program.ProgramID
 			if lane := program.RepositoryLane; lane != nil {
-				items = append(items, sessionRepositoryItem{ID: repositoryItemID(sessionID, program.ProgramID, lane.WorkspacePath), SessionID: sessionID, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit, Lifecycle: program.State, Retained: true})
+				items = append(items, sessionRepositoryItem{ID: repositoryItemID(sessionID, "lane", lane.WorkspacePath), SessionID: sessionID, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit, Lifecycle: program.State, Retained: true})
 			}
 		}
 		if cursor.Context != "" && cursor.Context != contextID { writeError(w, http.StatusConflict, pebblestore.ErrRepositoryHistoryCursor); return }
@@ -232,7 +243,11 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 			if cursor.Phase == "sessions" { cursor.Phase = "programs" } else { cursor.Phase = "done"; break }
 		}
 	}
-	if cursor.Phase != "done" { data, _ := json.Marshal(cursor); response.NextCursor = base64.RawURLEncoding.EncodeToString(data) }
+	data, err = json.Marshal(cursor)
+	if err != nil { writeError(w, http.StatusInternalServerError, err); return }
+	_, next, err := s.sessions.RepositoryContinuation(continuationQuery, anchor, data)
+	if err != nil { writeError(w, http.StatusConflict, err); return }
+	if cursor.Phase != "done" { response.NextCursor = next }
 	if err := ctx.Err(); err != nil { writeError(w, http.StatusRequestTimeout, err); return }
 	writeJSON(w, http.StatusOK, response)
 }
@@ -257,11 +272,26 @@ func (s *Server) selectedSessionRepository(principal identity.Principal, session
 			item.WorkspaceGeneration, _ = strconv.ParseInt(sessionsV3MetadataString(owner.Metadata, "swarm_v3_source_workspace_generation"), 10, 64)
 		}
 		if err := s.authorizeRepositoryItem(principal, item); err != nil { return sessionRepositoryItem{}, err }
+		item.currentAuthority = owner.WorktreeEnabled && item.WorkspacePath == owner.WorktreeRootPath
+		for _, grant := range pebblestore.NormalizeSessionWorkspaceGrants(owner) {
+			if grant.Path == item.WorkspacePath && grant.Kind != pebblestore.WorkspaceGrantTemporary { item.currentAuthority = true }
+		}
 		return item, nil
 	}
 	query := pebblestore.RepositoryHistoryQuery{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ParentSessionID: sessionID, Limit: 20}
-	page, err := s.sessions.TaskProgramRepositoryHistory(query)
+	page, err := s.sessions.ExactRepositoryHistory(query, path)
 	if err != nil { return sessionRepositoryItem{}, err }
+	for _, row := range page.Sessions {
+		for _, item := range repositorySessionItems(row, sessionID) {
+			if item.WorkspacePath != path { continue }
+			if item.WorkspaceID == "" && item.SourcePath == sessionsV3MetadataString(row.Session.Metadata, "swarm_v3_source_workspace_path") {
+				item.WorkspaceID = sessionsV3MetadataString(row.Session.Metadata, "swarm_v3_source_workspace_id")
+				item.WorkspaceGeneration, _ = strconv.ParseInt(sessionsV3MetadataString(row.Session.Metadata, "swarm_v3_source_workspace_generation"), 10, 64)
+			}
+			if err := s.authorizeRepositoryItem(principal, item); err != nil { return sessionRepositoryItem{}, err }
+			return item, nil
+		}
+	}
 	for _, program := range page.Programs {
 		lane := program.RepositoryLane
 		if lane == nil || lane.WorkspacePath != path { continue }
@@ -269,7 +299,6 @@ func (s *Server) selectedSessionRepository(principal identity.Principal, session
 		if err := s.authorizeRepositoryItem(principal, item); err != nil { return sessionRepositoryItem{}, err }
 		return item, nil
 	}
-	if page.NextCursor != "" { return sessionRepositoryItem{}, errors.New("repository selector exceeds bounded program lookup; use owning worker session") }
 	return sessionRepositoryItem{}, errors.New("unknown session repository selector")
 }
 

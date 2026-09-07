@@ -2,6 +2,8 @@ package pebblestore
 
 import (
 	"bytes"
+	"context"
+	"strings"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -127,12 +129,89 @@ func TestRepositoryHistoryBackfillFailureAtomic(t *testing.T) {
 	store := openV3SessionEventTestStore(t)
 	sessions := NewSessionStore(store)
 	historyCreate(t, sessions, "parent", "account", "user", "")
-	before, _, err := store.GetBytes(repositoryHistoryRevisionKey)
+	before, _, err := store.GetBytes(repositoryHistoryRevisionKey + "/" + keyPart("parent"))
+	if err != nil { t.Fatal(err) }
+	if _, err := sessions.BackfillRepositoryHistory(100); err != nil { t.Fatal(err) }
+	metaBefore, _, err := store.GetBytes(repositoryHistoryMetaKey)
 	if err != nil { t.Fatal(err) }
 	if err := store.db.Set([]byte(KeySession("zz-corrupt")), []byte("{"), nil); err != nil { t.Fatal(err) }
 	if _, err := sessions.BackfillRepositoryHistory(100); err == nil { t.Fatal("corruption accepted") }
-	var meta repositoryHistoryMeta
-	if ok, err := store.GetJSON(repositoryHistoryMetaKey, &meta); err != nil || ok { t.Fatalf("partial migration progress: %+v %v", meta, err) }
-	after, _, err := store.GetBytes(repositoryHistoryRevisionKey)
+	metaAfter, _, err := store.GetBytes(repositoryHistoryMetaKey)
+	if err != nil || !bytes.Equal(metaBefore, metaAfter) { t.Fatal("partial migration progress") }
+	after, _, err := store.GetBytes(repositoryHistoryRevisionKey + "/" + keyPart("parent"))
 	if err != nil || !bytes.Equal(before, after) { t.Fatal("failed migration committed partial index") }
+}
+
+// Purpose: startup maintenance must be cancellable and resumable; complete HTTP
+// continuations must reject forged scope/limit/state while unrelated writes and
+// chat-only metadata do not invalidate them. Store snapshots are the narrowest
+// authority for atomic revision and no-partial-result assertions.
+func TestRepositoryHistoryContinuationAndMaintenance(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	parent := historyCreate(t, sessions, "parent", "account", "user", "")
+	ctx, cancel := context.WithCancel(context.Background()); cancel()
+	if err := sessions.CompleteRepositoryHistoryMaintenance(ctx); !errors.Is(err, context.Canceled) { t.Fatal(err) }
+	if err := sessions.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil { t.Fatal(err) }
+	q := RepositoryHistoryQuery{AccountScopeID: "account", UserID: "user", ParentSessionID: "parent", Limit: 1}
+	payload := []byte(`{"phase":"sessions","cursor":"","offset":1,"context":"first"}`)
+	_, token, err := sessions.RepositoryContinuation(q, "", payload)
+	if err != nil { t.Fatal(err) }
+	historyCreate(t, sessions, "unrelated", "other-account", "user", "parent")
+	parent.Metadata["chat_token"] = "streaming"
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: parent.ID, AccountScopeID: "account", UserID: "user", Kind: V3SessionMutationUpdateMetadata, Session: &parent, IdempotencyKey: "chat", RequestHash: "chat", NowUnixMs: 200})
+	if err != nil { t.Fatal(err) }
+	decoded, _, err := sessions.RepositoryContinuation(q, token, nil)
+	if err != nil || !bytes.Equal(decoded, payload) { t.Fatalf("unrelated write invalidated token: %s %v", decoded, err) }
+	for _, bad := range []string{"forged", strings.Repeat("a", 24001), token[:len(token)/2]} {
+		if decoded, _, err := sessions.RepositoryContinuation(q, bad, nil); err == nil || len(decoded) != 0 { t.Fatal("forged continuation returned state") }
+	}
+	other := q; other.Limit = 2
+	if decoded, _, err := sessions.RepositoryContinuation(other, token, nil); err == nil || len(decoded) != 0 { t.Fatal("limit change accepted") }
+	parent.Metadata["integration_status"] = "integrated"
+	_, err = sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: parent.ID, AccountScopeID: "account", UserID: "user", Kind: V3SessionMutationUpdateMetadata, Session: &parent, IdempotencyKey: "integrate", RequestHash: "integrate", NowUnixMs: 300})
+	if err != nil { t.Fatal(err) }
+	if decoded, _, err := sessions.RepositoryContinuation(q, token, nil); !errors.Is(err, ErrRepositoryHistoryCursor) || len(decoded) != 0 { t.Fatal("stale lifecycle accepted") }
+}
+
+// Purpose: indexed logical claims deduplicate unchanged attachments across
+// default changes without removing distinct catalog IDs; exact retained lookup
+// must not scan a capped program list. The store layer proves claim pagination
+// and principal rejection independently of Git filesystem availability.
+func TestRepositoryHistoryClaimsAndExactLookup(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	parent := historyCreate(t, sessions, "parent", "account", "user", "")
+	source := parent.WorkspacePath
+	parent.WorkspaceGrants = []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, Path: source, WorkspaceID: "a"}, {Kind: WorkspaceGrantAdditional, Path: source, WorkspaceID: "b"}}
+	update := func(key string) {
+		t.Helper()
+		_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: parent.ID, AccountScopeID: "account", UserID: "user", Kind: V3SessionMutationUpdateMetadata, Session: &parent, IdempotencyKey: key, RequestHash: key, NowUnixMs: 200})
+		if err != nil { t.Fatal(err) }
+	}
+	update("attach")
+	parent.WorkspaceGrants[0].Kind, parent.WorkspaceGrants[1].Kind = WorkspaceGrantAdditional, WorkspaceGrantPrimary
+	update("default")
+	historyReady(t, sessions)
+	q := RepositoryHistoryQuery{AccountScopeID: "account", UserID: "user", ParentSessionID: "parent", Limit: 1}
+	seen := map[string]bool{}
+	for n := 0; n < 10; n++ {
+		page, err := sessions.ListSessionRepositoryHistory(q)
+		if err != nil { t.Fatal(err) }
+		for _, row := range page.Sessions { for _, grant := range row.Grants {
+			key := grant.WorkspaceID + ":" + grant.Path
+			if seen[key] { t.Fatalf("duplicate claim %s", key) }; seen[key] = true
+		} }
+		q.Cursor = page.NextCursor; if q.Cursor == "" { break }
+	}
+	if !seen["a:"+source] || !seen["b:"+source] { t.Fatal("distinct identities lost") }
+	for i := 0; i < 30; i++ {
+		record := TaskProgramRecord{ParentSessionID: "parent", ProgramID: fmt.Sprintf("program-%02d", i), State: TaskProgramStateCompleted, RepositoryLane: &TaskProgramRepositoryLane{SourcePath: source, WorkspacePath: filepath.Join(source, "lane")}}
+		if err := sessions.putTaskProgramHistory(record); err != nil { t.Fatal(err) }
+	}
+	q.Cursor = ""
+	page, err := sessions.ExactRepositoryHistory(q, filepath.Join(source, "lane"))
+	if err != nil || len(page.Programs) != 1 || page.Programs[0].ProgramID != "program-29" { t.Fatalf("exact late lookup: %+v %v", page, err) }
+	q.UserID = "foreign"
+	if page, err := sessions.ExactRepositoryHistory(q, filepath.Join(source, "lane")); err == nil || len(page.Programs) != 0 { t.Fatal("foreign lookup returned lane") }
 }
