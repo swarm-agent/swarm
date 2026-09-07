@@ -16,7 +16,6 @@ import { sortDiscoveredWorkspaces, dedupeDiscoveredAgainstWorkspaces } from '../
 import { loadLauncherCatalogFirst } from '../services/load-launcher-catalog-first'
 import { syncWorkspaceOverviewWorktreeState } from '../services/workspace-overview-cache'
 import { browseWorkspacePath } from '../queries/browse-workspace-path'
-import { listWorkspaces } from '../queries/list-workspaces'
 import { discoverWorkspaces } from '../queries/discover-workspaces'
 import { uiSettingsQueryKey, uiSettingsQueryOptions, workspaceOverviewQueryKey, workspaceOverviewQueryOptions } from '../../../queries/query-options'
 import type {
@@ -376,37 +375,6 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       applyWorkspaceTheme(resolveEffectiveThemeId(currentWorkspacePath, workspaces, globalThemeId))
     }
   }, [applyDocumentTheme, currentWorkspacePath, globalThemeId, loading, workspaces])
-
-  const hasPendingWorkspaceDefinition = workspaces.some((workspace) => workspace.definitionStatus === 'pending')
-
-  useEffect(() => {
-    if (!hasPendingWorkspaceDefinition) {
-      return
-    }
-    const timer = window.setInterval(() => {
-      void listWorkspaces()
-        .then((latest) => {
-          const latestByPath = new Map(latest.map((workspace) => [workspace.path, workspace]))
-          setWorkspaces((current) => current.map((workspace) => {
-            const updated = latestByPath.get(workspace.path)
-            return updated
-              ? {
-                  ...workspace,
-                  definitionStatus: updated.definitionStatus,
-                  definition: updated.definition,
-                  definitionError: updated.definitionError,
-                  definitionSuggestion: updated.definitionSuggestion,
-                  definitionAttempts: updated.definitionAttempts,
-                  definitionGeneration: updated.definitionGeneration,
-                  definitionUpdatedAt: updated.definitionUpdatedAt,
-                }
-              : workspace
-          }))
-        })
-        .catch(() => {})
-    }, 2_000)
-    return () => window.clearInterval(timer)
-  }, [hasPendingWorkspaceDefinition])
 
   useEffect(() => {
     const defaultOverviewKey = workspaceOverviewQueryKey([], 25)

@@ -6195,3 +6195,9 @@ ta-scope-delivery-prompt	go-test	swarmd/internal/run/service_task_owned_scope_de
 # source_sha256 swarmd/internal/tool/runtime_manage_worktree_recovery_test.go e2793c794c58b7842fae4ac8ea7ab07dcf6932b565968c7ba60be95ab485690e
 # Retained source metadata regression: TestApprovedCoderAllocatesFromSelectedSharedWorkspace and TestMultiWorkspaceIdentityTransitions count=2 passed; fixture nil-map and allocation-collision failures repaired, not hidden. Independent review pending.
 # source_sha256 swarmd/internal/run/service_task_launch_test.go fdf4dae5ee411c53ac2eff34533bcfe0f9e2bf1e08d02c46b591975fca03eae8 supersedes previous digest verdict reliance.
+
+# 2026-09-07 workspace no-polling correction; base 2095a20c plus working diff. Prior G4/V6 digests for the edited files are historical, not current evidence. Tests not run; independent P1/P2 review pending; no curated promotion.
+# source_sha256 web/src/features/desktop/state/session-repositories.spec.ts 288072e32c73476c0c2afe8504c424e5f79ab1b93b964d62ba4ade0f566ee99e
+# source_sha256 web/src/features/desktop/git/session-repository-picker.spec.ts d9b93e2fa7d169151fc295b2b32e18e3a878819d4c423baa6c4fb378aa878efb
+# source_sha256 web/src/features/workspaces/launcher/state/use-workspace-launcher.spec.ts c1e49d87f86fe89e3c6a4b46837a939865e381409ec473d284e0ee9cd7e152e6
+# Requirement: scoped durable events, no idle polling or timer-based in-flight retry; preserve exact ownership/stale rejection. New action-filter and real-inventory scheduler assertions cover unrelated activity, attachment-only filtering, completion-driven follow-up, hidden deferral and late-result rejection. Picker checks remain rendered error-state evidence only; launcher source guard is wiring evidence only, not runtime/security proof. Browser visual verification remains unperformed.

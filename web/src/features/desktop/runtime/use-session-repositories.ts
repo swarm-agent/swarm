@@ -10,17 +10,13 @@ export function useSessionRepositories(sessionId: string) {
     if (!sessionId) return
     const scheduler = scheduleRepositoryRefresh(inventory, () => document.visibilityState !== 'hidden')
     const unsubscribe = subscribeDesktopV3Cache(mutation => {
-      if (!mutation || repositoryEventInvalidates(mutation.action.type)) scheduler.invalidate()
+      const owners = new Set([sessionId, ...inventory.state.items.map(row => row.session_id)])
+      if (!mutation || repositoryEventInvalidates(mutation.action, owners)) scheduler.invalidate()
     })
-    const polling = setInterval(scheduler.invalidate, 30_000)
-    window.addEventListener('focus', scheduler.invalidate)
-    window.addEventListener('online', scheduler.invalidate)
     document.addEventListener('visibilitychange', scheduler.visibilityChanged)
     if (document.visibilityState !== 'hidden') void inventory.refresh()
     return () => {
-      unsubscribe(); scheduler.dispose(); clearInterval(polling)
-      window.removeEventListener('focus', scheduler.invalidate)
-      window.removeEventListener('online', scheduler.invalidate)
+      unsubscribe(); scheduler.dispose()
       document.removeEventListener('visibilitychange', scheduler.visibilityChanged)
     }
   }, [inventory, sessionId])

@@ -72,8 +72,6 @@ test('failure and concurrent live invalidation preserve rows but disable operati
     assert.equal(repositoryMutationSupported(repositoryFixture(patch), owner, false), false)
   }
   assert.equal(repositoryMutationSupported(repositoryFixture(), owner, true), false)
-  for (const type of ['reconnect.applySnapshot', 'realtime.statusChanged', 'realtime.worksetSessionRemoved', 'mutation.sessionSettingsResult', 'syncStream.applyBatch']) assert.equal(repositoryEventInvalidates(type), true)
-  for (const type of ['session.select', 'realtime.applyLivePatchBatch', 'realtime.storeResume', 'mutation.invented']) assert.equal(repositoryEventInvalidates(type), false)
   fail = false; await inventory.refresh()
   assert.equal(inventory.state.stale, false)
   assert.equal(inventory.state.error, '')
@@ -124,26 +122,51 @@ test('continued windows reach 460 workers and keep exact unloaded selection', as
   assert.equal(inventory.state.selectedKey, selected)
 })
 
-// Requirement: sustained invalidations cannot cancel/starve reads; hidden views
-// pause and an in-flight invalidation schedules a later refresh. Fake clock
-// exercises the shared scheduler used by both production consumers.
-test('refresh scheduler coalesces events, follows in-flight invalidation and pauses hidden views', t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  let reads = 0; let cancels = 0; let visible = true
-  const target = { state: { loading: false }, invalidate() {}, async refresh() { reads++; target.state.loading = true }, dispose() { cancels++; target.state.loading = false } }
-  const scheduler = scheduleRepositoryRefresh(target, () => visible)
+// Requirement: only relevant durable changes trigger reads; chatter and unrelated
+// sessions cannot keep workspace/Git controls stale. Test the action filter directly.
+test('repository invalidation is scoped and ignores streaming chatter', () => {
+  const owners = new Set(['parent'])
+  const action = (sessionId: string, eventType: string) => ({ type: 'realtime.applyEvent' as const, event: { source: 'realtime' as const, sessionId, eventType, payload: {} } })
+  for (const type of ['session.message.appended', 'run.usage.updated', 'session.tool.started']) {
+    assert.equal(repositoryEventInvalidates(action('parent', type), owners), false)
+  }
+  assert.equal(repositoryEventInvalidates(action('other', 'session.tool.completed'), owners), false)
+  assert.equal(repositoryEventInvalidates(action('parent', 'session.tool.completed'), owners), true)
+  assert.equal(repositoryEventInvalidates(action('parent', 'session.tool.completed'), owners, true), false)
+  assert.equal(repositoryEventInvalidates(action('parent', 'session.settings.updated'), owners, true), true)
+  assert.equal(repositoryEventInvalidates({ type: 'realtime.statusChanged', status: 'open' }, owners), false)
+})
+
+// Requirement: completion, not a timer, drains one queued invalidation. The real
+// inventory proves no aborted requests, idle polling, or lost in-flight updates.
+test('refresh scheduler drains events without polling and defers hidden reads', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] })
+  let reads = 0; let visible = true
+  const pending: Array<(value: SessionRepositoriesResponse) => void> = []
+  const inventory = new SessionRepositoryInventory(() => { reads++; return new Promise(resolve => pending.push(resolve)) })
+  const scheduler = scheduleRepositoryRefresh(inventory, () => visible)
   for (let i = 0; i < 100; i++) scheduler.invalidate()
-  t.mock.timers.tick(1_000)
+  await Promise.resolve()
   assert.equal(reads, 1)
-  scheduler.invalidate(); t.mock.timers.tick(1_000)
+  scheduler.invalidate()
+  t.mock.timers.tick(60_000)
   assert.equal(reads, 1)
-  target.state.loading = false
-  t.mock.timers.tick(1_000)
+  pending.shift()!(page([repositoryFixture()]))
+  await Promise.resolve(); await Promise.resolve()
+  assert.equal(reads, 2)
+  pending.shift()!(page([repositoryFixture()]))
+  await Promise.resolve(); await Promise.resolve()
+  assert.equal(inventory.state.stale, false)
+  t.mock.timers.tick(60_000)
   assert.equal(reads, 2)
   visible = false; scheduler.visibilityChanged(); scheduler.invalidate()
-  t.mock.timers.tick(10_000)
-  assert.equal(reads, 2); assert.equal(cancels, 1)
-  visible = true; scheduler.visibilityChanged(); t.mock.timers.tick(1_000)
+  await Promise.resolve()
+  assert.equal(reads, 2)
+  visible = true; scheduler.visibilityChanged()
+  await Promise.resolve()
   assert.equal(reads, 3)
   scheduler.dispose()
+  pending.shift()!(page([repositoryFixture({ id: 'late' })]))
+  await Promise.resolve()
+  assert.equal(inventory.state.items[0].id, 'row')
 })

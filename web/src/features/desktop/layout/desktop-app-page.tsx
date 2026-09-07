@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { observePageActivity, startPagePolling, withPageRequest } from '../../../app/page-lifecycle'
+import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
@@ -51,7 +51,7 @@ import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { resolveDesktopTaskWorkspace } from '../chat/services/task-workspace-selection'
 import { executeDesktopTipsCommand } from '../chat/services/home-tips'
-import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
+import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, suggestWorkspaceCommitMessage } from '../git/api'
 import { SessionRepositoryPicker } from '../git/session-repository-picker'
 import { useSessionRepositories } from '../runtime/use-session-repositories'
 import { repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
@@ -2611,7 +2611,6 @@ export function DesktopAppPage() {
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
-  const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [editingSidebarSwarmName, setEditingSidebarSwarmName] = useState(false)
@@ -3170,7 +3169,7 @@ export function DesktopAppPage() {
     ? (selectedRepositoryMutable && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ? gitStatusQuery.data.status : selectedRepository.status ?? null)
     : null
   const activeSessionWorktree = Boolean(selectedRepositoryMutable && activeGitSession?.worktreeEnabled)
-  const selectedRepositoryActionsEnabled = selectedRepositoryMutable && !gitRealtimeErrors[repositoryInventory.selectedKey] && !gitStatusQuery.isError && !gitStatusQuery.isFetching
+  const selectedRepositoryActionsEnabled = selectedRepositoryMutable && !gitStatusQuery.isError && !gitStatusQuery.isFetching
     && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
@@ -3191,30 +3190,11 @@ export function DesktopAppPage() {
   const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && !gitReviewQuery.isFetching && activeSessionReviewCandidate?.integrate_eligible)
 
   useEffect(() => {
-    if (!selectedGitWorkspacePath || !selectedRepositoryMutable) return
-    let token = ''
-    return startPagePolling(async (signal) => {
-      const startedAt = Date.now()
-      const requestedToken = token
-      try {
-        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken, signal)
-        if (signal.aborted) return 5_000
-        if (response.watch_token !== requestedToken) {
-          token = response.watch_token
-          queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
-        }
-        setGitRealtimeErrors((current) => {
-          if (!current[repositoryInventory.selectedKey]) return current
-          const next = { ...current }; delete next[repositoryInventory.selectedKey]; return next
-        })
-        // Preserve the defensive floor for immediately unchanged responses.
-        return response.watch_token === requestedToken ? Math.max(250, 1_000 - (Date.now() - startedAt)) : 250
-      } catch (error) {
-        if (!signal.aborted) setGitRealtimeErrors((current) => ({ ...current, [repositoryInventory.selectedKey]: error instanceof Error ? error.message : String(error) }))
-        return 5_000
-      }
-    })
-  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath, selectedRepositoryMutable, repositoryInventory.selectedKey])
+    if (!selectedRepositoryMutable || !selectedRepository?.status) return
+    // Inventory completion follows scoped durable events or an explicit refresh.
+    // Reuse that exact status instead of maintaining a second Git polling loop.
+    queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: selectedRepository.status })
+  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath, selectedRepositoryMutable, selectedRepository])
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
     mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
@@ -4767,8 +4747,7 @@ export function DesktopAppPage() {
     }
   }
 
-  const gitSidebarError = selectedRepositoryMutable ? gitRealtimeErrors[repositoryInventory.selectedKey]
-    || (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '') : ''
+  const gitSidebarError = selectedRepositoryMutable ? (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '') : ''
   const gitSidebarMissingGit = isMissingGitSidebarError(gitSidebarError)
 
   const handleAskSwarmToInstallGit = async () => {
