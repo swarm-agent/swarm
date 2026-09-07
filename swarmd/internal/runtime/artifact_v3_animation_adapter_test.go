@@ -24,7 +24,7 @@ func TestArtifactV3AnimationAdapterPreservesAuthoredSeek(t *testing.T) {
 		name, script, style string
 		fail                bool
 	}{
-		{"authored", `<script>globalThis.__SWARM_ANIMATION_V1__={version:"swarm.animation/v1",ready:()=>true,seek:t=>{document.getElementById('box').style.transform='translateX('+t/4+'px)';document.documentElement.dataset.swarmAnimationTimeMs=String(t);return {time_ms:t}}}</script>`, "", false},
+		{"authored", `<script>globalThis.__SWARM_ANIMATION_V1__={version:"swarm.animation/v1",ready:()=>true,seek:t=>{document.getElementById('box').style.transform='translateX('+t/4+'px)';return {time_ms:t}}}</script>`, "", false},
 		{"css-only", "", `#box{animation:move 1s linear both}@keyframes move{to{transform:translateX(250px)}}`, false},
 		{"invalid-authored", `<script>globalThis.__SWARM_ANIMATION_V1__={version:"invalid"}</script>`, "", true},
 	} {

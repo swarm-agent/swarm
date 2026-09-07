@@ -560,7 +560,7 @@ const runtime={
   },
   seek:async timeMs=>{
     if (!bound) return {__swarm_outcome:"runtime_unbound"};
-    try { return await bound.seek(timeMs); } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
+    try { const ack=await bound.seek(timeMs); if(ack&&Object.keys(ack).length===1&&ack.time_ms===timeMs)document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs); return ack; } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
   }
 };
 // Keep the trusted proxy immutable while accepting the original parser-time
