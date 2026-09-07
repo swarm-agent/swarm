@@ -6228,3 +6228,9 @@ ta-scope-delivery-prompt	go-test	swarmd/internal/run/service_task_owned_scope_de
 
 # Working-workspace header revision: prior source digests for web/src/features/desktop/chat/queries/session-attachments.spec.ts and web/src/features/desktop/chat/components/session-attachments.browser.spec.ts are invalidated. New selector and refresh cases distinguish default/running delegated sources from access-only attachments and completed history. Browser selectors now target working names and disclose available inventory. Not executed; independent review and reinventory pending. No curated-manifest additions.
 # Working-workspace header revision also invalidates prior digests for web/src/features/desktop/chat/components/session-attachments.spec.tsx: added rendered-label assertion for nine available versus two working roots. Not run; reinventory and independent review pending.
+
+# Mobile header workspace-row revision: prior verdicts for the three files below do not cover these edits; focused execution and independent review pending.
+# source_sha256 web/src/features/desktop/chat/components/desktop-v3-chat-header.spec.tsx 8ed3319abc9b81df8f98c925abb2a808f7b362c4953b21ab1d6ce23cc1c4c615
+# source_sha256 web/src/features/desktop/chat/components/session-attachments.spec.tsx 4d59e0534b6ae421059d85f604fb4cbb01c845154f603d3c2f3db41d4c9db199
+# source_sha256 web/src/features/desktop/chat/components/session-attachments.browser.spec.ts 15c8c06e7d7ea6940013616a85aa4947ccc8b1606f7fc9371d0cf6665d430820
+# Requirement/authority: DesktopV3ChatHeader places one SessionAttachments control below the mobile title; SessionAttachmentsView displays workspace names without Working on. SSR asserts row contents/single mount and collapsed copy; existing browser selectors follow the accessible label. Browser header geometry and rendered pixels remain unverified. Tests not run in this source-only change.

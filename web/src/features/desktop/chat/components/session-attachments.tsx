@@ -21,11 +21,11 @@ export function SessionAttachmentsView({ items, workingSources = [], loading, st
   const workingLabel = workspaceNames || (error ? 'Workspaces unavailable' : loading ? 'Loading workspaces' : more ? 'Workspaces loading incomplete' : 'No working workspace reported')
   const stateLabel = error ? (items.length ? 'Workspace list stale' : 'Workspaces unavailable') : loading && !items.length ? 'Loading workspaces' : more ? `${items.length}+ workspaces` : `${items.length} workspaces`
   return <>
-    <button type="button" aria-haspopup="dialog" aria-label={`Working on: ${workingLabel}`} title={`Working on: ${workingLabel}${stale ? ' — workspace information may be stale' : ''}`}
-      className="max-w-40 truncate rounded px-2 py-1 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:max-w-64"
-      onClick={() => dialog.current?.showModal()}>Working on: {workingLabel}{stale && workspaceNames ? ' · Stale' : ''}</button>
+    <button type="button" aria-haspopup="dialog" aria-label={`Workspaces: ${workingLabel}`} title={`${workingLabel}${stale ? ' — workspace information may be stale' : ''}`}
+      className="min-w-0 max-w-full truncate rounded text-left text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:max-w-64 sm:px-2 sm:py-1 sm:text-xs sm:font-normal"
+      onClick={() => dialog.current?.showModal()}>{workingLabel}{stale && workspaceNames ? ' · Stale' : ''}</button>
     <dialog ref={dialog} aria-label="Session workspaces" className="fixed m-auto max-h-[80dvh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text)] backdrop:bg-black/40">
-      <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Working on</h2><button type="button" onClick={() => dialog.current?.close()} aria-label="Close workspaces">Close</button></div>
+      <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Session workspaces</h2><button type="button" onClick={() => dialog.current?.close()} aria-label="Close workspaces">Close</button></div>
       <ul className="my-2 grid gap-1" aria-label="Working workspace list">
         {workingWorkspaces.map(item => <li key={item.workspace_id}>{item.workspace_name || item.workspace_id}</li>)}
       </ul>

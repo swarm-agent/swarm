@@ -33,8 +33,8 @@ export function SessionRepositoryPicker({ inventory, onSelect, onRefresh, onLoad
     </div>
     {!inventory.loading && !inventory.error && inventory.items.length === 0 ? <p>No repositories returned.</p> : null}
     {inventory.selectedKey && !inventory.items.some(row => repositoryKey(row) === inventory.selectedKey) ? <p role="status">Selected repository is not in the loaded inventory. Load more or select a repository explicitly.</p> : null}
-    
+
     {inventory.nextCursor ? <><p role="status">Partial inventory — more repositories remain.</p><button type="button" disabled={inventory.loading || inventory.stale} onClick={onLoadMore}>Load more repositories</button></> : null}
-    
+
   </div>
 }

@@ -50,9 +50,9 @@ test('attachment dialog supports 64 identities, live removal and failed refresh 
     await page.goto('http://fixture.invalid/attachment-fixture')
     await page.addStyleTag({ content: css })
     await page.addScriptTag({ content: js, type: 'module' })
-    await page.getByRole('button', { name: 'Working on: Workspaces loading incomplete', exact: true }).waitFor()
+    await page.getByRole('button', { name: 'Workspaces: Workspaces loading incomplete', exact: true }).waitFor()
     assert.deepEqual(cursors, ['', 'opaque-20', 'opaque-40', 'opaque-60'])
-    await page.getByRole('button', { name: 'Working on: Workspaces loading incomplete', exact: true }).click()
+    await page.getByRole('button', { name: 'Workspaces: Workspaces loading incomplete', exact: true }).click()
     await page.getByText('Available workspaces', { exact: true }).click()
     for (let window = 0; window < 5; window++) {
       const before = cursors.length
@@ -61,7 +61,7 @@ test('attachment dialog supports 64 identities, live removal and failed refresh 
       assert.equal(cursors.length - before, 4)
       assert.ok(await page.locator('[data-workspace-id]').count() <= 64)
     }
-    await page.getByRole('button', { name: /^Working on: Same name/ }).waitFor()
+    await page.getByRole('button', { name: /^Workspaces: Same name/ }).waitFor()
     assert.equal(cursors.length, 24)
     for (const width of [375, 1440]) {
       await page.setViewportSize({ width, height: 800 })

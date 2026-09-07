@@ -82,3 +82,19 @@ test('header omits unresolved branch placeholders and the plan indicator', () =>
   assert.doesNotMatch(markup, /aria-label="Plan mode"/)
   assert.doesNotMatch(markup, />undefined</)
 })
+
+// Requirement: mobile workspace identity belongs below the title, without runtime
+// or model metadata. DesktopV3ChatHeader owns placement; SSR guards the single
+// attachment-control mount and row contents, not computed browser geometry.
+test('session workspace row contains one attachment control without runtime metadata', () => {
+  const markup = renderToStaticMarkup(
+    <DesktopV3ChatHeader title="Conversation" workspaceName="Project" sessionId="fixture-session" branchName="agent/header-fix" modelLabel="Example model" />,
+  )
+  const row = markup.slice(markup.indexOf('data-testid="session-workspace-row"'))
+  const button = row.slice(0, row.indexOf('</button>'))
+  assert.match(button, /aria-haspopup="dialog"/)
+  assert.doesNotMatch(button, /Working on|Runtime:|agent\/header-fix|Example model/)
+  assert.equal((markup.match(/aria-haspopup="dialog"/g) ?? []).length, 1)
+  assert.ok(markup.indexOf('</h1>') < markup.indexOf('data-testid="session-workspace-row"'))
+  assert.match(markup, /data-testid="desktop-v3-git-branch">Runtime: agent\/header-fix/)
+})

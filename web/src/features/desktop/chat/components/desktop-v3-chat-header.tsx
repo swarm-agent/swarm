@@ -154,26 +154,16 @@ export function DesktopV3ChatHeader({
           </button>
         ) : null}
 
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 sm:contents">
           {!hideMobileIdentity ? (
             <div className="sm:hidden">
               <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
                 {editableTitle}
               </h1>
-              <div className="mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 text-[10px] font-medium text-[var(--app-text-muted)]" title={displayWorkspace}>
-                <span className="min-w-0 truncate text-left" title={[displayWorkspace, resolvedHeaderDetails].filter(Boolean).join(' · ')}>
-                  {displayWorkspace}{resolvedHeaderDetails ? ` · ${resolvedHeaderDetails}` : ''}
-                </span>
-                {mobileRunTimerLabel ? (
-                  <span className="shrink-0 justify-self-end tabular-nums text-[var(--app-text)]" title={runStatus?.label}>
-                    {mobileRunTimerLabel}
-                  </span>
-                ) : null}
-              </div>
             </div>
           ) : null}
 
-          <div className="hidden min-w-0 sm:block">
+          <div className="hidden min-w-0 sm:block sm:flex-1">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
               {editableTitle}
               <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
@@ -191,9 +181,17 @@ export function DesktopV3ChatHeader({
               </div>
             ) : null}
           </div>
+          <div className={`${hideMobileIdentity ? 'hidden sm:contents' : 'mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 sm:contents'}`} data-testid="session-workspace-row">
+            {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} revision={workspaceRevision} /> : (
+              <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:hidden" title={displayWorkspace}>{displayWorkspace}</span>
+            )}
+            {mobileRunTimerLabel ? (
+              <span className="shrink-0 justify-self-end text-[10px] tabular-nums text-[var(--app-text)] sm:hidden" title={runStatus?.label}>
+                {mobileRunTimerLabel}
+              </span>
+            ) : null}
+          </div>
         </div>
-
-        {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} revision={workspaceRevision} /> : null}
         <div className="hidden sm:block">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
         </div>
