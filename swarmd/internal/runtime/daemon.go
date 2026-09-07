@@ -236,6 +236,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
+	historyContext, cancelHistory := context.WithTimeout(context.Background(), 2*time.Minute)
+	historyErr := pebblestore.NewSessionStore(store).CompleteRepositoryHistoryMaintenance(historyContext)
+	cancelHistory()
+	if historyErr != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("initialize repository history (resumable maintenance): %w", historyErr)
+	}
 	if _, err := pebblestore.RunModelProfileFlatMigration(store); err != nil {
 		_ = store.Close()
 		_ = lk.Release()

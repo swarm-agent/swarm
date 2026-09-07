@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Purpose: canonical suite selection and argv adapter preserve independent outcomes.
+# Threat: serial execution, hidden failures or ambient deployment/model configuration.
+# Authority: lib-launch-prerun.sh and run-testbench-launch-prerun.sh. Actual process
+# lifecycle negatives live in launch_prerun_supervisor_test.py; these shell checks
+# do not claim product/security proof from source-string assertions.
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/lib-launch-prerun.sh
 source "${ROOT_DIR}/scripts/lib-launch-prerun.sh"
@@ -12,11 +17,14 @@ fail() {
 
 TEST_ROOT="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/launch-prerun-test.XXXXXX")"
 trap 'rm -rf -- "${TEST_ROOT}"' EXIT
+cp "${ROOT_DIR}/.env.example" "${TEST_ROOT}/testbench.env"
+export SWARM_TESTBENCH_ENV_FILE="${TEST_ROOT}/testbench.env"
 EVENTS="${TEST_ROOT}/events.ndjson"
+export EVENTS
 : >"${EVENTS}"
 
 swarm_launch_prerun_run_lane() {
-  local lane="$1" _log_path="$2"
+  local lane="$1"
   local start end
   start="$(date +%s%N)"
   printf '{"lane":"%s","event":"start","ns":%s}\n' "${lane}" "${start}" >>"${EVENTS}"
@@ -30,6 +38,11 @@ swarm_launch_prerun_run_lane() {
   [[ "${lane}" != "fail-c" ]]
 }
 
+export -f swarm_launch_prerun_run_lane
+swarm_launch_prerun_lane_command() {
+  local -n result_ref="$2"
+  result_ref=(bash -c 'swarm_launch_prerun_run_lane "$1"' -- "$1")
+}
 set +e
 swarm_launch_prerun_run_parallel "${TEST_ROOT}/run" 2 slow-a slow-b fail-c >"${TEST_ROOT}/stdout" 2>"${TEST_ROOT}/stderr"
 status=$?
@@ -60,7 +73,7 @@ nine_status=$?
 set -e
 [[ "${zero_status}" != "0" && "${nine_status}" != "0" ]] || fail "invalid job limits were accepted"
 
-EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync\nomarchy-install'
+EXPECTED_SUITES=$'critical\nonboarding\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync\nomarchy-install\nattach-inspect\nworkspace-routing\nworkspace-workers\nworkspace-safety\nworkspace-browser'
 ACTUAL_SUITES="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --list-suites)"
 [[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical suite manifest changed unexpectedly"
 critical_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite critical)" || fail "critical lane dry run failed"
@@ -89,10 +102,11 @@ set +e
 (
   source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
   SWARM_PRIMARY_SSH=test-alias
+  SWARM_TESTBENCH_TARGET=container
   SWARM_TESTBENCH_LOCAL_DESKTOP_PORT=31001
-  SWARM_REMOTE_DESKTOP_PORT=31002
+  SWARM_REMOTE_DESKTOP_PORT=5655
   SWARM_TESTBENCH_LOCAL_API_PORT=31003
-  SWARM_TESTBENCH_REMOTE_API_PORT=31004
+  SWARM_TESTBENCH_REMOTE_API_PORT=7881
   SWARM_TESTBENCH_REVERSE_LOCAL_PORT=
   SWARM_TESTBENCH_REVERSE_REMOTE_PORT=
   SWARM_TESTBENCH_PROVIDER=fireworks
@@ -107,10 +121,11 @@ off_status=$?
 (
   source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
   SWARM_PRIMARY_SSH=test-alias
+  SWARM_TESTBENCH_TARGET=container
   SWARM_TESTBENCH_LOCAL_DESKTOP_PORT=31001
-  SWARM_REMOTE_DESKTOP_PORT=31002
+  SWARM_REMOTE_DESKTOP_PORT=5655
   SWARM_TESTBENCH_LOCAL_API_PORT=31003
-  SWARM_TESTBENCH_REMOTE_API_PORT=31004
+  SWARM_TESTBENCH_REMOTE_API_PORT=7881
   SWARM_TESTBENCH_REVERSE_LOCAL_PORT=
   SWARM_TESTBENCH_REVERSE_REMOTE_PORT=
   SWARM_TESTBENCH_PROVIDER=fireworks

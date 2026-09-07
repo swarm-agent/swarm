@@ -53,6 +53,7 @@ V3 is the launch session architecture, not an optional side path.
 - `/ws`, legacy run streams, `/v3/sessions/{id}/stream`, `after_seq`, and `afterRev` are not V3 chat/session rendering paths.
 - Legacy `/v3/sessions:workset` and `/v3/tui/sessions:workset` routes remain only behind the removal gates frozen in `sessions_v3_sync_contract.go`. Desktop must not regress to them. TUI compatibility callers may remain until parity and evidence gates pass; do not add new production callers.
 - Desktop backend-derived state belongs in `web/src/features/desktop/state/`, with runtime ownership in `web/src/features/desktop/runtime/` and realtime coordination in `web/src/features/desktop/realtime/`. Components consume selectors and actions; they do not parse transport frames or create a second authoritative cache.
+- **Never implement workspace or session Git freshness with recurring polling, long-poll loops, or one-second refresh/status churn.** Use scoped V3 durable events and canonical mutation/cache updates, with initial hydration, explicit user refresh, and durable reconnect repair. Ignore token/usage chatter and unrelated sessions. Coalesce in-flight invalidations on request completion, not a retry timer. Keep loaded workspace labels stable during background reads; preserve genuine stale/error and repository-ownership safety checks rather than disabling operations on every transport event.
 
 Do not add session behavior to v1/v2 session handlers, legacy snapshots, frontend local storage, route display metadata, or in-memory hubs.
 

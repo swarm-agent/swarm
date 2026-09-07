@@ -39,6 +39,14 @@ func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWor
 		return nil, fmt.Errorf("resolve target path: %w", err)
 	}
 
+	_, resolvedCandidate, err := normalizeWorkspaceCandidatePath(workspacePath, candidate)
+	if err != nil {
+		return nil, err
+	}
+	if !workspaceGitAdminAllowed(scope, candidate) || !workspaceGitAdminAllowed(scope, resolvedCandidate) {
+		return nil, fmt.Errorf("path %q escapes workspace scope: unrelated Git administration path", requested)
+	}
+
 	var selectedRoot, selectedRelative string
 	for _, allowedRoot := range resolveAllowedRoots(scope) {
 		allowedRoot, err = filepath.Abs(filepath.Clean(strings.TrimSpace(allowedRoot)))
@@ -144,11 +152,14 @@ func (p *rootedWorkspacePath) openMutable(flags int, perm fs.FileMode) (*os.File
 }
 
 func workspaceMutationAllowed(scope WorkspaceScope, candidate string) bool {
+	candidate = normalizeScopePath(candidate)
+	if candidate == "" || !pathWithinAllowedRoots(resolveMutableRoots(scope), candidate) {
+		return false
+	}
 	if len(scope.MutationScopes) == 0 {
 		return true
 	}
 	workspaceRoot := normalizeScopePath(scope.PrimaryPath)
-	candidate = normalizeScopePath(candidate)
 	if workspaceRoot == "" || candidate == "" || !pathWithinAllowedRoots([]string{workspaceRoot}, candidate) {
 		return false
 	}

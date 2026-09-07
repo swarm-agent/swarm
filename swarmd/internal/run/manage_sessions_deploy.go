@@ -170,6 +170,9 @@ func parseManageSessionsDeployArguments(arguments string) ([]manageSessionsDeplo
 		if mode != sessionruntime.ModePlan && mode != sessionruntime.ModeAuto {
 			return nil, fmt.Errorf("manage-sessions deploy proposals[%d] mode must be plan or auto", i)
 		}
+		// Deployment always starts on the Action lane, even for older callers
+		// requesting Plan. The user can switch modes after creation.
+		mode = sessionruntime.ModeAuto
 		out = append(out, manageSessionsDeployInput{Title: strings.TrimSpace(input.Title), Prompt: input.Prompt, Mode: mode, Agent: strings.TrimSpace(input.Agent), WorkspacePath: strings.TrimSpace(input.WorkspacePath), WorktreeName: strings.TrimSpace(input.WorktreeName)})
 	}
 	return out, nil

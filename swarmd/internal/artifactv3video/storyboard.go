@@ -8,6 +8,9 @@ import (
 	"io"
 	"path"
 	"strings"
+
+	"swarm/packages/swarmd/internal/htmlcapture"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const StoryboardFilename = "swarm-storyboard.json"
@@ -21,6 +24,7 @@ type TemporalSection struct {
 	CaptureStateID      string   `json:"capture_state_id"`
 	Entrypoint          string   `json:"entrypoint"`
 	DurationMs          int64    `json:"duration_ms"`
+	FPS                 float64  `json:"-"`
 	ProductionState     string   `json:"production_state"`
 	FilmingRequirements []string `json:"filming_requirements"`
 }
@@ -39,8 +43,8 @@ func projectSections(project Project, selection Selection) ([]TemporalSection, e
 		if selection.CaptureStateID != "" {
 			return nil, errors.New("capture-state target requires swarm-storyboard.json")
 		}
-		duration, _, err := normalizedTiming(selection.DurationMs, selection.FPS)
-		return []TemporalSection{{ID: "artifact-v3", Title: "Artifact V3 animation", DurationMs: duration, ProductionState: "ready", FilmingRequirements: []string{"Preserve the authenticated Artifact V3 project and deterministic animation timing."}}}, err
+		duration, fps, err := projectTiming(project, "", selection.DurationMs, selection.FPS)
+		return []TemporalSection{{ID: "artifact-v3", Title: "Artifact V3 animation", DurationMs: duration, FPS: fps, ProductionState: "ready", FilmingRequirements: []string{"Preserve the authenticated Artifact V3 project and deterministic animation timing."}}}, err
 	}
 	if selection.DurationMs != 0 {
 		return nil, errors.New("storyboard duration belongs to each temporal section")
@@ -73,6 +77,11 @@ func projectSections(project Project, selection Selection) ([]TemporalSection, e
 				return nil, errors.New("empty filming requirement")
 			}
 		}
+		_, fps, err := projectTiming(project, section.Entrypoint, section.DurationMs, selection.FPS)
+		if err != nil {
+			return nil, err
+		}
+		section.FPS = fps
 		total += section.DurationMs
 		if total > maxDurationMs {
 			return nil, errors.New("storyboard total duration exceeds 60 seconds")
@@ -90,4 +99,40 @@ func projectSections(project Project, selection Selection) ([]TemporalSection, e
 // Sections resolves declared state entries for the trusted renderer.
 func Sections(project Project, stateID string) ([]TemporalSection, error) {
 	return projectSections(project, Selection{CaptureStateID: stateID})
+}
+
+// projectTiming resolves only authenticated entrypoint bytes. Explicit timing
+// is an assertion, never permission to override an authored declaration.
+func projectTiming(project Project, entry string, duration int64, fps float64) (int64, float64, error) {
+	if entry == "" {
+		var manifest pebblestore.ArtifactV3Manifest
+		if json.Unmarshal(project.Files[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil || manifest.Entrypoint == "" {
+			return 0, 0, errors.New("invalid native project entrypoint")
+		}
+		entry = manifest.Entrypoint
+	}
+	body, ok := project.Files[entry]
+	if !ok || len(body) == 0 {
+		return 0, 0, errors.New("missing native project entrypoint")
+	}
+	d, f, present, err := htmlcapture.AnimationTiming(body)
+	if err != nil {
+		return 0, 0, err
+	}
+	var manifest pebblestore.ArtifactV3Manifest
+	if raw, ok := project.Files[pebblestore.ArtifactV3ManifestFilename]; ok {
+		if json.Unmarshal(raw, &manifest) != nil {
+			return 0, 0, errors.New("invalid native project manifest")
+		}
+		if manifest.AnimationProfile != nil && !present {
+			return 0, 0, errors.New("profiled animation requires authored timing declaration")
+		}
+	}
+	if present {
+		if (duration != 0 && duration != int64(d)) || (fps != 0 && fps != float64(f)) {
+			return 0, 0, errors.New("requested timing conflicts with authored animation manifest")
+		}
+		duration, fps = int64(d), float64(f)
+	}
+	return normalizedTiming(duration, fps)
 }

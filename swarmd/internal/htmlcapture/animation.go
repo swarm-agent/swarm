@@ -908,15 +908,13 @@ func auditAnimationViewport(ctx context.Context, timeMS int) ([]AnimationDiagnos
 	expression := fmt.Sprintf(`(() => {
 const maxChecks=%d,maxReports=%d,nodes=Array.from(document.querySelectorAll('*')).filter(node=>!node.matches('[data-swarm-renderer-style]')),reports=[];
 if (document.documentElement.scrollWidth>innerWidth || document.documentElement.scrollHeight>innerHeight || document.body.scrollWidth>innerWidth || document.body.scrollHeight>innerHeight) reports.push({code:'animation_viewport_overflow',outcome:'scroll_overflow'});
-const escaped=value=>{try{return CSS.escape(value)}catch(_){return String(value).replace(/[^a-zA-Z0-9_-]/g,'_')}};
+// Structural selectors deliberately omit authored IDs/classes and attributes.
 const selector=node=>{
-  if (node.id) return '#'+escaped(node.id);
   const parts=[]; let current=node;
   while (current&&current.nodeType===1&&parts.length<5) {
-    let part=current.localName||'element';
-    if (current.classList&&current.classList.length) part+='.'+Array.from(current.classList).slice(0,2).map(escaped).join('.');
+    let part='*';
     const parent=current.parentElement;
-    if (parent) { const peers=Array.from(parent.children).filter(item=>item.localName===current.localName); if (peers.length>1) part+=':nth-of-type('+(peers.indexOf(current)+1)+')'; }
+    if (parent) part+=':nth-child('+(Array.from(parent.children).indexOf(current)+1)+')';
     parts.unshift(part); current=parent;
   }
   return parts.join(' > ').slice(0,%d);
@@ -926,10 +924,36 @@ const add=(node,pseudo,rect)=>{
   reports.push({code:'animation_viewport_overflow',outcome:'bounds_overflow',selector:selector(node),pseudo:pseudo||'',bounds:{left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom}});
 };
 const outside=rect=>Number.isFinite(rect.left)&&Number.isFinite(rect.top)&&Number.isFinite(rect.right)&&Number.isFinite(rect.bottom)&&(rect.left<0||rect.top<0||rect.right>innerWidth||rect.bottom>innerHeight);
+// SVG graphics bounds include geometry outside their SVG viewport. Only
+// intersect proven SVG viewport clips, never the root HTML viewport: that
+// would mask misplaced authored boxes. HTML positioning/clip-path/filter
+// semantics remain conservative rather than guessing a clipping ancestor.
+const visibleSVGRect=(node,rect)=>{
+  const result={left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom};
+  if (!(node instanceof SVGElement)) return result;
+  let ancestor=node.parentElement,depth=0;
+  while (ancestor instanceof SVGElement && depth++<64) {
+    // Only outer SVG CSS boxes have the viewport rectangle used here;
+    // nested SVG bounding boxes can instead describe their child geometry.
+    if (ancestor instanceof SVGSVGElement && !ancestor.ownerSVGElement) {
+      const style=getComputedStyle(ancestor);
+      // Rotated/skewed viewport bounding boxes are not rectangular clips.
+      const matrix=ancestor.getScreenCTM();
+      if (matrix && matrix.b===0 && matrix.c===0 && matrix.a>0 && matrix.d>0 && style.overflowX==='hidden' && style.overflowY==='hidden') {
+        const clip=ancestor.getBoundingClientRect();
+        result.left=Math.max(result.left,clip.left);result.top=Math.max(result.top,clip.top);
+        result.right=Math.min(result.right,clip.right);result.bottom=Math.min(result.bottom,clip.bottom);
+      }
+    }
+    ancestor=ancestor.parentElement;
+  }
+  return result;
+};
 const count=Math.min(nodes.length,maxChecks);
 for (let i=0;i<count&&reports.length<maxReports;i++) {
   const node=nodes[i],style=getComputedStyle(node),rect=node.getBoundingClientRect();
-  if (style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&rect.width>0&&rect.height>0&&outside(rect)) add(node,'',rect);
+  const visible=visibleSVGRect(node,rect);
+  if (style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&rect.width>0&&rect.height>0&&visible.right>visible.left&&visible.bottom>visible.top&&outside(visible)) add(node,'',visible);
   for (const pseudo of ['::before','::after']) {
     if (reports.length>=maxReports) break;
     const ps=getComputedStyle(node,pseudo);

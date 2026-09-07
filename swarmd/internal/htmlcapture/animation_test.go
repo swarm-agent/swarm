@@ -497,6 +497,9 @@ func TestAnimationPreflightRejectsMalformedSeekAck(t *testing.T) {
 	}
 }
 
+// Requirement: auditAnimationViewport reports actual negative-left geometry
+// with a structural selector, never authored IDs. Browser preflight is the
+// narrowest layer proving layout and diagnostic privacy together.
 func TestAnimationPreflightReportsElementOverflow(t *testing.T) {
 	script := `<!doctype html><html><head><script>globalThis.__SWARM_ANIMATION_BIND__({version:"swarm.animation/v1",ready(){return {duration_ms:400,fps:10}},seek(timeMs){document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs);return {time_ms:timeMs}}});</script>
 <style>html,body{margin:0;width:100%;height:100%;background:#08111f}#outside{position:absolute;left:-2px;top:0;width:20px;height:20px}</style></head><body><div id="outside"></div></body></html>`
@@ -507,7 +510,7 @@ func TestAnimationPreflightReportsElementOverflow(t *testing.T) {
 	}
 	found := false
 	for _, diagnostic := range result.Diagnostics {
-		if diagnostic.Stage == "viewport" && diagnostic.Selector == "#outside" && diagnostic.Bounds != nil && diagnostic.Bounds.Left == -2 {
+		if diagnostic.Stage == "viewport" && diagnostic.Selector == "* > *:nth-child(2) > *:nth-child(1)" && diagnostic.Bounds != nil && diagnostic.Bounds.Left == -2 {
 			found = true
 		}
 	}

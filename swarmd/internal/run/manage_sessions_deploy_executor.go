@@ -71,6 +71,11 @@ func parseApprovedManageSessionsDeploy(raw string) (manageSessionsDeployApproved
 		selected[strings.TrimSpace(id)] = struct{}{}
 	}
 	for _, proposal := range approved.Proposals {
+		// Approval edits and stale manifests cannot opt into a planning run.
+		// Reject before any reservation, worktree allocation, or session mutation.
+		if proposal.Mode != sessionruntime.ModeAuto {
+			return approved, fmt.Errorf("proposal %q must start in auto; switch to Plan manually after deployment", proposal.ID)
+		}
 		if _, wanted := selected[proposal.ID]; wanted && !proposal.ManagedWorktree {
 			return approved, fmt.Errorf("proposal %q must use a session-owned managed worktree", proposal.ID)
 		}

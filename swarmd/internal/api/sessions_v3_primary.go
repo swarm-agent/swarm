@@ -289,6 +289,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session)))
+	case "repositories":
+		s.handleSessionV3Repositories(w, r, principal, sessionID)
 	case "archive":
 		s.handleSessionV3PrimaryArchive(w, r, principal, sessionID)
 	case "messages":
@@ -847,6 +849,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 			session.Metadata = make(map[string]any, 4)
 		}
 		session.Metadata["swarm_v3_source_workspace_path"] = binding.SourceWorkspacePath
+		session.Metadata["base_commit"] = strings.TrimSpace(allocation.BaseCommit)
 		session.Metadata["swarm_v3_runtime_workspace_path"] = strings.TrimSpace(allocation.WorkspacePath)
 		available := true
 		session.WorkspaceGrants = append(session.WorkspaceGrants, pebblestore.WorkspaceGrant{
@@ -3567,8 +3570,16 @@ func (s *Server) reuseSessionsV3CreateWorktree(principal identity.Principal, wor
 				return worktreeruntime.Allocation{}, workspaceIDErr
 			}
 		}
+		state, err := s.worktrees.InspectTaskWorkspace(entryPath)
+		if err != nil {
+			return worktreeruntime.Allocation{}, err
+		}
+		if !state.Clean || state.BranchName != branchName || strings.TrimSpace(state.HeadCommit) == "" {
+			return worktreeruntime.Allocation{}, errors.New("selected worktree has stale, dirty or missing base identity")
+		}
 		return worktreeruntime.Allocation{
 			WorkspacePath: entryPath,
+			BaseCommit:    state.HeadCommit,
 			BaseBranch:    "",
 			BranchName:    branchName,
 			WorkspaceID:   workspaceID,
@@ -3578,6 +3589,21 @@ func (s *Server) reuseSessionsV3CreateWorktree(principal identity.Principal, wor
 }
 
 func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, workspacePath, workspaceName, title string, metadata map[string]any) (string, error) {
+	// AppliedAt is server clock metadata, not request intent. Otherwise a delayed
+	// retry of the same create request conflicts before it can reuse its allocation.
+	metadata = cloneSessionsV3Metadata(metadata)
+	if raw, ok := metadata["model_profile"]; ok {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return "", err
+		}
+		var profile map[string]any
+		if err := json.Unmarshal(encoded, &profile); err != nil {
+			return "", err
+		}
+		delete(profile, "applied_at")
+		metadata["model_profile"] = profile
+	}
 	canonical := struct {
 		Operation                string                        `json:"operation"`
 		SessionID                string                        `json:"session_id"`

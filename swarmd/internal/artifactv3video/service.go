@@ -154,13 +154,10 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 	if err != nil {
 		return Conversion{}, err
 	}
-	_, fps, err := normalizedTiming(selection.DurationMs, selection.FPS)
-	if err != nil {
-		return Conversion{}, err
-	}
 	conversion := Conversion{Plan: pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Summary: "Native Artifact V3 temporal conversion"}}
 	var derivatives []Derivative
 	for _, section := range sections {
+		fps := section.FPS
 		request := RenderRequest{Project: cloneProject(project), CaptureStateID: section.CaptureStateID, Entrypoint: section.Entrypoint, DurationMs: section.DurationMs, FPS: fps, AnimationAdapter: animationAdapterVersion}
 		if err := s.renderer.Preflight(ctx, request); err != nil {
 			return Conversion{}, fmt.Errorf("trusted Artifact V3 preflight failed: %w", err)
@@ -333,7 +330,7 @@ func normalizedTiming(duration int64, fps float64) (int64, float64, error) {
 	if fps == 0 {
 		fps = DefaultFPS
 	}
-	if duration <= 0 || duration > maxDurationMs || fps <= 0 || fps > 60 {
+	if duration <= 0 || duration > maxDurationMs || fps <= 0 || fps > 60 || fps != float64(int(fps)) {
 		return 0, 0, errors.New("Artifact V3 video duration/fps are outside supported bounds")
 	}
 	return duration, fps, nil

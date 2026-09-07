@@ -553,6 +553,7 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   revisions: VideoIterationRevisionWire[]
   basePartOrder?: Array<{ id: string; duration_ms: number }>
   onProposalsLoaded?: (proposals: VideoEditProposalWire[]) => void
+  onProposalLoadState?: (state: string | null) => void
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
   onPreviewProposal: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
@@ -568,17 +569,19 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   const [error, setError] = useState<string | null>(null)
   const loadRequestSequence = useRef(0)
   const projectionSequence = useDesktopV3CacheSelector(useCallback((state) => videoProposalProjectionSequence(state, props.sessionId), [props.sessionId]))
-  const load = useCallback(async () => loadLatestVideoEditProposals({
+  const load = useCallback(async () => {
+    props.onProposalLoadState?.('Loading proposal review state…')
+    await loadLatestVideoEditProposals({
     sessionId: props.sessionId,
     projectId: props.projectId,
     requestSequence: loadRequestSequence,
     onLoaded: (loaded) => { setProposals(loaded); props.onProposalsLoaded?.(loaded) },
-    onError: setError,
-  }), [props.onProposalsLoaded, props.projectId, props.sessionId])
+    onError: (error) => { setError(error); props.onProposalLoadState?.(error ? `Could not load proposal review: ${error}. Retry in History & proposal recovery.` : null) },
+  })
+  }, [props.onProposalsLoaded, props.onProposalLoadState, props.projectId, props.sessionId])
   useEffect(() => { void load() }, [load, projectionSequence])
   const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions, props.basePartOrder), [proposals, props.basePartOrder, props.revisions])
   const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending' && iteration.proposal.working_revision_id === props.currentRevisionId)?.id
-    ?? iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id
     ?? null, [iterations, props.currentRevisionId])
 
   useEffect(() => {
@@ -589,8 +592,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
 
   const previewProposal = useMemo(() => {
     const proposal = iterations.find((iteration) => iteration.id === previewId)?.proposal
-    return proposal?.status === 'pending' ? proposal : null
-  }, [iterations, previewId])
+    return proposal?.status === 'pending' && proposal.working_revision_id === props.currentRevisionId ? proposal : null
+  }, [iterations, previewId, props.currentRevisionId])
   const selectedChangeIds = useMemo(() => previewProposal ? selectedVideoProposalChangeIDs(previewProposal, selected) : [], [previewProposal, selected])
   useEffect(() => { props.onPreviewProposal(previewProposal, selectedChangeIds) }, [previewProposal, selectedChangeIds, props.onPreviewProposal])
 
@@ -603,7 +606,7 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
         const open = expanded[iteration.id] ?? iteration.status === 'pending'
         const previewing = previewId === iteration.id
         const proposal = iteration.proposal
-        const stale = Boolean(proposal?.working_revision_id) && proposal?.working_revision_id !== props.currentRevisionId
+        const stale = proposal?.status === 'pending' && proposal.working_revision_id !== props.currentRevisionId
         const enabledIds = proposal ? selectedVideoProposalChangeIDs(proposal, selected) : []
         return <article key={iteration.id} className={`border ${previewing ? 'border-amber-300 bg-amber-950/20' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`}>
           <div className="flex items-start gap-1 p-2">
@@ -625,7 +628,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
                 </div>
               </div>
             })}
-            {proposal?.status === 'pending' ? <div className="mt-3 grid gap-1">
+            {proposal?.status === 'pending' && stale ? <div className="mt-3 space-y-2 text-xs" role="status"><p>Older pending proposal. The current cut is unchanged; this proposal cannot be confirmed here.</p><Button variant="outline" className="h-auto whitespace-normal px-2 py-2 text-xs" onClick={() => props.onFeedback(`Rework older proposal ${proposal.id} (${proposal.title || 'untitled'}) as a new revision proposal based on the current cut. Preserve the confirmed cut until I accept it.`)}>Ask AI to rework from current cut</Button>{proposal.working_revision_id ? <Button variant="ghost" className="h-auto px-2 py-2 text-xs" onClick={() => props.onPreviewRevision(proposal.working_revision_id!)}>Preview older working cut</Button> : null}</div> : null}
+            {proposal?.status === 'pending' && !stale ? <div className="mt-3 grid gap-1">
               {proposal.plan?.parts.flatMap((part) => part.animation_candidates?.candidates ?? []).length ? <p className="text-[9px] text-amber-200">Choose one live HTML candidate in the player. The selected canonical source can be confirmed directly.</p> : null}
               <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || proposal.plan?.parts.some((part) => (proposal.plan?.kind === 'initial' || enabledIds.includes(part.id)) && !videoAnimationReadyForConfirmation(part)) || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
               <Button variant="ghost" className="h-7 px-2 text-[10px]" disabled={Boolean(busyId)} onClick={() => void (async () => { const feedback = `Restore the accepted parent of iteration ${proposal.id} and revise only the changes I describe: `; setBusyId(proposal.id); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, feedback); setPreviewId(null); await props.onFeedback(feedback); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><RotateCcw size={12} />Restore parent and revise</Button>

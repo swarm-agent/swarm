@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${SWARM_TESTBENCH_ATTACH_ONLY:-}" == 1 ]]; then
+  printf 'testbench-container-deploy: deployment client is forbidden in attach-only mode\n' >&2
+  exit 2
+fi
+
 usage() {
   cat <<'EOF'
 Usage: scripts/testbench-container-deploy.sh <deploy|status|stop|tunnel|pool-status> [--source-worktree <path>] [--no-key-sync]

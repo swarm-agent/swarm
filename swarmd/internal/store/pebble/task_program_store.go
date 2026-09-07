@@ -314,7 +314,7 @@ func (s *SessionStore) CreateTaskProgram(record TaskProgramRecord) (TaskProgramR
 		record.Jobs[i].UpdatedAt = now
 	}
 	record.CreatedAt, record.UpdatedAt = now, now
-	if err := s.store.PutJSON(KeyTaskProgram(record.ParentSessionID, record.ProgramID), record); err != nil {
+	if err := s.putTaskProgramHistory(record); err != nil {
 		return TaskProgramRecord{}, false, fmt.Errorf("persist task program: %w", err)
 	}
 	return record, true, nil
@@ -400,7 +400,7 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 	if err := validateTaskProgramRecord(record); err != nil {
 		return TaskProgramRecord{}, false, err
 	}
-	if err := s.store.PutJSON(KeyTaskProgram(parentSessionID, programID), record); err != nil {
+	if err := s.putTaskProgramHistory(record); err != nil {
 		return TaskProgramRecord{}, false, fmt.Errorf("persist task program transition: %w", err)
 	}
 	return record, true, nil

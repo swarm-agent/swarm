@@ -21,6 +21,7 @@ swarm_testbench_env_key_allowed() {
 }
 
 swarm_testbench_load_env() {
+  [[ "${SWARM_TESTBENCH_ATTACH_ONLY:-}" != 1 ]] || { swarm_testbench_fail 'attach-only must not load deployment/model configuration'; return 1; }
   local root_dir="$1"
   local env_file="${SWARM_TESTBENCH_ENV_FILE:-${root_dir}/.env}"
   local line key value

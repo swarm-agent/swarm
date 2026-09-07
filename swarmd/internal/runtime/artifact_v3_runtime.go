@@ -1267,11 +1267,28 @@ func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest
 		manifest.Entrypoint = input.Entrypoint
 	}
 	files := cloneArtifactProject(input.Project.Files)
-	files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
+	duration, fps, declared, err := htmlcapture.AnimationTiming(files[manifest.Entrypoint])
+	if err != nil {
+		return htmlcapture.AnimationRequest{}, err
+	}
+	if declared {
+		if int64(duration) != input.DurationMs || float64(fps) != input.FPS {
+			return htmlcapture.AnimationRequest{}, errors.New("render timing conflicts with authored animation manifest")
+		}
+	} else {
+		if manifest.AnimationProfile != nil {
+			return htmlcapture.AnimationRequest{}, errors.New("profiled animation requires authored timing declaration")
+		}
+		files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
+	}
 	// Native V3 accepts CSS/WAAPI motion. The server-owned adapter below makes
 	// those timelines deterministically seekable even when author code does not
 	// own a requestAnimationFrame loop, so requiring artifact-owned rAF here would
 	// reject valid CSS-only animations after the adapter is successfully bound.
+	// Boolean readiness asserts availability, not timing. Native historical
+	// runtimes may return true even with an authored manifest; timing above is
+	// already checked against that declaration. htmlcapture still rejects any
+	// timing-bearing acknowledgement that contradicts this exact request.
 	return htmlcapture.AnimationRequest{Entry: manifest.Entrypoint, Files: files, DurationMS: int(input.DurationMs), FPS: int(input.FPS), OutputFPS: int(input.FPS), Quality: htmlcapture.AnimationQualityStandard, RequireLivePlayback: false, AllowBooleanReady: true}, nil
 }
 
@@ -1280,8 +1297,8 @@ func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifa
 	if err != nil {
 		return err
 	}
-	_, err = r.renderer.PreflightAnimation(ctx, request)
-	return err
+	result, err := r.renderer.PreflightAnimation(ctx, request)
+	return htmlcapture.WithAnimationDiagnostics(err, result.Diagnostics)
 }
 
 func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv3video.RenderRequest) (artifactv3video.RenderResult, error) {
@@ -1291,7 +1308,7 @@ func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv
 	}
 	result, err := r.renderer.RenderAnimation(ctx, request)
 	if err != nil {
-		return artifactv3video.RenderResult{}, err
+		return artifactv3video.RenderResult{}, htmlcapture.WithAnimationDiagnostics(err, result.Diagnostics)
 	}
 	if result.DurationMS <= 0 || result.FPS <= 0 || result.FrameCount <= 0 {
 		return artifactv3video.RenderResult{}, errors.New("Artifact V3 animation renderer returned incomplete timing evidence")

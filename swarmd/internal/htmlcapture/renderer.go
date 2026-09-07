@@ -375,20 +375,24 @@ const visible=node=>{const s=getComputedStyle(node),r=node.getBoundingClientRect
 let blockers=Array.from(document.querySelectorAll('[data-swarm-capture-blocking],[role="dialog"][aria-modal="true"],dialog[open]'));
 try { blockers=blockers.concat(Array.from(document.querySelectorAll(':popover-open'))); } catch (_) {}
 if (blockers.some(visible)) return {code:"capture_state_blocked"};
-document.querySelectorAll('[data-swarm-capture-ui]').forEach(node=>node.remove());
+const requiredSelectors=%s, excludedSelectors=new Set();
+for (const selector of requiredSelectors) { let nodes; try { nodes=Array.from(document.querySelectorAll(selector)); } catch (_) { return {code:"capture_required_element_invalid"}; } if (nodes.length>0 && nodes.every(node=>node.closest('[data-swarm-capture-ui]'))) excludedSelectors.add(selector); }
+// Keep marked nodes addressable across state/tile captures while excluding
+// them from layout and pixels. This also preserves retained selector evidence.
+document.querySelectorAll('[data-swarm-capture-ui]').forEach(node=>node.style.setProperty('display','none','important'));
 if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 const selection=getSelection(); if(selection) selection.removeAllRanges();
 const temporal=%t;
 for (const animation of document.getAnimations()) { if (temporal) animation.pause(); else animation.cancel(); }
 const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color);
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
-const width=%d,height=%d,requiredSelectors=%s;
+const width=%d,height=%d;
 %s
 if (document.documentElement.scrollWidth>width || document.documentElement.scrollHeight>height || document.body.scrollWidth>width || document.body.scrollHeight>height) return {code:"capture_viewport_overflow"};
-for (const selector of requiredSelectors) { let node; try { node=document.querySelector(selector); } catch (_) { return {code:"capture_required_element_invalid"}; } if (!node || !visible(node)) return {code:"capture_required_element_missing"}; const r=node.getBoundingClientRect(); if (r.left<0 || r.top<0 || r.right>width || r.bottom>height) return {code:"capture_required_element_clipped"}; }
+for (const selector of requiredSelectors) { if(excludedSelectors.has(selector))continue; let node; try { node=document.querySelector(selector); } catch (_) { return {code:"capture_required_element_invalid"}; } if (!node || !visible(node)) return {code:"capture_required_element_missing"}; const r=node.getBoundingClientRect(); if (r.left<0 || r.top<0 || r.right>width || r.bottom>height) return {code:"capture_required_element_clipped"}; }
 const style=document.createElement('style'); style.textContent='*,*::before,*::after{'+(temporal?'animation-play-state:paused!important;':'animation:none!important;')+'transition:none!important;scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:'+width+'px!important;height:'+height+'px!important;max-width:'+width+'px!important;max-height:'+height+'px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok"};
-})()`, stateID, temporal, viewportWidth, viewportHeight, selectors, documentAudit)
+})()`, stateID, selectors, temporal, viewportWidth, viewportHeight, documentAudit)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, func(p *cdpruntime.EvaluateParams) *cdpruntime.EvaluateParams {
 		return p.WithAwaitPromise(true).WithReturnByValue(true)
 	})); err != nil {
