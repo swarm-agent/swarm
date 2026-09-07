@@ -2,6 +2,12 @@
 
 ## Scope and evidence discipline
 
+**Current verdict:** the core identity mismatch is repaired and has final-source
+regression evidence. The supported mixed-agent live flow completed with documented
+fixture/output corrections. This is **not blanket launch approval**. The final
+reconciliation table and command register in **V6** supersede earlier pending
+statuses; earlier sections retain the chronology of actual failures and fixes.
+
 Baseline production source: `0712a332106aad28c62dc58953a95fcaa7fc5f90`.
 This matrix was created before production fixes. It specifies reproduction and
 acceptance, not launch readiness. The supplied incident shape is a saved parent
@@ -57,7 +63,8 @@ unless a row explicitly records exact live evidence.
 
 The executed command register, causal map, complete acceptance matrix and bounded
 responsibility graph below supersede the initial pre-implementation inventory.
-Production fixes remain deferred to the subsequent implementation checkpoints.
+This inventory describes the pre-implementation checkpoint. Foundation, consumer,
+UI and live corrections are recorded below; V6 gives the final effective status.
 
 ## Executed reproduction and command register
 
@@ -111,7 +118,10 @@ not the complete Desktop creation endpoint. Those are explicit remaining gaps.
 | Unmanaged parent → nested target | target | target | target | target | Control passes C1/C3; not a supported new direct-session creation mode |
 | Stale generation after move | unchanged | unchanged | no launch | no launch | Rejected, no partial snapshot mutation |
 
-## Causal map and inspected assertion inventory
+## Baseline causal map and inspected assertion inventory
+
+This section describes baseline `0712a332` only, not current production behavior.
+The current fault prevention and existing-session policy are summarized in V6.
 
 Paths in this section are relative to `swarmd/internal/` unless prefixed `web/`.
 
@@ -209,7 +219,7 @@ path/session query key. `services/session-workspace.ts` returns one canonical pa
 not typed attachment/default items. Complete enumeration needs API/state/header
 work; no rendered defect is claimed without browser evidence.
 
-## Expanded acceptance matrix
+## Baseline expanded acceptance matrix
 
 Every row references the command register above: it supplies exact command, SHA,
 build and result fields without duplicating an unreadable command in each cell.
@@ -342,7 +352,7 @@ New regression files listed below are intentional concrete output targets.
    approved exact-build live stage. Never infer whole-system completion from the
    individual handoffs. No production implementation in this checkpoint.
 
-## Supported live acceptance topology (specified, not executed)
+## Supported live acceptance topology (original specification)
 
 Use two saved disposable independent repositories **A** and **B**, with an optional
 nested independent **C** as a separate case. Attach A/B; select B as execution
@@ -689,3 +699,441 @@ was clipped by the plan card's remaining height. A safe layout correction makes
 the repository section itself scrollable and the file region nonshrinking; no
 forced browser click is accepted as proof. Typecheck and eight focused repository
 browser/state tests pass (3.361s); exact-build pointer recheck required.
+
+## V6 — Final reconciliation (2026-09-07)
+
+### Revision and evidence boundaries
+
+- **Source-tested:** `6e345d0437a5b60c1d3eec65ff2c480514f131fe` with
+  unchanged production/test bytes. V6 changes documentation and test inventory only.
+- **Running-build-tested:** that same full SHA, according to the retained exact-build
+  acceptance report and fixture evidence from the live checkpoint. The final trial
+  completed all four jobs; Coders started 25 ms apart and overlapped for their
+  40.963s/30.500s intervals. Both used the same immutable stage base.
+- **Deployment:** the existing isolated persistent candidate lane was rebuilt and
+  tested at that SHA. This is historical revision-bound acceptance, not a new
+  current-health probe. No host-runtime deployment, captured-checkout promotion,
+  push, release or Models change is implied. Private deployment-client edits remain
+  outside this public source change and need their own operational review.
+- **Important qualification:** the final trial's right-file content contained
+  specification labels. Parent validation detected it; a bounded correction attempt
+  was stopped before its first command after miscopying the marker. A guarded
+  fixture-only corrective commit then preserved both integrated child commits.
+  Exact newline bytes, disjoint scopes, clean parent and captured-repository
+  immutability passed afterward. This is corrected acceptance, not flawless
+  provider output. The Designer consumed the original integrated patch; it was
+  not rerun against the later fixture correction.
+- The original final-build artifact clipped both headings. An exact-lineage
+  typography repair produced a ready candidate, independently pixel-inspected:
+  both treatments retain the full marker and values without clipping/overlap.
+  The long token wraps awkwardly (including an isolated final character in one
+  panel); this proves content reachability, not polished typography. Explicit
+  candidate/head choice is still required; the original is retained.
+- Final pointer/reload evidence supersedes A5's last pending scroll check: normal
+  scrolling and clicking opened the retained untracked file below the tall plan
+  card. The attachment dialog retained two identities and an explicit default.
+  Earlier failed/removed workers remain visible, not falsely clean. Reinspection
+  of the retained header, dirty sidebar and repaired artifact pixels in V6 agrees
+  with these bounded claims. Screenshots and exact live identifiers remain private.
+
+### Exact final-source command register
+
+**V6-smoke**, repository root:
+
+```sh
+cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/run ./internal/api ./internal/worktree -run '^(TestMultiWorkspaceIdentityTransitions|TestProviderWorkspaceRestartRejectsStaleInvoker|TestSessionV3ToolBatchRestartBoundary|TestSessionsV3CreatePersistsAllocatorBase|TestTaskProgramReservationUsesWidestStage|TestSessionRepositoryParentIdentityIsExactAndOwned|TestSessionAllocationCapturesSelectedBase)$' -count=2 -timeout=120s
+```
+
+Passed twice: run 2.841s, API 1.391s, worktree 0.140s.
+
+**V6-backend**, repository root; selected assertions, not whole-package suites:
+
+```sh
+cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/run ./internal/worktree ./internal/tool ./internal/api ./internal/session ./internal/store/pebble -run '^(TestRepositoryIdentityIsolation|TestWorkspaceAttachmentBoundsAndHistory|TestWorkspaceGitAdminReadBoundary|TestMultiWorkspaceIdentityTransitions|TestManageWorkspaceSetSessionPreservesGlobalWorkspaceGrantsAndRestartsTurn|TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope|TestManageWorkspaceAdoptWorktreeRollsBackWhenCurrentWorktreeIsDirty|TestTaskProgramRepositoryLanePreflightReuseAndIsolation|TestMandatorySessionWorktreeRunRevalidation|TestRunWorkspaceScopeUsesManagedWorktreeAsPrimaryAndPromptsToolRoot|TestRunWorkspaceScopeCoderAllowsOnlyCanonicalLinkedWorktreeGitAdminRoot|TestRunWorkspaceScopeCoderSourceWorkspaceReadDoesNotRequestPermission|TestRunExecutionContextPreservesCoderLinkedWorkspaceReadAuthorization|TestRunExecutionContextPreservesCoderSourceWorkspaceReadAuthorization|TestResolveRunWorkspaceScopeIncludesAttachedWorkspaceWithoutSwitch|TestTaskTargetCanonicalRootsAndProgramPreflight|TestTaskTargetTypedLaneIdentity|TestTaskTargetRuntimePreflightAndRegularChildren|TestTaskFinderSelectedWorkspaceDoesNotInheritParentRoot|TestTaskProgramRealStageUsesIntegratedBase|TestTaskProgramEndedOwnerPreservesCommittedSibling|TestTaskProgramTransitionFailurePreservesSnapshot|TestTaskProgramPlannedStartRejectsNonRunnableCheckpoint|TestTaskProgramCohortErrorPreservesSuccessfulSibling|TestTaskProgramNativeReferenceRoundTrip|TestTaskProgramFinderDoesNotHydrateItself|TestTaskProgramApprovedLaneMappingDoesNotWidenScope|TestTaskProgramIgnoresAmbientArtifactSelection|TestProviderWorkspaceRestartRejectsStaleInvoker|TestSessionV3ToolBatchRestartBoundary|TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn|TestSessionsV3CreatePersistsAllocatorBase|TestSessionAllocationCapturesSelectedBase|TestSessionsV3PrimaryWorktreeCreateReplayDoesNotReallocate|TestTaskProgramReservationUsesWidestStage|TestSessionRepositoryParentIdentityIsExactAndOwned|TestSessionRepositoryLaneNamedAllocation|TestManageWorktreeNamedPrimaryRecovery|TestWorkspaceTarget.*|TestGenericFilesystem.*|TestRepositoryHistory.*|TestSessionRepositoryHistory.*|TestTaskProgramRepositoryHistory.*|TestSessionRepositories.*)$' -count=2 -timeout=180s
+```
+
+Passed twice: run 16.795s, worktree 0.473s, tool 0.594s, API 5.468s,
+session 0.005s, store 1.161s. No unselected test inherits this result.
+
+**V6-web**, repository root:
+
+```sh
+cd web && SWARM_TEST_BROWSER_CHANNEL=chrome node --import tsx --test --test-force-exit --test-concurrency=1 --test-timeout=70000 src/features/desktop/state/session-repositories.spec.ts src/features/desktop/git/api.spec.ts src/features/desktop/git/session-repository-picker.spec.ts src/features/desktop/git/session-repository-picker.browser.spec.ts src/features/desktop/chat/queries/session-attachments.spec.ts src/features/desktop/chat/components/session-attachments.spec.tsx src/features/desktop/chat/components/session-attachments.browser.spec.ts src/features/desktop/chat/components/desktop-v3-chat-header.spec.tsx && node node_modules/typescript/bin/tsc -b --pretty false
+```
+
+Passed 27 tests, 8.614s; typecheck passed. Nonfatal Node registration and bundler
+option deprecation warnings remain. Browser fixtures intercept transport; they
+are not additional live-testbench executions.
+
+**L5** refers only to the prior live checkpoint's retained acceptance report,
+fixture outputs and screenshots, not a newly executed V6 command. Canonical plan
+retrieval during reconciliation exceeded the tool response quota; the complete
+prior command transcript could not be independently re-read here. The retained
+report identifies the exact build, while structured fixture/Git outputs and pixels
+corroborate the bounded results. Full per-stage command-transcript reconciliation
+remains a provenance gap; recover it through bounded canonical plan retrieval
+before treating L5 as a fully reproducible command register. Public-safe sequence: prepare → attach/restart → program → parent Git validation → bounded
+output/artifact correction → unsupported-plan rejection → retained dirty recall
+and pinned-switch rejection → pointer/reload inspection. These stages are not a
+new checked-in runner or a portable one-command acceptance suite. The public
+matrix does not invent missing command transcripts or expose private paths.
+
+### Final disposition of all acceptance intersections
+
+All V6 command references bind to the final SHA above. Earlier C/F/R/G/A entries
+remain historical evidence, not competing current statuses. **Partial** explicitly
+means the whole row is not accepted; its next action is the missing proof.
+
+| ID | Final evidence / executed assertion selection | Result and exact remaining action |
+|---|---|---|
+| M01 | V6-backend `TestSessionsV3CreatePersistsAllocatorBase`, `TestSessionAllocationCapturesSelectedBase`, create replay; L5 actual creation | Pass for persisted allocator base/replay and tested live creation; broader creation permutations unverified. |
+| M02 | V6-backend `TestMultiWorkspaceIdentityTransitions` nested case; L5 sibling transition | Correct owned target or reject; real nested canonicalizer/provider combination remains a distinct live fixture. |
+| M03 | V6-backend identity transitions whole-session equality | Account-only default semantics pass; explicitly test next-session default inheritance before claiming that intersection. |
+| M04 | V6-backend identity transitions, stale invoker, batch boundary and provider restart fixture; L5 attach/restart/read | Pass for tested runtime/tool/default alignment; do not infer every provider transport. |
+| M05 | V6-backend sibling transition; L5 source/target/common-dir postconditions | Pass for independent sibling isolation. |
+| M06 | V6-backend `TestRepositoryIdentityIsolation` and nested saved lookup | Exact Git-root/alias rejection passes; arbitrary saved subpaths are unsupported, not an accepted routing feature. |
+| M07 | V6-web same-name attachment/default tests and header browser fixture | Pass for 64 distinct identities and non-first default; full-app duplicate-name trial remains unverified. |
+| M08 | V6-backend identity isolation negatives; baseline empty-directory failure | Partial: non-Git/missing/subpath rejection proved; add direct bare/unborn no-allocation cases. |
+| M09 | V6-backend identity transitions and repository-history dedup; L5 two attachments | Partial: exact sets/reload/dedup pass; exercise repeated attach request replay through the complete client API. |
+| M10 | V6-backend identity transitions removal/default rejection; V6-web removal | Pass for tested exact removal, explicit replacement requirement and retained non-grant history. |
+| M11 | V6-backend identity transitions/lane dirty rejection; L5 pinned dirty child | Pass for conservative refusal and preserved dirty bytes; completed history also pins, finer eligibility not implemented. |
+| M12 | V6-backend `TestWorkspaceTarget.*`/`TestGenericFilesystem.*`; L5 actual FFF/list/read | Partial: root selection and real live target reads pass; full per-operation FFF indexing permutations remain unverified. |
+| M13 | V6-backend actual write/edit and missing-primary Bash refusal | Partial: run an explicit post-switch Bash cwd/unchanged-other-repository live assertion; no shell filesystem sandbox claim. |
+| M14 | V6-backend filesystem authority and canonical worker target tests | Pass for tested authorized absolute/default selectors and rejected unauthorized/admin access; not arbitrary shell confinement. |
+| M15 | V6-backend canonical roots/typed lanes and search-selection ambiguity | Partial: alias/root selection tested; add a complete relative-selector symlink-replacement end-to-end case. |
+| M16 | V6-backend batch prefix filesystem postconditions and stale invoker | Pass: restart/error prevents suffix execution; rejected calls are not fabricated as successful history. |
+| M17 | V6-backend retained-child transition rejection; L5 retained pin | Partial: assignment is conservative/immutable; execute held-worker concurrent mutation race before claiming live concurrency safety. |
+| M18 | V6-backend fresh-service reload, store history reopen/backfill; L5 persistent rebuild | Partial: restart retention passes; inject process death at allocation/CAS/outbox boundaries and verify recovery. |
+| M19 | V6-backend foreign/stale/revoked transition, target and repository-inventory negatives | Pass for selected rejection plus unchanged snapshots/Git; not exhaustive revocation timing. |
+| M20 | V6-backend repository identity, Git-admin/typed-lane and HTTP selector negatives | Partial: examined substitutions fail closed; add timed symlink-swap/TOCTOU proof at actual rooted I/O boundary. |
+| M21 | V6-backend real stage and target preparation; L5 four jobs, overlapping Coders, ready Designer | Supported topology completed; exact output required parent correction. Repeat untouched provider trial for repeatability, not to erase failed evidence. |
+| M22 | V6-backend runtime no-spawn split-target test; L5 HTTP 400 with parent event/run equality | Pass for split-repository rejection. Designer selector parser evidence remains C3; add runtime inventory equality for every unsupported combination. |
+| M23 | V6-backend `TestTaskTargetRuntimePreflightAndRegularChildren` | Partial: independent regular repository allocations pass deterministically; execute two actual cross-repository provider workers and separate integrations. |
+| M24 | V6-backend `TestTaskProgramRealStageUsesIntegratedBase`; L5 exact stage bases/patches | Pass for staged integrated dependency handoff and stale/binary/oversized rejection. Later fixture correction was not a new Designer dependency run. |
+| M25 | V6-backend recovery/cohort/ended-owner tests; L5 dirty recall and visible retained file | Partial: retention/unfinished-only identity and pinned refusal pass; arbitrary failed-child resume and generic list remain unproved. Never auto-commit dirty work. |
+| M26 | V6-backend history/inventory; V6-web 460-worker windows; L5 full browser rows | Pass for tested attachments/source/parent/worker retention, explicit unavailable removed worktrees and late-window access. Missing historical provenance remains unavailable. |
+| M27 | V6-backend inventory status and V6-web picker; L5 untracked retained file click | Partial: dirty counts/file disclosure pass; execute independent staged/unstaged/conflict/committed full-app selection fixtures. |
+| M28 | V6-backend exact selectors/named-primary recovery; L5 captured-source equality | Partial: exact read/integration and no implicit promotion pass; no real promote operation or every stale UI mutation exercised. |
+| M29 | V6-web cancellation/stale/default/refresh tests; L5 persistent reload/terminal rows | Partial: reload and fixture scheduling pass; controlled live transport gap, late-response and completion-race proof still needed. |
+| M30 | V6-backend bounds/history/cursors; V6-web 64 attachments/460 workers | Partial: bounded storage/window traversal passes; measure large-set live timing/fan-out and full 1/2/8/64/65 API boundary matrix. |
+| M31 | V6-backend contradictory legacy source/lane rejection and inventory history | Pass for fail-closed mismatch with retained evidence; no automated legacy repair or invented base/owner. |
+| M32 | V6-backend injected persistence/CAS/transition failure and create replay | Partial: tested failures preserve state; two real concurrent default mutations and process-crash allocation cleanup remain unverified. |
+| M33 | V6-backend approved lane scope mapping | Partial: adapter rejects widening; exercise permission denial mid-stage with durable reservation/program/child unchanged-state assertions. |
+| M34 | V6-backend native reference/no-ambient-selection/dependency tests; L5 exact repair and pixels | Partial: exact native handoff/correction works; native discovery and fresh-context reference loss remain product gaps. Persist exact reference in canonical checkpoint context before recovery. |
+
+### Root cause and safe existing-session handling
+
+The reproduced sequence was: allocate correctly in A → change saved/default
+identity to B while keeping A's managed lane → persist that contradiction →
+rehydrate it → default tool/worker still uses A while explicit worker uses B.
+Both nested and sibling fixtures reproduced it, so ancestry was not the sole
+cause. The original incident transcript and customer repository were never
+independently inspected; this is an incident-shaped controlled reproduction.
+
+Current prevention is canonical, not a label patch:
+`run/service_workspace_manage.go:setSessionWorkspaces` authorizes the exact flat
+set and uses event-sequence CAS; `service_workspace_identity.go` allocates/reuses
+an authenticated repository-owned lane and preserves history. Its
+`validateSessionRepositoryIdentity` plus `worktree/identity.go:ValidateOwnedIdentity`
+checks actual Git authority/branch/base before runtime scope resolves.
+`provider_tool_invoker.go` rejects stale captured execution and invalidates the
+step after restart; `api/sessions_v3_tool_batch.go` stops the remaining batch.
+Primary creation now persists the actual allocator base; worker preparation and
+bounded committed dependency evidence preserve source versus execution identity.
+The repositories route, exact-parent/program reads, scoped history indexes,
+Desktop inventory cache/header/picker and scrollable file region expose the same
+facts without granting retained rows mutation authority.
+
+For an affected existing session: preserve its files, commits, base/owner records
+and dirty children. Do not edit metadata to match a display label, guess a missing
+base, delete a lane, force a switch or promote a captured checkout. Execution
+rejects incomplete/contradictory identity; the inventory can show unavailable
+provenance. Use authenticated exact-source inspection and separately reviewed
+recovery only when ownership is provable. If not provable, keep the old session
+retained and start a new correctly targeted isolated session; moving retained
+work is a distinct approved recovery operation. Completed descendants can still
+pin switching; integrating them is not a promise that this conservative gate clears.
+
+### Launch verdict
+
+**Core repair accepted with bounded evidence; overall launch approval withheld.**
+Prioritize the unresolved cross-repository provider integration, concurrent/crash
+and permission-boundary proofs, full-app status/transport permutations and
+independent P1/P2 test review before a launch-critical sign-off. The table names
+each remaining exact proof. No new tests were promoted into the critical runner.
+The retained live artifact reference/discovery problem and private deployment
+client changes need separately scoped product/operational follow-up; no additional
+checkpoint was created by this reconciliation.
+
+### Reconciliation validation and final source state
+
+`bash scripts/check-atlas-sync.sh` passed, as did the committed-range gate:
+
+```sh
+BASE_SHA=0712a332106aad28c62dc58953a95fcaa7fc5f90 HEAD_SHA=6e345d0437a5b60c1d3eec65ff2c480514f131fe bash scripts/check-atlas-sync.sh
+```
+
+`git diff --check` passed. A bounded read-only comparison verified all 31 changed
+test-file SHA256 entries against actual bytes, exactly M01–M34 in the final table,
+and no selected private endpoint/session/home/key markers in baseline-to-current
+added text. This is a targeted privacy check, not a general secret-audit claim.
+Private live evidence is ignored and not staged. This reconciliation changes only
+this matrix, `docs/swarm-atlas.md`, and `docs/testing/test-audit-ledger.tsv`;
+production/test bytes remain at the final tested SHA. Documentation is left
+uncommitted for explicit source review; no new commit, push or promotion occurred.
+
+## L1 — Attach-only launch contract (2026-09-07)
+
+This is a new execution contract, not another acceptance upgrade to V6. All prior
+V6 text is retained. Source baseline remains `6e345d0437a5b60c1d3eec65ff2c480514f131fe`;
+runner changes are local/uncommitted and do not change the running application.
+A bounded authenticated Desktop read and separate broker/forward association
+confirmed the existing active candidate at that same SHA. Its retained lane owner
+is not the current source worktree. No rebuild, deployment, tunnel change,
+provider/model change or first-workspace substitution was performed.
+
+### Case counting and evidence contract
+
+There are **48 required executable subcases: four in each of S01–S12**. Each ID
+below needs its own `pass`, `fail`, or `not-run` result, exact source/runner/build,
+start/end time, assertions and private evidence locator. A scenario passes only
+when all four required cases pass. Do not count filenames, Go top-level tests,
+HTTP successes, AI claims, scheduler suite exits or historical V6 results as
+additional executed subcases. L1 implements lifecycle/connection infrastructure;
+**this new product wave is 0 pass / 0 fail / 48 not-run** until later scenario
+execution. Historical and narrower deterministic assertions remain inputs only.
+
+Use fresh suite-owned committed Git fixtures A/B/C with distinct unpredictable
+markers. B is nested-independent for the nested cases, otherwise sibling; compare
+actual common directories rather than path prefixes. Record each captured root's
+HEAD, index/status and marker bytes before and after. No customer repositories,
+ambient first session, implicit default change, captured-source promotion, shared
+model mutation or crash of the shared candidate. Provider/worker counts are
+separate from suite concurrency; verify capacity before the live wave.
+
+| Scenario / lane | Four independently reported executable cases | Required proof and inspected support / missing boundary |
+|---|---|---|
+| S01 / routing | S01-a explicit A creation; S01-b explicit B creation despite account default A; S01-c replay identical create request; S01-d reject forged allocator base | Compare persisted source ID, lane common-dir, allocator base and create/allocation counts. `sessions_v3_base_identity_test.go:TestSessionsV3CreatePersistsAllocatorBase` inspected: real HTTP handler/store, fake allocator; forged create has no session/allocation, replay retains original base after fake base changes. Full selected-root real-Git HTTP/provider fixture is missing. |
+| S02 / safety | S02-a nested-independent B switch; S02-b sibling B switch; S02-c unsaved nested root cannot resolve A; S02-d contradictory source/lane rejects | `service_multi_workspace_reproduction_test.go:TestMultiWorkspaceIdentityTransitions` inspected completely: real Git common-dir/base, independent target lane, ancestor lookup and contradictory provenance rejection, captured HEAD/status unchanged. Runtime canonicalizer is a fixture; full live combination still required where claimed. |
+| S03 / routing | S03-a attach A/B with explicit non-first B default; S03-b remove A preserving retained history but revoking access; S03-c remove default without replacement rejects; S03-d restart refreshes next prompt/tool/worker context and blocks old suffix | Identity transition assertions inspect exact grants, full snapshot equality, fresh-service reload and stale invoker rejection. Provider batch boundary is prior V6 evidence, not newly executed here. Live attach replay/restart and actual post-restart tool execution remain required. |
+| S04 / routing | S04-a real read B marker; S04-b real search B content; S04-c real find B filename; S04-d real list B directory | Inspect actual tool outputs for exact marker and root; ensure A marker absent. `runtime_workspace_target_test.go` inspected: executes read/list, but search/find test only the shared resolver and ambiguity rejection. Real FFF index/query results are missing from the new runner. |
+| S05 / routing | S05-a relative write to B lane; S05-b exact edit in B lane; S05-c Bash reports exact B cwd/common-dir; S05-d aggregate wrong-repository immutability after all three | Inspected filesystem test checks written/edited bytes and rejected outside/read-only targets unchanged, including absent parent directory after denied create. Missing-primary Bash test proves no process marker only; successful post-switch Bash cwd needs actual execution. Compare A/B captured roots and old A lane, not just B output. No shell sandbox claim. |
+| S06 / safety | S06-a explicit authorized B target from A; S06-b relative selector resolves declared source exactly; S06-c removed/revoked B denies new calls; S06-d ambiguous path/paths rejects without expansion | Inspected filesystem selection test compares exact default/explicit roots and rejects conflicting selectors before expansion. Identity fixture revokes catalog entry and checks entire session unchanged. Relative selector through complete runtime and live revocation timing remain missing. |
+| S07 / workers | S07-a regular Coder A assignment; S07-b overlapping regular Coder B assignment; S07-c integrate A exact committed handoff only into A parent lane; S07-d integrate B separately with captured roots unchanged | Each worker must have real immutable base, distinct owned path/common-dir, exact marker bytes and clean committed handoff. Parent performs separate canonical integrations and verifies patch equivalence/destination. Existing regular preparation tests are prior V6 support only; the inspected legacy `task-program-worktrees.mjs` is neither this proof nor attach-safe. Missing real cross-repository provider integration runner. |
+| S08 / workers | S08-a Finder exact B input; S08-b two disjoint same-repo Coders share base and overlap; S08-c stage barrier integrates both exact outputs; S08-d next-stage consumer sees immutable integrated content and rejects stale/missing evidence | Measure actual worker intervals, not launch calls or slot count. Exact newline bytes and source HEADs required; any correction is separately reported, never untouched-provider success. V6 describes the real-stage fixture and historical provider trial; neither counts for this wave. Inspected legacy runner runs separate sequential programs, changes shared models and uses stale session contracts; replace only missing proofs later. |
+| S09 / safety | S09-a held running child blocks default switch; S09-b attempted mutation cannot change child's immutable scope/base; S09-c two competing default mutations yield one CAS winner; S09-d loser leaves no extra lane/partial grants | Inspected identity fixture creates retained child metadata and injects stale CAS, asserting whole snapshot/worktree inventory unchanged. It does not run a held worker or race two mutations. Add barrier-based tests around actual execution and persistence. |
+| S10 / safety | S10-a permission denial before worker admission; S10-b denial mid-stage retains committed sibling/dirty child; S10-c symlink/path substitution denies rooted I/O; S10-d foreign principal/stale selector rejects without mutation | Assert reservation/program/child/worktree counts and bytes, not just error strings. Inspected identity fixture rejects foreign/stale moves; filesystem test rejects unauthorized roots/admin access. Mid-stage permission and timed substitution are missing proof, not accepted from adapter tests. |
+| S11 / safety | S11-a subprocess dies after allocation before mutation; S11-b dies across commit/outbox boundary; S11-c reopen validates attachments/default/lane consistency; S11-d recover unfinished work without replaying successful sibling | Use only local temporary stores/processes and deterministic injected barriers. Inspected transition fixture injects returned persistence/CAS errors and fresh service reload; it is not process-crash evidence. Never restart the live candidate. Explicitly name any unsupported injection boundary. |
+| S12 / Desktop | S12-a full-app attachment dialog shows IDs/default; S12-b staged/unstaged/untracked/conflict/committed lane selections; S12-c retained failed/removed worker and dirty file normal pointer reachability; S12-d forced transport gap/reconnect/late response keeps current default and completion | Canonical repositories API/state/header/picker own rendering; V6 component and historical pointer results are not new full-app proof. Capture normal scrolling/clicks and pixel-inspect every claimed state for overflow, wrong selection, hidden status and stale response. Missing dedicated isolated browser runner. |
+
+### Runner boundary and lifecycle
+
+`scripts/run-testbench-launch-prerun.sh` remains the only suite manifest. Its
+explicit `--attach-only` path uses the supplied Desktop root with same-origin
+`/v1/auth/desktop/session`, `/v1/swarm/topology` and `/v1/agent-model-settings` reads.
+No daemon port inference or redirects; credentials stay in process memory.
+Identity is pinned for child inspection. Build/lane evidence remains a separate
+read-only broker verification, never inferred from the topology or local HEAD.
+
+Only `critical` and `attach-inspect` are currently admitted in attach-only mode.
+Legacy live wrappers are deliberately rejected before `.env`, SSH, deployment,
+tunnel or model mutation. This is a capability boundary, not a passing substitute
+for the missing scenarios. Subsequent scenario work must register reviewed
+isolated implementations in this same manifest; do not merely allowlist the old
+runners. `task-routing.mjs` was inspected and changes Swarm/Router settings,
+adds/selects workspaces and can select an ambient first session;
+`task-program-worktrees.mjs` changes Swarm/Coder/Designer settings and creates
+workspace bindings. Neither is safe to overlap unchanged.
+
+The structured-argv Python supervisor runs at most eight selected suites (default
+four), each with a wall deadline at most 600 seconds, default 120-second no-output
+stall deadline, heartbeat at most 15 seconds and hard 1 MiB log cap (maximum 4 MiB).
+It tracks Linux process identities, owned descendant trees and process groups,
+uses subreaper adoption, escalates TERM to KILL, and preserves successful siblings
+on failure/cancellation. Atomic `results.json` and `summary.tsv` retain per-command
+outcomes; unfinished queue entries become `not-run` on cancellation. These are
+runner results, not automatic S01–S12 assertions. Logs are bounded private data,
+not public artifacts. Fresh ignored evidence directories prevent overwriting a
+previous wave. No provider runs exist in L1; later runners must persist their
+owned run IDs and use canonical cancellation for remote runs before local exit.
+
+### L1 executed validation (local runner diff, no application deployment)
+
+- `PYTHONDONTWRITEBYTECODE=1 timeout 40s python3 tests/scripts/launch_prerun_supervisor_test.py -v`: eight tests pass twice on the final supervisor/test bytes (5.163s and 5.184s). Actual overlap, bounded occupancy, nonzero/spawn failure, TERM-resistant setsid descendant death, wall/stall limits, log cap, orphan rejection and shell cancellation propagation are asserted. Linux process supervision is not an adversarial sandbox: excessive descendants fail; uninterruptible cleanup reports `cleanup_incomplete` with remaining PIDs rather than waiting indefinitely or claiming cleanup.
+- `timeout 40s node --test --test-concurrency=1 tests/scripts/testbench_attach_test.mjs`: four tests pass (final 0.757s), exercising fake loopback HTTP and the real shell entrypoint. Rejected legacy suites make zero extra HTTP requests; shared settings are read, never written. Redirects, drift, wrong runtime, overlarge response and request hang reject. Final child checks additionally pin the preflight settings digest.
+- `timeout 30s bash tests/scripts/lib_launch_prerun_test.sh`: passes with a data-only temporary example configuration, not ambient `.env`. Existing source-string compatibility checks are not independent security evidence.
+- Canonical `--attach-only` / `attach-inspect` executed twice against the unchanged agreed endpoint, with a 60-second wall and 30-second stall limit: one suite passed each time; authenticated topology/settings identity was preserved. No product/provider scenario is counted by that connection result. Exact private endpoint and evidence directories remain in the checkpoint handoff, not this public document.
+- Initial lifecycle run failed four sibling-preservation assertions because exit/EOF ordering was misclassified; fixed production supervisor ordering. A later Node test detected import-time connection during URL validation; fixed argument/entrypoint separation before rerunning. Both failures remain history, not erased by final passing results.
+- `bash -n` for all seven changed shell scripts, `bash scripts/check-atlas-sync.sh` and `git diff --check` pass. No broad Go/Node suite, provider trial, browser proof, critical-tier promotion, independent P1/P2 review, commit or push was performed in L1. The audit ledger records exact runner/test byte digests.
+
+## L2 — Focused runner implementation (local, incomplete)
+
+Source remains `6e345d0437a5b60c1d3eec65ff2c480514f131fe` plus the retained
+uncommitted runner/test diff. No live product trial was executed in L2; the new
+48-case wave remains **0 pass / 0 fail / 48 not-run**. Narrow local test results
+below must not be promoted to full scenario passes.
+
+The existing launch-prerun manifest now names `workspace-safety` and
+`workspace-browser` as local attach-safe fixtures. `workspace-routing` is a
+registered **disabled** implementation: both canonical admission and its direct
+entrypoint fail before network mutation. Its fake-HTTP-tested implementation
+creates uniquely named repositories through folder/setup/add APIs with
+`make_current:false`, creates/replays isolated V3 sessions, reads explicit owned
+repository selectors, uses existing Swarm assignments, and records owned run IDs
+for canonical stop. It never selects a first workspace or changes shared models.
+It is not live-safe yet: the process supervisor's 0.5-second TERM-to-KILL window
+can preempt asynchronous remote cancellation. A bounded independent owned-run
+cleanup phase, including lost message-response recovery, must precede admission.
+Do not merely remove the guard or extend a timeout without proving cleanup.
+
+### Executed local evidence and exact limitations
+
+- `TestMultiWorkspaceIdentityTransitions` now stops two real B/C allocations at
+  their actual mutation publisher, admits one CAS winner, then verifies the stale
+  loser leaves the entire winning snapshot unchanged and removes its path/Git
+  inventory. Existing nested/sibling/retained history and negative assertions
+  remain. Initial same-target fixture failed before the barrier because both
+  allocations chose one deterministic lane; corrected to distinct B/C targets,
+  not by weakening CAS assertions. Goroutines abort/join before fixture teardown.
+- `TestWorkspaceLaunchPostOpenSubstitution` deterministically substitutes a
+  symlink or hard link after rooted authorization. Outside writes reject without
+  truncation; symlink reads reject; outside and retained inside bytes are unchanged.
+  This does not prove pre-OpenRoot substitution or hard-link read confidentiality.
+- `TestWorkspaceLaunchAcknowledgedMutationProcessExit` uses an isolated subprocess
+  that exits without closing Pebble after an acknowledged canonical mutation.
+  Reopen compares the complete snapshot and explicit attachment identity. It does
+  not inject failure inside commit/outbox, allocate real lanes, or prove orphan
+  recovery. The shared candidate is never restarted.
+- Exact final local command: `cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/run ./internal/tool -run '^(TestMultiWorkspaceIdentityTransitions|TestWorkspaceLaunchPostOpenSubstitution|TestWorkspaceLaunchAcknowledgedMutationProcessExit|TestWorkspaceTargetFilesystemAuthority|TestWorkspaceTargetSearchSelection)$' -count=2 -timeout=90s`.
+  Passed: run 3.824s, tool 0.030s. Five top-level tests, not five product scenarios.
+- `node --test --test-concurrency=1 tests/scripts/workspace_launch_test.mjs tests/scripts/testbench_attach_test.mjs`: eight tests passed in 1.048s. Actual fake HTTP
+  checks exact owned identity/replay, unchanged selection/assignments, no requests
+  on denied targets, fresh-deadline owned cancellation, and exclusion of prose or
+  other-run events. These are runner proofs, not actual provider results.
+- New `workspace-launch.browser.spec.ts` uses the real repository inventory/picker
+  with a held old response, reconnect generation, explicit non-first default,
+  failed retained worker and staged/unstaged/untracked/conflict counts. It uses
+  normal clicks and optional private screenshots. Browser launch failed: pinned
+  headless-shell and full Chromium executables are absent. A bounded maintained
+  headless-shell installation reached download completion but timed out before a
+  usable executable; the follow-up launch still failed. **No browser assertions
+  or pixels were inspected.** Even once runnable, this is a component fixture,
+  not the full application, attachment dialog or actual websocket transport.
+
+| Cases | Remaining named boundary (no silent skip) |
+|---|---|
+| S01-a–d | Real HTTP/common-dir/allocation-count selected-root proof and forged-base no-allocation assertion; fixture baseline alone insufficient |
+| S02-a–d | Local identity tests execute; canonicalizer is a fixture, not a complete live combination |
+| S03-a–d | Provider attach/remove/default/restart with next-call scope and unchanged stale suffix |
+| S04-a–d | Actual provider FFF/read/list marker outputs; privacy-redacted completion names are not bytes |
+| S05-a–d | Exact edited bytes, post-switch Bash cwd/common-dir, old-lane and both captured-source immutability |
+| S06-a–d | Complete relative selector/revocation timing; existing resolver tests are narrower |
+| S07-a–d | Actual overlapping cross-repository workers and separate verified parent-lane integrations; legacy runner remains unsafe |
+| S08-a–d | Existing-assignment staged provider trial with common immutable base, overlap and exact integrated dependency bytes |
+| S09-a–b | Actual held worker; retained metadata is not worker execution |
+| S09-c–d | B/C publisher CAS/rollback now locally proven; no full live race claim |
+| S10-a–b,d | Mid-stage permission denial and child/reservation/dirty-sibling postconditions; full principal/stale selection proof |
+| S10-c | Post-open rooted substitution locally proven; pre-root-open race remains untested |
+| S11-a–d | Allocation-before-mutation and internal batch/outbox crash windows, real lane reopen and unfinished-only recovery; acknowledged-snapshot subprocess is narrower |
+| S12-a–d | Full-app attachment/default, status/file navigation, actual reconnect and late transport responses plus pixel review; component fixture cannot substitute |
+
+No new critical-tier promotion or independent P1/P2 review. Existing V6/L1
+history and the three pre-existing documentation changes remain preserved.
+
+## L2R — Installed-browser recovery and scoped runner safety
+
+2026-09-07, same source HEAD plus retained local diff. Supersedes L2's browser
+blocker and missing single-parent cleanup claims, not its historical results.
+No live product/provider trial: **0 pass / 0 fail / 48 not-run**. No deployment,
+tunnel change, shared setting mutation, commit or critical-tier promotion.
+
+- Installed Chrome via `SWARM_TEST_BROWSER_CHANNEL=chrome` runs both registered
+  browser fixtures; no browser download is required. Corrected an impossible
+  detached-worker Default fixture after inspecting the actual repositories API:
+  attached source B carries Default, while retained failed worker selection is
+  inspection state. The attempted initial-auto-selection assertion failed and
+  is retained as a fixture error, not a product bug or passing result. Pointer
+  selection, dirty counts, delayed old response and reconnect generation pass.
+  Reused the complete 64-attachment/dialog/default/removal/failed-refresh fixture.
+  Three screenshots at 375/420/1440 widths were pixel-inspected: legible text,
+  clear selected worker, no horizontal overflow; dialog clipping is inside its
+  intentional scroll viewport. Not full-app/actual-WebSocket proof.
+- `WorkspaceTrial` now implements provider-driven attachment/default switching,
+  exact saved IDs, existing agent assignment, and controlled read-only Bash
+  verification of cwd, actual common-dir, HEAD, branch, status and bounded marker
+  bytes. Git snapshot comparison removes only observation timestamp/duration;
+  substantive fields remain. Missing/redacted/rewritten proof output rejects.
+  S05 cannot pass on completion names or assistant prose. Mutation-stage entry
+  records fail until all exact postconditions pass; incomplete suites exit nonzero.
+- Explicit message/run identity is recorded before POST. TERM aborts in-flight
+  requests; a fresh cleanup client hydrates the exact lost-response run and stops
+  only that identity without submitting another message. Absent admission stays
+  visibly unresolved, never stops a foreign run. The supervisor accepts validated
+  per-suite cleanup grace 0.5–25 seconds, preserving its output/deadline/fan-out
+  limits and failure semantics. A composed real supervisor/Node/fake HTTP test
+  delays stop acknowledgment beyond the former .5-second KILL boundary and proves
+  exact cancellation plus successful sibling retention. This is not proof of
+  provider shutdown, late admission after cleanup, or delegated-child cancellation.
+- Real-Git identity fixture now holds child runtime scope at a barrier while
+  rejecting parent retargeting, comparing entire child snapshot, scope, HEAD,
+  status and worktree inventory. No provider is involved. New later-cohort denial
+  fixture injects at `failUnlaunchedCohort`, preserving committed prior-job records,
+  dirty bytes and session/Git inventories. It is not mid-tool permission UI or
+  reservation release proof. Existing CAS/substitution/reopen cases remain.
+- Regular cross-repository and same-repository two-stage Coder proof functions
+  use the same owned client and assignments, check exact marker bytes/common-dir,
+  distinct lanes, clean heads, separate integration destinations and captured-root
+  immutability. Focused verifier negatives reject wrong roots, dirty heads, stale
+  bases, cross-sibling leakage and missing dependencies. **Worker admission remains
+  disabled** until exact task-permission handling and owned-child cancellation
+  are integrated; the functions have not made real provider calls. Their Coder
+  consumer is not the specified Finder/Designer handoff or measured overlap.
+
+### L2R executed checks
+
+- `timeout 40s node --test --test-concurrency=1 tests/scripts/workspace_launch_test.mjs tests/scripts/testbench_attach_test.mjs`: 16 pass, 0 fail/skip, 1.983s.
+- `timeout 60s python3 tests/scripts/launch_prerun_supervisor_test.py`: 10 pass, 6.930s; final rerun recorded in private handoff.
+- `cd swarmd && GOMAXPROCS=2 go test -p 2 ./internal/run ./internal/tool -run '^(TestMultiWorkspaceIdentityTransitions|TestWorkspaceLaunchLaterCohortDenied|TestWorkspaceLaunchPostOpenSubstitution|TestWorkspaceLaunchAcknowledgedMutationProcessExit|TestWorkspaceTargetFilesystemAuthority|TestWorkspaceTargetSearchSelection)$' -count=2 -timeout=90s`: run 5.640s, tool 0.018s, all selected tests pass twice.
+- From `web/`, `SWARM_TEST_BROWSER_CHANNEL=chrome node --import tsx --test --test-concurrency=1 src/features/desktop/git/workspace-launch.browser.spec.ts src/features/desktop/chat/components/session-attachments.browser.spec.ts`: 2 pass, 0 fail/skip, 5.943s; private screenshot directory supplied. Vite/Node deprecation warnings do not change results.
+- `timeout 35s bash tests/scripts/lib_launch_prerun_test.sh`: PASS.
+
+### Exact remaining scenario limitations
+
+The L2 table remains authoritative except these narrower upgrades: S03-a now has
+an executable provider-driven attachment/default stage (not run); S05-a–d have
+controlled exact filesystem postconditions (not run); S09-a–b gain held runtime-scope
+proof, not actual provider execution; S10-a/b gain later-cohort injected-denial
+persistence proof, not full permission/reservation lifecycle; S12 component/browser
+proofs now execute and pixels are reviewed, still not full app. S01 allocation-count
+and account-default-A, S03 removal/restart suffix, S04 actual FFF marker output,
+S06 relative/revocation timing, S07/S08 admitted provider overlap and complete
+integration lineage, S11 internal allocation/commit/outbox crash windows and
+unfinished-only provider recovery remain explicit missing boundaries. No local
+fixture result upgrades any of the 48 live product cases.
+
+Before a live routing stage, independently reverify the existing candidate and
+choose an explicit reviewed disposable fixture parent; the runner never chooses
+an ambient first workspace. It stops at pending permissions rather than blanket
+approving. Do not remove worker admission guards merely to obtain a green launch
+wave. Freeze exact runner hashes and retained diff before execution. Public ledger
+records reinventory only, not independent P1/P2 sign-off.
+
+### L2R continuation: exact-call permissions and endpoint unavailable
+
+Routing now preflights every pending permission against the exact owned session,
+run, tool and full argument object before resolving any entry, uses `allow_once`
+only and rejects saved-policy/argument overrides. Read/write/proof prompts supply
+those exact arguments. Negative batch tests prove a foreign run, changed command
+or task request produces zero resolution calls. Seventeen Node tests pass
+(2.245s), shell regression and Desktop typecheck pass. Worker task/child lifecycle
+admission remains disabled; exact permission support for routing is not blanket
+approval for workers. The canonical browser suite now explicitly defaults to the
+already installed Chrome channel, with the existing environment override retained.
+
+A fresh bounded read-only preflight of the agreed endpoint failed with connection
+refused. Independent maintained broker inspection reported the previously verified
+candidate slot inactive at the same source SHA. No provider trial, rebuild, start,
+tunnel replacement or alternate endpoint was attempted. This is an actual external
+live-testing blocker, separate from the remaining local implementation gaps. All
+48 full live cases remain not-run. Resume only against the same explicitly agreed
+endpoint once reachable; do not reinterpret this failure as permission to deploy.

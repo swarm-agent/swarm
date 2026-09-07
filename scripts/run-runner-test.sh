@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${SWARM_TESTBENCH_ATTACH_ONLY:-}" == 1 ]]; then
+  printf 'run-runner-test: legacy scenarios are not attach-safe; refusing shared settings/session mutation\n' >&2
+  exit 2
+fi
+
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--browser-executable <path>] [--stage <name>] [--session-id <id>] [--initial-run-id <id>] [--artifact-id <id>] [--desktop-path <path>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
