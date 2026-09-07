@@ -52,3 +52,23 @@ func TestDeriveArtifactHTMLPartsPreservesIterationSectionsOverAnimationFallback(
 		t.Fatalf("derived iteration parts = %+v, want authored section targets only", parts)
 	}
 }
+
+// Requirement: deriveArtifactHTMLParts excludes capture-only semantic start tags
+// regardless of boolean/value/case spelling, without mistaking attribute values
+// or similarly named attributes for the marker. This source-level test prevents
+// impossible required selectors before native manifest creation.
+func TestDeriveArtifactHTMLPartsCaptureUI(t *testing.T) {
+	for _, attr := range []string{`data-swarm-capture-ui`, `DATA-SWARM-CAPTURE-UI`, `data-swarm-capture-ui=""`, `data-swarm-capture-ui='false'`, `data-swarm-capture-ui=false`} {
+		body := []byte(`<main id="announcement">Hello</main><nav id="playback" ` + attr + `>Play</nav><section id="reveal">Reveal</section>`)
+		parts := deriveArtifactHTMLParts(body, "text/html")
+		if len(parts) != 2 || parts[0].ID != "announcement" || parts[1].ID != "reveal" {
+			t.Fatalf("marker %s: %#v", attr, parts)
+		}
+	}
+	for _, attr := range []string{`aria-label="data-swarm-capture-ui"`, `data-swarm-capture-ui-extra`, `title="x > data-swarm-capture-ui"`} {
+		parts := deriveArtifactHTMLParts([]byte(`<nav id=playback `+attr+`>Play</nav>`), "text/html")
+		if len(parts) != 1 || parts[0].ID != "playback" {
+			t.Fatalf("false marker %s: %#v", attr, parts)
+		}
+	}
+}

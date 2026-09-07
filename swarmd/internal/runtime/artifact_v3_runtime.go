@@ -479,17 +479,22 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 // artificially visible. Static documents capture independently reachable sections.
 func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, files map[string][]byte) (htmlcapture.Request, error) {
 	request := htmlcapture.Request{Entry: manifest.Entrypoint, Files: cloneArtifactProject(files), StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900}
+	var durationMS int64
 	if manifest.AnimationProfile != nil {
 		canonical, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: manifest.AnimationProfile.ProfileID})
 		if err != nil || canonical.ProfileID != "motion_ui" || !reflect.DeepEqual(canonical, manifest.AnimationProfile) {
 			return request, errors.New("native HTML requires an unchanged reviewed motion_ui profile")
+		}
+		durationMS, err = tool.ArtifactHTMLAnimationDurationMS(files[manifest.Entrypoint])
+		if err != nil {
+			return request, err
 		}
 	}
 	times := map[string]int64{}
 	request.StateRequiredSelectors = map[string][]string{}
 	for _, part := range manifest.Parts {
 		if part.CaptureTimeMS != nil {
-			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.CaptureTimeMS < 0 || *part.CaptureTimeMS > 120000 {
+			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.CaptureTimeMS < 0 || *part.CaptureTimeMS > durationMS {
 				return request, errors.New("invalid native temporal Part capture contract")
 			}
 			if len(times) >= htmlcapture.MaxStates {
@@ -501,7 +506,19 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 			request.RequiredSelectors = append(request.RequiredSelectors, part.Locator.Value)
 		}
 	}
+	if len(times) == 0 && manifest.AnimationProfile != nil {
+		times["animation-preview"] = durationMS / 2
+		request.StateIDs = []string{"animation-preview"}
+	} else {
+		request.StateIDs = nil
+		for _, part := range manifest.Parts {
+			if part.CaptureTimeMS != nil {
+				request.StateIDs = append(request.StateIDs, part.ID)
+			}
+		}
+	}
 	if len(times) == 0 {
+		request.StateIDs = []string{"default"}
 		if manifest.AnimationProfile == nil && len(request.RequiredSelectors) > 0 {
 			request.DocumentSections = true
 			request.StateIDs = nil
@@ -518,12 +535,6 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 		}
 		request.Files[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(request.Files[manifest.Entrypoint])
 		return request, nil
-	}
-	request.StateIDs = nil
-	for _, part := range manifest.Parts {
-		if part.CaptureTimeMS != nil {
-			request.StateIDs = append(request.StateIDs, part.ID)
-		}
 	}
 	request.TemporalStates = true
 	encoded, err := json.Marshal(times)

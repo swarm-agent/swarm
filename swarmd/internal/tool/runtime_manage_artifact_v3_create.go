@@ -78,6 +78,13 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		}
 		parts = deriveArtifactHTMLParts([]byte(body), mediaType)
 	}
+	var durationMS int64
+	if profile != nil {
+		durationMS, err = ArtifactHTMLAnimationDurationMS([]byte(body))
+		if err != nil {
+			return nil, err
+		}
+	}
 	requestedParts, err := parseArtifactParts(args["parts"])
 	if err != nil {
 		return nil, err
@@ -87,7 +94,11 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		for _, part := range parts {
 			derivedByID[strings.TrimSpace(part.ID)] = part
 		}
+		captureOnly := artifactHTMLCaptureOnlyRegions([]byte(body))
 		for _, requested := range requestedParts {
+			if captureOnly[strings.TrimSpace(requested.ID)] {
+				return nil, fmt.Errorf("manage_artifact create requested Part %q is a capture-only HTML region", requested.ID)
+			}
 			derived, ok := derivedByID[strings.TrimSpace(requested.ID)]
 			if !ok || derived.Kind != "selector" {
 				return nil, fmt.Errorf("manage_artifact create requested Part %q does not resolve to a stable HTML region id", requested.ID)
@@ -99,8 +110,8 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			derived := derivedByID[strings.TrimSpace(requested.ID)]
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 			if requested.Kind == "temporal" {
-				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > 120000 {
-					return nil, errors.New("native temporal Parts require motion_ui and 0 <= start_ms < end_ms <= 120000")
+				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > durationMS {
+					return nil, errors.New("native temporal Parts require motion_ui and 0 <= start_ms < end_ms <= canonical animation duration (maximum 120000)")
 				}
 				derived.StartMs, derived.EndMs = requested.StartMs, requested.EndMs
 			}
@@ -128,6 +139,12 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	if len(manifestParts) == 0 {
 		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, or footer")
+	}
+	if profile != nil && len(requestedParts) == 0 {
+		// One whole-animation sample; all other meaningful regions remain global
+		// requirements. Do not turn capture controls into output metadata.
+		midpoint := durationMS / 2
+		manifestParts[0].CaptureTimeMS = &midpoint
 	}
 	manifest, err := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: manifestParts, AnimationProfile: profile})
 	if err != nil {

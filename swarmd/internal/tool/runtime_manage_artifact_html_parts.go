@@ -3,6 +3,7 @@ package tool
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"unicode"
@@ -14,7 +15,8 @@ var (
 	artifactHTMLIterationManifest = regexp.MustCompile(`(?is)<script\s+([^>]*)>(.*?)</script\s*>`)
 	artifactHTMLIterationID       = regexp.MustCompile(`(?i)(?:^|\s)id\s*=\s*["']swarm-iteration-manifest["'](?:\s|$)`)
 	artifactHTMLManifestType      = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
-	artifactHTMLRegion            = regexp.MustCompile(`(?is)<(header|main|section|article|nav|aside|footer)\b([^>]*)>`)
+	artifactHTMLRegion            = regexp.MustCompile(`(?is)<(header|main|section|article|nav|aside|footer)\b((?:[^>"']|"[^"]*"|'[^']*')*)>`)
+	artifactHTMLAttributes        = regexp.MustCompile(`([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?`)
 )
 
 type artifactHTMLIterationManifestValue struct {
@@ -41,9 +43,13 @@ func deriveArtifactHTMLParts(body []byte, mediaType string) []pebblestore.Sessio
 	}
 	parts := make([]pebblestore.SessionArtifactPart, 0, 8)
 	seen := make(map[string]struct{})
+	captureOnly := artifactHTMLCaptureOnlyRegions(body)
 	appendPart := func(part pebblestore.SessionArtifactPart) {
 		part.ID, part.Label = strings.TrimSpace(part.ID), strings.TrimSpace(part.Label)
 		if len(parts) >= pebblestore.SessionArtifactMaxParts || !validManagedArtifactStableID(part.ID) || part.Label == "" || len(part.Label) > 256 {
+			return
+		}
+		if captureOnly[part.ID] {
 			return
 		}
 		if _, duplicate := seen[part.ID]; duplicate {
@@ -105,13 +111,44 @@ func deriveArtifactHTMLParts(body []byte, mediaType string) []pebblestore.Sessio
 	return parts
 }
 
-func artifactHTMLAttribute(attributes []byte, name string) string {
-	pattern := regexp.MustCompile(`(?i)(?:^|\s)` + regexp.QuoteMeta(name) + `\s*=\s*["']([^"']+)["']`)
-	match := pattern.FindSubmatch(attributes)
-	if len(match) != 2 {
-		return ""
+// ArtifactHTMLAnimationDurationMS reuses the canonical bounded animation parser
+// for native creation and runtime preview; neither boundary invents timing.
+func ArtifactHTMLAnimationDurationMS(body []byte) (int64, error) {
+	manifest, err := parseAnimationManifest(body)
+	if err == nil && manifest.DurationMS > 120000 {
+		return 0, errors.New("native animation duration exceeds 120000 ms")
 	}
-	return strings.TrimSpace(string(match[1]))
+	return int64(manifest.DurationMS), err
+}
+
+func artifactHTMLCaptureOnlyRegions(body []byte) map[string]bool {
+	ids := map[string]bool{}
+	for _, region := range artifactHTMLRegion.FindAllSubmatch(body, -1) {
+		for _, attribute := range artifactHTMLAttributes.FindAllSubmatch(region[2], -1) {
+			if strings.EqualFold(string(attribute[1]), "data-swarm-capture-ui") {
+				ids[artifactHTMLAttribute(region[2], "id")] = true
+			}
+		}
+	}
+	return ids
+}
+
+func artifactHTMLAttribute(attributes []byte, name string) string {
+	for _, attribute := range artifactHTMLAttributes.FindAllSubmatch(attributes, -1) {
+		if !strings.EqualFold(string(attribute[1]), name) {
+			continue
+		}
+		_, value, assigned := strings.Cut(string(attribute[0]), "=")
+		if !assigned {
+			return ""
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') {
+			value = value[1 : len(value)-1]
+		}
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func artifactHTMLPartLabel(id string) string {
