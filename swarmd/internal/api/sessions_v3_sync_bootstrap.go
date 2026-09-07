@@ -1087,6 +1087,9 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"swarm_v3_source_workspace_name",
 		"swarm_v3_source_workspace_path",
 		"swarm_v3_runtime_workspace_path",
+		// Desktop uses this marker to retain the initiating user message when
+		// a later bounded transcript hydrate omits it. Keep request hashes private.
+		"routed_start",
 		"routed_worktree_name",
 		"swarm_v3_placement_generation",
 		"swarm_v3_binding_generation",
