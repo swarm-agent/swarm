@@ -326,6 +326,7 @@ export function DesktopV3AgenticComposer({
   const textAttachmentSequenceRef = useRef(0)
   const routedSubmissionRef = useRef(false)
   const handledArtifactSelectionRequestRef = useRef('')
+  const dictationButtonRef = useRef<HTMLButtonElement | null>(null)
   const dictationEnabledRef = useRef(false)
   const dictationCanRunRef = useRef(false)
   const dictationRestartTimerRef = useRef<number | null>(null)
@@ -603,6 +604,21 @@ export function DesktopV3AgenticComposer({
   }, [composerDisabled, focusSignal])
 
   useEffect(() => {
+    if (composerDisabled || typeof window === 'undefined') return
+    // Browser recognition and click completion can restore focus to the mic
+    // after the synchronous toggle handler. Recover after the draft is rendered,
+    // but never steal focus if the user has moved to another control.
+    const frame = window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current
+      if (!textarea || document.activeElement !== dictationButtonRef.current) return
+      textarea.focus()
+      const cursorPosition = textarea.value.length
+      textarea.setSelectionRange(cursorPosition, cursorPosition)
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [composerDisabled, dictationComposer, dictationEnabled, dictationListening])
+
+  useEffect(() => {
     if (!error) setDismissedComposerError(null)
     if (routedNewSession && error) routedSubmissionRef.current = false
   }, [error, routedNewSession])
@@ -654,6 +670,13 @@ export function DesktopV3AgenticComposer({
 
   const handleDictationToggle = useCallback(() => {
     if (dictationButtonDisabled) return
+    // Keep Enter on the composer's send path instead of activating the mic again.
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.focus()
+      const cursorPosition = textarea.value.length
+      textarea.setSelectionRange(cursorPosition, cursorPosition)
+    }
     if (dictationEnabledRef.current) {
       stopDictation(true)
       return
@@ -1162,6 +1185,8 @@ export function DesktopV3AgenticComposer({
   const dictationButton = () => showDictationButton ? (
     <button
       type="button"
+      ref={dictationButtonRef}
+      onMouseDown={(event) => event.preventDefault()}
       onClick={handleDictationToggle}
       disabled={dictationButtonDisabled}
       aria-pressed={dictationEnabled}
