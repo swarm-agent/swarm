@@ -682,3 +682,10 @@ attachments and integrated-removed rows. A stale regular-worker running label
 was corrected using exact parent task-call lineage (not filesystem inference).
 Focused inventory/exact-parent tests passed twice, 2.066s. List/config recovery
 attempts failed before recall succeeded; generic list behavior is not validated.
+
+Final full-app pointer inspection on `cb09303dd72b2f3aea32e48be86b3920d8a4dd29`
+showed retained failed worker and dirty count after restart, but the file disclosure
+was clipped by the plan card's remaining height. A safe layout correction makes
+the repository section itself scrollable and the file region nonshrinking; no
+forced browser click is accepted as proof. Typecheck and eight focused repository
+browser/state tests pass (3.361s); exact-build pointer recheck required.

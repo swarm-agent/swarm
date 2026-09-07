@@ -4859,7 +4859,7 @@ export function DesktopAppPage() {
 
   const planSidebarGitPanel = routeSessionId ? (
     <>
-    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
       <SessionRepositoryPicker inventory={repositoryInventory} onSelect={repositoryInventory.select} onRefresh={() => { void repositoryInventory.refresh() }} onLoadMore={() => { void repositoryInventory.loadMore() }} />
       {selectedRepository && !selectedRepositoryActionsEnabled ? <p className="my-2 text-xs text-[var(--app-text-subtle)]">Inspection only. Operations require a fresh, exact current-session repository; retained workers and lanes use explicit worktree review.</p> : null}
       <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]" data-plan-git-header>
@@ -4886,7 +4886,7 @@ export function DesktopAppPage() {
           {activeSessionCommits.length > 0 ? <div className="max-h-28 overflow-y-auto border-t border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-session-commit-list>{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
         </details>
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
+      <div className="flex shrink-0 flex-col" data-plan-git-scroll-region>
         {gitSidebarMissingGit ? <button type="button" className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-warning)] px-2 py-1.5 text-xs font-semibold text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitInstallHelpBusy} onClick={() => { void handleAskSwarmToInstallGit() }}>{gitInstallHelpBusy ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}{gitInstallHelpBusy ? 'Asking Swarm…' : "Git isn't installed, Ask Swarm to install Git?"}</button>
           : gitSidebarError ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitSidebarError}</div>
           : repositoryInventory.loading && !gitSnapshot ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
