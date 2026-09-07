@@ -29,8 +29,8 @@ func TestSessionRepositoryParentIdentityIsExactAndOwned(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	put(pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: source, WorktreeEnabled: true, WorktreeRootPath: lane, WorktreeBranch: "agent/parent", Metadata: map[string]any{"swarm_v3_source_workspace_path": source, "base_commit": "base"}})
-	put(pebblestore.SessionSnapshot{ID: "child", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: lane, Metadata: map[string]any{"parent_session_id": "parent", "task_program_id": "program", "task_program_job_id": "job"}})
+	put(pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: source, WorktreeEnabled: true, WorktreeRootPath: lane, WorktreeBranch: "agent/parent", Metadata: map[string]any{"swarm_v3_source_workspace_path": source, "base_commit": "base", "task_launches": map[string]any{"call": map[string]any{"launches": []any{map[string]any{"child_session_id": "child", "child_state": "dirty-recoverable"}}}}}})
+	put(pebblestore.SessionSnapshot{ID: "child", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, WorkspacePath: lane, Metadata: map[string]any{"parent_session_id": "parent", "task_program_id": "program", "task_program_job_id": "job", "parent_task_call_id": "call"}})
 	program := pebblestore.TaskProgramRecord{ParentSessionID: "parent", ProgramID: "program", DefinitionHash: "hash", Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "stage", DependencyEvidence: "fixture"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "job", StageID: "stage", AgentType: "coder", Title: "Fixture", MetaPrompt: "Fixture", Deliverable: "Fixture", OwnedScope: []string{"file"}, DependencyEvidence: "fixture", AcceptanceCriteria: []string{"fixture"}}}}}
 	program.Jobs = []pebblestore.TaskProgramJobRecord{{JobID: "job", StageID: "stage", State: pebblestore.TaskProgramJobDeclared}}
 	created, _, err := server.sessions.CreateTaskProgram(program)
@@ -43,7 +43,7 @@ func TestSessionRepositoryParentIdentityIsExactAndOwned(t *testing.T) {
 	}
 	item := sessionRepositoryItem{SessionID: "child", Kind: "worker", SourcePath: lane, WorkspacePath: lane}
 	got := server.resolveRepositoryParentIdentity(principal, item)
-	if got.SourcePath != source || got.laneOwnerID != "parent" || got.BaseCommit != "base" || got.currentAuthority {
+	if got.SourcePath != source || got.laneOwnerID != "parent" || got.BaseCommit != "base" || got.currentAuthority || got.Lifecycle != "dirty-recoverable" {
 		t.Fatalf("wrong provenance: %+v", got)
 	}
 	foreign := principal

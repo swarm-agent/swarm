@@ -669,3 +669,16 @@ still reflected historical running snapshots; an inventory-only exact program
 reader now supplies linked job lifecycle without invoking mutating reconciliation.
 Focused HTTP inventory/exact-parent tests passed twice, 2.128s. Rebuild/reconnect,
 retained dirty recovery and unsupported-program live negatives remain separate.
+
+On `068df26727bd9e91ae0ac14801b59cc3190319b3`, persistent restart retained the
+completed program/artifact and attachments. Unsupported split-repository Coder
+plan submission returned HTTP 400 before any parent event/run mutation. A deliberately
+uncommitted regular Coder returned `dirty-recoverable`, preserved its original
+HEAD and `recovery.txt`; canonical recall returned the same child, file and base.
+Default switching was rejected as pinned by retained delegated work. No commit,
+integration or cleanup of that fixture was performed. Inventory preserved its
+row and untracked count; full browser traversal/reload showed the same two
+attachments and integrated-removed rows. A stale regular-worker running label
+was corrected using exact parent task-call lineage (not filesystem inference).
+Focused inventory/exact-parent tests passed twice, 2.066s. List/config recovery
+attempts failed before recall succeeded; generic list behavior is not validated.

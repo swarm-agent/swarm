@@ -23,6 +23,24 @@ func (s *Server) resolveRepositoryParentIdentity(principal identity.Principal, i
 	if err != nil || !ok || parent.AccountScopeID != principal.AccountScopeID || parent.UserID != principal.UserID || !parent.WorktreeEnabled {
 		return item
 	}
+	// Regular Coder terminal facts live in the parent's exact task-call lineage.
+	callID := sessionsV3MetadataString(owner.Metadata, "parent_task_call_id")
+	if calls, ok := parent.Metadata["task_launches"].(map[string]any); ok && callID != "" {
+		if call, ok := calls[callID].(map[string]any); ok {
+			if rows, ok := call["launches"].([]any); ok && len(rows) <= 50 {
+				for _, raw := range rows {
+					row, ok := raw.(map[string]any)
+					if !ok || firstNonEmpty(sessionsV3MetadataString(row, "child_session_id"), sessionsV3MetadataString(row, "session_id")) != owner.ID {
+						continue
+					}
+					if state := firstNonEmpty(sessionsV3MetadataString(row, "child_state"), sessionsV3MetadataString(row, "phase")); state != "" {
+						item.Lifecycle = state
+					}
+					break
+				}
+			}
+		}
+	}
 	programID := sessionsV3MetadataString(owner.Metadata, "task_program_id")
 	jobID := sessionsV3MetadataString(owner.Metadata, "task_program_job_id")
 	if programID != "" && jobID != "" {

@@ -6076,3 +6076,4 @@ ta-scope-delivery-prompt	go-test	swarmd/internal/run/service_task_owned_scope_de
 # A5 source_sha256 swarmd/internal/run/service_task_program_width_test.go 73afff53401e4b87881b9a1d9a884232f80f1c4d5954e1926de8632a458bd7b4
 # A5 source_sha256 swarmd/internal/worktree/allocation_base_test.go ce67c78be791cee2f9ca3ef30540d3f7dd2e0f0ae2cc9a53939f0d6d8ad5afe4
 # A5 lifecycle reinventory swarmd/internal/api/sessions_v3_repository_parent_test.go ed37dc768dc50f1948780534195bb79d662ec66443ebe361f78a4cb388268f7a supersedes prior digest; exact-parent/inventory count=2 API pass 2.128s, program inspection preserves revision; P1/P2 unreviewed, no curated promotion.
+# A5 regular dirty lineage reinventory swarmd/internal/api/sessions_v3_repository_parent_test.go 81bbacb6aed3fb11cbf3b1debd8c2d997f31d692de9de7107d7854878abf4ff4; exact retained dirty state assertion and existing negatives count=2 pass 2.066s; P1/P2 unreviewed, no curated promotion.
