@@ -35,7 +35,7 @@ export class AttachClient {
     if (!route.startsWith('/') || route.startsWith('//') || route.includes('..') || route.includes('\\') || /[\r\n#]/.test(route)) throw new Error('invalid attach route')
     const readRoutes = ['/v1/auth/desktop/session', '/v1/swarm/topology', '/v1/agent-model-settings', '/v1/workspace/current']
     const mutationRoutes = ['/v1/workspace/folders/create', '/v1/workspace/repository/setup', '/v1/workspace/add', '/v3/sessions', '/v3/sync/hydrate']
-    const ownedRoute = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/(repositories\?limit=20|permissions\?status=pending&limit=20|messages|run\/stop)$/.test(route)
+    const ownedRoute = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/(repositories\?limit=20(?:&cursor=[a-zA-Z0-9_%.-]+)?|permissions\?status=pending&limit=20|messages|run\/stop)$/.test(route)
     const permissionResolve = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/permissions\/[a-zA-Z0-9_-]+\/resolve$/.test(route)
     const statusRoute = route.startsWith('/v1/workspace/git/status?session_id=')
     if (!(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&

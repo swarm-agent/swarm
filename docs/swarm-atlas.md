@@ -752,3 +752,51 @@ workspace Go tests passed twice. That narrower fixture success does not resolve
 the observed supervisor/gate interaction. Keep it as a runner investigation for
 the next test wave, without weakening descendant rejection or product assertions.
 No new critical-manifest promotion or independent P1/P2 review is implied.
+
+### Parallel runner correction and scoped evidence, 2026-09-07
+
+| Workspace launch continuation | source `b09daa99` plus scoped runner diff | 2026-09-07 | Repair observed supervisor and attach-client execution gaps | Inspected `run`, `WorkspaceTrial.repositories/prove`, `AttachClient.request`, `providerManagedV3ToolEventPayload` and `liveStreamRawOutput`. The supervisor retains attributed zombie identities and attributes only already-adopted live descendants by their bounded inherited suite label; PID/start-tick ownership, live-orphan rejection and cancellation remain enforced. Complete repository proof follows at most eight opaque pages, rejecting repeats/partial inventories. Bash proof uses literal heredoc bytes and the canonical raw stdout field, requiring a final completion sentinel rather than interpreting a display summary as a result envelope. |
+
+The earlier supervisor failure reproduced with real Chrome double-forked live
+children. After correction, the unchanged two Chrome fixtures and six selected
+Go safety tests (each twice) passed concurrently; recorded overlap was 6.488s.
+All three browser PNGs were inspected: text and selection remain legible, no
+horizontal overflow; attachment lists intentionally scroll vertically. These are
+component fixtures, not a full-app transport proof. Twelve OS supervisor tests
+and twenty Node attach/runner tests pass, including adopted-child cleanup,
+retained zombies, cursor repetition and incomplete raw-output rejection.
+
+Provider-backed routing remains **failed**, not a green launch suite. Actual
+workspace mutation/restart completed; rewritten proof arguments were rejected
+without approval and exact owned runs cancelled. One exact Bash proof executed
+and returned real Git/common-dir/byte observations, but its run failed with an
+empty provider response. The final trial returned prose after omitting required
+Bash explanation arguments; tool validation rejected it. No marker-mutation
+postconditions or worker integration were established. All 48 historical matrix
+subcases remain unproven by these trials. Worker admission remains disabled;
+shared model settings were unchanged. No product bytes changed, candidate
+rebuild, release, critical-manifest promotion or independent P1/P2 verdict is
+claimed by this continuation. Remaining attack points: provider argument
+fidelity, child-owned cancellation before worker admission, opaque inventory
+bounds and full-app reconnect behavior.
+
+### Retained-lane live correction, 2026-09-07
+
+The subsequent bounded routing recovery verified all seven actual tools, exact
+edited marker bytes, unchanged captured repositories and retained prior lane.
+`completedTools` now reads canonical `buildV3ProviderManagedToolResultRecord`
+messages when hydration manifests events; it rejects foreign runs, prose and
+failed/truncated Bash envelopes. Earlier failed attempts remain failures.
+
+Two regular workers committed successfully after repository-local test identity
+setup. Live integration exposed a retained-default gap: `resolveTaskTargetWorkspace`
+aliased only the current source, and `manageWorktreeRecoveryDestination` recognized
+only current or program lanes. The correction reauthorizes the historical saved
+workspace, validates its owned allocation, and accepts only exact recorded
+session-lane destinations with owner/base/branch/source checks. No captured
+checkout is an integration target. High-value attack points are forged historical
+ownership, revoked source access, branch mismatch and stale captured base.
+Focused identity-transition and recovery tests passed twice; corrected product
+bytes still require candidate rebuild and live rerun. Worker cleanup verifies
+terminal durable child lifecycle after parent cancellation; program admission
+remains disabled. No full matrix or release approval is implied.

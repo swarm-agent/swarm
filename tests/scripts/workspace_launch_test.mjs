@@ -8,7 +8,7 @@ import http from 'node:http'
 import { once } from 'node:events'
 import { WorkspaceTrial, completedTools, repositoryState } from '../../scripts/runners/workspace-launch.mjs'
 
-async function fixture(t, { lostMessage = false, foreignOnly = false } = {}) {
+async function fixture(t, { lostMessage = false, foreignOnly = false, pagination = '' } = {}) {
   const requests = []
   const settings = { swarm: { action: { provider: 'fixture', model: 'action' }, plan: { model: 'plan' } } }
   const s = http.createServer(async (req, res) => {
@@ -26,6 +26,10 @@ async function fixture(t, { lostMessage = false, foreignOnly = false } = {}) {
     if (req.url === '/v1/workspace/repository/setup') return send({ repository: { head_commit: 'a'.repeat(40) } })
     if (req.url === '/v1/workspace/add') { assert.equal(body.make_current, false); return send({ workspace: { workspace_id: 'saved', local_workspace_binding_id: 'binding' } }) }
     if (req.url === '/v3/sessions') return send({ session: { id: 'owned', workspace_path: body.workspace_path, worktree_root_path: '/fixture-lane', worktree_enabled: true } })
+    if (pagination && req.url.startsWith('/v3/sessions/owned/repositories?limit=20')) {
+      const second = req.url.includes('&cursor=opaque-token')
+      return send({ items: [{ id: second ? 'second' : 'first' }], next_cursor: !second || pagination === 'repeat' ? 'opaque-token' : '' })
+    }
     if (req.url === '/v3/sessions/owned/repositories?limit=20') return send({ items: [{ kind: 'parent', workspace_path: '/fixture-lane', source_path: requests.find(r => r.route === '/v3/sessions').body.workspace_path, base_commit: 'a'.repeat(40) }] })
     if (req.url === '/v3/sessions/owned/permissions/exact/resolve') {
       assert.deepEqual(body, { action: 'allow_once', reason: 'Exact owned launch fixture call only' })
@@ -274,4 +278,76 @@ test('permission review allows only exact owned call once and rejects batch wide
   await assert.rejects(trial.request('POST', '/v3/sessions/owned/permissions/exact/resolve', { action: 'allow_always' }))
   await assert.rejects(trial.request('POST', '/v3/sessions/owned/permissions/exact/resolve', { action: 'allow_once', approved_arguments: {} }))
   assert.equal(requests.length, before)
+})
+
+// Requirement: repository proofs consume opaque pages, never partial inventories
+// or repeated cursors. Fake HTTP is the narrowest AttachClient route contract.
+for (const pagination of ['complete', 'repeat']) test(`owned repository pagination ${pagination}`, { timeout: 5000 }, async t => {
+  const { trial, requests } = await fixture(t, { pagination })
+  await trial.initialize(); trial.sessions.set('owned', { id: 'owned' })
+  if (pagination === 'repeat') await assert.rejects(trial.repositories('owned'), /cursor repeated/)
+  else assert.deepEqual(await trial.repositories('owned'), [{ id: 'first' }, { id: 'second' }])
+  const pages = requests.filter(r => r.route.includes('/repositories?'))
+  assert.equal(pages.length, 2)
+  assert.equal(pages[1].route, '/v3/sessions/owned/repositories?limit=20&cursor=opaque-token')
+  assert(pages.every(r => r.method === 'GET'))
+})
+
+// Requirement: provider event stdout, not the display summary, proves exact
+// filesystem bytes; missing/truncated or incomplete output must fail closed.
+test('filesystem proof consumes only complete exact raw stdout', async () => {
+  const { proofCommand } = await import('../../scripts/runners/workspace-launch.mjs')
+  const trial = new WorkspaceTrial('http://127.0.0.1:12345/')
+  trial.sessions.set('owned', { worktree_root_path: '/lane' })
+  trial.repositories = async () => [{ workspace_path: '/lane', availability: 'available' }]
+  const command = proofCommand(['/lane'], ['marker.txt'])
+  const proof = { complete: true, cwd: '/lane', repositories: [{ path: '/lane' }] }
+  let raw = JSON.stringify(proof)
+  trial.run = async (_id, prompt, calls) => {
+    assert.equal(calls[0].args.command, command)
+    assert(prompt.includes(JSON.stringify(calls[0].args)), 'complete arguments must reach provider')
+    assert.deepEqual(calls[0].args.explanation, ['Read only the disposable trial repositories.'])
+    return { runID: 'run', snapshot: { events_by_session: { owned: [{ event_type: 'session.tool.completed', run_id: 'run', payload: { tool_name: 'bash', arguments: JSON.stringify(calls[0].args), output: 'display only', raw_output: raw } }] } } }
+  }
+  assert.deepEqual(await trial.prove('owned', ['/lane']), proof)
+  for (const invalid of [undefined, '{', JSON.stringify({ ...proof, complete: false }), JSON.stringify({ ...proof, cwd: '/wrong' })]) {
+    raw = invalid
+    await assert.rejects(trial.prove('owned', ['/lane']))
+  }
+})
+
+// Requirement: canonical hydrated tool records remain usable when event history
+// is manifested. buildV3ProviderManagedToolResultRecord owns this envelope.
+// This narrow parser test rejects prose, foreign identity and incomplete stdout.
+test('canonical tool messages survive event omission without accepting prose or failed Bash', () => {
+  const record = { path_id: 'run.v3.provider-tool-result.v1', type: 'v3_provider_tool_result', run_id: 'run', call_id: 'call', tool_name: 'bash', arguments: '{}', output: JSON.stringify({ exit_code: 0, output: 'proof' }) }
+  const message = { session_id: 'owned', role: 'tool', content: JSON.stringify(record) }
+  const snapshot = { messages_by_session: { owned: [message] } }
+  assert.equal(completedTools(snapshot, 'owned', 'run')[0].payload.raw_output, 'proof')
+  snapshot.events_by_session = { owned: [{ event_type: 'session.tool.completed', run_id: 'run', payload: record }] }
+  assert.equal(completedTools(snapshot, 'owned', 'run').length, 1)
+  delete snapshot.events_by_session
+  for (const patch of [{ role: 'assistant' }, { session_id: 'foreign' }, { content: JSON.stringify({ ...record, run_id: 'foreign' }) }]) {
+    snapshot.messages_by_session.owned = [{ ...message, ...patch }]
+    assert.deepEqual(completedTools(snapshot, 'owned', 'run'), [])
+  }
+  for (const patch of [{ exit_code: 1 }, { exit_code: 0, truncated: true }, { exit_code: 0, timed_out: true }]) {
+    snapshot.messages_by_session.owned = [{ ...message, content: JSON.stringify({ ...record, output: JSON.stringify(patch) }) }]
+    assert.throws(() => completedTools(snapshot, 'owned', 'run'))
+  }
+})
+
+// Requirement: parent cancellation is not proof of child termination. Verify
+// repository lifecycle postconditions after canonical CancelRun context teardown.
+test('worker cleanup waits for terminal children and only inspects owned parent', async () => {
+  const trial = new WorkspaceTrial('http://127.0.0.1:12345/')
+  trial.sessions.set('owned', { id: 'owned' }); trial.workerParents.add('owned')
+  let count = 0
+  trial.repositories = async id => {
+    assert.equal(id, 'owned'); count++
+    return [{ kind: 'worker', session_id: 'child', lifecycle: count === 1 ? 'running' : 'cancelled' }]
+  }
+  await trial.stopOwned()
+  assert.equal(count, 2)
+  assert.deepEqual(trial.evidence.cleanup[0].children, [{ session: 'child', state: 'cancelled' }])
 })

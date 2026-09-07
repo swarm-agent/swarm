@@ -496,3 +496,42 @@ func TestManageWorktreeNamedPrimaryRecovery(t *testing.T) {
 		t.Fatal("named lane missing committed change")
 	}
 }
+
+// Purpose: a prior session default is retained authority, not a Task Program
+// lane. RecoveryDestination must validate its owner, Git lane and captured base;
+// rejecting forged metadata must not advance either repository.
+func TestManageWorktreeRetainedSessionDestination(t *testing.T) {
+	f := newRecoveryFixture(t, true, true)
+	parent, _, err := f.sessions.GetSession("recovery-parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, _, err := f.sessions.GetSession("recovery-good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := map[string]any{"path": parent.WorktreeRootPath, "source_workspace_path": f.source, "branch": parent.WorktreeBranch, "base_commit": f.base, "owner_session_id": parent.ID}
+	parent.Metadata["swarm_v3_worktree_history"] = []any{history}
+	parent.WorktreeRootPath = filepath.Join(t.TempDir(), "different-current-lane")
+	row := f.rows[0].(map[string]any)
+	got, err := f.runtime.manageWorktreeRecoveryDestination(f.scope, parent, child, row)
+	if err != nil || got != f.lane {
+		t.Fatalf("retained destination %q: %v", got, err)
+	}
+	for _, patch := range []map[string]any{{"owner_session_id": "foreign"}, {"base_commit": ""}, {"branch": "dev"}} {
+		altered := map[string]any{}
+		for k, v := range history {
+			altered[k] = v
+		}
+		for k, v := range patch {
+			altered[k] = v
+		}
+		parent.Metadata["swarm_v3_worktree_history"] = []any{altered}
+		if _, err := f.runtime.manageWorktreeRecoveryDestination(f.scope, parent, child, row); err == nil {
+			t.Fatal("forged retained destination accepted")
+		}
+		if recoveryGit(t, f.source, "rev-parse", "HEAD") != f.base || recoveryGit(t, f.lane, "rev-parse", "HEAD") != f.base {
+			t.Fatal("rejection changed Git state")
+		}
+	}
+}

@@ -3453,6 +3453,23 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 		if sourceErr == nil && target == source {
 			return scope.PrimaryPath, strings.TrimSpace(parentSession.WorkspaceName), nil
 		}
+		for _, item := range sessionWorktreeHistory(parentSession.Metadata["swarm_v3_worktree_history"]) {
+			if filepath.Clean(mapString(item, "source_workspace_path")) != target {
+				continue
+			}
+			canonical, err := s.canonicalSessionWorkspace(principal, mapString(item, "workspace_id"), 0)
+			if err != nil {
+				return "", "", err
+			}
+			if canonical.SourceWorkspacePath != target {
+				return "", "", errors.New("retained task source identity changed")
+			}
+			allocation, err := s.resolveOwnedSessionWorktree(parentSession, canonical, mapString(item, "path"))
+			if err != nil {
+				return "", "", err
+			}
+			return allocation.WorkspacePath, canonical.WorkspaceName, nil
+		}
 	}
 	authorized := false
 	for _, root := range allowedRoots {

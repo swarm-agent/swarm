@@ -174,6 +174,33 @@ class Lifecycle(unittest.TestCase):
             self.assertNotEqual(p.returncode, 0)
             self.assertFalse(target.exists())
 
+    def test_adopted_labelled_double_fork_is_cancelled_without_harming_sibling(self):
+        # Requirement: subreaper-owned double-forks retain a bounded suite label;
+        # attribution is not authority over unrelated processes. A live orphan
+        # still fails its own suite and must be killed, never silently passed.
+        marker = self.root/'double-fork-pid'
+        child = f'import os,time; os.setsid(); open({str(marker)!r},"w").write(str(os.getpid())); time.sleep(60)'
+        middle = f'import subprocess,sys; subprocess.Popen([sys.executable,"-c",{child!r}])'
+        parent = f'import subprocess,sys,time; subprocess.run([sys.executable,"-c",{middle!r}],check=True); time.sleep(.5)'
+        p = self.start([command('orphan', parent), command('sibling', 'import time; time.sleep(1); print("retained")')])
+        data, _ = self.result(p)
+        rows = {r['id']: r for r in data['results']}
+        self.assertEqual(rows['orphan']['reason'], 'orphaned_descendants')
+        self.assertEqual(rows['sibling']['outcome'], 'pass')
+        self.assert_dead(int(marker.read_text()))
+
+    def test_attributed_exited_orphan_preserves_sibling(self):
+        # Requirement: an already-attributed zombie cannot execute or escape;
+        # reaping it must not cancel a separate suite. Hold its parent long
+        # enough for attribution, then orphan the exited child (real Linux OS).
+        marker = self.root/'exited-pid'
+        child = f'import os,time; open({str(marker)!r},"w").write(str(os.getpid())); time.sleep(.3)'
+        parent = f'import subprocess,sys,time; subprocess.Popen([sys.executable,"-c",{child!r}]); time.sleep(.8)'
+        p = self.start([command('reaped', parent), command('sibling', 'import time; time.sleep(1.2); print("retained")')])
+        data, _ = self.result(p)
+        self.assertEqual(data['counts'], {'pass': 2, 'fail': 0, 'not-run': 0})
+        self.assert_dead(int(marker.read_text()))
+
     def test_orphan_cannot_report_success(self):
         marker = self.root/'pid'
         child = f'import os,time; open({str(marker)!r},"w").write(str(os.getpid())); time.sleep(60)'

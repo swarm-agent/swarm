@@ -68,32 +68,50 @@ func (r *Runtime) manageWorktreeRecoveryDestination(scope WorkspaceScope, parent
 		}
 		lane = pebblestore.TaskProgramRepositoryLane{SourcePath: asString(parent.Metadata["swarm_v3_source_workspace_path"]), WorkspacePath: parent.WorktreeRootPath, Branch: parent.WorktreeBranch, BaseCommit: asString(parent.Metadata["base_commit"])}
 	} else {
-		authority, ok := r.sessions.(interface {
-			TaskProgramRepositoryLanes(string) ([]pebblestore.TaskProgramRepositoryLane, error)
-		})
-		if !ok {
-			return "", errors.New("durable Task Program repository lane authority unavailable")
-		}
-		lanes, err := authority.TaskProgramRepositoryLanes(parent.ID)
-		if err != nil {
-			return "", err
-		}
-		for _, saved := range lanes {
-			if requested != "" && filepath.Clean(saved.WorkspacePath) == filepath.Clean(requested) {
-				if lane.WorkspacePath != "" && lane != saved {
-					return "", errors.New("ambiguous durable Task Program repository lane")
-				}
-				lane = saved
+		// A prior default remains an owned session lane, not a program lane.
+		history, _ := parent.Metadata["swarm_v3_worktree_history"].([]any)
+		for _, raw := range history {
+			item, ok := raw.(map[string]any)
+			if !ok || requested == "" || filepath.Clean(asString(item["path"])) != filepath.Clean(requested) {
+				continue
 			}
+			if asString(item["owner_session_id"]) != parent.ID || asString(item["base_commit"]) == "" {
+				return "", errors.New("retained session lane ownership or base is incomplete")
+			}
+			candidate := pebblestore.TaskProgramRepositoryLane{SourcePath: asString(item["source_workspace_path"]), WorkspacePath: asString(item["path"]), Branch: asString(item["branch"]), BaseCommit: asString(item["base_commit"])}
+			if lane.WorkspacePath != "" && lane != candidate {
+				return "", errors.New("ambiguous retained session lane")
+			}
+			lane, primaryLane = candidate, true
 		}
-		if lane.BaseCommit == "" {
-			return "", errors.New("durable Task Program repository lane has no captured base")
+		if !primaryLane {
+			authority, ok := r.sessions.(interface {
+				TaskProgramRepositoryLanes(string) ([]pebblestore.TaskProgramRepositoryLane, error)
+			})
+			if !ok {
+				return "", errors.New("durable Task Program repository lane authority unavailable")
+			}
+			lanes, err := authority.TaskProgramRepositoryLanes(parent.ID)
+			if err != nil {
+				return "", err
+			}
+			for _, saved := range lanes {
+				if requested != "" && filepath.Clean(saved.WorkspacePath) == filepath.Clean(requested) {
+					if lane.WorkspacePath != "" && lane != saved {
+						return "", errors.New("ambiguous durable Task Program repository lane")
+					}
+					lane = saved
+				}
+			}
+			if lane.BaseCommit == "" {
+				return "", errors.New("durable Task Program repository lane has no captured base")
+			}
+			if lane.WorkspacePath == "" {
+				return "", errors.New("child destination is not an exact durable parent-owned repository lane")
+			}
+			digest := sha256.Sum256([]byte(parent.ID + "\x00" + lane.SourcePath))
+			seed = "program-lane-" + hex.EncodeToString(digest[:12])
 		}
-		if lane.WorkspacePath == "" {
-			return "", errors.New("child destination is not an exact durable parent-owned repository lane")
-		}
-		digest := sha256.Sum256([]byte(parent.ID + "\x00" + lane.SourcePath))
-		seed = "program-lane-" + hex.EncodeToString(digest[:12])
 	}
 	if !filepath.IsAbs(lane.SourcePath) || !filepath.IsAbs(lane.WorkspacePath) || lane.Branch == "" || filepath.Clean(lane.SourcePath) == filepath.Clean(lane.WorkspacePath) {
 		return "", errors.New("recovery requires a distinct authenticated session-owned parent lane")

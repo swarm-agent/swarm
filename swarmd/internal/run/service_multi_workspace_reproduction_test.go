@@ -308,6 +308,13 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 				t.Fatalf("explicit worker: %q %v", explicit, err)
 			}
 			if managed {
+				// Requirement: returning a worker to the prior source uses its retained
+				// owned lane, never the captured checkout. Target resolution is the
+				// narrowest authority; source/status assertions below prove no mutation.
+				retained, _, err := svc.resolveTaskTargetWorkspace(after, principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: parentPath})
+				if err != nil || retained != before.WorktreeRootPath {
+					t.Fatalf("retained worker lane: %q %v", retained, err)
+				}
 				if after.WorktreeRootPath == before.WorktreeRootPath || mapString(after.Metadata, "swarm_v3_worktree_owner_session_id") != id {
 					t.Fatal("target did not receive an independent owned lane")
 				}

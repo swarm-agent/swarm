@@ -153,9 +153,34 @@ def run(root, jobs, commands, wall=600, stall=120, cap=1048576, heartbeat=15):
             table = snapshot()
             # An orphan adopted before it could be attributed is still ours. Stop
             # it globally; never let a fast double-fork escape cancellation.
-            tracked = {pid for state in active.values() for pid in descendants(state, table)}
+            for state in active.values():
+                descendants(state, table)
+            # Exited, attributed children still belong to their suite until reaped.
+            # Excluding zombies here misclassifies ordinary child teardown as an
+            # escaped double-fork and cancels unrelated concurrent suites.
+            tracked = {pid for state in active.values() for pid, ticks in state['owned'].items()
+                       if pid in table and table[pid][2] == ticks}
             for pid, (parent, status, _ticks) in table.items():
                 if parent == os.getpid() and pid not in active and pid not in tracked:
+                    # Adoption proves ownership; an inherited suite label only
+                    # attributes that already-owned process (e.g. Chrome's
+                    # double-forked crash handler). Never use labels to adopt
+                    # arbitrary host processes. Dead/unlabelled orphans still
+                    # fail closed when no prior identity was recorded.
+                    try:
+                        with open(f'/proc/{pid}/environ', 'rb') as environment:
+                            fields = environment.read(65537)
+                        labels = [field.split(b'=', 1)[1] for field in fields.split(b'\0')
+                                  if field.startswith(b'SWARM_LAUNCH_CASE_ID=')]
+                        matching = [state for state in active.values()
+                                    if labels == [state['id'].encode()]
+                                    and len(fields) <= 65536
+                                    and int(_ticks) >= int(state['owned'].get(state['process'].pid, _ticks))]
+                    except (OSError, ValueError):
+                        matching = []
+                    if len(matching) == 1:
+                        matching[0]['owned'][pid] = _ticks
+                        continue
                     # Attribution was lost during a double-fork. Fail active work
                     # conservatively instead of silently accepting an escaped task.
                     for state in active.values():

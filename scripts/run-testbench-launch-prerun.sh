@@ -28,7 +28,7 @@ Options:
   --attach-only <url>        Reuse this exact loopback Desktop root; no .env or deployment
   --suite attach-inspect     Bounded authenticated read-only connection proof
   --suite workspace-routing  Owned fixture/provider stage (requires SWARM_ATTACH_FIXTURE_PARENT)
-  --suite workspace-workers  Owned worker stage (disabled pending child lifecycle review)
+  --suite workspace-workers  Owned two-worker stage (requires SWARM_ATTACH_FIXTURE_PARENT)
   --suite workspace-safety   Focused local identity/CAS/rooted-I/O/reopen proofs
   --suite workspace-browser  Hermetic picker/reconnect fixture (not full-app proof)
   --wall-seconds <n>         Suite wall deadline (1..600; default: 600)
@@ -61,7 +61,7 @@ Attach-only requires explicit suites and rejects legacy suites that change share
 settings, allocate tunnels, or select ambient sessions. Local safety/browser and
 read-only inspect suites are admitted. Routing requires an explicit reviewed
 SWARM_ATTACH_FIXTURE_PARENT for unique disposable repositories; worker admission
-remains disabled. Later isolated scenarios must be explicitly reviewed
+uses exact task permission matching and terminal child verification. Later isolated scenarios must be explicitly reviewed
 in this same manifest. Authentication stays in process memory. Build and lane
 ownership require separate read-only broker evidence; HTTP 200 is not proof.
 
@@ -191,7 +191,7 @@ if [[ -n "${ATTACH_URL}" ]]; then
   for suite in "${SUITES[@]}"; do
     case "${suite}" in
       workspace-routing) [[ -n "${SWARM_ATTACH_FIXTURE_PARENT:-}" ]] || fail "workspace-routing is not attach-safe without explicit SWARM_ATTACH_FIXTURE_PARENT; no connection or mutation attempted" ;;
-      workspace-workers) fail "workspace-workers is not attach-safe pending owned-child cancellation and exact task permission review; no connection or mutation attempted" ;;
+      workspace-workers) [[ -n "${SWARM_ATTACH_FIXTURE_PARENT:-}" ]] || fail "workspace-workers is not attach-safe without explicit SWARM_ATTACH_FIXTURE_PARENT; no connection or mutation attempted" ;;
       critical|attach-inspect|workspace-safety|workspace-browser) ;; *) fail "suite ${suite} is not attach-safe; no connection or mutation attempted" ;; esac
   done
   [[ -z "${WORKSPACE}${WORKSPACE_PATH}${LINKED_WORKSPACE_PATH}${REMOTE_REPO}${CANDIDATE_ARCHIVE}${CANDIDATE_CHECKSUM}${OMARCHY_GUEST}" ]] || fail "attach-only rejects legacy workspace/deployment overrides"

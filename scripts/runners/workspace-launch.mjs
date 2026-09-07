@@ -27,6 +27,7 @@ export class WorkspaceTrial extends AttachClient {
     this.fixtures = new Map()
     this.activeRuns = new Map()
     this.pendingRuns = new Map()
+    this.workerParents = new Set()
     this.evidence = { trial: this.id, sessions: [], fixtures: [], cases: Array.from({ length: 12 }, (_, i) => ['a','b','c','d'].map(letter => ({ id: `S${String(i + 1).padStart(2, '0')}-${letter}`, status: 'not-run', reason: 'Full must-pass proof not implemented by baseline routing observation' }))).flat(), limitations: [], cleanup: [] }
     this.evidencePath = options.evidencePath
   }
@@ -55,10 +56,18 @@ export class WorkspaceTrial extends AttachClient {
     })
   }
   async repositories(id) {
-    const result = await super.request('GET', `/v3/sessions/${this.owned(id)}/repositories?limit=20`)
-    assert(!result.next_cursor, 'repository inventory truncated; no partial proof')
-    assert(Array.isArray(result.items), 'repository rows missing')
-    return result.items
+    const rows = [], cursors = new Set()
+    let cursor = ''
+    for (let page = 0; page < 8; page++) {
+      const result = await super.request('GET', `/v3/sessions/${this.owned(id)}/repositories?limit=20${cursor ? '&cursor=' + encodeURIComponent(cursor) : ''}`)
+      assert(Array.isArray(result.items), 'repository rows missing')
+      rows.push(...result.items)
+      if (!result.next_cursor) return rows
+      assert(typeof result.next_cursor === 'string' && !cursors.has(result.next_cursor), 'repository cursor repeated')
+      cursor = result.next_cursor
+      cursors.add(cursor)
+    }
+    throw new Error('repository inventory exceeds eight pages; no partial proof')
   }
   async status(id, selected) {
     const rows = await this.repositories(id)
@@ -121,16 +130,17 @@ export class WorkspaceTrial extends AttachClient {
     assert(selected.every(root => inventory.some(row => row.workspace_path === root && row.availability === 'available')), 'proof selector not authenticated')
     assert(files.length <= 4 && files.every(file => /^[a-z][a-z0-9.-]*$/.test(file)), 'proof file names must be bounded basenames')
     const command = proofCommand(selected, files)
-    const { snapshot, runID } = await this.run(id, `Use Bash exactly once with command ${JSON.stringify(command)}, category=read, critical=false, explanation=["Read only the disposable trial repositories."]. Do not run any other tool or mutate files/settings. Do not rewrite the command. Finish after the tool result.`, [{ name: 'bash', args: { command, category: 'read', critical: false, explanation: ['Read only the disposable trial repositories.'] } }])
+    const args = { command, category: 'read', critical: false, explanation: ['Read only the disposable trial repositories.'] }
+    const { snapshot, runID } = await this.run(id, `Call bash exactly once with this complete JSON argument object, including explanation, category and critical: ${JSON.stringify(args)}. Preserve the decoded command bytes exactly. Do not run any other tool or mutate files/settings. If the tool rejects arguments, correct the call rather than claiming completion. After a successful tool result, return the plain text DONE.`, [{ name: 'bash', args }])
     const calls = completedTools(snapshot, id, runID)
     assert(calls.every(({ payload }) => (payload.tool_name || payload.name) === 'bash' && !payload.error), 'unexpected tool in filesystem proof')
     assert.equal(calls.length, 1, 'exactly one Bash proof required')
-    const args = decodeObject(calls[0].payload.arguments)
-    assert.equal(args.command, command, 'proof command changed')
-    const result = decodeObject(calls[0].payload.output)
-    assert.equal(result.exit_code, 0, 'filesystem proof failed')
-    assert(!result.truncated && !result.timed_out, 'filesystem proof truncated')
-    const proof = decodeObject(result.output)
+    const actualArgs = decodeObject(calls[0].payload.arguments)
+    assert.deepEqual(actualArgs, args, 'proof arguments changed')
+    // providerManagedV3ToolEventPayload retains Bash stdout in raw_output;
+    // output is a display summary, not the original Bash result envelope.
+    const proof = decodeObject(calls[0].payload.raw_output)
+    assert.equal(proof.complete, true, 'filesystem proof did not reach its final postcondition')
     assert.deepEqual(proof.repositories.map(row => row.path), selected, 'proof roots differ')
     assert.equal(proof.cwd, this.sessions.get(id).worktree_root_path, 'Bash default cwd differs')
     this.evidence.proofs ||= []
@@ -240,6 +250,24 @@ export class WorkspaceTrial extends AttachClient {
         this.activeRuns.delete(id)
       } catch { this.evidence.cleanup.push({ session: id, run, status: 'unconfirmed; manual owned-run inspection required' }) }
     }
+    // Parent CancelRun cancels the task context; executeTaskLaunchesInParallel
+    // joins its children. Verify durable worker terminal state, never assume it.
+    for (const id of this.workerParents) {
+      try {
+        const original = this.deadline, signal = this.signal
+        this.deadline = cleanup.deadline; this.signal = undefined
+        try {
+          let children
+          do {
+            children = (await this.repositories(id)).filter(row => row.kind === 'worker')
+            if (children.every(row => ['completed', 'failed', 'cancelled', 'blocked', 'needs_review'].includes(row.lifecycle))) break
+            await new Promise(resolve => setTimeout(resolve, 500))
+          } while (performance.now() < cleanup.deadline - 1000)
+          assert(children.every(row => ['completed', 'failed', 'cancelled', 'blocked', 'needs_review'].includes(row.lifecycle)), 'child termination unconfirmed')
+          this.evidence.cleanup.push({ session: id, children: children.map(row => ({ session: row.session_id, state: row.lifecycle })), status: 'children terminal' })
+        } finally { this.deadline = original; this.signal = signal }
+      } catch { this.evidence.cleanup.push({ session: id, status: 'child termination unconfirmed' }); process.exitCode = 1 }
+    }
     await this.persist()
   }
   async unchanged() {
@@ -263,15 +291,37 @@ export function decodeObject(value) {
 export function proofCommand(roots, files) {
   // Only authenticated disposable selectors reach this command. No shell Git
   // hooks, external diff, arbitrary traversal or unbounded repository walks.
-  const code = `import os,json,subprocess,pathlib\nroots=json.loads(${JSON.stringify(JSON.stringify(roots))})\nfiles=json.loads(${JSON.stringify(JSON.stringify(files))})\nrows=[]\nfor root in roots:\n def git(*args):\n  return subprocess.run(['git','-C',root,*args],check=True,capture_output=True,text=True,timeout=3).stdout.strip()\n row={'path':root,'root':git('rev-parse','--show-toplevel'),'common':git('rev-parse','--path-format=absolute','--git-common-dir'),'head':git('rev-parse','HEAD'),'branch':git('branch','--show-current'),'status':git('status','--porcelain'),'files':{}}\n for name in files:\n  p=pathlib.Path(root)/name\n  if p.is_symlink(): raise RuntimeError('symlink proof file')\n  if p.exists():\n   with p.open('rb') as f: data=f.read(4097)\n   if len(data)>4096: raise RuntimeError('proof file exceeds limit')\n   row['files'][name]=data.decode('utf-8')\n  else: row['files'][name]=None\n rows.append(row)\nprint(json.dumps({'cwd':os.getcwd(),'repositories':rows}))`
-  return `python3 -c '${code.replaceAll("'", "'\\''")}'`
+  const code = `import os,json,subprocess,pathlib\nroots=json.loads(${JSON.stringify(JSON.stringify(roots))})\nfiles=json.loads(${JSON.stringify(JSON.stringify(files))})\nrows=[]\nfor root in roots:\n def git(*args):\n  return subprocess.run(['git','-C',root,*args],check=True,capture_output=True,text=True,timeout=3).stdout.strip()\n row={'path':root,'root':git('rev-parse','--show-toplevel'),'common':git('rev-parse','--path-format=absolute','--git-common-dir'),'head':git('rev-parse','HEAD'),'branch':git('branch','--show-current'),'status':git('status','--porcelain'),'files':{}}\n for name in files:\n  p=pathlib.Path(root)/name\n  if p.is_symlink(): raise RuntimeError('symlink proof file')\n  if p.exists():\n   with p.open('rb') as f: data=f.read(4097)\n   if len(data)>4096: raise RuntimeError('proof file exceeds limit')\n   row['files'][name]=data.decode('utf-8')\n  else: row['files'][name]=None\n rows.append(row)\nprint(json.dumps({'complete':True,'cwd':os.getcwd(),'repositories':rows}))`
+  assert(!code.split('\n').includes('SWARM_PROOF'), 'proof delimiter collision')
+  return `python3 <<'SWARM_PROOF'\n${code}\nSWARM_PROOF`
 }
 
 export function completedTools(snapshot, id, runID) {
-  return (snapshot.events_by_session?.[id] || []).filter(event => event.event_type === 'session.tool.completed').map(event => {
-    const payload = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload
-    return { event, payload }
-  }).filter(({ event, payload }) => (event.run_id || payload?.run_id) === runID)
+  // Hydration may manifest older events once the session grows. Canonical tool
+  // messages retain buildV3ProviderManagedToolResultRecord, not assistant prose.
+  const records = new Map()
+  for (const message of snapshot.messages_by_session?.[id] || []) {
+    if (message.role !== 'tool' || message.session_id !== id) continue
+    const record = decodeObject(message.content)
+    if (record.path_id !== 'run.v3.provider-tool-result.v1' || record.type !== 'v3_provider_tool_result' || record.run_id !== runID) continue
+    assert(record.call_id && record.tool_name, 'incomplete canonical tool record')
+    const payload = { ...record }
+    if (record.tool_name === 'bash' && !record.error) {
+      const result = decodeObject(record.output)
+      assert.equal(result.exit_code, 0, 'Bash execution failed')
+      assert(!result.truncated && !result.timed_out && !result.binary_suppressed, 'incomplete Bash output')
+      payload.raw_output = result.output
+    }
+    records.set(record.call_id, { event: message, payload })
+  }
+  for (const event of snapshot.events_by_session?.[id] || []) {
+    if (event.event_type !== 'session.tool.completed') continue
+    const payload = decodeObject(event.payload)
+    if ((event.run_id || payload.run_id) !== runID) continue
+    const key = payload.call_id || payload.tool_instance_id
+    if (!key || !records.has(key)) records.set(key || Symbol(), { event, payload })
+  }
+  return [...records.values()]
 }
 
 export async function routing(trial, parent) {
@@ -333,13 +383,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     assert(process.env.SWARM_TESTBENCH_ATTACH_ONLY === '1', 'attach-only required')
     assert(process.env.SWARM_ATTACH_FIXTURE_PARENT, 'SWARM_ATTACH_FIXTURE_PARENT must name the reviewed disposable fixture parent on the candidate')
     const stage = process.argv[3] || 'routing'
-    if (stage !== 'routing') throw new Error('worker stage disabled: owned child cancellation and exact task-permission review remain required')
+    assert(['routing', 'regular'].includes(stage), 'unsupported reviewed stage')
     await trial.initialize()
-    await routing(trial, process.env.SWARM_ATTACH_FIXTURE_PARENT)
+    if (stage === 'routing') await routing(trial, process.env.SWARM_ATTACH_FIXTURE_PARENT)
+    else await workers(trial, process.env.SWARM_ATTACH_FIXTURE_PARENT, stage)
     process.exitCode = 2 // incomplete must-pass coverage is never a green suite
   } catch (error) {
     // Never print provider/API response bodies.
     trial.evidence.failure = error.code || error.name || 'trial_failure'
+    trial.evidence.failure_location = String(error.stack || '').split('\n').find(line => line.includes('workspace-launch.mjs:'))?.trim() || 'unknown'
     console.error(`workspace-launch: ${trial.evidence.failure}; inspect private evidence and owned sessions`)
     process.exitCode = 1
   } finally {
@@ -353,13 +405,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 
 // Provider-worker stages intentionally share the reviewed fixture/cancellation
 // client, never the legacy runner's model writes or ambient binding selection.
-// Keep disabled admission until owned child cancellation and exact permission
-// review are established; exporting an executable stage is not a live pass.
+// Regular admission requires exact task permissions and terminal child checks.
+// The program stage remains unadmitted; source support is not live evidence.
 export async function workers(trial, parent, kind) {
   assert(['regular', 'program'].includes(kind), 'unsupported worker stage')
   const a = await trial.fixture(parent, 'a'), b = await trial.fixture(parent, 'b')
   const sa = await trial.create(a, kind)
   const session = await trial.attach(sa.id, [a, b], b)
+  // Test-only repository-local identity; never mutate ambient/global Git config.
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'"
+  const command = [a.path, b.path].map(root => `git -C ${quote(root)} config --local user.name 'Swarm Fixture' && git -C ${quote(root)} config --local user.email 'fixture@example.invalid'`).join(' && ')
+  const identityArgs = { command, category: 'update', critical: false, explanation: ['Configure author identity only in the two disposable test repositories.'] }
+  await trial.run(session.id, `Call bash once with this exact argument object: ${JSON.stringify(identityArgs)}. No global settings, commits, or other tools. Return DONE after success.`, [{ name: 'bash', args: identityArgs }])
   const before = await trial.prove(session.id, [a.path, b.path, sa.worktree_root_path, session.worktree_root_path], ['left.txt', 'right.txt'])
   const markers = { 'left.txt': `${a.marker}\n`, 'right.txt': `${b.marker}\n`, 'check.txt': 'verified\n' }
   const assignment = (file, source) => ({
@@ -386,7 +443,8 @@ export async function workers(trial, parent, kind) {
       jobs: [{ ...left, id: 'left', stage_id: 'write' }, { ...right, id: 'right', stage_id: 'write' }, { ...later, id: 'verify', stage_id: 'verify', depends_on: ['left', 'right'] }],
     } }
   }
-  const { snapshot, runID } = await trial.run(session.id, `Call task exactly once using this complete request: ${JSON.stringify(request)}. Do not change assignments, reduce jobs, approve permissions, retry failed workers or change settings. After return, stop and report the exact task outcome. No other tool.`)
+  trial.workerParents.add(session.id)
+  const { snapshot, runID } = await trial.run(session.id, `Call task exactly once using this complete request: ${JSON.stringify(request)}. Do not change assignments, reduce jobs, approve permissions, retry failed workers or change settings. After return, stop and report the exact task outcome. No other tool.`, [{ name: 'task', args: request }])
   const calls = completedTools(snapshot, session.id, runID).filter(({ payload }) => (payload.tool_name || payload.name) === 'task')
   assert.equal(calls.length, 1, 'one task completion required')
   assert(!calls[0].payload.error, 'task failed')
@@ -401,7 +459,12 @@ export async function workers(trial, parent, kind) {
     for (const source of [a.path, b.path]) {
       const child = children.find(row => row.source_path === source)
       assert(child, 'missing repository-specific child')
-      await trial.run(session.id, `Use manage-worktree integrate for only session_ids=${JSON.stringify([child.session_id])}, workspace_path=${JSON.stringify(source)}. Integrate only into this session's owned lane; never promote or advance the captured checkout. Do not commit dirty work, retry, change settings, or run other tools.`)
+      const args = { action: 'integrate', session_ids: [child.session_id], workspace_path: source }
+      const integrated = await trial.run(session.id, `Call manage-worktree exactly once with ${JSON.stringify(args)}. Integrate only into this session's owned lane; never promote or advance the captured checkout. Do not commit dirty work, retry, change settings, or run other tools.`, [{ name: 'manage-worktree', args }])
+      const completions = completedTools(integrated.snapshot, session.id, integrated.runID)
+      assert.equal(completions.length, 1, 'one integration completion required')
+      assert.equal(completions[0].payload.tool_name, 'manage-worktree')
+      assert(!completions[0].payload.error, 'integration tool failed')
     }
   }
   const after = await trial.prove(session.id, [a.path, b.path, sa.worktree_root_path, session.worktree_root_path], ['left.txt', 'right.txt', 'check.txt'])
