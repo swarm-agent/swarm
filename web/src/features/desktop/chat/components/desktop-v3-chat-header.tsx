@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { SessionAttachments } from './session-attachments'
 import { Archive, Clipboard, Download, Film, LoaderCircle, MessageSquare, MessageSquareText, MoreVertical, Pin } from 'lucide-react'
 import { DesktopV3RunStatusPill, formatDesktopV3RunTimerLabel, type DesktopV3RunStatusModel } from './desktop-v3-run-status'
 
@@ -16,6 +17,8 @@ export interface DesktopV3ChatHeaderSessionActions {
 export interface DesktopV3ChatHeaderProps {
   title: string
   workspaceName: string
+  sessionId?: string
+  workspaceRevision?: number
   branchName?: string
   modelLabel?: string
   runStatus?: DesktopV3RunStatusModel | null
@@ -44,6 +47,8 @@ function normalizeBranchName(value: string | undefined): string {
 export function DesktopV3ChatHeader({
   title,
   workspaceName,
+  sessionId,
+  workspaceRevision,
   branchName,
   modelLabel,
   runStatus = null,
@@ -56,10 +61,10 @@ export function DesktopV3ChatHeader({
   hideMobileIdentity = false,
 }: DesktopV3ChatHeaderProps) {
   const displayTitle = normalizeTitle(title)
-  const displayWorkspace = normalizeWorkspaceName(workspaceName)
+  const displayWorkspace = sessionId ? 'Session workspaces' : normalizeWorkspaceName(workspaceName)
   const displayBranch = normalizeBranchName(branchName)
   const resolvedModelLabel = modelLabel?.trim() ?? ''
-  const resolvedHeaderDetails = [displayBranch, resolvedModelLabel].filter(Boolean).join(' · ')
+  const resolvedHeaderDetails = [displayBranch ? `Runtime: ${displayBranch}` : '', resolvedModelLabel].filter(Boolean).join(' · ')
   const [liveRunStatusNow, setLiveRunStatusNow] = useState(() => Date.now())
   const runStatusNow = controlledRunStatusNow ?? liveRunStatusNow
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
@@ -177,7 +182,7 @@ export function DesktopV3ChatHeader({
             {resolvedHeaderDetails ? (
               <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]" title={resolvedHeaderDetails}>
                 {displayBranch ? (
-                  <span className="truncate" data-testid="desktop-v3-git-branch">{displayBranch}</span>
+                  <span className="truncate" data-testid="desktop-v3-git-branch">Runtime: {displayBranch}</span>
                 ) : null}
                 {displayBranch && resolvedModelLabel ? <span aria-hidden="true">·</span> : null}
                 {resolvedModelLabel ? (
@@ -188,6 +193,7 @@ export function DesktopV3ChatHeader({
           </div>
         </div>
 
+        {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} revision={workspaceRevision} /> : null}
         <div className="hidden sm:block">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
         </div>
