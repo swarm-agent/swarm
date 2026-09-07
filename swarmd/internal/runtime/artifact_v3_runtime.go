@@ -1280,8 +1280,8 @@ func (r artifactV3AnimationRenderer) Preflight(ctx context.Context, input artifa
 	if err != nil {
 		return err
 	}
-	_, err = r.renderer.PreflightAnimation(ctx, request)
-	return err
+	result, err := r.renderer.PreflightAnimation(ctx, request)
+	return htmlcapture.WithAnimationDiagnostics(err, result.Diagnostics)
 }
 
 func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv3video.RenderRequest) (artifactv3video.RenderResult, error) {
@@ -1291,7 +1291,7 @@ func (r artifactV3AnimationRenderer) Render(ctx context.Context, input artifactv
 	}
 	result, err := r.renderer.RenderAnimation(ctx, request)
 	if err != nil {
-		return artifactv3video.RenderResult{}, err
+		return artifactv3video.RenderResult{}, htmlcapture.WithAnimationDiagnostics(err, result.Diagnostics)
 	}
 	if result.DurationMS <= 0 || result.FPS <= 0 || result.FrameCount <= 0 {
 		return artifactv3video.RenderResult{}, errors.New("Artifact V3 animation renderer returned incomplete timing evidence")
