@@ -800,3 +800,12 @@ Focused identity-transition and recovery tests passed twice; corrected product
 bytes still require candidate rebuild and live rerun. Worker cleanup verifies
 terminal durable child lifecycle after parent cancellation; program admission
 remains disabled. No full matrix or release approval is implied.
+
+The first corrected live candidate also exposed child metadata conflating the
+retained target lane with its captured source. `prepareDelegatedSubagentLaunchWithProfile`
+now preserves the history-recorded source separately from the integration target;
+the repository API still requires an exact saved source. The focused allocation
+and identity tests passed twice after correcting isolated test fixture setup.
+The supervised critical invocation still reproduced `unattributed_descendant`;
+the required bounded direct fast gate passed. This supervisor gap is retained,
+not counted as a passing supervised gate.

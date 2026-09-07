@@ -1463,6 +1463,13 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if sameTaskProgramPath(targetWorkspacePath, parentSession.WorktreeRootPath) && parentSession.WorktreeEnabled {
 		childMetadata["swarm_v3_source_workspace_path"] = mapString(parentSession.Metadata, "swarm_v3_source_workspace_path")
 	}
+	if parentSession.WorktreeEnabled {
+		for _, item := range sessionWorktreeHistory(parentSession.Metadata["swarm_v3_worktree_history"]) {
+			if sameTaskProgramPath(targetWorkspacePath, mapString(item, "path")) && mapString(item, "owner_session_id") == parentSession.ID {
+				childMetadata["swarm_v3_source_workspace_path"] = mapString(item, "source_workspace_path")
+			}
+		}
+	}
 	if childWorkspacePath != "" {
 		childMetadata["swarm_v3_runtime_workspace_path"] = childWorkspacePath
 	}

@@ -6161,3 +6161,5 @@ ta-scope-delivery-prompt	go-test	swarmd/internal/run/service_task_owned_scope_de
 # source_sha256 tests/scripts/workspace_launch_test.mjs 0f6e4d286cd59f924f65c97761454be5c140d22be356d93f3a48c2796dc8c184
 # source_sha256 swarmd/internal/run/service_multi_workspace_reproduction_test.go 383e713128a46348d94dcc743cdace2b1f43f30c0fff76cec2c3bd13a36c9c09
 # source_sha256 swarmd/internal/tool/runtime_manage_worktree_recovery_test.go e2793c794c58b7842fae4ac8ea7ab07dcf6932b565968c7ba60be95ab485690e
+# Retained source metadata regression: TestApprovedCoderAllocatesFromSelectedSharedWorkspace and TestMultiWorkspaceIdentityTransitions count=2 passed; fixture nil-map and allocation-collision failures repaired, not hidden. Independent review pending.
+# source_sha256 swarmd/internal/run/service_task_launch_test.go fdf4dae5ee411c53ac2eff34533bcfe0f9e2bf1e08d02c46b591975fca03eae8 supersedes previous digest verdict reliance.
