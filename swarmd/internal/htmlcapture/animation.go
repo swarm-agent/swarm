@@ -71,7 +71,10 @@ type AnimationRequest struct {
 	OutputFPS           int
 	Quality             AnimationQuality
 	RequireLivePlayback bool
-	Progress            func(AnimationProgress)
+	// Native V3 timing is server-declared; its authored runtime may acknowledge
+	// readiness with true rather than duplicate the server timing metadata.
+	AllowBooleanReady bool
+	Progress          func(AnimationProgress)
 }
 
 // AnimationBounds uses CSS pixel coordinates in the fixed 1920x1080 viewport.
@@ -655,7 +658,7 @@ if (ack && typeof ack.__swarm_outcome==="string") {
 }
 const finalLifecycle=bootstrap.lifecycle;
 if (finalLifecycle.filter(item=>item==="bound").length!==1||finalLifecycle[0]!=="bind_claimed") return {code:"animation_bootstrap_missing",outcome:"lifecycle_invalid",lifecycle:finalLifecycle};
-if (!ack || Object.keys(ack).length!==2 || ack.duration_ms!==%d || ack.fps!==%d) return {code:"animation_manifest_mismatch",outcome:"manifest_mismatch",lifecycle:finalLifecycle};
+if (!(ack===true && %t) && (!ack || Object.keys(ack).length!==2 || ack.duration_ms!==%d || ack.fps!==%d)) return {code:"animation_manifest_mismatch",outcome:"manifest_mismatch",lifecycle:finalLifecycle};
 if (%t) {
   await new Promise(resolve=>setTimeout(resolve,50));
   if (bootstrap.live_frame_requests<2 || bootstrap.live_frame_callbacks<1) return {code:"animation_playback_missing",outcome:"live_playback_missing",lifecycle:finalLifecycle};
@@ -672,7 +675,7 @@ const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const style=document.createElement('style'); style.setAttribute('data-swarm-renderer-style','animation-v1'); style.textContent='*,*::before,*::after{scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:1920px!important;height:1080px!important;max-width:1920px!important;max-height:1080px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok",outcome:"ready",lifecycle:finalLifecycle};
-})()`, AnimationVersion, req.DurationMS, req.FPS, req.RequireLivePlayback)
+})()`, AnimationVersion, req.AllowBooleanReady, req.DurationMS, req.FPS, req.RequireLivePlayback)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, awaitPromise)); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			diagnostic := AnimationDiagnostic{Stage: "readiness", Outcome: "ready_timeout"}
