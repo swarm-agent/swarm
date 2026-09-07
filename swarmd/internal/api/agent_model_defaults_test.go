@@ -33,6 +33,10 @@ func TestRestoreAgentModelDefaultsAccountBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := pebblestore.NewAgentModelSettingsStore(db)
 	original := testAgentModelSettingsRecord("account-one")
 	original.Swarm.Action.ContextMode = "full"
@@ -63,7 +67,7 @@ func TestRestoreAgentModelDefaultsAccountBoundary(t *testing.T) {
 		}
 		return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
 	})
-	server := &Server{model: model.NewService(pebblestore.NewModelStore(db), nil, catalog), agentModelSettingsStore: store,
+	server := &Server{model: model.NewService(pebblestore.NewModelStore(db), events, catalog), agentModelSettingsStore: store,
 		providers: registry.New(testProviderAdapter{status: provideriface.Status{ID: "codex", Ready: true}})}
 	server.SetAgentModelSettingsService(agentmodelsettings.NewService(store))
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-one", AccountScopeID: "account-one"}
@@ -89,7 +93,7 @@ func TestRestoreAgentModelDefaultsAccountBoundary(t *testing.T) {
 		t.Fatal("failed restore changed assignments")
 	}
 	// First onboarding must stop before persisting recommendations on refresh failure.
-	server.agents = agent.NewService(pebblestore.NewAgentStore(db), nil)
+	server.agents = agent.NewService(pebblestore.NewAgentStore(db), events)
 	if _, err := server.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount("account-new", "user-new", "codex"); err == nil {
 		t.Fatal("onboarding ignored refresh failure")
 	}
@@ -108,6 +112,17 @@ func TestRestoreAgentModelDefaultsAccountBoundary(t *testing.T) {
 	}
 	server.providers = registry.New(testProviderAdapter{status: provideriface.Status{ID: "codex", Ready: true}})
 	call(principal, 123, 200)
+	// Purpose: exercise the actual first-onboarding hydration boundary against
+	// the embedded snapshot after a fake successful freshness check. Its Codex
+	// Auto recommendation is Astra/medium, despite legacy Sol model tags.
+	status, err := server.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount("account-new", "user-new", "codex")
+	if err != nil || status == nil || !status.Applied {
+		t.Fatalf("fresh onboarding failed: %+v %v", status, err)
+	}
+	fresh, found, err := store.GetForAccount("account-new")
+	if err != nil || !found || fresh.Swarm.Action.Model != "gpt-6-astra" || fresh.Swarm.Action.Thinking != "medium" || fresh.Swarm.Plan.Model != "gpt-6-astra" || fresh.Swarm.Plan.Thinking != "xhigh" {
+		t.Fatalf("fresh onboarding ignored snapshot recommendations: %+v %v", fresh, err)
+	}
 	got, _, _ = store.GetForAccount("account-one")
 	recs, ok, err := catalog.RecommendedRoleDefaults("codex", "auto")
 	if err != nil || !ok {
