@@ -6,7 +6,7 @@ import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, Mo
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
 import { displayAgentName } from '../services/agent-display'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
-import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
+import { restoreAgentModelDefaults, saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
 import type { AgentModelAssignment, AgentModelSettings, SystemAgentModelName } from '../../settings/swarm/types/agent-model-settings'
 import { createModelProfile, deleteModelProfile, invalidateModelProfiles, updateModelProfile } from '../queries/model-profile-queries'
 
@@ -524,6 +524,21 @@ export function AgentModelControl({
     return value
   }
 
+  async function restoreModelDefaults() {
+    const settings = agentModelSettingsQuery.data
+    if (!settings || saving || busy) return
+    if (!window.confirm('Restore current recommendations for Action, Plan and all system agents? Providers are kept. Model, thinking, service tier and context overrides are reset. Credentials, favorites and existing sessions are unchanged.')) return
+    setSaving(true)
+    setError(null)
+    try {
+      const restored = await restoreAgentModelDefaults(settings.updatedAt)
+      queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, restored)
+      setOpen(false)
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Model defaults were not restored.')
+    } finally { setSaving(false) }
+  }
+
   async function saveSwarmModels() {
     const action = validateDraft('Swarm Action', actionDraft)
     const plan = validateDraft('Swarm Plan', planDraft)
@@ -952,6 +967,7 @@ export function AgentModelControl({
                 <ModelDraftEditor className="mt-4" title={`${draftProfile ? displayAgentName(draftProfile.name) : 'Agent'} model`} draft={singleDraft} providers={providers} modelOptions={modelOptions} onProviderChange={(provider) => updateProvider(setSingleDraft, provider)} onModelChange={(model) => updateModel(setSingleDraft, model)} onThinkingChange={(thinking) => setSingleDraft((current) => ({ ...current, thinking }))} onServiceTierChange={(serviceTier) => setSingleDraft((current) => ({ ...current, serviceTier }))} showServiceTier />
               </>
             )}
+            <button type="button" disabled={busy || saving || !agentModelSettingsQuery.data} onClick={() => { void restoreModelDefaults() }} className="mt-4 rounded-lg border border-[var(--app-border)] px-3 py-2 text-xs text-[var(--app-text-muted)] disabled:opacity-60">Restore recommended model defaults</button>
             {error ? <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-sm text-[var(--app-danger)]">{error}</div> : null}
           </section>
         </div>

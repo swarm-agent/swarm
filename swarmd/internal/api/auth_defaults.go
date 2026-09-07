@@ -34,6 +34,13 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 		return nil, fmt.Errorf("read onboarding agent model settings: %w", settingsErr)
 	}
 
+	if err := s.refreshModelCatalogForOnboardingDefaults(); err != nil {
+		return nil, err
+	}
+	before, _, err := s.model.CatalogMeta()
+	if err != nil {
+		return nil, err
+	}
 	providerID, providerDefaults, ok, err := s.resolveOnboardingModelProvider(activatedProvider)
 	if err != nil {
 		return nil, err
@@ -47,6 +54,13 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	}
 	if !ok {
 		return nil, fmt.Errorf("missing required snapshot system-agent recommendations for provider %q", providerID)
+	}
+	after, _, err := s.model.CatalogMeta()
+	if err != nil {
+		return nil, err
+	}
+	if before.SnapshotID != after.SnapshotID || before.SnapshotVersion != after.SnapshotVersion || before.FetchedAt != after.FetchedAt {
+		return nil, errors.New("catalog changed while resolving onboarding defaults; retry")
 	}
 	// The complete record is installed in one synced store write so a partial
 	// Action/Plan or system-agent assignment set is never externally visible.
@@ -92,8 +106,8 @@ func (s *Server) refreshModelCatalogForOnboardingDefaults() error {
 	if err != nil {
 		return fmt.Errorf("read model catalog metadata: %w", err)
 	}
-	if ok && strings.TrimSpace(meta.LiveSnapshotVersion) != "" {
-		if meta.ExpiresAt <= 0 || meta.ExpiresAt > time.Now().UnixMilli() {
+	if ok && strings.TrimSpace(meta.LiveSnapshotVersion) != "" && meta.LiveSnapshotVersion == meta.SnapshotVersion && meta.LiveSnapshotID == meta.SnapshotID && meta.LastError == "" && !meta.UsingCacheFallback {
+		if meta.ExpiresAt > time.Now().UnixMilli() {
 			return nil
 		}
 	}

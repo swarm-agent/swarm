@@ -46,3 +46,11 @@ export function saveSystemAgentModelSettings(input: SystemAgentModelSettingsPatc
     },
   })
 }
+
+export async function restoreAgentModelDefaults(expectedUpdatedAt: number): Promise<AgentModelSettings> {
+  return parseAgentModelSettings(await requestJson<unknown>('/v1/agent-model-settings/restore-defaults', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_updated_at: expectedUpdatedAt }),
+  }))
+}

@@ -194,6 +194,10 @@ func (s *AgentModelSettingsStore) UpdateSystemAgentForAccount(accountScopeID, na
 }
 
 func (s *AgentModelSettingsStore) updateForAccount(accountScopeID string, mutate func(*AgentModelSettingsRecord)) (AgentModelSettingsRecord, error) {
+	return s.updateCheckedForAccount(accountScopeID, func(record *AgentModelSettingsRecord) error { mutate(record); return nil })
+}
+
+func (s *AgentModelSettingsStore) updateCheckedForAccount(accountScopeID string, mutate func(*AgentModelSettingsRecord) error) (AgentModelSettingsRecord, error) {
 	if s == nil || s.store == nil {
 		return AgentModelSettingsRecord{}, ErrAgentModelSettingsStoreNotConfigured
 	}
@@ -218,7 +222,9 @@ func (s *AgentModelSettingsStore) updateForAccount(accountScopeID string, mutate
 	} else {
 		return AgentModelSettingsRecord{}, ErrAgentModelSettingsNotFound
 	}
-	mutate(&record)
+	if err := mutate(&record); err != nil {
+		return AgentModelSettingsRecord{}, err
+	}
 	record = normalizeAgentModelSettingsRecord(record)
 	if err := validateAgentModelSettingsRecord(record); err != nil {
 		return AgentModelSettingsRecord{}, err

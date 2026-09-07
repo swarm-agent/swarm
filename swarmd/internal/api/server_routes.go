@@ -40,6 +40,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 
 func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(AgentModelSettingsPath, s.handleAgentModelSettings)
+	mux.HandleFunc(AgentModelSettingsPath+"/restore-defaults", s.handleRestoreAgentModelDefaults)
 	mux.HandleFunc("/v1/swarm/targets", s.handleSwarmTargets)
 	mux.HandleFunc("/v1/swarm/target/current", s.handleSwarmCurrentTarget)
 	mux.HandleFunc("/v1/swarm/target/select", s.handleSwarmSelectTarget)
