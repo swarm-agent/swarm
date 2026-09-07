@@ -119,6 +119,7 @@ type TaskIntegrationEntry struct {
 }
 
 type TaskIntegrationPlan struct {
+	FastForwardHead          string                 `json:"fast_forward_head,omitempty"`
 	ParentBranch             string                 `json:"parent_branch"`
 	ParentHead               string                 `json:"parent_head"`
 	Entries                  []TaskIntegrationEntry `json:"entries"`
@@ -598,6 +599,23 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 		})
 		plan.Commits = append(plan.Commits, commits...)
 	}
+	// Whole-lane promotion may already contain the target, including an explicit
+	// conflict-resolution merge. Replaying its earlier patches would discard that
+	// resolution. Keep scoped children and multi-child batches on the replay path.
+	if len(plan.Entries) == 1 && len(plan.Entries[0].OwnedScopes) == 0 && plan.Entries[0].HeadCommit != plan.ParentHead {
+		descends, err := s.TaskCommitDescendsFrom(parentPath, plan.ParentHead, plan.Entries[0].HeadCommit)
+		if err != nil {
+			return TaskIntegrationPlan{}, err
+		}
+		merges, err := runGit(parentPath, "rev-list", "--merges", "-n", "1", plan.ParentHead+".."+plan.Entries[0].HeadCommit)
+		if err != nil {
+			return TaskIntegrationPlan{}, err
+		}
+		if descends && merges != "" {
+			plan.FastForwardHead = plan.Entries[0].HeadCommit
+			return plan, nil
+		}
+	}
 	if err := preflightCherryPick(parentPath, plan.ParentHead, plan.Entries); err != nil {
 		return TaskIntegrationPlan{}, err
 	}
@@ -618,8 +636,14 @@ func (s *Service) ApplyTaskIntegration(parentPath string, plan TaskIntegrationPl
 	if err != nil {
 		return TaskIntegrationResult{}, err
 	}
-	if strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
+	if current.FastForwardHead != plan.FastForwardHead || strings.Join(current.Commits, "\x00") != strings.Join(plan.Commits, "\x00") {
 		return TaskIntegrationResult{}, errors.New("integration manifest became stale")
+	}
+	if current.FastForwardHead != "" {
+		if _, err := runGitWithEnv(parentPath, gitenv.FilterIdentityOverrides(os.Environ()), "merge", "--ff-only", "--no-edit", current.FastForwardHead); err != nil {
+			return TaskIntegrationResult{TaskIntegrationPlan: current}, fmt.Errorf("fast-forward integration failed: %w", err)
+		}
+		return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: current.FastForwardHead}, nil
 	}
 	if len(current.Commits) == 0 {
 		return TaskIntegrationResult{TaskIntegrationPlan: current, ResultingParentHead: current.ParentHead}, nil
