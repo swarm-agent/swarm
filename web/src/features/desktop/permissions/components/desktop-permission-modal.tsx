@@ -1644,7 +1644,7 @@ function SessionDeployModal({
       ...proposal.manifest,
       title: proposal.title.trim(),
       prompt: proposal.prompt.trim(),
-      mode: proposal.mode,
+      mode: 'auto',
       agent_name: proposal.agentName,
       agent_mode: proposal.agentMode,
       managed_worktree: proposal.managedWorktree,
@@ -1705,7 +1705,7 @@ function SessionDeployModal({
               </label>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <SessionDeployField label="Title"><input value={proposal.title} onChange={(event) => updateProposal(proposal.id, { title: event.target.value })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')} placeholder="New session" /></SessionDeployField>
-                <SessionDeployField label="Mode"><select value={proposal.mode} onChange={(event) => updateProposal(proposal.id, { mode: event.target.value as 'plan' | 'auto' })} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}><option value="auto">Auto</option><option value="plan">Plan</option></select></SessionDeployField>
+                <SessionDeployField label="Mode"><div className="text-sm text-[var(--app-text)]">Auto — switch to Plan manually after deployment.</div></SessionDeployField>
                 <SessionDeployField label="Allowed agent"><select value={proposal.agentName} title={proposal.agentName} onChange={(event) => { const agent = payload.allowedAgents.find((candidate) => candidate.name === event.target.value); if (agent) updateProposal(proposal.id, { agentName: agent.name, agentMode: agent.mode }) }} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)]')}>{payload.allowedAgents.map((agent) => <option key={`${agent.mode}:${agent.name}`} value={agent.name}>{agent.name} ({agent.mode})</option>)}</select></SessionDeployField>
                 <SessionDeployField label="Workspace"><select value={proposal.workspacePath} title={proposal.workspaceName || proposal.workspacePath} disabled={payload.allowedWorkspaces.length === 0} onChange={(event) => { const workspace = payload.allowedWorkspaces.find((candidate) => candidate.path === event.target.value); if (workspace) updateProposal(proposal.id, { workspacePath: workspace.path, workspaceName: workspace.name, manifest: { ...proposal.manifest, workspace_id: workspace.id, workspace_generation: workspace.generation, workspace_path: workspace.path, workspace_name: workspace.name } }) }} className={cn(SESSION_DEPLOY_CONTROL_CLASS, 'bg-[var(--app-bg-alt)] disabled:opacity-50')}>{payload.allowedWorkspaces.length === 0 ? <option value="">No saved workspaces</option> : payload.allowedWorkspaces.map((workspace) => <option key={`${workspace.id}:${workspace.generation}`} value={workspace.path}>{workspace.name || workspace.path}</option>)}</select></SessionDeployField>
               </div>
