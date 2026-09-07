@@ -2840,32 +2840,24 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			}
 			input = append(input, sessionsV3ProviderAssistantInputItem(stepText))
 		}
-		toolResults := make([]provideriface.ToolExecutionResult, 0, len(response.FunctionCalls))
-		restartAfterTools := false
-		permissionWaited := false
-		for _, call := range response.FunctionCalls {
+		toolResults, restartAfterTools, permissionWaited, batchErr := executeSessionV3ToolBatch(response.FunctionCalls, func(call provideriface.FunctionCall) (provideriface.ToolExecutionResult, error) {
 			if job.activity != nil {
 				job.activity.toolActive.Store(true)
 			}
 			if identicalCount, key := identicalCalls.Observe(call); identicalCount >= sessionV3ProviderIdenticalToolCallLimit {
-				return sessionV3ProviderLoopResult{}, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
+				return provideriface.ToolExecutionResult{}, fmt.Errorf("v3 provider repeated identical tool call %d times: %s", sessionV3ProviderIdenticalToolCallLimit, key)
 			}
 			result, err := toolInvoker.ExecuteTool(ctx, provideriface.ToolInvocation{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name), Arguments: strings.TrimSpace(call.Arguments), Metadata: cloneSessionsV3Metadata(call.Metadata)})
 			if job.activity != nil {
 				job.activity.toolActive.Store(false)
 				job.activity.touch()
 			}
-			if err != nil {
-				return sessionV3ProviderLoopResult{}, err
-			}
-			if result.RestartTurn {
-				restartAfterTools = true
-			}
-			if result.PermissionWaitMS > 0 {
-				permissionWaited = true
-			}
-			toolResults = append(toolResults, result)
+			return result, err
+		})
+		if batchErr != nil {
+			return sessionV3ProviderLoopResult{}, batchErr
 		}
+		response.FunctionCalls = response.FunctionCalls[:len(toolResults)]
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
 		input = append(input, sessionsV3ProviderToolMediaInputItems(toolResults)...)
 		guardCompactHandoff := ""

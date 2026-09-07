@@ -201,7 +201,10 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, err := svc.providerManagedWorkspaceContext(providerToolInvokerConfig{sessionID: id, workspacePath: beforeScope.PrimaryPath}, principal)
+			if _, err := svc.providerManagedWorkspaceContext(providerToolInvokerConfig{sessionID: id, workspacePath: beforeScope.PrimaryPath}, principal); err == nil {
+				t.Fatal("stale provider step silently retargeted after workspace mutation")
+			}
+			ctx, err := svc.providerManagedWorkspaceContext(providerToolInvokerConfig{sessionID: id, workspacePath: afterScope.PrimaryPath}, principal)
 			if err != nil || ctx.WorkspacePath != afterScope.PrimaryPath {
 				t.Fatalf("provider context rehydration: %+v %v", ctx, err)
 			}

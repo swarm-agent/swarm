@@ -191,6 +191,10 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 type providerToolInvoker struct {
 	service *Service
 	config  providerToolInvokerConfig
+	// One provider step owns one invoker. Serialize calls across a restart so
+	// no adapter can continue a stale step after changing workspace authority.
+	mu              sync.Mutex
+	restartRequired bool
 }
 
 func (s *Service) newProviderToolInvoker(config providerToolInvokerConfig) provideriface.ToolInvoker {
@@ -212,6 +216,11 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 		return provideriface.ToolExecutionResult{}, errors.New("provider tool invoker is not configured")
 	}
 
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.restartRequired {
+		return provideriface.ToolExecutionResult{}, errors.New("provider tool step requires restart before further execution")
+	}
 	call := tool.Call{
 		CallID:    strings.TrimSpace(invocation.CallID),
 		Name:      strings.TrimSpace(invocation.Name),
@@ -233,6 +242,9 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 	}
 
 	restartTurn := providerManagedToolRequiresTurnRestart(call, result)
+	if restartTurn {
+		i.restartRequired = true
+	}
 	if restartTurn && providerManagedToolResultIsTerminalPlan(call, result) {
 		i.config.terminalPlanState.MarkTerminal()
 	}
@@ -270,6 +282,9 @@ func (s *Service) providerManagedWorkspaceContext(config providerToolInvokerConf
 	if identityAvailable {
 		if _, err := s.syncWorkspaceScopeFromSession(session, principal, &workspaceCtx); err != nil {
 			return runWorkspaceContext{}, err
+		}
+		if captured := strings.TrimSpace(config.workspacePath); captured != "" && filepath.Clean(captured) != filepath.Clean(workspaceCtx.WorkspacePath) {
+			return runWorkspaceContext{}, errors.New("provider workspace authority changed; restart and rehydrate before executing tools")
 		}
 		return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
 	}
@@ -524,6 +539,9 @@ func (s *Service) providerManagedVideoStudioImageGeneration(config providerToolI
 }
 
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
+	if strings.TrimSpace(result.Error) != "" {
+		return false
+	}
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
 		return false
