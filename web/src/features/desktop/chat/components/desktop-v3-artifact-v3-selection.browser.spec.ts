@@ -43,7 +43,7 @@ test('native narration preview selection is exact, sandboxed and intent-only', {
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<html><body><div id="root"></div></body></html>' })
       if (url.pathname.includes('/preview/access/token')) {
         const config = { revision_ref: url.searchParams.get('revision'), parts: parts.map((part) => ({ id: part.id, selector: part.locator.value })), part_ids: parts.map((part) => part.id) }
-        return route.fulfill({ contentType: 'text/html', body: `<html><head><script>${script.replace('__SWARM_ARTIFACT_V3_SELECTION_CONFIG__', JSON.stringify(config))}</script></head><body><section id="scene"><p id="narration-one"><strong>First narration</strong></p><p id="visual-one">Visual only</p><div style="height:1100px"></div><p id="narration-two"><span>Second narration</span></p></section></body></html>` })
+        return route.fulfill({ contentType: 'text/html', body: `<html><head><script>${script.replace('__SWARM_ARTIFACT_V3_SELECTION_CONFIG__', JSON.stringify(config))}</script></head><body><section id="scene"><button id="play" onclick="this.textContent='Paused'">Play</button><p id="narration-one"><strong>First narration</strong></p><p id="visual-one">Visual only</p><div style="height:1100px"></div><p id="narration-two"><span>Second narration</span></p></section></body></html>` })
       }
       if (url.pathname.endsWith('/preview/access')) return route.fulfill({ json: { ok: true, preview_url: `/v3/sessions/parent/artifacts-v3/artifact/preview/access/token?revision=${request.postDataJSON().revision_ref}` } })
       if (request.method() !== 'GET') mutations.push(url.pathname)
@@ -55,6 +55,11 @@ test('native narration preview selection is exact, sandboxed and intent-only', {
     await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
     const frame = page.frameLocator('[data-artifact-v3-complete-preview]')
     const button = (id: string) => page.locator(`[data-artifact-v3-part="${id}"]`)
+    // Authored playback controls inside a Part keep their click handler and do
+    // not become selection intent (production selection capture listener).
+    await frame.locator('#play').click()
+    assert.equal(await frame.locator('#play').textContent(), 'Paused')
+    assert.equal(await button('scene').getAttribute('aria-pressed'), 'false')
     await frame.locator('#narration-one strong').click()
     await page.waitForFunction(() => document.querySelector('[data-artifact-v3-part="narration-one"]')?.getAttribute('aria-pressed') === 'true')
     assert.equal(await button('scene').getAttribute('aria-pressed'), 'false')
@@ -106,6 +111,11 @@ test('native narration preview selection is exact, sandboxed and intent-only', {
     await page.locator(`[data-artifact-v3-revision="${prior.commit_oid}"]`).click()
     await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === '0 selected')
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)
+    // Authored playback controls inside a Part keep their click handler and do
+    // not become selection intent (production selection capture listener).
+    await frame.locator('#play').click()
+    assert.equal(await frame.locator('#play').textContent(), 'Paused')
+    assert.equal(await button('scene').getAttribute('aria-pressed'), 'false')
     await frame.locator('#narration-one strong').click()
     await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === '1 selected')
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)

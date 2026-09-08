@@ -32,6 +32,8 @@
     }
   });
   document.addEventListener('click', (event) => {
+    // Selection must not swallow authored playback controls nested in Parts.
+    if (event.composedPath().some((element) => element instanceof Element && element.matches('button, input, select, textarea, a, [role="button"], [contenteditable], [data-swarm-capture-ui]'))) return;
     // Walk inside-out so narration wins over a declared enclosing scene.
     for (const element of event.composedPath()) {
       if (!(element instanceof Element)) continue;
