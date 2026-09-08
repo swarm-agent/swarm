@@ -1986,5 +1986,15 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3ExactDraft(ctx context.Contex
 	repository.Drafts = map[string]pebblestore.ArtifactV3DraftProjection{draft.GrantID: draft}
 	public, _, err := artifactV3PublicDraft(repository)
 	if err != nil { return zero, nil, err }
+	// Exact owner-authorized recovery exposes bounded repair diagnostics, never
+	// the private grant or project envelope. General gallery summaries remain
+	// fixed-message only.
+	if public != nil && state.Gate != nil {
+		gate := boundedArtifactV3Gate(state.Gate)
+		public.Diagnostics = nil
+		for _, diagnostic := range gate.Diagnostics {
+			public.Diagnostics = append(public.Diagnostics, api.ArtifactV3Diagnostic{Stage: diagnostic.Stage, Code: diagnostic.Code, Message: diagnostic.Message})
+		}
+	}
 	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, TurnID: grant.TurnID, CandidateID: grant.CandidateID, ExpectedSequence: draft.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, public, nil
 }
