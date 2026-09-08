@@ -48,10 +48,13 @@ type artifactV3RuntimeAdapter struct {
 	renderer       htmlcapture.Renderer
 	publish        func(identity.Principal, api.ArtifactV3Artifact, string, string) error
 
-	mu       sync.RWMutex
-	grants   map[string]artifactV3GrantOwner
-	builds   map[string]tool.ArtifactV3BuildResult
-	previews map[string]tool.ArtifactV3PreviewResult
+	// Serialize Git/projection publication for siblings in one repository.
+	// Preview rendering and editing remain concurrent.
+	publicationLocks [64]sync.Mutex
+	mu               sync.RWMutex
+	grants           map[string]artifactV3GrantOwner
+	builds           map[string]tool.ArtifactV3BuildResult
+	previews         map[string]tool.ArtifactV3PreviewResult
 }
 
 type artifactV3GrantOwner struct {
@@ -267,6 +270,7 @@ func (a *artifactV3RuntimeAdapter) MaterializeBase(ctx context.Context, artifact
 }
 
 func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request tool.ArtifactV3SubmitRequest) (tool.ArtifactV3Revision, error) {
+	defer a.lockPublication(request.ArtifactID)()
 	grant, ok := tool.ArtifactV3GrantFromContext(ctx)
 	if !ok || grant.ArtifactID != request.ArtifactID || grant.TurnID != request.TurnID || grant.CandidateID != request.CandidateID || grant.BaseCommitOID != request.BaseCommitOID || grant.Initial != request.Initial || grant.PolicyRevision != request.PolicyRevision {
 		return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorUnauthorized
@@ -2078,4 +2082,14 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3ExactDraft(ctx context.Contex
 		}
 	}
 	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, TurnID: grant.TurnID, CandidateID: grant.CandidateID, ExpectedSequence: draft.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, public, nil
+}
+
+func (a *artifactV3RuntimeAdapter) lockPublication(artifactID string) func() {
+	var bucket uint32
+	for i := 0; i < len(artifactID); i++ {
+		bucket = bucket*33 + uint32(artifactID[i])
+	}
+	lock := &a.publicationLocks[bucket%uint32(len(a.publicationLocks))]
+	lock.Lock()
+	return lock.Unlock
 }

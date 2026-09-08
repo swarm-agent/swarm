@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -279,5 +280,36 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 	selected, err := adapter.SelectArtifactV3Exact(ctx, "account", "user", "parent", initial.ArtifactID, sibling.TurnID, sibling.CandidateID, first.Revision.CommitOID, "exact-select", turn.EventSeq)
 	if err != nil || selected.CommitOID != good.Revision.CommitOID || snapshot().HeadCommitOID != good.Revision.CommitOID {
 		t.Fatalf("exact tool selection: %+v %v", selected, err)
+	}
+	// Requirement: five sibling finishes must not observe another sibling's
+	// Git ref before its durable projection exists during realtime publication.
+	grants := make([]tool.ArtifactV3AuthorGrant, 5)
+	for i := range grants {
+		req := request
+		req.TaskCallID, req.BaseCommitOID, req.CandidateIndex = "parallel", selected.CommitOID, i+1
+		g, err := author.PrepareTurn(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g = bind(g, p)
+		if err := author.Edit(ctx, p, g, "index.html", []byte("Original"), []byte(fmt.Sprintf("Parallel %d", i)), false); err != nil {
+			t.Fatal(err)
+		}
+		if gate, err := author.BuildPreview(ctx, p, g); err != nil || !gate.Ready {
+			t.Fatalf("parallel gate: %v", err)
+		}
+		grants[i] = g
+	}
+	errors := make(chan error, len(grants))
+	for _, g := range grants {
+		go func(g tool.ArtifactV3AuthorGrant) { _, err := author.Finish(ctx, p, g); errors <- err }(g)
+	}
+	for range grants {
+		if err := <-errors; err != nil {
+			t.Errorf("parallel finish: %v", err)
+		}
+	}
+	if snapshot().HeadCommitOID != selected.CommitOID {
+		t.Fatal("parallel publication moved selected head")
 	}
 }
