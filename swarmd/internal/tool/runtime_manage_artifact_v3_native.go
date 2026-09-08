@@ -54,7 +54,7 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"artifact_v3_source": map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "commit_oid": source.CommitOID, "projection_seq": source.ProjectionSeq}, "reference": map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "revision_ref": source.RevisionRef}, "parts": source.Revision.Parts, "turns": source.Turns, "candidates": source.Candidates}, nil
+	return map[string]any{"artifact_v3_source": map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "commit_oid": source.CommitOID, "projection_seq": source.ProjectionSeq}, "reference": map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "revision_ref": source.RevisionRef}, "parts": source.Revision.Parts, "turns": source.Turns, "candidates": source.Candidates, "selection_calls": artifactV3SelectionCalls(source)}, nil
 }
 
 // Selection deliberately requires caller-supplied CAS; discovery never selects.
@@ -83,4 +83,22 @@ func (r *Runtime) selectDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		return nil, err
 	}
 	return map[string]any{"status": "selected", "reference": map[string]any{"session_id": principal.SessionID, "artifact_id": id, "revision_ref": "revision-" + revision.CommitOID}}, nil
+}
+
+// Exact copyable arguments are read-only evidence, not consent or selection.
+func artifactV3SelectionCalls(source pebblestore.ArtifactV3SelectedSource) []map[string]any {
+	calls := []map[string]any{}
+	for _, candidate := range source.Candidates {
+		if candidate.Status != "ready" {
+			continue
+		}
+		for _, turn := range source.Turns {
+			if turn.TurnID != candidate.TurnID || turn.BaseCommitOID != source.CommitOID || turn.EventSeq == 0 {
+				continue
+			}
+			calls = append(calls, map[string]any{"action": "select_v3", "artifact_id": source.ArtifactID, "turn_id": turn.TurnID, "candidate_id": candidate.CandidateID, "expected_head": source.CommitOID, "expected_turn_revision": turn.EventSeq})
+			break
+		}
+	}
+	return calls
 }
