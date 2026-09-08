@@ -1244,7 +1244,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-theme",
-			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
+			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the saved source workspace, not the managed execution worktree; explicit workspace paths must resolve to exact saved workspace roots.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

@@ -19,7 +19,7 @@ func (r *Runtime) manageThemeInspect(scope WorkspaceScope, args map[string]any) 
 	if err != nil {
 		return "", fmt.Errorf("manage-theme inspect failed: %w", err)
 	}
-	workspaceSummary, _ := r.manageThemeWorkspaceSummary(scope, args)
+	workspaceSummary := r.manageThemeMaybeWorkspaceSummary(scope, args)
 	response := map[string]any{
 		"status":               "ok",
 		"action":               "inspect",
@@ -479,12 +479,12 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 	if applyTo == "none" {
 		return "", errors.New("manage-theme set cannot use apply_to=none; use apply_to=workspace, account, or global")
 	}
-	workspacePath := strings.TrimSpace(asString(args["workspace_path"]))
-	if workspacePath == "" && applyTo == "" {
-		workspacePath = strings.TrimSpace(scope.PrimaryPath)
-	}
-	if applyTo == "workspace" && workspacePath == "" {
-		workspacePath = strings.TrimSpace(scope.PrimaryPath)
+	workspacePath := ""
+	if applyTo != "account" && applyTo != "global" {
+		workspacePath, err = manageThemeWorkspacePath(scope, args)
+		if err != nil {
+			return "", err
+		}
 	}
 	if workspacePath != "" && applyTo != "account" && applyTo != "global" {
 		if r.themeWorkspace == nil {
@@ -497,6 +497,10 @@ func (r *Runtime) manageThemeSet(scope WorkspaceScope, args map[string]any, conf
 		if err != nil {
 			return "", err
 		}
+		if !scopeInfo.Matched || strings.TrimSpace(scopeInfo.WorkspacePath) != strings.TrimSpace(scopeInfo.ResolvedPath) {
+			return "", errors.New("manage-theme requires an exact saved workspace path")
+		}
+		workspacePath = strings.TrimSpace(scopeInfo.WorkspacePath)
 		beforeThemeID := manageThemeNormalizeID(scopeInfo.ThemeID)
 		change := map[string]any{
 			"kind":           "theme_change",
@@ -613,7 +617,7 @@ func (r *Runtime) manageThemeBuildApplyPlan(scope WorkspaceScope, args map[strin
 		return manageThemeApplyPlan{}, err
 	}
 	if applyTo == "" && defaultWorkspace {
-		if strings.TrimSpace(scope.PrimaryPath) != "" || strings.TrimSpace(asString(args["workspace_path"])) != "" {
+		if scope.WorktreeEnabled || strings.TrimSpace(scope.PrimaryPath) != "" || strings.TrimSpace(asString(args["workspace_path"])) != "" {
 			applyTo = "workspace"
 		}
 	}
@@ -638,9 +642,9 @@ func (r *Runtime) manageThemeBuildApplyPlan(scope WorkspaceScope, args map[strin
 			},
 		}, nil
 	}
-	workspacePath := strings.TrimSpace(asString(args["workspace_path"]))
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(scope.PrimaryPath)
+	workspacePath, err := manageThemeWorkspacePath(scope, args)
+	if err != nil {
+		return manageThemeApplyPlan{}, err
 	}
 	if workspacePath == "" {
 		return manageThemeApplyPlan{}, errors.New("manage-theme create apply_to=workspace requires workspace_path or an active workspace scope")
@@ -655,12 +659,15 @@ func (r *Runtime) manageThemeBuildApplyPlan(scope WorkspaceScope, args map[strin
 	if err != nil {
 		return manageThemeApplyPlan{}, err
 	}
+	if !scopeInfo.Matched || strings.TrimSpace(scopeInfo.WorkspacePath) != strings.TrimSpace(scopeInfo.ResolvedPath) {
+		return manageThemeApplyPlan{}, errors.New("manage-theme requires an exact saved workspace path")
+	}
 	resolvedWorkspacePath := strings.TrimSpace(scopeInfo.WorkspacePath)
 	beforeThemeID := manageThemeNormalizeID(scopeInfo.ThemeID)
 	return manageThemeApplyPlan{
 		target:        "workspace",
 		themeID:       themeID,
-		workspacePath: workspacePath,
+		workspacePath: resolvedWorkspacePath,
 		change: map[string]any{
 			"kind":           "theme_change",
 			"target":         "workspace_theme",
@@ -670,6 +677,22 @@ func (r *Runtime) manageThemeBuildApplyPlan(scope WorkspaceScope, args map[strin
 			"after":          map[string]any{"workspace_path": resolvedWorkspacePath, "theme_id": themeID},
 		},
 	}, nil
+}
+
+// Theme settings belong to the saved workspace, not its isolated execution lane.
+func manageThemeWorkspacePath(scope WorkspaceScope, args map[string]any) (string, error) {
+	path := strings.TrimSpace(asString(args["workspace_path"]))
+	if scope.WorktreeEnabled {
+		if path == "" || path == strings.TrimSpace(scope.PrimaryPath) || path == strings.TrimSpace(scope.WorktreeRootPath) {
+			path = strings.TrimSpace(scope.SourceWorkspacePath)
+			if path == "" {
+				return "", errors.New("manage-theme managed worktree requires a source workspace identity")
+			}
+		}
+	} else if path == "" {
+		path = strings.TrimSpace(scope.PrimaryPath)
+	}
+	return path, nil
 }
 
 func manageThemeNormalizeApplyTo(raw string) (string, error) {
@@ -765,7 +788,7 @@ func manageThemeCreateUsage() string {
 }
 
 func manageThemeActionContracts(scope WorkspaceScope) map[string]any {
-	activeWorkspace := strings.TrimSpace(scope.PrimaryPath)
+	activeWorkspace, _ := manageThemeWorkspacePath(scope, nil)
 	return map[string]any{
 		"create_batch": map[string]any{
 			"required": []string{"action=create_batch", "themes with 1 to 8 items", "each item: id or theme_id, name, and palette (or base_theme_id)"},
@@ -807,7 +830,7 @@ func manageThemeActionContracts(scope WorkspaceScope) map[string]any {
 		},
 		"workspace_default": map[string]any{
 			"active_workspace_path": activeWorkspace,
-			"note":                  "workspace-scoped create/set default to the active workspace when available; pass apply_to=account/global to change account settings instead",
+			"note":                  "workspace-scoped operations default to the saved source workspace, never the managed execution worktree; pass apply_to=account/global to change account settings instead",
 		},
 	}
 }
@@ -846,9 +869,9 @@ func (r *Runtime) manageThemeWorkspaceSummary(scope WorkspaceScope, args map[str
 	if r == nil || r.themeWorkspace == nil {
 		return nil, nil
 	}
-	workspacePath := strings.TrimSpace(asString(args["workspace_path"]))
-	if workspacePath == "" {
-		workspacePath = strings.TrimSpace(scope.PrimaryPath)
+	workspacePath, err := manageThemeWorkspacePath(scope, args)
+	if err != nil {
+		return nil, err
 	}
 	if workspacePath == "" {
 		return nil, nil

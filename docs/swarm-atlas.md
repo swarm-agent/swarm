@@ -455,7 +455,13 @@ Critical invariant / attack points: profile-budget override, missing or out-of-r
 
 Current capture-UI/default-motion evidence (2026-09-07): focused derivation/create and runtime request tests pass on the scoped working diff; real local Chrome valid/hidden/clipped/unstable cases pass without a skip. New attack points are boolean/case/value attribute parsing, false marker text, duplicate/missing manifest, out-of-duration scene metadata, capture-only explicit selection and accidental wall-clock routing. Allocation tests assert no turn/submit/selection on rejection; request tests assert global output selectors and source immutability. Installed-runtime/retained-draft validation remains unperformed and requires explicit operator rebuild followed by explicit resume. Independent P1/P2 review and curated promotion remain pending.
 
+### Theme tool saved-workspace targeting
+
+`tool/runtime_manage_theme.go` resolves theme targets using the run's authenticated source workspace (`run/service_workspace_context.go`), independently of filesystem execution scope. Set and create/update/batch application require an exact matched saved root before calling `workspace.Service.SetThemeIDForPrincipal`; ancestor matches and missing source identity fail before settings writes. Inspection advertises the same source default. Explicit account/global application remains separate. Attack point: treating an isolated lane under another saved workspace as a settings target. `runtime_manage_theme_workspace_test.go` authors preview/confirm and missing-source/ancestor/unsaved rejection postconditions; execution and independent review remain pending.
+
 ## 14. Revision ledger and update template
+
+- 2026-09-08 — Theme tool workspace isolation: live read-only set preview selected an unrelated ancestor of the execution lane. Inspected `service_workspace_context.go`, theme registration and set/create/update/batch handlers, and principal-scoped workspace lookup/write authority. Theme defaults now use trusted `SourceWorkspacePath`; missing source and non-exact/unsaved targets reject before writes. Added focused regression source; tests not run, independent review pending. Explicit saved-workspace targeting successfully applied a builtin theme with the existing live tool; the source fix is not deployed.
 
 - 2026-09-08: Traced AI catalog creation versus UI Add, topology self-binding persistence, overview projection and Desktop route gating. Wired catalog creation to topology with failure rollback and unchanged selection; added real-binding/negative-case regression source and explicit existing-entry recovery guidance. Source/diff reviewed and Go formatted; tests/build/live Desktop not run.
 
