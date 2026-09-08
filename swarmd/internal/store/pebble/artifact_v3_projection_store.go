@@ -79,6 +79,7 @@ type ArtifactV3RevisionProjection struct {
 }
 
 type ArtifactV3TurnProjection struct {
+	RevisionIntent string `json:"revision_intent,omitempty"`
 	Version             int      `json:"version"`
 	ArtifactID          string   `json:"artifact_id"`
 	TurnID              string   `json:"turn_id"`
@@ -435,7 +436,7 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		} else if found {
 			candidateTransition := input.Kind == V3SessionMutationArtifactV3CandidateCommitted && (existing.Status == "open" || existing.Status == "awaiting_selection") && copy.Status == "awaiting_selection" && existing.BaseCommitOID == copy.BaseCommitOID
 			selectTransition := input.Kind == V3SessionMutationArtifactV3HeadSelected && existing.Status == "awaiting_selection" && copy.Status == "selected" && existing.BaseCommitOID == copy.BaseCommitOID
-			if existing.BaseCommitOID != copy.BaseCommitOID || !reflect.DeepEqual(existing.TargetPartIDs, copy.TargetPartIDs) || existing.TargetPartID != copy.TargetPartID || (!candidateTransition && !selectTransition && existing.Status != copy.Status) {
+			if existing.RevisionIntent != copy.RevisionIntent || existing.BaseCommitOID != copy.BaseCommitOID || !reflect.DeepEqual(existing.TargetPartIDs, copy.TargetPartIDs) || existing.TargetPartID != copy.TargetPartID || (!candidateTransition && !selectTransition && existing.Status != copy.Status) {
 				return preparedArtifactV3Mutation{}, errors.New("artifact v3 turn identity is immutable")
 			}
 		}

@@ -99,6 +99,12 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	if a == nil || a.service == nil || a.sessions == nil || strings.TrimSpace(request.AccountScopeID) == "" || strings.TrimSpace(request.UserID) == "" || strings.TrimSpace(request.OwnerSessionID) == "" || strings.TrimSpace(request.TaskCallID) == "" {
 		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 	}
+	if err := pebblestore.ValidateArtifactV3RevisionIntent(request.RevisionIntent, request.TargetPartIDs); err != nil {
+		return tool.ArtifactV3AuthorGrant{}, err
+	}
+	if request.Initial && (request.RevisionIntent != "" || len(request.TargetPartIDs) != 0) {
+		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+	}
 	owner := pebblestore.ArtifactV3Owner{AccountScopeID: strings.TrimSpace(request.AccountScopeID), UserID: strings.TrimSpace(request.UserID), SessionID: strings.TrimSpace(request.OwnerSessionID)}
 	artifactID := strings.TrimSpace(request.ArtifactID)
 	if request.Initial {
@@ -148,6 +154,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	candidateID := artifactV3StableID("candidate", turnID, fmt.Sprint(request.CandidateIndex))
 	grantID := artifactV3StableID("grant", artifactID, turnID, candidateID)
 	grant := tool.ArtifactV3AuthorGrant{
+		RevisionIntent: request.RevisionIntent,
 		SourceProjectionSeq: request.ProjectionSeq,
 		AccountScopeID:      owner.AccountScopeID, UserID: owner.UserID,
 		ID: grantID, ArtifactID: artifactID, OwnerSessionID: owner.SessionID, TurnID: turnID, CandidateID: candidateID,
@@ -164,7 +171,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		if len(grant.TargetPartIDs) != 0 {
 			target = grant.TargetPartIDs[0]
 		}
-		if _, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: artifactID, TurnID: turnID, ExpectedHead: grant.BaseCommitOID, TargetPartID: target, TargetPartIDs: grant.TargetPartIDs}); err != nil {
+		if _, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: artifactID, TurnID: turnID, ExpectedHead: grant.BaseCommitOID, RevisionIntent: grant.RevisionIntent, TargetPartID: target, TargetPartIDs: grant.TargetPartIDs}); err != nil {
 			return tool.ArtifactV3AuthorGrant{}, err
 		}
 	}

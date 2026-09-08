@@ -76,6 +76,7 @@ func (l ArtifactV3AuthorLimits) normalized() ArtifactV3AuthorLimits {
 }
 
 type ArtifactV3AuthorGrant struct {
+	RevisionIntent string
 	SourceProjectionSeq                                              uint64
 	AccountScopeID, UserID                                           string
 	ID, ArtifactID, OwnerSessionID, ProducerSessionID, ProducerRunID string
@@ -161,6 +162,7 @@ type ArtifactV3SubmitRequest struct {
 type ArtifactV3Revision struct{ CommitOID, TreeOID, ManifestBlobOID string }
 
 type ArtifactV3PrepareTurnRequest struct {
+	RevisionIntent string
 	AccountScopeID, UserID, OwnerSessionID, TaskCallID, Prompt string
 	ArtifactID, BaseCommitOID, PolicyRevision                  string
 	ProjectionSeq                                              uint64
@@ -253,6 +255,7 @@ type ArtifactV3AuthorFinish struct {
 	Gate     ArtifactV3AuthorGate
 }
 type ArtifactV3AuthorContext struct {
+	RevisionIntent string
 	ArtifactID, TurnID, CandidateID, BaseCommitOID, PolicyRevision string
 	Initial                                                        bool
 	TargetPartIDs, LockedPaths                                     []string
@@ -954,7 +957,7 @@ func artifactV3WorkspaceKey(g ArtifactV3AuthorGrant) string {
 	return "turn-" + hex.EncodeToString(sum[:16])
 }
 func artifactV3Context(g ArtifactV3AuthorGrant, files map[string][]byte, gate *ArtifactV3AuthorGate) ArtifactV3AuthorContext {
-	out := ArtifactV3AuthorContext{ArtifactID: g.ArtifactID, TurnID: g.TurnID, CandidateID: g.CandidateID, BaseCommitOID: g.BaseCommitOID, PolicyRevision: g.PolicyRevision, Initial: g.Initial, TargetPartIDs: append([]string(nil), g.TargetPartIDs...), LockedPaths: append([]string(nil), g.LockedPaths...), LatestGate: gate}
+	out := ArtifactV3AuthorContext{RevisionIntent: g.RevisionIntent, ArtifactID: g.ArtifactID, TurnID: g.TurnID, CandidateID: g.CandidateID, BaseCommitOID: g.BaseCommitOID, PolicyRevision: g.PolicyRevision, Initial: g.Initial, TargetPartIDs: append([]string(nil), g.TargetPartIDs...), LockedPaths: append([]string(nil), g.LockedPaths...), LatestGate: gate}
 	// Guidance is derived from the storage contract, not another schema authority.
 	// This example does not write files or grant build/preview readiness.
 	out.ManifestFilename = pebblestore.ArtifactV3ManifestFilename

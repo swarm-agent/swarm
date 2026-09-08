@@ -1,6 +1,33 @@
 package pebblestore
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
+
+const (
+	ArtifactV3RevisionFocusedParts = "focused_parts"
+	ArtifactV3RevisionWholeProject = "whole_project"
+)
+
+// ValidateArtifactV3RevisionIntent keeps omission conservative for older callers:
+// an omitted intent never authorizes structural Part replacement.
+func ValidateArtifactV3RevisionIntent(intent string, targets []string) error {
+	if intent != "" && intent != ArtifactV3RevisionFocusedParts && intent != ArtifactV3RevisionWholeProject {
+		return ErrArtifactV3Invalid
+	}
+	if len(targets) > 256 || (intent == ArtifactV3RevisionFocusedParts && len(targets) == 0) || (intent == ArtifactV3RevisionWholeProject && len(targets) != 0) {
+		return ErrArtifactV3Invalid
+	}
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		if target == "" || target != strings.TrimSpace(target) || len(target) > 512 || seen[target] {
+			return ErrArtifactV3Invalid
+		}
+		seen[target] = true
+	}
+	return nil
+}
 
 const (
 	ArtifactV3ManifestFilename = "swarm-artifact.json"
