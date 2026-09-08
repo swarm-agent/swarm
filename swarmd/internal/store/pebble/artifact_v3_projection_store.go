@@ -711,14 +711,15 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 		return ErrArtifactV3Integrity
 	}
 	var producerSession, producerRun string
-	if json.Unmarshal(before["ProducerSessionID"], &producerSession) != nil || json.Unmarshal(before["ProducerRunID"], &producerRun) != nil || producerSession != input.SessionID || producerRun == "" || producerRun == r.ProducerRunID {
+	if json.Unmarshal(before["ProducerSessionID"], &producerSession) != nil || json.Unmarshal(before["ProducerRunID"], &producerRun) != nil || producerSession == "" || producerRun == "" || producerRun == r.ProducerRunID {
 		return ErrArtifactV3Unauthorized
 	}
 	var publishing bool
 	if json.Unmarshal(before["Publishing"], &publishing) != nil || string(before["Finished"]) != "null" {
 		return ErrArtifactV3Conflict
 	}
-	previous, found, err := s.GetV3SessionRunIntent(input.SessionID, producerRun)
+	if err := s.ValidateArtifactV3DraftProducer(input.AccountScopeID, input.UserID, input.SessionID, producerSession); err != nil { return err }
+	previous, found, err := s.GetV3SessionRunIntent(producerSession, producerRun)
 	if err != nil {
 		return err
 	}
@@ -732,6 +733,8 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	if !found || active.RunID != r.ProducerRunID || active.UserID != input.UserID || active.AccountScopeID != input.AccountScopeID {
 		return ErrArtifactV3Unauthorized
 	}
+	var nextSession string
+	if json.Unmarshal(after["ProducerSessionID"], &nextSession) != nil || nextSession != input.SessionID { return ErrArtifactV3Unauthorized }
 	var nextRun string
 	if json.Unmarshal(after["ProducerRunID"], &nextRun) != nil || nextRun != r.ProducerRunID || (!publishing && string(after["Gate"]) != "null") {
 		return ErrArtifactV3Unauthorized
@@ -765,6 +768,8 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	}
 	// A frozen publication handoff preserves every validated byte and gate;
 	// only its terminal producer may change. It cannot become an editable draft.
+	delete(before, "ProducerSessionID")
+	delete(after, "ProducerSessionID")
 	delete(before, "ProducerRunID")
 	delete(after, "ProducerRunID")
 	left, _ := json.Marshal(before)
@@ -796,5 +801,20 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	if string(left) != string(right) {
 		return ErrArtifactV3Unauthorized
 	}
+	return nil
+}
+
+// ValidateArtifactV3DraftProducer authenticates durable task lineage, not caller
+// claims. Resume also invokes it under the canonical mutation serialization.
+func (s *SessionStore) ValidateArtifactV3DraftProducer(account, user, owner, producer string) error {
+	if account == "" || user == "" || owner == "" || producer == "" { return ErrArtifactV3Unauthorized }
+	if producer == owner { return nil }
+	child, found, err := s.GetSession(producer)
+	if err != nil { return err }
+	if !found || child.AccountScopeID != account || child.UserID != user { return ErrArtifactV3Unauthorized }
+	parent, parentOK := child.Metadata["parent_session_id"].(string)
+	kind, kindOK := child.Metadata["lineage_kind"].(string)
+	agent, agentOK := child.Metadata["subagent"].(string)
+	if !parentOK || parent != owner || !kindOK || kind != "delegated_subagent" || !agentOK || agent != "designer" { return ErrArtifactV3Unauthorized }
 	return nil
 }

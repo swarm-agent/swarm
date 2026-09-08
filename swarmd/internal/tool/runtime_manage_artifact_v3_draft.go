@@ -116,6 +116,8 @@ func (r *Runtime) authorDirectArtifactV3Draft(ctx context.Context, scope Workspa
 // ArtifactV3DraftResumeRequest contains only owned locators and CAS evidence.
 // Empty ExpectedHead is explicit evidence for a draft with no published revision.
 type ArtifactV3DraftResumeRequest struct {
+	TurnID string `json:"turn_id,omitempty"`
+	CandidateID string `json:"candidate_id,omitempty"`
 	SessionID             string `json:"session_id"`
 	ArtifactID            string `json:"artifact_id"`
 	ExpectedSequence      uint64 `json:"expected_sequence"`
@@ -138,7 +140,7 @@ func (r *Runtime) resumeDirectArtifactV3Draft(ctx context.Context, scope Workspa
 	if !ok {
 		return nil, ErrArtifactV3AuthorInvalid
 	}
-	if err := requireOnlyArtifactV3Fields(raw, "session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"); err != nil {
+	if err := requireOnlyArtifactV3Fields(raw, "session_id", "artifact_id", "turn_id", "candidate_id", "expected_sequence", "expected_projection_seq", "expected_head"); err != nil {
 		return nil, err
 	}
 	if _, ok := raw["expected_head"].(string); !ok {
@@ -171,6 +173,10 @@ func (r *Runtime) resumeDirectArtifactV3Draft(ctx context.Context, scope Workspa
 }
 
 // Draft status exposes CAS locators, never the private grant or source envelope.
+type ArtifactV3ExactDraftLocator interface {
+	LocateArtifactV3ExactDraft(context.Context, ArtifactV3AuthorPrincipal, string, string, string) (ArtifactV3DraftResumeRequest, any, error)
+}
+
 type ArtifactV3DirectDraftLocator interface {
 	LocateArtifactV3DirectDraft(context.Context, ArtifactV3AuthorPrincipal, string) (ArtifactV3DraftResumeRequest, error)
 }
@@ -179,9 +185,16 @@ func (r *Runtime) locateDirectArtifactV3Draft(ctx context.Context, scope Workspa
 	if r == nil || r.artifactV3Author == nil {
 		return nil, ErrArtifactV3AuthorInvalid
 	}
-	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id"); err != nil {
+	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id", "turn_id", "candidate_id"); err != nil {
 		return nil, err
 	}
+	if scope.SessionID != principal.SessionID { return nil, ErrArtifactV3AuthorUnauthorized }
+	if locator, ok := r.artifactV3Author.repository.(ArtifactV3ExactDraftLocator); ok {
+		request, diagnostics, err := locator.LocateArtifactV3ExactDraft(ctx, ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: scope.SessionID, ProducerRunID: principal.RunID}, mapString(args, "artifact_id"), mapString(args, "turn_id"), mapString(args, "candidate_id"))
+		if err != nil { return nil, err }
+		return map[string]any{"resume_draft": request, "diagnostics": diagnostics}, nil
+	}
+	if mapString(args, "turn_id") != "" || mapString(args, "candidate_id") != "" { return nil, ErrArtifactV3AuthorInvalid }
 	locator, ok := r.artifactV3Author.repository.(ArtifactV3DirectDraftLocator)
 	if !ok {
 		return nil, ErrArtifactV3AuthorInvalid

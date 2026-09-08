@@ -1844,12 +1844,8 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	if repository.EventSeq != request.ExpectedProjectionSeq || repository.HeadCommitOID != request.ExpectedHead {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
-	var draft pebblestore.ArtifactV3DraftProjection
-	for _, candidate := range repository.Drafts {
-		if draft.GrantID == "" || candidate.EventSeq > draft.EventSeq || (candidate.EventSeq == draft.EventSeq && candidate.GrantID > draft.GrantID) {
-			draft = candidate
-		}
-	}
+	draft, err := artifactV3ExactDraft(repository, request.TurnID, request.CandidateID)
+	if err != nil { return zero, err }
 	if draft.GrantID == "" || draft.Sequence != request.ExpectedSequence {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
@@ -1858,7 +1854,7 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	if json.Unmarshal(draft.Grant, &grant) != nil || json.Unmarshal(draft.State, &state) != nil || digestArtifactProject(state.Project) != draft.Digest {
 		return zero, pebblestore.ErrArtifactV3Integrity
 	}
-	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID || state.ProducerSessionID != p.ProducerSessionID {
+	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
 	if state.Finished != nil || (!state.Publishing && grant.BaseCommitOID != repository.HeadCommitOID) {
@@ -1867,7 +1863,7 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	oldID := draft.GrantID
 	grant.ID = artifactV3StableID("resume", oldID, p.ProducerRunID, fmt.Sprint(draft.Sequence))
 	grant.ExpiresAt = time.Now().Add(30 * time.Minute).UnixMilli()
-	state.ProducerRunID = p.ProducerRunID
+	state.ProducerSessionID, state.ProducerRunID = p.ProducerSessionID, p.ProducerRunID
 	// A deliberate later-run handoff gets a new bounded repair budget. Source
 	// and diagnostic history remain intact; ordinary retries never reset it.
 	if !state.Publishing {
@@ -1917,6 +1913,11 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	if !found || repository.OwnerSessionID != p.ProducerSessionID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
+	draft, err := artifactV3ExactDraft(repository, "", "")
+	if err != nil { return zero, err }
+	var grant tool.ArtifactV3AuthorGrant
+	if json.Unmarshal(draft.Grant, &grant) != nil { return zero, pebblestore.ErrArtifactV3Integrity }
+	repository.Drafts = map[string]pebblestore.ArtifactV3DraftProjection{draft.GrantID: draft}
 	public, _, err := artifactV3PublicDraft(repository)
 	if err != nil {
 		return zero, err
@@ -1924,7 +1925,7 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	if public == nil {
 		return zero, tool.ErrArtifactV3AuthorInvalid
 	}
-	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
+	return tool.ArtifactV3DraftResumeRequest{TurnID: grant.TurnID, CandidateID: grant.CandidateID, SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(_ context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
@@ -1949,4 +1950,41 @@ func (a *artifactV3RuntimeAdapter) SelectArtifactV3Exact(ctx context.Context, ac
  selected, err := a.SelectCandidate(ctx, api.ArtifactV3Principal{AccountScopeID: account, UserID: user}, api.ArtifactV3SelectCandidateRequest{SessionID: session, ArtifactID: artifactID, TurnID: turn, CandidateID: candidate, ExpectedHeadRef: head, ExpectedTurnRevision: seq, ClientRequestID: requestID})
  if err != nil { return tool.ArtifactV3Revision{}, err }
  return tool.ArtifactV3Revision{CommitOID: selected.Head.CommitOID, TreeOID: selected.Head.TreeOID, ManifestBlobOID: selected.Head.ManifestBlobOID}, nil
+}
+
+// Exact identity, never update time, selects a retained candidate. Omitted IDs
+// are accepted only for a singleton repository (older direct-author callers).
+func artifactV3ExactDraft(repository pebblestore.ArtifactV3RepositoryProjection, turn, candidate string) (pebblestore.ArtifactV3DraftProjection, error) {
+	var selected pebblestore.ArtifactV3DraftProjection
+	if (turn == "") != (candidate == "") { return selected, tool.ErrArtifactV3AuthorInvalid }
+	if turn == "" && len(repository.Drafts) != 1 { return selected, tool.ErrArtifactV3AuthorConflict }
+	for id, draft := range repository.Drafts {
+		var grant tool.ArtifactV3AuthorGrant
+		if json.Unmarshal(draft.Grant, &grant) != nil || grant.ID != id || draft.GrantID != id || grant.ArtifactID != repository.ArtifactID || grant.OwnerSessionID != repository.OwnerSessionID { return selected, pebblestore.ErrArtifactV3Integrity }
+		if turn != "" && (grant.TurnID != turn || grant.CandidateID != candidate) { continue }
+		if selected.GrantID != "" { return selected, tool.ErrArtifactV3AuthorConflict }
+		selected = draft
+	}
+	if selected.GrantID == "" { return selected, tool.ErrArtifactV3AuthorInvalid }
+	return selected, nil
+}
+
+func (a *artifactV3RuntimeAdapter) LocateArtifactV3ExactDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, artifactID, turn, candidate string) (tool.ArtifactV3DraftResumeRequest, any, error) {
+	zero := tool.ArtifactV3DraftResumeRequest{}
+	if ctx == nil || a == nil || a.sessions == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerSessionID == "" { return zero, nil, tool.ErrArtifactV3AuthorUnauthorized }
+	if err := ctx.Err(); err != nil { return zero, nil, err }
+	repository, found, err := a.sessions.GetArtifactV3Repository(p.AccountScopeID, p.UserID, artifactID)
+	if err != nil { return zero, nil, err }
+	if !found || repository.OwnerSessionID != p.ProducerSessionID { return zero, nil, tool.ErrArtifactV3AuthorUnauthorized }
+	draft, err := artifactV3ExactDraft(repository, turn, candidate)
+	if err != nil { return zero, nil, err }
+	var grant tool.ArtifactV3AuthorGrant
+	var state tool.ArtifactV3AuthorDraft
+	if json.Unmarshal(draft.Grant, &grant) != nil || json.Unmarshal(draft.State, &state) != nil || digestArtifactProject(state.Project) != draft.Digest { return zero, nil, pebblestore.ErrArtifactV3Integrity }
+	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID { return zero, nil, tool.ErrArtifactV3AuthorUnauthorized }
+	if err := a.sessions.ValidateArtifactV3DraftProducer(p.AccountScopeID, p.UserID, repository.OwnerSessionID, state.ProducerSessionID); err != nil { return zero, nil, err }
+	repository.Drafts = map[string]pebblestore.ArtifactV3DraftProjection{draft.GrantID: draft}
+	public, _, err := artifactV3PublicDraft(repository)
+	if err != nil { return zero, nil, err }
+	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, TurnID: grant.TurnID, CandidateID: grant.CandidateID, ExpectedSequence: draft.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, public, nil
 }
