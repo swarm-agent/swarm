@@ -296,7 +296,7 @@ func manageArtifactDefinition() Definition {
 				"turn_id":                map[string]any{"type": "string"},
 				"candidate_id":           map[string]any{"type": "string"},
 				"expected_head":          map[string]any{"type": "string"},
-				"expected_turn_revision": map[string]any{"type": "integer", "minimum": 1},
+				"expected_turn_revision": map[string]any{"type": "integer", "minimum": 1, "description": "Required for select_v3: copy the selected turn's current revision from source_v3 alongside artifact_id, turn_id, candidate_id and expected_head. Never omit or guess this CAS value."},
 				"revision_intent":        map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}, "description": "Explicit native revision intent. whole_project omits target_part_ids; focused_parts requires targets."},
 				"target_part_ids":        map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "uniqueItems": true, "description": "Native Artifact V3 Part IDs; required for focused_parts, omitted for whole_project."},
 				"turn_key":               map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Optional lowercase stable key shared by sibling revise_v3 candidates from one exact base. When omitted for a single candidate, the server derives a replay-stable key from trusted run and call identity. Required for alternatives."},

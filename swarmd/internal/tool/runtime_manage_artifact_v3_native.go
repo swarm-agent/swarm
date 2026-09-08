@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"swarm/packages/swarmd/internal/artifact"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -71,7 +72,7 @@ func (r *Runtime) selectDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 	id, turn, candidate, head := asString(args["artifact_id"]), asString(args["turn_id"]), asString(args["candidate_id"]), asString(args["expected_head"])
 	seq, supplied, err := optionalArtifactInt64(args, "expected_turn_revision")
 	if err != nil || !supplied || seq <= 0 || id == "" || turn == "" || candidate == "" || head == "" {
-		return nil, ErrArtifactV3AuthorInvalid
+		return nil, fmt.Errorf("%w: select_v3 requires artifact_id, turn_id, candidate_id, expected_head and positive expected_turn_revision from a fresh source_v3 response", ErrArtifactV3AuthorInvalid)
 	}
 	selector, ok := r.artifactV3Author.repository.(ArtifactV3NativeSelector)
 	if !ok {

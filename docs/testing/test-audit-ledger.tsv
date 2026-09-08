@@ -6258,3 +6258,17 @@ ta-theme-workspace-selection	go-test	swarmd/internal/tool/runtime_manage_theme_w
 
 # 2026-09-08 native consumer inventory: added artifact/animation_snapshot_test.go, run/artifact_v3_intent_test.go, runtime/artifact_v3_viewport_test.go; revised runtime/artifact_v3_runtime_test.go, runtime/artifact_v3_temporal_test.go and web/src/features/desktop/session-v3/native-artifact-selection.spec.ts. Prior digests for revised files invalidated. Assertions inspect exact intent/preallocation rejection, reviewed historical snapshot immutability and forgery rejection, bounded viewport propagation and exact-selected focused-to-whole transport. Focused execution recorded in atlas; independent P1/P2 and curated promotion pending. Runtime fixture now enforces 1920x1080; malformed HTML replaces forbidden manifest editing; timing rejection uses the current 36,000-frame budget rather than retired two-minute limit.
 # 2026-09-08 candidate gate reconciliation: routed_sessions_atomicity_test.go helper now asserts absent failed-session events/outbox while allowing prior fixture workspace-catalog records. Existing source digest is invalidated; independent P1/P2 reinventory remains pending. TestBackgroundRouterSessionStart repeated twice and curated fast gate passed; no new curated entry added.
+# 2026-09-08 final native remix evidence at deb7bcf6b5b95fe5dc6a3542e642d7e5382461b2: six-package Test(ArtifactV3|NativeHandoff|AnimationSnapshotAdmission) selection passed count=2; four native-artifact-selection tests passed. This is execution evidence, not independent two-pass approval; no curated runner admission. Historical rows/digests for changed files remain superseded.
+# Current source inventory (SHA-256; independent audit pending):
+# 25be77b0639d16fa341c3072b5fb6728737aca4f461b37f2e08b399d40005de9 swarmd/internal/artifact/animation_snapshot_test.go
+# 7dba3193bcb792b726e747a81b35ffdb8b97c72ee0a37957b40e8e7a1d546d6a swarmd/internal/permission/artifact_v3_approval_test.go
+# 2026-09-08 exact native capability rules: TestArtifactV3ExactActionRules checks explicit allow, deny precedence, generic/wildcard isolation and default ask in auto/bypass. Focused tests passed twice; independent P1/P2 remains pending.
+# fe68d82de3f2757819becb8ffcde86cd978fa08f7adedb98c2592ba7d2c98a02 swarmd/internal/run/artifact_v3_intent_test.go
+# 2b2c6b8d0198dfa456ef2a7624c2dfb6e861018ec4d643b4f47cb0aabf8048db swarmd/internal/runtime/artifact_v3_recovery_test.go
+# 3e9d754a12b099bee3f0ebd900f029d2b7b2bc5b1d7ef81fe046bf6840e25b82 swarmd/internal/runtime/artifact_v3_viewport_test.go
+# 90ad5e0a1b7ea988cdac2e42f8163fa0732d0d56d62ec38485a0782a290aa66d swarmd/internal/store/pebble/artifact_v3_remix_test.go
+# 1b36e41a84b7ae7a4e0244b3c27dbd7f20af53b7dd318515d45730b881d3c82e swarmd/internal/store/pebble/artifact_v3_recovery_test.go
+# 5a9140ea3932200223c474fc63ce4b05714380809db448d4bd0013e6c0a46083 swarmd/internal/tool/runtime_artifact_v3_remix_test.go
+# f848264fa1fd108ff53968b7c4f736d885a56060b2b93200691e0d806215594b swarmd/internal/tool/runtime_manage_artifact_v3_native_test.go
+# a5afdd4fc21ed30b102ceb7a421b11c8df5a10d1e7d13ff350cabb5239779b5e swarmd/internal/tool/runtime_manage_artifact_v3_recovery_test.go
+# efe9eff013ab9cef7e5bdeec4a463aa7732dfd01a87befc5d9e5a1e7a22119bf web/src/features/desktop/session-v3/native-artifact-selection.spec.ts
