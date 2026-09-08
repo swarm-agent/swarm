@@ -1926,3 +1926,27 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	}
 	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
 }
+
+func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(_ context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+ return a.service.ResolveSelectedSource(pebblestore.ArtifactV3Owner{AccountScopeID: account, UserID: user, SessionID: session}, artifactID, commit, seq)
+}
+
+func (a *artifactV3RuntimeAdapter) ListArtifactV3SelectedSources(ctx context.Context, account, user, session string, limit int) ([]pebblestore.ArtifactV3SelectedSource, error) {
+ if account == "" || user == "" || session == "" || limit < 1 || limit > 50 { return nil, pebblestore.ErrArtifactV3Invalid }
+ repositories, err := a.sessions.ListArtifactV3Repositories(account, user, session, limit)
+ if err != nil { return nil, err }
+ sources := make([]pebblestore.ArtifactV3SelectedSource, 0, len(repositories))
+ for _, repository := range repositories {
+  if repository.HeadCommitOID == "" { continue }
+  source, err := a.ResolveArtifactV3SelectedSource(ctx, account, user, session, repository.ArtifactID, repository.HeadCommitOID, repository.EventSeq)
+  if err != nil { return nil, err }
+  sources = append(sources, source)
+ }
+ return sources, nil
+}
+
+func (a *artifactV3RuntimeAdapter) SelectArtifactV3Exact(ctx context.Context, account, user, session, artifactID, turn, candidate, head, requestID string, seq uint64) (tool.ArtifactV3Revision, error) {
+ selected, err := a.SelectCandidate(ctx, api.ArtifactV3Principal{AccountScopeID: account, UserID: user}, api.ArtifactV3SelectCandidateRequest{SessionID: session, ArtifactID: artifactID, TurnID: turn, CandidateID: candidate, ExpectedHeadRef: head, ExpectedTurnRevision: seq, ClientRequestID: requestID})
+ if err != nil { return tool.ArtifactV3Revision{}, err }
+ return tool.ArtifactV3Revision{CommitOID: selected.Head.CommitOID, TreeOID: selected.Head.TreeOID, ManifestBlobOID: selected.Head.ManifestBlobOID}, nil
+}
