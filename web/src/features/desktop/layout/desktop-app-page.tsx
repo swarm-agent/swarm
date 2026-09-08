@@ -5492,6 +5492,15 @@ export function DesktopAppPage() {
             planSidebarBelowActions={planSidebarGitPanel}
           />
           </div>
+        ) : topWorkspace?.path && (!routeWorkspaceSlug || chatWorkspacePath) && !activeWorkspaceAuthority && !workspacesLoading ? (
+          <div className="flex h-full flex-1 items-center justify-center px-6">
+            <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">
+              <div className="text-lg font-semibold">Workspace routing unavailable</div>
+              <p className="mt-2 text-sm text-[var(--app-text-muted)]">
+                This workspace is saved, but its local runtime binding is unavailable. Re-add the same folder through Add workspace to repair a missing binding, then refresh. Your files are not deleted.
+              </p>
+            </Card>
+          </div>
         ) : routeWorkspaceSlug && !chatWorkspacePath && workspacesLoading ? (
           <div className="flex min-h-0 flex-1 flex-col bg-[var(--app-bg)]" aria-busy="true" data-testid="desktop-v3-workspace-route-loading">
             <DesktopV3ChatHeader

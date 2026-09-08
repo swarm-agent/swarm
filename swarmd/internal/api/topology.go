@@ -72,6 +72,9 @@ func (s *Server) SetTopologyService(service *topologyruntime.Service) {
 		return
 	}
 	s.topology = service
+	if s.workspace != nil {
+		s.workspace.SetLocalBindingService(service)
+	}
 	if workspaceCanonical, ok := s.runner.(interface {
 		SetSessionWorkspaceCanonicalizer(runruntime.SessionWorkspaceCanonicalizer)
 	}); ok && workspaceCanonical != nil {
