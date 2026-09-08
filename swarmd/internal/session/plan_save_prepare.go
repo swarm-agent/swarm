@@ -260,10 +260,36 @@ func (s *Service) authenticatePlanDocumentArtifacts(accountScopeID, sessionID st
 func (s *Service) authenticatePlanArtifactList(accountScopeID, sessionID, field string, artifacts []pebblestore.SessionPlanArtifactReference) error {
 	for i := range artifacts {
 		ref := &artifacts[i]
+		prefix := fmt.Sprintf("%s[%d]", field, i)
+		if isArtifactV3PlanArtifact(*ref) {
+			artSessionID, artifactID, revisionRef := strings.TrimSpace(ref.SessionID), strings.TrimSpace(ref.ArtifactID), strings.TrimSpace(ref.RevisionRef)
+			if artSessionID != sessionID {
+				return fmt.Errorf("%s: Artifact V3 session %q does not belong to checkpoint session %q", prefix, artSessionID, sessionID)
+			}
+			artifactSession, ok, err := s.store.GetSession(artSessionID)
+			if err != nil || !ok || artifactSession.AccountScopeID != accountScopeID {
+				return fmt.Errorf("%s: Artifact V3 session %q was not found", prefix, artSessionID)
+			}
+			repository, ok, err := s.store.GetArtifactV3Repository(accountScopeID, artifactSession.UserID, artifactID)
+			if err != nil || !ok || repository.OwnerSessionID != artSessionID {
+				return fmt.Errorf("%s: Artifact V3 %q was not found for this session", prefix, artifactID)
+			}
+			commit := strings.TrimPrefix(revisionRef, "revision-")
+			revision, ok, err := s.store.GetArtifactV3Revision(accountScopeID, artifactSession.UserID, artifactID, commit)
+			if err != nil || !ok || revision.CommitOID != commit {
+				return fmt.Errorf("%s: Artifact V3 revision %q was not found", prefix, revisionRef)
+			}
+			if ref.MediaType == "" {
+				ref.MediaType = "text/html"
+			}
+			if ref.Label == "" {
+				ref.Label = "Artifact"
+			}
+			continue
+		}
 		if !isManagedPlanArtifact(*ref) {
 			continue
 		}
-		prefix := fmt.Sprintf("%s[%d]", field, i)
 		artSessionID := strings.TrimSpace(ref.SessionID)
 		collectionID := strings.TrimSpace(ref.CollectionID)
 		variantID := strings.TrimSpace(ref.VariantID)

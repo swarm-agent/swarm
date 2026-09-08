@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -495,6 +496,86 @@ func TestVideoEditProposalsChainFromUnconfirmedWorkingRevision(t *testing.T) {
 	restored, _, _ := store.GetVideoProject("acc", "sess", project.ID)
 	if restored.CurrentRevisionID != first.WorkingRevisionID || restored.ConfirmedRevisionID != base.ID {
 		t.Fatalf("reject did not restore the prior working revision: %+v", restored)
+	}
+}
+
+func testNativeV3VideoReference(mediaType, derivativeID, digestChar string) *ArtifactV3VideoReference {
+	return &ArtifactV3VideoReference{
+		SessionID: "studio", ArtifactID: "artifact", RevisionID: "revision", CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40),
+		ManifestDigestSHA256: strings.Repeat("c", 64), BuildID: "build", ValidationID: "validation", DerivativeID: derivativeID, PartID: "motion", CaptureStateID: "capture",
+		EventSeq: 7, DigestSHA256: strings.Repeat(digestChar, 64), MediaType: mediaType, DurationMs: 2000, FPS: 30, AnimationProfile: "motion_ui",
+	}
+}
+
+// Requirement: pending native V3 conversion keeps its exact Git source, live
+// HTML candidate, fallback still, and MP4 derivative through acceptance/restart.
+// Threat: a mutation or decode could silently downgrade the render authority to
+// a legacy/V2 reference. The Pebble mutation test proves durable postconditions.
+func TestArtifactV3AnimationAuthoritySurvivesProposalAcceptanceAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "pebble.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewSessionStore(db)
+	t.Cleanup(func() {
+		if db != nil {
+			_ = db.Close()
+		}
+	})
+	createTestSession(t, store, "account", "user", "studio")
+	source := testNativeV3VideoReference("text/html", "", "d")
+	still := testNativeV3VideoReference("image/png", "still", "e")
+	visual := testNativeV3VideoReference("video/mp4", "mp4", "f")
+	part := VideoPlanPart{ID: "motion", Title: "Motion", DurationMs: 2000, CaptureStateID: "capture", FilmingRequirements: []string{"Capture complete motion"}, ProductionState: VideoProductionStateReady,
+		ArtifactV3Source: source, ArtifactV3Still: still, ArtifactV3Visual: visual, VisualMediaType: "video/mp4", SourceEndMs: 2000,
+		AnimationCandidates: &VideoAnimationCandidateSet{Status: VideoAnimationCandidateStatusReady, SelectedCandidateID: "native", V3SelectedSource: source, V3Derivative: visual, Candidates: []VideoAnimationCandidate{{ID: "native", V3Source: source}}}}
+	project, base, err := store.CreateVideoProject(CreateVideoProjectInput{AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: "project", Title: "Native V3", InitialTimeline: &VideoProjectTimeline{OutputPreset: VideoPresetLandscape1080p}, NowUnixMs: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: "convert-v3", BaseRevisionID: base.ID, Intent: VideoEditProposalIntentArtifactV3Convert, Plan: &VideoPlanProposal{Kind: VideoPlanKindInitial, Parts: []VideoPlanPart{part}}, NowUnixMs: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Status != VideoEditProposalStatusPending || proposal.Intent != VideoEditProposalIntentArtifactV3Convert || proposal.AcceptedRevisionID != "" || proposal.WorkingRevisionID == "" {
+		t.Fatalf("conversion must retain V3 intent, remain pending, and never self-accept: %+v", proposal)
+	}
+	working, ok, err := store.GetVideoProjectRevision("account", "studio", project.ID, proposal.WorkingRevisionID)
+	if err != nil || !ok || len(working.Timeline.Clips) != 1 || working.Timeline.Clips[0].ArtifactV3Ref == nil || *working.Timeline.Clips[0].ArtifactV3Ref != *visual || working.Timeline.Clips[0].ArtifactRef != nil || working.Timeline.Clips[0].ArtifactV2Ref != nil {
+		t.Fatalf("working cut lost native V3 render authority: ok=%v err=%v revision=%+v", ok, err, working)
+	}
+	workingPlan, err := acceptedVideoPlanFromTimeline(working.Timeline)
+	if err != nil || workingPlan == nil || workingPlan.Parts[0].ArtifactV3Still == nil || *workingPlan.Parts[0].ArtifactV3Still != *still || workingPlan.Parts[0].AnimationCandidates == nil || workingPlan.Parts[0].AnimationCandidates.V3SelectedSource == nil || *workingPlan.Parts[0].AnimationCandidates.V3SelectedSource != *source {
+		t.Fatalf("pending working cut lost fallback or live V3 candidate: err=%v plan=%+v", err, workingPlan)
+	}
+	resolved, accepted, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{AccountScopeID: "account", UserID: "user", SessionID: "studio", ProjectID: project.ID, ProposalID: proposal.ID, RevisionID: "accepted-v3", NowUnixMs: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Status != VideoEditProposalStatusAccepted || len(accepted.Timeline.Clips) != 1 || accepted.Timeline.Clips[0].ArtifactV3Ref == nil || *accepted.Timeline.Clips[0].ArtifactV3Ref != *visual {
+		t.Fatalf("accepted cut lost native V3 render authority: proposal=%+v revision=%+v", resolved, accepted)
+	}
+	acceptedPlan, err := acceptedVideoPlanFromTimeline(accepted.Timeline)
+	if err != nil || acceptedPlan == nil || acceptedPlan.Parts[0].ArtifactV3Still == nil || *acceptedPlan.Parts[0].ArtifactV3Still != *still || acceptedPlan.Parts[0].AnimationCandidates == nil || acceptedPlan.Parts[0].AnimationCandidates.V3SelectedSource == nil || *acceptedPlan.Parts[0].AnimationCandidates.V3SelectedSource != *source || acceptedPlan.Parts[0].AnimationCandidates.V3Derivative == nil || *acceptedPlan.Parts[0].AnimationCandidates.V3Derivative != *visual {
+		t.Fatalf("accepted plan lost V3 fallback or animation authority: err=%v plan=%+v", err, acceptedPlan)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db = nil
+	db, err = Open(filepath.Join(dir, "pebble.db"))
+	if err != nil {
+		t.Fatalf("restart database: %v", err)
+	}
+	store = NewSessionStore(db)
+	restarted, ok, err := store.GetVideoProjectRevision("account", "studio", project.ID, accepted.ID)
+	if err != nil || !ok || restarted.Timeline.Clips[0].ArtifactV3Ref == nil || *restarted.Timeline.Clips[0].ArtifactV3Ref != *visual {
+		t.Fatalf("restart lost native V3 render authority: ok=%v err=%v revision=%+v", ok, err, restarted)
+	}
+	restartedProposal, ok, err := store.GetVideoEditProposal("account", "studio", project.ID, proposal.ID)
+	if err != nil || !ok || restartedProposal.Intent != VideoEditProposalIntentArtifactV3Convert || restartedProposal.Plan == nil || restartedProposal.Plan.Parts[0].ArtifactV3Still == nil || *restartedProposal.Plan.Parts[0].ArtifactV3Still != *still {
+		t.Fatalf("restart lost proposal V3 intent or fallback: ok=%v err=%v proposal=%+v", ok, err, restartedProposal)
 	}
 }
 

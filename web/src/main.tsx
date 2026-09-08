@@ -14,9 +14,15 @@ if (isIOS && navigatorWithStandalone.standalone === true) {
   document.documentElement.classList.add('ios-standalone-pwa')
 }
 
+window.__swarmStartup?.started()
 setupServiceWorker()
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+ReactDOM.createRoot(document.getElementById('root')!, {
+  onUncaughtError(error) {
+    console.error(error)
+    window.__swarmStartup?.fail()
+  },
+}).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />

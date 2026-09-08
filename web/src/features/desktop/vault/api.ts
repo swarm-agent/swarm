@@ -1,4 +1,4 @@
-import { requestJson } from "../../../app/api";
+import { requestJson, requestStartupJson } from "../../../app/api";
 import {
   mapVaultStatus,
   type VaultImportResult,
@@ -38,7 +38,7 @@ function decodeVaultBundle(rawBundle: string | number[] | undefined): Uint8Array
 }
 
 export async function fetchVaultStatus(): Promise<VaultStatus> {
-  const status = mapVaultStatus(await requestJson<VaultStatusWire>("/v1/vault"));
+  const status = mapVaultStatus(await requestStartupJson<VaultStatusWire>("/v1/vault"));
   return status
 }
 

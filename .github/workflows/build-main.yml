@@ -89,6 +89,8 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
       - name: Build stable release archive
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
 
       - name: Smoke release archive and artifact-root install

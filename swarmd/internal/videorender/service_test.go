@@ -158,6 +158,75 @@ func TestRenderHTMLAnimationClipReportsProgress(t *testing.T) {
 	}
 }
 
+func testRendererArtifactV3Reference() pebblestore.ArtifactV3VideoReference {
+	return pebblestore.ArtifactV3VideoReference{
+		SessionID: "artifact-session", ArtifactID: "artifact", RevisionID: "revision-" + strings.Repeat("a", 40),
+		CommitOID: strings.Repeat("a", 40), TreeOID: strings.Repeat("b", 40), ManifestDigestSHA256: strings.Repeat("c", 64),
+		BuildID: "build", ValidationID: "validation", DerivativeID: "av3der_" + strings.Repeat("d", 64), EventSeq: 7,
+		DigestSHA256: strings.Repeat("d", 64), MediaType: "video/mp4", DurationMs: 2000, FPS: 30, AnimationProfile: "motion_ui",
+	}
+}
+
+// Requirement: final rendering materializes only one exact authenticated native
+// V3 MP4 derivative. Threat: mixed, stale, HTML-valued, or timing-mismatched
+// references could borrow weaker legacy authority or render substituted bytes.
+func TestMaterializeTimelineInputsUsesExactArtifactV3MP4Derivative(t *testing.T) {
+	ref := testRendererArtifactV3Reference()
+	mp4 := append([]byte{0, 0, 0, 12}, []byte("ftypisom")...)
+	authority := &fakeArtifactV3Authority{allowed: map[pebblestore.ArtifactV3VideoReference][]byte{ref: mp4}}
+	svc := NewService(Config{}, newFakeSessionStore(), &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+	svc.SetArtifactV3Authority(authority)
+	timeline := pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "motion", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactV3Ref: &ref, MediaType: "video/mp4", SourceStartMs: 0, SourceEndMs: 2000, DurationMs: 2000, TimelineEndMs: 2000, Visible: true}}}
+	inputs, err := svc.materializeTimelineInputs(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}, pebblestore.SessionSnapshot{ID: "session"}, "", t.TempDir(), timeline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || len(authority.validateCalls) != 1 || len(authority.readCalls) != 1 || !inputs[0].IsVideo || inputs[0].IsImage || inputs[0].HasAudio || inputs[0].StartMs != 0 || inputs[0].EndMs != 2000 {
+		t.Fatalf("native V3 materialization = %+v validate=%d read=%d", inputs, len(authority.validateCalls), len(authority.readCalls))
+	}
+	body, err := os.ReadFile(inputs[0].FilePath)
+	if err != nil || string(body) != string(mp4) {
+		t.Fatalf("materialized native V3 bytes=%q err=%v", body, err)
+	}
+}
+
+func TestMaterializeTimelineInputsRejectsInvalidArtifactV3AuthorityWithoutWriting(t *testing.T) {
+	base := testRendererArtifactV3Reference()
+	cases := []struct {
+		name      string
+		mutate    func(*pebblestore.VideoTimelineClip)
+		authority *fakeArtifactV3Authority
+		want      string
+	}{
+		{"missing authority", func(*pebblestore.VideoTimelineClip) {}, nil, "authority is unavailable"},
+		{"mixed authority", func(c *pebblestore.VideoTimelineClip) {
+			c.ArtifactRef = &pebblestore.SessionArtifactSelectionReference{SessionID: "legacy", CollectionID: "legacy", VariantID: "legacy", EventSeq: 1}
+		}, &fakeArtifactV3Authority{allowed: map[pebblestore.ArtifactV3VideoReference][]byte{base: []byte("mp4")}}, "exactly one"},
+		{"stale", func(*pebblestore.VideoTimelineClip) {}, &fakeArtifactV3Authority{allowed: map[pebblestore.ArtifactV3VideoReference][]byte{}, validateErr: errors.New("stale")}, "stale"},
+		{"html", func(c *pebblestore.VideoTimelineClip) { c.ArtifactV3Ref.MediaType = "text/html" }, &fakeArtifactV3Authority{allowed: map[pebblestore.ArtifactV3VideoReference][]byte{}}, "stale"},
+		{"timing", func(c *pebblestore.VideoTimelineClip) { c.SourceEndMs = 1000 }, &fakeArtifactV3Authority{allowed: map[pebblestore.ArtifactV3VideoReference][]byte{base: []byte("mp4")}}, "timing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := base
+			clip := pebblestore.VideoTimelineClip{ID: "motion", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactV3Ref: &ref, MediaType: "video/mp4", SourceEndMs: 2000, DurationMs: 2000, TimelineEndMs: 2000, Visible: true}
+			tc.mutate(&clip)
+			svc := NewService(Config{}, newFakeSessionStore(), &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+			if tc.authority != nil {
+				svc.SetArtifactV3Authority(tc.authority)
+			}
+			jobDir := t.TempDir()
+			if _, err := svc.materializeTimelineInputs(context.Background(), identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc", UserID: "user"}, pebblestore.SessionSnapshot{ID: "session"}, "", jobDir, pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{clip}}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error=%v want %q", err, tc.want)
+			}
+			entries, _ := os.ReadDir(jobDir)
+			if len(entries) != 0 {
+				t.Fatalf("rejected V3 materialization wrote files: %v", entries)
+			}
+		})
+	}
+}
+
 func TestMaterializeTimelineInputsRejectsHTMLReferenceWithoutExplicitSession(t *testing.T) {
 	store := newFakeSessionStore()
 	store.variants["acc/session/motion/html"] = reviewedHTMLAnimationVariant("session", "motion", "html", 7, 1000)
@@ -656,6 +725,43 @@ type fakeArtifactAuthority struct {
 	readVariant     pebblestore.SessionArtifactVariant
 	readVariants    map[string]pebblestore.SessionArtifactVariant
 	readRefs        []pebblestore.SessionArtifactSelectionReference
+}
+
+type fakeArtifactV3Authority struct {
+	allowed       map[pebblestore.ArtifactV3VideoReference][]byte
+	validateErr   error
+	readErr       error
+	validateCalls []pebblestore.ArtifactV3VideoReference
+	readCalls     []pebblestore.ArtifactV3VideoReference
+}
+
+func (f *fakeArtifactV3Authority) ValidateVideoReference(accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) error {
+	f.validateCalls = append(f.validateCalls, ref)
+	if accountScopeID != "acc" || userID != "user" {
+		return errors.New("owner mismatch")
+	}
+	if f.validateErr != nil {
+		return f.validateErr
+	}
+	if _, ok := f.allowed[ref]; !ok {
+		return errors.New("stale native V3 reference")
+	}
+	return nil
+}
+
+func (f *fakeArtifactV3Authority) ReadVideoReference(_ context.Context, accountScopeID, userID string, ref pebblestore.ArtifactV3VideoReference) ([]byte, error) {
+	f.readCalls = append(f.readCalls, ref)
+	if accountScopeID != "acc" || userID != "user" {
+		return nil, errors.New("owner mismatch")
+	}
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	body, ok := f.allowed[ref]
+	if !ok {
+		return nil, errors.New("missing native V3 derivative")
+	}
+	return append([]byte(nil), body...), nil
 }
 
 type fakeAnimationRenderer struct {

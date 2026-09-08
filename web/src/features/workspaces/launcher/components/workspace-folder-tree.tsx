@@ -59,6 +59,7 @@ export function WorkspaceFolderTree({
   const [createdFolderPath, setCreatedFolderPath] = useState<string | null>(null)
   const [createMessage, setCreateMessage] = useState<string | null>(null)
   const [createError, setCreateError] = useState<string | null>(null)
+  const [creatingFolder, setCreatingFolder] = useState(false)
 
   const savedPaths = useMemo(() => new Set(workspaces.map((workspace) => workspace.path)), [workspaces])
   const searchValue = search.trim().toLowerCase()
@@ -74,10 +75,10 @@ export function WorkspaceFolderTree({
   const currentSaved = currentPath ? savedPaths.has(currentPath) : false
   const createdMessageText = createMessage ? `Created “${createMessage}”` : null
   const currentBusy = Boolean(currentPath && (savingPath === currentPath || selectingPath === currentPath))
-  const createBusy = Boolean(currentPath && savingPath === currentPath)
+  const createBusy = creatingFolder || Boolean(savingPath)
 
   const createFolder = async () => {
-    if (!currentPath) {
+    if (!currentPath || createBusy) {
       return
     }
     const name = window.prompt(`Name the new folder in ${currentPath}`)?.trim() ?? ''
@@ -85,6 +86,7 @@ export function WorkspaceFolderTree({
       return
     }
     setCreateError(null)
+    setCreatingFolder(true)
     try {
       const createdPath = await onCreateFolder(currentPath, name)
       if (createdPath) {
@@ -93,12 +95,15 @@ export function WorkspaceFolderTree({
         if (openCreatedFolder) {
           onBrowsePath(createdPath)
         }
+        onCreateWorkspace({ path: createdPath, name, isGitRepo: false, hasClaude: false, hasSwarm: false, lastModified: 0 })
         window.setTimeout(() => {
           setCreateMessage((current) => (current === name ? null : current))
         }, 3500)
       }
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Failed to create folder here')
+    } finally {
+      setCreatingFolder(false)
     }
   }
 
@@ -202,7 +207,7 @@ export function WorkspaceFolderTree({
               title="Create a folder here"
             >
               {createBusy ? <RefreshCw size={14} className="shrink-0 animate-spin" /> : <FolderPlus size={14} className="shrink-0" />}
-              <span className="truncate">{createBusy ? 'Creating folder…' : 'New folder'}</span>
+              <span className="truncate">{createBusy ? 'Creating folder…' : 'Create and add workspace'}</span>
             </button>
 
             <div className="mt-2 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--app-text-subtle)]">

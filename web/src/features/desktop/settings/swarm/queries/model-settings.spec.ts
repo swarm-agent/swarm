@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { getAgentModelSettings } from './get-agent-model-settings'
-import { saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../mutations/save-agent-model-settings'
+import { restoreAgentModelDefaults, saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../mutations/save-agent-model-settings'
 
 const originalFetch = globalThis.fetch
 const assignment = (model: string) => ({ provider: 'codex', model, thinking: 'high', service_tier: 'fast', context_mode: '' })
@@ -80,4 +80,21 @@ test('PATCH updates one system agent without sending sibling assignments', async
   })
   assert.equal(request?.method, 'PATCH')
   assert.deepEqual(JSON.parse(String(request?.body)), { system_agents: { coder: assignment('gpt-coder') } })
+})
+
+// Purpose: the restore mutation sends only an optimistic-concurrency token to
+// its dedicated authority; failed refresh/stale responses never become settings.
+test('restore uses explicit endpoint and rejects failures', async () => {
+  let calls = 0
+  globalThis.fetch = async (input, init) => {
+    calls++
+    assert.match(String(input), /\/v1\/agent-model-settings\/restore-defaults$/)
+    assert.equal(init?.method, 'POST')
+    assert.deepEqual(JSON.parse(String(init?.body)), { expected_updated_at: 42 })
+    return new Response(JSON.stringify({ ok: true, agent_model_settings: responseRecord(43) }), { status: 200 })
+  }
+  assert.equal((await restoreAgentModelDefaults(42)).updatedAt, 43)
+  assert.equal(calls, 1)
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: 'catalog unavailable' }), { status: 502 })
+  await assert.rejects(restoreAgentModelDefaults(42))
 })

@@ -216,13 +216,18 @@ func TestBuildFireworksChatCompletionRequestRejectsUnsupportedMessageRole(t *tes
 }
 
 func TestValidateFireworksMediaContractRejectsCredentialRotation(t *testing.T) {
-	record := pebblestore.AuthCredentialRecord{AccountScopeID: "account-test", Provider: "fireworks", ID: "primary", Type: pebblestore.AuthTypeAPI}
+	record := pebblestore.AuthCredentialRecord{AccountScopeID: "account-test", Provider: "fireworks", ID: "primary", Type: pebblestore.AuthTypeAPI, APIKey: "key-a"}
 	contract := fireworksTestContract(fireworksTestImageCapability(1024, 1))
-	contract.CredentialFingerprint = fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.ID, record.Type)
+	contract.CredentialFingerprint = fireworksCredentialFingerprint(record.AccountScopeID, record.Provider, record.Type, record.APIKey)
 	if err := validateFireworksMediaContractForCredential(contract, record); err != nil {
 		t.Fatalf("matching credential: %v", err)
 	}
-	record.ID = "rotated"
+	equivalent := record
+	equivalent.ID = "duplicate-record"
+	if err := validateFireworksMediaContractForCredential(contract, equivalent); err != nil {
+		t.Fatalf("equivalent credential record: %v", err)
+	}
+	record.APIKey = "key-b"
 	if err := validateFireworksMediaContractForCredential(contract, record); err == nil || !strings.Contains(err.Error(), "active Fireworks credential") {
 		t.Fatalf("error = %v, want credential rotation rejection", err)
 	}

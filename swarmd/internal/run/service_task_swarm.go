@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
@@ -19,6 +20,7 @@ import (
 )
 
 const (
+	taskSwarmRouterMaxAttempts        = 2
 	taskSwarmRouterTimeout            = 90 * time.Second
 	taskSwarmRouterMaxOutputRunes     = 512000
 	taskSwarmRouterMaxDeltaFieldRunes = 12000
@@ -53,6 +55,8 @@ type taskSwarmHydrationRequest struct {
 	IterationControls   *taskSwarmIterationControls                    `json:"iteration_controls,omitempty"`
 	IntegrationContract string                                         `json:"integration_contract,omitempty"`
 	SourceArtifact      *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactV3Source    *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
+	ArtifactV2Source    *taskArtifactV2Source                          `json:"artifact_v2_source,omitempty"`
 	SectionTarget       *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
 	SectionTargets      []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
 	FocusedParts        bool                                           `json:"focused_parts,omitempty"`
@@ -112,7 +116,7 @@ func taskSwarmRouterSystemPrompt(request taskSwarmHydrationRequest) string {
 	var b strings.Builder
 	b.WriteString(`You are Router, the tool-free specialization planner for an Iteration Swarm inside Swarm's existing task tool.
 Return only one JSON object matching this exact response contract: {"group_title":"concise iteration group title","deltas":[{"index":1,"title":"short title","theme":"specific theme","role":"specialized responsibility only","constraints":["worker-specific constraint"],"deliverable":"worker-specific output"}]}.
-Produce exactly one compact delta for every supplied item in ascending index order.
+Produce exactly one compact delta for every supplied item in ascending index order. Use valid JSON string escaping for quotes, backslashes, and newlines; no trailing commas. Keep deltas short: do not reproduce narration, HTML, code, or the shared brief. Use an empty constraints array when no worker-specific constraint is needed.
 Name group_title from the supplied description and the most specific authoritative context so it identifies the whole iteration group in a narrow sidebar. Prefer the section target label when present, then an explicit item group or theme, and use the parent prompt only when those fields are absent. It must be exactly 3 or 4 words, never a generic label such as "Managed group", and must not end with filler such as "group", "iterations", or "alternatives".
 
 The parent-authored prompt, output contract, output requirements, iteration controls, item themes, group briefs, execution model, and ownership rules are authoritative and read-only. Never add, remove, weaken, contradict, reinterpret, or silently replace any of them. Never invent user-facing content, product features, components, interactions, visual motifs, claims, dependencies, or requirements that the parent did not authorize. Your delta may elaborate execution details only when they are directly supported by the parent brief. When uncertain, preserve the parent detail instead of filling the gap creatively.
@@ -157,28 +161,74 @@ func (r *configuredTaskSwarmRouter) Hydrate(ctx context.Context, request taskSwa
 	callCtx, cancel := context.WithTimeout(callCtx, taskSwarmRouterTimeout)
 	defer cancel()
 
+	// Regenerate once from the unchanged authoritative request, not from partially
+	// decoded deltas or untrusted failed output. Both calls share one time budget.
+	var validationErr error
+	for attempt := 0; attempt < taskSwarmRouterMaxAttempts; attempt++ {
+		if err := callCtx.Err(); err != nil {
+			return taskSwarmHydrationResult{}, err
+		}
+		attemptReq := req
+		if attempt > 0 {
+			attemptReq.ProviderLineageID = provideriface.ShortProviderLineageKey("task_swarm_router_regenerate", lineage)
+			attemptReq.ProviderCacheKey = providerScopedKey("cache", attemptReq.ProviderLineageID)
+			attemptReq.SessionAffinityKey = providerScopedKey("affinity", attemptReq.ProviderLineageID)
+			attemptReq.BoundaryReason = "task_swarm_router_regenerate"
+			attemptReq.Instructions += "\nThe previous response failed local JSON or complete-wave validation and was discarded. Generate a fresh complete JSON object from the unchanged request. Include every requested index exactly once in ascending order, all required fields, distinct specializations, and a concrete 3 or 4 word group title. Do not abbreviate the requested wave or quote the shared brief."
+		}
+		raw, err := r.taskSwarmRouterOutput(callCtx, attemptReq)
+		if err != nil {
+			return taskSwarmHydrationResult{}, err
+		}
+		result, err := decodeTaskSwarmHydrationResultForRequest(raw, request)
+		if err == nil {
+			return result, nil
+		}
+		validationErr = err
+	}
+	return taskSwarmHydrationResult{}, fmt.Errorf("Router output invalid after %d validated attempts; no swarm workers launched: %w", taskSwarmRouterMaxAttempts, validationErr)
+}
+
+func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, req provideriface.Request) (string, error) {
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var output strings.Builder
+	outputRunes := 0
 	overLimit := false
+	toolCall := false
 	response, err := r.runner.CreateResponseStreaming(callCtx, req, func(event provideriface.StreamEvent) {
+		if overLimit || toolCall {
+			return
+		}
+		switch event.Type {
+		case provideriface.StreamEventToolCallStarted, provideriface.StreamEventToolCallArgumentsDelta, provideriface.StreamEventToolCallArgumentsSnapshot, provideriface.StreamEventToolCallCompleted:
+			toolCall = true
+			cancel()
+			return
+		}
 		if event.Type == provideriface.StreamEventOutputTextDelta {
+			outputRunes += utf8.RuneCountInString(event.Delta)
+			if outputRunes > taskSwarmRouterMaxOutputRunes {
+				overLimit = true
+				cancel()
+				return
+			}
 			output.WriteString(event.Delta)
 		}
-		if len([]rune(output.String())) > taskSwarmRouterMaxOutputRunes {
-			overLimit = true
-			cancel()
-		}
 	})
-	if overLimit {
-		return taskSwarmHydrationResult{}, fmt.Errorf("task swarm Router output exceeded %d characters", taskSwarmRouterMaxOutputRunes)
+	if overLimit || utf8.RuneCountInString(response.Text) > taskSwarmRouterMaxOutputRunes {
+		return "", fmt.Errorf("task swarm Router output exceeded %d characters", taskSwarmRouterMaxOutputRunes)
+	}
+	if toolCall || len(response.FunctionCalls) != 0 {
+		return "", errors.New("task swarm Router must not call tools")
 	}
 	if err != nil {
-		return taskSwarmHydrationResult{}, err
+		return "", err
 	}
-	raw := strings.TrimSpace(firstNonEmptyString(response.Text, output.String()))
-	if raw == "" {
-		return taskSwarmHydrationResult{}, errors.New("task swarm Router returned no output")
+	if err := callCtx.Err(); err != nil {
+		return "", err
 	}
-	return decodeTaskSwarmHydrationResultForRequest(raw, request)
+	return strings.TrimSpace(firstNonEmptyString(response.Text, output.String())), nil
 }
 
 func decodeTaskSwarmHydrationResult(raw string, count int) (taskSwarmHydrationResult, error) {
@@ -360,7 +410,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 	}
 	request := taskSwarmHydrationRequest{
 		Description: strings.TrimSpace(parsed.Description), Prompt: strings.TrimSpace(parsed.Prompt), AgentType: parsed.Swarm.AgentType, SwarmStrategy: parsed.Swarm.Strategy,
-		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
+		OutputContract: strings.TrimSpace(parsed.Swarm.OutputContract), OutputMode: strings.TrimSpace(parsed.Swarm.OutputMode), OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls), IntegrationContract: strings.TrimSpace(parsed.Swarm.IntegrationContract), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact), ArtifactV3Source: cloneTaskArtifactV3Source(parsed.Swarm.ArtifactV3Source), ArtifactV2Source: cloneTaskArtifactV2Source(parsed.Swarm.ArtifactV2Source), SectionTarget: cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget), SectionTargets: cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
 		Items: make([]taskSwarmHydrationItem, len(launchSpecs)),
 	}
 	for _, launch := range launchSpecs {
@@ -498,33 +548,46 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		b.WriteString("- owned scope: entire isolated worktree\n")
 	}
 	if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
-		if request.SourceArtifact != nil {
+		if request.ArtifactV3Source != nil {
+			b.WriteString("- exact native Artifact V3 source (immutable server-authenticated Git identity and intent targets): ")
+			encoded, _ := json.Marshal(request.ArtifactV3Source)
+			b.Write(encoded)
+			b.WriteString("\n- Native V3 Parts express intent for one complete project revision. Preserve the exact source and every non-target requirement; never translate its Git identity into V1/V2 references.\n")
+		} else if request.ArtifactV2Source != nil {
+			b.WriteString("- exact Artifact V2 source (immutable server-authenticated working revision, published head, composition head, and target Part IDs): ")
+			encoded, _ := json.Marshal(request.ArtifactV2Source)
+			b.Write(encoded)
+			b.WriteString("\n- Artifact V2 focused iteration contract: inspect the context-bound candidate working artifact, declare the exact complete part set requested by the parent brief, author real revisions for every target while preserving all non-target semantics, request server build/validation, and submit only the ready candidate. The parent server imports only the exact target revisions into one durable Iteration Round; never call manage_artifact.\n")
+		} else if request.SourceArtifact != nil {
 			b.WriteString("- exact source artifact reference (immutable; use this existing ready artifact as the input for the requested iteration): ")
 			encoded, _ := json.Marshal(request.SourceArtifact)
 			b.Write(encoded)
 			b.WriteString("\n")
 		}
-		if len(request.SectionTargets) != 0 {
+		if request.ArtifactV3Source != nil {
+			// Native target membership is already bound in the source envelope.
+			// Optional legacy-shaped selection hints never change its authoring protocol.
+		} else if len(request.SectionTargets) != 0 {
 			encoded, _ := json.Marshal(request.SectionTargets)
 			if request.FocusedParts {
 				b.WriteString("- selected authoritative artifact parts (immutable server-bound byte selection): ")
 				b.Write(encoded)
-				b.WriteString("\n- multipart contract: call manage_artifact action=read_parts once, edit every selected independently byte-bearing part and no others, then call manage_artifact action=publish_parts exactly once with one replacement per selected part. The server publishes all changed revisions as one atomic candidate composition and preserves every untouched exact part revision. Do not use create/create_package.\n")
+				b.WriteString("\n- focused multipart contract: use artifact_v2_author inspect_context, write only every granted target part against its exact current base and composition-head revision, preserve all non-target and locked parts byte-for-byte, then request the server build/validation and submit the candidate only when ready.\n")
 			} else {
 				b.WriteString("- selected source-bound review/edit targets on one complete artifact (immutable server-authenticated locators): ")
 				b.Write(encoded)
-				b.WriteString("\n- monolithic multi-target revision contract: these targets identify every region to change atomically, not separate bytes. Inspect the exact complete source artifact, change all selected regions together, preserve every non-target region, and publish exactly one complete revised artifact with one manage_artifact create or create_package call. Keep a single-file text/html source as text/html; do not call read_parts/publish_parts, convert it to a ZIP, or manufacture initial_parts. Include the source's complete review/edit target set in that same publication, retaining every selected locator.\n")
+				b.WriteString("\n- focused multi-target contract: these targets are the exact Artifact V2 editable set. Use artifact_v2_author to create derived revisions for all targets, preserve every non-target byte, then request server build/validation and submit only the verified composition candidate.\n")
 			}
 		} else if request.SectionTarget != nil {
 			encoded, _ := json.Marshal(request.SectionTarget)
 			if request.FocusedParts {
 				b.WriteString("- selected authoritative artifact part (immutable server-bound byte selection): ")
 				b.Write(encoded)
-				b.WriteString("\n- focused part contract: call manage_artifact action=read_part to retrieve only the selected exact part bytes, edit only those bytes, then call manage_artifact action=publish_part exactly once with only replacement content and content metadata. Do not read, materialize, recreate, or publish the complete artifact. Do not use create/create_package. The server preserves every untouched exact part revision and constructs the candidate composition.\n")
+				b.WriteString("\n- focused part contract: use artifact_v2_author inspect_context and write_part only for the selected exact Part ID, naming its exact base revision and composition-head revision. The server preserves every untouched exact revision, builds, validates, and records the candidate.\n")
 			} else {
 				b.WriteString("- selected source-bound review/edit target on one complete artifact (immutable server-authenticated locator): ")
 				b.Write(encoded)
-				b.WriteString("\n- monolithic revision contract: this target identifies what to change, not separate bytes. Inspect the exact source artifact, preserve every non-target region, and publish one complete revised artifact with exactly one manage_artifact create or create_package call. Keep a single-file text/html source as text/html; do not convert it to a ZIP or manufacture initial_parts. Include the source's complete review/edit targets in that same publication, with the targeted locator retained.\n")
+				b.WriteString("\n- focused revision contract: this target is the exact Artifact V2 editable Part. Create one derived part revision with artifact_v2_author, preserve every other exact part revision, and submit only after server build/validation succeeds.\n")
 			}
 		}
 		if request.OutputRequirements != nil {
@@ -543,8 +606,10 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
+			} else if request.ArtifactV2Source != nil && !request.FocusedParts {
+				b.WriteString("- output mode: managed Artifact V2 source revision; use the context-bound artifact_v2_author capability, request server build/validation, and submit_candidate only when ready. Never call manage_artifact or checkout write/edit.\n")
 			} else if !request.FocusedParts {
-				b.WriteString("- output mode: managed complete revision; use manage_artifact exactly once with create or create_package and omit output_requirements and animation_profile. Prefer one self-contained text/html file when the source is one HTML file; never wrap it in a ZIP merely to represent review/edit targets. Include accurate complete-revision parts when already known; otherwise, for text/html omit parts and let the server derive targets from authored manifests and stable semantic-region IDs without splitting or rewriting the file. The server injects the immutable requirement snapshot and atomically finalizes the preallocated opaque target. Never call unsupported update/finalize actions. Do not use write/edit, write the workspace checkout, or choose/override destination lineage.\n")
+				b.WriteString("- output mode: managed native Artifact V3; use only the context-bound artifact_v3_author capability. Inspect the complete conventional project tree, make coherent file edits, run build_preview and repair from diagnostics, then call finish_turn exactly once when ready. Parts are intent targets for a complete project revision, not independent byte ownership. Destination, output policy, validation state, and candidate identity are server-owned. Never call manage_artifact, artifact_v2_author, or checkout write/edit tools.\n")
 			}
 		} else {
 			b.WriteString("- output mode: workspace; work in the parent's shared checkout and write only within the distinct declared owned scope; do not use Bash or Git.\n")
@@ -615,7 +680,18 @@ func (s *Service) hydrateTaskSwarm(ctx context.Context, parent pebblestore.Sessi
 	if err != nil {
 		return nil, err
 	}
+	return hydrateTaskSwarmLaunches(ctx, router, parent, parsed, request, launchSpecs, step, callID, emit)
+}
+
+// Publish no assignments until the complete Router result and every prompt validate.
+func hydrateTaskSwarmLaunches(ctx context.Context, router taskSwarmRouter, parent pebblestore.SessionSnapshot, parsed taskCallArguments, request taskSwarmHydrationRequest, launchSpecs []taskLaunchSpec, step int, callID string, emit StreamHandler) ([]taskLaunchSpec, error) {
+	if len(request.Items) != len(launchSpecs) {
+		return nil, errors.New("task swarm hydration request does not match launch wave")
+	}
 	result, err := router.Hydrate(ctx, request)
+	if err == nil {
+		err = validateTaskSwarmHydrationResult(result, len(launchSpecs))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("task swarm hydration failed: %w", err)
 	}
@@ -633,7 +709,7 @@ func (s *Service) hydrateTaskSwarm(ctx context.Context, parent pebblestore.Sessi
 			launchSpecs[i].SourceArguments = map[string]any{}
 		}
 		effectiveTheme := strings.TrimSpace(result.Deltas[i].Theme)
-		if request.IterationControls != nil && strings.TrimSpace(request.Items[i].Theme) != "" {
+		if strings.TrimSpace(request.Items[i].Theme) != "" {
 			effectiveTheme = strings.TrimSpace(request.Items[i].Theme)
 		}
 		launchSpecs[i].SourceArguments["swarm_theme"] = effectiveTheme

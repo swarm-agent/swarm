@@ -7323,6 +7323,8 @@ func saveSessionsV3ActivePlanForFinalizationTest(t *testing.T, sessionSvc *sessi
 	}
 }
 
+// Purpose: the V3 provider loop must rebuild structured history and fresh context
+// after restart without replaying encrypted reasoning; compiled agents remain immutable.
 func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
@@ -7351,8 +7353,12 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	runSvc := runruntime.NewService(sessionSvc, server.model, providers, tool.NewRuntime(1), server.perm.(*permission.Service), server.agents, nil, nil)
 	server.runner = runSvc
 	server.SetBypassPermissions(true)
-	if _, _, _, err := server.agents.UpsertForAccount(testPrincipal().AccountScopeID, agentruntime.UpsertInput{Name: "swarm", Mode: agentruntime.ModePrimary, Provider: "test-provider", Model: "test-model", Thinking: "medium", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{"read": {Enabled: pebblestore.BoolPtr(true)}}}, Enabled: pebblestore.BoolPtr(true), Prompt: "Swarm prompt"}); err != nil {
-		t.Fatalf("upsert tool-enabled swarm agent: %v", err)
+	// Compiled agent identity is immutable; configure only its canonical model assignment.
+	if _, err := server.agentModelSettings.ReplaceSwarm(identity.ContextWithPrincipal(context.Background(), testPrincipal()), agentmodelsettings.SwarmInput{
+		Action: agentmodelsettings.Assignment{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
+		Plan:   agentmodelsettings.Assignment{Provider: "test-provider", Model: "test-model", Thinking: "medium"},
+	}); err != nil {
+		t.Fatal(err)
 	}
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
@@ -7380,8 +7386,8 @@ func TestSessionsV3ExecutorContinuesAfterProviderManagedRestartTurn(t *testing.T
 	if runner.requests[1].ProviderLineageID == "" || runner.requests[1].ProviderCacheKey == "" || runner.requests[1].SessionAffinityKey == "" {
 		t.Fatalf("restart-after-tool request missing provider lineage keys: %+v", runner.requests[1])
 	}
-	if runner.requests[1].BoundaryReason != "restart_after_tool" {
-		t.Fatalf("restart-after-tool boundary reason = %q, want restart_after_tool", runner.requests[1].BoundaryReason)
+	if runner.requests[1].BoundaryReason != "epoch_fresh_context+restart_after_tool" {
+		t.Fatalf("restart-after-tool boundary reason = %q, want epoch_fresh_context+restart_after_tool", runner.requests[1].BoundaryReason)
 	}
 	if runner.requests[1].NativeContinuationAllowed || !runner.requests[1].ForceFreshProviderContext {
 		t.Fatalf("restart-after-tool did not force a fresh provider context: %+v", runner.requests[1])

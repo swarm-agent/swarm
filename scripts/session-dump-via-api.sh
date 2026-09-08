@@ -3,15 +3,18 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/session-dump-via-api.sh <session-url>
+Usage: scripts/session-dump-via-api.sh <session-url> [output-file]
 
-Requests a development session dump through the same-machine Desktop API
-passthrough. The session URL supplies both the local Desktop origin and the
-session ID. The daemon writes the private JSON dump to its session-dumps
-directory and this script prints that absolute path.
+Requests a development session dump through the Desktop API passthrough. The
+session URL supplies both the loopback Desktop origin and session ID. With no
+output file, the script preserves same-machine behavior and prints the daemon's
+absolute dump path. With output-file, it downloads that exact private dump from
+the dev-only authenticated endpoint, writes it mode 0600, and prints the local
+absolute path.
 
-Example:
+Examples:
   scripts/session-dump-via-api.sh http://127.0.0.1:5555/swarm-go/<session-id>
+  scripts/session-dump-via-api.sh http://127.0.0.1:15655/swarm-go/<session-id> "$TMPDIR/session.json"
 
 Requirements:
   - The session URL must use localhost or a loopback IP address.
@@ -33,10 +36,11 @@ if [[ $# -eq 1 && ( "$1" == "-h" || "$1" == "--help" ) ]]; then
   usage
   exit 0
 fi
-if [[ $# -ne 1 ]]; then
+if [[ $# -lt 1 || $# -gt 2 ]]; then
   usage
   exit 2
 fi
+output_file="${2:-}"
 
 require_command curl
 require_command jq
@@ -88,7 +92,7 @@ session_id="${parsed#*$'\n'}"
 umask 077
 scratch="$(mktemp -d "${TMPDIR%/}/swarm-session-api-dump.XXXXXX")"
 cleanup() {
-  rm -f -- "${scratch}/cookies" "${scratch}/bootstrap.json" "${scratch}/dump-response.json"
+  rm -f -- "${scratch}/cookies" "${scratch}/bootstrap.json" "${scratch}/dump-response.json" "${scratch}/download.json"
   rmdir -- "${scratch}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -112,7 +116,11 @@ if [[ ! "${bootstrap_status}" =~ ^2[0-9][0-9]$ ]]; then
   fail "${message}"
 fi
 
-request_body="$(jq -nc --arg session_id "${session_id}" '{session_id: $session_id}')"
+if [[ -n "${output_file}" ]]; then
+  request_body="$(jq -nc --arg session_id "${session_id}" '{session_id: $session_id, download: true}')"
+else
+  request_body="$(jq -nc --arg session_id "${session_id}" '{session_id: $session_id}')"
+fi
 dump_status="$(curl --silent --show-error --max-time 120 \
   --output "${scratch}/dump-response.json" \
   --write-out '%{http_code}' \
@@ -136,9 +144,36 @@ dump_path="$(jq -er '.path | select(type == "string" and startswith("/"))' "${sc
 bytes_written="$(jq -er '.bytes_written | select(type == "number" and . > 0)' "${scratch}/dump-response.json")" \
   || fail "session dump API response did not confirm a non-empty dump"
 
-if [[ -e "${dump_path}" ]]; then
-  [[ -f "${dump_path}" && -s "${dump_path}" ]] || fail "API dump path is not a non-empty regular file: ${dump_path}"
+if [[ -n "${output_file}" ]]; then
+  download_path="$(jq -er '.download_path | select(type == "string" and startswith("/v3/developer/session-dump/file/session-") and endswith(".json"))' "${scratch}/dump-response.json")" \
+    || fail "session dump API response omitted a safe download_path"
+  output_file="$(python3 - "${output_file}" <<'PY'
+import os
+import sys
+print(os.path.abspath(os.path.expanduser(sys.argv[1])))
+PY
+)"
+  [[ ! -d "${output_file}" ]] || fail "output-file names a directory: ${output_file}"
+  mkdir -p -- "$(dirname -- "${output_file}")"
+  download_status="$(curl --silent --show-error --max-time 120 \
+    --output "${scratch}/download.json" \
+    --write-out '%{http_code}' \
+    --cookie "${scratch}/cookies" \
+    "${common_headers[@]}" \
+    "${origin}${download_path}")"
+  if [[ ! "${download_status}" =~ ^2[0-9][0-9]$ ]]; then
+    fail "session dump download returned HTTP ${download_status}"
+  fi
+  [[ -s "${scratch}/download.json" ]] || fail "session dump download was empty"
+  jq -e --arg session_id "${session_id}" '.format_version == 1 and .session.id == $session_id' "${scratch}/download.json" >/dev/null \
+    || fail "session dump download did not match the requested session"
+  install -m 0600 "${scratch}/download.json" "${output_file}"
+  printf 'session-dump-via-api: downloaded %s bytes for session %s\n' "$(wc -c <"${output_file}")" "${session_id}" >&2
+  printf '%s\n' "${output_file}"
+else
+  if [[ -e "${dump_path}" ]]; then
+    [[ -f "${dump_path}" && -s "${dump_path}" ]] || fail "API dump path is not a non-empty regular file: ${dump_path}"
+  fi
+  printf 'session-dump-via-api: wrote %s bytes for session %s\n' "${bytes_written}" "${session_id}" >&2
+  printf '%s\n' "${dump_path}"
 fi
-
-printf 'session-dump-via-api: wrote %s bytes for session %s\n' "${bytes_written}" "${session_id}" >&2
-printf '%s\n' "${dump_path}"

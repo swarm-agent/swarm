@@ -25,6 +25,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/identity"
@@ -141,6 +142,8 @@ type Server struct {
 	longSessionDiagnostics      *longsessiondiag.Recorder
 	mediaStaging                *mediastaging.Service
 	artifacts                   *artifact.Registry
+	artifactV2                  *artifactv2.Service
+	artifactV3                  ArtifactV3Service
 
 	longSessionDesktopSampleLogOnce sync.Once
 
@@ -243,6 +246,7 @@ type notificationService interface {
 type worktreeService interface {
 	GetConfig(workspacePath string) (worktreeruntime.Config, error)
 	GetConfigForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
+	GetConfigForSavedWorkspaceForPrincipal(principal identity.Principal, workspacePath string) (worktreeruntime.Config, error)
 	SetConfig(workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
 	SetConfigForPrincipal(principal identity.Principal, workspacePath string, enabled, useCurrentBranch bool, baseBranch, branchName string) (worktreeruntime.Config, *pebblestore.EventEnvelope, error)
 	AllocateDetachedWorkspace(workspacePath, nameSeed string) (worktreeruntime.Allocation, error)

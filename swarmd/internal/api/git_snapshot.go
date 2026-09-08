@@ -29,18 +29,18 @@ func (s *Server) handleGitStatus(w http.ResponseWriter, r *http.Request) {
 	limit := 20
 	if raw := strings.TrimSpace(r.URL.Query().Get("recent_limit")); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || parsed < 0 {
-			writeError(w, http.StatusBadRequest, errors.New("recent_limit must be a non-negative integer"))
+		if parseErr != nil || parsed < 0 || parsed > 100 {
+			writeError(w, http.StatusBadRequest, errors.New("recent_limit must be an integer between 0 and 100"))
 			return
 		}
 		limit = parsed
 	}
-	snapshot, err := gitstatus.SnapshotForPath(context.Background(), workspacePath, gitstatus.Options{RecentLimit: limit, IncludeDetails: true})
+	snapshot, err := gitstatus.SnapshotForPath(r.Context(), workspacePath, gitstatus.Options{RecentLimit: limit, IncludeDetails: true})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err := s.populateSessionGitCommits(context.Background(), principal, strings.TrimSpace(r.URL.Query().Get("session_id")), workspacePath, limit, &snapshot); err != nil {
+	if err := s.populateSessionGitCommits(r.Context(), principal, strings.TrimSpace(r.URL.Query().Get("session_id")), workspacePath, limit, &snapshot); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -55,55 +55,28 @@ func (s *Server) populateSessionGitCommits(ctx context.Context, principal identi
 	if sessionID == "" || snapshot == nil || s == nil || s.sessions == nil {
 		return nil
 	}
-	session, found, err := s.sessions.GetSession(sessionID)
+	item, err := s.selectedSessionRepository(principal, sessionID, workspacePath)
 	if err != nil {
 		return err
 	}
-	if !found || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) || !session.WorktreeEnabled {
-		return nil
+	if item.BaseCommit != "" && item.Kind != "source" {
+		snapshot.SessionCommits = gitstatus.ListCommitsSince(ctx, workspacePath, item.BaseCommit, limit)
 	}
-	baseRef := strings.TrimSpace(session.WorktreeBaseBranch)
-	if baseCommit := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "base_commit")); baseCommit != "" {
-		baseRef = baseCommit
-	}
-	snapshot.SessionCommits = gitstatus.ListCommitsSince(ctx, workspacePath, baseRef, limit)
 	return nil
 }
 
-func (s *Server) resolveSessionGitWorkspacePath(principal identity.Principal, sessionID string) (string, bool, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return "", false, nil
-	}
-	if s == nil || s.sessions == nil {
-		return "", false, errors.New("session service not configured")
-	}
-	session, ok, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		return "", false, err
-	}
-	if !ok || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(principal.AccountScopeID) {
-		return "", false, errors.New("session not found")
-	}
-	if !session.WorktreeEnabled {
-		return "", false, nil
-	}
-	worktreePath := strings.TrimSpace(session.WorktreeRootPath)
-	if worktreePath == "" {
-		return "", false, errors.New("session worktree path is incomplete")
-	}
-	return worktreePath, true, nil
-}
-
 func (s *Server) resolveGitStatusWorkspacePath(r *http.Request, principal identity.Principal) (string, error) {
-	if worktreePath, ok, err := s.resolveSessionGitWorkspacePath(principal, r.URL.Query().Get("session_id")); err != nil {
-		return "", err
-	} else if ok {
-		return worktreePath, nil
-	}
 	workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
+	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
+	if workspacePath != "" && cwd != "" && workspacePath != cwd {
+		return "", errors.New("conflicting repository selectors")
+	}
 	if workspacePath == "" {
 		workspacePath = strings.TrimSpace(r.URL.Query().Get("cwd"))
+	}
+	if sessionID := strings.TrimSpace(r.URL.Query().Get("session_id")); sessionID != "" {
+		item, err := s.selectedSessionRepository(principal, sessionID, workspacePath)
+		return item.WorkspacePath, err
 	}
 	if workspacePath == "" && s.workspace != nil {
 		current, ok, err := s.workspace.CurrentBindingForPrincipal(principal)

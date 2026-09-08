@@ -36,10 +36,9 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  if (request.mode === 'navigate') {
-    event.respondWith(fetch(request, { cache: 'no-store' }))
-    return
-  }
+  // HTML and app chunks use normal browser/server cache semantics. Intercept
+  // only the explicit icon allowlist, never navigation (even to an icon URL).
+  if (request.mode === 'navigate') return
 
   if (isStaticShellAsset(url.pathname)) {
     event.respondWith(cacheFirst(request))

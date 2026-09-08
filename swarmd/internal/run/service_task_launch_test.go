@@ -1415,6 +1415,26 @@ func TestApprovedCoderAllocatesFromSelectedSharedWorkspace(t *testing.T) {
 	if metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_source_workspace_path") != targetPath || metadataStringForTest(launch.ChildSession.Metadata, "swarm_v3_runtime_workspace_path") != clonePath || metadataStringForTest(launch.ChildSession.Metadata, "base_commit") != taskBase.BaseCommit {
 		t.Fatalf("shared workspace metadata = %#v", launch.ChildSession.Metadata)
 	}
+	// Requirement: retained-lane allocation records the captured saved source,
+	// not the lane as source. This preparation boundary owns child metadata.
+	captured := t.TempDir()
+	parent.Metadata = cloneGenericMap(parent.Metadata)
+	if parent.Metadata == nil {
+		parent.Metadata = map[string]any{}
+	}
+	parent.WorktreeEnabled = true
+	parent.Metadata["swarm_v3_worktree_history"] = []any{map[string]any{"path": targetPath, "owner_session_id": parent.ID, "source_workspace_path": captured}}
+	stub.allocation.WorkspacePath = t.TempDir()
+	stub.allocation.BranchName = "agent/retained"
+	retained, err := svc.prepareDelegatedSubagentLaunchWithProfile(parent, sessionruntime.ModeAuto, taskLaunchPrepared{
+		LaunchIndex: 2, RequestedSubagent: "coder", MetaPrompt: "implement", VirtualTarget: virtual, TaskBase: &taskBase, TargetWorkspacePath: targetPath, LogicalTaskID: "retained-workspace-task",
+	}, "implement", "", &profile, source, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadataStringForTest(retained.ChildSession.Metadata, "swarm_v3_source_workspace_path") != captured || metadataStringForTest(retained.ChildSession.Metadata, "target_workspace_path") != targetPath {
+		t.Fatal("retained source and destination conflated")
+	}
 }
 
 func TestCoderPromptMakesAllocatedWorktreeAuthoritativeAndBaseCheckoutReadOnly(t *testing.T) {
@@ -1426,6 +1446,9 @@ func TestCoderPromptMakesAllocatedWorktreeAuthoritativeAndBaseCheckoutReadOnly(t
 	}
 }
 
+// Purpose: allocation must resolve a real linked Git admin path while keeping
+// the Coder scope isolated, permitting source reads but rejecting source writes.
+// A directory-only allocation stub cannot prove this runtime Git boundary.
 func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
 	defer cleanup()
@@ -1437,8 +1460,10 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	parent.WorktreeRootPath = parent.WorkspacePath
 	parent.WorktreeBaseBranch = "dev"
 	parent.TemporaryWorkspaceRoots = []string{t.TempDir()}
-	clonePath := t.TempDir()
-	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: filepath.Dir(clonePath), BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
+	repository := programFixtureRepo(t)
+	clonePath := filepath.Join(t.TempDir(), "child")
+	programFixtureGit(t, repository, "worktree", "add", "-b", "agent/clone", clonePath, "HEAD")
+	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: clonePath, RepoRoot: repository, BaseBranch: "dev", BranchName: "agent/clone", WorkspaceID: "clone-workspace"}}
 	svc.SetWorktreeService(stub)
 	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
 	if err != nil || !virtual {
@@ -1472,8 +1497,14 @@ func TestApprovedCoderAllocatesIsolatedWorktreeScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve Coder scope: %v", err)
 	}
-	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || !needsExpansion {
-		t.Fatalf("parent worktree read from Coder: needed=%t err=%v scope=%#v", needsExpansion, err, scope)
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "read", Arguments: mustJSON(t, map[string]any{"path": parent.WorkspacePath})}); err != nil || needsExpansion {
+		t.Fatalf("read-only source visibility: needed=%t err=%v", needsExpansion, err)
+	}
+	if _, needsExpansion, err := tool.ScopeExpansionForCall(scope, tool.Call{Name: "write", Arguments: mustJSON(t, map[string]any{"path": filepath.Join(parent.WorkspacePath, "forbidden.txt"), "content": "must not write"})}); err == nil && !needsExpansion {
+		t.Fatal("Coder source write was not rejected")
+	}
+	if _, err := os.Stat(filepath.Join(parent.WorkspacePath, "forbidden.txt")); !os.IsNotExist(err) {
+		t.Fatalf("source file unexpectedly changed: %v", err)
 	}
 }
 
@@ -2287,12 +2318,12 @@ func TestDesignerPermissionManifestUsesCompiledManagedProfileByDefault(t *testin
 	if row.OutputMode != taskOutputModeManaged || len(row.OwnedScope) != 0 || row.ProfileSnapshot == nil || !row.ProfileSnapshot.Protected {
 		t.Fatalf("managed Designer output contract = mode %q scope %#v profile %#v", row.OutputMode, row.OwnedScope, row.ProfileSnapshot)
 	}
-	for _, name := range []string{"read", "search", "find", "list", "manage_artifact"} {
+	for _, name := range []string{"read", "search", "find", "list", "artifact_v3_author"} {
 		if !stringSliceContains(row.ResolvedTools.AllowedTools, name) {
 			t.Fatalf("managed Designer allowed tools %v missing %q", row.ResolvedTools.AllowedTools, name)
 		}
 	}
-	for _, name := range []string{"write", "edit", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
+	for _, name := range []string{"write", "edit", "artifact_v2_author", "manage_artifact", "bash", "git_status", "git_commit", "task", "manage_worktree", "plan_manage"} {
 		if !stringSliceContains(row.ResolvedTools.DisabledTools, name) {
 			t.Fatalf("managed Designer disabled tools %v missing %q", row.ResolvedTools.DisabledTools, name)
 		}
@@ -2605,6 +2636,41 @@ func TestApprovedFinderWaveManifestDigestSurvivesPermissionRoundTrip(t *testing.
 	}
 	if digest != envelope.ManifestHash || digest != envelope.Manifest.ManifestHash {
 		t.Fatalf("approved manifest hash mismatch: digest=%q envelope=%q manifest=%q", digest, envelope.ManifestHash, envelope.Manifest.ManifestHash)
+	}
+}
+
+func TestManagedDesignerEmptyOwnedScopeNormalizesForApprovedManifest(t *testing.T) {
+	svc, parentSessionID, cleanup := newTaskLaunchPermissionTestService(t)
+	defer cleanup()
+	bindTaskInheritanceModelProfile(t, svc, parentSessionID)
+
+	call := tool.Call{Name: "task", Arguments: mustJSON(t, map[string]any{
+		"prompt": "Create managed variants.",
+		"launches": []any{
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Create first.", "owned_scope": []any{}},
+			map[string]any{"subagent_type": "designer", "meta_prompt": "Create second."},
+		},
+	})}
+	parsed, err := parseTaskCallArguments(call.Arguments)
+	if err != nil {
+		t.Fatalf("parse task call: %v", err)
+	}
+	if parsed.Launches[0].OwnedScope != nil || parsed.Launches[1].OwnedScope != nil {
+		t.Fatalf("managed Designer empty owned scopes = %#v, %#v, want nil", parsed.Launches[0].OwnedScope, parsed.Launches[1].OwnedScope)
+	}
+	manifest, err := svc.buildTaskLaunchPermissionPayload(parentSessionID, sessionruntime.ModeAuto, call)
+	if err != nil {
+		t.Fatalf("build task manifest: %v", err)
+	}
+	approved, err := json.Marshal(manifest.ApprovedArguments)
+	if err != nil {
+		t.Fatalf("marshal approved manifest: %v", err)
+	}
+	for i := range parsed.Launches {
+		parsed.Launches[i].TargetWorkspacePath = manifest.Launches[i].TargetWorkspacePath
+	}
+	if _, err := parseApprovedTaskLaunchManifest(string(approved), parsed.Launches); err != nil {
+		t.Fatalf("validate approved task manifest: %v", err)
 	}
 }
 

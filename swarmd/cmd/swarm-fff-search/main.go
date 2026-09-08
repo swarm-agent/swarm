@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/tool/searchipc"
@@ -128,7 +129,6 @@ func (w *worker) handle(req searchipc.Request, started time.Time) searchipc.Resp
 		if len(resp.ContentResults) == 1 {
 			resp.Content = resp.ContentResults[0]
 		}
-		resp.FileResults = runFileSearches(w.inst, req, resp.ContentResults)
 	case operationFiles:
 		resp.FileResults = runFileFinds(w.inst, req, operationFiles)
 	case operationGlob:
@@ -293,28 +293,31 @@ func normalizeOperation(operation string) string {
 
 func runContentSearches(inst *fff.Instance, req searchipc.Request, timeout time.Duration) []searchipc.GrepQueryResult {
 	results := make([]searchipc.GrepQueryResult, 0, len(req.Queries))
+	constraints, constraintErr := contentConstraints(req)
+	opts := fff.GrepOptions{PageLimit: req.PageLimit, TimeBudget: timeout, FileOffset: req.FileOffset, Mode: grepMode(req.ContentMode), MaxMatchesPerFile: req.MaxMatchesPerFile, BeforeContext: req.BeforeContext, AfterContext: req.AfterContext, ClassifyDefinitions: true}
 	for _, query := range req.Queries {
 		result := searchipc.GrepQueryResult{Query: query, Mode: operationContent}
-		matches, metrics, err := inst.GrepWithConfig(buildFFFGrepQuery(req, query), fff.GrepOptions{PageLimit: req.PageLimit, TimeBudget: timeout, FileOffset: req.FileOffset, Mode: grepMode(req.ContentMode), MaxMatchesPerFile: req.MaxMatchesPerFile, BeforeContext: req.BeforeContext, AfterContext: req.AfterContext, ClassifyDefinitions: true})
-		result.Matches, result.Metrics = matches, metrics
-		if err != nil {
-			result.Error = strings.TrimSpace(err.Error())
-		}
-		results = append(results, result)
-	}
-	return results
-}
-
-func runFileSearches(inst *fff.Instance, req searchipc.Request, contentResults []searchipc.GrepQueryResult) []searchipc.SearchQueryResult {
-	results := make([]searchipc.SearchQueryResult, 0, len(req.Queries))
-	pageSize := uint32(req.MaxResults + 1)
-	for _, query := range req.Queries {
-		if !needsFileSearchFallback(query, contentResults) {
+		if strings.ContainsAny(query, "\x00\r\n") {
+			result.Error = "FFF content queries must be single-line text without NUL bytes"
+			results = append(results, result)
 			continue
 		}
-		result := searchipc.SearchQueryResult{Query: query, Mode: operationFiles}
-		items, metrics, err := inst.SearchWithOptions(buildFFFSearchQuery(req, query), pageSize, req.PageIndex)
-		result.Items, result.Metrics = items, metrics
+		if constraintErr != nil {
+			result.Error = constraintErr.Error()
+			results = append(results, result)
+			continue
+		}
+		var matches []fff.GrepMatch
+		var metrics fff.GrepMetrics
+		var err error
+		if opts.Mode == 0 {
+			// A single pattern preserves per-query smart case and pagination while
+			// bypassing query syntax (globs, exclusions, paths, whitespace folding).
+			matches, metrics, err = inst.MultiGrepWithConfig([]string{query}, constraints, opts)
+		} else {
+			matches, metrics, err = inst.GrepWithConfig(strings.TrimSpace(constraints+" "+query), opts)
+		}
+		result.Matches, result.Metrics = matches, metrics
 		if err != nil {
 			result.Error = strings.TrimSpace(err.Error())
 		}
@@ -395,16 +398,45 @@ func targetConstraint(req searchipc.Request) string {
 	return strings.TrimSuffix(rel, "/") + "/"
 }
 
-func buildFFFGrepQuery(req searchipc.Request, pattern string) string {
-	parts := []string{}
-	if c := targetConstraint(req); c != "" {
-		parts = append(parts, c)
+// contentConstraints uses explicit root-relative globs, never bare filenames:
+// GrepConfig intentionally treats filenames as text when AI mode is disabled.
+// Native prefiltering must happen before pagination, not only on returned rows.
+func contentConstraints(req searchipc.Request) (string, error) {
+	rel, _ := filepath.Rel(req.IndexRoot, req.TargetPath)
+	rel = filepath.ToSlash(rel)
+	// The pinned native constraints parser splits on whitespace and has no
+	// quoted-token grammar. Fail explicitly rather than silently widening scope.
+	if strings.IndexFunc(rel+req.Include, unicode.IsSpace) >= 0 {
+		return "", errors.New("FFF content filters do not support whitespace in target-relative paths or include globs")
 	}
-	if include := strings.TrimSpace(req.Include); include != "" {
-		parts = append(parts, include)
+	if info, err := os.Stat(req.TargetPath); err == nil && !info.IsDir() {
+		// The ./ alternative forces glob parsing even for numeric root-level
+		// names. The unprefixed alternative matches the index's relative paths;
+		// unlike **/ it cannot admit nested files with the same suffix.
+		exact := escapeContentGlob(rel)
+		return "{" + exact + ",./" + exact + "}", nil
 	}
-	parts = append(parts, strings.TrimSpace(pattern))
-	return strings.Join(parts, " ")
+	prefix := ""
+	if rel != "." {
+		prefix = escapeContentGlob(rel) + "/"
+	}
+	include := strings.TrimSpace(req.Include)
+	if include == "" {
+		if prefix == "" {
+			return "", nil
+		}
+		return prefix + "**/*", nil
+	}
+	if !strings.Contains(include, "/") {
+		return prefix + "**/" + include, nil
+	}
+	// A path-shaped include may also be an exact filename, not a wildcard.
+	glob := prefix + include
+	return "{" + glob + ",./" + glob + "}", nil
+}
+
+func escapeContentGlob(value string) string {
+	return strings.NewReplacer("\\", "[\\]", "*", "[*]", "?", "[?]", "[", "[[]", "]", "[]]", "{", "[{]", "}", "[}]", ",", "\\,").Replace(value)
 }
 func buildFFFSearchQuery(req searchipc.Request, pattern string) string {
 	parts := []string{}
@@ -531,14 +563,6 @@ func grepMode(mode string) uint8 {
 	default:
 		return 0
 	}
-}
-func needsFileSearchFallback(query string, results []searchipc.GrepQueryResult) bool {
-	for _, r := range results {
-		if strings.EqualFold(strings.TrimSpace(r.Query), strings.TrimSpace(query)) {
-			return strings.TrimSpace(r.Error) != "" || r.Metrics.TotalMatched == 0
-		}
-	}
-	return true
 }
 func compactQueries(queries []string) []string {
 	out := make([]string, 0, len(queries))

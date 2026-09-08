@@ -104,6 +104,26 @@ func TestSanitizeFireworksToolParametersDefaultsEmptyObjectSchema(t *testing.T) 
 	}
 }
 
+func TestBuildChatCompletionRequestPreservesFunctionOutputToolName(t *testing.T) {
+	request, err := buildChatCompletionRequest(provideriface.Request{
+		Model: "test-model",
+		Input: []map[string]any{
+			{"type": "function_call", "call_id": "call_task", "name": "task", "arguments": `{}`},
+			{"type": "function_call_output", "call_id": "call_task", "name": "task", "output": "completed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if len(request.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(request.Messages))
+	}
+	toolMessage := request.Messages[1]
+	if toolMessage["role"] != "tool" || toolMessage["tool_call_id"] != "call_task" || toolMessage["name"] != "task" || toolMessage["content"] != "completed" {
+		t.Fatalf("tool message = %#v, want named task result", toolMessage)
+	}
+}
+
 func TestBuildChatCompletionRequestNormalizesPlanCheckpointCompositionBranches(t *testing.T) {
 	definitions := toolruntime.NewRuntime(1).Definitions()
 	planTools := make([]provideriface.ToolDefinition, 0, 2)

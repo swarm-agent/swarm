@@ -291,20 +291,22 @@ type RunOptions struct {
 	ContinuationBoundary RunContinuationBoundaryCallback
 	TaskCompaction       *TaskContextCompaction
 	// TrustedAgentProfile is populated only by trusted internal orchestration.
-	TrustedAgentProfile   *pebblestore.AgentProfile
-	PermissionSessionID   string
-	RunID                 string
-	TargetKind            string
-	TargetName            string
-	Background            bool
-	OwnerTransport        string
-	ToolScope             *RunToolScope
-	CompiledPolicy        *permission.Policy
-	ExecutionContext      *RunExecutionContext
-	PlanCheckpointContext *RunPlanCheckpointContext
-	Principal             identity.Principal
-	ApplySessionMutation  func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
-	ArtifactRunContext    *tool.ArtifactRunContext
+	TrustedAgentProfile     *pebblestore.AgentProfile
+	PermissionSessionID     string
+	RunID                   string
+	TargetKind              string
+	TargetName              string
+	Background              bool
+	OwnerTransport          string
+	ToolScope               *RunToolScope
+	CompiledPolicy          *permission.Policy
+	ExecutionContext        *RunExecutionContext
+	PlanCheckpointContext   *RunPlanCheckpointContext
+	Principal               identity.Principal
+	ApplySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ArtifactRunContext      *tool.ArtifactRunContext
+	ArtifactV2AuthorContext *tool.ArtifactV2AuthorRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 	// SkipInitialUserMessage is trusted control-plane state for a run whose user
 	// message and run intent were committed atomically before dispatch.
 	SkipInitialUserMessage bool
@@ -600,6 +602,14 @@ func isRunMessageRoleAllowed(role string) bool {
 	default:
 		return false
 	}
+}
+
+func nextAssistantFragmentLogicalKey(flushes map[int]int, step int) string {
+	flushes[step]++
+	if flushes[step] == 1 {
+		return fmt.Sprintf("assistant:%d", step)
+	}
+	return fmt.Sprintf("assistant:%d:fragment:%d", step, flushes[step])
 }
 
 func runMessageV3ClientRequestID(sessionID, runID, logicalKey string) string {
@@ -1721,6 +1731,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}, nil
 	}
 
+	assistantFragmentFlushes := make(map[int]int)
 	flushAssistantFragments := func(step int) (pebblestore.MessageSnapshot, bool, error) {
 		if suppressAssistantFragments || terminalPlanState.IsTerminal() {
 			suppressAssistantFragments = true
@@ -1731,7 +1742,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if assistantText == "" {
 			return pebblestore.MessageSnapshot{}, false, nil
 		}
-		assistantMessage, _, assistantEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("assistant:%d", step), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
+		logicalKey := nextAssistantFragmentLogicalKey(assistantFragmentFlushes, step)
+		assistantMessage, _, assistantEvent, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "assistant", Content: assistantText, Metadata: runMessageMetadata, RunID: runID, Step: step, LogicalKey: logicalKey, Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 		if appendErr != nil {
 			return pebblestore.MessageSnapshot{}, false, appendErr
 		}
@@ -2144,28 +2156,29 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			ParallelToolCalls:         true,
 			WorkspacePath:             workspaceCtx.WorkspacePath,
 			ToolInvoker: s.newProviderToolInvoker(providerToolInvokerConfig{
-				sessionID:            sessionID,
-				permissionSessionID:  permissionSessionID,
-				runID:                runID,
-				step:                 step,
-				sessionMode:          executionMode,
-				mediaExecutionMode:   mediaExecutionMode,
-				agentProfile:         agentProfile,
-				workspacePath:        workspaceCtx.WorkspacePath,
-				workspaceRoots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-				workspaceOriginPath:  workspaceCtx.OriginWorkspacePath,
-				workspaceOriginRoots: append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
-				workspaceName:        sessionSnapshot.WorkspaceName,
-				principal:            options.Principal,
-				emit:                 emit,
-				policy:               compiledPolicy,
-				applySessionMutation: options.ApplySessionMutation,
-				providerManagedV3:    options.ApplySessionMutation != nil,
-				terminalPlanState:    terminalPlanState,
-				providerID:           providerID,
-				model:                resolvedPreference.Preference.Model,
-				mediaContract:        mediaContract,
-				artifactRunContext:   cloneArtifactRunContext(options.ArtifactRunContext),
+				sessionID:               sessionID,
+				permissionSessionID:     permissionSessionID,
+				runID:                   runID,
+				step:                    step,
+				sessionMode:             executionMode,
+				mediaExecutionMode:      mediaExecutionMode,
+				agentProfile:            agentProfile,
+				workspacePath:           workspaceCtx.WorkspacePath,
+				workspaceRoots:          append([]string(nil), workspaceCtx.WorkspaceRoots...),
+				workspaceOriginPath:     workspaceCtx.OriginWorkspacePath,
+				workspaceOriginRoots:    append([]string(nil), workspaceCtx.OriginWorkspaceRoots...),
+				workspaceName:           sessionSnapshot.WorkspaceName,
+				principal:               options.Principal,
+				emit:                    emit,
+				policy:                  compiledPolicy,
+				applySessionMutation:    options.ApplySessionMutation,
+				providerManagedV3:       options.ApplySessionMutation != nil,
+				terminalPlanState:       terminalPlanState,
+				providerID:              providerID,
+				model:                   resolvedPreference.Preference.Model,
+				mediaContract:           mediaContract,
+				artifactRunContext:      cloneArtifactRunContext(options.ArtifactRunContext),
+				artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(options.ArtifactV3AuthorContext, runID),
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -2668,6 +2681,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			runID:              runID,
 			artifactRunContext: cloneArtifactRunContext(options.ArtifactRunContext),
 		}))
+		if authorContext := tool.BindArtifactV3AuthorRunContext(options.ArtifactV3AuthorContext, runID); authorContext != nil {
+			options.ArtifactV3AuthorContext = authorContext
+			runtimeCtx = tool.WithArtifactV3AuthorRunContext(runtimeCtx, *authorContext)
+		}
+		if options.ArtifactV2AuthorContext != nil {
+			authorContext := cloneArtifactV2AuthorRunContext(options.ArtifactV2AuthorContext)
+			if authorContext != nil {
+				authorContext.Grant.ProducerRunID = runID
+				runtimeCtx = tool.WithArtifactV2AuthorRunContext(runtimeCtx, *authorContext)
+			}
+		}
 		executedResults := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, scopeApprovedCalls, func(_ int, call tool.Call, progress tool.Progress) {
 			stage := strings.ToLower(strings.TrimSpace(progress.Stage))
 			if stage != "output" && stage != "image" {
@@ -2769,10 +2793,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			nextInputFunctionOutputs = append(nextInputFunctionOutputs, map[string]any{
 				"type":    "function_call_output",
 				"call_id": call.CallID,
+				"name":    call.Name,
 				"output":  prepareToolOutputForModel(call, result),
 			})
 
-			toolHistoryText := formatToolHistoryWithMetadata(call, toolCallMetadata[i], result)
+			toolHistoryText := formatToolHistoryForRun(call, toolCallMetadata[i], result, runID)
 			storedToolMessage, _, event, appendErr := s.appendRunMessage(runAppendMessageInput{SessionID: sessionID, Role: "tool", Content: toolHistoryText, RunID: runID, Step: step, LogicalKey: fmt.Sprintf("tool:%d:%s", step, strings.TrimSpace(call.CallID)), Principal: options.Principal, ApplySessionMutation: options.ApplySessionMutation})
 			if appendErr != nil {
 				return RunResult{}, appendErr
@@ -2809,6 +2834,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		designerRefinementFeedback := ""
 		if isDesignerRun {
 			refinementIndex, refinementCode, refinementEligible := managedDesignerRefinementCandidate(activeAgent, options.ArtifactRunContext, designerManagedRefinementAttempts, toolCalls, gatedResults)
+			if options.ArtifactV2AuthorContext != nil || options.ArtifactV3AuthorContext != nil {
+				refinementEligible = false
+			}
 			if terminalFailure, stop := designerFailures.ObserveSkipping(toolCalls, gatedResults, refinementIndex); stop {
 				assistantFragments = append(assistantFragments, terminalFailure)
 				break

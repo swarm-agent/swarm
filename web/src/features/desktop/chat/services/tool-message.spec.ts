@@ -6,6 +6,65 @@ function assert(condition: boolean, message: string): void {
   }
 }
 
+function testAskUserTimelineShowsSelectedChoice(): void {
+  const message = buildStructuredToolMessage({
+    tool: "ask_user",
+    callId: "call_ask_choice",
+    argumentsText: JSON.stringify({
+      question: "Which environment?",
+      options: [
+        { label: "Staging", value: "staging" },
+        { label: "Production", value: "production" },
+      ],
+    }),
+    outputText: JSON.stringify({
+      tool: "ask_user",
+      status: "answered",
+      question: "Which environment?",
+      answer: "production",
+    }),
+  });
+  assert(Boolean(message), "expected structured ask-user choice message");
+  assert(message?.previewLines.includes("Selected: Production") === true, `missing selected choice: ${message?.previewLines.join(" | ")}`);
+}
+
+function testAskUserTimelineShowsCustomResponses(): void {
+  const single = buildStructuredToolMessage({
+    tool: "ask-user",
+    callId: "call_ask_custom",
+    argumentsText: JSON.stringify({ question: "What should it say?", options: ["Short", "Detailed"] }),
+    outputText: JSON.stringify({
+      tool: "ask_user",
+      status: "answered",
+      question: "What should it say?",
+      answer: "Use the customer-facing name",
+    }),
+  });
+  assert(single?.previewLines.includes("Custom response: Use the customer-facing name") === true, `missing custom response: ${single?.previewLines.join(" | ")}`);
+
+  const multiple = buildStructuredToolMessage({
+    tool: "ask_user",
+    callId: "call_ask_multiple",
+    argumentsText: JSON.stringify({
+      questions: [
+        { id: "tone", question: "Which tone?", options: [{ label: "Concise", value: "concise" }, { label: "Warm", value: "warm" }] },
+        { id: "note", question: "Any other direction?", options: ["No changes", "Add details"] },
+      ],
+    }),
+    outputText: JSON.stringify({
+      tool: "ask_user",
+      status: "answered",
+      questions: [
+        { id: "tone", question: "Which tone?", options: ["Concise", "Warm"] },
+        { id: "note", question: "Any other direction?", options: ["No changes", "Add details"] },
+      ],
+      answers: { tone: "warm", note: "Keep the launch date prominent" },
+    }),
+  });
+  assert(multiple?.previewLines.includes("Which tone? — Selected: Warm") === true, `missing structured choice: ${multiple?.previewLines.join(" | ")}`);
+  assert(multiple?.previewLines.includes("Any other direction? — Custom response: Keep the launch date prominent") === true, `missing structured custom response: ${multiple?.previewLines.join(" | ")}`);
+}
+
 function testExitPlanApprovedShowsMetadata(): void {
   const message = buildStructuredToolMessage({
     tool: "exit_plan_mode",
@@ -1562,6 +1621,8 @@ function testProviderNeutralToolActivityDescriptors(): void {
 
 function main(): void {
   testProviderNeutralToolActivityDescriptors();
+  testAskUserTimelineShowsSelectedChoice();
+  testAskUserTimelineShowsCustomResponses();
   testManageVideoToolMessageParsesUserMetadata();
   testManageVideoToolMessageParsesSourceIdentity();
   testManageArtifactToolMessageParsesArtifactData();

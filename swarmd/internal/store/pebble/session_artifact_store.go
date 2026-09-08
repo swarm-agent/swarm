@@ -277,9 +277,14 @@ type SessionArtifactCollection struct {
 // PendingRequest is hidden Studio context. The reference contains no bytes,
 // digest, or storage path.
 type SessionArtifactSelectionReference struct {
+	ArtifactID              string               `json:"artifact_id,omitempty"`
+	RevisionRef             string               `json:"revision_ref,omitempty"`
+	TargetPartIDs           *[]string            `json:"target_part_ids,omitempty"`
+	CommitOID               string               `json:"commit_oid,omitempty"`
+	ProjectionSeq           uint64               `json:"projection_seq,omitempty"`
 	SessionID               string               `json:"session_id"`
-	CollectionID            string               `json:"collection_id"`
-	VariantID               string               `json:"variant_id"`
+	CollectionID            string               `json:"collection_id,omitempty"`
+	VariantID               string               `json:"variant_id,omitempty"`
 	EventSeq                uint64               `json:"event_seq,omitempty"`
 	Label                   string               `json:"label,omitempty"`
 	Description             string               `json:"description,omitempty"`
@@ -317,6 +322,19 @@ func (s *SessionStore) ValidateSessionArtifactMessageSelections(accountScopeID, 
 	out := make([]SessionArtifactSelectionReference, 0, len(selections))
 	seen := make(map[string]struct{}, len(selections))
 	for index, incoming := range selections {
+		if incoming.ArtifactID != "" || incoming.RevisionRef != "" || incoming.TargetPartIDs != nil || incoming.CommitOID != "" || incoming.ProjectionSeq != 0 {
+			ref, err := s.validateNativeArtifactMessageSelection(accountScopeID, userID, incoming)
+			if err != nil {
+				return nil, fmt.Errorf("artifact selection %d: %w", index, err)
+			}
+			key := strings.Join([]string{"native", ref.SessionID, ref.ArtifactID}, "\x00")
+			if _, duplicate := seen[key]; duplicate {
+				return nil, fmt.Errorf("artifact selection %d is duplicated", index)
+			}
+			seen[key] = struct{}{}
+			out = append(out, ref)
+			continue
+		}
 		ref := SessionArtifactSelectionReference{
 			SessionID: strings.TrimSpace(incoming.SessionID), CollectionID: strings.TrimSpace(incoming.CollectionID),
 			VariantID: strings.TrimSpace(incoming.VariantID), EventSeq: incoming.EventSeq,

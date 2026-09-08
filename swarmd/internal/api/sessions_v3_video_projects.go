@@ -1,7 +1,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -385,6 +387,30 @@ func (s *Server) handleSessionV3VideoSubpath(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	subpath = strings.Trim(subpath, "/")
+	if subpath == "artifact-v3/media" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			methodNotAllowed(w)
+			return
+		}
+		raw := r.URL.Query().Get("reference")
+		var ref pebblestore.ArtifactV3VideoReference
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if len(raw) == 0 || len(raw) > 8192 || decoder.Decode(&ref) != nil || decoder.Decode(new(any)) != io.EOF {
+			writeError(w, http.StatusBadRequest, errors.New("complete native Artifact V3 media reference required"))
+			return
+		}
+		body, err := s.videoProjects.ReadArtifactV3Media(r.Context(), principal, sessionID, ref)
+		if err != nil {
+			writeError(w, http.StatusNotFound, errors.New("Artifact V3 media unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", ref.MediaType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "private, no-store")
+		http.ServeContent(w, r, ref.DerivativeID, time.Time{}, bytes.NewReader(body))
+		return
+	}
 	if subpath == "projects" {
 		s.handleSessionV3VideoProjects(w, r, principal, sessionID)
 		return

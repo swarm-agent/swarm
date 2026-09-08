@@ -1,7 +1,7 @@
 import { apiFetch, readErrorMessage, requestJson } from '../../../app/api'
 import type { ModelProfileChoice, ModelProfileSelectionRecord } from '../chat/types/chat'
 import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
-import type { DesktopV3ArtifactMessageSelection } from './artifact-api'
+import { normalizeDesktopV3ArtifactMessageSelection, type DesktopV3ArtifactMessageSelection } from './artifact-api'
 import type { DesktopVideoSourceAttachment } from '../chat/services/video-source-attachments'
 import { desktopRoutedSessionMetadata } from '../chat/services/desktop-routed-worktree-intent'
 
@@ -204,11 +204,14 @@ export interface DesktopV3RoutedSessionStartResponse {
   mutation: DesktopV3RoutedSessionMutation
 }
 
-function portableDesktopV3ArtifactMessageSelection(selection: DesktopV3ArtifactMessageSelection): DesktopV3ArtifactMessageSelection {
+export function portableDesktopV3ArtifactMessageSelection(selection: DesktopV3ArtifactMessageSelection): DesktopV3ArtifactMessageSelection {
+  const normalized = normalizeDesktopV3ArtifactMessageSelection(selection)
+  if (!normalized) throw new Error('Invalid artifact selection')
+  if (normalized.artifact_id) return normalized
   return {
     session_id: selection.session_id.trim(),
-    collection_id: selection.collection_id.trim(),
-    variant_id: selection.variant_id.trim(),
+    collection_id: selection.collection_id!.trim(),
+    variant_id: selection.variant_id!.trim(),
     event_seq: selection.event_seq,
     label: selection.label.trim(),
     ...(selection.description?.trim() ? { description: selection.description.trim() } : {}),
@@ -311,7 +314,7 @@ export async function postDesktopV3RoutedSessionStart(
     throw new Error('Desktop V3 routed start accepts media or staging_ids, not both')
   }
   for (const selection of input.artifact_selections ?? []) {
-    if (!selection.session_id.trim() || !selection.collection_id.trim() || !selection.variant_id.trim() || selection.event_seq <= 0 || !selection.label.trim() || (selection.action !== 'select' && selection.action !== 'use')) {
+    if (!normalizeDesktopV3ArtifactMessageSelection(selection)) {
       throw new Error('Desktop V3 routed start contains an invalid artifact selection')
     }
   }

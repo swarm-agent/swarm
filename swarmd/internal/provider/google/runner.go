@@ -597,14 +597,41 @@ func sanitizeGoogleToolSchemaValue(value any) any {
 
 func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[string]any) map[string]any {
 	out := make(map[string]any, len(schema)+2)
-	properties, _ := sanitizeGoogleToolSchemaValue(schema["properties"]).(map[string]any)
-	if properties != nil {
+	// Property names are data, not schema keywords (a tool may name a field "enum").
+	var properties map[string]any
+	if source, ok := schema["properties"].(map[string]any); ok {
+		properties = make(map[string]any, len(source))
+		for name, property := range source {
+			properties[name] = sanitizeGoogleToolSchemaValue(property)
+		}
 		out["properties"] = properties
 	}
 	for key, item := range schema {
 		switch key {
 		case "additionalProperties", "uniqueItems", "exclusiveMinimum", "exclusiveMaximum", "properties":
 			continue
+		case "enum":
+			// Google's parameters field uses protobuf Schema: enum is repeated
+			// string even for INTEGER/NUMBER schemas, unlike JSON Schema enums.
+			// Round-trip through JSON to handle both typed Go slices and decoded
+			// []any without changing the canonical schema or the parameter type.
+			encoded, err := json.Marshal(item)
+			var values []json.RawMessage
+			if err == nil && json.Unmarshal(encoded, &values) == nil {
+				enums := make([]string, 0, len(values))
+				for _, value := range values {
+					var text string
+					if json.Unmarshal(value, &text) != nil || string(value) == "null" {
+						text = string(value)
+					}
+					enums = append(enums, text)
+				}
+				out[key] = enums
+			} else {
+				// Preserve malformed input for normal serialization/provider
+				// rejection rather than silently removing its constraint.
+				out[key] = item
+			}
 		case "anyOf":
 			out[key] = sanitizeGoogleToolSchemaAlternatives(item, properties)
 		default:

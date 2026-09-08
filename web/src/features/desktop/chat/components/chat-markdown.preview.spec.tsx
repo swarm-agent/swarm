@@ -13,6 +13,28 @@ function renderToolMarkup(toolMessage: NonNullable<ReturnType<typeof buildStruct
   return renderToStaticMarkup(<ToolMessageView toolMessage={toolMessage} />);
 }
 
+function testAcceptedAskUserResponseRendersOnTimeline(): void {
+  const choice = buildStructuredToolMessage({
+    tool: "ask_user",
+    callId: "call_ask_choice",
+    argumentsText: JSON.stringify({ question: "Which environment?", options: [{ label: "Staging", value: "staging" }, { label: "Production", value: "production" }] }),
+    outputText: JSON.stringify({ tool: "ask_user", status: "answered", question: "Which environment?", answer: "production" }),
+  });
+  assert(Boolean(choice), "expected structured ask-user choice message");
+  const choiceMarkup = renderToolMarkup(choice!);
+  assert(choiceMarkup.includes("Selected: Production"), "timeline should show the accepted predefined choice");
+
+  const custom = buildStructuredToolMessage({
+    tool: "ask_user",
+    callId: "call_ask_custom",
+    argumentsText: JSON.stringify({ question: "What should it say?", options: ["Short", "Detailed"] }),
+    outputText: JSON.stringify({ tool: "ask_user", status: "answered", question: "What should it say?", answer: "Use the customer-facing name" }),
+  });
+  assert(Boolean(custom), "expected structured ask-user custom response message");
+  const customMarkup = renderToolMarkup(custom!);
+  assert(customMarkup.includes("Custom response: Use the customer-facing name"), "timeline should show the accepted custom response");
+}
+
 function testDeniedExitPlanPermissionUsesFlatPreview(): void {
   const message = buildStructuredToolMessage({
     tool: "permission",
@@ -924,6 +946,7 @@ function testManageArtifactRendersTypedArtifactCard(): void {
 }
 
 function main(): void {
+  testAcceptedAskUserResponseRendersOnTimeline();
   testDeniedExitPlanPermissionUsesFlatPreview();
   testPlanManageUsesMinimalTransitionView();
   testAcceptedPlanShowsStartedPlanMetadata();

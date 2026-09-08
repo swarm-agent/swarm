@@ -775,7 +775,7 @@ export const DesktopPlanExecutionSidebar = memo(
                 "grid content-start",
                 embedded
                   ? "gap-4"
-                  : "min-h-0 shrink overflow-hidden rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
+                  : "min-h-0 flex-1 overflow-hidden rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
               )}
               data-plan-scroll-region
               data-plan-top-stack={!embedded ? "unified" : undefined}
@@ -815,7 +815,7 @@ export const DesktopPlanExecutionSidebar = memo(
               className={cn(
                 embedded
                   ? ""
-                  : "flex min-h-[7rem] flex-1 flex-col overflow-hidden rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3 shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
+                  : "mt-auto flex min-h-0 shrink-0 flex-col overflow-hidden has-[[data-git-expanded=true]]:h-[60%] has-[[data-git-expanded=true]]:shrink has-[[data-git-expanded=true]]:min-h-[10rem] rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3 shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
               )}
               data-plan-section="session"
             >

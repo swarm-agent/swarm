@@ -1009,6 +1009,69 @@ test('routed first message survives an empty route-triggered hydrate and reconci
   assert.equal(state.messagesBySession[sessionB.id].source, 'network')
 })
 
+test('routed first user message survives post-response hydrate after mutation provenance is reconciled', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const routedSession: SessionSnapshot = {
+    ...sessionB,
+    mode: 'auto',
+    message_count: 1,
+    metadata: {
+      routed_start: true,
+      background_router_session: true,
+    },
+  }
+  state.sessionsById[sessionB.id] = { kind: 'full', session: routedSession, needsHydrate: false }
+  state.projectionsBySession[sessionB.id] = { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 }
+  upsertCommittedMessage(state, sessionB.id, messageB1)
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: routedSession },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 2, projection_high_watermark_seq: 2 } },
+    messages_by_session: { [sessionB.id]: [messageB1] },
+  }), [sessionB.id])
+  assert.equal(state.messagesBySession[sessionB.id].source, 'network')
+
+  const assistant: MessageSnapshot = {
+    id: 'msg-b-2',
+    session_id: sessionB.id,
+    global_seq: 3,
+    role: 'assistant',
+    content: 'done',
+    created_at: 30,
+  }
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...routedSession, message_count: 2, last_message_at: 30, updated_at: 30 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 3, projection_high_watermark_seq: 3, updated_at: 30 } },
+    messages_by_session: { [sessionB.id]: [assistant] },
+  }), [sessionB.id])
+
+  assert.deepEqual(
+    state.messagesBySession[sessionB.id].items.map((message) => [message.role, message.content]),
+    [['user', messageB1.content], ['assistant', assistant.content]],
+  )
+})
+
+test('ordinary hydrated session still accepts an authoritative transcript replacement', () => {
+  const state = bootstrappedState()
+  applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
+  const assistant: MessageSnapshot = {
+    id: 'msg-b-replacement',
+    session_id: sessionB.id,
+    global_seq: 3,
+    role: 'assistant',
+    content: 'authoritative replacement',
+    created_at: 30,
+  }
+
+  applyHydrateSnapshot(state, hydrateSnapshotFixture({
+    sessions_by_id: { [sessionB.id]: { ...sessionB, message_count: 1, last_message_at: 30, updated_at: 30 } },
+    projections_by_session: { [sessionB.id]: { ...projectionB, last_event_seq: 3, projection_high_watermark_seq: 3, updated_at: 30 } },
+    messages_by_session: { [sessionB.id]: [assistant] },
+  }), [sessionB.id])
+
+  assert.deepEqual(state.messagesBySession[sessionB.id].items.map((message) => message.id), [assistant.id])
+})
+
 test('metadata-only hydrate validates subset but ignores empty message payload when messages are out of scope', () => {
   const state = bootstrappedState()
   applyHydrateSnapshot(state, hydrateSnapshotFixture(), [sessionB.id])
@@ -2405,6 +2468,9 @@ test('progressive live answer prefixes reconcile to one assistant row and one re
   ])
 })
 
+// Requirement: reasoning keeps its start-event anchor across completion and tool
+// construction. The cache reducer and conversation renderer own this causal
+// order; checking both phases prevents completion-time movement hidden by sorting.
 test('durable provider tool construction follows reasoning without later row movement', () => {
   const state = bootstrappedState()
 
@@ -2449,7 +2515,7 @@ test('durable provider tool construction follows reasoning without later row mov
       : `tool:${item.tool.callId}:${item.timelineSeq}`)
 
   assert.deepEqual(signature(), [
-    'reasoning:inspect the relevant files:5',
+    'reasoning:inspect the relevant files:3',
     'tool:call-causal:6',
   ])
 
@@ -2464,7 +2530,7 @@ test('durable provider tool construction follows reasoning without later row mov
   })
 
   assert.deepEqual(signature(), [
-    'reasoning:inspect the relevant files:5',
+    'reasoning:inspect the relevant files:3',
     'tool:call-causal:6',
   ])
   const run = state.liveRunsBySession[sessionA.id]['run-live']
@@ -2627,6 +2693,9 @@ test('late reasoning does not move speculative assistant output from an earlier 
   assert.deepEqual(rendered, ['live-assistant', 'live-reasoning'])
 })
 
+// Requirement: the first durable assistant event replaces speculative placement;
+// later reasoning must not move that established anchor. Reducer assertions are
+// the narrowest proof of applyStreamAwareDurableAssistantDelta reconciliation.
 test('late same-step reasoning does not move assistant text with a durable checkpoint', () => {
   let state = bootstrappedState()
   state = applyDesktopV3LivePatchBatch(state, [livePatch({
@@ -2665,7 +2734,7 @@ test('late same-step reasoning does not move assistant text with a durable check
 
   const run = state.liveRunsBySession[sessionA.id]['run-live']
   assert.equal(run.assistantSegments?.[0]?.durableOffsetEnd, byteLength('durable assistant'))
-  assert.equal(run.assistantSegments?.[0]?.timelineSeq, assistantSeq)
+  assert.equal(run.assistantSegments?.[0]?.timelineSeq, assistantSeq + 5)
 })
 
 test('realtime provider tool construction events create live tool overlay while arguments stream', () => {
@@ -3564,6 +3633,10 @@ test('reasoning completion commits one reasoning message and renders once', () =
   assert.equal(rendered.filter((item) => item.type === 'message' && item.message.role === 'reasoning').length, 1)
 })
 
+// Requirement: hydrate keeps reasoning at its start event before subsequent tool
+// output, without changing canonical message sequences. applyHydrateSnapshot and
+// buildDesktopV3ConversationRenderItems own this replay/order boundary; this
+// reducer-to-render test prevents completion-time repositioning after refresh.
 test('hydrate replays durable reasoning events and commits thinking message after refresh', () => {
   const state = bootstrappedState()
   const toolMessage: MessageSnapshot = {
@@ -3669,7 +3742,7 @@ test('hydrate replays durable reasoning events and commits thinking message afte
   const rendered = buildDesktopV3ConversationRenderItems(selectRenderedSessionMessages(state, sessionA.id))
   assert.deepEqual(
     rendered.filter((item) => item.type === 'message').map((item) => item.type === 'message' ? `${item.message.role}:${item.message.global_seq}` : ''),
-    ['user:1', 'assistant:2', 'tool:6', 'reasoning:7', 'assistant:8'],
+    ['user:1', 'assistant:2', 'reasoning:7', 'tool:6', 'assistant:8'],
   )
   assert.equal(rendered.filter((item) => item.type === 'live-reasoning').length, 0)
 })

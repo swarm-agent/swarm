@@ -235,6 +235,8 @@ type SessionPlanInfo struct {
 // the durable plan document.
 type SessionPlanArtifactReference struct {
 	SessionID    string `json:"session_id,omitempty"`
+	ArtifactID   string `json:"artifact_id,omitempty"`
+	RevisionRef  string `json:"revision_ref,omitempty"`
 	CollectionID string `json:"collection_id,omitempty"`
 	VariantID    string `json:"variant_id,omitempty"`
 	EventSeq     uint64 `json:"event_seq,omitempty"`

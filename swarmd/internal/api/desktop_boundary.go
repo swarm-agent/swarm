@@ -37,6 +37,13 @@ func (s *Server) withDesktopBoundary(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Opaque sandbox previews cannot present the Desktop origin or session
+		// cookie. Admit only an authenticated, short-lived, path-scoped preview
+		// capability; withAuth independently validates it and supplies principal.
+		if _, ok := s.validateSessionV3ArtifactPreviewRequest(r); ok {
+			next.ServeHTTP(w, r)
+			return
+		}
 		admission, err := s.admitDesktopRequest(r)
 		if err != nil {
 			if errors.Is(err, errTailscaleDesktopOriginNotApproved) && shouldAllowPendingTailscaleDesktopRequest(r) {

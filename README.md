@@ -210,6 +210,8 @@ Run the repository pre-commit gate before committing changes:
 
 That gate includes repository policy checks, secret checks, hardcoded-path checks, and vulnerability scanning. Additional development scripts live under `scripts/`.
 
+Live candidate testing uses only the dedicated broker-owned `systemd-nspawn` testbench. Configure the ignored `.env` from `.env.example`, deploy a clean committed candidate with `./scripts/testbench-container-deploy.sh deploy`, and run checked-in scenarios with `./scripts/run-testbench-runner.sh <runner-name>`. See [`docs/testing/testbench-container.md`](docs/testing/testbench-container.md). The host Swarm service and host ports `5555/7781` are not a live candidate-test fallback.
+
 Common source-checkout commands:
 
 ```bash

@@ -134,6 +134,7 @@ export interface WorkspaceOverviewSwarmTargetWire {
 
 export interface WorkspaceOverviewResponseWire {
   ok?: boolean
+  details_included?: boolean
   current_workspace?: WorkspaceResolutionWire | null
   workspaces?: WorkspaceOverviewWorkspaceWire[]
   directories?: WorkspaceDiscoverEntryWire[]
@@ -405,13 +406,20 @@ function mapOverviewSession(session: WorkspaceOverviewSessionWire, preferRuntime
   }
 }
 
-function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire, preferRuntimeWorkspacePath: boolean): WorkspaceOverviewWorkspace {
+function mapOverviewWorkspace(workspace: WorkspaceOverviewWorkspaceWire, preferRuntimeWorkspacePath: boolean, detailsIncluded: boolean): WorkspaceOverviewWorkspace {
   return {
     ...mapWorkspaceEntry(workspace),
+    ...(detailsIncluded ? {} : {
+      gitBranch: undefined, gitHasGit: undefined, gitClean: undefined,
+      gitDirtyCount: undefined, gitStagedCount: undefined, gitModifiedCount: undefined,
+      gitUntrackedCount: undefined, gitConflictCount: undefined, gitAheadCount: undefined,
+      gitBehindCount: undefined, gitCommittedFileCount: undefined,
+      gitCommittedAdditions: undefined, gitCommittedDeletions: undefined,
+    }),
     sessions: Array.isArray(workspace.sessions)
       ? workspace.sessions.map((session) => mapOverviewSession(session, preferRuntimeWorkspacePath)).filter((session) => session.id)
       : [],
-    todoSummary: mapWorkspaceTodoSummary(workspace.todo_summary),
+    todoSummary: detailsIncluded ? mapWorkspaceTodoSummary(workspace.todo_summary) : undefined,
     topologyRoutes: Array.isArray(workspace.topology_routes)
       ? workspace.topology_routes.map(mapOverviewTopologyRoute).filter((route) => route.routeId && route.workspaceBindingId && route.runtimeSwarmId)
       : [],
@@ -424,7 +432,7 @@ export function mapWorkspaceOverviewResponse(response: WorkspaceOverviewResponse
   return {
     ok: Boolean(response.ok),
     currentWorkspace: response.current_workspace ? mapWorkspaceResolution(response.current_workspace) : null,
-    workspaces: Array.isArray(response.workspaces) ? response.workspaces.map((workspace) => mapOverviewWorkspace(workspace, preferRuntimeWorkspacePath)) : [],
+    workspaces: Array.isArray(response.workspaces) ? response.workspaces.map((workspace) => mapOverviewWorkspace(workspace, preferRuntimeWorkspacePath, response.details_included !== false)) : [],
     discovered: Array.isArray(response.directories) ? response.directories.map(mapWorkspaceDiscoverEntry) : [],
     swarmTarget,
   }

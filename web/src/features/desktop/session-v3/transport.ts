@@ -482,8 +482,8 @@ export class DesktopV3RealtimeTransport {
     })
 
     socket.addEventListener('close', () => {
-      this.clearLiveness()
       if (generation !== this.generation || this.socket !== socket) return
+      this.clearLiveness()
       this.socket = null
       this.readySessionSubscriptions.clear()
       if (!this.desired) {

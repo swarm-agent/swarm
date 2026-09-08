@@ -1,4 +1,5 @@
 import { apiFetch, requestJson } from '../../../app/api'
+import { STARTUP_REQUEST_TIMEOUT_MS, throwIfAborted, withRequestDeadline } from '../../../app/request-lifecycle'
 
 import type { SessionsReconnectResponse, SyncHistory, SyncResources, SyncSelector, SyncSnapshotResponse } from './desktop-v3-cache-types'
 
@@ -153,6 +154,10 @@ export function buildDesktopV3BootstrapInput(
 export async function postDesktopV3SyncBootstrap(
   input: Partial<DesktopV3BootstrapInput> = {},
 ): Promise<SyncSnapshotResponse> {
+  return withRequestDeadline((signal) => readDesktopV3SyncBootstrap(input, signal), STARTUP_REQUEST_TIMEOUT_MS)
+}
+
+async function readDesktopV3SyncBootstrap(input: Partial<DesktopV3BootstrapInput>, signal: AbortSignal): Promise<SyncSnapshotResponse> {
   const body = buildDesktopV3BootstrapInput(input)
   const requestStartedAt = desktopV3Now()
   const response = await apiFetch('/v3/sync/bootstrap', {
@@ -161,9 +166,11 @@ export async function postDesktopV3SyncBootstrap(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal,
   })
   const headersReceivedAt = desktopV3Now()
   const text = await response.text()
+  throwIfAborted(signal)
   const bodyReadAt = desktopV3Now()
 
   if (!response.ok) {
@@ -197,6 +204,10 @@ export async function postDesktopV3SyncHydrate(
   input: DesktopV3HydrateInput,
   signal?: AbortSignal,
 ): Promise<SyncSnapshotResponse> {
+  return withRequestDeadline((requestSignal) => readDesktopV3SyncHydrate(input, requestSignal), STARTUP_REQUEST_TIMEOUT_MS, signal)
+}
+
+async function readDesktopV3SyncHydrate(input: DesktopV3HydrateInput, signal: AbortSignal): Promise<SyncSnapshotResponse> {
   const requestStartedAt = desktopV3Now()
   const response = await apiFetch('/v3/sync/hydrate', {
     method: 'POST',
@@ -208,6 +219,7 @@ export async function postDesktopV3SyncHydrate(
   })
   const headersReceivedAt = desktopV3Now()
   const text = await response.text()
+  throwIfAborted(signal)
   const bodyReadAt = desktopV3Now()
 
   if (!response.ok) {

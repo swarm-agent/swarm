@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
@@ -38,8 +39,7 @@ import { normalizeShowTipsEnabled, normalizeSidebarHideInactiveHours, type UISet
 import { saveSidebarHideInactiveHours } from '../settings/swarm/mutations/save-sidebar-hide-inactive-hours'
 import { saveShowTipsSetting } from '../settings/swarm/mutations/save-show-tips-setting'
 import { fetchSwarmTargets } from '../swarm/api/swarm-targets'
-import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
-import { DesktopV3NewSessionPane } from '../chat/components/desktop-v3-new-session-pane'
+import { DesktopV3ConversationPane as ConversationPane } from '../chat/components/desktop-v3-new-session-pane'
 import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
 import { applyDesktopV3RoutedStartResponse, clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
@@ -50,7 +50,10 @@ import { preferenceFromModelProfile } from '../chat/services/model-profiles'
 import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { resolveDesktopTaskWorkspace } from '../chat/services/task-workspace-selection'
 import { executeDesktopTipsCommand } from '../chat/services/home-tips'
-import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, startGitRealtime, suggestWorkspaceCommitMessage } from '../git/api'
+import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, suggestWorkspaceCommitMessage } from '../git/api'
+import { SessionRepositoryPicker } from '../git/session-repository-picker'
+import { useSessionRepositories } from '../runtime/use-session-repositories'
+import { repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
@@ -100,6 +103,7 @@ import {
 const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
+const SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT = 5
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -2289,12 +2293,16 @@ interface RenderSidebarSessionGroupsInput {
   bulkArchivePending: boolean
   masterSelectionGroup: SidebarSessionGroupID | null
   reviewCleanupOpen: boolean
+  collapsedGroups: Readonly<Partial<Record<SidebarSessionGroupID, boolean>>>
+  expandedOverflowGroups: Readonly<Partial<Record<SidebarSessionGroupID, boolean>>>
   gitHasGit: boolean
   gitAheadCount: number
   gitBehindCount: number
   gitDirtyCount: number
   onOpenGit: () => void
   onToggleReviewCleanup: () => void
+  onToggleGroupCollapsed: (group: SidebarSessionGroupID) => void
+  onToggleGroupOverflow: (group: SidebarSessionGroupID) => void
   onEnterSelectionMode: (group: SidebarSessionGroupID) => void
   onClearSelection: () => void
   onBulkArchive: () => void
@@ -2346,6 +2354,19 @@ export const SIDEBAR_SESSION_GROUPS = [
   { id: 'active_chats', label: 'Active Chats', showInactiveThreshold: true },
 ] as const satisfies ReadonlyArray<{ id: SidebarSessionGroupID; label: string; showInactiveThreshold: boolean }>
 
+export function sidebarVisibleGroupNodes(
+  nodes: SidebarSessionNode[],
+  group: SidebarSessionGroupID,
+  overflowExpanded: boolean,
+): SidebarSessionNode[] {
+  if (group !== 'needs_review' || overflowExpanded) return nodes
+  let visibleRoots = 0
+  return nodes.filter((node) => {
+    if (node.depth === 0) visibleRoots += 1
+    return visibleRoots <= SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+  })
+}
+
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
   if (input.nodes.length === 0) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
@@ -2362,6 +2383,23 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
     if (nodes.length === 0) return []
+    const collapsed = input.collapsedGroups[group.id]
+    const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
+    const rootCount = nodes.filter((node) => node.depth === 0).length
+    const hasOverflow = group.id === 'needs_review' && rootCount > SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
+    const hiddenRootCount = Math.max(0, rootCount - SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT)
+    const collapseControl = (
+      <button
+        type="button"
+        className="grid h-5 w-5 shrink-0 place-items-center rounded text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${group.label} section`}
+        aria-expanded={!collapsed}
+        onClick={() => input.onToggleGroupCollapsed(group.id)}
+      >
+        {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+      </button>
+    )
     const groupControls = (
       <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
@@ -2423,18 +2461,22 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               ) : null}
               {groupControls}
             </div>
-            <div data-sidebar-needs-review-heading className="flex min-h-6 items-center px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+            <div data-sidebar-needs-review-heading className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+              {collapseControl}
               <span>{group.label}</span>
+              <span className="ml-1 tabular-nums tracking-normal">{rootCount}</span>
             </div>
           </>
         ) : (
           <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
+            {collapseControl}
             <span>{group.label}</span>
+            <span className="tabular-nums tracking-normal">{rootCount}</span>
             {groupControls}
           </div>
         )}
-        <div className="grid gap-1">
-          {sidebarTaskCallPresentationGroups(nodes).map((taskGroup) => {
+        {!collapsed ? <div className="grid gap-1">
+          {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
             const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
             return (
               <div
@@ -2473,7 +2515,19 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               </div>
             )
           })}
-        </div>
+          {hasOverflow ? (
+            <button
+              type="button"
+              className="flex min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+              aria-label={overflowExpanded ? 'Show fewer Needs Review sessions' : `Show ${hiddenRootCount} more Needs Review sessions`}
+              aria-expanded={overflowExpanded}
+              onClick={() => input.onToggleGroupOverflow(group.id)}
+            >
+              <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
+              <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+            </button>
+          ) : null}
+        </div> : null}
       </section>
     )]
   })
@@ -2548,10 +2602,15 @@ export function DesktopAppPage() {
   const [quickActionsOpen, setQuickActionsOpen] = useState(false)
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false)
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  const integrationHelpRequestIdRef = useRef(0)
+  const [integrationHelpDraft, setIntegrationHelpDraft] = useState<{ id: number; sessionId: string; draft: string; append: true }>()
+  const handleIntegrationHelpDraftHandled = useCallback((id: number) => {
+    setIntegrationHelpDraft((current) => current?.id === id ? undefined : current)
+  }, [])
   const [newSessionEpoch, setNewSessionEpoch] = useState(0)
+  const [activatedConversation, setActivatedConversation] = useState<{ sessionId: string; key: string } | null>(null)
   const [newSessionIntent, setNewSessionIntent] = useState<(DesktopNewSessionCommandRequest & { workspacePath: string }) | null>(null)
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false)
-  const [gitRealtimeErrors, setGitRealtimeErrors] = useState<Record<string, string>>({})
   const [todoItems, setTodoItems] = useState<Record<string, WorkspaceTodoItem[]>>({})
   const [todoSummaries, setTodoSummaries] = useState<Record<string, WorkspaceTodoSummary>>({})
   const [editingSidebarSwarmName, setEditingSidebarSwarmName] = useState(false)
@@ -2573,6 +2632,24 @@ export function DesktopAppPage() {
   const lastSelectedSidebarRootIDRef = useRef<string | null>(null)
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
+  const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    needs_review: false,
+    in_progress: false,
+    pinned: false,
+    active_chats: false,
+  })
+  const [expandedSidebarOverflowGroups, setExpandedSidebarOverflowGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    needs_review: false,
+    in_progress: false,
+    pinned: false,
+    active_chats: false,
+  })
+  const handleToggleSidebarGroupCollapsed = useCallback((group: SidebarSessionGroupID) => {
+    setCollapsedSidebarGroups((current) => ({ ...current, [group]: !current[group] }))
+  }, [])
+  const handleToggleSidebarGroupOverflow = useCallback((group: SidebarSessionGroupID) => {
+    setExpandedSidebarOverflowGroups((current) => ({ ...current, [group]: !current[group] }))
+  }, [])
   const [sidebarThresholdSaving, setSidebarThresholdSaving] = useState(false)
   const [sidebarNow, setSidebarNow] = useState(() => Date.now())
   const [previousChatSessionId, setPreviousChatSessionId] = useState<string | null>(null)
@@ -3067,21 +3144,35 @@ export function DesktopAppPage() {
     [desktopStateSessions],
   )
   const activeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
-  const selectedGitSessionId = activeGitSession?.id ?? ''
-  const selectedGitWorkspacePath = activeGitSession?.worktreeEnabled
+  const repositoryInventory = useSessionRepositories(routeSessionId || '')
+  const selectedRepository = repositoryInventory.items.find(row => repositoryKey(row) === repositoryInventory.selectedKey)
+  const currentGitWorkspacePath = activeGitSession?.worktreeEnabled
     ? activeGitSession.worktreeRootPath?.trim() || ''
     : activeGitSession
       ? desktopRouteWorkspacePathForSession(activeGitSession, workspacePathByBindingId, knownWorkspacePaths, workspacePathById)
       : ''
+  const selectedGitSessionId = selectedRepository?.session_id || ''
+  const selectedGitWorkspacePath = selectedRepository?.workspace_path || ''
+  const selectedRepositoryMutable = repositoryMutationSupported(selectedRepository, {
+    id: activeGitSession?.id || '', path: currentGitWorkspacePath, worktree: Boolean(activeGitSession?.worktreeEnabled), branch: activeGitSession?.worktreeEnabled ? activeGitSession.worktreeBranch : undefined,
+  }, repositoryInventory.stale || repositoryInventory.loading)
+  const [gitDockExpanded, setGitDockExpanded] = useState(false)
+  useEffect(() => setGitDockExpanded(false), [routeSessionId])
+  const [gitPageActive, setGitPageActive] = useState(() => document.visibilityState !== 'hidden')
+  useEffect(() => observePageActivity(setGitPageActive), [])
   const gitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
-    queryFn: () => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId),
-    enabled: selectedGitSessionId !== '' && selectedGitWorkspacePath !== '',
+    queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId, pageSignal), signal),
+    enabled: gitPageActive && selectedRepositoryMutable,
     staleTime: 0,
     refetchOnWindowFocus: true,
   })
-  const gitSnapshot = gitStatusQuery.data?.status ?? null
-  const activeSessionWorktree = Boolean(activeGitSession?.worktreeEnabled && selectedGitWorkspacePath)
+  const gitSnapshot = selectedRepository?.availability === 'available'
+    ? (selectedRepositoryMutable && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ? gitStatusQuery.data.status : selectedRepository.status ?? null)
+    : null
+  const activeSessionWorktree = Boolean(selectedRepositoryMutable && activeGitSession?.worktreeEnabled)
+  const selectedRepositoryActionsEnabled = selectedRepositoryMutable && !gitStatusQuery.isError && !gitStatusQuery.isFetching
+    && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
   const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId, workspacePathById) : ''
@@ -3098,47 +3189,14 @@ export function DesktopAppPage() {
   const activeSessionReviewCandidate = activeSessionWorktree
     ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
     : null
-  const activeSessionIntegrateEligible = Boolean(activeSessionReviewCandidate?.integrate_eligible)
+  const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && !gitReviewQuery.isFetching && activeSessionReviewCandidate?.integrate_eligible)
 
   useEffect(() => {
-    if (!selectedGitWorkspacePath || document.visibilityState === 'hidden') return
-    let cancelled = false
-    let token = ''
-    const refresh = async () => {
-      const startedAt = Date.now()
-      const requestedToken = token
-      try {
-        const response = await startGitRealtime(selectedGitWorkspacePath, selectedGitSessionId, requestedToken)
-        if (cancelled) return
-        if (response.watch_token !== requestedToken) {
-          token = response.watch_token
-          queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: response.status })
-        } else {
-          // A current daemon holds this request for the long-poll window. Keep a
-          // defensive floor for stale/nonconforming daemons that ignore the token
-          // so an immediate unchanged response cannot create a hot request loop.
-          const remaining = 1_000 - (Date.now() - startedAt)
-          if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining))
-        }
-        setGitRealtimeErrors((current) => {
-          if (!current[selectedGitWorkspacePath]) return current
-          const next = { ...current }; delete next[selectedGitWorkspacePath]; return next
-        })
-        return true
-      } catch (error) {
-        if (!cancelled) setGitRealtimeErrors((current) => ({ ...current, [selectedGitWorkspacePath]: error instanceof Error ? error.message : String(error) }))
-        return false
-      }
-    }
-    const poll = async () => {
-      while (!cancelled) {
-        const ok = document.visibilityState === 'visible' ? await refresh() : true
-        if (!cancelled) await new Promise((resolve) => window.setTimeout(resolve, document.visibilityState !== 'visible' ? 1_000 : ok ? 250 : 5_000))
-      }
-    }
-    void poll()
-    return () => { cancelled = true }
-  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath])
+    if (!selectedRepositoryMutable || !selectedRepository?.status) return
+    // Inventory completion follows scoped durable events or an explicit refresh.
+    // Reuse that exact status instead of maintaining a second Git polling loop.
+    queryClient.setQueryData(gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId), { ok: true, status: selectedRepository.status })
+  }, [queryClient, selectedGitSessionId, selectedGitWorkspacePath, selectedRepositoryMutable, selectedRepository])
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(
     mergedSidebarWorkspaceEntries.map((workspace) => ({
       path: workspace.path,
@@ -3157,8 +3215,8 @@ export function DesktopAppPage() {
     : routeWorkspaceSlug
   const topWorkspaceGitStatusQuery = useQuery({
     queryKey: gitStatusQueryKey(topWorkspacePath),
-    queryFn: () => fetchGitStatus(topWorkspacePath),
-    enabled: Boolean(topWorkspacePath),
+    queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(topWorkspacePath, 12, '', pageSignal), signal),
+    enabled: gitPageActive && Boolean(topWorkspacePath),
     staleTime: 5_000,
     refetchOnWindowFocus: true,
   })
@@ -3296,28 +3354,28 @@ export function DesktopAppPage() {
     })
   }, [agentStateQuery.data?.profiles, draftPreferenceQuery.data?.preference, modelProfilesQuery.data, navigate, resolveDesktopRepairSessionAuthority])
 
+  const openIntegrationHelpDraft = useCallback(async (sourceSessionId: string, owningWorkspacePath: string, prompt: string) => {
+    const sessionId = sourceSessionId.trim()
+    if (!sessionId) throw new Error('The existing session is unavailable')
+    const sourceSession = sessionById.get(sessionId)
+    const workspaceSlug = sourceSession ? globalSessionWorkspaceSlug(sourceSession)
+      : workspaceSlugByPath.get(owningWorkspacePath)
+        ?? workspaceRouteSlugBase({ path: owningWorkspacePath, workspaceName: fallbackWorkspaceNameFromPath(owningWorkspacePath) })
+    await navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } })
+    setMobileSidebarOpen(false)
+    setIntegrationHelpDraft({ id: ++integrationHelpRequestIdRef.current, sessionId, draft: prompt, append: true })
+    setComposerFocusSignal((current) => current + 1)
+  }, [globalSessionWorkspaceSlug, navigate, sessionById, workspaceSlugByPath])
+
   const reviewFixAvailable = Boolean(topWorkspacePath)
   const handleAskSwarmToFixReviewIntegration = useCallback(async (failure: ReviewWorktreeIntegrationFailure) => {
-    setNeedsReviewCleanupOpen(false)
     try {
-      await launchDesktopRepairSession({
-        owningWorkspacePath: topWorkspacePath,
-        sourceSessionId: failure.candidate.session_id,
-        prompt: buildReviewWorktreeFixPrompt(failure, topWorkspacePath),
-        title: `${failure.operation === 'commit_and_integrate' ? 'Fix commit and integration' : 'Fix integration'}: ${failure.candidate.title || failure.candidate.worktree_branch || failure.candidate.session_id}`,
-        source: 'desktop-v3-review-worktrees-recovery',
-        messageMetadata: {
-          failed_session_id: failure.candidate.session_id,
-          worktree_branch: failure.candidate.worktree_branch,
-          target_branch: failure.candidate.target_branch,
-          target_workspace_path: topWorkspacePath,
-          integration_error: failure.error,
-        },
-      })
+      await openIntegrationHelpDraft(failure.candidate.session_id, topWorkspacePath, buildReviewWorktreeFixPrompt(failure, topWorkspacePath))
+      setNeedsReviewCleanupOpen(false)
     } catch (cause) {
-      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not start a Swarm repair session.', tone: 'error' })
+      setDesktopToast({ message: cause instanceof Error ? cause.message : 'Could not open integration help in the existing session.', tone: 'error' })
     }
-  }, [launchDesktopRepairSession, topWorkspacePath])
+  }, [openIntegrationHelpDraft, topWorkspacePath])
 
   useEffect(() => {
     if (!routeSessionId) return
@@ -3530,9 +3588,14 @@ export function DesktopAppPage() {
       throw new Error('Routed Desktop start returned authority for a different workspace')
     }
     applyDesktopV3RoutedStartResponse(response)
-    await selectAndHydrateDesktopV3Session(response.session_id)
+    setActivatedConversation({ sessionId: response.session_id, key: `new:${topWorkspace?.path}:${newSessionEpoch}` })
+    // The atomic response already contains the first message and session view.
+    // Hydration repairs in the background; it is not a second opening screen.
+    void selectAndHydrateDesktopV3Session(response.session_id)
     await handleNewSessionStarted(response.session_id)
-  }, [activeWorkspaceAuthority, handleNewSessionStarted])
+    setNewSessionIntent(null)
+    setNewSessionEpoch((current) => current + 1)
+  }, [activeWorkspaceAuthority, handleNewSessionStarted, topWorkspace?.path, newSessionEpoch])
 
   const handleArchivePlanSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -4382,12 +4445,16 @@ export function DesktopAppPage() {
     bulkArchivePending,
     masterSelectionGroup: sidebarMasterSelectionGroup,
     reviewCleanupOpen: needsReviewCleanupOpen,
+    collapsedGroups: collapsedSidebarGroups,
+    expandedOverflowGroups: expandedSidebarOverflowGroups,
     gitHasGit: topWorkspaceHasGit,
     gitAheadCount: topWorkspaceGitAheadCount,
     gitBehindCount: topWorkspaceGitBehindCount,
     gitDirtyCount: topWorkspaceGitDirtyCount,
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+    onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
+    onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
     onEnterSelectionMode: handleEnterSidebarSelectionMode,
     onClearSelection: handleClearSidebarSelection,
     onBulkArchive: () => { void handleBulkArchiveSidebar() },
@@ -4503,7 +4570,7 @@ export function DesktopAppPage() {
   }, [])
 
   const integrateSessionWorktree = async (input: GitIntegrateModalState) => {
-    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, graceHours: 1 })
+    const review = await reviewDesktopV3Worktrees({ workspacePath: input.workspacePath, sessionIds: [input.sessionId], graceHours: 1 })
     const candidate = [...(review.retained ?? []), ...(review.done ?? [])].find((item) => item.session_id === input.sessionId)
     const sourceHead = candidate?.source_head?.trim()
     const targetBranch = review.current_target_branch?.trim()
@@ -4597,9 +4664,10 @@ export function DesktopAppPage() {
       commitSucceeded = true
       setGitCommitModal(null)
       setGitCommitMessage('')
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+      // Invalidate now, but do not put unrelated refetches ahead of integration.
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'], refetchType: 'none' }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'], refetchType: 'none' }),
       ])
 
       let completionMessage = 'Changes committed successfully.'
@@ -4621,13 +4689,6 @@ export function DesktopAppPage() {
         completionMessage = 'Changes committed and session archived.'
       }
 
-      if (integration || archiveAfterCommit) {
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
-          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
-        ])
-      }
-
       setDesktopToast({ message: completionMessage, tone: 'success' })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -4639,6 +4700,12 @@ export function DesktopAppPage() {
         setGitCommitError(message)
       }
     } finally {
+      if (commitSucceeded) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        ])
+      }
       setGitCommitBusy(false)
       setGitIntegrateBusy(false)
     }
@@ -4659,7 +4726,7 @@ export function DesktopAppPage() {
       if (archiveAfterIntegration) await archiveIntegratedSession(integrated)
       setGitIntegrateModal(null)
       setDesktopToast({ message: archiveAfterIntegration ? 'Worktree integrated and session archived.' : 'Worktree integrated successfully.', tone: 'success' })
-      await Promise.all([
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
         queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
       ])
@@ -4676,22 +4743,10 @@ export function DesktopAppPage() {
     if (!modal || modal.presentation !== 'sidebar-popout' || modal.integrationComplete || !integrationError || gitIntegrateBusy || gitIntegrateHelpBusy) return
     setGitIntegrateHelpBusy(true)
     try {
-      await launchDesktopRepairSession({
-        owningWorkspacePath: modal.workspacePath,
-        sourceSessionId: modal.sessionId,
-        prompt: buildGitSidebarIntegrationHelpPrompt(modal, integrationError),
-        title: `Review integration failure: ${modal.worktreeBranch || modal.sessionId}`,
-        source: 'desktop-v3-git-sidebar-integration-help',
-        messageMetadata: {
-          worktree_branch: modal.worktreeBranch,
-          target_branch: modal.targetBranch,
-          target_workspace_path: modal.workspacePath,
-          integration_error: integrationError,
-        },
-      })
+      await openIntegrationHelpDraft(modal.sessionId, modal.workspacePath, buildGitSidebarIntegrationHelpPrompt(modal, integrationError))
       setGitIntegrateModal(null)
       setGitIntegrateArchive(false)
-      setDesktopToast({ message: 'Started a new Swarm session for this integration error.', tone: 'success' })
+      setDesktopToast({ message: 'Integration error added to the existing session’s message box. Review and send when ready.', tone: 'success' })
     } catch (error) {
       setDesktopToast({ message: `Could not ask Swarm for integration help: ${error instanceof Error ? error.message : String(error)}`, tone: 'error' })
     } finally {
@@ -4699,8 +4754,7 @@ export function DesktopAppPage() {
     }
   }
 
-  const gitSidebarError = gitRealtimeErrors[selectedGitWorkspacePath]
-    || (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '')
+  const gitSidebarError = selectedRepositoryMutable ? (gitStatusQuery.error instanceof Error ? gitStatusQuery.error.message : '') : ''
   const gitSidebarMissingGit = isMissingGitSidebarError(gitSidebarError)
 
   const handleAskSwarmToInstallGit = async () => {
@@ -4789,15 +4843,32 @@ export function DesktopAppPage() {
     }
   }, [closeGitSidebarIntegratePopout, gitIntegrateModal?.presentation])
 
-  const planSidebarGitPanel = selectedGitSessionId && selectedGitWorkspacePath ? (
+  const planSidebarGitPanel = routeSessionId ? (
     <>
-    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-plan-git-layout="inset-card" data-plan-section-treatment="inset-card">
+    <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-git-expanded={gitDockExpanded} data-plan-git-layout="expandable-dock" data-plan-section-treatment="inset-card">
+      <div className="flex shrink-0 items-center gap-2">
+      <button type="button" className="flex min-h-9 min-w-0 flex-1 items-center justify-between gap-2 text-left text-xs font-semibold" aria-expanded={gitDockExpanded} aria-controls="session-git-dock-details" onClick={() => setGitDockExpanded(expanded => !expanded)}>
+        <span>Session changes</span>
+        <span className="flex items-center gap-1 text-[var(--app-text-muted)]">{gitDockExpanded ? 'Collapse' : 'Expand'}<ChevronDown size={14} className={gitDockExpanded ? '' : 'rotate-180'} /></span>
+      </button>
+      <button type="button" className="min-h-9 shrink-0 px-1 text-[11px] text-[var(--app-text-muted)]" disabled={repositoryInventory.loading} onClick={() => { void repositoryInventory.refresh(); if (selectedRepositoryMutable) void gitStatusQuery.refetch(); if (activeSessionWorktree && activeSessionNeedsReview) void gitReviewQuery.refetch() }} aria-label="Refresh session Git status">Refresh</button>
+      </div>
+      <div className="shrink-0 truncate text-[11px] text-[var(--app-text-muted)]" title={selectedRepository?.workspace_name}>{selectedRepository?.workspace_name || 'Session repository'} · {gitSnapshot?.branch || selectedRepository?.branch || 'Loading branch…'}{activeSessionWorktree ? ` → ${activeSessionTargetBranch}` : ''}</div>
+      <div className="shrink-0 py-1 text-xs" role="status">
+        {repositoryInventory.stale || repositoryInventory.error || gitStatusQuery.isError ? 'Status unavailable · refresh before making changes' : gitSnapshot?.has_git ? `${gitSnapshot.dirty_count} uncommitted file${gitSnapshot.dirty_count === 1 ? '' : 's'}` : repositoryInventory.loading ? 'Loading changes…' : 'Git status unavailable'}
+        <span className="block text-[var(--app-text-muted)]">{repositoryInventory.stale || gitStatusQuery.isError || gitReviewQuery.isError ? 'Integration comparison unavailable' : gitReviewQuery.isFetching ? 'Checking integration…' : activeSessionReviewCandidate?.reason === 'commits_missing_from_target' ? `${activeSessionReviewCandidate.missing_commit_count ?? 0} commit${activeSessionReviewCandidate.missing_commit_count === 1 ? '' : 's'} not in ${activeSessionTargetBranch}` : activeSessionReviewCandidate?.reason === 'clean_and_integrated' ? `Integrated into ${activeSessionTargetBranch}` : activeSessionIntegrateEligible ? `Ready to integrate into ${activeSessionTargetBranch}` : activeSessionWorktree ? 'Integration not yet verified' : selectedRepository?.kind === 'source' ? 'Source checkout · no session integration' : 'Select this session’s branch to integrate'}</span>
+      </div>
+      <div id="session-git-dock-details" hidden={!gitDockExpanded} className={gitDockExpanded ? 'min-h-0 max-h-[60vh] flex-1 overflow-y-auto overscroll-contain pr-1' : 'hidden'}>
+      <details className="my-2 text-xs"><summary className="cursor-pointer py-2 text-[var(--app-text-muted)]">Branches &amp; repositories</summary>
+      <SessionRepositoryPicker inventory={repositoryInventory} onSelect={repositoryInventory.select} onRefresh={() => { void repositoryInventory.refresh() }} onLoadMore={() => { void repositoryInventory.loadMore() }} />
+      </details>
+      {selectedRepository && !selectedRepositoryActionsEnabled ? <p className="my-2 text-xs text-[var(--app-text-subtle)]">Inspection only. Operations require a fresh, exact current-session repository; retained workers and lanes use explicit worktree review.</p> : null}
       <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]" data-plan-git-header>
         <GitBranch size={13} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate">{gitSnapshot?.branch || 'Git changes'}</span>
         {gitSnapshot?.has_git ? <span className="shrink-0">{gitSnapshot.dirty_count}</span> : null}
       </div>
-      {gitSnapshot?.has_git ? (
+      {gitSnapshot?.has_git && selectedRepositoryActionsEnabled ? (
         <div className="mt-2 flex min-w-0 shrink-0 items-center justify-end gap-1 normal-case tracking-normal" data-plan-git-action-row data-plan-git-commit>
           {gitSnapshot.files.length > 0 ? <>
             <button type="button" className="grid min-h-9 w-9 shrink-0 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitCommitBusy || gitAICommitPhase !== null} onClick={() => openGitCommitReview({ workspacePath: selectedGitWorkspacePath, sessionId: selectedGitSessionId, files: gitSnapshot.files, worktree: activeSessionWorktree, targetWorkspacePath: activeSessionTargetWorkspacePath, targetBranch: activeSessionTargetBranch, canIntegrate: Boolean(activeSessionReviewCandidate?.commit_eligible && activeSessionTargetWorkspacePath) })} aria-label="Commit changes" title="Commit changes"><Save size={14} aria-hidden="true" /></button>
@@ -4813,22 +4884,25 @@ export function DesktopAppPage() {
             <span className="shrink-0 normal-case tracking-normal">{activeSessionCommits.length}</span>
             <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
           </summary>
-          {activeSessionCommits.length > 0 ? <div className="max-h-28 overflow-y-auto border-t border-[var(--app-border)] [scrollbar-gutter:stable]" data-plan-git-session-commit-list>{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
+          {activeSessionCommits.length > 0 ? <div className="border-t border-[var(--app-border)]" data-plan-git-session-commit-list>{activeSessionCommits.map((commit) => <div key={commit.hash} className="flex min-w-0 items-start gap-2 border-b border-[var(--app-border)] px-2 py-1.5 text-[10px] last:border-0"><span className="shrink-0 font-mono text-[var(--app-primary)]">{commit.short_hash}</span><span className="min-w-0 flex-1 truncate text-[var(--app-text-muted)]" title={commit.subject}>{commit.subject}</span></div>)}</div> : <div className="border-t border-[var(--app-border)] px-2 py-1.5 text-[10px] text-[var(--app-text-subtle)]">No commits yet.</div>}
         </details>
       ) : null}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-plan-git-scroll-region>
+      <div className="flex shrink-0 flex-col" data-plan-git-scroll-region>
         {gitSidebarMissingGit ? <button type="button" className="mt-2 inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-warning)] px-2 py-1.5 text-xs font-semibold text-[var(--app-warning)] hover:bg-[var(--app-warning-bg)] disabled:cursor-not-allowed disabled:opacity-60" disabled={gitInstallHelpBusy} onClick={() => { void handleAskSwarmToInstallGit() }}>{gitInstallHelpBusy ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Bot size={13} aria-hidden="true" />}{gitInstallHelpBusy ? 'Asking Swarm…' : "Git isn't installed, Ask Swarm to install Git?"}</button>
           : gitSidebarError ? <div className="mt-2 text-xs text-[var(--app-warning)]">{gitSidebarError}</div>
-          : gitStatusQuery.isPending ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+          : repositoryInventory.loading && !gitSnapshot ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Loading scoped changes…</div>
+          : selectedRepository?.availability !== 'available' ? <div className="mt-2 text-xs text-[var(--app-warning)]">{selectedRepository?.error || 'Select an available repository to inspect changes.'}</div>
           : !gitSnapshot?.has_git ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">No Git repository for this session.</div>
           : gitSnapshot.files.length === 0 ? <div className="mt-2 text-xs text-[var(--app-text-subtle)]">Clean working tree.</div>
-          : <details className="group mt-2 min-h-0 shrink overflow-hidden rounded-xl bg-[var(--app-bg-alt)]" data-plan-git-file-details>
+          : <details open className="group mt-2 rounded-xl bg-[var(--app-bg-alt)]" data-plan-git-file-details>
               <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 px-2 text-[10px] font-semibold text-[var(--app-text-muted)] [&::-webkit-details-marker]:hidden">
                 <span className="min-w-0 flex-1 truncate">{gitSnapshot.files.length} file{gitSnapshot.files.length === 1 ? '' : 's'} changed</span>
                 <ChevronDown size={12} className="shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
               </summary>
-              <div className="max-h-40 overflow-y-auto border-t border-[var(--app-border)] p-1 [scrollbar-gutter:stable]" data-plan-git-file-list data-plan-git-scroll="inside-disclosure">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1 truncate" title={file.path}>{file.path}</span></div>)}</div>
+              <div className="border-t border-[var(--app-border)] p-1" data-plan-git-file-list data-plan-git-scroll="dock">{gitSnapshot.files.map((file) => <div key={`${file.kind}:${file.path}:${file.orig_path ?? ''}`} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[10px] hover:bg-[var(--app-surface-hover)]"><span className={cn('shrink-0 rounded px-1 py-0.5', file.untracked ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]' : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-subtle)]')}>{gitFileStatusLabel(file)}</span><span className="min-w-0 flex-1" title={file.path}><span className="block truncate text-xs">{file.path.split('/').pop()}</span><span className="block truncate text-[10px] text-[var(--app-text-muted)]">{file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : 'Repository root'}</span></span></div>)}</div>
             </details>}
+      </div>
+      {selectedRepositoryActionsEnabled ? <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} sessionId={selectedGitSessionId} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} /> : null}
       </div>
       {activeSessionIntegrateEligible && activeSessionReviewCandidate ? <div ref={gitIntegrateAnchorRef} className="relative mt-2 shrink-0" data-plan-git-integrate-anchor>
         {gitIntegrateModal?.presentation === 'sidebar-popout' && typeof document !== 'undefined' ? createPortal(
@@ -4862,7 +4936,6 @@ export function DesktopAppPage() {
         }}>{gitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : gitIntegrateModal?.integrationComplete ? <Archive size={12} /> : <GitMerge size={12} />}{gitIntegrateModal?.presentation === 'sidebar-popout' ? gitIntegrateModal.integrationComplete ? 'Archive session' : gitIntegrateError ? 'Review integration error' : `Confirm integration into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}` : `Integrate into ${activeSessionReviewCandidate.target_branch || activeSessionTargetBranch}`}</button>
       </div> : null}
     </section>
-    <WorkspaceActionsSidebarSection workspacePath={selectedGitWorkspacePath} sessionId={selectedGitSessionId} workspaceName={routeWorkspace?.workspaceName || ''} canAICommit={Boolean(gitSnapshot?.files.length) && gitAICommitPhase === null && !gitCommitBusy} onRun={openWorkspaceAction} onAICommitRun={(action) => { void runAICommitWorkspaceAction(action, selectedGitWorkspacePath, selectedGitSessionId) }} />
     </>
   ) : null
 
@@ -5109,7 +5182,7 @@ export function DesktopAppPage() {
           <div className="flex min-h-0 flex-1 flex-col">
             <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
               <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
-                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
+                  <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
                     <div ref={workspaceDropdownRef} className="relative min-w-0">
                       <button
                         type="button"
@@ -5239,12 +5312,16 @@ export function DesktopAppPage() {
                     bulkArchivePending,
                     masterSelectionGroup: sidebarMasterSelectionGroup,
                     reviewCleanupOpen: needsReviewCleanupOpen,
+                    collapsedGroups: collapsedSidebarGroups,
+                    expandedOverflowGroups: expandedSidebarOverflowGroups,
                     gitHasGit: topWorkspaceHasGit,
                     gitAheadCount: topWorkspaceGitAheadCount,
                     gitBehindCount: topWorkspaceGitBehindCount,
                     gitDirtyCount: topWorkspaceGitDirtyCount,
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
+                    onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
+                    onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
                     onEnterSelectionMode: handleEnterSidebarSelectionMode,
                     onClearSelection: handleClearSidebarSelection,
                     onBulkArchive: () => { void handleBulkArchiveSidebar() },
@@ -5341,15 +5418,26 @@ export function DesktopAppPage() {
               </p>
             </Card>
           </div>
-        ) : routeSessionId ? (
+        ) : routeSessionId || (topWorkspace?.path && activeWorkspaceAuthority && (!routeWorkspaceSlug || chatWorkspacePath)) ? (
           <div className="flex min-h-0 flex-1 flex-col">
-          <DesktopV3ExistingConversationPane
-            key={`existing:${routeSessionId}`}
+          <ConversationPane
+            key={routeSessionId ? activatedConversation?.sessionId === routeSessionId ? activatedConversation.key : `existing:${routeSessionId}` : `new:${topWorkspace?.path}:${newSessionEpoch}`}
+            workspace={topWorkspace!}
+            workspaceAuthority={activeWorkspaceAuthority!}
+            onRoutedSessionResolved={handleRoutedSessionResolved}
+            initialPrompt={newSessionIntent?.workspacePath === topWorkspace?.path ? newSessionIntent?.prompt : undefined}
+            initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace?.path ? newSessionIntent?.planModeRequested : requestedNewPlan}
+            mobileSessionQuickMenu={mobileSessionQuickMenu}
+            workspaces={mergedSidebarWorkspaceEntries}
+            onSelectWorkspace={mergedSidebarWorkspaceEntries.length > 1 ? handleSelectWorkspaceFromPicker : undefined}
+            onSetWorkspaceIcon={setWorkspaceIcon}
             sessionId={routeSessionId}
             composerFocusSignal={composerFocusSignal}
+            composerDraftRequest={integrationHelpDraft?.sessionId === routeSessionId ? integrationHelpDraft : undefined}
+            onComposerDraftRequestHandled={handleIntegrationHelpDraftHandled}
             initialHydrateStatus={desktopInitialHydrate.status}
-            renderedMessages={selectedDesktopV3Messages}
-            messagesLoaded={selectedDesktopV3MessagesLoaded}
+            renderedMessages={routeSessionId ? selectedDesktopV3Messages : undefined}
+            messagesLoaded={routeSessionId ? selectedDesktopV3MessagesLoaded : undefined}
             loadedMessageCount={selectedDesktopV3LoadedMessageCount}
             session={sessionById.get(routeSessionId) ?? null}
             routeOptions={sessionById.get(routeSessionId) ? (() => {
@@ -5399,7 +5487,8 @@ export function DesktopAppPage() {
             developerMode={updateDevMode}
             agentSettingsOpenSignal={agentSettingsOpenSignal}
             agentSettingsInitialAgent={requestedAgentName}
-            onOpenPlan={() => openPlanModalForSession(routeSessionId)}
+            onOpenPlan={routeSessionId ? () => openPlanModalForSession(routeSessionId) : undefined}
+            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
             planSidebarBelowActions={planSidebarGitPanel}
           />
           </div>
@@ -5429,25 +5518,6 @@ export function DesktopAppPage() {
               </Card>
             </div>
           </div>
-        ) : topWorkspace?.path && activeWorkspaceAuthority ? (
-          <DesktopV3NewSessionPane
-            key={`new:${topWorkspace.path}:${newSessionEpoch}`}
-            workspace={topWorkspace}
-            workspaceAuthority={activeWorkspaceAuthority}
-            onRoutedSessionResolved={handleRoutedSessionResolved}
-            composerFocusSignal={composerFocusSignal}
-            initialPrompt={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.prompt : undefined}
-            initialPlanModeRequested={newSessionIntent?.workspacePath === topWorkspace.path ? newSessionIntent.planModeRequested : requestedNewPlan}
-            agentSettingsOpenSignal={agentSettingsOpenSignal}
-            agentSettingsInitialAgent={requestedAgentName}
-            mobileSessionQuickMenu={mobileSessionQuickMenu}
-            onSlashCommand={handleSlashCommand}
-            developerMode={updateDevMode}
-            workspaces={mergedSidebarWorkspaceEntries}
-            onSelectWorkspace={mergedSidebarWorkspaceEntries.length > 1 ? handleSelectWorkspaceFromPicker : undefined}
-            onSetWorkspaceIcon={setWorkspaceIcon}
-            onOpenActionSettings={() => handleOpenSettingsTab('actions')}
-          />
         ) : (
           <div className="flex h-full flex-1 items-center justify-center px-6">
             <Card className="max-w-lg border-[var(--app-border)] bg-[var(--app-surface)] p-6 text-center">

@@ -13,6 +13,7 @@ Contents:
 
 ## Current scope
 
+- Vendored release: `v0.10.6`, source commit `c6013ba6a5918221b6c482486aca01acc0830825`. Reviewed digests and independent npm-distribution verification are recorded in `scripts/fff-release-manifest.txt`.
 - Vendored runtime target in this repo: Linux amd64 glibc (`c-lib-x86_64-unknown-linux-gnu.so` upstream asset)
 - Wrapper exposes:
   - create/destroy/wait for scan

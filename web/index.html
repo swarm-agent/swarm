@@ -14,37 +14,102 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <title>Swarm Desktop</title>
     <script>
+      // Must precede build-injected CSS/modules: a stalled stylesheet must not
+      // prevent the watchdog from starting. This code has no external imports.
       (() => {
-        const rootReserved = new Set(['settings', 'integrations', 'tools', 'flow'])
-        const workspaceReserved = new Set(['settings', 'tools', 'flow'])
-        const parts = window.location.pathname.split('/').map((part) => {
-          try {
-            return decodeURIComponent(part).trim()
-          } catch {
-            return ''
+        let phase = 'bundle'
+        let ready = false
+        let screenCommitted = false
+        let fatal = false
+        let expired = false
+        const render = () => {
+          const shell = document.getElementById('swarm-startup')
+          const root = document.getElementById('root')
+          if (!shell || !root) return
+          const retryFocused = shell.contains(document.activeElement)
+          shell.hidden = ready && !fatal
+          root.hidden = !ready || fatal
+          if (shell.hidden && retryFocused) { root.tabIndex = -1; root.focus() }
+          if (fatal || expired) {
+            document.getElementById('swarm-startup-title').textContent = fatal ? 'Swarm could not load' : 'Swarm is taking longer than expected'
+            document.getElementById('swarm-startup-message').textContent = fatal
+              ? 'The app could not finish loading. Reload to try again. This does not confirm that the daemon is unavailable.'
+              : phase === 'bundle'
+                ? 'The app files have not finished loading. Check your connection to this desktop address, then reload to try again.'
+                : 'The app has started, but its startup checks or screen are still loading. The daemon may be unreachable; reload to try again.'
           }
-        }).filter(Boolean)
-        if (parts.length !== 2) return
-        const [workspaceSlug, sessionId] = parts
-        if (!workspaceSlug || !sessionId || rootReserved.has(workspaceSlug) || workspaceReserved.has(sessionId)) return
-        const startedAt = performance.now()
-        window.__swarmV3SessionPreload = {
-          sessionId,
-          startedAt,
-          promise: fetch(`/v3/sessions/${encodeURIComponent(sessionId)}`, {
-            cache: 'no-store',
-            credentials: 'same-origin',
-            headers: { Accept: 'application/json' },
-          }).then((response) => {
-            if (!response.ok) return null
-            return response.json()
-          }).catch(() => null),
         }
+        const releasedStyles = new WeakSet()
+        const releasePendingStyles = () => {
+          // A render-blocking stylesheet can otherwise hide even this inline UI.
+          // Restore its media only on load; never mark the app ready without it.
+          document.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
+            if (link.sheet || releasedStyles.has(link)) return
+            releasedStyles.add(link)
+            const media = link.media
+            link.media = 'not all'
+            link.addEventListener('load', () => { link.media = media }, { once: true })
+          })
+        }
+        const watchdog = setTimeout(() => {
+          if (!ready && !fatal) { expired = true; releasePendingStyles(); render() }
+        }, 20000)
+        const fail = () => { fatal = true; clearTimeout(watchdog); releasePendingStyles(); render() }
+        const finish = () => {
+          if (fatal || !screenCommitted) return
+          if ([...document.querySelectorAll('link[rel="stylesheet"]')].some((link) => !link.sheet)) return
+          ready = true
+          clearTimeout(watchdog)
+          render()
+        }
+        document.addEventListener('load', (event) => {
+          if (event.target instanceof HTMLLinkElement && event.target.rel === 'stylesheet') queueMicrotask(finish)
+        }, true)
+        window.__swarmStartup = {
+          started() { phase = 'bootstrap'; render() },
+          ready() { screenCommitted = true; finish() },
+          fail,
+        }
+        window.addEventListener('error', (event) => {
+          if (!ready && (event instanceof ErrorEvent || event.target instanceof HTMLScriptElement || (event.target instanceof HTMLLinkElement && event.target.rel === 'stylesheet'))) fail()
+        }, true)
+        window.addEventListener('unhandledrejection', () => { if (!ready) fail() })
+        window.addEventListener('vite:preloadError', fail)
+        document.addEventListener('DOMContentLoaded', render, { once: true })
+        document.addEventListener('click', (event) => {
+          if (event.target instanceof Element && event.target.closest('#swarm-startup-retry')) {
+            event.preventDefault()
+            window.location.reload()
+          }
+        })
       })()
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <style>
+      #swarm-startup { position: fixed; inset: 0; z-index: 2147483647; overflow: auto; box-sizing: border-box; display: grid; place-items: center; padding: 24px; background: #08111f; color: #e7edf6; font: 16px/1.6 system-ui, sans-serif; color-scheme: dark; }
+      #swarm-startup[hidden], #root[hidden] { display: none !important; }
+      #swarm-startup section { width: 100%; max-width: 440px; }
+      #swarm-startup h1 { margin: 12px 0; font-size: 28px; line-height: 1.25; color: #f4f7fc; }
+      #swarm-startup p { margin: 12px 0; }
+      #swarm-startup .startup-brand { color: #85caff; font-size: 13px; font-weight: 700; letter-spacing: .16em; }
+      #swarm-startup .startup-note { color: #a8b8cc; font-size: 14px; }
+      #swarm-startup a { display: inline-block; margin: 12px 0; padding: 10px 18px; border: 1px solid #85caff; border-radius: 8px; color: #08111f; background: #85caff; text-decoration: none; font-weight: 650; }
+      #swarm-startup a:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
+    </style>
+    <div id="swarm-startup" aria-labelledby="swarm-startup-title">
+      <section>
+        <p class="startup-brand">SWARM DESKTOP</p>
+        <div role="status" aria-live="polite" aria-atomic="true">
+          <h1 id="swarm-startup-title">Starting Swarm…</h1>
+          <p id="swarm-startup-message">Loading the app. Recovery will appear within 20 seconds if startup does not finish.</p>
+        </div>
+        <a id="swarm-startup-retry" href="">Reload page</a>
+        <p class="startup-note">Reloading does not clear your sessions, credentials, or browser storage.</p>
+        <noscript><p>Swarm needs JavaScript. Enable it for this address, then reload the page.</p></noscript>
+      </section>
+    </div>
+    <div id="root" hidden></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

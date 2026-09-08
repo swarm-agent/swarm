@@ -16,6 +16,7 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/cdproto/network"
 	"github.com/chromedp/cdproto/page"
@@ -70,7 +71,10 @@ type AnimationRequest struct {
 	OutputFPS           int
 	Quality             AnimationQuality
 	RequireLivePlayback bool
-	Progress            func(AnimationProgress)
+	// Native V3 timing is server-declared; its authored runtime may acknowledge
+	// readiness with true rather than duplicate the server timing metadata.
+	AllowBooleanReady bool
+	Progress          func(AnimationProgress)
 }
 
 // AnimationBounds uses CSS pixel coordinates in the fixed 1920x1080 viewport.
@@ -217,6 +221,10 @@ rendererCapacityAcquired:
 		chromedp.ExecPath(r.BinaryPath),
 		chromedp.UserDataDir(filepath.Join(jobDir, "profile")),
 		chromedp.Flag("headless", true),
+		// Seek acknowledgements run on the main thread. Keep CSS animation
+		// sampling there too so a compositor timeline cannot deliver a stale
+		// frame after currentTime is set. The pixel stability audit still runs.
+		chromedp.Flag("disable-threaded-animation", true),
 		chromedp.Flag("no-sandbox", false),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-component-update", true),
@@ -297,6 +305,7 @@ rendererCapacityAcquired:
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
 		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorDeny).WithEventsEnabled(true),
 		chromedp.EmulateViewport(Width, Height),
+		emulation.SetFocusEmulationEnabled(true),
 		chromedp.Navigate(origin+"/"+req.Entry),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	)
@@ -353,15 +362,19 @@ rendererCapacityAcquired:
 	representative := []int{0, (frameCount / 2) * 1000 / renderFPS, (frameCount - 1) * 1000 / renderFPS}
 	seenRepresentative := make(map[int]struct{}, len(representative))
 	audited := 0
+	var preview []byte
 	for _, timeMS := range representative {
 		if _, seen := seenRepresentative[timeMS]; seen {
 			continue
 		}
 		seenRepresentative[timeMS] = struct{}{}
-		_, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
+		frame, frameDiagnostics, err := captureAnimationFrame(browserCtx, timeMS, true)
 		diagnostics = append(diagnostics, frameDiagnostics...)
 		if err != nil {
 			return AnimationResult{DurationMS: req.DurationMS, FPS: req.FPS, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, err
+		}
+		if timeMS == 0 {
+			preview = append([]byte(nil), frame...)
 		}
 		audited++
 		emit("deterministic_preflight", audited, len(representative))
@@ -439,7 +452,7 @@ rendererCapacityAcquired:
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
 	}
-	return AnimationResult{MP4: mp4, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
+	return AnimationResult{MP4: mp4, PreviewPNG: preview, DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, nil
 }
 
 func animationRenderTimeout(frameCount int) time.Duration {
@@ -547,7 +560,7 @@ const runtime={
   },
   seek:async timeMs=>{
     if (!bound) return {__swarm_outcome:"runtime_unbound"};
-    try { return await bound.seek(timeMs); } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
+    try { const ack=await bound.seek(timeMs); if(ack&&Object.keys(ack).length===1&&ack.time_ms===timeMs)document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs); return ack; } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
   }
 };
 // Keep the trusted proxy immutable while accepting the original parser-time
@@ -606,6 +619,7 @@ func startAnimationWorkerPage(browserCtx context.Context, origin string, req Ani
 	if err := chromedp.Run(loadCtx,
 		fetch.Enable().WithPatterns([]*fetch.RequestPattern{{URLPattern: "*"}}),
 		chromedp.EmulateViewport(Width, Height),
+		emulation.SetFocusEmulationEnabled(true),
 		chromedp.Navigate(origin+"/"+req.Entry),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 	); err != nil {
@@ -644,7 +658,7 @@ if (ack && typeof ack.__swarm_outcome==="string") {
 }
 const finalLifecycle=bootstrap.lifecycle;
 if (finalLifecycle.filter(item=>item==="bound").length!==1||finalLifecycle[0]!=="bind_claimed") return {code:"animation_bootstrap_missing",outcome:"lifecycle_invalid",lifecycle:finalLifecycle};
-if (!ack || Object.keys(ack).length!==2 || ack.duration_ms!==%d || ack.fps!==%d) return {code:"animation_manifest_mismatch",outcome:"manifest_mismatch",lifecycle:finalLifecycle};
+if (!(ack===true && %t) && (!ack || Object.keys(ack).length!==2 || ack.duration_ms!==%d || ack.fps!==%d)) return {code:"animation_manifest_mismatch",outcome:"manifest_mismatch",lifecycle:finalLifecycle};
 if (%t) {
   await new Promise(resolve=>setTimeout(resolve,50));
   if (bootstrap.live_frame_requests<2 || bootstrap.live_frame_callbacks<1) return {code:"animation_playback_missing",outcome:"live_playback_missing",lifecycle:finalLifecycle};
@@ -661,7 +675,7 @@ const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const style=document.createElement('style'); style.setAttribute('data-swarm-renderer-style','animation-v1'); style.textContent='*,*::before,*::after{scroll-behavior:auto!important;caret-color:transparent!important;cursor:none!important;pointer-events:none!important}html,body{width:1920px!important;height:1080px!important;max-width:1920px!important;max-height:1080px!important;margin:0!important;overflow:hidden!important}'+(needsOpaqueCanvas?'html{background:#fff!important}':''); document.head.append(style);
 return {code:"ok",outcome:"ready",lifecycle:finalLifecycle};
-})()`, AnimationVersion, req.DurationMS, req.FPS, req.RequireLivePlayback)
+})()`, AnimationVersion, req.AllowBooleanReady, req.DurationMS, req.FPS, req.RequireLivePlayback)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, awaitPromise)); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			diagnostic := AnimationDiagnostic{Stage: "readiness", Outcome: "ready_timeout"}
@@ -709,7 +723,13 @@ if (ack&&typeof ack.__swarm_outcome==="string") {
   return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
 }
 if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
-for (const animation of document.getAnimations()) animation.pause();
+const animations=document.getAnimations();
+for (const animation of animations) animation.pause();
+// A seek acknowledgement and style/layout flush do not imply a presented
+// frame. Settle pending pauses and cross a paint boundary before sampling;
+// the two independent screenshots below still reject changing author pixels.
+await Promise.all(animations.map(animation=>animation.ready));
+await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
 return {code:"ok",outcome:"seek_acknowledged"};
 })()`, timeMS, animationSeekTimeoutMS)
 	if err := chromedp.Run(ctx, chromedp.Evaluate(expression, &audit, awaitPromise)); err != nil {
@@ -749,7 +769,7 @@ return {code:"ok",outcome:"seek_acknowledged"};
 	if err != nil {
 		return nil, diagnostics, err
 	}
-	stable, err := equalPixels(first, second)
+	stable, err := equalPixels(first, second, Width, Height)
 	if err != nil {
 		return nil, diagnostics, NewError("animation_png_invalid", "renderer returned an invalid PNG frame")
 	}
@@ -888,15 +908,13 @@ func auditAnimationViewport(ctx context.Context, timeMS int) ([]AnimationDiagnos
 	expression := fmt.Sprintf(`(() => {
 const maxChecks=%d,maxReports=%d,nodes=Array.from(document.querySelectorAll('*')).filter(node=>!node.matches('[data-swarm-renderer-style]')),reports=[];
 if (document.documentElement.scrollWidth>innerWidth || document.documentElement.scrollHeight>innerHeight || document.body.scrollWidth>innerWidth || document.body.scrollHeight>innerHeight) reports.push({code:'animation_viewport_overflow',outcome:'scroll_overflow'});
-const escaped=value=>{try{return CSS.escape(value)}catch(_){return String(value).replace(/[^a-zA-Z0-9_-]/g,'_')}};
+// Structural selectors deliberately omit authored IDs/classes and attributes.
 const selector=node=>{
-  if (node.id) return '#'+escaped(node.id);
   const parts=[]; let current=node;
   while (current&&current.nodeType===1&&parts.length<5) {
-    let part=current.localName||'element';
-    if (current.classList&&current.classList.length) part+='.'+Array.from(current.classList).slice(0,2).map(escaped).join('.');
+    let part='*';
     const parent=current.parentElement;
-    if (parent) { const peers=Array.from(parent.children).filter(item=>item.localName===current.localName); if (peers.length>1) part+=':nth-of-type('+(peers.indexOf(current)+1)+')'; }
+    if (parent) part+=':nth-child('+(Array.from(parent.children).indexOf(current)+1)+')';
     parts.unshift(part); current=parent;
   }
   return parts.join(' > ').slice(0,%d);
@@ -906,10 +924,36 @@ const add=(node,pseudo,rect)=>{
   reports.push({code:'animation_viewport_overflow',outcome:'bounds_overflow',selector:selector(node),pseudo:pseudo||'',bounds:{left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom}});
 };
 const outside=rect=>Number.isFinite(rect.left)&&Number.isFinite(rect.top)&&Number.isFinite(rect.right)&&Number.isFinite(rect.bottom)&&(rect.left<0||rect.top<0||rect.right>innerWidth||rect.bottom>innerHeight);
+// SVG graphics bounds include geometry outside their SVG viewport. Only
+// intersect proven SVG viewport clips, never the root HTML viewport: that
+// would mask misplaced authored boxes. HTML positioning/clip-path/filter
+// semantics remain conservative rather than guessing a clipping ancestor.
+const visibleSVGRect=(node,rect)=>{
+  const result={left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom};
+  if (!(node instanceof SVGElement)) return result;
+  let ancestor=node.parentElement,depth=0;
+  while (ancestor instanceof SVGElement && depth++<64) {
+    // Only outer SVG CSS boxes have the viewport rectangle used here;
+    // nested SVG bounding boxes can instead describe their child geometry.
+    if (ancestor instanceof SVGSVGElement && !ancestor.ownerSVGElement) {
+      const style=getComputedStyle(ancestor);
+      // Rotated/skewed viewport bounding boxes are not rectangular clips.
+      const matrix=ancestor.getScreenCTM();
+      if (matrix && matrix.b===0 && matrix.c===0 && matrix.a>0 && matrix.d>0 && style.overflowX==='hidden' && style.overflowY==='hidden') {
+        const clip=ancestor.getBoundingClientRect();
+        result.left=Math.max(result.left,clip.left);result.top=Math.max(result.top,clip.top);
+        result.right=Math.min(result.right,clip.right);result.bottom=Math.min(result.bottom,clip.bottom);
+      }
+    }
+    ancestor=ancestor.parentElement;
+  }
+  return result;
+};
 const count=Math.min(nodes.length,maxChecks);
 for (let i=0;i<count&&reports.length<maxReports;i++) {
   const node=nodes[i],style=getComputedStyle(node),rect=node.getBoundingClientRect();
-  if (style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&rect.width>0&&rect.height>0&&outside(rect)) add(node,'',rect);
+  const visible=visibleSVGRect(node,rect);
+  if (style.display!=='none'&&style.visibility!=='hidden'&&Number(style.opacity)!==0&&rect.width>0&&rect.height>0&&visible.right>visible.left&&visible.bottom>visible.top&&outside(visible)) add(node,'',visible);
   for (const pseudo of ['::before','::after']) {
     if (reports.length>=maxReports) break;
     const ps=getComputedStyle(node,pseudo);

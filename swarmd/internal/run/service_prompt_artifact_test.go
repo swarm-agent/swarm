@@ -207,17 +207,20 @@ func TestMasterHarnessPromptRequiresExactRenderedPixelVerification(t *testing.T)
 	}
 }
 
+// Requirement: masterHarnessPrompt explains output-only Part derivation so authors
+// cannot request capture controls as immutable targets. This text-contract test
+// proves guidance only; tool allocation and browser rejection tests prove behavior.
 func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
-		"Managed artifact `parts` are durable source-bound review/edit targets shown by Artifact Studio",
-		"complete monolithic artifact remains one file",
-		"For text/html, the caller may omit `parts`",
-		"server derives useful targets",
-		"without splitting or rewriting the source",
-		"Use `initial_parts` only",
-		"Never create a ZIP merely to represent HTML review/edit targets",
-		"derived temporal targets mirror each canonical manifest section's exact id, label, start_ms, and end_ms",
+		"For direct native HTML with animation_profile motion_ui",
+		"data-swarm-capture-ui are excluded from derived Parts",
+		"explicit Parts must target output regions only",
+		"remaining meaningful output regions still required",
+		"explicit kind=temporal Parts with stable output-region IDs",
+		"start_ms/end_ms within the manifest duration",
+		"Never edit the server-owned swarm-artifact.json",
+		"retain the exact draft and repair source through its authorized handle",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing managed artifact parts guidance %q", want)
@@ -256,28 +259,23 @@ func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t
 	}
 }
 
+// Requirement: masterHarnessPrompt distinguishes deterministic native preview
+// from live autoplay and retains canonical timing/manifest authority. This narrow
+// guidance test does not establish runtime seek or pixel-stability evidence.
 func TestMasterHarnessPromptGuidesDeterministicHTMLAnimationExport(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
-		"separate swarm.animation/v1 HTML contract",
-		"#swarm-animation-manifest",
-		"globalThis.__SWARM_ANIMATION_V1__",
-		"ready()",
-		"seek(timeMs)",
-		"deterministic seek API does not create live playback",
-		"Artifact Studio is not required to call seek continuously",
-		"one self-starting requestAnimationFrame scheduler driven by performance.now()",
-		"share one renderAt(timeMs) function with ready/seek/stop",
-		"Never publish an animation that only renders frame zero and waits for host seek calls",
-		"swarm-player/v1 sandbox bridge before DOMContentLoaded",
-		"{protocol: 'swarm-player/v1', id: request.id, ok: true, result}",
-		"Artifact Studio may send stop immediately before describe on first load",
-		"describe returns that exact manifest in result and must resume the artifact-owned scheduler",
-		"section buttons, active states, iteration sections, and managed temporal parts must all use the same IDs and exact time boundaries",
-		"action=export_html_animation",
-		"renderer samples canonical timestamps",
-		"silent managed video/mp4",
-		"managed_artifact video timeline clip",
+		"exactly one #swarm-animation-manifest",
+		"application/json, version swarm.animation/v1",
+		"duration_ms 100–120000, fps 1–60",
+		"matching ready()",
+		"acknowledging time_ms",
+		"preserve normal controls/autoplay outside capture",
+		"renderer-selected deterministic seek, not wall-clock autoplay",
+		"seek(ms) must pause every rAF/timer autoplay source",
+		"Never edit the server-owned swarm-artifact.json",
+		"Omit parts for one whole-animation midpoint sample",
+		"even without explicit temporal Parts",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing HTML animation workflow guidance %q", want)

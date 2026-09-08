@@ -9,6 +9,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -66,6 +67,15 @@ func (s *coderLineageWorktreeService) InspectTaskWorkspace(path string) (worktre
 		return worktreeruntime.TaskWorkspaceState{}, errors.New("unknown test worktree")
 	}
 	return state, nil
+}
+
+// The real-Git recovery tests exercise the ownership validator; this double
+// models only a valid primary lane for the batching/classification tests.
+func (s *coderLineageWorktreeService) ValidateTaskRepositoryLane(source, lane, owner, branch string) error {
+	if source != "/captured" || lane != "/repo" || owner != "parent-session" || branch != "agent/parent-session" {
+		return errors.New("invalid test parent lane")
+	}
+	return nil
 }
 
 func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, _, _ string) (bool, error) {
@@ -199,6 +209,7 @@ func TestManageWorktreePromoteReportsCurrentTargetLineageBeforeApply(t *testing.
 // TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLane proves the promotion authority can reach only the source session's exact captured account-owned checkout, even when the active mutation lane is the owned worktree. This prevents the active-lane containment rule from making guarded delivery impossible while retaining principal-backed target authentication; the tool runtime is the narrowest layer that owns this resolver and no-apply boundary.
 func TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLane(t *testing.T) {
 	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = []string{scope.PrimaryPath}
 	sessions := runtime.sessions.(*coderLineageSessionService)
 	source := sessions.parent
 	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
@@ -228,6 +239,7 @@ func TestManageWorktreePromoteAllowsExactCapturedAccountWorkspaceOutsideActiveLa
 // TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane proves a model-supplied path cannot use captured-lineage metadata to promote into a checkout the authenticated account does not own. The regression threat is cross-workspace mutation outside the active lane; the tool runtime is the narrowest layer that can assert rejection before integration apply.
 func TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane(t *testing.T) {
 	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = []string{scope.PrimaryPath}
 	sessions := runtime.sessions.(*coderLineageSessionService)
 	source := sessions.parent
 	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
@@ -592,10 +604,18 @@ func coderLineageRow(parentID, id string, launchIndex int, states map[string]wor
 	}
 }
 
+// Scheduling/ordering unit tests stub only the exact saved primary source;
+// real catalog authorization and revocation are exercised in recovery tests.
+type coderLineageWorkspaceService struct{ gitManageWorkspaceService }
+
+func (*coderLineageWorkspaceService) ScopeForPathForPrincipal(principal identity.Principal, path string) (workspaceruntime.Scope, error) {
+	return workspaceruntime.Scope{WorkspacePath: "/captured", ResolvedPath: path, Matched: path == "/captured" && principal.AccountScopeID == "account" && principal.UserID == "user"}, nil
+}
+
 func coderLineageRuntime(parentID, parentPath string, launches map[string]any, states map[string]worktreeruntime.TaskWorkspaceState, children map[string]pebblestore.SessionSnapshot, childIDs []string) (*Runtime, WorkspaceScope, *coderLineageWorktreeService, []string) {
-	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, WorktreeEnabled: true, WorktreeRootPath: parentPath, WorktreeBranch: "agent/parent-session", WorktreeBaseBranch: "dev", Metadata: map[string]any{"task_launches": launches}}
+	parent := pebblestore.SessionSnapshot{ID: parentID, AccountScopeID: "account", UserID: "user", WorkspacePath: parentPath, WorktreeEnabled: true, WorktreeRootPath: parentPath, WorktreeBranch: "agent/parent-session", WorktreeBaseBranch: "dev", Metadata: map[string]any{"task_launches": launches, "swarm_v3_source_workspace_path": "/captured"}}
 	worktrees := &coderLineageWorktreeService{states: states}
-	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees}
-	scope := WorkspaceScope{PrimaryPath: parentPath, Roots: []string{parentPath}, SessionID: parentID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: parentID}}
+	runtime := &Runtime{sessions: &coderLineageSessionService{parent: parent, children: children}, worktrees: worktrees, workspace: &coderLineageWorkspaceService{}}
+	scope := WorkspaceScope{PrimaryPath: parentPath, Roots: []string{parentPath, "/captured"}, SessionID: parentID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: parentID}}
 	return runtime, scope, worktrees, childIDs
 }

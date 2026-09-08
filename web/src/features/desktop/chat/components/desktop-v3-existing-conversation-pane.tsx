@@ -13,7 +13,7 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
@@ -170,11 +170,19 @@ import {
 import { normalizeDesktopPlanFinalHandoff } from "../services/session-plan-record";
 import { DesktopV3ArtifactGallery, type DesktopV3ArtifactGalleryEntry } from "./desktop-v3-artifact-gallery";
 import { DesktopV3ArtifactSidebar, desktopV3ArtifactsForSession, desktopV3HasPendingVisualSwarm, desktopV3MobileVisualSwarmArtifactToOpen, desktopV3NextSessionSidebarView } from "./desktop-v3-artifact-sidebar";
+import { DesktopV3ArtifactV2Sidebar } from "./desktop-v3-artifact-v2-sidebar";
+import { DesktopV3ArtifactV2Studio } from "./desktop-v3-artifact-v2-studio";
+import { DesktopV3ArtifactV3Sidebar } from "./desktop-v3-artifact-v3-sidebar";
+import { DesktopV3ArtifactV3Studio } from "./desktop-v3-artifact-v3-studio";
+import { useNativeArtifactCatalog } from "../../session-v3/use-native-artifact-catalog";
+import { type DesktopV3NativeArtifactSummary } from "../../session-v3/artifact-v3-api";
+import { fetchDesktopV3ArtifactV2Catalog, type DesktopV3ArtifactV2CatalogItem } from "../../session-v3/artifact-v2-api";
 import { appendDesktopV3ArtifactMessageSelections, desktopV3ArtifactCatalogEntryForViewerLocation, desktopV3ArtifactCatalogEntryKey, desktopV3ArtifactCollectionViewerHref, desktopV3ArtifactCollectionViewerSearch, desktopV3ArtifactViewerHref, desktopV3ArtifactViewerLocation, desktopV3ArtifactViewerSearch, fetchDesktopV3ArtifactCatalog, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
 import { useDesktopV3OpenArtifactCatalogRefresh } from "../../session-v3/use-artifact-catalog-refresh";
 import {
   desktopV3ActiveSessionSidebarView,
+  desktopV3HasArtifactSidebarContent,
   effectiveDesktopSidebarDisplayMode,
   loadDesktopSidebarDisplayMode,
   type DesktopSidebarDisplayMode,
@@ -969,7 +977,34 @@ function renderItemTimelineSeq(item: DesktopV3RenderItem): number {
   }
 }
 
+function committedAssistantRenderKey(message: MessageSnapshot): string {
+  if (message.role !== "assistant") return "";
+  const streamId = metadataString(message.metadata, "stream_id") || metadataString(message.metadata, "streamId");
+  const runId = metadataString(message.metadata, "run_id");
+  return streamId && runId ? `live-assistant:${runId}:${streamId}` : "";
+}
+
+function committedReasoningRenderKey(message: MessageSnapshot): string {
+  if (message.role !== "reasoning") return "";
+  const key = metadataString(message.metadata, "reasoning_overlay_key");
+  const runId = metadataString(message.metadata, "run_id");
+  return key && runId ? `live-reasoning:${runId}:${key}` : "";
+}
+
+function committedAssistantTimelineSeq(message: MessageSnapshot): number {
+  if (committedReasoningRenderKey(message)) {
+    const start = numericTimelineSeq(message.metadata?.reasoning_start_seq);
+    if (start > 0 && start <= message.global_seq) return start;
+  }
+  if (committedAssistantRenderKey(message)) {
+    const start = numericTimelineSeq(message.metadata?.stream_start_seq);
+    if (start > 0 && start <= message.global_seq) return start;
+  }
+  return message.global_seq;
+}
+
 function committedToolRenderKey(message: MessageSnapshot): string {
+  if (message.role !== "tool") return "";
   const identity = metadataString(message.metadata, "call_id")
     || message.toolMessage?.callId?.trim()
     || metadataString(message.metadata, "tool_instance_id")
@@ -1363,6 +1398,7 @@ export function buildDesktopV3LiveRunRenderItems(
   run: LiveRunOverlay,
   options: {
     assistantMessages?: Set<string>;
+    committedAssistantKeys?: Set<string>;
     reasoningMessages?: Set<string>;
     committedToolKeys?: Set<string>;
   } = {},
@@ -1371,11 +1407,13 @@ export function buildDesktopV3LiveRunRenderItems(
   for (const segment of run.assistantSegments ?? []) {
     const content = segment.content;
     if (!content.trim()) continue;
-    if (options.assistantMessages?.has(normalizeReplayContent(content)))
-      continue;
+    const id = segment.streamId ? `live-assistant:${run.runId}:${segment.streamId}` : segment.id;
+    if (segment.streamId
+      ? options.committedAssistantKeys?.has(id)
+      : options.assistantMessages?.has(normalizeReplayContent(content))) continue;
     items.push({
       type: "live-assistant",
-      id: segment.id,
+      id,
       content,
       timelineSeq: segment.timelineSeq,
     });
@@ -1395,7 +1433,7 @@ export function buildDesktopV3LiveRunRenderItems(
     if (!text && !summary && reasoning.state !== "running") continue;
     items.push({
       type: "live-reasoning",
-      id: `live-reasoning:${reasoning.key || reasoning.reasoningId || reasoning.reasoningKey || run.runId}`,
+      id: `live-reasoning:${run.runId}:${reasoning.key || reasoning.reasoningId || reasoning.reasoningKey || run.runId}`,
       text,
       summary,
       state: reasoning.state,
@@ -1415,11 +1453,18 @@ export function buildDesktopV3LiveRunRenderItems(
     });
   }
   if (run.assistantDraft?.content) {
-    items.push({
+    const draft = run.assistantDraft;
+    const id = draft.streamId
+      ? `live-assistant:${run.runId}:${draft.streamId}`
+      : `live-assistant:${run.runId}:draft`;
+    const committed = draft.streamId
+      ? options.committedAssistantKeys?.has(id)
+      : options.assistantMessages?.has(normalizeReplayContent(draft.content));
+    if (!committed) items.push({
       type: "live-assistant",
-      id: `live-assistant:${run.runId}:draft`,
-      content: run.assistantDraft.content,
-      timelineSeq: run.assistantDraft.timelineSeq,
+      id,
+      content: draft.content,
+      timelineSeq: draft.timelineSeq,
     });
   } else if (run.status === "running" || run.status === "pending_executor") {
     items.push({
@@ -1453,6 +1498,7 @@ export function buildDesktopV3ConversationRenderItems(
   );
   const assistantMessages = canonicalContentSet(visibleCommittedMessages, "assistant");
   const reasoningMessages = canonicalContentSet(visibleCommittedMessages, "reasoning");
+  const committedAssistantKeys = new Set(visibleCommittedMessages.map(committedAssistantRenderKey).filter(Boolean));
   const committedToolKeys = new Set<string>(
     visibleCommittedMessages.map(committedToolRenderKey).filter((key): key is string => Boolean(key)),
   );
@@ -1469,8 +1515,8 @@ export function buildDesktopV3ConversationRenderItems(
             : {
                 type: "message" as const,
                 message,
-                timelineSeq: message.global_seq,
-                renderKey: committedToolRenderKey(message) || undefined,
+                timelineSeq: committedAssistantTimelineSeq(message),
+                renderKey: committedAssistantRenderKey(message) || committedReasoningRenderKey(message) || committedToolRenderKey(message) || undefined,
               },
     ),
     ...renderedMessages.pendingUser.map((message) => ({
@@ -1483,6 +1529,7 @@ export function buildDesktopV3ConversationRenderItems(
     items.push(
       ...buildDesktopV3LiveRunRenderItems(run, {
         assistantMessages,
+        committedAssistantKeys,
         reasoningMessages,
         committedToolKeys,
       }),
@@ -1507,6 +1554,12 @@ export function resolveDesktopV3StopRunRequest(input: {
 }
 
 export interface DesktopV3ExistingConversationPaneProps {
+  /** Local start uses this same transcript; no provisional session is created. */
+  startPresentation?: { workspaceName: string; runStatus: DesktopV3RunStatusModel | null };
+  emptyPresentation?: ReactNode;
+  scrollIdentity?: string;
+  composerOverride?: ReactNode;
+  firstMessageIdentity?: { messageId: string; renderKey: string };
   /** Compatibility-only command seam; resolved routed mode is read-only here. */
   modeCommand?: "toggle-plan-auto" | null;
   onModeCommandHandled?: () => void;
@@ -1533,7 +1586,8 @@ export interface DesktopV3ExistingConversationPaneProps {
   agentSettingsOpenSignal?: number;
   agentSettingsInitialAgent?: string;
   composerFocusSignal?: number;
-  composerDraftRequest?: { id: number; draft: string };
+  composerDraftRequest?: { id: number; draft: string; append?: boolean };
+  onComposerDraftRequestHandled?: (id: number) => void;
   onCompactingChange?: (sessionId: string, startedAt: number | null) => void;
   onArchivePlanSession?: (sessionId: string) => void;
   onOpenPlan?: () => void;
@@ -1568,6 +1622,7 @@ export function completeDesktopV3ExistingMessage(input: {
 }
 
 type DesktopV3ExistingComposerController = {
+  appendDraft: (draft: string) => void;
   setDraft: (draft: string) => void;
 };
 
@@ -1579,7 +1634,8 @@ type DesktopV3ExistingConversationComposerProps = Omit<
   hasStoredOperation: boolean;
   canSubmitWithoutDraft: boolean;
   controllerRef: MutableRefObject<DesktopV3ExistingComposerController | null>;
-  draftRequest?: { id: number; draft: string };
+  draftRequest?: { id: number; draft: string; append?: boolean };
+  onDraftRequestHandled?: (id: number) => void;
   onSubmit: ComponentProps<typeof DesktopV3AgenticComposer>['onSubmit'];
 };
 
@@ -1589,6 +1645,7 @@ export function DesktopV3ExistingConversationComposer({
   canSubmitWithoutDraft,
   controllerRef,
   draftRequest,
+  onDraftRequestHandled,
   onSubmit,
   ...composerProps
 }: DesktopV3ExistingConversationComposerProps) {
@@ -1598,11 +1655,14 @@ export function DesktopV3ExistingConversationComposer({
   useEffect(() => {
     if (!draftRequest || draftRequest.id === handledDraftRequestRef.current) return;
     handledDraftRequestRef.current = draftRequest.id;
-    setDraft(draftRequest.draft);
-  }, [draftRequest]);
+    setDraft((current) => draftRequest.append && current.trim()
+      ? `${current}\n\n${draftRequest.draft}`
+      : draftRequest.draft);
+    onDraftRequestHandled?.(draftRequest.id);
+  }, [draftRequest, onDraftRequestHandled]);
 
   useLayoutEffect(() => {
-    const controller: DesktopV3ExistingComposerController = { setDraft };
+    const controller: DesktopV3ExistingComposerController = { setDraft, appendDraft: (text) => setDraft((current) => current.trim() ? `${current}\n\n${text}` : text) };
     controllerRef.current = controller;
     return () => {
       if (controllerRef.current === controller) controllerRef.current = null;
@@ -1645,6 +1705,7 @@ export function DesktopV3ExistingConversationPane({
   agentSettingsInitialAgent = "",
   composerFocusSignal = 0,
   composerDraftRequest,
+  onComposerDraftRequestHandled,
   onCompactingChange,
   onArchivePlanSession,
   onOpenPlan,
@@ -1658,10 +1719,15 @@ export function DesktopV3ExistingConversationPane({
   artifactReviewPortalTarget = null,
   presentation = "page",
   onMessageSent,
+  startPresentation,
+  emptyPresentation,
+  scrollIdentity,
+  composerOverride,
+  firstMessageIdentity,
 }: DesktopV3ExistingConversationPaneProps) {
   const normalizedSessionId = sessionId.trim();
   const navigate = useNavigate();
-  const routeParams = useParams({ strict: false }) as { workspaceSlug?: unknown };
+  const routeParams = useRouterState({ select: (state) => state.matches[state.matches.length - 1]?.params }) as { workspaceSlug?: unknown };
   const artifactRouteSearch = useSearch({ strict: false }) as { artifactSession?: unknown; artifact?: unknown; collection?: unknown; artifactGroup?: unknown };
   const queryClient = useQueryClient();
   const mountedRef = useRef(true);
@@ -1968,6 +2034,12 @@ export function DesktopV3ExistingConversationPane({
   const [planSidebarDisplayMode, setPlanSidebarDisplayMode] = useState<DesktopSidebarDisplayMode>(() => loadDesktopSidebarDisplayMode());
   const planSidebarGridRef = useRef<HTMLDivElement | null>(null);
   const [sessionArtifacts, setSessionArtifacts] = useState<DesktopV3ArtifactCatalogEntry[]>([]);
+  const { artifacts: sessionArtifactV3, loading: sessionArtifactV3Loading, error: sessionArtifactV3Error, refresh: refreshNativeArtifacts } = useNativeArtifactCatalog(normalizedSessionId);
+  const [selectedArtifactV3, setSelectedArtifactV3] = useState<DesktopV3NativeArtifactSummary | null>(null);
+  const [artifactV3StudioOpen, setArtifactV3StudioOpen] = useState(false);
+  const [sessionArtifactV2, setSessionArtifactV2] = useState<DesktopV3ArtifactV2CatalogItem[]>([]);
+  const [selectedArtifactV2, setSelectedArtifactV2] = useState<DesktopV3ArtifactV2CatalogItem | null>(null);
+  const [artifactV2StudioOpen, setArtifactV2StudioOpen] = useState(false);
   const [sessionArtifactsLoading, setSessionArtifactsLoading] = useState(false);
   const [sessionArtifactsError, setSessionArtifactsError] = useState("");
   const [sidebarView, setSidebarView] = useState<DesktopV3SessionSidebarView>("plan");
@@ -1981,7 +2053,8 @@ export function DesktopV3ExistingConversationPane({
   const openedMobileVisualSwarmKeysRef = useRef(new Set<string>());
   const artifactSidebarSessionRef = useRef("");
   const priorSessionArtifactCountRef = useRef(0);
-  const priorSessionHasPlanRef = useRef(false);
+  const priorNativeArtifactCountRef = useRef(0);
+  const priorPlanPermissionVisibleRef = useRef(false);
   const preferredPlanSidebarMode = useMemo(loadDesktopSidebarDisplayMode, []);
   useEffect(() => {
     const element = planSidebarGridRef.current;
@@ -2007,26 +2080,42 @@ export function DesktopV3ExistingConversationPane({
       if (frame) window.cancelAnimationFrame(frame);
     };
   }, [preferredPlanSidebarMode]);
+  const legacyArtifactRequestRef = useRef(0);
   const refreshSessionArtifacts = useCallback(async () => {
     if (!normalizedSessionId) return;
+    const requestId = ++legacyArtifactRequestRef.current;
     setSessionArtifactsLoading(true);
     setSessionArtifactsError("");
     try {
-      const catalog = await fetchDesktopV3ArtifactCatalog(undefined, normalizedSessionId);
-      if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
-      setSessionArtifacts(desktopV3ArtifactsForSession(catalog, normalizedSessionId));
+      const [catalog, artifactV2Catalog] = await Promise.allSettled([
+        fetchDesktopV3ArtifactCatalog(undefined, normalizedSessionId),
+        fetchDesktopV3ArtifactV2Catalog(normalizedSessionId),
+      ]);
+      if (requestId !== legacyArtifactRequestRef.current || artifactSidebarSessionRef.current !== normalizedSessionId) return;
+      if (catalog.status === 'fulfilled') setSessionArtifacts(desktopV3ArtifactsForSession(catalog.value, normalizedSessionId));
+      if (artifactV2Catalog.status === 'fulfilled') {
+        setSessionArtifactV2(artifactV2Catalog.value);
+        setSelectedArtifactV2((current) => current ? artifactV2Catalog.value.find((item) => item.working.id === current.working.id) ?? current : current);
+      }
+      if (catalog.status === 'rejected' || artifactV2Catalog.status === 'rejected') setSessionArtifactsError('Some older artifacts could not be loaded. Retry to refresh them.');
     } catch (error) {
-      setSessionArtifactsError(error instanceof Error ? error.message : "Session artifacts failed to load");
+      if (requestId === legacyArtifactRequestRef.current && artifactSidebarSessionRef.current === normalizedSessionId) setSessionArtifactsError(error instanceof Error ? error.message : "Session artifacts failed to load");
     } finally {
-      setSessionArtifactsLoading(false);
+      if (requestId === legacyArtifactRequestRef.current && artifactSidebarSessionRef.current === normalizedSessionId) setSessionArtifactsLoading(false);
     }
   }, [normalizedSessionId]);
   useDesktopV3OpenArtifactCatalogRefresh(Boolean(normalizedSessionId), refreshSessionArtifacts);
   useEffect(() => {
     artifactSidebarSessionRef.current = normalizedSessionId;
     priorSessionArtifactCountRef.current = 0;
-    priorSessionHasPlanRef.current = false;
+    priorNativeArtifactCountRef.current = 0;
+    priorPlanPermissionVisibleRef.current = false;
     setSessionArtifacts([]);
+    setSelectedArtifactV3(null);
+    setArtifactV3StudioOpen(false);
+    setSessionArtifactV2([]);
+    setSelectedArtifactV2(null);
+    setArtifactV2StudioOpen(false);
     setSidebarView("plan");
     setArtifactGalleryOpen(false);
     setArtifactGalleryInitialKey("");
@@ -2036,6 +2125,7 @@ export function DesktopV3ExistingConversationPane({
     dismissedArtifactViewerLocationKeyRef.current = "";
     openedMobileVisualSwarmKeysRef.current.clear();
     void refreshSessionArtifacts();
+    return () => { legacyArtifactRequestRef.current += 1; };
   }, [normalizedSessionId, refreshSessionArtifacts]);
 
   const taskChildActions = useMemo<TaskChildCardActions>(() => ({
@@ -2074,8 +2164,11 @@ export function DesktopV3ExistingConversationPane({
     selectedModelAvailable,
   );
   const renderItems = useMemo(
-    () => buildDesktopV3ConversationRenderItems(renderedMessages),
-    [renderedMessages],
+    () => buildDesktopV3ConversationRenderItems(renderedMessages).map((item) =>
+      firstMessageIdentity && item.type === 'message' && item.message.id === firstMessageIdentity.messageId
+        ? { ...item, renderKey: firstMessageIdentity.renderKey }
+        : item),
+    [renderedMessages, firstMessageIdentity],
   );
 
   const taskChildRows = useMemo<TaskToolRow[]>(() => {
@@ -2188,25 +2281,35 @@ export function DesktopV3ExistingConversationPane({
     setResolvingPlanPermissionId("");
   }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
   const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument);
-  const hasSessionArtifacts = sessionArtifacts.length > 0;
+  const hasSessionArtifacts = desktopV3HasArtifactSidebarContent({
+    artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
+    error: sessionArtifactV3Error,
+  });
   const hasPendingVisualSwarm = desktopV3HasPendingVisualSwarm(sessionArtifacts);
   const showConversationSidebar = showPlanSidebar || hasSessionArtifacts;
   const showConversationSidebarColumn = showConversationSidebar && presentation !== "sidebar";
   useEffect(() => {
     if (artifactSidebarSessionRef.current !== normalizedSessionId) return;
     const previousCount = priorSessionArtifactCountRef.current;
-    const previousHasPlan = priorSessionHasPlanRef.current;
+    const previousNativeCount = priorNativeArtifactCountRef.current;
+    const previousPlanPermissionVisible = priorPlanPermissionVisibleRef.current;
     setSidebarView((current) => desktopV3NextSessionSidebarView({
       current,
       previousArtifactCount: previousCount,
-      artifactCount: sessionArtifacts.length,
+      artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
       hasPlan: showPlanSidebar,
-      prioritizePlan: Boolean(stablePlanDocument) || (showPlanSidebar && !previousHasPlan),
+      // Hydration may replace the plan object on every tool event. Only a new
+      // permission should steal focus; legacy catalog arrival is independent.
+      planPermissionVisible: Boolean(stablePlanDocument),
+      previousPlanPermissionVisible,
+      nativeArtifactCount: sessionArtifactV3.length,
+      previousNativeArtifactCount: previousNativeCount,
       hasPendingVisualSwarm,
     }));
-    priorSessionArtifactCountRef.current = sessionArtifacts.length;
-    priorSessionHasPlanRef.current = showPlanSidebar;
-  }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
+    priorSessionArtifactCountRef.current = sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length;
+    priorNativeArtifactCountRef.current = sessionArtifactV3.length;
+    priorPlanPermissionVisibleRef.current = Boolean(stablePlanDocument);
+  }, [hasPendingVisualSwarm, normalizedSessionId, sessionArtifactV3.length, sessionArtifactV2.length, sessionArtifacts.length, showPlanSidebar, stablePlanDocument]);
   const activeSidebarView = desktopV3ActiveSessionSidebarView({
     selected: sidebarView,
     hasPlan: showPlanSidebar,
@@ -2364,7 +2467,7 @@ export function DesktopV3ExistingConversationPane({
     scrollToBottom,
     preserveScrollPositionForPrepend,
   } = useDesktopV3StickyBottomScroll({
-    resetKey: normalizedSessionId,
+    resetKey: scrollIdentity ?? normalizedSessionId,
     itemCount: renderItems.length,
     followKey: scrollFollowKey,
   });
@@ -3113,7 +3216,7 @@ export function DesktopV3ExistingConversationPane({
     [hasOpenPlan],
   );
 
-  if (!normalizedSessionId) {
+  if (!normalizedSessionId && !startPresentation) {
     return (
       <DesktopV3ChatStateCard
         title="Select a session"
@@ -3130,13 +3233,15 @@ export function DesktopV3ExistingConversationPane({
       data-testid="desktop-v3-existing-conversation-pane"
     >
       <DesktopV3ChatHeader
-        title={session?.title || cacheSession?.title || "Conversation"}
+        sessionId={normalizedSessionId}
+        workspaceRevision={cacheSession?.updated_at}
+        title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
         workspaceName={
-          session?.workspaceName || cacheSession?.workspace_name || "Workspace"
+          session?.workspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
-        runStatus={runStatusModel}
+        runStatus={startPresentation?.runStatus ?? runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
         sessionActions={headerSessionActions}
@@ -3212,7 +3317,10 @@ export function DesktopV3ExistingConversationPane({
             ) : null}
             <div
               ref={scrollContainerRef}
-              className="h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]"
+              className={cn(
+                "h-full min-h-0 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]",
+                Boolean(emptyPresentation) && "max-sm:overflow-y-hidden max-sm:py-0 max-sm:[scrollbar-gutter:auto]",
+              )}
               data-testid="desktop-chat-scroller"
               tabIndex={0}
             >
@@ -3222,9 +3330,13 @@ export function DesktopV3ExistingConversationPane({
                 className={cn(
                   "mx-auto flex min-h-full w-full min-w-0 max-w-[70rem] flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]",
                   presentation === "sidebar" ? "px-4" : "px-8 sm:px-12",
+                  // The mobile workspace list owns its padding and scroll area;
+                  // message gutters otherwise squeeze its workspace/Task row.
+                  Boolean(emptyPresentation) && "max-sm:h-full max-sm:min-h-0 max-sm:max-w-none max-sm:gap-0 max-sm:px-0",
                 )}
               >
-                {showConversationLoading ? (
+                {emptyPresentation}
+                {showConversationLoading && !startPresentation ? (
                   <DesktopV3ConversationLoadingSpinner />
                 ) : null}
                 {initialHydrateStatus === "error" &&
@@ -3373,11 +3485,11 @@ export function DesktopV3ExistingConversationPane({
                   {hasSessionArtifacts ? (
                     <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
                       <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />Plan</button>
-                      <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifacts.length}</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}</button>
                     </div>
                   ) : null}
                   {activeSidebarView === "artifacts" ? (
-                    <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} />
+                    <>{sessionArtifactV3.length > 0 || sessionArtifactV3Loading || sessionArtifactV3Error ? <DesktopV3ArtifactV3Sidebar artifacts={sessionArtifactV3} loading={sessionArtifactV3Loading} error={sessionArtifactV3Error} onRetry={() => void refreshNativeArtifacts()} embedded onOpenArtifact={(artifact) => { setSelectedArtifactV3(artifact); setArtifactV3StudioOpen(true); }} /> : null}{sessionArtifactV2.length > 0 ? <DesktopV3ArtifactV2Sidebar artifacts={sessionArtifactV2} loading={sessionArtifactsLoading} error={sessionArtifactsError} embedded onOpenArtifact={(artifact) => { setSelectedArtifactV2(artifact); setArtifactV2StudioOpen(true); }} /> : null}<DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode="full" loading={sessionArtifactsLoading && sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0} error={sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0 ? sessionArtifactsError : ""} embedded artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} /></>
                   ) : (
                     <IsolatedPlanExecutionSidebar
                       sessionId={normalizedSessionId}
@@ -3395,7 +3507,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          <DesktopV3ExistingConversationComposer
+          {composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
@@ -3406,6 +3518,7 @@ export function DesktopV3ExistingConversationPane({
             canSubmitWithoutDraft={canSubmitWithoutDraft}
             controllerRef={composerControllerRef}
             draftRequest={composerDraftRequest}
+            onDraftRequestHandled={onComposerDraftRequestHandled}
             placeholder="Message Swarm…"
             inputLabel="Continue Desktop V3 conversation"
             disabled={sending || compacting}
@@ -3489,7 +3602,7 @@ export function DesktopV3ExistingConversationPane({
             onSlashCommand={onSlashCommand}
             developerMode={developerMode}
             onOpenActionSettings={onOpenActionSettings}
-          />
+          />}
         </div>
 
         {showConversationSidebarColumn ? (
@@ -3503,14 +3616,14 @@ export function DesktopV3ExistingConversationPane({
             {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
-                <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifacts.length}` : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
             <div className={stablePlanDocument
               ? "contents min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:min-w-0 min-[1300px]:flex-1 min-[1300px]:flex-col min-[1300px]:overflow-hidden"
               : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"}>
               {activeSidebarView === "artifacts" ? (
-                <DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading} error={sessionArtifactsError} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} />
+                <>{sessionArtifactV3.length > 0 || sessionArtifactV3Loading || sessionArtifactV3Error ? <DesktopV3ArtifactV3Sidebar artifacts={sessionArtifactV3} loading={sessionArtifactV3Loading} error={sessionArtifactV3Error} onRetry={() => void refreshNativeArtifacts()} onOpenArtifact={(artifact) => { setSelectedArtifactV3(artifact); setArtifactV3StudioOpen(true); }} /> : null}{sessionArtifactV2.length > 0 ? <DesktopV3ArtifactV2Sidebar artifacts={sessionArtifactV2} loading={sessionArtifactsLoading} error={sessionArtifactsError} onOpenArtifact={(artifact) => { setSelectedArtifactV2(artifact); setArtifactV2StudioOpen(true); }} /> : null}<DesktopV3ArtifactSidebar artifacts={sessionArtifacts} displayMode={planSidebarDisplayMode} loading={sessionArtifactsLoading && sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0} error={sessionArtifactV3.length === 0 && sessionArtifactV2.length === 0 ? sessionArtifactsError : ""} artifactHref={artifactViewerHref} onOpenArtifact={openArtifactFullView} onAddToChat={queueGalleryArtifactSelections} /></>
               ) : stablePlanDocument && stablePlanPermission && planSidebarViewport ? (
                 <DesktopPlanAgentSidecar
                   parentSessionId={normalizedSessionId}
@@ -3583,6 +3696,30 @@ export function DesktopV3ExistingConversationPane({
         onSelectionPersisted={refreshSessionArtifacts}
       /> : null}
 
+      <DesktopV3ArtifactV3Studio
+        artifact={selectedArtifactV3}
+        onRepairDraft={(artifact) => {
+          if (artifact.ownerSessionId !== normalizedSessionId) return;
+          composerControllerRef.current?.appendDraft(`Please continue fixing the retained artifact ${JSON.stringify(artifact.label)} (artifact ID: ${artifact.artifactId}). Inspect its current draft status, resume it safely if needed, and edit its existing source until validation passes. Preserve its identity and unrelated content; do not create a replacement.`);
+          setArtifactV3StudioOpen(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+        open={artifactV3StudioOpen}
+        onOpenChange={setArtifactV3StudioOpen}
+        onRefresh={refreshSessionArtifacts}
+        onIterate={(selection) => {
+          queueGalleryArtifactSelections([selection]);
+          setArtifactV3StudioOpen(false);
+          setArtifactComposerFocusSignal((current) => current + 1);
+        }}
+      />
+
+      <DesktopV3ArtifactV2Studio
+        artifact={selectedArtifactV2}
+        open={artifactV2StudioOpen}
+        onOpenChange={setArtifactV2StudioOpen}
+      />
+
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
         open={Boolean(selectedPermission)}
@@ -3619,6 +3756,9 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
+  const userMessage = desktopV3UserMessageElement(item);
+  if (userMessage) return userMessage;
+
   switch (item.type) {
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
@@ -3640,8 +3780,6 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
           onArtifactSelections={onArtifactSelections}
         />
       );
-    case "pending-user":
-      return <DesktopV3PendingUserMessage message={item.message} />;
     case "live-assistant":
       return (
         <DesktopV3AssistantMessage content={item.content} role="assistant" />
@@ -4533,8 +4671,8 @@ function DesktopV3CommittedMessage({
           text: message.content,
           summary: message.content,
           state: "completed",
-          startedAt: null,
-          completedAt: null,
+          startedAt: numericTimelineSeq(message.metadata?.reasoning_started_at) || null,
+          completedAt: numericTimelineSeq(message.metadata?.reasoning_completed_at) || null,
           timelineSeq: message.global_seq,
         }}
         thinkingTagsEnabled={thinkingTagsEnabled}
@@ -4583,21 +4721,29 @@ function DesktopV3UserMessage({
   );
 }
 
-function DesktopV3PendingUserMessage({
-  message,
-}: {
-  message: PendingUserMessage;
-}) {
-  return (
-    <DesktopV3UserMessage
-      content={message.content}
-      media={message.media}
-      artifactSelections={message.artifactSelections}
-      pendingLabel={
-        message.status === "failed" ? message.error || "failed" : undefined
-      }
-    />
-  );
+// Keep the same immediate React child through confirmation. Matching row keys
+// alone cannot preserve the bubble when its parent component type changes.
+export function desktopV3UserMessageElement(item: DesktopV3RenderItem) {
+  if (item.type === "pending-user") {
+    return (
+      <DesktopV3UserMessage
+        content={item.message.content}
+        media={item.message.media}
+        artifactSelections={item.message.artifactSelections}
+        pendingLabel={item.message.status === "failed" ? item.message.error || "failed" : undefined}
+      />
+    );
+  }
+  if (item.type === "message" && item.message.role === "user" && !item.message.toolMessage) {
+    return (
+      <DesktopV3UserMessage
+        content={item.message.content}
+        media={item.message.media}
+        artifactSelections={item.message.artifact_selections}
+      />
+    );
+  }
+  return null;
 }
 
 function DesktopV3CompactPendingState() {
@@ -4697,7 +4843,7 @@ function DesktopV3ReasoningMessage({
     return () => window.clearInterval(timer);
   }, [item.state]);
   const body = reasoningBody(item.text, item.summary, thinkingTagsEnabled);
-  const label = item.state === "error" ? "Thinking failed" : "Thinking";
+  const label = item.state === "error" ? "Thinking failed" : item.state === "completed" ? "Thought" : "Thinking";
   const elapsed = reasoningElapsedLabel(
     item.startedAt,
     item.state === "running" ? null : item.completedAt,

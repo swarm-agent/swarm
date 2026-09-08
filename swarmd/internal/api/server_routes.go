@@ -40,6 +40,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 
 func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(AgentModelSettingsPath, s.handleAgentModelSettings)
+	mux.HandleFunc(AgentModelSettingsPath+"/restore-defaults", s.handleRestoreAgentModelDefaults)
 	mux.HandleFunc("/v1/swarm/targets", s.handleSwarmTargets)
 	mux.HandleFunc("/v1/swarm/target/current", s.handleSwarmCurrentTarget)
 	mux.HandleFunc("/v1/swarm/target/select", s.handleSwarmSelectTarget)
@@ -166,6 +167,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/update/run", s.handleUpdateRun)
 	mux.HandleFunc(SessionStorageMaintenancePath, s.handleSessionStorageMaintenance)
 	mux.HandleFunc(SessionDumpPath, s.handleSessionDump)
+	mux.HandleFunc(sessionDumpFilePath, s.handleSessionDumpFile)
 	mux.HandleFunc(LongSessionDiagnosticsConfigPath, s.handleLongSessionDiagnosticsConfig)
 	mux.HandleFunc(LongSessionDiagnosticsSamplePath, s.handleLongSessionDiagnosticsSample)
 	mux.HandleFunc(LongSessionDiagnosticsCapturePath, s.handleLongSessionDiagnosticsCapture)

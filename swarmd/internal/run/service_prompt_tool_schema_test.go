@@ -90,8 +90,14 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	if !ok {
 		t.Fatal("task schema omits exact section_target")
 	}
-	if description, _ := sectionTarget["description"].(string); !strings.Contains(description, "managed Designer work") || !strings.Contains(description, "Requires source_artifact") || !strings.Contains(description, "focused corrections") {
+	if description, _ := sectionTarget["description"].(string); !strings.Contains(description, "managed Designer work") || !strings.Contains(description, "Requires source_artifact") {
 		t.Fatalf("task section_target description = %q", description)
+	}
+	sectionTargetProperties, _ := sectionTarget["properties"].(map[string]any)
+	for _, field := range []string{"x", "y", "width", "height", "page", "state_id", "selector"} {
+		if sectionTargetProperties[field] == nil {
+			t.Fatalf("task section_target schema omits validator-required field %q", field)
+		}
 	}
 	controls, ok := properties["iteration_controls"].(map[string]any)
 	if !ok || !reflect.DeepEqual(controls["required"], []string{"change"}) || controls["additionalProperties"] != false {

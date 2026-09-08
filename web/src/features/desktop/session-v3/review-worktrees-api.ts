@@ -5,6 +5,7 @@ import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '.
 import type { V3RealtimeOutboxRecord } from '../state/desktop-v3-cache-types'
 
 export type ReviewWorktreeReason =
+  | 'inspection_pending'
   | 'uncommitted_work'
   | 'current_checkout_uncommitted_work'
   | 'current_checkout_clean'
@@ -55,6 +56,7 @@ export interface RecentlyArchivedReviewSession {
 
 export interface ReviewWorktreesResponse {
   ok: boolean
+  inspection_pending?: boolean
   target_detection: string
   current_target_branch?: string
   current_target_head?: string
@@ -65,9 +67,9 @@ export interface ReviewWorktreesResponse {
   commit_batch_id?: string
   recently_archived: RecentlyArchivedReviewSession[]
   grace_period_ms: number
-  checkout_dirty: boolean
-  checkout_dirty_count: number
-  blocked_by_checkout_count: number
+  checkout_dirty: boolean | null
+  checkout_dirty_count: number | null
+  blocked_by_checkout_count: number | null
   complete: boolean
 }
 
@@ -111,6 +113,8 @@ export async function unarchiveDesktopV3ReviewSessions(versions: Record<string, 
 
 export async function reviewDesktopV3Worktrees(input: {
   workspacePath?: string
+  catalogOnly?: boolean
+  signal?: AbortSignal
   sessionIds?: string[]
   archiveSessionIds?: string[]
   archiveAll?: boolean
@@ -122,12 +126,17 @@ export async function reviewDesktopV3Worktrees(input: {
   automatic?: boolean
   graceHours?: number
 } = {}): Promise<ReviewWorktreesResponse> {
+  const actionIds = [...new Set([...(input.promoteSessionIds ?? []), ...(input.archiveSessionIds ?? [])])]
+  const sessionIds = input.sessionIds ?? (!input.automatic && !input.archiveAll && !input.commitSessionIds?.length && actionIds.length > 0 ? actionIds : undefined)
   const response = await requestJson<ReviewWorktreesResponse>('/v3/sessions:review-worktrees', {
     method: 'POST',
+    signal: input.signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       workspace_path: input.workspacePath?.trim() || undefined,
-      session_ids: input.sessionIds,
+      catalog_only: input.catalogOnly || undefined,
+      // Exact actions should not inspect every unrelated review lane afterward.
+      session_ids: sessionIds,
       archive_session_ids: input.archiveSessionIds,
       archive_all: input.archiveAll,
       promote_session_ids: input.promoteSessionIds,

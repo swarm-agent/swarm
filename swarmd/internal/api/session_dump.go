@@ -17,6 +17,7 @@ import (
 
 const (
 	SessionDumpPath           = "/v3/developer/session-dump"
+	sessionDumpFilePath       = "/v3/developer/session-dump/file/"
 	sessionDumpDirectoryName  = "session-dumps"
 	sessionDumpMaxMessages    = 1_000_000
 	sessionDumpMaxEvents      = 1_000_000
@@ -29,6 +30,7 @@ var sessionDumpFilenameCharacters = regexp.MustCompile(`[^A-Za-z0-9_.-]+`)
 
 type sessionDumpHTTPRequest struct {
 	SessionID string `json:"session_id"`
+	Download  bool   `json:"download,omitempty"`
 }
 
 type sessionDumpFile struct {
@@ -92,17 +94,61 @@ func (s *Server) handleSessionDump(w http.ResponseWriter, r *http.Request) {
 		writeSessionNotFound(w)
 		return
 	}
-	path, size, err := s.writeSessionDumpFile(request.SessionID, dump)
+	path, size, filename, err := s.writeSessionDumpFile(request.SessionID, dump)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("write session dump: %w", err))
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+	response := map[string]any{
 		"ok":            true,
 		"session_id":    request.SessionID,
 		"path":          path,
 		"bytes_written": size,
-	})
+	}
+	if request.Download {
+		response["download_path"] = sessionDumpFilePath + filename
+	}
+	writeJSON(w, http.StatusCreated, response)
+}
+
+func (s *Server) handleSessionDumpFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		methodNotAllowed(w)
+		return
+	}
+	principal, ok := PrincipalFromRequest(r)
+	if !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
+		return
+	}
+	cfg, err := s.loadStartupConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("load startup config: %w", err))
+		return
+	}
+	if !cfg.DevMode {
+		writeError(w, http.StatusForbidden, errors.New("session dump requires dev_mode=true in swarm.conf"))
+		return
+	}
+	name := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, sessionDumpFilePath))
+	if name == "" || filepath.Base(name) != name || !strings.HasPrefix(name, "session-") || !strings.HasSuffix(name, ".json") {
+		writeError(w, http.StatusBadRequest, errors.New("valid session dump name is required"))
+		return
+	}
+	path := filepath.Join(strings.TrimSpace(s.dataDir), sessionDumpDirectoryName, name)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		writeError(w, http.StatusInternalServerError, errors.New("session dump file is unavailable"))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	http.ServeFile(w, r, path)
 }
 
 func (s *Server) buildSessionDump(sessionID string) (sessionDumpFile, bool, error) {
@@ -168,24 +214,24 @@ func (s *Server) buildSessionDump(sessionID string) (sessionDumpFile, bool, erro
 	}, true, nil
 }
 
-func (s *Server) writeSessionDumpFile(sessionID string, dump sessionDumpFile) (string, int64, error) {
+func (s *Server) writeSessionDumpFile(sessionID string, dump sessionDumpFile) (string, int64, string, error) {
 	dataDir := strings.TrimSpace(s.dataDir)
 	if dataDir == "" {
-		return "", 0, errors.New("daemon data directory is not configured")
+		return "", 0, "", errors.New("daemon data directory is not configured")
 	}
 	directory := filepath.Join(dataDir, sessionDumpDirectoryName)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	if err := os.Chmod(directory, 0o700); err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	name := safeSessionDumpFilename(sessionID)
 	filename := fmt.Sprintf("session-%s-%s.json", name, time.Now().UTC().Format("20060102T150405.000000000Z"))
 	path := filepath.Join(directory, filename)
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", 0, err
+		return "", 0, "", err
 	}
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
@@ -196,18 +242,18 @@ func (s *Server) writeSessionDumpFile(sessionID string, dump sessionDumpFile) (s
 	closeErr := file.Close()
 	if writeErr != nil {
 		_ = os.Remove(path)
-		return "", 0, writeErr
+		return "", 0, "", writeErr
 	}
 	if closeErr != nil {
 		_ = os.Remove(path)
-		return "", 0, closeErr
+		return "", 0, "", closeErr
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		_ = os.Remove(path)
-		return "", 0, err
+		return "", 0, "", err
 	}
-	return path, info.Size(), nil
+	return path, info.Size(), filename, nil
 }
 
 func safeSessionDumpFilename(sessionID string) string {

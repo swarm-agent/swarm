@@ -662,12 +662,14 @@ func TestEnsureBootDefaultsPreservesNewerPersistedLiveSnapshot(t *testing.T) {
 	}
 }
 
+// Purpose: refresh must install a newer verified payload once, then skip an
+// unchanged identity. The fake HTTP/store boundary proves persisted model data.
 func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
 	versionBody := []byte(`{
 		"snapshot_id":"snapshot-live",
 		"snapshot_version":"v-live",
 		"snapshot_schema_version":"2026-07-01.1",
-		"generated_at":"2026-07-01T00:00:00Z",
+		"generated_at":"2099-01-01T00:00:00Z",
 		"model_count":1,
 		"provider_count":1,
 		"hydrated_provider_count":1,
@@ -677,7 +679,7 @@ func TestRefreshUsesSnapshotVersionAndSkipsUnchangedSnapshot(t *testing.T) {
 		"snapshot_id":"snapshot-live",
 		"snapshot_version":"v-live",
 		"snapshot_schema_version":"2026-07-01.1",
-		"generated_at":"2026-07-01T00:00:00Z",
+		"generated_at":"2099-01-01T00:00:00Z",
 		"model_count":1,
 		"provider_count":1,
 		"hydrated_provider_count":1,

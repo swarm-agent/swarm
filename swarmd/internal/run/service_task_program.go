@@ -389,21 +389,15 @@ func taskProgramSpecUsesManagedDesigner(job taskProgramJob) bool {
 	return mode == taskOutputModeManaged || (mode == "" && len(job.OwnedScope) == 0)
 }
 
-func taskProgramExpectedArtifactReference(record pebblestore.TaskProgramRecord, jobID string) *taskArtifactReference {
-	routingID := taskManagedArtifactRoutingID(record.ReservationCallID, record.ProgramID)
-	return &taskArtifactReference{
-		SessionID:    strings.TrimSpace(record.ParentSessionID),
-		CollectionID: taskManagedArtifactID("collection", record.ParentSessionID, routingID, 0),
-		VariantID:    taskManagedArtifactID("variant", record.ParentSessionID, routingID+"\x00job:"+strings.TrimSpace(jobID), 0),
-		Status:       pebblestore.SessionArtifactStatusReady,
-	}
-}
-
 func taskProgramReadyArtifactReference(record pebblestore.TaskProgramRecord, definition pebblestore.TaskProgramJobSpec, job pebblestore.TaskProgramJobRecord) *taskArtifactReference {
 	if !taskProgramDefinitionUsesManagedDesigner(definition) || job.State != pebblestore.TaskProgramJobCompleted || job.IntegrationState != "artifact_ready" {
 		return nil
 	}
-	return taskProgramExpectedArtifactReference(record, job.JobID)
+	if job.ArtifactRef == nil {
+		return nil
+	}
+	ref := job.ArtifactRef
+	return &taskArtifactReference{SessionID: ref.SessionID, ArtifactID: ref.ArtifactID, CommitOID: ref.CommitOID, ProjectionSeq: ref.ProjectionSeq, TurnID: ref.TurnID, CandidateID: ref.CandidateID, Status: pebblestore.SessionArtifactStatusReady}
 }
 
 func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchOutcome, runErrs []error) []pebblestore.TaskProgramJobTransition {
@@ -444,8 +438,14 @@ func taskProgramOutcomeTransitions(spec *taskProgramSpec, outcomes []taskLaunchO
 		if agentruntime.IsFinderAgentName(spec.Jobs[i].RequestedSubagentType) {
 			handoffRef = taskProgramDurableHandoffRef(outcome.ReportRef)
 		}
+		var artifactRef *pebblestore.TaskProgramArtifactRef
+		if integration == "artifact_ready" && outcome.ArtifactReference != nil {
+			r := outcome.ArtifactReference
+			artifactRef = &pebblestore.TaskProgramArtifactRef{SessionID: r.SessionID, ArtifactID: r.ArtifactID, CommitOID: r.CommitOID, ProjectionSeq: r.ProjectionSeq, TurnID: r.TurnID, CandidateID: r.CandidateID}
+		}
 		updates = append(updates, pebblestore.TaskProgramJobTransition{
-			JobID: spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,
+			ArtifactRef: artifactRef,
+			JobID:       spec.Jobs[i].ID, ExpectedState: pebblestore.TaskProgramJobRunning, State: state,
 			ChildSessionID: outcome.ChildSessionID, CurrentSessionID: outcome.ChildSessionID, CurrentRunID: outcome.ChildRunID, WorkspacePath: outcome.WorkspacePath, WorktreeBranch: outcome.WorktreeBranch,
 			ParentBranch: outcome.ParentBranch, ImmutableStageBase: outcome.BaseCommit, ChildHead: outcome.HeadCommit,
 			IntegrationState: integration, HandoffRef: handoffRef, Blocker: blocker,

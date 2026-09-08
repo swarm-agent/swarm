@@ -248,8 +248,12 @@ func TestV3ReasoningUpdatesUseExplicitProviderDeltaMode(t *testing.T) {
 	}
 }
 
+// Requirement: provider callbacks remain nonblocking while persistence stalls;
+// the executor live hub must retain all bytes before the writer is released.
+// This channel-gated fake-provider test forces the schedule without sleeps.
 func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	configureAssistantOrderTestProvider(t, server)
 	created := createSessionsV3PrimaryTestSessionWithPreference(t, server, "callback-live-blocked-create", "callback live blocked", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 
 	liveSub := server.v3LiveHub.subscribe()
@@ -270,6 +274,9 @@ func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *tes
 	exec := newSessionV3Executor(server)
 	exec.startDelay = 0
 	writer := newSessionsV3BlockingDurableProgressWriter(sessionV3ExecutorDurableProgressWriter{exec: exec})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(writer.release) }) }
+	t.Cleanup(release)
 	exec.durableProgressWriterForTest = writer
 	server.v3SessionExecutor = exec
 
@@ -293,7 +300,7 @@ func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *tes
 	if patch.Text != expected || patch.LiveSeqStart != 1 || patch.LiveSeqEnd != deltaCount || patch.OffsetStart != 0 || patch.OffsetEnd != deltaCount {
 		t.Fatalf("live patch before release = seq %d-%d offsets %d-%d text len %d", patch.LiveSeqStart, patch.LiveSeqEnd, patch.OffsetStart, patch.OffsetEnd, len(patch.Text))
 	}
-	close(writer.release)
+	release()
 	waitForSessionsV3MessageCount(t, sessionSvc, created.ID, 2)
 	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
 	if err != nil {
@@ -304,8 +311,13 @@ func TestV3AssistantCallbackPublishesAllDeltasWhileDurableWriterIsBlocked(t *tes
 	}
 }
 
+// Requirement: executor completion persists the same stream identity, bytes and
+// first durable text sequence used while streaming. This fake-provider API test
+// proves the sink-to-completion-to-stored-message wiring, preventing hydration
+// from sorting text by its later completion event instead of its original slot.
 func TestV3CommittedAssistantMetadataMatchesFinalStream(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	configureAssistantOrderTestProvider(t, server)
 	runner := installSessionsV3TestProvider(server, "héllo 🌍")
 	runner.handler = func(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 		onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "hé"})
@@ -323,10 +335,40 @@ func TestV3CommittedAssistantMetadataMatchesFinalStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
+	if messages[1].Content != "héllo 🌍" {
+		t.Fatalf("provider did not complete expected text: %+v", messages[1])
+	}
 	metadata := messages[1].Metadata
 	runID, _ := metadata["run_id"].(string)
 	if runID == "" {
 		t.Fatalf("assistant metadata missing run_id: %+v", metadata)
+	}
+	events, err := sessionSvc.ListSessionEvents(created.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstTextSeq uint64
+	for _, event := range events {
+		if event.EventType == "session.assistant.delta" {
+			firstTextSeq = event.Seq
+			break
+		}
+	}
+	if firstTextSeq == 0 || firstTextSeq >= messages[1].GlobalSeq {
+		t.Fatalf("missing pre-commit text anchor: %d", firstTextSeq)
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamMetadata struct {
+		StartSeq uint64 `json:"stream_start_seq"`
+	}
+	if err := json.Unmarshal(encoded, &streamMetadata); err != nil {
+		t.Fatal(err)
+	}
+	if streamMetadata.StartSeq != firstTextSeq {
+		t.Fatalf("stream start = %d, want %d", streamMetadata.StartSeq, firstTextSeq)
 	}
 	if metadata["stream_id"] != sessionV3AssistantLiveStreamID(runID, 1) || metadata["stream_step"] != float64(1) && metadata["stream_step"] != 1 || metadata["stream_offset_end"] != float64(len([]byte("héllo 🌍"))) && metadata["stream_offset_end"] != len([]byte("héllo 🌍")) {
 		t.Fatalf("assistant metadata = %+v", metadata)

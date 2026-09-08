@@ -174,6 +174,20 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessIncludesBoundedManagedDesignerReplacementRecovery(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"next_action=launch_one_replacement_wave_for_failed_managed_designer_slots",
+		"retain only those explicit successful references and launch exactly one replacement Designer per failed slot",
+		"Do not rerun successful slots, reuse the failed artifact, or repeat another replacement wave",
+		"partial task error is not by itself a nonrecoverable checkpoint failure",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness missing managed Designer recovery guidance %q", want)
+		}
+	}
+}
+
 func TestAppendResolvedModelPolicyInstructionsReportsRequestFacts(t *testing.T) {
 	instructions := AppendResolvedModelPolicyInstructions("base", sessionruntime.ModePlan, pebblestore.ModelPreference{
 		Provider: "Codex", Model: "gpt-5.4", Thinking: "high", ServiceTier: "priority", ContextMode: "1m",

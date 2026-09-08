@@ -5,60 +5,62 @@ import (
 	"testing"
 )
 
-func TestMasterHarnessRequiresProfiledDesignerAnimationGuidance(t *testing.T) {
+func TestMasterHarnessRequiresArtifactV2DesignerAnimationContract(t *testing.T) {
 	prompt := masterHarnessPrompt(t.TempDir())
 	for _, expected := range []string{
 		"For animated output, always pass the narrowest applicable animation_profile",
-		"concrete animation-quality, frame-pacing, hot-loop, caching, adaptive-quality",
-		"do not rely on vague words such as optimal, smooth, or high FPS",
 		"motion_ui for CSS/WAAPI/SVG/Canvas UI motion",
 		"spatial_3d for pinned local Three.js",
 		"vector_playback for licensed dotLottie/Rive imports",
 		"final_render for MP4 playback",
 		`"animation_profile":{"profile":"motion_ui"}`,
-		"parser-executed classic `head` script",
-		"immediately calls globalThis.__SWARM_ANIMATION_BIND__(runtime) when that trusted binder exists",
-		"otherwise assigning the runtime to globalThis.__SWARM_ANIMATION_V1__ for standalone preview",
-		"never defer bootstrap behind a module, event, promise, import, or asset load",
+		"Managed Designers use only the context-bound artifact_v2_author capability",
+		"server owns capture HTML, state runtime, trusted rendering",
+		"server validates exact V2 composition/build/validation evidence",
+		"Use a V2 Iteration Round",
+		"one stable Video Studio part",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing Designer animation requirement %q", expected)
+			t.Fatalf("master harness missing Artifact V2 animation requirement %q", expected)
 		}
 	}
-}
-
-func TestMasterHarnessPrefersLiveHTMLVideoStudioPreviewBeforeExport(t *testing.T) {
-	prompt := masterHarnessPrompt(t.TempDir())
-	for _, expected := range []string{
-		"submit the pending proposal before any HTML-to-MP4 export",
-		"plays the selected HTML live in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
-		"Do not call export_html_animation merely to preview HTML with soundtrack",
-		"never claim that live HTML plus soundtrack preview is unsupported",
-		"explicit durable acceptance/promotion or final rendering",
-	} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing live HTML Video Studio guidance %q", expected)
-		}
-	}
-}
-
-func TestMasterHarnessPreservesOneClipIterationTopology(t *testing.T) {
-	prompt := masterHarnessPrompt(t.TempDir())
-	for _, expected := range []string{
-		"one video clip with multiple iterations",
-		"one stable video-plan part",
-		"not a full-song timeline",
-		"no longer than 12 seconds",
-		"status=awaiting_selection",
-		"manage_artifact derive_text",
-		"consume only its explicitly returned successful ready artifact_references",
-		"export_html_animation_fallback on one valid candidate",
-		"source_audio clip already trimmed to the same intro window in initial_timeline",
+	for _, forbidden := range []string{
+		"one or more such parts atomically only through manage_video propose_html_iteration",
+		"manage_artifact export_html_animation_fallback on one valid candidate",
 		"publish_workspace on the exact workspace file or package with animation_profile",
-		"representative seek preflight before queueing",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("master harness retained V1 managed animation workflow %q", forbidden)
+		}
+	}
+}
+
+func TestMasterHarnessRoutesArtifactV2VideoConversionWithoutManualArrays(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+	for _, expected := range []string{
+		"manage_video convert_artifact_v2",
+		"callers must not export V1 HTML, reconstruct arrays, or mix collection/variant references into the V2 path",
+		"resulting proposal remains pending for user review",
+		"server owns the fallback and pending candidate set",
+		"do not derive V1 HTML, allocate replacement variants, or export MP4 merely for live preview",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing one-clip iteration requirement %q", expected)
+			t.Fatalf("master harness missing Artifact V2 Video Studio guidance %q", expected)
+		}
+	}
+}
+
+func TestMasterHarnessRoutesNativeArtifactV3VideoConversion(t *testing.T) {
+	prompt := masterHarnessPrompt(t.TempDir())
+	for _, expected := range []string{
+		"manage_video convert_artifact_v3",
+		"artifact_v3_session_id, artifact_v3_artifact_id, artifact_v3_revision_ref, project_id, and base_revision_id",
+		"injects deterministic animation timing only into ephemeral render bytes",
+		"exactly one pending artifact_v3_conversion proposal",
+		"must not author plan arrays or translate through V1/V2 identity",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("master harness missing Artifact V3 video guidance %q", expected)
 		}
 	}
 }
@@ -81,41 +83,20 @@ func TestVideoStudioMessageContextBoundsBlockedHTMLClipWork(t *testing.T) {
 	}
 }
 
-func TestMasterHarnessAllowsAtomicMultiPartHTMLVideoProposals(t *testing.T) {
-	prompt := masterHarnessPrompt(t.TempDir())
-	for _, expected := range []string{
-		"one or more such parts atomically only through manage_video propose_html_iteration",
-		"one exact image fallback per part",
-		"one or more stable-id parts",
-		"2 to 16 compatible ready animation_candidates",
-	} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing multi-part HTML proposal guidance %q", expected)
-		}
-	}
-	if strings.Contains(prompt, "propose_html_iteration rejects image-only downgrade, multiple parts") {
-		t.Fatal("master harness still forbids multi-part HTML proposals")
-	}
-}
-
-func TestVideoStudioMessageContextPrefersLiveHTMLCandidatePreview(t *testing.T) {
+func TestVideoStudioMessageContextUsesArtifactV2Conversion(t *testing.T) {
 	prompt := videoStudioMessageContextForProvider(map[string]any{
 		"creative_mode":     "video",
 		"video_project_id":  "project-1",
 		"video_revision_id": "revision-1",
 	})
 	for _, expected := range []string{
-		"and animation_candidates",
-		"propose_html_iteration",
-		"select_animation_candidate",
-		"promote_animation_derivative",
-		"previews the selected HTML live in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
+		"manage_video convert_artifact_v2",
+		"exact Artifact V2 artifact and published-head identities",
+		"server constructs stable parts, duration, candidate sets, and exact fallbacks",
 		"Do not export HTML to MP4 merely for live review",
-		"do not submit text/html through replace_source",
-		"MP4 derivative is required",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("Video Studio context missing live HTML guidance %q: %s", expected, prompt)
+			t.Fatalf("Video Studio context missing V2 guidance %q: %s", expected, prompt)
 		}
 	}
 }

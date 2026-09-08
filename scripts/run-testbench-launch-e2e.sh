@@ -6,7 +6,7 @@ usage() {
 Usage: scripts/run-testbench-launch-e2e.sh [--workspace <name-or-path>] [--desktop-timeout-ms <ms>] [--tui-timeout-seconds <n>] [--with-onboarding] [--headful]
 
 Optionally runs the existing isolated product onboarding gate, then runs the
-testbench connectivity/configuration check, canonical Desktop launch suite, and
+exact container candidate setup, canonical Desktop launch suite, and
 canonical TUI launch suite. Each stage is sequential and stops on its first
 failure so evidence stays bounded and attributable.
 USAGE
@@ -41,8 +41,8 @@ if [[ "${WITH_ONBOARDING}" == "true" ]]; then
   printf '\n'
 fi
 
-printf '== Testbench stage 1/3: connectivity and configuration checks ==\n'
-"${ROOT_DIR}/scripts/testbench-e2e-tunnel.sh" check
+printf '== Testbench stage 1/3: ensure exact isolated-container candidate ==\n'
+"${ROOT_DIR}/scripts/testbench-container-deploy.sh" ensure
 
 printf '\n== Testbench stage 2/3: Desktop launch suite ==\n'
 desktop_args=(--timeout-ms "${DESKTOP_TIMEOUT_MS}")

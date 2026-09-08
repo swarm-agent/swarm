@@ -1674,6 +1674,58 @@ function extractBashToolData(
   };
 }
 
+function askUserOptionLabel(options: unknown, answer: string): string {
+  if (!Array.isArray(options)) return "";
+  for (const option of options) {
+    if (typeof option === "string") {
+      if (option.trim() === answer) return option.trim();
+      continue;
+    }
+    const record = jsonRecord(option);
+    if (!record) continue;
+    const value = jsonStr(record, "value") || jsonStr(record, "label");
+    if (value === answer) return jsonStr(record, "label") || value;
+  }
+  return "";
+}
+
+function extractAskUserPreviewLines(
+  outputJson: Record<string, unknown> | null,
+  argumentsJson: Record<string, unknown> | null,
+): string[] {
+  if (!outputJson) return [];
+  const lines: string[] = [];
+  const answer = jsonStr(outputJson, "answer");
+  if (answer) {
+    const selectedLabel = askUserOptionLabel(argumentsJson?.options, answer);
+    pushPreviewLine(lines, selectedLabel ? `Selected: ${selectedLabel}` : `Custom response: ${answer}`, 8);
+    return lines;
+  }
+
+  const answers = jsonRecord(outputJson.answers);
+  if (!answers) return lines;
+  const argumentQuestions = jsonObjectSlice(argumentsJson, "questions");
+  const outputQuestions = jsonObjectSlice(outputJson, "questions");
+  for (const [index, question] of outputQuestions.entries()) {
+    const id = jsonStr(question, "id") || `q_${index + 1}`;
+    const value = typeof answers[id] === "string" ? answers[id].trim() : "";
+    if (!value) continue;
+    const argumentQuestion = argumentQuestions.find((candidate, questionIndex) =>
+      (jsonStr(candidate, "id") || `q_${questionIndex + 1}`) === id,
+    );
+    const selectedLabel = askUserOptionLabel(argumentQuestion?.options ?? question.options, value);
+    const questionText = jsonStr(question, "question") || jsonStr(argumentQuestion, "question") || `Question ${index + 1}`;
+    pushPreviewLine(
+      lines,
+      selectedLabel
+        ? `${questionText} — Selected: ${selectedLabel}`
+        : `${questionText} — Custom response: ${value}`,
+      8,
+    );
+  }
+  return lines;
+}
+
 function extractPreviewLines(
   toolName: string,
   outputJson: Record<string, unknown> | null,
@@ -1821,6 +1873,9 @@ function extractPreviewLines(
     case "manage_todos": {
       return buildManageTodosPreviewLines(effective, 6);
     }
+    case "ask-user":
+    case "ask_user":
+      return extractAskUserPreviewLines(outputJson, argumentsJson);
     case "plan_manage":
     case "plan-manage":
       return buildPlanManagePreviewLines(effective, 6);

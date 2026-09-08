@@ -71,28 +71,29 @@ func toolProgressionDisplay(identity string, runCount int) string {
 // callers that own the provider loop but need the canonical run.Service tool
 // executor and persistence path.
 type ProviderManagedToolInvokerConfig struct {
-	SessionID            string
-	PermissionSessionID  string
-	RunID                string
-	SourceMessageID      string
-	Step                 int
-	SessionMode          string
-	WorkspacePath        string
-	WorkspaceRoots       []string
-	WorkspaceOriginPath  string
-	WorkspaceOriginRoots []string
-	WorkspaceName        string
-	Principal            identity.Principal
-	Emit                 StreamHandler
-	ApplySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
-	ProviderManagedV3    bool
-	AgentProfile         pebblestore.AgentProfile
-	ToolProgression      *ToolProgressionState
-	ProviderID           string
-	Model                string
-	MediaContract        provideriface.SessionMediaContract
-	PlanContextGuard     *PlanContextGuard
-	ArtifactRunContext   *tool.ArtifactRunContext
+	SessionID               string
+	PermissionSessionID     string
+	RunID                   string
+	SourceMessageID         string
+	Step                    int
+	SessionMode             string
+	WorkspacePath           string
+	WorkspaceRoots          []string
+	WorkspaceOriginPath     string
+	WorkspaceOriginRoots    []string
+	WorkspaceName           string
+	Principal               identity.Principal
+	Emit                    StreamHandler
+	ApplySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	ProviderManagedV3       bool
+	AgentProfile            pebblestore.AgentProfile
+	ToolProgression         *ToolProgressionState
+	ProviderID              string
+	Model                   string
+	MediaContract           provideriface.SessionMediaContract
+	PlanContextGuard        *PlanContextGuard
+	ArtifactRunContext      *tool.ArtifactRunContext
+	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 }
 
 type terminalPlanToolState struct {
@@ -129,65 +130,71 @@ func providerManagedExecutionPrincipal(ctx context.Context, config providerToolI
 }
 
 type providerToolInvokerConfig struct {
-	sessionID            string
-	permissionSessionID  string
-	runID                string
-	sourceMessageID      string
-	step                 int
-	sessionMode          string
-	mediaExecutionMode   string
-	workspacePath        string
-	workspaceRoots       []string
-	workspaceOriginPath  string
-	workspaceOriginRoots []string
-	workspaceName        string
-	principal            identity.Principal
-	emit                 StreamHandler
-	applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
-	providerManagedV3    bool
-	policy               *permission.Policy
-	agentProfile         pebblestore.AgentProfile
-	toolProgression      *ToolProgressionState
-	terminalPlanState    *terminalPlanToolState
-	providerID           string
-	model                string
-	mediaContract        provideriface.SessionMediaContract
-	planContextGuard     *PlanContextGuard
-	artifactRunContext   *tool.ArtifactRunContext
+	sessionID               string
+	permissionSessionID     string
+	runID                   string
+	sourceMessageID         string
+	step                    int
+	sessionMode             string
+	mediaExecutionMode      string
+	workspacePath           string
+	workspaceRoots          []string
+	workspaceOriginPath     string
+	workspaceOriginRoots    []string
+	workspaceName           string
+	principal               identity.Principal
+	emit                    StreamHandler
+	applySessionMutation    func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)
+	providerManagedV3       bool
+	policy                  *permission.Policy
+	agentProfile            pebblestore.AgentProfile
+	toolProgression         *ToolProgressionState
+	terminalPlanState       *terminalPlanToolState
+	providerID              string
+	model                   string
+	mediaContract           provideriface.SessionMediaContract
+	planContextGuard        *PlanContextGuard
+	artifactRunContext      *tool.ArtifactRunContext
+	artifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
 	return providerToolInvokerConfig{
-		sessionID:            strings.TrimSpace(config.SessionID),
-		permissionSessionID:  strings.TrimSpace(config.PermissionSessionID),
-		runID:                strings.TrimSpace(config.RunID),
-		sourceMessageID:      strings.TrimSpace(config.SourceMessageID),
-		step:                 config.Step,
-		sessionMode:          strings.TrimSpace(config.SessionMode),
-		mediaExecutionMode:   strings.TrimSpace(config.SessionMode),
-		workspacePath:        strings.TrimSpace(config.WorkspacePath),
-		workspaceRoots:       append([]string(nil), config.WorkspaceRoots...),
-		workspaceOriginPath:  strings.TrimSpace(config.WorkspaceOriginPath),
-		workspaceOriginRoots: append([]string(nil), config.WorkspaceOriginRoots...),
-		workspaceName:        strings.TrimSpace(config.WorkspaceName),
-		principal:            config.Principal,
-		emit:                 config.Emit,
-		applySessionMutation: config.ApplySessionMutation,
-		providerManagedV3:    config.ProviderManagedV3,
-		agentProfile:         config.AgentProfile,
-		toolProgression:      config.ToolProgression,
-		terminalPlanState:    &terminalPlanToolState{},
-		providerID:           strings.ToLower(strings.TrimSpace(config.ProviderID)),
-		model:                strings.TrimSpace(config.Model),
-		mediaContract:        config.MediaContract,
-		planContextGuard:     config.PlanContextGuard,
-		artifactRunContext:   cloneArtifactRunContext(config.ArtifactRunContext),
+		sessionID:               strings.TrimSpace(config.SessionID),
+		permissionSessionID:     strings.TrimSpace(config.PermissionSessionID),
+		runID:                   strings.TrimSpace(config.RunID),
+		sourceMessageID:         strings.TrimSpace(config.SourceMessageID),
+		step:                    config.Step,
+		sessionMode:             strings.TrimSpace(config.SessionMode),
+		mediaExecutionMode:      strings.TrimSpace(config.SessionMode),
+		workspacePath:           strings.TrimSpace(config.WorkspacePath),
+		workspaceRoots:          append([]string(nil), config.WorkspaceRoots...),
+		workspaceOriginPath:     strings.TrimSpace(config.WorkspaceOriginPath),
+		workspaceOriginRoots:    append([]string(nil), config.WorkspaceOriginRoots...),
+		workspaceName:           strings.TrimSpace(config.WorkspaceName),
+		principal:               config.Principal,
+		emit:                    config.Emit,
+		applySessionMutation:    config.ApplySessionMutation,
+		providerManagedV3:       config.ProviderManagedV3,
+		agentProfile:            config.AgentProfile,
+		toolProgression:         config.ToolProgression,
+		terminalPlanState:       &terminalPlanToolState{},
+		providerID:              strings.ToLower(strings.TrimSpace(config.ProviderID)),
+		model:                   strings.TrimSpace(config.Model),
+		mediaContract:           config.MediaContract,
+		planContextGuard:        config.PlanContextGuard,
+		artifactRunContext:      cloneArtifactRunContext(config.ArtifactRunContext),
+		artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(config.ArtifactV3AuthorContext, strings.TrimSpace(config.RunID)),
 	}
 }
 
 type providerToolInvoker struct {
 	service *Service
 	config  providerToolInvokerConfig
+	// One provider step owns one invoker. Serialize calls across a restart so
+	// no adapter can continue a stale step after changing workspace authority.
+	mu              sync.Mutex
+	restartRequired bool
 }
 
 func (s *Service) newProviderToolInvoker(config providerToolInvokerConfig) provideriface.ToolInvoker {
@@ -209,6 +216,11 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 		return provideriface.ToolExecutionResult{}, errors.New("provider tool invoker is not configured")
 	}
 
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if i.restartRequired {
+		return provideriface.ToolExecutionResult{}, errors.New("provider tool step requires restart before further execution")
+	}
 	call := tool.Call{
 		CallID:    strings.TrimSpace(invocation.CallID),
 		Name:      strings.TrimSpace(invocation.Name),
@@ -230,6 +242,9 @@ func (i *providerToolInvoker) ExecuteTool(ctx context.Context, invocation provid
 	}
 
 	restartTurn := providerManagedToolRequiresTurnRestart(call, result)
+	if restartTurn {
+		i.restartRequired = true
+	}
 	if restartTurn && providerManagedToolResultIsTerminalPlan(call, result) {
 		i.config.terminalPlanState.MarkTerminal()
 	}
@@ -268,6 +283,9 @@ func (s *Service) providerManagedWorkspaceContext(config providerToolInvokerConf
 		if _, err := s.syncWorkspaceScopeFromSession(session, principal, &workspaceCtx); err != nil {
 			return runWorkspaceContext{}, err
 		}
+		if captured := strings.TrimSpace(config.workspacePath); captured != "" && filepath.Clean(captured) != filepath.Clean(workspaceCtx.WorkspacePath) {
+			return runWorkspaceContext{}, errors.New("provider workspace authority changed; restart and rehydrate before executing tools")
+		}
 		return normalizeProviderManagedWorkspaceContext(workspaceCtx), nil
 	}
 	if len(session.TemporaryWorkspaceRoots) > 0 {
@@ -304,6 +322,17 @@ func providerManagedOriginWorkspaceRoots(config providerToolInvokerConfig) []str
 		originRoots = []string{strings.TrimSpace(config.workspaceOriginPath)}
 	}
 	return originRoots
+}
+
+func cloneArtifactV2AuthorRunContext(input *tool.ArtifactV2AuthorRunContext) *tool.ArtifactV2AuthorRunContext {
+	if input == nil {
+		return nil
+	}
+	cloned := *input
+	cloned.Grant.AllowedActions = append([]string(nil), input.Grant.AllowedActions...)
+	cloned.Grant.EditablePartIDs = append([]string(nil), input.Grant.EditablePartIDs...)
+	cloned.Grant.DeclaredPartKeys = append([]string(nil), input.Grant.DeclaredPartKeys...)
+	return &cloned
 }
 
 func cloneArtifactRunContext(input *tool.ArtifactRunContext) *tool.ArtifactRunContext {
@@ -510,6 +539,9 @@ func (s *Service) providerManagedVideoStudioImageGeneration(config providerToolI
 }
 
 func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) bool {
+	if strings.TrimSpace(result.Error) != "" {
+		return false
+	}
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
 	if payload == nil {
 		return false
@@ -622,16 +654,6 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 			merged := mergePermissionPolicies(config.policy, &trustedImagePolicy)
 			config.policy = &merged
 		}
-	}
-	if videoStudioRequest && canonicalToolName(call.Name) == "manage_video" {
-		// Video Studio owns project proposal construction. The assistant can create
-		// or revise only durable pending proposals; accepting them and starting a
-		// final render remain explicit Studio UI operations.
-		trustedVideoPolicy := permission.NormalizePolicy(permission.Policy{Version: 1, Rules: []permission.PolicyRule{{
-			Kind: permission.PolicyRuleKindTool, Decision: permission.PolicyDecisionAllow, Tool: "manage_video",
-		}}})
-		merged := mergePermissionPolicies(config.policy, &trustedVideoPolicy)
-		config.policy = &merged
 	}
 
 	gatedResults := []tool.Result{{CallID: call.CallID, Name: call.Name}}
@@ -794,6 +816,9 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeScope.SessionID = strings.TrimSpace(config.sessionID)
 					runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))
+					if authorContext := tool.BindArtifactV3AuthorRunContext(config.artifactV3AuthorContext, config.runID); authorContext != nil {
+						runtimeCtx = tool.WithArtifactV3AuthorRunContext(runtimeCtx, *authorContext)
+					}
 					runtimeCtx = tool.WithVideoRunContext(runtimeCtx, tool.VideoRunContext{SessionID: config.sessionID, RunID: config.runID, MessageID: config.sourceMessageID})
 					executed := s.tools.ExecuteBatchStreamingWithProgress(runtimeCtx, workspaceCtx.WorkspacePath, runtimeCalls, func(_ int, current tool.Call, progress tool.Progress) {
 						if config.emit == nil {
@@ -927,6 +952,25 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 		if asset.ContractHash != currentContract.Hash || asset.ProviderID != providerID || asset.Model != modelID {
 			return result, errors.New("media asset admission contract does not match the current run")
 		}
+	} else if args.ArtifactV3Reference != nil {
+		if s.tools == nil || s.tools.ArtifactV3AuthorService() == nil {
+			return result, errors.New("media_inspect Artifact V3 reference requires the native Artifact V3 authority")
+		}
+		payload, err = s.tools.ArtifactV3AuthorService().ReadPreviewEvidence(ctx, principal.AccountScopeID, principal.UserID, args.ArtifactV3Reference.SessionID, args.ArtifactV3Reference.ArtifactID, args.ArtifactV3Reference.RevisionRef)
+		if err != nil {
+			return result, fmt.Errorf("read Artifact V3 preview evidence: %w", err)
+		}
+		mimeType := strings.ToLower(strings.TrimSpace(http.DetectContentType(payload)))
+		capability, err := validateMediaInspectInvocation(currentContract, "image", mimeType, "png")
+		if err != nil {
+			return result, err
+		}
+		if mimeType != "image/png" || len(payload) == 0 || int64(len(payload)) > capability.MaxBytes {
+			return result, errors.New("media_inspect Artifact V3 preview is not a valid bounded PNG")
+		}
+		digest := sha256.Sum256(payload)
+		digestHex := hex.EncodeToString(digest[:])
+		asset = pebblestore.SessionMediaAsset{ID: "artifact_v3_" + digestHex, Modality: "image", DetectedMIMEType: mimeType, FileType: "png", Size: int64(len(payload)), DigestSHA256: digestHex, ContractHash: currentContract.Hash, ProviderID: providerID, Model: modelID}
 	} else if args.ArtifactReference != nil {
 		if s.tools == nil || s.tools.ArtifactAuthority() == nil {
 			return result, errors.New("media_inspect artifact reference requires the authenticated artifact authority")

@@ -102,7 +102,7 @@ export function DesktopV3RoutedPendingShell({
       data-start-path={startPath}
       aria-busy={routing || undefined}
     >
-      <div className="min-h-0 flex-1 overflow-y-auto py-6">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-6 [scrollbar-gutter:stable_both-edges]">
         <div className="mx-auto flex min-h-full w-full max-w-[70rem] flex-col gap-5 px-8 sm:px-12">
           <div className="flex justify-end" data-testid="desktop-v3-local-pending-prompt">
             <div className="max-w-[70%] whitespace-pre-wrap break-words rounded-xl bg-[var(--app-primary)] px-4 py-3 text-sm leading-6 text-[var(--app-primary-text)] shadow-sm">

@@ -41,6 +41,30 @@ export type VideoPlanVisualWire = {
   description?: string
 }
 
+export type ArtifactV3VideoReferenceWire = {
+  session_id: string
+  artifact_id: string
+  revision_id: string
+  commit_oid: string
+  tree_oid: string
+  manifest_digest_sha256: string
+  build_id: string
+  validation_id: string
+  event_seq: number
+  derivative_id?: string
+  part_id?: string
+  capture_state_id?: string
+  digest_sha256: string
+  media_type: string
+  duration_ms: number
+  fps: number
+  animation_profile: string
+}
+
+export function artifactV3VideoMediaUrl(ref: ArtifactV3VideoReferenceWire): string {
+  return `/v3/sessions/${encodeURIComponent(ref.session_id)}/video/artifact-v3/media?reference=${encodeURIComponent(JSON.stringify(ref))}`
+}
+
 export type VideoCaptionWire = {
   id: string
   text: string
@@ -52,7 +76,8 @@ export type VideoCaptionWire = {
 export type VideoAnimationCandidateWire = {
   id: string
   label?: string
-  source: VideoPlanVisualWire
+  source?: VideoPlanVisualWire
+  artifact_v3_source?: ArtifactV3VideoReferenceWire
 }
 
 export type VideoAnimationCandidateSetWire = {
@@ -60,6 +85,8 @@ export type VideoAnimationCandidateSetWire = {
   selected_candidate_id?: string
   selected_source?: VideoPlanVisualWire
   derivative?: VideoPlanVisualWire
+  artifact_v3_selected_source?: ArtifactV3VideoReferenceWire
+  artifact_v3_derivative?: ArtifactV3VideoReferenceWire
   status: 'awaiting_selection' | 'awaiting_export' | 'ready' | 'failed'
   failure_reason?: string
 }
@@ -81,6 +108,9 @@ export type VideoPlanPartWire = {
   caption?: VideoCaptionWire
   transition?: VideoTransitionWire
   visual?: VideoPlanVisualWire
+  artifact_v3_source?: ArtifactV3VideoReferenceWire
+  artifact_v3_still?: ArtifactV3VideoReferenceWire
+  artifact_v3_visual?: ArtifactV3VideoReferenceWire
   visual_media_type?: string
   source_start_ms?: number
   source_end_ms?: number
@@ -104,7 +134,7 @@ export function videoAnimationReadyForConfirmation(part: VideoPlanPartWire): boo
   if (animation.status === 'ready') return true
   if (!animation.selected_candidate_id || !animation.selected_source) return false
   const selected = animation.candidates.find((candidate) => candidate.id === animation.selected_candidate_id)
-  return Boolean(selected
+  return Boolean(selected?.source
     && selected.source.session_id === animation.selected_source.session_id
     && selected.source.collection_id === animation.selected_source.collection_id
     && selected.source.variant_id === animation.selected_source.variant_id
@@ -166,19 +196,21 @@ export type VideoStoryboardContext = {
   captureStateId: string
   productionState: 'pending' | 'ready'
   filmingRequirements: string[]
-  source: VideoPlanVisualWire
-  still: VideoPlanVisualWire
+  source?: VideoPlanVisualWire
+  still?: VideoPlanVisualWire
+  artifactV3Source?: ArtifactV3VideoReferenceWire
+  artifactV3Still?: ArtifactV3VideoReferenceWire
 }
 
 export function videoPlanPartStoryboardContext(part: VideoPlanPartWire | undefined): VideoStoryboardContext | null {
-  if (!part?.storyboard_source || !part.storyboard_still || !part.capture_state_id || !part.production_state) return null
+  if (!part || !part.capture_state_id || !part.production_state || !((part.storyboard_source && part.storyboard_still) || (part.artifact_v3_source && part.artifact_v3_still))) return null
   return {
     partId: part.id,
     captureStateId: part.capture_state_id,
     productionState: part.production_state,
     filmingRequirements: Array.isArray(part.filming_requirements) ? part.filming_requirements.filter(Boolean) : [],
-    source: part.storyboard_source,
-    still: part.storyboard_still,
+    ...(part.storyboard_source && part.storyboard_still ? { source: part.storyboard_source, still: part.storyboard_still } : {}),
+    ...(part.artifact_v3_source && part.artifact_v3_still ? { artifactV3Source: part.artifact_v3_source, artifactV3Still: part.artifact_v3_still } : {}),
   }
 }
 
@@ -313,7 +345,7 @@ export async function selectVideoAnimationCandidate(input: {
 }): Promise<VideoEditProposalWire> {
   const response = await requestJson<{ proposal?: VideoEditProposalWire }>(`/v3/sessions/${encodeURIComponent(input.sessionId)}/video/projects/${encodeURIComponent(input.projectId)}/edit-proposals/${encodeURIComponent(input.proposalId)}/animation-candidate-select`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ part_id: input.partId, selected_candidate_id: input.candidate.id, selected_source: input.candidate.source }),
+    body: JSON.stringify({ part_id: input.partId, selected_candidate_id: input.candidate.id, selected_source: input.candidate.source, artifact_v3_selected_source: input.candidate.artifact_v3_source }),
   })
   if (!response.proposal) throw new Error('Animation candidate selection returned no proposal')
   return response.proposal
@@ -521,6 +553,7 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   revisions: VideoIterationRevisionWire[]
   basePartOrder?: Array<{ id: string; duration_ms: number }>
   onProposalsLoaded?: (proposals: VideoEditProposalWire[]) => void
+  onProposalLoadState?: (state: string | null) => void
   onAccepted: () => Promise<void> | void
   onFeedback: (message: string) => Promise<void> | void
   onPreviewProposal: (proposal: VideoEditProposalWire | null, selectedChangeIds: string[]) => void
@@ -536,17 +569,19 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
   const [error, setError] = useState<string | null>(null)
   const loadRequestSequence = useRef(0)
   const projectionSequence = useDesktopV3CacheSelector(useCallback((state) => videoProposalProjectionSequence(state, props.sessionId), [props.sessionId]))
-  const load = useCallback(async () => loadLatestVideoEditProposals({
+  const load = useCallback(async () => {
+    props.onProposalLoadState?.('Loading proposal review state…')
+    await loadLatestVideoEditProposals({
     sessionId: props.sessionId,
     projectId: props.projectId,
     requestSequence: loadRequestSequence,
     onLoaded: (loaded) => { setProposals(loaded); props.onProposalsLoaded?.(loaded) },
-    onError: setError,
-  }), [props.onProposalsLoaded, props.projectId, props.sessionId])
+    onError: (error) => { setError(error); props.onProposalLoadState?.(error ? `Could not load proposal review: ${error}. Retry in History & proposal recovery.` : null) },
+  })
+  }, [props.onProposalsLoaded, props.onProposalLoadState, props.projectId, props.sessionId])
   useEffect(() => { void load() }, [load, projectionSequence])
   const iterations = useMemo(() => buildVideoIterationTimeline(proposals, props.revisions, props.basePartOrder), [proposals, props.basePartOrder, props.revisions])
   const newestPendingIterationId = useMemo(() => iterations.find((iteration) => iteration.proposal?.status === 'pending' && iteration.proposal.working_revision_id === props.currentRevisionId)?.id
-    ?? iterations.find((iteration) => iteration.proposal?.status === 'pending')?.id
     ?? null, [iterations, props.currentRevisionId])
 
   useEffect(() => {
@@ -557,8 +592,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
 
   const previewProposal = useMemo(() => {
     const proposal = iterations.find((iteration) => iteration.id === previewId)?.proposal
-    return proposal?.status === 'pending' ? proposal : null
-  }, [iterations, previewId])
+    return proposal?.status === 'pending' && proposal.working_revision_id === props.currentRevisionId ? proposal : null
+  }, [iterations, previewId, props.currentRevisionId])
   const selectedChangeIds = useMemo(() => previewProposal ? selectedVideoProposalChangeIDs(previewProposal, selected) : [], [previewProposal, selected])
   useEffect(() => { props.onPreviewProposal(previewProposal, selectedChangeIds) }, [previewProposal, selectedChangeIds, props.onPreviewProposal])
 
@@ -571,7 +606,7 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
         const open = expanded[iteration.id] ?? iteration.status === 'pending'
         const previewing = previewId === iteration.id
         const proposal = iteration.proposal
-        const stale = Boolean(proposal?.working_revision_id) && proposal?.working_revision_id !== props.currentRevisionId
+        const stale = proposal?.status === 'pending' && proposal.working_revision_id !== props.currentRevisionId
         const enabledIds = proposal ? selectedVideoProposalChangeIDs(proposal, selected) : []
         return <article key={iteration.id} className={`border ${previewing ? 'border-amber-300 bg-amber-950/20' : 'border-[var(--app-border)] bg-[var(--app-bg)]'}`}>
           <div className="flex items-start gap-1 p-2">
@@ -593,7 +628,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
                 </div>
               </div>
             })}
-            {proposal?.status === 'pending' ? <div className="mt-3 grid gap-1">
+            {proposal?.status === 'pending' && stale ? <div className="mt-3 space-y-2 text-xs" role="status"><p>Older pending proposal. The current cut is unchanged; this proposal cannot be confirmed here.</p><Button variant="outline" className="h-auto whitespace-normal px-2 py-2 text-xs" onClick={() => props.onFeedback(`Rework older proposal ${proposal.id} (${proposal.title || 'untitled'}) as a new revision proposal based on the current cut. Preserve the confirmed cut until I accept it.`)}>Ask AI to rework from current cut</Button>{proposal.working_revision_id ? <Button variant="ghost" className="h-auto px-2 py-2 text-xs" onClick={() => props.onPreviewRevision(proposal.working_revision_id!)}>Preview older working cut</Button> : null}</div> : null}
+            {proposal?.status === 'pending' && !stale ? <div className="mt-3 grid gap-1">
               {proposal.plan?.parts.flatMap((part) => part.animation_candidates?.candidates ?? []).length ? <p className="text-[9px] text-amber-200">Choose one live HTML candidate in the player. The selected canonical source can be confirmed directly.</p> : null}
               <Button className="h-7 px-2 text-[10px]" disabled={Boolean(busyId) || stale || proposal.plan?.parts.some((part) => (proposal.plan?.kind === 'initial' || enabledIds.includes(part.id)) && !videoAnimationReadyForConfirmation(part)) || (proposal.plan?.kind !== 'initial' && enabledIds.length === 0)} onClick={() => void (async () => { setBusyId(proposal.id); try { await acceptVideoEditProposal({ sessionId: props.sessionId, projectId: props.projectId, proposalId: proposal.id, selectedOperationIds: enabledIds, changeSummary: proposal.title || proposal.plan?.summary || proposal.rationale }); setPreviewId(null); await props.onAccepted(); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><Check size={12} />Confirm enabled changes</Button>
               <Button variant="ghost" className="h-7 px-2 text-[10px]" disabled={Boolean(busyId)} onClick={() => void (async () => { const feedback = `Restore the accepted parent of iteration ${proposal.id} and revise only the changes I describe: `; setBusyId(proposal.id); try { await rejectVideoEditProposal(props.sessionId, props.projectId, proposal.id, feedback); setPreviewId(null); await props.onFeedback(feedback); await load() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusyId(null) } })()}><RotateCcw size={12} />Restore parent and revise</Button>

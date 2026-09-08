@@ -29,6 +29,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
@@ -36,6 +37,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/taskscope"
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
@@ -150,33 +152,39 @@ var (
 )
 
 type Runtime struct {
-	maxParallel          int
-	httpClient           *http.Client
-	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
-	sessions             manageSessionService
-	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
-	workspace            manageWorktreeWorkspaceService
-	worktrees            manageWorktreeConfigService
-	agents               manageAgentService
-	orchestration        manageOrchestrationPolicyService
-	todos                manageTodoService
-	actions              manageActionService
-	uiSettings           manageThemeUISettingsService
-	themeWorkspace       manageThemeWorkspaceService
-	artifacts            *artifact.Registry
-	artifactAuthority    ArtifactAuthority
-	htmlCapture          htmlcapture.Renderer
-	htmlAnimationCapture htmlcapture.AnimationRenderer
-	animationJobsMu      sync.Mutex
-	animationJobs        map[string]context.CancelFunc
-	imageGeneration      ManagedImageGenerationService
-	video                manageVideoService
-	videoSources         *videosource.Service
-	videoProjects        manageVideoProjectService
-	videoRender          manageVideoRenderService
-	searchCoordinator    *SearchCoordinator
-	focusedPartMu        sync.Mutex
-	focusedPartProtocols map[string]focusedPartProtocolState
+	maxParallel           int
+	httpClient            *http.Client
+	exaConfigResolver     func(context.Context) (ExaRuntimeConfig, error)
+	sessions              manageSessionService
+	publishSessionOutbox  func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace             manageWorktreeWorkspaceService
+	worktrees             manageWorktreeConfigService
+	agents                manageAgentService
+	orchestration         manageOrchestrationPolicyService
+	todos                 manageTodoService
+	actions               manageActionService
+	uiSettings            manageThemeUISettingsService
+	themeWorkspace        manageThemeWorkspaceService
+	artifacts             *artifact.Registry
+	artifactAuthority     ArtifactAuthority
+	artifactV2Author      *artifactv2.AuthorService
+	artifactV3Author      *ArtifactV3AuthorService
+	directArtifactV3Mu    sync.Mutex
+	directArtifactV3ByRun map[string]directArtifactV3Publication
+	artifactV2Video       *artifactv2.VideoConversionService
+	artifactV3Video       ArtifactV3VideoConversionService
+	htmlCapture           htmlcapture.Renderer
+	htmlAnimationCapture  htmlcapture.AnimationRenderer
+	animationJobsMu       sync.Mutex
+	animationJobs         map[string]context.CancelFunc
+	imageGeneration       ManagedImageGenerationService
+	video                 manageVideoService
+	videoSources          *videosource.Service
+	videoProjects         manageVideoProjectService
+	videoRender           manageVideoRenderService
+	searchCoordinator     *SearchCoordinator
+	focusedPartMu         sync.Mutex
+	focusedPartProtocols  map[string]focusedPartProtocolState
 }
 
 type ExaRuntimeConfig struct {
@@ -560,6 +568,33 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 		args["capability_token"] = capabilities.CapabilityToken
 	}
 	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
+	if r != nil {
+		r.artifactV2Video = service
+	}
+}
+
+// ArtifactV3VideoConversionInput intentionally contains only exact native V3
+// identity plus the target project base. The model cannot author plan arrays.
+type ArtifactV3VideoConversionInput struct {
+	RequestID, VideoSessionID, ProjectID, BaseRevisionID string
+	ArtifactSessionID, ArtifactID, RevisionRef           string
+	PartID, CaptureStateID                               string
+	Title, Rationale                                     string
+}
+
+type ArtifactV3VideoConversionService interface {
+	ConvertToPendingProposal(context.Context, identity.Principal, ArtifactV3VideoConversionInput) (pebblestore.VideoEditProposalSnapshot, error)
+	ValidateVideoReference(string, string, pebblestore.ArtifactV3VideoReference) error
+	ReadVideoReference(context.Context, string, string, pebblestore.ArtifactV3VideoReference) ([]byte, error)
+}
+
+func (r *Runtime) SetArtifactV3VideoConversionService(service ArtifactV3VideoConversionService) {
+	if r != nil {
+		r.artifactV3Video = service
+	}
 }
 
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
@@ -1272,8 +1307,8 @@ func (r *Runtime) Definitions() []Definition {
 					"intent":                 map[string]any{"type": "string", "maxLength": 500, "description": "Short user-readable reason for a persistent catalog or Workspace Map change. update_map requires an explicit user request and intent. Do not include unrelated private content."},
 					"expected_revision":      map[string]any{"type": "integer", "minimum": 1, "description": "update_map only: exact current Workspace Map revision returned by inspect_map/get_map; stale revisions fail without mutation."},
 					"content":                map[string]any{"type": "string", "maxLength": 32768, "description": "update_map only: complete replacement Markdown document. It must begin with '# Workspace Map'."},
-					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Authorized workspace identities granted to this session."},
-					"primary_workspace_id":   map[string]any{"type": "string", "description": "Workspace identity used for navigation and sidebar grouping; it is added to workspace_ids when omitted there."},
+					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact flat attachment set for set_session (maximum 64). Omit to preserve attachments. Removal requires an explicit replacement default if the current default is removed; historical worktree ownership is retained."},
+					"primary_workspace_id":   map[string]any{"type": "string", "description": "Explicit session default identity, independent of attachment order; added to workspace_ids when omitted there. Git default changes select an owned isolated lane or fail without relabeling history."},
 					"worktree_name":          map[string]any{"type": "string", "description": "adopt_worktree only: short requested name used to allocate a new managed worktree for this same session."},
 					"worktree_path":          map[string]any{"type": "string", "description": "adopt_worktree only: exact prior managed worktree path already recorded as owned by this same session."},
 					"expected_worktree_path": map[string]any{"type": "string", "description": "adopt_worktree only: optional stale-reference guard for the session's current worktree path; use an empty omission for the first adoption."},
@@ -1308,6 +1343,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		{
@@ -1470,7 +1506,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. Approved-checkpoint starts omit program and max_concurrency because the runtime loads the canonical definition. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder swarms launch Router-hydrated workers. Designer swarms launch Router-hydrated workers into managed parent-owned artifacts only; repository Designer work uses regular launches. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Idea Swarms repeat the same question directly.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm. Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. Approved-checkpoint starts omit program and max_concurrency because the runtime loads the canonical definition. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode generates its wave from agent_type and count: omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Coder swarms launch Router-hydrated workers. Designer swarms launch Router-hydrated workers into managed parent-owned artifacts only; repository Designer work uses regular launches. Image swarms use a distinct direct format: Router independently hydrates the parent brief plus each base theme, then orchestration sends each prompt straight to the account image model without agent sessions. Router JSON/complete-wave validation failures get at most one server-owned regeneration within the shared deadline; persistent failure launches no workers. Preserve the full brief and count: do not shorten narration, split the wave, or substitute regular launches to bypass hydration. Idea Swarms repeat the same question directly.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1499,13 +1535,21 @@ func (r *Runtime) Definitions() []Definition {
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
 					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for Designer work (regular launches or managed Iteration Swarms) or direct image Iteration Swarms. Regular workspace Designers require exactly one concrete owned_scope output target; trusted orchestration authenticates and materializes the artifact there before the child runs. Managed Designers receive the opaque reference and preserve source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
+					"artifact_v3_source": map[string]any{"type": "object", "properties": map[string]any{
+						"session_id": map[string]any{"type": "string", "minLength": 1}, "artifact_id": map[string]any{"type": "string", "minLength": 1}, "commit_oid": map[string]any{"type": "string", "minLength": 1}, "projection_seq": map[string]any{"type": "integer", "minimum": 1},
+						"target_part_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}},
+					}, "required": []string{"session_id", "artifact_id", "commit_oid", "projection_seq"}, "additionalProperties": false, "description": "Exact native Artifact V3 source for managed Designer follow-up work. session_id must own the artifact. Trusted orchestration authenticates the artifact, exact immutable head commit, projection sequence, and target Part IDs before branching a complete candidate."},
+					"artifact_v2_source": map[string]any{"type": "object", "properties": map[string]any{
+						"artifact_id": map[string]any{"type": "string", "minLength": 1}, "published_head_id": map[string]any{"type": "string", "minLength": 1}, "composition_id": map[string]any{"type": "string", "minLength": 1},
+						"working_revision": map[string]any{"type": "integer", "minimum": 1}, "composition_head_revision": map[string]any{"type": "integer", "minimum": 1}, "target_part_ids": map[string]any{"type": "array", "minItems": 1, "maxItems": 64, "items": map[string]any{"type": "string", "minLength": 1}},
+					}, "required": []string{"artifact_id", "published_head_id", "composition_id", "working_revision", "composition_head_revision", "target_part_ids"}, "additionalProperties": false, "description": "Exact published Artifact V2 source for a focused Designer Iteration Swarm. The server authenticates it, opens one durable Iteration Round, imports only target revisions, and keeps candidates out of the accepted head until explicit selection."},
 					"section_target": map[string]any{"type": "object", "properties": map[string]any{
 						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1},
 						"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
-						"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1},
+						"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "page": map[string]any{"type": "integer", "minimum": 1}, "state_id": map[string]any{"type": "string", "minLength": 1}, "selector": map[string]any{"type": "string", "minLength": 1},
 					}, "required": []string{"id", "label"}, "additionalProperties": false, "description": "Optional exact artifact part target for managed Designer work. Requires source_artifact. Mutually exclusive with section_targets."},
 					"section_targets": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object", "properties": map[string]any{
-						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1},
+						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "page": map[string]any{"type": "integer", "minimum": 1}, "state_id": map[string]any{"type": "string", "minLength": 1}, "selector": map[string]any{"type": "string", "minLength": 1},
 					}, "required": []string{"id", "label"}, "additionalProperties": true}, "description": "Canonical bounded multi-part selection from one exact source composition. Managed Designer candidates must replace every selected part together as one atomic composition turn. Mutually exclusive with section_target."},
 					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
@@ -1546,7 +1590,7 @@ func (r *Runtime) Definitions() []Definition {
 					"deliverable":         map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason":  map[string]any{"type": "string", "description": "Regular-mode single-launch shorthand only: why this scope is useful and safe to delegate now. Omit in mode=swarm; swarm concurrency is defined by count."},
 					"workspace_path":      map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target or default target for every Coder/Finder job in a Task Program start. May select an authorized linked/shared workspace root; omitted uses the parent workspace. Coder worktrees are based on the selected target repository HEAD."},
-					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree."},
+					"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Required as a concrete clean workspace-relative path for workspace-mode Designer and forbidden for managed Designer; an omitted Coder scope safely defaults to its entire isolated worktree. " + taskscope.Guidance},
 					"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that the launch does not depend on unfinished child work."},
 					"launches": map[string]any{
 						"type":        "array",
@@ -1566,7 +1610,7 @@ func (r *Runtime) Definitions() []Definition {
 								"animation_profile":   artifact.AnimationProfileToolSchema(),
 								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
 								"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder. Each Coder gets a worktree based on that target repository HEAD; omitted uses the parent workspace."},
-								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree."},
+								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree. " + taskscope.Guidance},
 								"dependency_evidence": map[string]any{"type": "string", "description": "Evidence that this launch does not depend on another child's unfinished work."},
 							},
 							"additionalProperties": false,
@@ -1605,7 +1649,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"id":                  id,
 					"stage_id":            id,
 					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
-					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}},
+					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Canonical job identity; prefer agent_type in both inline and checkpoint Task Programs. subagent_type is an input alias; conflicting values are rejected."},
 					"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
 					"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder job. Overrides the Task Program start workspace_path. Coder jobs in one program must resolve to one target workspace so staged integration has one parent Git history."},
 					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
@@ -1614,7 +1658,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"output_requirements": artifact.OutputRequirementsToolSchema(),
 					"animation_profile":   artifact.AnimationProfileToolSchema(),
 					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
-					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs."},
+					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs. " + taskscope.Guidance + " Workspace Designers require concrete paths without wildcard suffixes; program jobs cannot use whole-workspace sentinels."},
 					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
 					"dependency_evidence": map[string]any{"type": "string", "minLength": 1},
 				}, "required": []string{"id", "stage_id", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
@@ -1694,6 +1738,8 @@ func sessionPlanArtifactToolSchema() map[string]any {
 			"path":          map[string]any{"type": "string", "description": "Clean workspace-relative path; absolute and workspace-escaping paths are rejected."},
 			"source_ref":    map[string]any{"type": "string", "description": "Exact opaque videosrc_ reference returned by manage_video browse_source for a final video deliverable."},
 			"session_id":    map[string]any{"type": "string"},
+			"artifact_id":   map[string]any{"type": "string", "description": "Native Artifact V3 identity."},
+			"revision_ref":  map[string]any{"type": "string", "description": "Exact native Artifact V3 revision reference."},
 			"collection_id": map[string]any{"type": "string"},
 			"variant_id":    map[string]any{"type": "string"},
 			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
@@ -1706,6 +1752,7 @@ func sessionPlanArtifactToolSchema() map[string]any {
 			map[string]any{"required": []string{"path"}},
 			map[string]any{"required": []string{"source_ref"}},
 			map[string]any{"required": []string{"session_id", "collection_id", "variant_id", "event_seq"}},
+			map[string]any{"required": []string{"session_id", "artifact_id", "revision_ref"}},
 		},
 		"additionalProperties": false,
 	}
@@ -1891,6 +1938,10 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageWorktree(scope, args)
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "artifact-v2-author", "artifact_v2_author":
+		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
+	case "artifact-v3-author", "artifact_v3_author":
+		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":
@@ -2485,12 +2536,8 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 		}
 
 		contentResults, contentErrors := searchHelperContentResults(helperResp, root, queries, targetInclude, rootResultLimit)
-		fileResults, fileErrors := searchHelperFileResults(helperResp.FileResults, root, queries, targetInclude, rootResultLimit)
-		combinedResults = append(combinedResults, mergeSearchHelperResults(contentResults, fileResults)...)
-		if len(fileResults) == 0 || !searchErrorsAreFallbackMisses(contentErrors, fileResults) {
-			rootErrors = append(rootErrors, contentErrors...)
-		}
-		rootErrors = append(rootErrors, fileErrors...)
+		combinedResults = append(combinedResults, contentResults...)
+		rootErrors = append(rootErrors, contentErrors...)
 	}
 	combinedResults = rewriteSearchResultsForDisplay(scope.PrimaryPath, searchRoots, searchTargetsContainFile(searchTargets), combinedResults)
 	if len(combinedResults) == 0 {
@@ -2602,12 +2649,19 @@ func selectResidentSearchScope(scope WorkspaceScope, target searchTarget) (strin
 	}
 	best := ""
 	for _, authorized := range append([]string{scope.PrimaryPath}, scope.Roots...) {
-		authorized = filepath.Clean(strings.TrimSpace(authorized))
-		rel, err := filepath.Rel(authorized, targetPath)
-		if authorized == "" || err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		authorized = strings.TrimSpace(authorized)
+		if authorized == "" {
 			continue
 		}
-		if best == "" || len(authorized) < len(best) {
+		authorized = filepath.Clean(authorized)
+		rel, err := filepath.Rel(authorized, targetPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		// Prefer the narrowest containing workspace. A saved ancestor (notably
+		// home or the filesystem root) must not widen a project index or trip
+		// FFF's broad-root scanning guard just because it is also authorized.
+		if best == "" || len(authorized) > len(best) {
 			best = authorized
 		}
 	}
@@ -2777,45 +2831,6 @@ func formatSearchContentHelperError(queries []string, message string) error {
 		return fmt.Errorf("query %q: %s", firstSearchQuery(queries), message)
 	}
 	return fmt.Errorf("multi-grep %q: %s", strings.Join(queries, " | "), message)
-}
-
-func searchHelperFileResults(helperResults []searchipc.SearchQueryResult, searchRoot string, queries []string, include string, maxResults int) ([]searchQueryExecution, []error) {
-	if len(helperResults) == 0 {
-		return nil, nil
-	}
-	allowedQueries := make(map[string]string, len(queries))
-	for _, query := range queries {
-		query = strings.TrimSpace(query)
-		if query != "" {
-			allowedQueries[strings.ToLower(query)] = query
-		}
-	}
-	results := make([]searchQueryExecution, 0, len(helperResults))
-	errs := make([]error, 0)
-	for _, helperResult := range helperResults {
-		query := strings.TrimSpace(helperResult.Query)
-		if canonical, ok := allowedQueries[strings.ToLower(query)]; ok {
-			query = canonical
-		}
-		if query == "" {
-			continue
-		}
-		result := searchQueryExecution{Query: query, Mode: "files"}
-		if strings.TrimSpace(helperResult.Error) != "" {
-			err := fmt.Errorf("query %q: %s", query, strings.TrimSpace(helperResult.Error))
-			result.Error = strings.TrimSpace(helperResult.Error)
-			results = append(results, result)
-			errs = append(errs, err)
-			continue
-		}
-		rows, totals, truncated := collectSearchFileRows(query, searchRoot, include, helperResult.Items, helperResult.Metrics, maxResults)
-		result.FileRows = rows
-		result.Totals = totals
-		result.ReturnedCount = len(rows)
-		result.Truncated = truncated
-		results = append(results, result)
-	}
-	return results, errs
 }
 
 func findHelperResults(resp searchipc.Response, searchRoot string, queries []string, include string, maxResults int, mode string) ([]findQueryExecution, []error) {
@@ -3159,6 +3174,9 @@ type searchTarget struct {
 
 func resolveSearchTargets(scope WorkspaceScope, args map[string]any) ([]searchTarget, error) {
 	requested := asStringSlice(args["paths"])
+	if len(requested) > 0 && strings.TrimSpace(asString(args["path"])) != "" {
+		return nil, errors.New("specify either path or paths, not both")
+	}
 	if len(requested) == 0 {
 		pathArg := strings.TrimSpace(asString(args["path"]))
 		if pathArg == "" {
@@ -3393,83 +3411,6 @@ func collectSearchContentRows(query, searchRoot, include string, matches []fff.G
 		NextFileOffset:     int(metrics.NextFileOffset),
 		RegexFallbackError: strings.TrimSpace(metrics.RegexFallbackError),
 	}, truncated, false, safetySource.String()
-}
-
-func searchErrorsAreFallbackMisses(contentErrors []error, fileResults []searchQueryExecution) bool {
-	if len(contentErrors) == 0 || len(fileResults) == 0 {
-		return false
-	}
-	for _, result := range fileResults {
-		if len(result.FileRows) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func mergeSearchHelperResults(contentResults, fileResults []searchQueryExecution) []searchQueryExecution {
-	if len(fileResults) == 0 {
-		return contentResults
-	}
-	if len(contentResults) == 0 {
-		return fileResults
-	}
-	byQuery := make(map[string]int, len(contentResults))
-	merged := make([]searchQueryExecution, 0, len(contentResults)+len(fileResults))
-	for _, result := range contentResults {
-		key := strings.ToLower(strings.TrimSpace(result.Query))
-		if key != "" {
-			byQuery[key] = len(merged)
-		}
-		merged = append(merged, result)
-	}
-	for _, fileResult := range fileResults {
-		key := strings.ToLower(strings.TrimSpace(fileResult.Query))
-		idx, ok := byQuery[key]
-		if !ok {
-			merged = append(merged, fileResult)
-			continue
-		}
-		contentResult := merged[idx]
-		if len(contentResult.ContentRows) == 0 {
-			fileResult.Error = joinSearchText(contentResult.Error, fileResult.Error)
-			fileResult.Truncated = fileResult.Truncated || contentResult.Truncated
-			fileResult.TimedOut = fileResult.TimedOut || contentResult.TimedOut
-			merged[idx] = fileResult
-		}
-	}
-	return merged
-}
-
-func collectSearchFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int) ([]searchFileRow, searchAggregateTotals, bool) {
-	files := make([]searchFileRow, 0, minInt(len(items), maxResults))
-	truncated := false
-	for _, item := range items {
-		pathValue := filepath.Clean(item.Path)
-		relPath := normalizeSearchRelativePath(searchRoot, pathValue, item.RelativePath)
-		if !matchesIncludeGlob(include, relPath) {
-			continue
-		}
-		files = append(files, searchFileRow{
-			Query:        query,
-			Path:         pathValue,
-			RelativePath: relPath,
-			FileName:     strings.TrimSpace(item.FileName),
-			GitStatus:    strings.TrimSpace(item.GitStatus),
-			Score:        item.Score,
-		})
-		if len(files) >= maxResults {
-			truncated = true
-			break
-		}
-	}
-	if metrics.TotalMatched > uint32(len(files)) {
-		truncated = true
-	}
-	return files, searchAggregateTotals{
-		TotalMatched: int(metrics.TotalMatched),
-		TotalFiles:   int(metrics.TotalFiles),
-	}, truncated
 }
 
 func collectFindFileRows(query, searchRoot, include string, items []fff.SearchItem, metrics fff.SearchMetrics, maxResults int, kind string) ([]findRow, searchAggregateTotals, bool) {
@@ -6617,8 +6558,17 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	sourcePath := strings.TrimSpace(source.WorktreeRootPath)
 	capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
 	capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
-	if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBranch != sourceBranch || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
+	if sourceBranch != source.WorktreeBranch {
+		lane, laneErr := r.selectedRepositoryLane(scope, source, targetWorkspacePath, sourceBranch)
+		if laneErr != nil {
+			return "", fmt.Errorf("select promotion repository lane: %w", laneErr)
+		}
+		sourcePath, capturedPath, capturedHead = lane.WorkspacePath, lane.SourcePath, lane.BaseCommit
+	} else if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
 		return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+	}
+	if sourceBranch == targetBranch {
+		return "", errors.New("promotion source must be distinct from the target branch")
 	}
 	resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, targetWorkspacePath, capturedPath)
 	if err != nil {
@@ -6670,12 +6620,9 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		return "", errors.New("manage-worktree integrate requires session and worktree services")
 	}
 	parentSessionID := strings.TrimSpace(firstNonEmptyString(scope.SessionID, scope.Principal.SessionID))
-	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	parent, err := r.manageWorktreeRecoveryParent(scope)
 	if err != nil {
 		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("parent session %q not found", parentSessionID)
 	}
 	if parent.AccountScopeID != scope.Principal.AccountScopeID || parent.UserID != scope.Principal.UserID {
 		return "", errors.New("manage-worktree integrate parent is not owned by the authenticated principal")
@@ -6747,24 +6694,14 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			if !selectedSet[id] || !agentruntime.IsCoderAgentName(asString(row["subagent"])) {
 				continue
 			}
-			childSession, found, sessionErr := r.sessions.GetSession(id)
+			childSession, sessionErr := r.manageWorktreeRecoveryChild(parent, row)
 			if sessionErr != nil {
 				return "", fmt.Errorf("verify selected child session %q: %w", id, sessionErr)
-			}
-			if !found {
-				return "", fmt.Errorf("verify selected child session %q: not found", id)
-			}
-			if childSession.AccountScopeID != parent.AccountScopeID || childSession.UserID != parent.UserID ||
-				strings.TrimSpace(asString(childSession.Metadata["parent_session_id"])) != parentSessionID ||
-				strings.TrimSpace(asString(childSession.Metadata["lineage_kind"])) != "delegated_subagent" ||
-				!agentruntime.IsCoderAgentName(asString(childSession.Metadata["subagent"])) {
-				return "", fmt.Errorf("selected child %q is not an owned Coder child of this parent", id)
 			}
 			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
 			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
 			headCommit := strings.TrimSpace(asString(row["head_commit"]))
-			childParentPath := strings.TrimSpace(firstNonEmptyString(asString(row["parent_workspace_path"]), asString(childSession.Metadata["target_workspace_path"]), parentPath))
-			resolvedParentPath, resolveErr := r.manageWorktreeResolveWorkspacePath(scope, childParentPath)
+			resolvedParentPath, resolveErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
 			if resolveErr != nil {
 				return "", fmt.Errorf("resolve selected child %q parent workspace: %w", id, resolveErr)
 			}
@@ -6847,12 +6784,9 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 	if parentSessionID == "" {
 		return "", errors.New("manage-worktree recall requires current parent session_id")
 	}
-	parent, ok, err := r.sessions.GetSession(parentSessionID)
+	parent, err := r.manageWorktreeRecoveryParent(scope)
 	if err != nil {
 		return "", err
-	}
-	if !ok {
-		return "", fmt.Errorf("parent session %q not found", parentSessionID)
 	}
 	limit := asInt(args["limit"], 25)
 	if limit <= 0 {
@@ -6864,11 +6798,6 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 	cursor := asInt(args["cursor"], 0)
 	if cursor < 0 {
 		cursor = 0
-	}
-	parentPath, parentPathErr := r.manageWorktreeResolveWorkspacePath(scope, "")
-	parentState := worktreeruntime.TaskWorkspaceState{}
-	if parentPathErr == nil {
-		parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
 	}
 	launchMap, _ := parent.Metadata["task_launches"].(map[string]any)
 	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
@@ -6897,10 +6826,35 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 			}
 			child["task_call_id"] = callID
 			child["parent_session_id"] = parentSessionID
-			path := strings.TrimSpace(firstNonEmptyString(asString(row["worktree_root_path"]), asString(row["workspace_path"])))
+			childSession, childErr := r.manageWorktreeRecoveryChild(parent, row)
+			if childErr != nil {
+				child["git_inspection_error"] = childErr.Error()
+				child["child_state"] = "blocked"
+				children = append(children, child)
+				continue
+			}
+			parentPath, parentPathErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
+			parentState := worktreeruntime.TaskWorkspaceState{}
+			if parentPathErr == nil {
+				parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
+			}
+			if parentPathErr != nil {
+				child["parent_git_inspection_error"] = parentPathErr.Error()
+				child["child_state"] = "blocked"
+				children = append(children, child)
+				continue
+			}
+			child["parent_workspace_path"] = parentPath
+			path := childSession.WorktreeRootPath
 			childState := "blocked"
 			if path != "" {
-				if state, inspectErr := r.worktrees.InspectTaskWorkspace(path); inspectErr != nil {
+				state, inspectErr := r.worktrees.InspectTaskWorkspace(path)
+				if inspectErr == nil {
+					// Failed children may have no terminal recorded HEAD. Authenticate
+					// their managed identity using live HEAD, without committing them.
+					state, inspectErr = r.worktrees.VerifyTaskIntegrationWorkspace(parentPath, path, childSession.ID, childSession.WorktreeBranch, asString(row["base_commit"]), state.HeadCommit)
+				}
+				if inspectErr != nil {
 					child["git_inspection_error"] = inspectErr.Error()
 				} else {
 					child["worktree_path"] = state.WorkspacePath
@@ -6918,11 +6872,6 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 						childState = "blocked"
 					case state.BranchName != recordedBranch || state.HeadCommit != recordedHead:
 						childState = "stale"
-					case parentPathErr != nil:
-						child["parent_git_inspection_error"] = parentPathErr.Error()
-						// Parent inspection affects integrated-vs-committed detection, not
-						// whether this clean child has a durable committed handoff.
-						childState = "committed"
 					default:
 						integrated, integrationErr := r.manageWorktreeCommitIntegrated(parentPath, recordedBase, recordedHead, parentState.HeadCommit)
 						if integrationErr != nil {
@@ -9653,7 +9602,7 @@ func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error
 		return "", err
 	}
 
-	if !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedCandidate) {
+	if !workspaceGitAdminAllowed(scope, resolvedCandidate) || !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedCandidate) {
 		return "", fmt.Errorf("path %q escapes workspace scope", requested)
 	}
 	return candidateAbs, nil
@@ -9740,9 +9689,6 @@ func normalizeWorkspaceScope(primary string, roots []string) WorkspaceScope {
 	add(primary)
 	for _, root := range roots {
 		add(root)
-	}
-	if primary == "" && len(out) > 0 {
-		primary = out[0]
 	}
 	if primary != "" && len(out) == 0 {
 		out = []string{primary}

@@ -1,11 +1,13 @@
 import { requestJson } from '../../../../app/api'
 import { mapWorkspaceOverviewResponse, type WorkspaceOverviewResponse, type WorkspaceOverviewResponseWire } from '../types/workspace-overview'
 
-export async function fetchWorkspaceOverview(roots: string[] = [], sessionLimit = 0): Promise<WorkspaceOverviewResponse> {
+export async function fetchWorkspaceOverview(roots: string[] = [], sessionLimit = 0, includeDetails = true, signal?: AbortSignal): Promise<WorkspaceOverviewResponse> {
   const search = new URLSearchParams({
     workspace_limit: '1000',
     discover_limit: '1000',
     limit: '100',
+    include_discovered: 'false',
+    include_details: String(includeDetails),
   })
   if (sessionLimit > 0) {
     search.set('session_limit', String(sessionLimit))
@@ -23,6 +25,7 @@ export async function fetchWorkspaceOverview(roots: string[] = [], sessionLimit 
     search.set('cursor', String(cursor))
     const response = await requestJson<WorkspaceOverviewResponseWire>(`/v1/workspace/overview?${search.toString()}`, {
       cache: 'no-store',
+      signal,
     })
     firstResponse ??= response
     workspaces.push(...(response.workspaces ?? []))

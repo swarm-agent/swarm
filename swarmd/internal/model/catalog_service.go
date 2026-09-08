@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	catalogMaterializationVersion = 1
+	catalogMaterializationVersion = 2
 	defaultCatalogURL             = "https://models.swarmagent.dev/v1/snapshot.json"
 	defaultCatalogVersionURL      = "https://models.swarmagent.dev/v1/snapshot-version.json"
 	defaultCatalogTTL             = time.Hour
@@ -355,6 +355,15 @@ func (s *CatalogService) RecommendedDefaults(providerID string) (pebblestore.Mod
 // provider-level recommendation. It is the canonical lookup for onboarding
 // roles that have independent model recommendations.
 func (s *CatalogService) RecommendedRoleDefaults(providerID string, roles ...string) (map[string]pebblestore.ModelCatalogRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta, found, err := s.store.GetMeta()
+	if err != nil {
+		return nil, false, err
+	}
+	if !found || meta.MaterializationVersion != catalogMaterializationVersion {
+		return nil, false, fmt.Errorf("catalog recommendations require a verified refresh")
+	}
 	providerID = canonicalCatalogProviderID(providerID)
 	if providerID == "" || len(roles) == 0 {
 		return nil, false, nil
@@ -434,6 +443,7 @@ func (s *CatalogService) refresh(ctx context.Context, force bool, reason string)
 		}
 	}
 
+	force = force || meta.MaterializationVersion != catalogMaterializationVersion
 	version, err := s.fetchSnapshotVersion(ctx, meta, force)
 	if err != nil {
 		updated := s.persistRefreshErrorLocked(meta, err, reason)
@@ -475,6 +485,17 @@ func (s *CatalogService) refresh(ctx context.Context, force bool, reason string)
 	if snapshotURL == "" {
 		snapshotURL = s.sourceURL
 	}
+	if !sameCatalogSnapshot(meta, version.Version) {
+		currentTime, currentErr := time.Parse(time.RFC3339Nano, meta.GeneratedAt)
+		nextTime, nextErr := time.Parse(time.RFC3339Nano, version.Version.GeneratedAt)
+		if currentErr != nil || nextErr != nil || !nextTime.After(currentTime) {
+			err := fmt.Errorf("advertised snapshot is not newer than the verified catalog")
+			updated := s.persistRefreshErrorLocked(meta, err, reason)
+			result := catalogRefreshResultFromMeta(updated)
+			result.UsedCache, result.UsedPinned, result.Manual = updated.RecordCount > 0, updated.Source == catalogSourcePinned, force
+			return result, err
+		}
+	}
 	changed := force || catalogMetaNeedsPinnedSeed(meta) || meta.RecordCount <= 0 || !sameCatalogSnapshot(meta, version.Version)
 	if !changed {
 		meta.SourceURL = firstNonEmpty(meta.SourceURL, snapshotURL)
@@ -500,7 +521,18 @@ func (s *CatalogService) refresh(ctx context.Context, force bool, reason string)
 		return result, nil
 	}
 
-	payload, snapshotETag, notModified, err := s.fetchSnapshot(ctx, snapshotURL, meta, !force && strings.TrimSpace(meta.ETag) != "")
+	payload, snapshotETag, notModified, err := s.fetchSnapshot(ctx, snapshotURL, meta, !force && sameCatalogSnapshot(meta, version.Version) && strings.TrimSpace(meta.ETag) != "")
+	if err == nil && notModified && !sameCatalogSnapshot(meta, version.Version) {
+		err = fmt.Errorf("snapshot returned not-modified for a different advertised version")
+	}
+	if err == nil && !notModified {
+		_, decoded, decodeErr := decodeSwarmSnapshotRecords(payload, nowMs, expiresAt, catalogSourceLive, snapshotETag)
+		if decodeErr != nil {
+			err = decodeErr
+		} else if decoded.SnapshotID != version.Version.SnapshotID || decoded.SnapshotVersion != version.Version.SnapshotVersion || decoded.GeneratedAt != version.Version.GeneratedAt {
+			err = fmt.Errorf("snapshot payload does not match advertised version")
+		}
+	}
 	if err != nil {
 		applyLiveMetadata(&meta, version.Version, nowMs)
 		updated := s.persistRefreshErrorLocked(meta, err, reason)
@@ -597,6 +629,9 @@ func (s *CatalogService) fetchSnapshotVersion(ctx context.Context, meta pebblest
 	defer resp.Body.Close()
 	etag := strings.TrimSpace(resp.Header.Get("ETag"))
 	if resp.StatusCode == http.StatusNotModified {
+		if force || meta.VersionETag == "" {
+			return catalogVersionFetch{}, fmt.Errorf("unsolicited not-modified snapshot version")
+		}
 		return catalogVersionFetch{ETag: etag, NotModified: true}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -631,6 +666,9 @@ func (s *CatalogService) fetchSnapshot(ctx context.Context, snapshotURL string, 
 	defer resp.Body.Close()
 	etag := strings.TrimSpace(resp.Header.Get("ETag"))
 	if resp.StatusCode == http.StatusNotModified {
+		if !useConditional {
+			return nil, "", false, fmt.Errorf("unsolicited not-modified snapshot payload")
+		}
 		return nil, etag, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -667,7 +705,9 @@ func (s *CatalogService) persistRefreshErrorLocked(meta pebblestore.ModelCatalog
 	meta.LastRefreshReason = reason
 	meta.UsingCacheFallback = meta.RecordCount > 0
 	applyPinnedMetadata(&meta)
-	_ = s.store.SetMeta(meta)
+	if persistErr := s.store.SetMeta(meta); persistErr != nil {
+		meta.LastError = fmt.Sprintf("%s; persist refresh failure metadata: %v", meta.LastError, persistErr)
+	}
 	return meta
 }
 
@@ -1280,6 +1320,20 @@ func appendProviderRecommendations(existing []pebblestore.ModelCatalogRecommenda
 	providerID = canonicalCatalogProviderID(providerID)
 	modelID = canonicalCatalogModelID(providerID, modelID)
 	catalogID = strings.TrimSpace(catalogID)
+	// Provider-level roles override legacy per-model tags, even on other models.
+	filtered := make([]pebblestore.ModelCatalogRecommendation, 0, len(existing))
+	for _, rec := range existing {
+		role := strings.ToLower(strings.TrimSpace(rec.Role))
+		if role == "main" {
+			role = "auto"
+		}
+		_, overridden := values[role]
+		_, mainOverride := values["main"]
+		if !overridden && !(role == "auto" && mainOverride) {
+			filtered = append(filtered, rec)
+		}
+	}
+	existing = filtered
 	existingRoles := make(map[string]struct{}, len(existing))
 	for _, rec := range existing {
 		role := strings.ToLower(strings.TrimSpace(rec.Role))
@@ -1289,6 +1343,11 @@ func appendProviderRecommendations(existing []pebblestore.ModelCatalogRecommenda
 	}
 	appendRole := func(role string) {
 		role = strings.ToLower(strings.TrimSpace(role))
+		if role == "main" {
+			if _, hasAuto := values["auto"]; hasAuto {
+				return
+			}
+		}
 		if role == "" {
 			return
 		}

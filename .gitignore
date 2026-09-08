@@ -64,6 +64,11 @@ coverage.out
 !/docs/swarm-atlas.md
 !/docs/checkpoints/
 !/docs/checkpoints/*.md
+!/docs/testing/
+/docs/testing/*
+!/docs/testing/test-audit-ledger.tsv
+!/docs/testing/testbench-container.md
+!/docs/testing/multi-workspace-session-matrix.md
 !/docs/identity/
 !/docs/identity/*.md
 !/docs/migrations/

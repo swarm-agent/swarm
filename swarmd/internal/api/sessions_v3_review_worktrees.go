@@ -27,6 +27,7 @@ const (
 
 type sessionsV3ReviewWorktreesRequest struct {
 	WorkspacePath      string            `json:"workspace_path,omitempty"`
+	CatalogOnly        bool              `json:"catalog_only,omitempty"`
 	SessionIDs         []string          `json:"session_ids,omitempty"`
 	ArchiveIDs         []string          `json:"archive_session_ids,omitempty"`
 	ArchiveAll         bool              `json:"archive_all,omitempty"`
@@ -78,6 +79,9 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	if req.Automatic && len(compactStrings(req.PromoteIDs)) > 0 {
 		return nil, errors.New("worktree promotion requires an explicit user action")
 	}
+	if req.CatalogOnly {
+		return s.catalogSessionsV3ReviewWorktrees(ctx, principal, req)
+	}
 	checkoutSnapshot, checkoutCommonDir := sessionsV3ReviewCheckoutTarget(ctx, req.WorkspacePath)
 	repository := newSessionsV3ReviewRepository(ctx, checkoutSnapshot, checkoutCommonDir)
 	checkoutBranch := strings.TrimSpace(checkoutSnapshot.Branch)
@@ -111,10 +115,7 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		if err != nil {
 			return nil, err
 		}
-		search, err = searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
-			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Global: true,
-			State: "needs_review", ArchivedMode: "exclude",
-		}, sessionsV3ReviewWorktreeLimit)
+		search, _, err = s.searchSessionsV3ReviewWorktrees(principal, requestedSessionIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -123,13 +124,15 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 		if err := s.promoteSessionsV3ReviewWorktrees(ctx, principal, req.WorkspacePath, req.PromoteIDs, req.SourceHeads, req.TargetBranch, req.TargetHead, now); err != nil {
 			return nil, err
 		}
-		search, err = searchSessionsV3ReviewWorktreePages(s.sessions.SearchSessions, pebblestore.V3SessionSearchOptions{
-			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Global: true,
-			State: "needs_review", ArchivedMode: "exclude",
-		}, sessionsV3ReviewWorktreeLimit)
+		search, _, err = s.searchSessionsV3ReviewWorktrees(principal, requestedSessionIDs)
 		if err != nil {
 			return nil, err
 		}
+		// Promotion changed the target. Never classify or return lineage from the
+		// pre-mutation snapshot, even when only the selected session is requested.
+		checkoutSnapshot, checkoutCommonDir = sessionsV3ReviewCheckoutTarget(ctx, req.WorkspacePath)
+		repository = newSessionsV3ReviewRepository(ctx, checkoutSnapshot, checkoutCommonDir)
+		checkoutBranch = strings.TrimSpace(checkoutSnapshot.Branch)
 	}
 	retained := make([]sessionreview.Classification, 0)
 	done := make([]sessionreview.Classification, 0)
@@ -151,23 +154,21 @@ func (s *Server) classifySessionsV3ReviewWorktrees(ctx context.Context, principa
 	// deterministic metadata updates and sorting.
 	repository.prefetchSnapshots(ctx, reviewSessions)
 	classifications := make([]sessionreview.Classification, len(reviewSessions))
-	var classificationWait sync.WaitGroup
-	for index, session := range reviewSessions {
-		classificationWait.Add(1)
-		go func() {
-			defer classificationWait.Done()
-			targetBranch := session.WorktreeBaseBranch
-			if repository.sessionUsesCheckout(session) {
-				classifications[index] = sessionreview.ClassifyCurrentCheckout(session, checkoutSnapshot, now, grace)
-				return
-			}
-			if checkoutBranch != "" && repository.worktreeMatchesCheckout(session.WorktreeRootPath) {
-				targetBranch = checkoutBranch
-			}
-			classifications[index] = repository.classifyAgainstTarget(ctx, session, now, grace, targetBranch)
-		}()
+	runSessionsV3ReviewWorkers(len(reviewSessions), func(index int) {
+		session := reviewSessions[index]
+		targetBranch := session.WorktreeBaseBranch
+		if repository.sessionUsesCheckout(session) {
+			classifications[index] = sessionreview.ClassifyCurrentCheckout(session, checkoutSnapshot, now, grace)
+			return
+		}
+		if checkoutBranch != "" && repository.worktreeMatchesCheckout(session.WorktreeRootPath) {
+			targetBranch = checkoutBranch
+		}
+		classifications[index] = repository.classifyAgainstTarget(ctx, session, now, grace, targetBranch)
+	})
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	classificationWait.Wait()
 	for index, session := range reviewSessions {
 		classification := classifications[index]
 		classification.CommitJob = sessionReviewCommitJob(session)
@@ -551,7 +552,7 @@ func (r *sessionsV3ReviewRepository) worktreeMatchesCheckout(worktreePath string
 }
 
 func (r *sessionsV3ReviewRepository) prefetchSnapshots(ctx context.Context, sessions []pebblestore.SessionSnapshot) {
-	var wait sync.WaitGroup
+	paths := make([]string, 0, len(sessions))
 	seen := make(map[string]struct{}, len(sessions))
 	for _, session := range sessions {
 		if !session.WorktreeEnabled {
@@ -565,16 +566,17 @@ func (r *sessionsV3ReviewRepository) prefetchSnapshots(ctx context.Context, sess
 			continue
 		}
 		seen[path] = struct{}{}
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			r.loadSnapshot(ctx, path)
-		}()
+		paths = append(paths, path)
 	}
-	wait.Wait()
+	runSessionsV3ReviewWorkers(len(paths), func(index int) {
+		r.loadSnapshot(ctx, paths[index])
+	})
 }
 
 func (r *sessionsV3ReviewRepository) loadSnapshot(ctx context.Context, path string) (gitstatus.Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return gitstatus.Snapshot{}, err
+	}
 	r.mu.Lock()
 	if snapshot, ok := r.snapshots[path]; ok {
 		r.mu.Unlock()

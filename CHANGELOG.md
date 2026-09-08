@@ -21,6 +21,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Changed
 
+- Show pending review worktrees before expensive Git checks, bound review enrichment concurrency, and scope integration reads to the selected session instead of repeatedly scanning all review lanes. Background refreshes no longer keep completed integrations pending.
 - Updated the daemon compression dependency to `github.com/klauspost/compress` v1.18.7 for the new build.
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
 - Expanded Desktop and TUI workspace onboarding, session routing, themes, responsive navigation, git status, and launch tips while removing legacy display and workspace-definition authorities.
@@ -38,6 +39,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Reduced workspace-launcher startup work with catalog-first loading: saved workspaces no longer wait for session/permission payloads, todo summaries, Git probes, or folder discovery. Return visits reuse the existing in-memory query cache; background details remain independent, and theme/browser updates no longer trigger redundant refreshes. Catalog worktree settings use exact account-owned lookups instead of repeated full-catalog scans.
 - Gave managed Designers one bounded refinement round for allowlisted author-correctable animation failures, using a fresh immutable candidate in the same collection while preserving failed artifacts and all strict trust checks.
 - Made managed Designer task failures report the artifact's concrete failure code separately from trusted-lineage and composition rejection.
 - Removed the retired hosted remote-deploy product surface while preserving Swarm targets, topology runtime placement, and workspace bindings.
@@ -70,7 +72,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Public command docs should describe `/voice` as experimental terminal voice input only, not as a fully supported voice product.
 - Public TUI workspace guidance should explain that `/workspace save` saves and switches to an unsaved Git launch directory.
 - Public video documentation should cover deterministic HTML animation export, trusted registered audio sources, transcription and deterministic audio analysis, reviewed soundtrack proposals, and the current no-fades/no-looping/no-ducking limits.
-- Docs impact: none for managed Designer bounded refinement/failure diagnostics, the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar responsiveness refinements, or internal test-governance and release-gate wiring.
+- Docs impact: none for managed Designer bounded refinement/failure diagnostics, the Tailscale host-update authorization correction, cryptography dependency correction, plan execution badge cleanup, Desktop sidebar and workspace-launcher responsiveness refinements, or internal test-governance and release-gate wiring.
 
 ## v0.1.19 - 2026-05-01
 

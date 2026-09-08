@@ -87,6 +87,75 @@ func TestSessionDumpWritesReadablePrivateFile(t *testing.T) {
 	}
 }
 
+func TestSessionDumpDownloadReturnsExactPrivateDump(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	dataDir := t.TempDir()
+	server.SetDataDir(dataDir)
+	writeSessionDumpStartupConfig(t, server.startupConfigPath, true)
+	createSessionDumpTestSession(t, server, sessionSvc, "dump-download")
+
+	body := strings.NewReader(`{"session_id":"dump-download","download":true}`)
+	request := httptest.NewRequest(http.MethodPost, SessionDumpPath, body)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, withTestPrincipal(request))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var response struct {
+		DownloadPath string `json:"download_path"`
+		BytesWritten int64  `json:"bytes_written"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.HasPrefix(response.DownloadPath, sessionDumpFilePath+"session-dump-download-") {
+		t.Fatalf("download path = %q", response.DownloadPath)
+	}
+
+	download := httptest.NewRequest(http.MethodGet, response.DownloadPath, nil)
+	downloadRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(downloadRecorder, withTestPrincipal(download))
+	if downloadRecorder.Code != http.StatusOK {
+		t.Fatalf("download status = %d, body=%s", downloadRecorder.Code, downloadRecorder.Body.String())
+	}
+	if int64(downloadRecorder.Body.Len()) != response.BytesWritten {
+		t.Fatalf("download bytes = %d, want %d", downloadRecorder.Body.Len(), response.BytesWritten)
+	}
+	var dump sessionDumpFile
+	if err := json.Unmarshal(downloadRecorder.Body.Bytes(), &dump); err != nil {
+		t.Fatalf("decode downloaded dump: %v", err)
+	}
+	if dump.Session.ID != "dump-download" || len(dump.Messages) != 1 {
+		t.Fatalf("downloaded wrong dump: session=%q messages=%d", dump.Session.ID, len(dump.Messages))
+	}
+}
+
+func TestSessionDumpDownloadRequiresDevMode(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.SetDataDir(t.TempDir())
+	writeSessionDumpStartupConfig(t, server.startupConfigPath, false)
+
+	request := httptest.NewRequest(http.MethodGet, sessionDumpFilePath+"session-private.json", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, withTestPrincipal(request))
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusForbidden, recorder.Body.String())
+	}
+}
+
+func TestSessionDumpDownloadRejectsUnsafeName(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	server.SetDataDir(t.TempDir())
+	writeSessionDumpStartupConfig(t, server.startupConfigPath, true)
+
+	request := httptest.NewRequest(http.MethodGet, sessionDumpFilePath+"%2e%2e%2fsession-private.json", nil)
+	recorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(recorder, withTestPrincipal(request))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+}
+
 func TestSessionDumpUnknownSessionIsNotWritten(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	dataDir := t.TempDir()

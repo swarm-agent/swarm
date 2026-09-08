@@ -1,5 +1,3 @@
-let reloadTriggered = false
-
 function unregisterDevelopmentServiceWorkers(): void {
   window.addEventListener('load', () => {
     navigator.serviceWorker.getRegistrations()
@@ -9,14 +7,8 @@ function unregisterDevelopmentServiceWorkers(): void {
 }
 
 function registerProductionServiceWorker(): void {
-  const hadController = navigator.serviceWorker.controller !== null
-
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController || reloadTriggered) return
-    reloadTriggered = true
-    window.location.reload()
-  })
-
+  // The worker owns icons and push only, not app bundles. A controller update
+  // needs no page reload and must not interrupt a session or loop on startup.
   window.addEventListener('load', () => {
     let updateInFlight: Promise<void> | undefined
     let registration: ServiceWorkerRegistration | undefined

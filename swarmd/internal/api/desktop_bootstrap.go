@@ -16,6 +16,7 @@ import (
 const workspaceOverviewDefaultSessionLimit = 25
 const workspaceOverviewDefaultPermissionLimit = 200
 const workspaceOverviewPermissionParallelism = 8
+const workspaceOverviewGitStatusParallelism = 8
 
 type workspaceOverviewSession struct {
 	pebblestore.SessionSnapshot
@@ -66,7 +67,7 @@ func (s *Server) applyWorkspaceWorktreeStatus(principal identity.Principal, entr
 		return entries, nil
 	}
 	for i := range entries {
-		config, err := s.worktrees.GetConfigForPrincipal(principal, entries[i].Path)
+		config, err := s.worktrees.GetConfigForSavedWorkspaceForPrincipal(principal, entries[i].Path)
 		if err != nil {
 			return nil, err
 		}
@@ -77,6 +78,7 @@ func (s *Server) applyWorkspaceWorktreeStatus(principal identity.Principal, entr
 
 type workspaceOverviewResponse struct {
 	OK               bool                         `json:"ok"`
+	DetailsIncluded  bool                         `json:"details_included"`
 	CurrentWorkspace *workspace.Resolution        `json:"current_workspace,omitempty"`
 	Workspaces       []workspaceOverviewWorkspace `json:"workspaces"`
 	Directories      []workspace.DiscoverEntry    `json:"directories"`
@@ -107,7 +109,8 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
-	if s.sessions == nil {
+	includeDetails := !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_details")), "false")
+	if includeDetails && s.sessions == nil {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("session service"))
 		return
 	}
@@ -135,10 +138,22 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	workspaces, err := s.workspace.ListKnownForPrincipal(principal, workspaceLimit)
+	allWorkspaces, err := s.workspace.ListKnownForPrincipal(principal, workspaceLimit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
+	}
+	totalWorkspaces := len(allWorkspaces)
+	if cursor < 0 {
+		cursor = 0
+	}
+	end := cursor + pageLimit
+	if end > totalWorkspaces {
+		end = totalWorkspaces
+	}
+	workspaces := make([]workspace.Entry, 0, max(0, end-cursor))
+	if cursor < totalWorkspaces {
+		workspaces = append(workspaces, allWorkspaces[cursor:end]...)
 	}
 	workspaces, err = s.applyWorkspaceWorktreeStatus(principal, workspaces)
 	if err != nil {
@@ -161,10 +176,13 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		currentOK = true
 	}
 
-	directories, err := s.workspace.Discover(roots, discoverLimit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	var directories []workspace.DiscoverEntry
+	if !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_discovered")), "false") {
+		directories, err = s.workspace.Discover(roots, discoverLimit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	workspacePaths := make([]string, 0, len(workspaces))
@@ -173,26 +191,30 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		workspacePaths = append(workspacePaths, workspacePath)
 	}
 	todoSummaries := make(map[string]pebblestore.WorkspaceTodoSummary, len(workspacePaths))
-	if s.todos != nil && len(workspacePaths) > 0 {
+	if includeDetails && s.todos != nil && len(workspacePaths) > 0 {
 		todoSummaries, err = s.todos.Summaries(workspacePaths)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 	}
-	groupedSessions, err := s.sessions.ListTopSessionsByWorkspace(workspacePaths, sessionLimit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
+	// Catalog-first callers need identity, routing, and settings, not session
+	// snapshots, permission payloads, todo scans, or Git subprocesses.
+	sessionsByWorkspace := make(map[string][]workspaceOverviewSession)
+	if includeDetails {
+		groupedSessions, listErr := s.sessions.ListTopSessionsByWorkspace(workspacePaths, sessionLimit)
+		if listErr != nil {
+			writeError(w, http.StatusInternalServerError, listErr)
+			return
+		}
+		sessionsByWorkspace, err = s.workspaceOverviewSessionsByWorkspace(groupedSessions, permissionLimit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
-	sessionsByWorkspace, err := s.workspaceOverviewSessionsByWorkspace(groupedSessions, permissionLimit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(principal, swarmTargets, workspaces)
+	topologyRoutesByWorkspace, err := s.workspaceOverviewTopologyRoutesByWorkspace(principal, swarmTargets, allWorkspaces)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
@@ -203,12 +225,16 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 	if primaryTarget != nil {
 		primarySwarmID = strings.TrimSpace(primaryTarget.SwarmID)
 	}
-	localBindingByWorkspaceID := localWorkspaceBindingIDsByWorkspaceID(workspaces, topologyRoutesByWorkspace, primarySwarmID)
+	localBindingByWorkspaceID := localWorkspaceBindingIDsByWorkspaceID(allWorkspaces, topologyRoutesByWorkspace, primarySwarmID)
 	if currentOK {
 		current.LocalWorkspaceBindingID = strings.TrimSpace(localBindingByWorkspaceID[strings.TrimSpace(current.WorkspaceID)])
 	}
+	gitStatuses := make([]gitStatusResponseFields, len(workspaces))
+	if includeDetails {
+		gitStatuses = workspaceOverviewGitStatuses(workspaces)
+	}
 	responseWorkspaces := make([]workspaceOverviewWorkspace, 0, len(workspaces))
-	for _, entry := range workspaces {
+	for index, entry := range workspaces {
 		workspacePath := strings.TrimSpace(entry.Path)
 		entry.LocalWorkspaceBindingID = strings.TrimSpace(localBindingByWorkspaceID[strings.TrimSpace(entry.WorkspaceID)])
 		responseWorkspaces = append(responseWorkspaces, workspaceOverviewWorkspace{
@@ -216,20 +242,8 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 			Sessions:                sessionsByWorkspace[workspacePath],
 			TodoSummary:             todoSummaries[workspacePath],
 			TopologyRoutes:          topologyRoutesByWorkspace[workspacePath],
-			gitStatusResponseFields: gitStatusResponseForPath(entry.Path),
+			gitStatusResponseFields: gitStatuses[index],
 		})
-	}
-	totalWorkspaces := len(responseWorkspaces)
-	if cursor < 0 {
-		cursor = 0
-	}
-	end := cursor + pageLimit
-	if end > totalWorkspaces {
-		end = totalWorkspaces
-	}
-	pagedWorkspaces := make([]workspaceOverviewWorkspace, 0, end-cursor)
-	if cursor < totalWorkspaces {
-		pagedWorkspaces = append(pagedWorkspaces, responseWorkspaces[cursor:end]...)
 	}
 	nextCursor := 0
 	if end < totalWorkspaces {
@@ -244,8 +258,9 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 
 	writeJSON(w, http.StatusOK, workspaceOverviewResponse{
 		OK:               true,
+		DetailsIncluded:  includeDetails,
 		CurrentWorkspace: currentPayload,
-		Workspaces:       pagedWorkspaces,
+		Workspaces:       responseWorkspaces,
 		Directories:      directories,
 		Cursor:           cursor,
 		Limit:            pageLimit,
@@ -254,6 +269,32 @@ func (s *Server) handleWorkspaceOverview(w http.ResponseWriter, r *http.Request)
 		TotalWorkspaces:  totalWorkspaces,
 		SwarmTarget:      currentTarget,
 	})
+}
+
+func workspaceOverviewGitStatuses(entries []workspace.Entry) []gitStatusResponseFields {
+	statuses := make([]gitStatusResponseFields, len(entries))
+	if len(entries) == 0 {
+		return statuses
+	}
+
+	jobs := make(chan int, len(entries))
+	workerCount := min(workspaceOverviewGitStatusParallelism, len(entries))
+	var wg sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				statuses[index] = gitStatusResponseForPath(entries[index].Path)
+			}
+		}()
+	}
+	for index := range entries {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+	return statuses
 }
 
 func (s *Server) workspaceOverviewSessionsByWorkspace(groups []pebblestore.WorkspaceSessionList, permissionLimit int) (map[string][]workspaceOverviewSession, error) {

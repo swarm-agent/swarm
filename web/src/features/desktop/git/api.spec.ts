@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 
-import { commitWorkspaceChanges, fetchGitStatus, startGitRealtime, suggestWorkspaceCommitMessage } from './api'
+import { GIT_REALTIME_TIMEOUT_MS, commitWorkspaceChanges, fetchGitStatus, fetchSessionRepositories, startGitRealtime, suggestWorkspaceCommitMessage } from './api'
 
 const originalFetch = globalThis.fetch
 
@@ -50,7 +50,8 @@ test('startGitRealtime coalesces duplicate in-flight cache-hit requests', async 
 
   const first = startGitRealtime('/workspace/project', 'session-1', 'watch-1')
   const second = startGitRealtime('/workspace/project', 'session-1', 'watch-1')
-  assert.equal(first, second)
+  // Coalescing shares the transport, not cancellation ownership.
+  assert.notEqual(first, second)
   assert.equal(calls, 1)
 
   resolveFetch(new Response(JSON.stringify({
@@ -118,4 +119,67 @@ test('commitWorkspaceChanges posts exact manual commit request to git commit API
     message: 'feat: direct manual commit',
     all: true,
   })
+})
+
+// Purpose: fetchGitStatus/startGitRealtime must abort obsolete transport while
+// retaining other live consumers. Fake transport/time proves cancellation,
+// 25s long-poll compatibility, deadline eviction and a successful retry.
+test('Git cancellation aborts only after the last live consumer leaves', async () => {
+  const signals: AbortSignal[] = []
+  globalThis.fetch = async (_input, init) => { signals.push(init!.signal!); return new Promise(() => {}) }
+  const a = new AbortController(), b = new AbortController()
+  const first = startGitRealtime('/workspace/project', 'session-1', '', a.signal)
+  const second = startGitRealtime('/workspace/project', 'session-1', '', b.signal)
+  a.abort()
+  await assert.rejects(first, { name: 'AbortError' })
+  assert.equal(signals.length, 1)
+  assert.equal(signals[0].aborted, false)
+  b.abort()
+  await assert.rejects(second, { name: 'AbortError' })
+  assert.equal(signals[0].aborted, true)
+  const c = new AbortController()
+  const replacement = startGitRealtime('/workspace/project', 'session-1', '', c.signal)
+  assert.equal(signals.length, 2)
+  c.abort()
+  await assert.rejects(replacement, { name: 'AbortError' })
+  const d = new AbortController()
+  const status = fetchGitStatus('/workspace/project', 12, 'session-1', d.signal)
+  d.abort()
+  await assert.rejects(status, { name: 'AbortError' })
+  assert.equal(signals[2].aborted, true)
+})
+
+test('Git long-poll body timeout evicts coalesced state and permits retry', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let signal!: AbortSignal
+  globalThis.fetch = async (_input, init) => {
+    signal = init!.signal!
+    return new Response(new ReadableStream({ start() {} }))
+  }
+  const first = startGitRealtime('/workspace/project', 'session-1', 'watch')
+  const second = startGitRealtime('/workspace/project', 'session-1', 'watch')
+  const rejected = Promise.all([assert.rejects(first, { name: 'TimeoutError' }), assert.rejects(second, { name: 'TimeoutError' })])
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  t.mock.timers.tick(25_000)
+  assert.equal(signal.aborted, false)
+  t.mock.timers.tick(GIT_REALTIME_TIMEOUT_MS - 25_000)
+  await rejected
+  assert.equal(signal.aborted, true)
+  globalThis.fetch = async () => Response.json({ ok: true, watch_token: 'next', status: { files: [] } })
+  assert.equal((await startGitRealtime('/workspace/project', 'session-1', 'watch')).watch_token, 'next')
+})
+
+// Requirement: inventory uses the canonical session owner and opaque cursor,
+// never a workspace fallback. This fetch boundary proves URL scope and rejection.
+test('session repositories scopes owner and forwards opaque cursor with bounded page size', async () => {
+  let url = ''
+  globalThis.fetch = (async input => {
+    url = String(input)
+    return new Response(JSON.stringify({ ok: true, items: [], history_coverage: 'retained' }), { headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  await fetchSessionRepositories('owner/a', 'opaque+/=')
+  assert.equal(url, '/v3/sessions/owner%2Fa/repositories?limit=20&cursor=opaque%2B%2F%3D')
+  await assert.rejects(fetchSessionRepositories(''), /owner is required/)
+  globalThis.fetch = (async () => new Response(JSON.stringify({ error: 'denied' }), { status: 403 })) as typeof fetch
+  await assert.rejects(fetchSessionRepositories('owner'), /denied|403/i)
 })

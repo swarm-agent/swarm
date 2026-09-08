@@ -165,6 +165,7 @@ type sessionV3DurableProgressSink struct {
 	reasoningDeltaIndexByKey   map[string]int
 	phaseRecordedByEventType   map[string]bool
 	assistantPersistedCount    int
+	assistantStartSeqByStream  map[string]uint64
 	reasoningPersistedCount    int
 	lastWorkerObservedActivity time.Time
 
@@ -192,6 +193,7 @@ func newSessionV3DurableProgressSinkWithWriter(exec *sessionV3Executor, job sess
 		currentReasoningByKey:     make(map[string]*sessionV3ReasoningProgressAggregate),
 		currentProviderToolByKey:  make(map[string]*sessionV3ProviderToolProgressAggregate),
 		acceptedAssistantEnd:      make(map[string]sessionV3AssistantAcceptedEnd),
+		assistantStartSeqByStream: make(map[string]uint64),
 		acceptedReasoningSnapshot: make(map[string]string),
 		waiters:                   make(map[uint64][]chan error),
 		reasoningDeltaIndexByKey:  make(map[string]int),
@@ -602,6 +604,17 @@ func (s *sessionV3DurableProgressSink) Err() error {
 	return s.firstErr
 }
 
+// AssistantStartSeq is the first durable text event, not the later message
+// commit. The same anchor accompanies the committed message through hydration.
+func (s *sessionV3DurableProgressSink) AssistantStartSeq(streamID string) uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.assistantStartSeqByStream[streamID]
+}
+
 func (s *sessionV3DurableProgressSink) AssistantFlushCount() int {
 	if s == nil {
 		return 0
@@ -856,10 +869,14 @@ func (s *sessionV3DurableProgressSink) persistEpoch(epoch sessionV3DurableProgre
 			s.nextAssistantDeltaIndex++
 			deltaIndex := s.nextAssistantDeltaIndex
 			s.mu.Unlock()
-			if _, err := s.writer.RecordRunProgress(s.job, progress, deltaIndex); err != nil {
+			result, err := s.writer.RecordRunProgress(s.job, progress, deltaIndex)
+			if err != nil {
 				return err
 			}
 			s.mu.Lock()
+			if s.assistantStartSeqByStream[progress.StreamID] == 0 {
+				s.assistantStartSeqByStream[progress.StreamID] = result.PrimarySeq
+			}
 			s.assistantPersistedCount++
 			s.mu.Unlock()
 		case sessionV3DurableProgressItemReasoningDelta:

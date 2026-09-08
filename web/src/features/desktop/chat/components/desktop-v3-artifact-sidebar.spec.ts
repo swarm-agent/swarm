@@ -360,8 +360,21 @@ test('pending visual swarm initially opens artifacts without overriding later us
   assert.equal(desktopV3NextSessionSidebarView({ current: 'plan', previousArtifactCount: 0, artifactCount: 1, hasPlan: true, prioritizePlan: true, hasPendingVisualSwarm: true }), 'artifacts')
   assert.equal(desktopV3NextSessionSidebarView({ current: 'plan', previousArtifactCount: 0, artifactCount: 1, hasPlan: false }), 'artifacts')
   assert.equal(desktopV3NextSessionSidebarView({ current: 'plan', previousArtifactCount: 0, artifactCount: 1, hasPlan: true }), 'plan')
+  assert.equal(desktopV3NextSessionSidebarView({ current: 'plan', previousArtifactCount: 0, artifactCount: 1, hasPlan: true, prioritizePlan: true, prioritizeArtifact: true }), 'artifacts')
   assert.equal(desktopV3NextSessionSidebarView({ current: 'artifacts', previousArtifactCount: 1, artifactCount: 2, hasPlan: true }), 'artifacts')
   assert.equal(desktopV3NextSessionSidebarView({ current: 'artifacts', previousArtifactCount: 1, artifactCount: 2, hasPlan: true, prioritizePlan: true }), 'plan')
   assert.equal(desktopV3NextSessionSidebarView({ current: 'artifacts', previousArtifactCount: 2, artifactCount: 0, hasPlan: true, hasPendingVisualSwarm: true }), 'plan')
 
+})
+
+// Requirement: independent native catalog arrival opens artifacts even when an
+// older catalog and a plan arrived first. Rehydrated plan objects must not
+// steal focus; a genuinely new approval remains actionable. Authority: the
+// conversation pane's transition inputs and desktopV3NextSessionSidebarView.
+test('native arrival and plan permission transitions preserve visible artifact focus', () => {
+  const state = {current:'plan' as const, previousArtifactCount:1, artifactCount:2,hasPlan:true,nativeArtifactCount:1,previousNativeArtifactCount:0,planPermissionVisible:true,previousPlanPermissionVisible:true}
+  assert.equal(desktopV3NextSessionSidebarView(state),'artifacts')
+  assert.equal(desktopV3NextSessionSidebarView({...state,current:'artifacts',previousNativeArtifactCount:1}),'artifacts')
+  assert.equal(desktopV3NextSessionSidebarView({...state,current:'plan',previousNativeArtifactCount:1}),'plan','explicit user navigation is preserved')
+  assert.equal(desktopV3NextSessionSidebarView({...state,current:'artifacts',previousNativeArtifactCount:1,previousPlanPermissionVisible:false}),'plan','new approval can draw attention')
 })

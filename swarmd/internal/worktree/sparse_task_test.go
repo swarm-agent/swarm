@@ -1,13 +1,19 @@
 package worktree
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
-func TestAllocateTaskWorkspaceMaterializesOnlyOwnedScopeAndContext(t *testing.T) {
+// Purpose: AllocateTaskWorkspace must expose immutable committed prerequisites
+// independently of mutation ownership. Real Git allocation and Go compilation
+// reproduce omitted source dependencies at the narrowest useful boundary.
+func TestAllocateTaskWorkspaceMaterializesCommittedDependencies(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	repo := initSparseTaskRepository(t)
 	base, err := runGit(repo, "rev-parse", "HEAD")
@@ -24,10 +30,24 @@ func TestAllocateTaskWorkspaceMaterializesOnlyOwnedScopeAndContext(t *testing.T)
 			t.Fatalf("expected sparse path %q: %v", relative, err)
 		}
 	}
-	for _, relative := range []string{"large/unrelated.bin", "other/skip.txt"} {
-		if _, err := os.Stat(filepath.Join(allocation.WorkspacePath, relative)); !os.IsNotExist(err) {
-			t.Fatalf("unrelated path %q was materialized: %v", relative, err)
+	for _, relative := range []string{"large/unrelated.bin", "other/skip.txt", "dependency/value.go"} {
+		if _, err := os.Stat(filepath.Join(allocation.WorkspacePath, relative)); err != nil {
+			t.Fatalf("committed read dependency %q absent: %v", relative, err)
 		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "test", "-p", "1", "./small")
+	cmd.Dir = allocation.WorkspacePath
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOPROXY=off", "GOSUMDB=off", "GOMAXPROCS=2")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("compile committed out-of-scope dependency: %v: %s", err, out)
+	}
+	if head, err := runGit(allocation.WorkspacePath, "rev-parse", "HEAD"); err != nil || head != base {
+		t.Fatalf("allocation changed base: %q %v", head, err)
+	}
+	if dirty, err := runGit(allocation.WorkspacePath, "status", "--porcelain"); err != nil || dirty != "" {
+		t.Fatalf("allocated source is dirty: %q %v", dirty, err)
 	}
 	sparseEnabled, err := runGit(allocation.WorkspacePath, "config", "--worktree", "--get", "core.sparseCheckout")
 	if err != nil || sparseEnabled != "true" {
@@ -72,6 +92,8 @@ func initSparseTaskRepository(t *testing.T) string {
 		"README.md":           "context\n",
 		"go.mod":              "module example.invalid/sparse\n",
 		"small/owned.txt":     "owned\n",
+		"small/value.go":      "package small\nimport \"example.invalid/sparse/dependency\"\nvar Value = dependency.Value\n",
+		"dependency/value.go": "package dependency\nconst Value = 42\n",
 		"large/unrelated.bin": "unrelated\n",
 		"other/skip.txt":      "skip\n",
 	}
