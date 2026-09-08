@@ -78,6 +78,8 @@ func (l ArtifactV3AuthorLimits) normalized() ArtifactV3AuthorLimits {
 }
 
 type ArtifactV3AuthorGrant struct {
+	Generation                                                       *pebblestore.ArtifactV3GenerationMember
+	SceneContract                                                    *pebblestore.ArtifactV3SceneContract
 	AnimationProfile                                                 *pebblestore.SessionArtifactAnimationProfile
 	OutputRequirements                                               *pebblestore.SessionArtifactOutputRequirements
 	RevisionIntent                                                   string
@@ -94,7 +96,7 @@ type ArtifactV3AuthorGrant struct {
 func (g ArtifactV3AuthorGrant) Allows(action string) bool {
 	// Reconciliation is a constrained edit, not a new capability escalation.
 	if action == artifactV3ActionReconcile {
-		return g.RevisionIntent == pebblestore.ArtifactV3RevisionWholeProject && g.Allows(artifactV3ActionEdit)
+		return (g.Initial || g.RevisionIntent == pebblestore.ArtifactV3RevisionWholeProject) && g.Allows(artifactV3ActionEdit)
 	}
 	for _, allowed := range g.AllowedActions {
 		if strings.EqualFold(strings.TrimSpace(allowed), strings.TrimSpace(action)) {
@@ -155,6 +157,7 @@ type ArtifactV3PreviewRequest struct {
 	TargetPartIDs                      []string
 }
 type ArtifactV3PreviewResult struct {
+	Scenes          []pebblestore.ArtifactV3SceneEvidence
 	ID, Status      string
 	EvidenceDigests []string
 	Diagnostics     []ArtifactV3Diagnostic
@@ -170,6 +173,9 @@ type ArtifactV3SubmitRequest struct {
 type ArtifactV3Revision struct{ CommitOID, TreeOID, ManifestBlobOID string }
 
 type ArtifactV3PrepareTurnRequest struct {
+	GenerationWaveID                                           string
+	GenerationIndex, GenerationCount                           int
+	SceneContract                                              *pebblestore.ArtifactV3SceneContract
 	AnimationProfile                                           *pebblestore.SessionArtifactAnimationProfile
 	OutputRequirements                                         *pebblestore.SessionArtifactOutputRequirements
 	RevisionIntent                                             string
@@ -369,11 +375,47 @@ func artifactV3AuthorDefinition() Definition {
 	}}
 }
 
+// ArtifactV3SceneContractSchema is shared by task and direct native authoring.
+func ArtifactV3SceneContractSchema() map[string]any {
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"duration_ms", "scenes"}, "description": "Explicit required complete scene sequence for native animation. Preserve stable scene IDs; no duration-only fragmentation. Producer cannot downgrade this contract.", "properties": map[string]any{"duration_ms": map[string]any{"type": "integer", "minimum": 100}, "scenes": map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"scene_id", "start_ms", "end_ms"}, "properties": map[string]any{"scene_id": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}}}}}
+}
+
+func ParseArtifactV3SceneContract(raw any) (*pebblestore.ArtifactV3SceneContract, error) {
+	if raw == nil {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var c pebblestore.ArtifactV3SceneContract
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.DisallowUnknownFields()
+	if d.Decode(&c) != nil || c.DurationMS < 100 || len(c.Scenes) == 0 || len(c.Scenes) > 256 {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
+	m := pebblestore.ArtifactV3Manifest{Entrypoint: "index.html", AnimationProfile: &pebblestore.SessionArtifactAnimationProfile{}, SceneContract: &c}
+	seen := map[string]bool{}
+	for _, scene := range c.Scenes {
+		if seen[scene.SceneID] {
+			return nil, ErrArtifactV3AuthorInvalid
+		}
+		seen[scene.SceneID] = true
+		scene := scene
+		m.Parts = append(m.Parts, pebblestore.ArtifactV3Part{ID: scene.SceneID, Temporal: &scene, Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#main"}})
+	}
+	if err := pebblestore.ValidateArtifactV3Scenes(m, c.DurationMS); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 // Share the exact native Part contract across primary and managed authoring.
 func artifactV3NativePartsSchema() map[string]any {
-	return map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Complete replacement Parts for explicit whole_project intent only. Preserve continuing IDs; add/remove/rebind meaningful output locators after editing source. Non-Part policy stays immutable. Run build_preview to resolve browser selectors/states and temporal captures before finish_turn.", "items": map[string]any{
+	return map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Complete replacement Parts for initial authoring or explicit whole_project revision intent. Preserve continuing IDs; add/remove/rebind meaningful output locators after editing source. Non-Part policy stays immutable. Run build_preview to resolve browser selectors/states and temporal captures before finish_turn.", "items": map[string]any{
 		"type": "object", "additionalProperties": false, "required": []string{"id", "label", "locator"}, "properties": map[string]any{
 			"id": map[string]any{"type": "string"}, "label": map[string]any{"type": "string"}, "capture_time_ms": map[string]any{"type": "integer", "minimum": 0},
+			"temporal": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"scene_id", "start_ms", "end_ms"}, "properties": map[string]any{"scene_id": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}},
 			"locator": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{
 				"kind": map[string]any{"type": "string", "enum": []string{"file", "selector", "state", "semantic"}}, "path": map[string]any{"type": "string"}, "value": map[string]any{"type": "string"}, "paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			}},
@@ -400,7 +442,7 @@ func parseArtifactV3NativeParts(raw any) ([]pebblestore.ArtifactV3Part, error) {
 // mandatory at the invalidated build/preview gate.
 func (s *ArtifactV3AuthorService) ReconcileParts(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, parts []pebblestore.ArtifactV3Part) error {
 	defer s.lockTurn(g)()
-	if g.Initial || g.RevisionIntent != pebblestore.ArtifactV3RevisionWholeProject {
+	if !g.Initial && g.RevisionIntent != pebblestore.ArtifactV3RevisionWholeProject {
 		return ErrArtifactV3AuthorLocked
 	}
 	state, err := s.state(ctx, p, g, artifactV3ActionReconcile)
@@ -420,7 +462,11 @@ func (s *ArtifactV3AuthorService) ReconcileParts(ctx context.Context, p Artifact
 		return err
 	}
 	var manifest pebblestore.ArtifactV3Manifest
-	if json.Unmarshal(state.base[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil {
+	manifestSource := state.base[pebblestore.ArtifactV3ManifestFilename]
+	if g.Initial {
+		manifestSource = project[pebblestore.ArtifactV3ManifestFilename]
+	}
+	if json.Unmarshal(manifestSource, &manifest) != nil {
 		return ErrArtifactV3AuthorInvalid
 	}
 	manifest.Parts = parts
@@ -910,10 +956,10 @@ func (s *ArtifactV3AuthorService) BuildPreview(ctx context.Context, p ArtifactV3
 	}
 	state.attempt++
 	gate := ArtifactV3AuthorGate{Attempt: state.attempt, ProjectDigest: artifactV3Digest(project)}
-	if g.AnimationProfile != nil || g.OutputRequirements != nil {
+	if g.AnimationProfile != nil || g.OutputRequirements != nil || g.SceneContract != nil {
 		var manifest pebblestore.ArtifactV3Manifest
-		if json.Unmarshal(project[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil || !reflect.DeepEqual(g.AnimationProfile, manifest.AnimationProfile) || !reflect.DeepEqual(g.OutputRequirements, manifest.OutputRequirements) {
-			gate.Diagnostics = append(gate.Diagnostics, ArtifactV3Diagnostic{Stage: "build", Code: "native_policy_mismatch", Message: "Preserve the exact animation_profile and output_requirements from inspect_context ManifestExample/source manifest."})
+		if json.Unmarshal(project[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil || !reflect.DeepEqual(g.AnimationProfile, manifest.AnimationProfile) || !reflect.DeepEqual(g.OutputRequirements, manifest.OutputRequirements) || !reflect.DeepEqual(g.SceneContract, manifest.SceneContract) {
+			gate.Diagnostics = append(gate.Diagnostics, ArtifactV3Diagnostic{Stage: "build", Code: "native_policy_mismatch", Message: "Preserve the exact animation_profile, output_requirements and scene_contract from inspect_context ManifestExample/source manifest."})
 			return s.persistGate(ctx, state, gate)
 		}
 	}
@@ -1081,6 +1127,7 @@ func artifactV3Context(g ArtifactV3AuthorGrant, files map[string][]byte, gate *A
 	out.ManifestExample = pebblestore.ArtifactV3Manifest{
 		SchemaVersion:      pebblestore.ArtifactV3ManifestVersion,
 		AnimationProfile:   g.AnimationProfile,
+		SceneContract:      g.SceneContract,
 		OutputRequirements: g.OutputRequirements,
 		Entrypoint:         "index.html",
 		Parts: []pebblestore.ArtifactV3Part{{

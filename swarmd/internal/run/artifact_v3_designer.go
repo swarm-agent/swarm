@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -105,6 +106,16 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 		return nil, errors.New("managed Designer Artifact V3 author service is unavailable")
 	}
 	requests := make([]tool.ArtifactV3PrepareTurnRequest, len(specs))
+	waveSeed := parent.ID + "\x00" + taskCallID
+	managedCount := 0
+	for _, spec := range specs {
+		if agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+			managedCount++
+			waveSeed += "\x00" + mapString(spec.SourceArguments, "program_id") + ":" + mapString(spec.SourceArguments, "program_job_id")
+		}
+	}
+	waveID := fmt.Sprintf("wave-%x", sha256.Sum256([]byte(waveSeed)))
+	memberIndex := 0
 	for index, spec := range specs {
 		if !agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 			continue
@@ -129,7 +140,9 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 			// accidentally reusing a previous cohort's genesis or candidate slot.
 			artifactCallID += ":program:" + programID + ":job:" + jobID
 		}
+		memberIndex++
 		request := tool.ArtifactV3PrepareTurnRequest{
+			GenerationWaveID: waveID, GenerationIndex: memberIndex, GenerationCount: managedCount,
 			AnimationProfile:   spec.AnimationProfile,
 			OutputRequirements: spec.OutputRequirements,
 			AccountScopeID:     parent.AccountScopeID,
@@ -142,6 +155,13 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 			Initial:            spec.ArtifactV3Source == nil && spec.SourceArtifact == nil,
 			TargetPartIDs:      targetPartIDs,
 			ExpiresAt:          time.Now().Add(2 * time.Hour).UnixMilli(),
+		}
+		if raw, exists := spec.SourceArguments["scene_contract"]; exists {
+			contract, err := tool.ParseArtifactV3SceneContract(raw)
+			if err != nil || spec.AnimationProfile == nil {
+				return nil, errors.New("invalid native scene_contract; requires animation profile and ordered complete scenes")
+			}
+			request.SceneContract = contract
 		}
 		if spec.ArtifactV3Source != nil {
 			if spec.ArtifactV3Source.SessionID != parent.ID {

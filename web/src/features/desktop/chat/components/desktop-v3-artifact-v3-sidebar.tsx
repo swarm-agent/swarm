@@ -22,6 +22,7 @@ export function DesktopV3ArtifactV3Sidebar({ artifacts, loading = false, error =
         <span className="min-w-0 flex-1">
           <span className="block break-words text-[10px] font-semibold">{artifact.label}</span>
           <span className="block text-[9px] text-[var(--app-text-subtle)]">{artifact.turnCount} turns · {artifact.partCount} parts</span>
+          {artifact.generations?.length ? <span className="block text-[10px] text-[var(--app-primary)]">{new Set(artifact.generations.map((member) => member.waveId)).size} generation rounds · {artifact.generations[artifact.generations.length - 1]?.count} sibling options</span> : null}
           {pending.length ? <span className="mt-1 block text-[9px] font-semibold text-[var(--app-primary)]" data-artifact-v3-pending>{pending.length} pending {pending.length === 1 ? 'turn' : 'turns'} · {ready ? `${ready} ${ready === 1 ? 'option' : 'options'} to review` : 'changes in progress'}<span className="block font-normal">{ready ? 'Open pending changes →' : 'Open turn progress →'}</span></span> : null}
         </span>
         <span className="shrink-0 rounded-full bg-[var(--app-surface-active)] px-1.5 py-0.5 text-[8px] font-semibold">{ready ? 'Review' : artifactStatusLabel(artifact)}</span>

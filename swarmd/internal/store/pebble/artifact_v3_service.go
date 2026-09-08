@@ -77,6 +77,9 @@ func NewArtifactV3Service(sessions *SessionStore, root string, limits ArtifactV3
 }
 
 func (s *ArtifactV3Service) Create(ctx context.Context, input ArtifactV3CreateInput) (ArtifactV3Projection, error) {
+	if err := validateArtifactV3SceneEvidence(input.Project, input.Preview, s.limits); err != nil {
+		return ArtifactV3Projection{}, err
+	}
 	if input.Owner.AccountScopeID == "" || input.Owner.UserID == "" || input.Owner.SessionID == "" || input.ArtifactID == "" || input.TransactionID == "" {
 		return ArtifactV3Projection{}, ErrArtifactV3Invalid
 	}
@@ -180,6 +183,9 @@ func (s *ArtifactV3Service) OpenTurn(ctx context.Context, input ArtifactV3OpenTu
 }
 
 func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV3SubmitCandidateInput) (ArtifactV3Projection, error) {
+	if err := validateArtifactV3SceneEvidence(input.Project, input.Preview, s.limits); err != nil {
+		return ArtifactV3Projection{}, err
+	}
 	stored, found, err := s.sessions.GetArtifactV3Repository(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID)
 	if err != nil {
 		return ArtifactV3Projection{}, err
@@ -190,7 +196,7 @@ func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV
 	if previous, found, err := s.sessions.GetArtifactV3Candidate(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID, input.TurnID, input.CandidateID); err != nil {
 		return ArtifactV3Projection{}, err
 	} else if found {
-		if previous.TransactionID != input.TransactionID || previous.Build != input.Build || previous.Preview != input.Preview || (previous.Status != "ready" && previous.Status != "selected") {
+		if previous.TransactionID != input.TransactionID || !reflect.DeepEqual(previous.Build, input.Build) || !reflect.DeepEqual(previous.Preview, input.Preview) || (previous.Status != "ready" && previous.Status != "selected") {
 			return ArtifactV3Projection{}, ErrArtifactV3Conflict
 		}
 		repo, err := s.open(ctx, input.Owner, input.ArtifactID)
@@ -430,7 +436,7 @@ func (s *ArtifactV3Service) revisionProjection(ctx context.Context, repository *
 	}
 	parts := make([]ArtifactV3PartProjection, 0, len(revision.Manifest.Parts))
 	for _, part := range revision.Manifest.Parts {
-		parts = append(parts, ArtifactV3PartProjection{ID: part.ID, Label: part.Label, LocatorKind: part.Locator.Kind, Path: part.Locator.Path, Value: part.Locator.Value, Paths: append([]string(nil), part.Locator.Paths...)})
+		parts = append(parts, ArtifactV3PartProjection{Temporal: part.Temporal, CaptureTimeMS: part.PreviewTimeMS(), ID: part.ID, Label: part.Label, LocatorKind: part.Locator.Kind, Path: part.Locator.Path, Value: part.Locator.Value, Paths: append([]string(nil), part.Locator.Paths...)})
 	}
 	return ArtifactV3RevisionProjection{ArtifactID: artifactID, RepositoryID: artifactID, OwnerSessionID: owner.SessionID, CommitOID: revision.CommitOID, TreeOID: revision.TreeOID, ManifestBlobOID: revision.ManifestBlobOID, ParentCommitOIDs: append([]string(nil), revision.Parents...), ChangedFiles: changed, Parts: parts, Build: build, Preview: preview, FileCount: revision.FileCount, TreeBytes: revision.TreeBytes, CreatedAt: now}, nil
 }
@@ -578,4 +584,31 @@ func (s *ArtifactV3Service) ResolveSelectedSource(owner ArtifactV3Owner, artifac
 		}
 	}
 	return source, nil
+}
+
+// Bind every declared scene to ordered trusted evidence before any Git mutation.
+func validateArtifactV3SceneEvidence(project ArtifactV3Project, evidence ArtifactV3EvidenceProjection, limits ArtifactV3Limits) error {
+	m, err := ValidateArtifactV3Project(project, limits)
+	if err != nil {
+		return err
+	}
+	index := 0
+	for _, p := range m.Parts {
+		if p.Temporal == nil {
+			continue
+		}
+		if index >= len(evidence.Scenes) {
+			return ErrArtifactV3Integrity
+		}
+		e := evidence.Scenes[index]
+		digest, err := hex.DecodeString(e.DigestSHA256)
+		if e.PartID != p.ID || e.SampleMS != *p.PreviewTimeMS() || err != nil || len(digest) != sha256.Size {
+			return ErrArtifactV3Integrity
+		}
+		index++
+	}
+	if index != len(evidence.Scenes) {
+		return ErrArtifactV3Integrity
+	}
+	return nil
 }

@@ -101,7 +101,26 @@ type ArtifactV3Part struct {
 	Label   string            `json:"label"`
 	Locator ArtifactV3Locator `json:"locator"`
 	// CaptureTimeMS selects a deterministic temporal preview; nil retains static visibility checks.
-	CaptureTimeMS *int64 `json:"capture_time_ms,omitempty"`
+	CaptureTimeMS *int64                   `json:"capture_time_ms,omitempty"`
+	Temporal      *ArtifactV3TemporalScene `json:"temporal,omitempty"`
+}
+
+// Temporal scenes share the complete project's playhead and may share a selector.
+type ArtifactV3TemporalScene struct {
+	SceneID string `json:"scene_id"`
+	StartMS int64  `json:"start_ms"`
+	EndMS   int64  `json:"end_ms"`
+}
+
+func (p ArtifactV3Part) PreviewTimeMS() *int64 {
+	if p.CaptureTimeMS != nil {
+		return p.CaptureTimeMS
+	}
+	if p.Temporal == nil {
+		return nil
+	}
+	t := p.Temporal.StartMS + (p.Temporal.EndMS-p.Temporal.StartMS)/2
+	return &t
 }
 
 type ArtifactV3Manifest struct {
@@ -110,6 +129,48 @@ type ArtifactV3Manifest struct {
 	Entrypoint         string                             `json:"entrypoint"`
 	Parts              []ArtifactV3Part                   `json:"parts"`
 	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	SceneContract      *ArtifactV3SceneContract           `json:"scene_contract,omitempty"`
+}
+
+// SceneContract is explicit authoring policy, not inferred from duration or prose.
+type ArtifactV3SceneContract struct {
+	DurationMS int64                     `json:"duration_ms"`
+	Scenes     []ArtifactV3TemporalScene `json:"scenes"`
+}
+
+// ValidateArtifactV3Scenes validates ordered, complete chapters and required policy.
+// Duration zero defers only the HTML duration comparison to the trusted preview gate.
+func ValidateArtifactV3Scenes(m ArtifactV3Manifest, duration int64) error {
+	var previous int64
+	count := 0
+	for _, p := range m.Parts {
+		s := p.Temporal
+		if s == nil {
+			continue
+		}
+		if m.AnimationProfile == nil || s.SceneID != p.ID || !artifactV3IDPattern.MatchString(s.SceneID) || s.StartMS != previous || s.EndMS <= s.StartMS || (duration > 0 && s.EndMS > duration) || p.Locator.Kind != "selector" || p.Locator.Path != m.Entrypoint || strings.TrimSpace(p.Locator.Value) == "" {
+			return ErrArtifactV3Invalid
+		}
+		if t := p.CaptureTimeMS; t != nil && (*t < s.StartMS || *t >= s.EndMS) {
+			return ErrArtifactV3Invalid
+		}
+		if c := m.SceneContract; c != nil {
+			if count >= len(c.Scenes) || c.Scenes[count] != *s {
+				return ErrArtifactV3Invalid
+			}
+		}
+		previous = s.EndMS
+		count++
+	}
+	if count > 256 || (count > 0 && duration > 0 && previous != duration) {
+		return ErrArtifactV3Invalid
+	}
+	if c := m.SceneContract; c != nil {
+		if c.DurationMS <= 0 || len(c.Scenes) == 0 || count != len(c.Scenes) || previous != c.DurationMS || (duration > 0 && duration != c.DurationMS) {
+			return ErrArtifactV3Invalid
+		}
+	}
+	return nil
 }
 
 // ArtifactV3Project is always a complete conventional project tree.

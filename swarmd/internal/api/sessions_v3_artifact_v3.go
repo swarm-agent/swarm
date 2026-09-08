@@ -60,22 +60,37 @@ type ArtifactV3DraftGate struct {
 	Diagnostics []ArtifactV3Diagnostic `json:"diagnostics"`
 }
 
+type ArtifactV3GenerationSibling struct {
+	pebblestore.ArtifactV3GenerationMember
+	Status        string `json:"status"`
+	CommitOID     string `json:"commit_oid,omitempty"`
+	ProjectionSeq uint64 `json:"projection_seq"`
+}
+
+type ArtifactV3GenerationGroup struct {
+	WaveID  string                        `json:"wave_id"`
+	Count   int                           `json:"count"`
+	Members []ArtifactV3GenerationSibling `json:"members"`
+}
+
 type ArtifactV3Artifact struct {
-	CurrentDraft    *ArtifactV3DraftSummary      `json:"current_draft,omitempty"`
-	Label           string                       `json:"label"`
-	ID              string                       `json:"id"`
-	OwnerSessionID  string                       `json:"owner_session_id"`
-	IntentReference string                       `json:"intent_reference,omitempty"`
-	ArtifactRef     string                       `json:"artifact_ref"`
-	Status          string                       `json:"status"`
-	Revision        uint64                       `json:"revision"`
-	PartCount       int                          `json:"part_count"`
-	Parts           []pebblestore.ArtifactV3Part `json:"parts"`
-	Head            *ArtifactV3Revision          `json:"head,omitempty"`
-	CurrentRevision *ArtifactV3Revision          `json:"current_revision,omitempty"`
-	Revisions       []ArtifactV3Revision         `json:"revisions,omitempty"`
-	Turns           []ArtifactV3Turn             `json:"turns,omitempty"`
-	UpdatedAt       int64                        `json:"updated_at"`
+	Generations      []pebblestore.ArtifactV3GenerationMember `json:"generations,omitempty"`
+	GenerationGroups []ArtifactV3GenerationGroup              `json:"generation_groups,omitempty"`
+	CurrentDraft     *ArtifactV3DraftSummary                  `json:"current_draft,omitempty"`
+	Label            string                                   `json:"label"`
+	ID               string                                   `json:"id"`
+	OwnerSessionID   string                                   `json:"owner_session_id"`
+	IntentReference  string                                   `json:"intent_reference,omitempty"`
+	ArtifactRef      string                                   `json:"artifact_ref"`
+	Status           string                                   `json:"status"`
+	Revision         uint64                                   `json:"revision"`
+	PartCount        int                                      `json:"part_count"`
+	Parts            []pebblestore.ArtifactV3Part             `json:"parts"`
+	Head             *ArtifactV3Revision                      `json:"head,omitempty"`
+	CurrentRevision  *ArtifactV3Revision                      `json:"current_revision,omitempty"`
+	Revisions        []ArtifactV3Revision                     `json:"revisions,omitempty"`
+	Turns            []ArtifactV3Turn                         `json:"turns,omitempty"`
+	UpdatedAt        int64                                    `json:"updated_at"`
 }
 
 type ArtifactV3Revision struct {
@@ -108,12 +123,13 @@ type ArtifactV3BuildEvidence struct {
 }
 
 type ArtifactV3ValidationEvidence struct {
-	ID              string                 `json:"id"`
-	Status          string                 `json:"status"`
-	CommitOID       string                 `json:"commit_oid"`
-	TreeOID         string                 `json:"tree_oid"`
-	EvidenceDigests []string               `json:"evidence_digests,omitempty"`
-	Diagnostics     []ArtifactV3Diagnostic `json:"diagnostics,omitempty"`
+	Scenes          []pebblestore.ArtifactV3SceneEvidence `json:"scenes,omitempty"`
+	ID              string                                `json:"id"`
+	Status          string                                `json:"status"`
+	CommitOID       string                                `json:"commit_oid"`
+	TreeOID         string                                `json:"tree_oid"`
+	EvidenceDigests []string                              `json:"evidence_digests,omitempty"`
+	Diagnostics     []ArtifactV3Diagnostic                `json:"diagnostics,omitempty"`
 }
 
 type ArtifactV3Diagnostic struct {

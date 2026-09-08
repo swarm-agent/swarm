@@ -108,6 +108,13 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	if request.Initial && (request.RevisionIntent != "" || len(request.TargetPartIDs) != 0) {
 		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 	}
+	if request.SceneContract != nil {
+		contract, err := tool.ParseArtifactV3SceneContract(request.SceneContract)
+		if err != nil || (request.Initial && request.AnimationProfile == nil) {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		request.SceneContract = contract
+	}
 	owner := pebblestore.ArtifactV3Owner{AccountScopeID: strings.TrimSpace(request.AccountScopeID), UserID: strings.TrimSpace(request.UserID), SessionID: strings.TrimSpace(request.OwnerSessionID)}
 	artifactID := strings.TrimSpace(request.ArtifactID)
 	if request.Initial {
@@ -144,6 +151,10 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		if request.AnimationProfile != nil && (source.Manifest.AnimationProfile == nil || request.AnimationProfile.ProfileID != source.Manifest.AnimationProfile.ProfileID) {
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 		}
+		if request.SceneContract != nil && !reflect.DeepEqual(request.SceneContract, source.Manifest.SceneContract) {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		request.SceneContract = source.Manifest.SceneContract
 		request.AnimationProfile = source.Manifest.AnimationProfile
 		if request.OutputRequirements != nil && !reflect.DeepEqual(request.OutputRequirements, source.Manifest.OutputRequirements) {
 			// An omitted native output policy already renders at landscape_video's
@@ -182,6 +193,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	grantID := artifactV3StableID("grant", artifactID, turnID, candidateID)
 	grant := tool.ArtifactV3AuthorGrant{
 		AnimationProfile:    request.AnimationProfile,
+		SceneContract:       request.SceneContract,
 		OutputRequirements:  request.OutputRequirements,
 		RevisionIntent:      request.RevisionIntent,
 		SourceProjectionSeq: request.ProjectionSeq,
@@ -191,6 +203,12 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		AllowedActions: []string{"inspect_context", "list_files", "read_file", "create_file", "edit_file", "rename_file", "delete_file", "diff", "build_preview", "finish_turn"},
 		PolicyRevision: strings.TrimSpace(request.PolicyRevision), ExpiresAt: request.ExpiresAt,
 		Limits: tool.ArtifactV3AuthorLimits{MaxFileBytes: 64 << 20, MaxTreeBytes: 256 << 20, MaxFiles: 4096, MaxPathBytes: 512, MaxPathDepth: 32, MaxListPage: 500, MaxReadBytes: 1 << 20, MaxDiffEntries: 1000},
+	}
+	if request.GenerationWaveID != "" {
+		if request.GenerationIndex < 1 || request.GenerationCount < request.GenerationIndex || request.GenerationCount > 256 || len(request.GenerationWaveID) > 128 {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		grant.Generation = &pebblestore.ArtifactV3GenerationMember{WaveID: request.GenerationWaveID, Index: request.GenerationIndex, Count: request.GenerationCount, ArtifactID: artifactID, TurnID: turnID, CandidateID: candidateID, BaseCommitOID: grant.BaseCommitOID, SourceProjectionSeq: request.ProjectionSeq}
 	}
 	if grant.PolicyRevision == "" || grant.ExpiresAt <= time.Now().UnixMilli() {
 		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
@@ -328,6 +346,7 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 			previewDigest = request.Preview.EvidenceDigests[0]
 		}
 		preview := artifactV3Evidence(request.Preview.ID, "succeeded", "", previewDigest)
+		preview.Scenes = request.Preview.Scenes
 		created, err := a.service.Create(ctx, pebblestore.ArtifactV3CreateInput{Owner: owner.Owner, ArtifactID: request.ArtifactID, TransactionID: transactionID, Project: project, Message: owner.Prompt, Build: build, Preview: preview})
 		if err != nil {
 			return tool.ArtifactV3Revision{}, err
@@ -355,6 +374,7 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 		previewDigest = request.Preview.EvidenceDigests[0]
 	}
 	preview := artifactV3Evidence(request.Preview.ID, "succeeded", candidate.CommitOID, previewDigest)
+	preview.Scenes = request.Preview.Scenes
 	committed, err := a.service.SubmitCandidate(ctx, pebblestore.ArtifactV3SubmitCandidateInput{Owner: owner.Owner, ArtifactID: request.ArtifactID, TurnID: request.TurnID, CandidateID: request.CandidateID, TransactionID: transactionID, ExpectedHead: request.BaseCommitOID, Project: project, Message: owner.Prompt, Build: build, Preview: preview})
 	if err != nil {
 		return tool.ArtifactV3Revision{}, err
@@ -497,6 +517,7 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: missing}, nil
 	}
 	evidenceDigests := make([]string, 0, len(results))
+	var sceneEvidence []pebblestore.ArtifactV3SceneEvidence
 	for index, result := range results {
 		if result.StateID != capture.StateIDs[index] || len(result.PNG) == 0 {
 			return tool.ArtifactV3PreviewResult{}, errors.New("temporal preview evidence is incomplete")
@@ -504,6 +525,11 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 		sum := sha256.Sum256(result.PNG)
 		evidenceDigests = append(evidenceDigests, hex.EncodeToString(sum[:]))
 		evidenceDigests = append(evidenceDigests, result.SectionDigests...)
+		for _, part := range manifest.Parts {
+			if part.Temporal != nil && part.ID == result.StateID {
+				sceneEvidence = append(sceneEvidence, pebblestore.ArtifactV3SceneEvidence{PartID: part.ID, SampleMS: *part.PreviewTimeMS(), DigestSHA256: hex.EncodeToString(sum[:])})
+			}
+		}
 	}
 	digest := sha256.Sum256(results[0].PNG)
 	digestHex := hex.EncodeToString(digest[:])
@@ -514,7 +540,7 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	if err := os.WriteFile(filepath.Join(a.evidenceRoot, id+".png"), results[0].PNG, 0o600); err != nil {
 		return tool.ArtifactV3PreviewResult{}, err
 	}
-	result := tool.ArtifactV3PreviewResult{ID: id, Status: "valid", EvidenceDigests: evidenceDigests}
+	result := tool.ArtifactV3PreviewResult{ID: id, Status: "valid", EvidenceDigests: evidenceDigests, Scenes: sceneEvidence}
 	a.mu.Lock()
 	a.previews[id] = result
 	a.mu.Unlock()
@@ -542,17 +568,24 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 			return request, err
 		}
 	}
+	if err := pebblestore.ValidateArtifactV3Scenes(manifest, durationMS); err != nil {
+		return request, err
+	}
 	times := map[string]int64{}
+	scenes := map[string]string{}
 	request.StateRequiredSelectors = map[string][]string{}
 	for _, part := range manifest.Parts {
-		if part.CaptureTimeMS != nil {
-			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.CaptureTimeMS < 0 || *part.CaptureTimeMS > durationMS {
+		if part.PreviewTimeMS() != nil {
+			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.PreviewTimeMS() < 0 || *part.PreviewTimeMS() > durationMS {
 				return request, errors.New("invalid native temporal Part capture contract")
 			}
 			if len(times) >= htmlcapture.MaxStates {
 				return request, errors.New("native temporal preview exceeds bounded state count")
 			}
-			times[part.ID] = *part.CaptureTimeMS
+			times[part.ID] = *part.PreviewTimeMS()
+			if part.Temporal != nil {
+				scenes[part.ID] = part.Temporal.SceneID
+			}
 			request.StateRequiredSelectors[part.ID] = []string{part.Locator.Value}
 		} else if part.Locator.Kind == "selector" && part.Locator.Path == manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
 			request.RequiredSelectors = append(request.RequiredSelectors, part.Locator.Value)
@@ -564,7 +597,7 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 	} else {
 		request.StateIDs = nil
 		for _, part := range manifest.Parts {
-			if part.CaptureTimeMS != nil {
+			if part.PreviewTimeMS() != nil {
 				request.StateIDs = append(request.StateIDs, part.ID)
 			}
 		}
@@ -596,7 +629,12 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 	if err != nil {
 		return request, err
 	}
-	bridge := `<script data-swarm-capture-ui>(()=>{const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("temporal Part requires swarm.animation/v1 ready/seek");await api.ready();if(typeof api.pause==="function")await api.pause();const ack=await api.seek(times[id]);if(!ack||ack.time_ms!==times[id])throw Error("temporal seek acknowledgement mismatch");document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
+	sceneJSON, _ := json.Marshal(scenes)
+	_, sceneFPS, _, timingErr := htmlcapture.AnimationTiming(files[manifest.Entrypoint])
+	if timingErr != nil {
+		return request, timingErr
+	}
+	bridge := `<script data-swarm-capture-ui>(()=>{const duration=` + fmt.Sprint(durationMS) + `,fps=` + fmt.Sprint(sceneFPS) + `;const scenes=` + string(sceneJSON) + `;const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("temporal Part requires swarm.animation/v1 ready/seek");const ready=await api.ready();if(scenes[id]&&(!ready||ready.duration_ms!==duration||ready.fps!==fps))throw Error("scene ready timing mismatch");if(typeof api.pause==="function")await api.pause();const ack=await api.seek(times[id]);if(!ack||ack.time_ms!==times[id])throw Error("temporal seek acknowledgement mismatch");if(scenes[id]&&ack.scene_id!==scenes[id])throw Error("temporal scene acknowledgement mismatch");document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
 	body := request.Files[manifest.Entrypoint]
 	if index := strings.LastIndex(strings.ToLower(string(body)), "</body>"); index >= 0 {
 		request.Files[manifest.Entrypoint] = []byte(string(body[:index]) + bridge + string(body[index:]))
@@ -718,7 +756,12 @@ func (a *artifactV3RuntimeAdapter) GetArtifact(ctx context.Context, principal ap
 	if err != nil || !ok || repository.OwnerSessionID != sessionID {
 		return api.ArtifactV3Artifact{}, pebblestore.ErrArtifactV3NotFound
 	}
-	return a.artifact(ctx, principal, repository)
+	result, err := a.artifact(ctx, principal, repository)
+	if err != nil {
+		return result, err
+	}
+	result.GenerationGroups, err = a.generationGroups(principal, repository)
+	return result, err
 }
 
 func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) (api.ArtifactV3Artifact, error) {
@@ -727,7 +770,7 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 		return api.ArtifactV3Artifact{}, err
 	}
 	if repository.HeadCommitOID == "" {
-		return api.ArtifactV3Artifact{ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
+		return api.ArtifactV3Artifact{Generations: repository.Generations, ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
 	}
 	revision, err := a.revision(ctx, principal, repository, repository.HeadCommitOID)
 	if err != nil {
@@ -745,7 +788,7 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 	if err != nil {
 		return api.ArtifactV3Artifact{}, err
 	}
-	return api.ArtifactV3Artifact{CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
+	return api.ArtifactV3Artifact{Generations: repository.Generations, CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ListRevisions(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, cursor string, limit int) (api.ArtifactV3RevisionPage, error) {
@@ -915,7 +958,7 @@ func artifactV3APIValidationEvidence(e pebblestore.ArtifactV3EvidenceProjection,
 	if e.Reference == "" || e.Status != "succeeded" || e.CommitOID == "" || e.DigestSHA256 == "" {
 		return nil
 	}
-	return &api.ArtifactV3ValidationEvidence{ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}}
+	return &api.ArtifactV3ValidationEvidence{Scenes: append([]pebblestore.ArtifactV3SceneEvidence(nil), e.Scenes...), ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}}
 }
 
 func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3OpenTurnRequest) (api.ArtifactV3Turn, error) {

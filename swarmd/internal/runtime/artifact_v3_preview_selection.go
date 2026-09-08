@@ -21,13 +21,14 @@ func injectArtifactV3PreviewSelection(body []byte, revision api.ArtifactV3Revisi
 	type target struct {
 		ID       string `json:"id"`
 		Selector string `json:"selector"`
+		TimeMS   *int64 `json:"time_ms,omitempty"`
 	}
 	parts := make([]target, 0)
 	ids := make([]string, 0, len(revision.Manifest.Parts))
 	for _, part := range revision.Manifest.Parts {
 		ids = append(ids, part.ID)
 		if part.Locator.Kind == "selector" && part.Locator.Path == revision.Manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
-			parts = append(parts, target{part.ID, part.Locator.Value})
+			parts = append(parts, target{part.ID, part.Locator.Value, part.PreviewTimeMS()})
 		}
 	}
 	config, _ := json.Marshal(struct {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, ChevronRight, FileDiff, GitCommitHorizontal, Loader2, MessageSquarePlus, RefreshCw, Search, X } from 'lucide-react'
 
+import { readNativeArtifactNavigation, writeNativeArtifactNavigation } from '../../session-v3/artifact-v3-navigation'
 import { cn } from '../../../../lib/cn'
 import {
   artifactStatusLabel,
@@ -24,6 +25,7 @@ export interface DesktopV3ArtifactV3StudioProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onIterate?: (selection: import('../../session-v3/artifact-api').DesktopV3ArtifactMessageSelection) => void | Promise<void>
+  onNavigate?: (artifact: DesktopV3NativeArtifactSummary) => void
   onRefresh?: () => void | Promise<void>
   onRepairDraft?: (artifact: DesktopV3NativeArtifactSummary) => void
 }
@@ -44,9 +46,11 @@ export function DesktopV3ArtifactV3Studio(props: DesktopV3ArtifactV3StudioProps)
   return <NativeArtifactStudio key={`${props.artifact?.ownerSessionId}:${props.artifact?.artifactId}:${props.open}`} {...props} />
 }
 
-function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefresh, onRepairDraft }: DesktopV3ArtifactV3StudioProps) {
+function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefresh, onRepairDraft, onNavigate }: DesktopV3ArtifactV3StudioProps) {
   const [studio, setStudio] = useState<DesktopV3NativeArtifactStudio | null>(null)
-  const [selectedRevisionRef, setSelectedRevisionRef] = useState('')
+  const initialNavigation = readNativeArtifactNavigation(typeof window === 'undefined' ? '' : window.location.search)
+  const [waveId, setWaveId] = useState(initialNavigation.artifactId === artifact?.artifactId ? initialNavigation.waveId : '')
+  const [selectedRevisionRef, setSelectedRevisionRef] = useState(initialNavigation.artifactId === artifact?.artifactId ? initialNavigation.revisionRef : '')
   const [selectedPartIds, setSelectedPartIds] = useState<string[]>([])
   const [focusedPartId, setFocusedPartId] = useState('')
   const [partsOpen, setPartsOpen] = useState(false)
@@ -58,7 +62,7 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   const [error, setError] = useState('')
   const previewRef = useRef<HTMLIFrameElement>(null)
   const loadRequest = useRef<AbortController | null>(null)
-  const explicitlySelectedRevision = useRef(false)
+  const explicitlySelectedRevision = useRef(Boolean(selectedRevisionRef))
   useEffect(() => () => loadRequest.current?.abort(), [])
 
   const load = useCallback(async () => {
@@ -96,6 +100,24 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   }, [open, artifact, load])
 
   useDesktopV3OpenArtifactCatalogRefresh(open, load)
+  useEffect(() => {
+    if (open && artifact) writeNativeArtifactNavigation({ artifactId: artifact.artifactId, revisionRef: selectedRevisionRef, waveId })
+  }, [open, artifact?.artifactId, selectedRevisionRef, waveId])
+  const close = () => { writeNativeArtifactNavigation(null); onOpenChange(false) }
+  const groups = studio?.artifact.generationGroups ?? []
+  const group = groups.find((entry) => entry.waveId === waveId) ?? groups[groups.length - 1]
+  const navigateMember = (member: NonNullable<typeof group>['members'][number]) => {
+    if (!artifact || !group || !member.commitOid || !['ready', 'selected'].includes(member.status)) return
+    const revisionRef = `revision-${member.commitOid}`
+    setWaveId(group.waveId)
+    if (member.artifactId === artifact.artifactId) {
+      explicitlySelectedRevision.current = true
+      setSelectedRevisionRef(revisionRef)
+    } else if (onNavigate) {
+      writeNativeArtifactNavigation({ artifactId: member.artifactId, revisionRef, waveId: group.waveId })
+      onNavigate({ ...artifact, artifactId: member.artifactId, artifactRef: member.artifactId, label: `Option ${member.index}`, head: null })
+    }
+  }
 
   const selectedRevision = useMemo(() => studio?.revisions.find((revision) => revision.revisionRef === selectedRevisionRef) ?? null, [selectedRevisionRef, studio])
   const pendingTurns = useMemo(() => pendingDesktopV3NativeArtifactTurns(studio?.turns ?? []), [studio])
@@ -138,6 +160,10 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   useEffect(() => {
     if (!open || !previewURL || previewLoading) return
     const receive = (event: MessageEvent) => {
+      if (event.source === previewRef.current?.contentWindow && event.data?.protocol === artifactV3SelectionProtocol && event.data?.revision_ref === selectedRevisionRef && event.data?.type === 'scene-seek-error' && visibleParts.some((part) => part.temporal && part.id === event.data.part_id)) {
+        setError('The animation did not acknowledge the requested scene time.')
+        return
+      }
       const message = nativeArtifactPreviewSelectionEvent(event, previewRef.current?.contentWindow, selectedRevisionRef, visibleParts)
       if (!message) return
       if (message.type === 'selection-ready') syncPreviewSelection()
@@ -156,13 +182,14 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
     setFocusedPartId(partId)
   }
 
-  const iterate = async (partIds: readonly string[]) => {
+  const iterate = async (partIds: readonly string[], referenceOnly = false) => {
     if (!studio || !onIterate || historical || !selectedRevision || selectedRevision.revisionRef !== studio.artifact.head?.revisionRef) return
     try {
       setBusy('iterate')
       setError('')
-      await onIterate(desktopV3NativeArtifactIterationSelection(studio, partIds))
-      onOpenChange(false)
+      const selection = desktopV3NativeArtifactIterationSelection(studio, partIds)
+      await onIterate(referenceOnly ? { ...selection, pending_request: 'Use these exact native source Parts as a style/example reference only. Do not revise or select the source unless separately requested.' } : selection)
+      close()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not start an Artifact turn')
     } finally {
@@ -200,11 +227,16 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   return <div className="fixed inset-0 z-[105] flex min-h-0 flex-col bg-[var(--app-bg)] text-[var(--app-text)]" role="dialog" aria-modal="true" aria-label="Artifact Studio" data-testid="desktop-artifact-v3-studio">
     <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-4">
       <div className="min-w-0"><div className="flex items-center gap-2"><GitCommitHorizontal className="size-4 text-[var(--app-primary)]" /><h1 className="truncate text-sm font-semibold">{studio?.artifact.label || artifact.label}</h1><span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[9px] font-semibold text-[var(--app-primary)]">Artifact</span></div><p className="truncate text-[10px] text-[var(--app-text-subtle)]">{artifactStatusLabel(studio?.artifact ?? artifact)} · {(studio?.artifact ?? artifact).head ? 'Last ready preview available' : 'Your artifact will appear here as soon as its preview is ready'}</p></div>
-      <div className="flex items-center gap-1"><button type="button" className="rounded border border-[var(--app-border)] px-2 py-1 text-xs lg:hidden" aria-controls="native-artifact-parts" aria-expanded={partsOpen} onClick={() => setPartsOpen((value) => !value)}>Parts</button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]" onClick={() => void load()} aria-label="Refresh Artifact Studio"><RefreshCw className={cn('size-4', loading && 'animate-spin')} /></button><button type="button" className="grid size-8 place-items-center rounded-lg hover:bg-[var(--app-surface-hover)]" onClick={() => onOpenChange(false)} aria-label="Close Artifact Studio"><X className="size-4" /></button></div>
+      <div className="flex items-center gap-1"><button type="button" className="rounded border border-[var(--app-border)] px-2 py-1 text-xs lg:hidden" aria-controls="native-artifact-parts" aria-expanded={partsOpen} onClick={() => setPartsOpen((value) => !value)}>Parts</button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]" onClick={() => void load()} aria-label="Refresh Artifact Studio"><RefreshCw className={cn('size-4', loading && 'animate-spin')} /></button><button type="button" className="grid size-8 place-items-center rounded-lg hover:bg-[var(--app-surface-hover)]" onClick={close} aria-label="Close Artifact Studio"><X className="size-4" /></button></div>
     </header>
     {loading && !studio ? <div className="grid flex-1 place-items-center"><Loader2 className="size-6 animate-spin text-[var(--app-primary)]" /></div> : studio ? <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] lg:grid-cols-[280px_minmax(0,1fr)_320px] lg:grid-rows-1" data-artifact-v3-studio>
       <aside id="native-artifact-parts" className={cn('min-h-0 overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 lg:static lg:block', partsOpen ? 'absolute inset-y-14 left-0 z-30 w-72 shadow-xl' : 'hidden')} aria-label="Artifact parts and history">
-        <section><div className="flex items-center justify-between"><h2 className="text-xs font-semibold">Parts</h2><span className="text-[9px] text-[var(--app-text-subtle)]">{visibleParts.length}</span></div><p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">Click sections or toggle Parts to select several, then request changes.</p><p className="mt-1 text-[10px]" role="status">{selectedPartIds.length} selected</p><label className="relative mt-2 block"><Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-[var(--app-text-subtle)]" /><input value={partQuery} onChange={(event) => setPartQuery(event.target.value)} className="h-8 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] pl-7 pr-2 text-[10px]" placeholder="Search parts" aria-label="Search Artifact parts" /></label><div className="mt-2 max-h-[42vh] space-y-1 overflow-y-auto" data-artifact-v3-part-navigator>{filteredParts.map((part) => { const selected = selectedPartIds.includes(part.id); return <button key={part.id} type="button" onClick={() => focusPart(part.id)} aria-pressed={selected} className={cn('w-full rounded-lg border px-2.5 py-2 text-left', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} data-artifact-v3-part={part.id}><span className="block truncate text-[10px] font-semibold">{part.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{part.locator.kind} · {part.locator.path || part.locator.value || `${part.locator.paths.length} source files`}</span></button>})}</div>{onIterate ? <button type="button" className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md py-2 bg-[var(--app-primary)] px-2 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(busy) || historical || !studio.artifact.head || !selectedRevision} title={historical ? 'Select this candidate as head before iterating its Parts' : undefined} onClick={() => void iterate(selectedPartIds)} data-artifact-v3-iterate><MessageSquarePlus className="size-3" />{selectedPartIds.length ? `Request changes · ${selectedPartIds.length} selected` : 'Remix whole project'}</button> : null}</section>
+        {group ? <nav aria-label="Generation siblings and iterations" className="mb-4 space-y-2">
+          <label className="block text-xs">Generation round<select aria-label="Generation round" className="mt-1 w-full rounded border p-2 bg-[var(--app-bg)]" value={group.waveId} onChange={(event) => setWaveId(event.target.value)}>{groups.map((entry, index) => <option key={entry.waveId} value={entry.waveId}>Round {index + 1} · {entry.count} options</option>)}</select></label>
+          {group.members.map((member) => <button key={member.index} type="button" className="block w-full rounded border p-2 text-left text-xs disabled:opacity-50" aria-current={member.artifactId === artifact.artifactId && member.commitOid === selectedRevision?.commitOid ? 'true' : undefined} disabled={!['ready', 'selected'].includes(member.status) || !member.commitOid || (member.artifactId !== artifact.artifactId && !onNavigate)} onClick={() => navigateMember(member)}>Option {member.index} · {member.status}</button>)}
+          {group.members.length < group.count ? <p role="status" className="text-xs">{group.count - group.members.length} options awaiting allocation</p> : null}
+        </nav> : null}
+        <section><div className="flex items-center justify-between"><h2 className="text-xs font-semibold">Parts</h2><span className="text-[9px] text-[var(--app-text-subtle)]">{visibleParts.length}</span></div><p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">Click sections or toggle Parts to select several, then request changes.</p><p className="mt-1 text-[10px]" role="status">{selectedPartIds.length} selected</p><label className="relative mt-2 block"><Search className="absolute left-2 top-1/2 size-3 -translate-y-1/2 text-[var(--app-text-subtle)]" /><input value={partQuery} onChange={(event) => setPartQuery(event.target.value)} className="h-8 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] pl-7 pr-2 text-[10px]" placeholder="Search parts" aria-label="Search Artifact parts" /></label><div className="mt-2 max-h-[42vh] space-y-1 overflow-y-auto" data-artifact-v3-part-navigator>{filteredParts.map((part) => { const selected = selectedPartIds.includes(part.id); return <button key={part.id} type="button" onClick={() => focusPart(part.id)} aria-pressed={selected} className={cn('w-full rounded-lg border px-2.5 py-2 text-left', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} data-artifact-v3-part={part.id}><span className="block truncate text-[10px] font-semibold">{part.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{part.temporal ? `Scene · ${part.temporal.startMs / 1000}–${part.temporal.endMs / 1000}s` : `${part.locator.kind} · ${part.locator.path || part.locator.value || `${part.locator.paths.length} source files`}`}</span></button>})}</div>{onIterate ? <button type="button" className="mt-2 inline-flex min-h-8 w-full items-center justify-center gap-1 rounded-md py-2 bg-[var(--app-primary)] px-2 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(busy) || historical || !studio.artifact.head || !selectedRevision} title={historical ? 'Select this candidate as head before iterating its Parts' : undefined} onClick={() => void iterate(selectedPartIds)} data-artifact-v3-iterate><MessageSquarePlus className="size-3" />{selectedPartIds.length ? `Request changes · ${selectedPartIds.length} selected` : 'Remix whole project'}</button> : null}{onIterate ? <button type="button" className="mt-2 w-full rounded border p-2 text-xs disabled:opacity-50" disabled={Boolean(busy) || historical || !studio.artifact.head || !selectedRevision} onClick={() => void iterate(selectedPartIds, true)}>Use as style/example reference</button> : null}</section>
         <section className="mt-5"><h2 className="text-xs font-semibold">Revision history</h2><p className="mt-0.5 text-[9px] text-[var(--app-text-subtle)]">Open an exact prior commit without moving head.</p><ol className="mt-2 space-y-1" data-artifact-v3-revision-history>{studio.revisions.map((revision, index) => { const selected = revision.revisionRef === selectedRevisionRef; const head = revision.revisionRef === studio.artifact.head?.revisionRef; return <li key={revision.revisionRef}><button type="button" data-artifact-v3-revision={revision.commitOid} className={cn('w-full rounded-lg border px-2 py-1.5 text-left', selected ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} onClick={() => { explicitlySelectedRevision.current = true; setSelectedRevisionRef(revision.revisionRef) }}><span className="flex justify-between gap-2 text-[9px] font-semibold"><span>{revisionLabel(revision, index)}</span>{head ? <span className="text-[var(--app-success)]">HEAD</span> : null}</span><span className="mt-0.5 block truncate font-mono text-[8px] text-[var(--app-text-subtle)]">{revision.parentCommitOids.length ? `parent ${shortOid(revision.parentCommitOids[0]!)}` : 'root commit'}</span></button></li>})}</ol></section>
       </aside>
       <main className="relative min-h-0 min-w-0 overflow-hidden bg-[var(--app-bg-alt)]" data-artifact-v3-primary-preview>

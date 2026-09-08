@@ -34,7 +34,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile":
+		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
@@ -124,12 +124,15 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			continue
 		}
 		var captureTime *int64
+		var temporal *pebblestore.ArtifactV3TemporalScene
 		if part.EndMs > part.StartMs {
 			value := part.StartMs + (part.EndMs-part.StartMs)/2
 			captureTime = &value
+			temporal = &pebblestore.ArtifactV3TemporalScene{SceneID: part.ID, StartMS: part.StartMs, EndMS: part.EndMs}
 		}
 		manifestParts = append(manifestParts, pebblestore.ArtifactV3Part{
 			CaptureTimeMS: captureTime,
+			Temporal:      temporal,
 			ID:            strings.TrimSpace(part.ID),
 			Label:         strings.TrimSpace(part.Label),
 			Locator: pebblestore.ArtifactV3Locator{
@@ -146,7 +149,27 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		midpoint := durationMS / 2
 		manifestParts[0].CaptureTimeMS = &midpoint
 	}
-	manifest, err := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: manifestParts, AnimationProfile: profile})
+	if raw, ok := args["native_parts"]; ok {
+		if len(requestedParts) != 0 {
+			return nil, errors.New("native_parts and parts are mutually exclusive")
+		}
+		manifestParts, err = parseArtifactV3NativeParts(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var sceneContract *pebblestore.ArtifactV3SceneContract
+	if raw, ok := args["scene_contract"]; ok {
+		sceneContract, err = ParseArtifactV3SceneContract(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	nativeManifest := pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: manifestParts, AnimationProfile: profile, SceneContract: sceneContract}
+	if err := pebblestore.ValidateArtifactV3Scenes(nativeManifest, durationMS); err != nil {
+		return nil, err
+	}
+	manifest, err := json.Marshal(nativeManifest)
 	if err != nil {
 		return nil, err
 	}
@@ -167,15 +190,17 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	prompt := strings.TrimSpace(firstNonEmptyString(asString(args["collection_description"]), asString(args["collection_name"]), filename))
 	prepare := ArtifactV3PrepareTurnRequest{
-		AccountScopeID: principal.AccountScopeID,
-		UserID:         principal.UserID,
-		OwnerSessionID: principal.SessionID,
-		TaskCallID:     "direct-create:" + producerRunID,
-		Prompt:         prompt,
-		PolicyRevision: "direct-primary-html-v1",
-		CandidateIndex: 1,
-		Initial:        true,
-		ExpiresAt:      time.Now().Add(15 * time.Minute).UnixMilli(),
+		AccountScopeID:   principal.AccountScopeID,
+		UserID:           principal.UserID,
+		OwnerSessionID:   principal.SessionID,
+		TaskCallID:       "direct-create:" + producerRunID,
+		Prompt:           prompt,
+		PolicyRevision:   "direct-primary-html-v1",
+		SceneContract:    sceneContract,
+		AnimationProfile: profile,
+		CandidateIndex:   1,
+		Initial:          true,
+		ExpiresAt:        time.Now().Add(15 * time.Minute).UnixMilli(),
 	}
 	if hasExisting {
 		priorPartIDs, partErr := directArtifactV3PartIDs(existing.Result["parts"])
@@ -228,6 +253,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		current, readErr := r.artifactV3Author.Read(ctx, author, grant, path, 0, 0)
 		if readErr != nil {
 			return readErr
+		}
+		if current.Content == string(content) {
+			return nil
 		}
 		return r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false)
 	}

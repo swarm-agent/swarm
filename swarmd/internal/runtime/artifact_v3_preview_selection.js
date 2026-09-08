@@ -11,10 +11,12 @@
     try { return document.querySelector(part.selector); } catch { return null; }
   };
   const paint = () => {
+    const elements = new Map();
     for (const part of parts) {
       const element = elementFor(part);
-      if (element) element.toggleAttribute('data-swarm-v3-selected', selected.includes(part.id));
+      if (element) elements.set(element, elements.get(element) || selected.includes(part.id));
     }
+    for (const [element, active] of elements) element.toggleAttribute('data-swarm-v3-selected', active);
   };
   window.addEventListener('message', (event) => {
     const message = event.data;
@@ -24,6 +26,15 @@
     selected = message.part_ids;
     paint();
     const part = parts.find((part) => part.id === message.focus_part_id);
+    if (part && Number.isSafeInteger(part.time_ms)) {
+      const runtime = globalThis.__SWARM_ANIMATION_V1__;
+      if (runtime?.version === 'swarm.animation/v1' && typeof runtime.seek === 'function') {
+        Promise.resolve().then(() => runtime.seek(part.time_ms)).then((result) => {
+          if (result?.time_ms !== part.time_ms) throw new Error('Scene seek was not acknowledged');
+        }).catch(() => send('scene-seek-error', { part_id: part.id }));
+      } else send('scene-seek-error', { part_id: part.id });
+      return;
+    }
     const element = part && elementFor(part);
     if (element) {
       element.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
@@ -38,6 +49,7 @@
     for (const element of event.composedPath()) {
       if (!(element instanceof Element)) continue;
       const part = parts.find((candidate) => {
+        if (Number.isSafeInteger(candidate.time_ms)) return false; // Shared Canvas cannot identify a chapter by geometry.
         try { return element.matches(candidate.selector); } catch { return false; }
       });
       if (!part) continue;

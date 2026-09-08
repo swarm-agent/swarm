@@ -35,6 +35,7 @@ type ArtifactV3DraftProjection struct {
 }
 
 type ArtifactV3RepositoryProjection struct {
+	Generations     []ArtifactV3GenerationMember         `json:"generations,omitempty"`
 	Drafts          map[string]ArtifactV3DraftProjection `json:"-"`
 	DraftStatus     string                               `json:"draft_status,omitempty"`
 	Version         int                                  `json:"version"`
@@ -51,12 +52,14 @@ type ArtifactV3RepositoryProjection struct {
 }
 
 type ArtifactV3PartProjection struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	LocatorKind string   `json:"locator_kind"`
-	Path        string   `json:"path,omitempty"`
-	Value       string   `json:"value,omitempty"`
-	Paths       []string `json:"paths,omitempty"`
+	Temporal      *ArtifactV3TemporalScene `json:"temporal,omitempty"`
+	CaptureTimeMS *int64                   `json:"capture_time_ms,omitempty"`
+	ID            string                   `json:"id"`
+	Label         string                   `json:"label"`
+	LocatorKind   string                   `json:"locator_kind"`
+	Path          string                   `json:"path,omitempty"`
+	Value         string                   `json:"value,omitempty"`
+	Paths         []string                 `json:"paths,omitempty"`
 }
 
 type ArtifactV3RevisionProjection struct {
@@ -94,11 +97,18 @@ type ArtifactV3TurnProjection struct {
 	EventSeq            uint64   `json:"event_seq"`
 }
 
-type ArtifactV3EvidenceProjection struct {
-	Status       string `json:"status"`
-	CommitOID    string `json:"commit_oid"`
+type ArtifactV3SceneEvidence struct {
+	PartID       string `json:"part_id"`
+	SampleMS     int64  `json:"sample_ms"`
 	DigestSHA256 string `json:"digest_sha256"`
-	Reference    string `json:"reference"`
+}
+
+type ArtifactV3EvidenceProjection struct {
+	Scenes       []ArtifactV3SceneEvidence `json:"scenes,omitempty"`
+	Status       string                    `json:"status"`
+	CommitOID    string                    `json:"commit_oid"`
+	DigestSHA256 string                    `json:"digest_sha256"`
+	Reference    string                    `json:"reference"`
 }
 
 type ArtifactV3CandidateProjection struct {
@@ -367,6 +377,9 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		copy.EventSeq = seq
 		copy.UpdatedAt = now
 		copy.Drafts = current.Drafts
+		if err := s.prepareArtifactV3Generation(input, current, &copy); err != nil {
+			return preparedArtifactV3Mutation{}, err
+		}
 		if input.Kind == V3SessionMutationArtifactV3DraftSaved {
 			d := *m.Draft
 			previous, found := current.Drafts[d.GrantID]
@@ -493,6 +506,17 @@ func artifactV3EvidenceReady(e ArtifactV3EvidenceProjection, commit string) bool
 
 func setArtifactV3MutationInBatch(batch *pebble.Batch, accountScopeID string, prepared preparedArtifactV3Mutation) error {
 	p := prepared.Projection
+	if p.Repository != nil {
+		for _, member := range p.Repository.Generations {
+			raw, err := json.Marshal(member)
+			if err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(artifactV3GenerationKey(accountScopeID, p.Repository.OwnerSessionID, member.WaveID, member.Index)), raw, nil); err != nil {
+				return err
+			}
+		}
+	}
 	for key, value := range map[string]any{
 		func() string {
 			if p.Repository == nil {

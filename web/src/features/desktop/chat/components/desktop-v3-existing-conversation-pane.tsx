@@ -2037,6 +2037,16 @@ export function DesktopV3ExistingConversationPane({
   const { artifacts: sessionArtifactV3, loading: sessionArtifactV3Loading, error: sessionArtifactV3Error, refresh: refreshNativeArtifacts } = useNativeArtifactCatalog(normalizedSessionId);
   const [selectedArtifactV3, setSelectedArtifactV3] = useState<DesktopV3NativeArtifactSummary | null>(null);
   const [artifactV3StudioOpen, setArtifactV3StudioOpen] = useState(false);
+  useEffect(() => {
+    const restore = () => {
+      const id = new URLSearchParams(window.location.search).get('native_artifact');
+      const artifact = sessionArtifactV3.find((entry) => entry.artifactId === id && entry.ownerSessionId === normalizedSessionId);
+      if (artifact) { setSelectedArtifactV3(artifact); setArtifactV3StudioOpen(true); }
+    };
+    restore();
+    window.addEventListener('popstate', restore);
+    return () => window.removeEventListener('popstate', restore);
+  }, [normalizedSessionId, sessionArtifactV3]);
   const [sessionArtifactV2, setSessionArtifactV2] = useState<DesktopV3ArtifactV2CatalogItem[]>([]);
   const [selectedArtifactV2, setSelectedArtifactV2] = useState<DesktopV3ArtifactV2CatalogItem | null>(null);
   const [artifactV2StudioOpen, setArtifactV2StudioOpen] = useState(false);
@@ -3697,6 +3707,7 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopV3ArtifactV3Studio
         artifact={selectedArtifactV3}
+        onNavigate={setSelectedArtifactV3}
         onRepairDraft={(artifact) => {
           if (artifact.ownerSessionId !== normalizedSessionId) return;
           composerControllerRef.current?.appendDraft(`Please continue fixing the retained artifact ${JSON.stringify(artifact.label)} (artifact ID: ${artifact.artifactId}). Inspect its current draft status, resume it safely if needed, and edit its existing source until validation passes. Preserve its identity and unrelated content; do not create a replacement.`);

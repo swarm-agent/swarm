@@ -293,6 +293,7 @@ func manageArtifactDefinition() Definition {
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
 				"artifact_v3_reference":  artifactV3Reference,
 				"native_parts":           artifactV3NativePartsSchema(),
+				"scene_contract":         ArtifactV3SceneContractSchema(),
 				"turn_id":                map[string]any{"type": "string"},
 				"candidate_id":           map[string]any{"type": "string"},
 				"expected_head":          map[string]any{"type": "string"},
