@@ -328,6 +328,13 @@ func (s *Service) mergeAuthorizedSessionWorkspaceGrantRoots(principal identity.P
 		if err != nil {
 			return nil, err
 		}
+		// Additional attachments are revocable access, not required execution
+		// identity. Keep their historical grants intact, but never admit a
+		// missing, foreign, or inactive catalog entry into the runtime roots.
+		// Primary/source identity and stale live grants still fail closed.
+		if grant.Kind == pebblestore.WorkspaceGrantAdditional && (!ok || !strings.EqualFold(strings.TrimSpace(entry.State), "active")) {
+			continue
+		}
 		if !ok {
 			return nil, fmt.Errorf("session workspace grant %q is no longer authorized for this account", workspaceID)
 		}
