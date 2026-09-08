@@ -72,7 +72,7 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child.Metadata = map[string]any{"parent_session_id": "parent", "lineage_kind": "delegated_subagent", "subagent": "designer"}
+	child.Metadata = map[string]any{"parent_session_id": "parent", "lineage_kind": "delegated_subagent", "subagent": "system-designer"}
 	if err := sessions.Store().UpdateSession(child); err != nil {
 		t.Fatal(err)
 	}
@@ -112,13 +112,61 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial = bind(initial, p)
+	initialProducer := p
+	initialProducer.ProducerSessionID, initialProducer.ProducerRunID = "child", "old"
+	initial = bind(initial, initialProducer)
 	manifest, _ := json.Marshal(pebblestore.ArtifactV3Manifest{SchemaVersion: pebblestore.ArtifactV3ManifestVersion, Entrypoint: "index.html", Parts: []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}}})
 	for path, body := range map[string][]byte{"swarm-artifact.json": manifest, "index.html": []byte(`<html><body><main id="hero">Original</main></body></html>`), "styles/theme.css": []byte(`body{color:navy}`), "src/app.js": []byte(`export const value=1;`)} {
-		if err := author.Create(ctx, p, initial, path, body); err != nil {
+		if err := author.Create(ctx, initialProducer, initial, path, body); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Requirement: initial unpublished Designer source must remain recoverable,
+	// not masquerade as a selected revision or permit a live-producer takeover.
+	renderer.fail = true
+	if gate, err := author.BuildPreview(ctx, initialProducer, initial); err != nil || gate.Ready {
+		t.Fatalf("initial failed gate: %+v %v", gate, err)
+	}
+	unpublished, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", initial.ArtifactID)
+	if _, err := adapter.ResolveArtifactV3SelectedSource(ctx, "account", "user", "parent", initial.ArtifactID, "", 0); err == nil || !strings.Contains(err.Error(), "artifact_v3_unpublished") || !strings.Contains(err.Error(), "draft_status_v3") {
+		t.Fatalf("unpublished recovery guidance: %v", err)
+	}
+	for _, who := range []tool.ArtifactV3AuthorPrincipal{
+		{AccountScopeID: "foreign", UserID: "user", ProducerSessionID: "parent"},
+		{AccountScopeID: "account", UserID: "foreign", ProducerSessionID: "parent"},
+		{AccountScopeID: "account", UserID: "user", ProducerSessionID: "sibling"},
+	} {
+		if _, _, err := adapter.LocateArtifactV3ExactDraft(ctx, who, initial.ArtifactID, "", ""); err == nil {
+			t.Fatal("foreign unpublished lookup accepted")
+		}
+		if _, err := adapter.ResolveArtifactV3SelectedSource(ctx, who.AccountScopeID, who.UserID, who.ProducerSessionID, initial.ArtifactID, "", 0); err == nil || strings.Contains(err.Error(), "artifact_v3_unpublished") {
+			t.Fatalf("foreign source lookup disclosed draft state: %v", err)
+		}
+	}
+	initialLocator, _, err := adapter.LocateArtifactV3ExactDraft(ctx, p, initial.ArtifactID, "", "")
+	if err != nil || initialLocator.ExpectedHead != "" {
+		t.Fatalf("initial locator: %+v %v", initialLocator, err)
+	}
+	if _, err := adapter.ResumeArtifactV3DirectDraft(ctx, p, initialLocator); err == nil {
+		t.Fatal("live initial producer resumed")
+	}
+	unchanged, _, _ := sessions.Store().GetArtifactV3Repository("account", "user", initial.ArtifactID)
+	if !reflect.DeepEqual(unpublished, unchanged) {
+		t.Fatal("read or rejected initial recovery mutated source")
+	}
+	setRun("child", "old", pebblestore.V3RunIntentCompleted)
+	oldInitial := initial
+	initial, err = adapter.ResumeArtifactV3DirectDraft(ctx, p, initialLocator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := author.Read(ctx, initialProducer, oldInitial, "index.html", 0, 4096); err == nil {
+		t.Fatal("initial old handle survived")
+	}
+	if _, err := author.Finish(ctx, p, initial); err == nil {
+		t.Fatal("initial resumed draft published without rebuild")
+	}
+	renderer.fail = false
 	if gate, err := author.BuildPreview(ctx, p, initial); err != nil || !gate.Ready {
 		t.Fatalf("initial gate: %+v %v", gate, err)
 	}
@@ -132,7 +180,9 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldp := p
-	oldp.ProducerSessionID, oldp.ProducerRunID = "child", "old"
+	oldp.ProducerSessionID, oldp.ProducerRunID = "child", "second-old"
+	setRun("child", "second-old", pebblestore.V3RunIntentPendingExecutor)
+	setRun("child", "second-old", pebblestore.V3RunIntentRunning)
 	failed = bind(failed, oldp)
 	renderer.fail = true
 	if gate, err := author.BuildPreview(ctx, oldp, failed); err != nil || gate.Ready {
@@ -198,7 +248,13 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 		}
 	}
 	reject(p, locator) // live old producer
-	setRun("child", "old", pebblestore.V3RunIntentCompleted)
+	setRun("child", "second-old", pebblestore.V3RunIntentCompleted)
+	staleProjection := locator
+	staleProjection.ExpectedProjectionSeq++
+	reject(p, staleProjection)
+	staleHead := locator
+	staleHead.ExpectedHead = strings.Repeat("f", 40)
+	reject(p, staleHead)
 	stale := locator
 	stale.ExpectedSequence++
 	reject(p, stale)

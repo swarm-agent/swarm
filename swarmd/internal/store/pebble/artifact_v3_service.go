@@ -547,6 +547,9 @@ func (s *ArtifactV3Service) ResolveSelectedSource(owner ArtifactV3Owner, artifac
 	if !found || repository.OwnerSessionID != owner.SessionID {
 		return ArtifactV3SelectedSource{}, ErrArtifactV3Unauthorized
 	}
+	if repository.HeadCommitOID == "" && commitOID == "" && projectionSeq == 0 {
+		return ArtifactV3SelectedSource{}, fmt.Errorf("%w: artifact_v3_unpublished: no selected revision exists; inspect the retained draft with draft_status_v3, then use its exact resume_draft with resume_v3 after the producer is terminal", ErrArtifactV3Conflict)
+	}
 	if repository.HeadCommitOID == "" || (commitOID != "" && commitOID != repository.HeadCommitOID) || (projectionSeq != 0 && projectionSeq != repository.EventSeq) {
 		return ArtifactV3SelectedSource{}, ErrArtifactV3Conflict
 	}

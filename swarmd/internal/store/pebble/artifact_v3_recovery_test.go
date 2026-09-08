@@ -20,14 +20,25 @@ func TestArtifactV3RecoveryProducerLineage(t *testing.T) {
 	if err := s.UpdateSession(child); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ValidateArtifactV3DraftProducer("account-1", "user-1", "parent", "child"); err != nil {
-		t.Fatal(err)
+	// Production delegation persists system-designer; retain the older exact
+	// short ID without admitting display labels or arbitrary profile names.
+	for _, agent := range []string{"designer", "system-designer"} {
+		child.Metadata["subagent"] = agent
+		if err := s.UpdateSession(child); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ValidateArtifactV3DraftProducer("account-1", "user-1", "parent", "child"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, metadata := range []map[string]any{
 		{"parent_session_id": "foreign", "lineage_kind": "delegated_subagent", "subagent": "designer"},
 		{"parent_session_id": []string{"parent"}, "lineage_kind": "delegated_subagent", "subagent": "designer"},
 		{"parent_session_id": "parent", "lineage_kind": "session_deploy", "subagent": "designer"},
 		{"parent_session_id": "parent", "lineage_kind": "delegated_subagent", "subagent": "coder"},
+		{"parent_session_id": "parent", "lineage_kind": "delegated_subagent", "subagent": "system-coder"},
+		{"parent_session_id": "parent", "lineage_kind": "delegated_subagent", "subagent": "Designer"},
+		{"parent_session_id": "parent", "lineage_kind": "delegated_subagent", "subagent": []string{"system-designer"}},
 	} {
 		child.Metadata = metadata
 		if err := s.UpdateSession(child); err != nil {

@@ -853,7 +853,10 @@ func (s *SessionStore) ValidateArtifactV3DraftProducer(account, user, owner, pro
 	parent, parentOK := child.Metadata["parent_session_id"].(string)
 	kind, kindOK := child.Metadata["lineage_kind"].(string)
 	agent, agentOK := child.Metadata["subagent"].(string)
-	if !parentOK || parent != owner || !kindOK || kind != "delegated_subagent" || !agentOK || agent != "designer" {
+	// Delegation persists the code-owned profile ID (system-designer). The
+	// older short name remains valid for already-retained drafts. Keep this
+	// allowlist exact: display labels and arbitrary profile names are not authority.
+	if !parentOK || parent != owner || !kindOK || kind != "delegated_subagent" || !agentOK || (agent != "designer" && agent != "system-designer") {
 		return ErrArtifactV3Unauthorized
 	}
 	return nil
