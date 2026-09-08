@@ -4045,7 +4045,18 @@ func buildPermissionWorkspaceScope(session pebblestore.SessionSnapshot) tool.Wor
 		}
 		add(validated)
 	}
-	scope := tool.WorkspaceScope{PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID)}
+	// Permission previews and approved execution must retain the same saved
+	// workspace identity as ordinary runtime dispatch. PrimaryPath remains the
+	// execution lane; workspace settings use SourceWorkspacePath instead.
+	scope := tool.WorkspaceScope{
+		PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID),
+		WorktreeEnabled:     session.WorktreeEnabled,
+		WorktreeRootPath:    strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
+		WorktreeBaseBranch:  strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBaseCommit:  strings.TrimSpace(mapString(session.Metadata, "base_commit")),
+		SourceWorkspacePath: strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")),
+	}
 	if userID, accountScopeID := strings.TrimSpace(session.UserID), strings.TrimSpace(session.AccountScopeID); userID != "" && accountScopeID != "" {
 		scope.Principal = identity.Principal{
 			Type:               identity.PrincipalTypeUser,
