@@ -435,6 +435,15 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
 	}
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
+		// Source bindings belong to the complete wave. Silently discarding a
+		// nested binding would allocate a blank genesis instead of a remix.
+		if strings.HasPrefix(label, "task launches[") {
+			for _, key := range []string{"artifact_v3_source", "artifact_v2_source", "source_artifact"} {
+				if _, supplied := raw[key]; supplied {
+					return taskLaunchSpec{}, fmt.Errorf("%s: %s must be supplied at task top level, not inside launches; no workers launched", label, key)
+				}
+			}
+		}
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
 		}
