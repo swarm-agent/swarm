@@ -328,8 +328,12 @@ func (p *Page) selectAskUserOptionLocked(question askUserQuestion, selection int
 	}
 	selection = maxInt(0, minInt(selection, len(question.Options)-1))
 	id := strings.TrimSpace(question.ID)
+	previous := p.permissionAskSelections[id]
 	p.permissionAskSelections[id] = selection
 	option := question.Options[selection]
+	if option.AllowCustom && previous != selection {
+		delete(p.permissionAskAnswers, id)
+	}
 	if !option.AllowCustom {
 		p.permissionAskAnswers[id] = firstNonEmptyToolRaw(option.Value, option.Label)
 		p.permissionAskCustomInput = nil
@@ -355,6 +359,21 @@ func (p *Page) handleAskUserPermissionKeyLocked(record client.PermissionRecord, 
 	intent, question, selection, ok := p.currentAskUserStateLocked(record)
 	if !ok {
 		return PageActionNone
+	}
+	// Keep long wrapped questions readable without changing the selected answer.
+	switch ev.Key() {
+	case tcell.KeyPgUp:
+		p.follow = false
+		p.scroll += 8
+		return PageActionNone
+	case tcell.KeyPgDn:
+		p.scroll = maxInt(0, p.scroll-8)
+		p.follow = p.scroll == 0
+		return PageActionNone
+	}
+	if !p.permissionAskCustomMode && len(question.Options) > 0 && question.Options[selection].AllowCustom && ev.Key() == tcell.KeyRune {
+		p.permissionAskCustomMode = true
+		p.permissionAskCustomInput = []rune(p.permissionAskAnswers[strings.TrimSpace(question.ID)])
 	}
 	if p.permissionAskCustomMode {
 		switch ev.Key() {
@@ -423,12 +442,72 @@ func (p *Page) handleAskUserPermissionKeyLocked(record client.PermissionRecord, 
 			index := int(r - '1')
 			if index < len(question.Options) {
 				p.selectAskUserOptionLocked(question, index)
+				if question.Options[index].AllowCustom {
+					p.permissionAskCustomMode = true
+					p.permissionAskCustomInput = []rune(p.permissionAskAnswers[strings.TrimSpace(question.ID)])
+				}
 			}
 		case r == 's' || r == 'S':
 			p.submitAskUserPermissionLocked(record)
 		}
 	}
 	return PageActionNone
+}
+
+// Resolved questions use the durable reason, never the pending editor's default
+// selection. This also preserves answers when the timeline is rehydrated.
+func resolvedAskUserCardRows(record client.PermissionRecord, intent askUserIntent, width int, styles PageStyles, selected bool) []renderRow {
+	model := permissionCardModel{Title: intent.Title, Badge: "QUESTION", Meta: "Resolved · " + permissionResolvedLabel(record)}
+	appendText := func(text string, style tcell.Style) {
+		for _, line := range wrapText(text, maxInt(1, width-4)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: style})
+		}
+	}
+	answers := map[string]string{}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(record.Decision)), "allow") {
+		if len(intent.Questions) == 1 {
+			answers[intent.Questions[0].ID] = strings.TrimSpace(record.Reason)
+		} else {
+			var response struct {
+				Answers map[string]string `json:"answers"`
+			}
+			if json.Unmarshal([]byte(record.Reason), &response) == nil {
+				answers = response.Answers
+			}
+		}
+	}
+	if intent.Context != "" {
+		appendText(intent.Context, styles.Muted)
+	}
+	for _, question := range intent.Questions {
+		appendText(question.Question, styles.Text.Bold(true))
+		answer := strings.TrimSpace(answers[question.ID])
+		selection := -1
+		if answer != "" {
+			for index, option := range question.Options {
+				if option.AllowCustom {
+					selection = index
+				} else if answer == firstNonEmptyToolRaw(option.Value, option.Label) {
+					selection = index
+					break
+				}
+			}
+		}
+		for index, option := range question.Options {
+			prefix, style := "  ", styles.Muted
+			if index == selection {
+				prefix, style = "› ", styles.Success.Bold(true)
+			}
+			appendText(fmt.Sprintf("%s%d %s", prefix, index+1, firstNonEmptyToolRaw(option.Label, option.Value)), style)
+		}
+		if answer != "" {
+			appendText("Your response: "+answer, styles.Text)
+		} else {
+			appendText("No response recorded", styles.Muted)
+		}
+		model.Content = append(model.Content, permissionCardLine{Text: "", Style: styles.Muted})
+	}
+	return permissionCardRows(permissionCardView{Model: model, Selected: selected, HideNote: true}, width, styles)
 }
 
 func specializedPermissionCardRows(record client.PermissionRecord, pendingCount, width int, styles PageStyles, selected, busy bool, errorText string, interaction *permissionInteractionView) []renderRow {
@@ -482,6 +561,9 @@ func specializedPermissionCardRows(record client.PermissionRecord, pendingCount,
 	if !ok || len(intent.Questions) == 0 {
 		return inlinePermissionCardRows(record, pendingCount, width, styles, record.SavedRulePreview, selected, nil, busy, errorText)
 	}
+	if !permissionPending(record) {
+		return resolvedAskUserCardRows(record, intent, width, styles, selected)
+	}
 	questionIndex := maxInt(0, minInt(interaction.AskQuestion, len(intent.Questions)-1))
 	question := intent.Questions[questionIndex]
 	model := permissionCardModel{
@@ -513,26 +595,24 @@ func specializedPermissionCardRows(record client.PermissionRecord, pendingCount,
 			style = styles.Primary.Bold(true)
 		}
 		label := firstNonEmptyToolRaw(option.Label, option.Value, "Option")
-		model.Content = append(model.Content, permissionCardLine{Text: fmt.Sprintf("%s%d %s", prefix, index+1, label), Style: style})
+		for _, line := range wrapText(fmt.Sprintf("%s%d %s", prefix, index+1, label), maxInt(1, width-4)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: style})
+		}
 		if index == selection && option.Description != "" {
 			for _, line := range wrapText("    "+option.Description, maxInt(1, width-4)) {
 				model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Muted})
 			}
 		}
 	}
-	if !permissionPending(record) {
-		model.Content = append(model.Content,
-			permissionCardLine{Text: "", Style: styles.Muted},
-			permissionCardLine{Text: "RESOLVED", Style: styles.Muted.Bold(true)},
-			permissionCardLine{Text: permissionResolvedLabel(record), Style: permissionResolvedStyle(record, styles).Bold(true)},
-		)
-	} else if interaction.AskCustomMode {
+	if interaction.AskCustomMode {
 		model.Content = append(model.Content,
 			permissionCardLine{Text: "", Style: styles.Muted},
 			permissionCardLine{Text: "CUSTOM RESPONSE", Style: styles.Muted.Bold(true)},
-			permissionCardLine{Text: "> " + interaction.AskCustomInput + "▌", Style: styles.Text},
-			permissionCardLine{Text: "Enter saves · Esc cancels typing", Style: styles.Muted},
 		)
+		for _, line := range wrapText("> "+interaction.AskCustomInput+"▌", maxInt(1, width-4)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Text})
+		}
+		model.Content = append(model.Content, permissionCardLine{Text: "Enter saves · Esc cancels typing", Style: styles.Muted})
 	} else {
 		model.Content = append(model.Content, permissionCardLine{Text: "↑/↓ choose · Enter select · ←/→ question · S submit · Esc deny", Style: styles.Muted})
 	}

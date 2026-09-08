@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { memo, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { fetchAttachmentPage, selectWorkingWorkspaces, SessionAttachmentInventory, type AttachmentRepository } from '../queries/session-attachments'
 import { subscribeDesktopV3Cache } from '../../state/desktop-v3-cache-store'
 import { repositoryEventInvalidates, scheduleRepositoryRefresh } from '../../state/session-repositories'
@@ -20,17 +20,25 @@ export function SessionAttachmentsView({ items, workingSources = [], loading, st
   const workspaceNames = workingWorkspaces.map(item => item.workspace_name || item.workspace_id).join(', ')
   const workingLabel = workspaceNames || (error ? 'Workspaces unavailable' : loading ? 'Loading workspaces' : more ? 'Workspaces loading incomplete' : 'No working workspace reported')
   const stateLabel = error ? (items.length ? 'Workspace list stale' : 'Workspaces unavailable') : loading && !items.length ? 'Loading workspaces' : more ? `${items.length}+ workspaces` : `${items.length} workspaces`
+  // Identity owns a stable header slot. Cache invalidation is not a user-facing
+  // failure: keep refresh details in the dialog, and reserve an error indicator
+  // rather than appending text that resizes the title on every repository event.
   return <>
-    <button type="button" aria-haspopup="dialog" aria-label={`Workspaces: ${workingLabel}`} title={`${workingLabel}${stale ? ' — workspace information may be stale' : ''}`}
-      className="min-w-0 max-w-full truncate rounded text-left text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:max-w-64 sm:px-2 sm:py-1 sm:text-xs sm:font-normal"
-      onClick={() => dialog.current?.showModal()}>{workingLabel}{stale && workspaceNames ? ' · Stale' : ''}</button>
+    <button type="button" aria-haspopup="dialog" aria-label={`Workspaces: ${workingLabel}${error ? ' — unable to update' : ''}`} title={`${workingLabel}${error ? ' — unable to update; open workspaces to retry' : stale ? ' — workspace information may be stale' : ''}`}
+      className="relative block h-5 min-w-0 w-full max-w-full rounded pr-3 text-left text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:h-7 sm:w-40 sm:shrink-0 sm:pl-2 sm:pr-5 sm:text-xs sm:font-normal lg:w-56"
+      onClick={() => dialog.current?.showModal()}>
+      <span className="block truncate">{workspaceNames || 'Workspaces'}</span>
+      {error ? <span aria-hidden="true" className="absolute right-1 top-1/2 -translate-y-1/2 text-[var(--app-danger)]">!</span> : null}
+    </button>
     <dialog ref={dialog} aria-label="Session workspaces" className="fixed m-auto max-h-[80dvh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text)] backdrop:bg-black/40">
       <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Session workspaces</h2><button type="button" onClick={() => dialog.current?.close()} aria-label="Close workspaces">Close</button></div>
       <ul className="my-2 grid gap-1" aria-label="Working workspace list">
         {workingWorkspaces.map(item => <li key={item.workspace_id}>{item.workspace_name || item.workspace_id}</li>)}
       </ul>
       <p className="my-2 text-xs">The session workspace and workspaces with running delegated work. Available workspaces below are access, not work in progress.</p>
-      {stale ? <p role="status" className="my-2 text-xs">Workspace information may be stale; displayed entries may no longer be attached.</p> : null}
+      {loading ? <p role="status" className="my-2 text-xs">{items.length ? 'Updating workspace information…' : 'Loading workspaces…'}</p> : null}
+      {stale && !loading ? <p role="status" className="my-2 text-xs">Workspace information may be stale; displayed entries may no longer be attached.</p> : null}
+      {error ? <p role="alert" className="my-2 text-xs">Unable to update workspace information. Refresh to retry.</p> : null}
       <details><summary className="cursor-pointer">Available workspaces</summary>
       <p role="status" className="my-2">{stateLabel}{error ? ' — unable to update; retry below.' : ''}</p>
       {!loading && !error && !more && !items.length ? <p>No attached workspaces.</p> : null}
@@ -50,12 +58,11 @@ export function SessionAttachmentsView({ items, workingSources = [], loading, st
   </>
 }
 
-export function SessionAttachments({ sessionId, revision }: { sessionId: string; revision?: number }) {
+export const SessionAttachments = memo(function SessionAttachments({ sessionId }: { sessionId: string }) {
   const inventory = useMemo(() => new SessionAttachmentInventory((cursor, signal) => fetchAttachmentPage(sessionId, cursor, signal)), [sessionId])
   const state = useSyncExternalStore(inventory.subscribe, inventory.snapshot, inventory.snapshot)
-  // revision includes token-only changes. Canonical cache actions below carry
-  // relevant invalidations instead of cancel/refetch on every projection revision.
-  void revision
+  // Canonical cache actions own refreshes, independently of header timer ticks
+  // and token-only projection revisions.
   useEffect(() => {
     const scheduler = scheduleRepositoryRefresh(inventory, () => document.visibilityState !== 'hidden')
     const unsubscribe = subscribeDesktopV3Cache(mutation => {
@@ -70,4 +77,4 @@ export function SessionAttachments({ sessionId, revision }: { sessionId: string;
   }, [inventory, sessionId])
   return <SessionAttachmentsView {...state} more={Boolean(state.nextCursor)}
     onRefresh={() => { void inventory.refresh() }} onMore={() => { void inventory.loadMore() }} />
-}
+})

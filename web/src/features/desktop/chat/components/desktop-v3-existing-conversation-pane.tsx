@@ -3234,7 +3234,6 @@ export function DesktopV3ExistingConversationPane({
     >
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
-        workspaceRevision={cacheSession?.updated_at}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
         workspaceName={
           session?.workspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"

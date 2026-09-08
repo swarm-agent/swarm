@@ -18,7 +18,6 @@ export interface DesktopV3ChatHeaderProps {
   title: string
   workspaceName: string
   sessionId?: string
-  workspaceRevision?: number
   branchName?: string
   modelLabel?: string
   runStatus?: DesktopV3RunStatusModel | null
@@ -48,7 +47,6 @@ export function DesktopV3ChatHeader({
   title,
   workspaceName,
   sessionId,
-  workspaceRevision,
   branchName,
   modelLabel,
   runStatus = null,
@@ -166,8 +164,10 @@ export function DesktopV3ChatHeader({
           <div className="hidden min-w-0 sm:block sm:flex-1">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
               {editableTitle}
-              <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
-              <span className="truncate font-normal text-[var(--app-text-muted)]" title={displayWorkspace}>{displayWorkspace}</span>
+              {!sessionId ? <>
+                <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
+                <span className="truncate font-normal text-[var(--app-text-muted)]" title={displayWorkspace}>{displayWorkspace}</span>
+              </> : null}
             </h1>
             {resolvedHeaderDetails ? (
               <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]" title={resolvedHeaderDetails}>
@@ -182,7 +182,7 @@ export function DesktopV3ChatHeader({
             ) : null}
           </div>
           <div className={`${hideMobileIdentity ? 'hidden sm:contents' : 'mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 sm:contents'}`} data-testid="session-workspace-row">
-            {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} revision={workspaceRevision} /> : (
+            {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} /> : (
               <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:hidden" title={displayWorkspace}>{displayWorkspace}</span>
             )}
             {mobileRunTimerLabel ? (

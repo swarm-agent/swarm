@@ -99,6 +99,9 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 
 func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 	items := append([]ui.CommandSuggestion(nil), buildHomeCommandSuggestions(devMode)...)
+	if devMode {
+		items = append(items, ui.CommandSuggestion{Command: "/flag", Hint: "Investigate a problem from this session in a new task", QuickTips: []string{"/flag <problem>", "Dev mode only; includes the prior session ID"}})
+	}
 	items = append(items,
 		ui.CommandSuggestion{
 			Command: archiveCommandUsage,
@@ -2150,6 +2153,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleNewCommand(raw)
 	case "plan":
 		a.handlePlanCommand(args)
+	case "flag":
+		a.handleFlagCommand(args)
 	case "task":
 		a.handleTaskCommand(args)
 	case "archive":
