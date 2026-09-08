@@ -263,4 +263,21 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 	if err != nil || !found || candidate.Status != "ready" || candidate.CommitOID != good.Revision.CommitOID {
 		t.Fatalf("lost ready sibling: %+v %v", candidate, err)
 	}
+	// Requirement: the tool's raw head OID must cross the API revision-ref
+	// adapter without a false conflict; stale turn CAS must leave state intact.
+	turn, found, err := sessions.Store().GetArtifactV3Turn("account", "user", initial.ArtifactID, sibling.TurnID)
+	if err != nil || !found {
+		t.Fatalf("selection turn: %v", err)
+	}
+	beforeSelect := snapshot()
+	if _, err := adapter.SelectArtifactV3Exact(ctx, "account", "user", "parent", initial.ArtifactID, sibling.TurnID, sibling.CandidateID, first.Revision.CommitOID, "stale-select", turn.EventSeq+1); err == nil {
+		t.Fatal("stale selection accepted")
+	}
+	if !reflect.DeepEqual(beforeSelect, snapshot()) {
+		t.Fatal("stale selection mutated repository")
+	}
+	selected, err := adapter.SelectArtifactV3Exact(ctx, "account", "user", "parent", initial.ArtifactID, sibling.TurnID, sibling.CandidateID, first.Revision.CommitOID, "exact-select", turn.EventSeq)
+	if err != nil || selected.CommitOID != good.Revision.CommitOID || snapshot().HeadCommitOID != good.Revision.CommitOID {
+		t.Fatalf("exact tool selection: %+v %v", selected, err)
+	}
 }

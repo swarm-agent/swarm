@@ -6264,7 +6264,8 @@ ta-theme-workspace-selection	go-test	swarmd/internal/tool/runtime_manage_theme_w
 # 7dba3193bcb792b726e747a81b35ffdb8b97c72ee0a37957b40e8e7a1d546d6a swarmd/internal/permission/artifact_v3_approval_test.go
 # 2026-09-08 exact native capability rules: TestArtifactV3ExactActionRules checks explicit allow, deny precedence, generic/wildcard isolation and default ask in auto/bypass. Focused tests passed twice; independent P1/P2 remains pending.
 # fe68d82de3f2757819becb8ffcde86cd978fa08f7adedb98c2592ba7d2c98a02 swarmd/internal/run/artifact_v3_intent_test.go
-# 2b2c6b8d0198dfa456ef2a7624c2dfb6e861018ec4d643b4f47cb0aabf8048db swarmd/internal/runtime/artifact_v3_recovery_test.go
+# ee09d8650b7565dd1fe72678ebd8ddc72b301c090f2dfe52f9526b4ea50e1268 swarmd/internal/runtime/artifact_v3_recovery_test.go
+# Exact tool-selection adapter regression added to real Git/Pebble recovery fixture: stale turn rejection leaves repository unchanged, valid raw head OID selects expected candidate. Passed twice; independent audit pending.
 # 3e9d754a12b099bee3f0ebd900f029d2b7b2bc5b1d7ef81fe046bf6840e25b82 swarmd/internal/runtime/artifact_v3_viewport_test.go
 # 90ad5e0a1b7ea988cdac2e42f8163fa0732d0d56d62ec38485a0782a290aa66d swarmd/internal/store/pebble/artifact_v3_remix_test.go
 # 1b36e41a84b7ae7a4e0244b3c27dbd7f20af53b7dd318515d45730b881d3c82e swarmd/internal/store/pebble/artifact_v3_recovery_test.go

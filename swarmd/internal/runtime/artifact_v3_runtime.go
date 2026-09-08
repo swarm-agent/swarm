@@ -1996,7 +1996,7 @@ func (a *artifactV3RuntimeAdapter) ListArtifactV3SelectedSources(ctx context.Con
 }
 
 func (a *artifactV3RuntimeAdapter) SelectArtifactV3Exact(ctx context.Context, account, user, session, artifactID, turn, candidate, head, requestID string, seq uint64) (tool.ArtifactV3Revision, error) {
-	selected, err := a.SelectCandidate(ctx, api.ArtifactV3Principal{AccountScopeID: account, UserID: user}, api.ArtifactV3SelectCandidateRequest{SessionID: session, ArtifactID: artifactID, TurnID: turn, CandidateID: candidate, ExpectedHeadRef: head, ExpectedTurnRevision: seq, ClientRequestID: requestID})
+	selected, err := a.SelectCandidate(ctx, api.ArtifactV3Principal{AccountScopeID: account, UserID: user}, api.ArtifactV3SelectCandidateRequest{SessionID: session, ArtifactID: artifactID, TurnID: turn, CandidateID: candidate, ExpectedHeadRef: "revision-" + head, ExpectedTurnRevision: seq, ClientRequestID: requestID})
 	if err != nil {
 		return tool.ArtifactV3Revision{}, err
 	}
