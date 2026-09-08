@@ -40,7 +40,7 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 		return nil, errors.New("native Artifact V3 discovery unavailable")
 	}
 	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id"); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: native discovery is session-bound; source_v3 accepts only action and artifact_id, list_v3 needs only action; omit session_id and artifact_v3_reference", err)
 	}
 	if asString(args["action"]) == "list_v3" {
 		sources, err := discovery.ListArtifactV3SelectedSources(ctx, principal.AccountScopeID, principal.UserID, principal.SessionID, 50)

@@ -146,7 +146,13 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		}
 		request.AnimationProfile = source.Manifest.AnimationProfile
 		if request.OutputRequirements != nil && !reflect.DeepEqual(request.OutputRequirements, source.Manifest.OutputRequirements) {
-			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+			// An omitted native output policy already renders at landscape_video's
+			// 1920x1080 default. Accept that exact resolved assertion, not a policy
+			// replacement; the grant must still inherit the original nil snapshot.
+			defaultOutput, err := artifact.ResolveOutputRequirements(&artifact.OutputRequirementsInput{Preset: "landscape_video"})
+			if err != nil || source.Manifest.OutputRequirements != nil || !reflect.DeepEqual(request.OutputRequirements, defaultOutput) {
+				return tool.ArtifactV3AuthorGrant{}, fmt.Errorf("%w: output_requirements conflicts with the selected source output policy", pebblestore.ErrArtifactV3Invalid)
+			}
 		}
 		request.OutputRequirements = source.Manifest.OutputRequirements
 		if len(request.TargetPartIDs) != 0 {

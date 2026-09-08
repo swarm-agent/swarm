@@ -97,6 +97,15 @@ func TestNativeHandoffDiscoveryTuple(t *testing.T) {
 	if source["projection_seq"] != uint64(7) || source["commit_oid"] != strings.Repeat("a", 40) || source["session_id"] != reference["session_id"] || source["artifact_id"] != reference["artifact_id"] || reference["revision_ref"] != "revision-"+source["commit_oid"].(string) {
 		t.Fatalf("incomplete tuple: %+v", output)
 	}
+	// Requirement: action-specific guidance must reject caller-authored session
+	// and revision envelopes, not silently broaden discovery authority.
+	for _, field := range []string{"session_id", "artifact_v3_reference"} {
+		args[field] = "caller-authored"
+		if _, err := runtime.discoverDirectArtifactV3(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, args); err == nil || !strings.Contains(err.Error(), "source_v3 accepts only action and artifact_id") {
+			t.Fatalf("missing action-specific rejection for %s: %v", field, err)
+		}
+		delete(args, field)
+	}
 	principal.AccountScopeID = "foreign"
 	if _, err := runtime.discoverDirectArtifactV3(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, args); err == nil {
 		t.Fatal("foreign principal accepted")
