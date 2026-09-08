@@ -328,8 +328,12 @@ func (p *Page) selectAskUserOptionLocked(question askUserQuestion, selection int
 	}
 	selection = maxInt(0, minInt(selection, len(question.Options)-1))
 	id := strings.TrimSpace(question.ID)
+	previous := p.permissionAskSelections[id]
 	p.permissionAskSelections[id] = selection
 	option := question.Options[selection]
+	if option.AllowCustom && previous != selection {
+		delete(p.permissionAskAnswers, id)
+	}
 	if !option.AllowCustom {
 		p.permissionAskAnswers[id] = firstNonEmptyToolRaw(option.Value, option.Label)
 		p.permissionAskCustomInput = nil
@@ -355,6 +359,21 @@ func (p *Page) handleAskUserPermissionKeyLocked(record client.PermissionRecord, 
 	intent, question, selection, ok := p.currentAskUserStateLocked(record)
 	if !ok {
 		return PageActionNone
+	}
+	// Keep long wrapped questions readable without changing the selected answer.
+	switch ev.Key() {
+	case tcell.KeyPgUp:
+		p.follow = false
+		p.scroll += 8
+		return PageActionNone
+	case tcell.KeyPgDn:
+		p.scroll = maxInt(0, p.scroll-8)
+		p.follow = p.scroll == 0
+		return PageActionNone
+	}
+	if !p.permissionAskCustomMode && len(question.Options) > 0 && question.Options[selection].AllowCustom && ev.Key() == tcell.KeyRune {
+		p.permissionAskCustomMode = true
+		p.permissionAskCustomInput = []rune(p.permissionAskAnswers[strings.TrimSpace(question.ID)])
 	}
 	if p.permissionAskCustomMode {
 		switch ev.Key() {
@@ -423,6 +442,10 @@ func (p *Page) handleAskUserPermissionKeyLocked(record client.PermissionRecord, 
 			index := int(r - '1')
 			if index < len(question.Options) {
 				p.selectAskUserOptionLocked(question, index)
+				if question.Options[index].AllowCustom {
+					p.permissionAskCustomMode = true
+					p.permissionAskCustomInput = []rune(p.permissionAskAnswers[strings.TrimSpace(question.ID)])
+				}
 			}
 		case r == 's' || r == 'S':
 			p.submitAskUserPermissionLocked(record)
@@ -513,7 +536,9 @@ func specializedPermissionCardRows(record client.PermissionRecord, pendingCount,
 			style = styles.Primary.Bold(true)
 		}
 		label := firstNonEmptyToolRaw(option.Label, option.Value, "Option")
-		model.Content = append(model.Content, permissionCardLine{Text: fmt.Sprintf("%s%d %s", prefix, index+1, label), Style: style})
+		for _, line := range wrapText(fmt.Sprintf("%s%d %s", prefix, index+1, label), maxInt(1, width-4)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: style})
+		}
 		if index == selection && option.Description != "" {
 			for _, line := range wrapText("    "+option.Description, maxInt(1, width-4)) {
 				model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Muted})
@@ -530,9 +555,11 @@ func specializedPermissionCardRows(record client.PermissionRecord, pendingCount,
 		model.Content = append(model.Content,
 			permissionCardLine{Text: "", Style: styles.Muted},
 			permissionCardLine{Text: "CUSTOM RESPONSE", Style: styles.Muted.Bold(true)},
-			permissionCardLine{Text: "> " + interaction.AskCustomInput + "▌", Style: styles.Text},
-			permissionCardLine{Text: "Enter saves · Esc cancels typing", Style: styles.Muted},
 		)
+		for _, line := range wrapText("> "+interaction.AskCustomInput+"▌", maxInt(1, width-4)) {
+			model.Content = append(model.Content, permissionCardLine{Text: line, Style: styles.Text})
+		}
+		model.Content = append(model.Content, permissionCardLine{Text: "Enter saves · Esc cancels typing", Style: styles.Muted})
 	} else {
 		model.Content = append(model.Content, permissionCardLine{Text: "↑/↓ choose · Enter select · ←/→ question · S submit · Esc deny", Style: styles.Muted})
 	}
