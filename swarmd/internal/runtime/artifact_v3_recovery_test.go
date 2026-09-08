@@ -283,10 +283,20 @@ func TestArtifactV3RecoveryChildIntegration(t *testing.T) {
 	}
 	// Requirement: five sibling finishes must not observe another sibling's
 	// Git ref before its durable projection exists during realtime publication.
+	// Retained failed/completed slots must not impose a sixteen-round lifetime.
+	for i := 0; i < 17; i++ {
+		req := request
+		req.TaskCallID, req.BaseCommitOID = fmt.Sprintf("retained-%d", i), selected.CommitOID
+		if _, err := author.PrepareTurn(ctx, req); err != nil {
+			t.Fatalf("retained round %d: %v", i, err)
+		}
+	}
 	grants := make([]tool.ArtifactV3AuthorGrant, 5)
 	for i := range grants {
 		req := request
 		req.TaskCallID, req.BaseCommitOID, req.CandidateIndex = "parallel", selected.CommitOID, i+1
+		req.RevisionIntent = pebblestore.ArtifactV3RevisionWholeProject
+		req.TargetPartIDs = nil
 		g, err := author.PrepareTurn(ctx, req)
 		if err != nil {
 			t.Fatal(err)

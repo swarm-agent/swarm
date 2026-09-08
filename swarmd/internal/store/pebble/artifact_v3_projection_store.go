@@ -382,8 +382,10 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 			if copy.HeadCommitOID != current.HeadCommitOID || (found && (previous.Sequence != m.ExpectedDraftSequence || previous.ExpiresAt <= now || string(previous.Grant) != string(d.Grant) || previous.ExpiresAt != d.ExpiresAt)) || (!found && m.ExpectedDraftSequence != 0) {
 				return preparedArtifactV3Mutation{}, ErrArtifactV3Conflict
 			}
-			if !found && len(current.Drafts) >= 16 {
-				return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid
+			// Drafts include immutable completed history, not just active producers.
+			// Permit bounded repeat rounds while retaining the aggregate byte cap below.
+			if !found && len(current.Drafts) >= 256 {
+				return preparedArtifactV3Mutation{}, fmt.Errorf("%w: artifact retained draft limit (256) reached", ErrArtifactV3Invalid)
 			}
 			copy.Drafts = make(map[string]ArtifactV3DraftProjection, len(current.Drafts)+1)
 			for key, value := range current.Drafts {
