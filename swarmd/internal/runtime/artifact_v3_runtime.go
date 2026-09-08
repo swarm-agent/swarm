@@ -528,8 +528,8 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 	var durationMS int64
 	if manifest.AnimationProfile != nil {
 		err := artifact.ValidateAnimationProfileSnapshot(manifest.AnimationProfile)
-		if err != nil || manifest.AnimationProfile.ProfileID != "motion_ui" {
-			return request, errors.New("native HTML requires an unchanged reviewed motion_ui profile")
+		if err != nil || (manifest.AnimationProfile.ProfileID != "motion_ui" && manifest.AnimationProfile.ProfileID != "spatial_3d") {
+			return request, errors.New("native HTML requires an unchanged reviewed motion_ui or spatial_3d profile")
 		}
 		durationMS, err = tool.ArtifactHTMLAnimationDurationMS(files[manifest.Entrypoint])
 		if err != nil {
@@ -581,6 +581,9 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 		}
 		request.Files[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(request.Files[manifest.Entrypoint])
 		return request, nil
+	}
+	if err := prepareArtifactV3Runtime(manifest.AnimationProfile, manifest.Entrypoint, request.Files); err != nil {
+		return htmlcapture.Request{}, err
 	}
 	request.TemporalStates = true
 	encoded, err := json.Marshal(times)
@@ -1326,6 +1329,9 @@ func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest
 			return htmlcapture.AnimationRequest{}, errors.New("profiled animation requires authored timing declaration")
 		}
 		files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
+	}
+	if err := prepareArtifactV3Runtime(manifest.AnimationProfile, manifest.Entrypoint, files); err != nil {
+		return htmlcapture.AnimationRequest{}, err
 	}
 	// Native V3 accepts CSS/WAAPI motion. The server-owned adapter below makes
 	// those timelines deterministically seekable even when author code does not

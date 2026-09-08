@@ -493,6 +493,9 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 		w.WriteHeader(http.StatusNoContent)
 	})
 	prefix := "/" + token + "/"
+	// Opaque sandbox origins need explicit CORS and a token-scoped script source
+	// for ES modules. This does not grant same-origin privileges or network access.
+	scriptSource := "http://" + listener.Addr().String() + prefix
 	mux.HandleFunc(prefix, func(w http.ResponseWriter, req *http.Request) {
 		name := strings.TrimPrefix(req.URL.Path, prefix)
 		if req.Method != "GET" || name == "" || path.Clean(name) != name || strings.Contains(name, "\\") {
@@ -504,7 +507,7 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 			http.NotFound(w, req)
 			return
 		}
-		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'none'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' "+scriptSource+"; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'none'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
 		switch strings.ToLower(filepath.Ext(name)) {
@@ -513,6 +516,8 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 		case ".css":
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		case ".js":
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		}
 		_, _ = w.Write(body)

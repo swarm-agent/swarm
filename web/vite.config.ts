@@ -46,6 +46,11 @@ function bundleAnimationRuntimes(): Plugin {
         ...animationRuntimeAssets().map(([source, target]) => copyFile(source, path.join(outputDirectory, target))),
         copyFile(path.resolve(import.meta.dirname, '..', 'THIRD_PARTY_NOTICES.md'), path.join(outputDirectory, 'THIRD_PARTY_NOTICES.md')),
       ])
+      const threeFiles = ['three.module.js', 'three.core.js']
+      const files = Object.fromEntries(await Promise.all(threeFiles.map(async (name) => [name, createHash('sha256').update(await readFile(path.join(outputDirectory, name))).digest('hex')])))
+      const threePackage = JSON.parse(await readFile(path.join(packageRoot(packageRequire.resolve('three'), 'three'), 'package.json'), 'utf8'))
+      if (threePackage.version !== '0.185.1') throw new Error('Unreviewed Three.js runtime version')
+      await writeFile(path.join(outputDirectory, 'three-manifest.json'), JSON.stringify({ version: threePackage.version, files }))
     },
     configureServer(server) {
       server.middlewares.use('/swarm-animation-runtime', (request, response, next) => {

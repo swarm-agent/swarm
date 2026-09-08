@@ -43,8 +43,8 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if err != nil {
 		return nil, err
 	}
-	if profile != nil && profile.ProfileID != "motion_ui" {
-		return nil, errors.New("direct Artifact V3 HTML currently supports animation_profile motion_ui only")
+	if profile != nil && profile.ProfileID != "motion_ui" && profile.ProfileID != "spatial_3d" {
+		return nil, errors.New("direct Artifact V3 HTML supports reviewed animation_profile motion_ui or spatial_3d only")
 	}
 	_, narrationPlan := args["narration_plan"]
 	if narrationPlan {
@@ -111,7 +111,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 			if requested.Kind == "temporal" {
 				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > durationMS {
-					return nil, errors.New("native temporal Parts require motion_ui and 0 <= start_ms < end_ms <= canonical animation duration within the 36000-frame budget")
+					return nil, errors.New("native temporal Parts require motion_ui or spatial_3d and 0 <= start_ms < end_ms <= canonical animation duration within the 36000-frame budget")
 				}
 				derived.StartMs, derived.EndMs = requested.StartMs, requested.EndMs
 			}

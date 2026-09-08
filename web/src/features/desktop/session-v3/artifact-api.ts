@@ -1482,7 +1482,7 @@ export function buildDesktopV3ArtifactSandboxDocument(
   if (runtimeScripts.length !== (runtimeAssets?.scripts.length ?? 0) || Object.keys(runtimeModules).length !== Object.keys(runtimeAssets?.modules ?? {}).length || Object.keys(runtimeWasm).length !== Object.keys(runtimeAssets?.wasm ?? {}).length) {
     throw new Error('Animation runtime assets must be same-install URLs')
   }
-  const runtimeSourcePolicy = runtimeScripts.length || Object.keys(runtimeModules).length || Object.keys(runtimeWasm).length ? window.location.origin : ''
+  const runtimeSourcePolicy = runtimeScripts.length || Object.keys(runtimeModules).length || Object.keys(runtimeWasm).length ? new URL(reviewedRuntimePath, window.location.origin).toString() : ''
   const policy = document.createElement('meta')
   policy.httpEquiv = 'Content-Security-Policy'
   policy.content = [
