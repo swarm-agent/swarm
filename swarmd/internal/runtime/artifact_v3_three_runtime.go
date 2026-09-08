@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -21,6 +22,10 @@ import (
 // read from the same installed Desktop distribution, never from authored files,
 // a package resolver, a CDN, or a guessed development checkout.
 func prepareArtifactV3Runtime(profile *pebblestore.SessionArtifactAnimationProfile, entry string, files map[string][]byte) error {
+	return prepareArtifactV3RuntimeWithModuleURL(profile, entry, files, "")
+}
+
+func prepareArtifactV3RuntimeWithModuleURL(profile *pebblestore.SessionArtifactAnimationProfile, entry string, files map[string][]byte, moduleURL string) error {
 	if err := artifact.ValidateAnimationProfileSnapshot(profile); err != nil {
 		return err
 	}
@@ -110,7 +115,9 @@ func prepareArtifactV3Runtime(profile *pebblestore.SessionArtifactAnimationProfi
 	if dir := path.Dir(entry); dir != "." {
 		prefix = strings.Repeat("../", len(strings.Split(dir, "/")))
 	}
-	moduleURL := prefix + "swarm-animation-runtime/three.module.js"
+	if moduleURL == "" {
+		moduleURL = prefix + "swarm-animation-runtime/three.module.js"
+	}
 	encoded, _ := json.Marshal(map[string]any{"imports": map[string]string{"three": moduleURL}})
 	config, _ := json.Marshal(map[string]any{"modules": map[string]string{"three": moduleURL}, "wasm": map[string]string{}})
 	injection := []byte(`<script type="importmap">` + string(encoded) + `</script><script>globalThis.__SWARM_ANIMATION_RUNTIME__=` + string(config) + `;</script>`)
@@ -132,4 +139,31 @@ func prepareArtifactV3Runtime(profile *pebblestore.SessionArtifactAnimationProfi
 		files[name] = body
 	}
 	return nil
+}
+
+// Live serving has no capture bootstrap: authored autoplay, controls and lifecycle
+// retain ownership. Both module edges carry the exact revision and access grant;
+// URL resolution of a relative ES import would otherwise drop the query string.
+func artifactV3LiveRuntimeFiles(profile *pebblestore.SessionArtifactAnimationProfile, entry string, source []byte, sessionID, artifactID, revisionRef, accessToken string) (map[string][]byte, error) {
+	prefix := "/v3/sessions/" + url.PathEscape(sessionID) + "/artifacts-v3/" + url.PathEscape(artifactID) + "/preview/"
+	if accessToken != "" {
+		prefix += "access/" + url.PathEscape(accessToken) + "/"
+	}
+	prefix += "files/swarm-animation-runtime/"
+	query := "?revision=" + url.QueryEscape(revisionRef)
+	files := map[string][]byte{entry: source}
+	if err := prepareArtifactV3RuntimeWithModuleURL(profile, entry, files, prefix+"three.module.js"+query); err != nil {
+		return nil, err
+	}
+	// Only trusted, integrity-checked dependency bytes are rewritten, never Git.
+	for _, name := range []string{"three.module.js", "three.core.js"} {
+		key := "swarm-animation-runtime/" + name
+		for _, dependency := range []string{"three.module.js", "three.core.js"} {
+			encoded, _ := json.Marshal(prefix + dependency + query)
+			for _, quote := range []string{"'", "\""} {
+				files[key] = bytes.ReplaceAll(files[key], []byte(quote+"./"+dependency+quote), encoded)
+			}
+		}
+	}
+	return files, nil
 }

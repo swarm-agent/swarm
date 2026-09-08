@@ -350,6 +350,15 @@ func (s *Server) handleSessionV3ArtifactsV3(w http.ResponseWriter, r *http.Reque
 		// explicit CORP policy Chromium blocks same-endpoint CSS/JS as
 		// ERR_BLOCKED_BY_ORB even though the authenticated request succeeds.
 		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		// Module scripts use CORS even inside the opaque sandbox. Only an
+		// authenticated, revision-bound preview capability may expose module
+		// bytes to that null origin; this does not allow credentialed CORS.
+		if accessToken != "" && r.Header.Get("Origin") == "null" && strings.HasSuffix(assetPath, ".js") {
+			if _, valid := s.validateSessionV3ArtifactPreviewRequest(r); valid {
+				w.Header().Set("Access-Control-Allow-Origin", "null")
+				w.Header().Add("Vary", "Origin")
+			}
+		}
 		w.Header().Set("Cache-Control", "private, no-store")
 		if strings.TrimSpace(preview.ETag) != "" {
 			w.Header().Set("ETag", preview.ETag)

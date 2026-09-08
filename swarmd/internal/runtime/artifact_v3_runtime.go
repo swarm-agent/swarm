@@ -830,9 +830,26 @@ func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal ap
 			mediaType = "application/octet-stream"
 		}
 	}
-	body, err := repository.ReadFile(ctx, revision.CommitOID, filePath)
-	if err != nil {
-		return api.ArtifactV3Preview{}, err
+	var body []byte
+	if profile := revision.Manifest.AnimationProfile; profile != nil && profile.ProfileID == "spatial_3d" && (filePath == revision.Manifest.Entrypoint || strings.HasPrefix(filePath, "swarm-animation-runtime/")) {
+		source, readErr := repository.ReadFile(ctx, revision.CommitOID, revision.Manifest.Entrypoint)
+		if readErr != nil {
+			return api.ArtifactV3Preview{}, readErr
+		}
+		files, prepareErr := artifactV3LiveRuntimeFiles(profile, revision.Manifest.Entrypoint, source, sessionID, artifactID, revision.RevisionRef, accessToken)
+		if prepareErr != nil {
+			return api.ArtifactV3Preview{}, prepareErr
+		}
+		var ok bool
+		body, ok = files[filePath]
+		if !ok {
+			return api.ArtifactV3Preview{}, pebblestore.ErrArtifactV3NotFound
+		}
+	} else {
+		body, err = repository.ReadFile(ctx, revision.CommitOID, filePath)
+		if err != nil {
+			return api.ArtifactV3Preview{}, err
+		}
 	}
 	if filePath == revision.Manifest.Entrypoint {
 		body = rewriteArtifactV3PreviewReferences(body, revision.Manifest.Entrypoint, sessionID, artifactID, revision.RevisionRef, accessToken)
