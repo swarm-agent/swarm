@@ -30,6 +30,7 @@ const (
 	V3RealtimeKindWorksetSessionRemoved    = "workset.session.removed"
 	V3RealtimeKindNotificationResource     = "notification.resource.updated"
 	V3RealtimeKindAITaskResource           = "task.lifecycle.updated"
+	V3RealtimeKindWorkspaceCatalog         = "workspace.catalog.updated"
 	V3RealtimeKindAuthResource             = "auth.credentials.updated"
 	V3RealtimeKindAuthDenied               = "auth.denied"
 	V3RealtimeKindSlowConsumer             = "slow_consumer.reconnect_required"
@@ -182,6 +183,11 @@ func ValidateV3RealtimeSchemaMessage(message V3RealtimeMessage) error {
 			return errors.New("v3 realtime task.lifecycle.updated requires endpoint_cursor and task")
 		}
 		return nil
+	case V3RealtimeKindWorkspaceCatalog:
+		if strings.TrimSpace(message.EndpointCursor) == "" {
+			return errors.New("workspace catalog update requires endpoint_cursor")
+		}
+		return nil
 	case V3RealtimeKindAuthResource:
 		if strings.TrimSpace(message.EndpointCursor) == "" || message.Auth == nil {
 			return errors.New("v3 realtime auth.credentials.updated requires endpoint_cursor and auth")
@@ -317,6 +323,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 		V3RealtimeKindWorksetSessionRemoved,
 		V3RealtimeKindNotificationResource,
 		V3RealtimeKindAITaskResource,
+		V3RealtimeKindWorkspaceCatalog,
 		V3RealtimeKindAuthResource,
 		V3RealtimeKindAuthDenied,
 		V3RealtimeKindSlowConsumer:
@@ -328,7 +335,7 @@ func ValidateV3RealtimeOutboundServerMessage(message V3RealtimeMessage) error {
 
 func v3RealtimeKindAllowed(kind string) bool {
 	switch kind {
-	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
+	case V3RealtimeKindHello, V3RealtimeKindEvent, V3RealtimeKindReplayStart, V3RealtimeKindReplayDone, V3RealtimeKindCursorError, V3RealtimeKindKeepalive, V3RealtimeKindEndpointWatermark, V3RealtimeKindHighWater, V3RealtimeKindSubscribe, V3RealtimeKindUnsubscribe, V3RealtimeKindResume, V3RealtimeKindWorksetSessionDiscovered, V3RealtimeKindWorksetSessionUpdated, V3RealtimeKindWorksetSessionRemoved, V3RealtimeKindNotificationResource, V3RealtimeKindAITaskResource, V3RealtimeKindWorkspaceCatalog, V3RealtimeKindAuthResource, V3RealtimeKindAuthDenied, V3RealtimeKindSlowConsumer:
 		return true
 	default:
 		return false

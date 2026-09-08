@@ -1,3 +1,4 @@
+import { refreshWorkspaceCatalog } from '../../workspaces/launcher/services/workspace-catalog-refresh'
 import type { QueryClient } from '@tanstack/react-query'
 
 import { queryClient as desktopQueryClient } from '../../../app/query-client'
@@ -11,7 +12,7 @@ import type { WorkspaceOverviewResponse } from '../../workspaces/launcher/types/
 import type { UISettingsWire } from '../settings/swarm/types/swarm-settings'
 import { refreshOpenDesktopV3ArtifactCatalogs } from '../session-v3/artifact-catalog-refresh'
 
-export type DesktopV3ClientEffectType = 'refresh_agents' | 'refresh_themes' | 'refresh_providers' | 'refresh_artifacts'
+export type DesktopV3ClientEffectType = 'refresh_agents' | 'refresh_themes' | 'refresh_providers' | 'refresh_artifacts' | 'refresh_workspaces'
 
 export interface DesktopV3ClientEffect {
   type: DesktopV3ClientEffectType
@@ -27,6 +28,7 @@ export interface DesktopV3ClientEffectRunnerDeps {
   refreshThemes: () => Promise<void>
   refreshProviders: () => Promise<void>
   refreshArtifacts: () => Promise<void>
+  refreshWorkspaces?: () => Promise<void>
   reportError: (effect: DesktopV3ClientEffectType, error: unknown) => void
 }
 
@@ -78,6 +80,9 @@ const ARTIFACT_CATALOG_MUTATION_EVENT_TYPES = new Set([
 ])
 
 export function durableClientEffectsFromRealtimeFrame(frame: RealtimeMessage): DesktopV3DurableClientEffects | null {
+  if (frame.kind === 'workspace.catalog.updated') {
+    return frame.endpoint_cursor ? { eventIdentity: `catalog:${frame.endpoint_cursor}`, effects: [{ type: 'refresh_workspaces' }] } : null
+  }
   if (frame.kind === 'auth.credentials.updated') {
     const eventSequence = numberValue(frame.auth?.event_sequence)
     const accountScopeID = stringValue(frame.auth?.account_scope_id)
@@ -138,6 +143,11 @@ export class DesktopV3ClientEffectRunner {
     this.scheduleDrain()
   }
 
+  refreshWorkspaceCatalog(): void {
+    this.pendingEffects.add('refresh_workspaces')
+    this.scheduleDrain()
+  }
+
   refreshArtifactCatalogs(): void {
     this.pendingEffects.add('refresh_artifacts')
     this.scheduleDrain()
@@ -177,6 +187,7 @@ export class DesktopV3ClientEffectRunner {
           if (effect === 'refresh_themes') await this.deps.refreshThemes()
           if (effect === 'refresh_providers') await this.deps.refreshProviders()
           if (effect === 'refresh_artifacts') await this.deps.refreshArtifacts()
+          if (effect === 'refresh_workspaces') await this.deps.refreshWorkspaces?.()
         } catch (error) {
           this.deps.reportError(effect, error)
         }
@@ -214,6 +225,7 @@ export function createDefaultDesktopV3ClientEffectRunnerDeps(
       ])
     },
     refreshArtifacts: refreshOpenDesktopV3ArtifactCatalogs,
+    refreshWorkspaces: () => refreshWorkspaceCatalog(queryClient),
     reportError: (effect, error) => {
       console.error(`[desktop-v3] client effect ${effect} failed`, error)
     },

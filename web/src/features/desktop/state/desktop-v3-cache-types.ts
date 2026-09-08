@@ -565,6 +565,7 @@ export type RealtimeKind =
   | 'live.patch'
   | 'notification.resource.updated'
   | 'task.lifecycle.updated'
+  | 'workspace.catalog.updated'
   | 'auth.credentials.updated'
 
 export interface RealtimeMessage {

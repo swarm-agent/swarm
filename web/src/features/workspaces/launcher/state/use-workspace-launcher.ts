@@ -161,7 +161,10 @@ function workspacesEqual(left: WorkspaceEntry[], right: WorkspaceEntry[]): boole
     const leftWorkspace = left[index]
     const rightWorkspace = right[index]
     if (
-      leftWorkspace.path !== rightWorkspace.path
+      leftWorkspace.workspaceId !== rightWorkspace.workspaceId
+      || leftWorkspace.workspaceGeneration !== rightWorkspace.workspaceGeneration
+      || leftWorkspace.localWorkspaceBindingId !== rightWorkspace.localWorkspaceBindingId
+      || leftWorkspace.path !== rightWorkspace.path
       || leftWorkspace.workspaceName !== rightWorkspace.workspaceName
       || leftWorkspace.themeId !== rightWorkspace.themeId
       || leftWorkspace.iconPNGDataURL !== rightWorkspace.iconPNGDataURL
@@ -225,7 +228,7 @@ function isDefaultWorkspaceOverviewKey(queryKey: readonly unknown[]): boolean {
   }
   const roots = Reflect.get(params, 'roots')
   const sessionLimit = Reflect.get(params, 'sessionLimit')
-  return Array.isArray(roots) && roots.length === 0 && sessionLimit === 25 && Reflect.get(params, 'includeDetails') !== false
+  return Array.isArray(roots) && roots.length === 0 && sessionLimit === 25
 }
 
 export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}): UseWorkspaceLauncherState {
@@ -380,7 +383,10 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     const defaultOverviewKey = workspaceOverviewQueryKey([], 25)
     const settingsKey = uiSettingsQueryKey()
     const syncFromOverviewCache = () => {
-      const overview = queryClient.getQueryData<WorkspaceOverviewResponse>(defaultOverviewKey)
+      const details = queryClient.getQueryState<WorkspaceOverviewResponse>(defaultOverviewKey)
+      const catalog = queryClient.getQueryState<WorkspaceOverviewResponse>(workspaceOverviewQueryKey([], 25, false))
+      const overview = catalog?.data && catalog.dataUpdatedAt > (details?.dataUpdatedAt ?? 0)
+        ? catalog.data : details?.data ?? catalog?.data
       if (!overview) {
         return
       }
@@ -410,6 +416,13 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       // React Query also emits observer option/result notifications while hooks are
       // rendering. Updating launcher state from those notifications can recurse
       // through React's setOptions path and trigger error #185 in production.
+      if (event.type === 'updated' && isDefaultWorkspaceOverviewKey(event.query.queryKey)) {
+        if (event.action.type === 'error') {
+          scheduleCacheSync(() => setLoadError(event.query.state.error instanceof Error ? event.query.state.error.message : 'Workspace updates are unavailable'))
+        } else if (event.action.type === 'success') {
+          scheduleCacheSync(() => setLoadError(null))
+        }
+      }
       if (event.type !== 'updated' || event.action.type !== 'success') {
         return
       }

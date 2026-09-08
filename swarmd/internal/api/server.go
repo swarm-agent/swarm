@@ -324,6 +324,13 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 	if notificationSvc, ok := notificationSvc.(*notification.Service); ok {
 		notificationSvc.SetRealtimePublisher(server.publishNotificationV3Realtime)
 	}
+	if server.workspace != nil {
+		server.workspace.SetCatalogPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
+			if err := server.publishCommittedV3RealtimeOutbox(record); err != nil {
+				log.Printf("workspace catalog realtime wake failed: %v", err)
+			}
+		})
+	}
 	if authSvc != nil {
 		authSvc.SetCredentialChangePublisher(server.publishAuthCredentialV3Realtime)
 	}

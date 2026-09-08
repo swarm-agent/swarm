@@ -169,6 +169,12 @@ func (s *Service) FailDefinitionForPrincipal(principal identity.Principal, path 
 	return s.store.FailDefinitionForAccount(principal.AccountScopeID, path, generation, failure, suggestion, attempts)
 }
 
+func (s *Service) SetCatalogPublisher(publish func(pebblestore.V3RealtimeOutboxRecord)) {
+	if s != nil && s.store != nil {
+		s.store.SetCatalogPublisher(publish)
+	}
+}
+
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
 	if s == nil {
 		return
