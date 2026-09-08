@@ -40,6 +40,7 @@ const (
 	artifactV3ActionDiff    = "diff"
 	artifactV3ActionBuild   = "build_preview"
 	artifactV3ActionFinish  = "finish_turn"
+	artifactV3ActionReconcile = "reconcile_parts"
 )
 
 type ArtifactV3AuthorLimits struct {
@@ -88,6 +89,8 @@ type ArtifactV3AuthorGrant struct {
 }
 
 func (g ArtifactV3AuthorGrant) Allows(action string) bool {
+	// Reconciliation is a constrained edit, not a new capability escalation.
+	if action == artifactV3ActionReconcile { return g.RevisionIntent == pebblestore.ArtifactV3RevisionWholeProject && g.Allows(artifactV3ActionEdit) }
 	for _, allowed := range g.AllowedActions {
 		if strings.EqualFold(strings.TrimSpace(allowed), strings.TrimSpace(action)) {
 			return true
@@ -352,10 +355,59 @@ func NewArtifactV3AuthorService(root string, repository ArtifactV3AuthorReposito
 func artifactV3AuthorDefinition() Definition {
 	return Definition{Type: "function", Name: "artifact_v3_author", Description: "Context-bound whole-project Artifact V3 authoring. Operates on the complete exact base tree with ordinary file operations, repeated server-owned build/browser preview gates, and one final complete candidate. Targets express user intent and do not restrict coherent cross-project edits; only server-locked paths are immutable. Destination, repository, refs, policy, build commands, and output paths are injected and cannot be caller supplied.", Parameters: map[string]any{
 		"type": "object", "properties": map[string]any{
-			"action": map[string]any{"type": "string", "enum": []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish}},
+			"action": map[string]any{"type": "string", "enum": []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish, artifactV3ActionReconcile}},
+			"native_parts": artifactV3NativePartsSchema(),
 			"path":   map[string]any{"type": "string", "maxLength": 512}, "to_path": map[string]any{"type": "string", "maxLength": 512}, "content": map[string]any{"type": "string"}, "old_string": map[string]any{"type": "string", "description": "Exact literal substring from decoded read_file Content, not JSON escape notation. Must match once unless replace_all is true. On mismatch, read again before retrying; no mutation occurs."}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}, "cursor": map[string]any{"type": "string", "maxLength": 1024}, "limit": map[string]any{"type": "integer", "minimum": 1}, "offset": map[string]any{"type": "integer", "minimum": 0},
 		}, "required": []string{"action"}, "additionalProperties": false,
 	}}
+}
+
+// Share the exact native Part contract across primary and managed authoring.
+func artifactV3NativePartsSchema() map[string]any {
+	return map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Complete replacement Parts for explicit whole_project intent only. Preserve continuing IDs; add/remove/rebind meaningful output locators after editing source. Non-Part policy stays immutable. Run build_preview to resolve browser selectors/states and temporal captures before finish_turn.", "items": map[string]any{
+		"type": "object", "additionalProperties": false, "required": []string{"id", "label", "locator"}, "properties": map[string]any{
+			"id": map[string]any{"type": "string"}, "label": map[string]any{"type": "string"}, "capture_time_ms": map[string]any{"type": "integer", "minimum": 0},
+			"locator": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{
+				"kind": map[string]any{"type": "string", "enum": []string{"file", "selector", "state", "semantic"}}, "path": map[string]any{"type": "string"}, "value": map[string]any{"type": "string"}, "paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			}},
+		},
+	}}
+}
+
+func parseArtifactV3NativeParts(raw any) ([]pebblestore.ArtifactV3Part, error) {
+	body, err := json.Marshal(raw)
+	if err != nil { return nil, ErrArtifactV3AuthorInvalid }
+	var parts []pebblestore.ArtifactV3Part
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&parts) != nil || len(parts) == 0 || len(parts) > 256 { return nil, ErrArtifactV3AuthorInvalid }
+	return parts, nil
+}
+
+// ReconcileParts is the sole revision manifest mutation path. Validate the
+// complete prospective tree before writing; browser locator resolution remains
+// mandatory at the invalidated build/preview gate.
+func (s *ArtifactV3AuthorService) ReconcileParts(ctx context.Context, p ArtifactV3AuthorPrincipal, g ArtifactV3AuthorGrant, parts []pebblestore.ArtifactV3Part) error {
+	defer s.lockTurn(g)()
+	if g.Initial || g.RevisionIntent != pebblestore.ArtifactV3RevisionWholeProject { return ErrArtifactV3AuthorLocked }
+	state, err := s.state(ctx, p, g, artifactV3ActionReconcile)
+	if err != nil { return err }
+	if len(parts) == 0 || len(parts) > 256 { return ErrArtifactV3AuthorInvalid }
+	for _, locked := range g.LockedPaths { if locked == pebblestore.ArtifactV3ManifestFilename { return ErrArtifactV3AuthorLocked } }
+	project, err := artifactV3Snapshot(state.root, g.Limits.normalized())
+	if err != nil { return err }
+	var manifest pebblestore.ArtifactV3Manifest
+	if json.Unmarshal(state.base[pebblestore.ArtifactV3ManifestFilename], &manifest) != nil { return ErrArtifactV3AuthorInvalid }
+	manifest.Parts = parts
+	body, err := json.Marshal(manifest)
+	if err != nil { return err }
+	project[pebblestore.ArtifactV3ManifestFilename] = body
+	limits := g.Limits.normalized()
+	if _, err = pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: project}, pebblestore.ArtifactV3Limits{MaxFileBytes: limits.MaxFileBytes, MaxTreeBytes: limits.MaxTreeBytes, MaxFiles: limits.MaxFiles, MaxPathBytes: limits.MaxPathBytes, MaxPathDepth: limits.MaxPathDepth, MaxParts: 256}); err != nil { return err }
+	for _, part := range parts { if part.CaptureTimeMS != nil && (*part.CaptureTimeMS < 0 || manifest.AnimationProfile == nil) { return ErrArtifactV3AuthorInvalid } }
+	if err = artifactV3WriteRegular(state.root, pebblestore.ArtifactV3ManifestFilename, body, false, limits); err != nil { return err }
+	s.invalidate(state)
+	return s.persist(ctx, state, nil)
 }
 
 // File payloads are bytes, not identifiers: never trim meaningful whitespace.
@@ -505,6 +557,13 @@ func (r *Runtime) executeArtifactV3Author(ctx context.Context, scope WorkspaceSc
 		if err = requireOnlyArtifactV3Fields(args, "action", "path"); err == nil {
 			err = r.artifactV3Author.Delete(ctx, principal, run.Grant, mapString(args, "path"))
 			result = map[string]any{"path": mapString(args, "path")}
+		}
+	case artifactV3ActionReconcile:
+		if err = requireOnlyArtifactV3Fields(args, "action", "native_parts"); err == nil {
+			var parts []pebblestore.ArtifactV3Part
+			parts, err = parseArtifactV3NativeParts(args["native_parts"])
+			if err == nil { err = r.artifactV3Author.ReconcileParts(ctx, principal, run.Grant, parts) }
+			result = map[string]any{"parts": parts, "message": "Parts reconciled; build_preview is required before finish_turn."}
 		}
 	case artifactV3ActionDiff:
 		if err = requireOnlyArtifactV3Fields(args, "action"); err == nil {
@@ -1018,6 +1077,7 @@ func artifactV3SafeDiagnostic(stage string, err error) ArtifactV3Diagnostic {
 	return ArtifactV3Diagnostic{Stage: stage, Code: code, Message: message}
 }
 func artifactV3Locked(g ArtifactV3AuthorGrant, path string) bool {
+	if !g.Initial && path == pebblestore.ArtifactV3ManifestFilename { return true }
 	for _, value := range g.LockedPaths {
 		if strings.TrimSpace(value) == path {
 			return true

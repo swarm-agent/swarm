@@ -195,8 +195,9 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 	}
 	if raw, supplied := args["native_parts"]; supplied {
 		if intent != pebblestore.ArtifactV3RevisionWholeProject { return nil, ErrArtifactV3AuthorLocked }
-		encoded, err := json.Marshal(raw)
-		if err != nil || json.Unmarshal(encoded, &manifestParts) != nil { return nil, ErrArtifactV3AuthorInvalid }
+		var err error
+		manifestParts, err = parseArtifactV3NativeParts(raw)
+		if err != nil { return nil, err }
 	}
 	manifest.Parts = manifestParts
 	proposedManifest, err := json.Marshal(manifest)
@@ -253,7 +254,7 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		return fail("html_write_failed", err)
 	}
 	if _, supplied := args["native_parts"]; supplied {
-		if err := r.artifactV3Author.Edit(ctx, author, grant, pebblestore.ArtifactV3ManifestFilename, baseProject[pebblestore.ArtifactV3ManifestFilename], proposedManifest, false); err != nil { return fail("parts_reconciliation_failed", err) }
+		if err := r.artifactV3Author.ReconcileParts(ctx, author, grant, manifestParts); err != nil { return fail("parts_reconciliation_failed", err) }
 	}
 	gate, err := r.artifactV3Author.BuildPreview(ctx, author, grant)
 	if err != nil {

@@ -239,7 +239,10 @@ func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV
 		return ArtifactV3Projection{}, err
 	}
 	var proposed ArtifactV3Manifest
-	if json.Unmarshal(input.Project.Files[ArtifactV3ManifestFilename], &proposed) != nil || !reflect.DeepEqual(base.Manifest.AnimationProfile, proposed.AnimationProfile) || (turn.RevisionIntent != ArtifactV3RevisionWholeProject && !reflect.DeepEqual(base.Manifest.Parts, proposed.Parts)) {
+	if json.Unmarshal(input.Project.Files[ArtifactV3ManifestFilename], &proposed) != nil { return ArtifactV3Projection{}, ErrArtifactV3Invalid }
+		basePolicy, proposedPolicy := base.Manifest, proposed
+		basePolicy.Parts, proposedPolicy.Parts = nil, nil
+		if !reflect.DeepEqual(basePolicy, proposedPolicy) || (turn.RevisionIntent != ArtifactV3RevisionWholeProject && !reflect.DeepEqual(base.Manifest.Parts, proposed.Parts)) {
 		return ArtifactV3Projection{}, ErrArtifactV3Invalid
 	}
 	if _, _, validationErr := repository.validateProject(input.Project); validationErr != nil {

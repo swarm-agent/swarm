@@ -292,7 +292,7 @@ func manageArtifactDefinition() Definition {
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
 				"artifact_v3_reference":  artifactV3Reference,
-				"native_parts": map[string]any{"type": "array", "maxItems": 256, "items": map[string]any{"type": "object"}, "description": "Whole-project revise_v3 only: canonical native Parts replacing manifest Parts, validated against the complete project; all other manifest policy is preserved."},
+				"native_parts": artifactV3NativePartsSchema(),
 				"turn_id": map[string]any{"type": "string"},
 				"candidate_id": map[string]any{"type": "string"},
 				"expected_head": map[string]any{"type": "string"},
