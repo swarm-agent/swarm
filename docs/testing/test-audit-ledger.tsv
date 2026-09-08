@@ -6273,3 +6273,5 @@ ta-theme-workspace-selection	go-test	swarmd/internal/tool/runtime_manage_theme_w
 # f848264fa1fd108ff53968b7c4f736d885a56060b2b93200691e0d806215594b swarmd/internal/tool/runtime_manage_artifact_v3_native_test.go
 # a5afdd4fc21ed30b102ceb7a421b11c8df5a10d1e7d13ff350cabb5239779b5e swarmd/internal/tool/runtime_manage_artifact_v3_recovery_test.go
 # efe9eff013ab9cef7e5bdeec4a463aa7732dfd01a87befc5d9e5a1e7a22119bf web/src/features/desktop/session-v3/native-artifact-selection.spec.ts
+
+# 2026-09-08 new run/designer_native_progress_test.go: native successful mutation resets consecutive failure budget; reads cannot reset; twelve total failures stop despite progress. Production ObserveSkipping boundary, focused tests passed twice. Independent P1/P2 pending; not added to curated runner.
