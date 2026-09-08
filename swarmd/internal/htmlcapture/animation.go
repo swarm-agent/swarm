@@ -27,7 +27,7 @@ import (
 
 const (
 	AnimationVersion            = "swarm.animation/v1"
-	MaxAnimationDurationMS      = 10 * 60 * 1000
+	MaxAnimationDurationMS      = MaxAnimationFrames * 1000 // derived at 1 FPS
 	MaxAnimationFPS             = 60
 	MaxAnimationFrames          = 36_000
 	MaxMP4Bytes                 = 512 << 20
@@ -160,13 +160,17 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	if err != nil {
 		return AnimationResult{}, err
 	}
+	// Preflight must reject an oversized selected derivative as well as source timing.
+	if _, err := AnimationFrameBudget(int64(req.DurationMS), encoding.FPS); err != nil {
+		return AnimationResult{}, err
+	}
 	renderFPS := encoding.FPS
 	if preflightOnly {
 		renderFPS = req.FPS
 	}
-	frameCount = (req.DurationMS*renderFPS + 999) / 1000
-	if frameCount < 1 || frameCount > MaxAnimationFrames {
-		return AnimationResult{}, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
+	frameCount, err = AnimationFrameBudget(int64(req.DurationMS), renderFPS)
+	if err != nil {
+		return AnimationResult{}, err
 	}
 	capacity := r.sem
 	if preflightOnly {
@@ -429,7 +433,12 @@ rendererCapacityAcquired:
 		}
 		return frame, nil
 	}
-	writeFrame := func(frame []byte) error { return writeAll(encoderInput, frame) }
+	writeFrame := func(frame []byte) error {
+		if info, err := os.Stat(outputPath); err == nil && info.Size() > MaxMP4Bytes {
+			return NewError("animation_source_limit_exceeded", "MP4 exceeds the 512 MiB storage budget; reduce complexity or split the job")
+		}
+		return writeAll(encoderInput, frame)
+	}
 	pipelineErr := runOrderedFramePipeline(ctx, frameCount, encoding.Workers, encoding.BufferFrames, capture, writeFrame, func(completed int) {
 		emit("frame_capture", completed, frameCount)
 	})
@@ -448,6 +457,10 @@ rendererCapacityAcquired:
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, newErrorWithCause("animation_encode_failed", "trusted MP4 encoder failed", errors.New(strings.TrimSpace(encoderOutput.String())))
 	}
 	timings["frame_capture_and_encode"] = time.Since(captureStartedAt)
+	info, err := os.Stat(outputPath)
+	if err != nil || info.Size() <= 0 || info.Size() > MaxMP4Bytes {
+		return AnimationResult{}, NewError("animation_mp4_invalid", "encoded MP4 exceeds the 512 MiB storage budget; reduce complexity or split the job")
+	}
 	mp4, err := os.ReadFile(outputPath)
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
@@ -468,11 +481,7 @@ func validateAnimationRequest(req AnimationRequest) (int, error) {
 	if strings.TrimSpace(req.Entry) == "" || len(req.Files) == 0 || !entryExists || entry == nil || len(entry) == 0 || req.DurationMS < 100 || req.DurationMS > MaxAnimationDurationMS || req.FPS < 1 || req.FPS > MaxAnimationFPS {
 		return 0, NewError("animation_source_limit_exceeded", "animation request exceeds fixed renderer bounds")
 	}
-	frameCount := (req.DurationMS*req.FPS + 999) / 1000
-	if frameCount < 1 || frameCount > MaxAnimationFrames {
-		return 0, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
-	}
-	return frameCount, nil
+	return AnimationFrameBudget(int64(req.DurationMS), req.FPS)
 }
 
 type animationEncoding struct {

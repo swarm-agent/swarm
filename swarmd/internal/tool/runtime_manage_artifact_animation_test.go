@@ -179,7 +179,7 @@ func TestExportHTMLAnimationRejectsManifestBoundsAndUnreviewedProfile(t *testing
 		t.Fatal("renderer called before profile validation")
 	}
 	authority.variant.AnimationProfile = reviewedMotionProfile(t)
-	authority.readBody = []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":600001,"fps":30}</script>`)
+	authority.readBody = []byte(`<!doctype html><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":1200001,"fps":30}</script>`)
 	if _, err := runtime.executeManageArtifact(ctx, scope, "animation-bounds", args); err == nil || !strings.Contains(err.Error(), "animation_manifest_invalid") {
 		t.Fatalf("manifest bounds error = %v", err)
 	}

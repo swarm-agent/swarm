@@ -147,7 +147,7 @@ func TestTemporalStoryboardRejectsInvalidManifestWithoutRendering(t *testing.T) 
 		"blank filming":      func(b *Storyboard) { b.Sections[1].FilmingRequirements = []string{" "} },
 		"invalid production": func(b *Storyboard) { b.Sections[1].ProductionState = "complete" },
 		"zero duration":      func(b *Storyboard) { b.Sections[1].DurationMs = 0 },
-		"total budget":       func(b *Storyboard) { b.Sections[1].DurationMs = 60000 },
+		"total budget":       func(b *Storyboard) { b.Sections[1].DurationMs = 1200000 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

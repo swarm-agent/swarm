@@ -498,8 +498,11 @@ func parseAnimationManifest(html []byte) (animationManifest, error) {
 	if err := decoder.Decode(&manifest); err != nil || ensureJSONEOF(decoder) != nil {
 		return animationManifest{}, animationError("animation_manifest_invalid", "animation manifest is malformed")
 	}
-	if manifest.Version != htmlcapture.AnimationVersion || manifest.DurationMS < 100 || manifest.DurationMS > htmlcapture.MaxAnimationDurationMS || manifest.FPS < 1 || manifest.FPS > htmlcapture.MaxAnimationFPS || (manifest.DurationMS*manifest.FPS+999)/1000 > htmlcapture.MaxAnimationFrames {
-		return animationManifest{}, animationError("animation_manifest_invalid", "animation manifest version, duration, FPS, or frame count is outside fixed bounds")
+	if manifest.Version != htmlcapture.AnimationVersion {
+		return animationManifest{}, animationError("animation_manifest_invalid", "animation manifest version is invalid")
+	}
+	if _, err := htmlcapture.AnimationFrameBudget(int64(manifest.DurationMS), manifest.FPS); err != nil {
+		return animationManifest{}, animationError("animation_manifest_invalid", err.Error())
 	}
 	return manifest, nil
 }

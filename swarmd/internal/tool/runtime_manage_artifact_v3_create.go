@@ -111,7 +111,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 			if requested.Kind == "temporal" {
 				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > durationMS {
-					return nil, errors.New("native temporal Parts require motion_ui and 0 <= start_ms < end_ms <= canonical animation duration (maximum 120000)")
+					return nil, errors.New("native temporal Parts require motion_ui and 0 <= start_ms < end_ms <= canonical animation duration within the 36000-frame budget")
 				}
 				derived.StartMs, derived.EndMs = requested.StartMs, requested.EndMs
 			}

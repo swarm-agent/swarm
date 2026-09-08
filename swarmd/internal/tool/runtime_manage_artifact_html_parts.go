@@ -3,7 +3,6 @@ package tool
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"regexp"
 	"strings"
 	"unicode"
@@ -115,9 +114,6 @@ func deriveArtifactHTMLParts(body []byte, mediaType string) []pebblestore.Sessio
 // for native creation and runtime preview; neither boundary invents timing.
 func ArtifactHTMLAnimationDurationMS(body []byte) (int64, error) {
 	manifest, err := parseAnimationManifest(body)
-	if err == nil && manifest.DurationMS > 120000 {
-		return 0, errors.New("native animation duration exceeds 120000 ms")
-	}
 	return int64(manifest.DurationMS), err
 }
 
