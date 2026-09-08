@@ -53,3 +53,51 @@ func TestAskUserChoiceWrapPreservesText(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: resolved ask-user cards must reconstruct the user's choice and
+// text from the durable permission reason after editor state is reset/reloaded.
+// specializedPermissionCardRows is the narrow rendering boundary; stale editor
+// state, missing answers, and denial must never fabricate a first-option pick.
+func TestAskUserResolvedResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason, decision, pick, response string
+	}{
+		{"suggestion", "Beta", "allow_once", "› 2 Beta", "Your response: Beta"},
+		{"custom", "S3 café terminalword", "allow_once", "› 3 Custom response", "S3 café terminalword"},
+		{"missing", "", "allow_once", "", "No response recorded"},
+		{"denied", "not an answer", "deny_once", "", "No response recorded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			record := client.PermissionRecord{ID: "ask", ToolName: "ask-user", Status: "resolved", Decision: tc.decision, Reason: tc.reason, ToolArguments: `{"question":"Choose","options":["Alpha","Beta"]}`}
+			for _, interaction := range []*permissionInteractionView{nil, {AskSelection: 0, AskAnswers: map[string]string{"q_1": "Alpha"}}} {
+				text := renderRowsText(specializedPermissionCardRows(record, 0, 60, testPageStyles(), false, false, "", interaction))
+				if !strings.Contains(text, tc.response) || (tc.pick != "" && !strings.Contains(text, tc.pick)) {
+					t.Fatalf("missing saved response or pick:\n%s", text)
+				}
+				for _, unwanted := range []string{"› 1 Alpha", "Response required", "S Submit", "Enter Select"} {
+					if strings.Contains(text, unwanted) {
+						t.Fatalf("resolved card retained %q:\n%s", unwanted, text)
+					}
+				}
+				if tc.pick == "" && strings.Contains(text, "›") {
+					t.Fatalf("fabricated a selection:\n%s", text)
+				}
+			}
+		})
+	}
+}
+
+// Requirement: every structured question's saved answer remains visible, not
+// only question one; labels may differ from submitted values. Use the existing
+// submission encoder and resolved-card boundary to verify their shared format.
+func TestAskUserResolvedMultipleResponses(t *testing.T) {
+	record := client.PermissionRecord{ID: "ask", ToolName: "ask-user", Status: "resolved", Decision: "allow_once", ToolArguments: `{"questions":[{"id":"target","question":"Where?","options":[{"label":"Staging","value":"stage"},{"label":"Production","value":"prod"}]},{"id":"note","question":"Why?","options":["First","Second"]}]}`}
+	intent, _ := parseAskUserIntent(record)
+	record.Reason, _ = askUserResolutionReason(intent, map[string]string{"target": "prod", "note": "my own reason"})
+	text := renderRowsText(specializedPermissionCardRows(record, 0, 60, testPageStyles(), false, false, "", nil))
+	for _, want := range []string{"Where?", "› 2 Production", "Your response: prod", "Why?", "› 3 Custom response", "Your response: my own reason"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q:\n%s", want, text)
+		}
+	}
+}
