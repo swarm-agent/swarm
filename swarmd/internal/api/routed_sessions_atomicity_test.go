@@ -274,7 +274,13 @@ func assertNoRoutedSessionDurableAuthority(t *testing.T, sessions *sessionruntim
 	if record, ok, err := sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationCreateSession, requestID); err != nil || ok {
 		t.Fatalf("failed routed start idempotency exists=%t record=%+v err=%v", ok, record, err)
 	}
-	if outbox, err := sessions.Store().ListV3RealtimeOutboxAfter(0, 10); err != nil || len(outbox) != 0 {
+	// The fixture registers workspace catalog entries before the request, which
+	// legitimately emit account outbox records. The failed session must publish
+	// neither events nor its own realtime authority at the mutation boundary.
+	if events, err := sessions.ListSessionEvents(sessionID, 0, 10); err != nil || len(events) != 0 {
+		t.Fatalf("failed routed start events=%+v err=%v", events, err)
+	}
+	if outbox, err := sessions.Store().ListV3RealtimeOutboxForSessionAfterEndpoint(sessionID, 0, 10); err != nil || len(outbox) != 0 {
 		t.Fatalf("failed routed start outbox=%+v err=%v", outbox, err)
 	}
 }

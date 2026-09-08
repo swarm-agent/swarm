@@ -156,6 +156,7 @@ type ArtifactV3Preview struct {
 }
 
 type ArtifactV3OpenTurnRequest struct {
+	RevisionIntent  string
 	SessionID       string
 	ArtifactID      string
 	ClientRequestID string
@@ -406,6 +407,7 @@ func (s *Server) handleArtifactV3Turns(w http.ResponseWriter, r *http.Request, p
 			ClientRequestID string   `json:"client_request_id"`
 			Intent          string   `json:"intent"`
 			BaseRevisionRef string   `json:"base_revision_ref"`
+			RevisionIntent  string   `json:"revision_intent,omitempty"`
 			TargetPartIDs   []string `json:"target_part_ids,omitempty"`
 			CandidateCount  int      `json:"candidate_count,omitempty"`
 		}
@@ -421,7 +423,7 @@ func (s *Server) handleArtifactV3Turns(w http.ResponseWriter, r *http.Request, p
 			writeError(w, http.StatusBadRequest, errors.New("intent, exact base_revision_ref, and a bounded candidate_count are required"))
 			return
 		}
-		turn, err := s.artifactV3.OpenTurn(r.Context(), artifactV3APIPrincipal(principal), ArtifactV3OpenTurnRequest{SessionID: sessionID, ArtifactID: artifactID, ClientRequestID: strings.TrimSpace(req.ClientRequestID), Intent: strings.TrimSpace(req.Intent), BaseRevisionRef: strings.TrimSpace(req.BaseRevisionRef), TargetPartIDs: canonicalArtifactV3IDs(req.TargetPartIDs), CandidateCount: req.CandidateCount})
+		turn, err := s.artifactV3.OpenTurn(r.Context(), artifactV3APIPrincipal(principal), ArtifactV3OpenTurnRequest{RevisionIntent: req.RevisionIntent, SessionID: sessionID, ArtifactID: artifactID, ClientRequestID: strings.TrimSpace(req.ClientRequestID), Intent: strings.TrimSpace(req.Intent), BaseRevisionRef: strings.TrimSpace(req.BaseRevisionRef), TargetPartIDs: canonicalArtifactV3IDs(req.TargetPartIDs), CandidateCount: req.CandidateCount})
 		if err != nil {
 			s.writeArtifactV3Error(w, err)
 			return

@@ -1538,6 +1538,7 @@ func (r *Runtime) Definitions() []Definition {
 					"artifact_v3_source": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string", "minLength": 1}, "artifact_id": map[string]any{"type": "string", "minLength": 1}, "commit_oid": map[string]any{"type": "string", "minLength": 1}, "projection_seq": map[string]any{"type": "integer", "minimum": 1},
 						"target_part_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}},
+						"revision_intent": map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}},
 					}, "required": []string{"session_id", "artifact_id", "commit_oid", "projection_seq"}, "additionalProperties": false, "description": "Exact native Artifact V3 source for managed Designer follow-up work. session_id must own the artifact. Trusted orchestration authenticates the artifact, exact immutable head commit, projection sequence, and target Part IDs before branching a complete candidate."},
 					"artifact_v2_source": map[string]any{"type": "object", "properties": map[string]any{
 						"artifact_id": map[string]any{"type": "string", "minLength": 1}, "published_head_id": map[string]any{"type": "string", "minLength": 1}, "composition_id": map[string]any{"type": "string", "minLength": 1},

@@ -105,10 +105,11 @@ type ArtifactV3Part struct {
 }
 
 type ArtifactV3Manifest struct {
-	SchemaVersion    string                           `json:"schema_version"`
-	Entrypoint       string                           `json:"entrypoint"`
-	Parts            []ArtifactV3Part                 `json:"parts"`
-	AnimationProfile *SessionArtifactAnimationProfile `json:"animation_profile,omitempty"`
+	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	SchemaVersion      string                             `json:"schema_version"`
+	Entrypoint         string                             `json:"entrypoint"`
+	Parts              []ArtifactV3Part                   `json:"parts"`
+	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
 }
 
 // ArtifactV3Project is always a complete conventional project tree.

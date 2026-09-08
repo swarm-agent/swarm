@@ -3,12 +3,13 @@ package artifact
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-const AnimationProfileRegistryVersion = "2026-08-16.v1"
+const AnimationProfileRegistryVersion = "2026-09-08.v2"
 
 type AnimationProfileInput struct {
 	Profile string `json:"profile"`
@@ -30,7 +31,7 @@ type animationProfileDefinition struct {
 var animationProfileDefinitions = []animationProfileDefinition{
 	{
 		id: "motion_ui", runtimeKind: "native_css_waapi_svg",
-		budgets: animationBudgets(3, 0, 2, 4_194_304, 0, 400),
+		budgets: animationBudgets(3, 0, 2, 4_194_304, 2_000, 400),
 	},
 	{
 		id: "spatial_3d", runtimeKind: "three_webgl", runtimePackage: "three", runtimeVersion: "0.185.1", heavy: true,
@@ -95,6 +96,29 @@ func ResolveAnimationProfile(input *AnimationProfileInput) (*pebblestore.Session
 		}
 	}
 	return nil, fmt.Errorf("animation_profile profile %q is unknown", profileID)
+}
+
+// ValidateAnimationProfileSnapshot admits only reviewed immutable snapshots.
+// Historical budgets remain unchanged: accepting an old snapshot is not an upgrade.
+func ValidateAnimationProfileSnapshot(profile *pebblestore.SessionArtifactAnimationProfile) error {
+	if profile == nil {
+		return nil
+	}
+	canonical, err := ResolveAnimationProfile(&AnimationProfileInput{Profile: profile.ProfileID})
+	if err != nil {
+		return err
+	}
+	if reflect.DeepEqual(canonical, profile) {
+		return nil
+	}
+	canonical.RegistryVersion = "2026-08-16.v1"
+	if canonical.ProfileID == "motion_ui" {
+		canonical.Budgets.MaxParticles = 0
+	}
+	if reflect.DeepEqual(canonical, profile) {
+		return nil
+	}
+	return errors.New("animation profile snapshot is not reviewed")
 }
 
 func ParseAnimationProfile(raw any) (*pebblestore.SessionArtifactAnimationProfile, error) {

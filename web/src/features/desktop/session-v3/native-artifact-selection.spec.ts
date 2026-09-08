@@ -71,3 +71,18 @@ test('native append and routed HTTP submissions preserve targets without hidden 
   assert.doesNotMatch(JSON.stringify(body),/pending_request|collection_id|variant_id|projection_seq/)
  }
 })
+
+// Requirement: after focused refinement, whole remix uses the newly selected
+// exact head and drops old target intent; transport must not lose explicit intent.
+test('native focused to whole repeat preserves selected head and explicit intent', () => {
+ const focused=desktopV3NativeArtifactIterationSelection(studio,['pricing'])
+ assert.equal(focused.revision_intent,'focused_parts')
+ const next={...studio,artifact:{...studio.artifact,head:{...studio.artifact.head!,commitOid:'c'.repeat(40),revisionRef:`revision-${'c'.repeat(40)}`}}}
+ const whole=desktopV3NativeArtifactIterationSelection(next,[])
+ assert.equal(whole.revision_intent,'whole_project')
+ assert.equal(whole.revision_ref,next.artifact.head.revisionRef)
+ assert.deepEqual(whole.target_part_ids,[])
+ assert.equal(portableDesktopV3ArtifactMessageSelection(whole).revision_intent,'whole_project')
+ assert.equal(normalizeDesktopV3ArtifactMessageSelection({...whole,target_part_ids:['pricing']}),null)
+ assert.equal(focused.revision_ref,studio.artifact.head!.revisionRef)
+})

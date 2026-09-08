@@ -36,6 +36,16 @@ func (s *SessionStore) validateNativeArtifactMessageSelection(account, user stri
 	if in.TargetPartIDs != nil {
 		targetIDs = *in.TargetPartIDs
 	}
+	ref.RevisionIntent = in.RevisionIntent
+	if ref.RevisionIntent == "" {
+		ref.RevisionIntent = ArtifactV3RevisionWholeProject
+		if len(targetIDs) > 0 {
+			ref.RevisionIntent = ArtifactV3RevisionFocusedParts
+		}
+	}
+	if err := ValidateArtifactV3RevisionIntent(ref.RevisionIntent, targetIDs); err != nil {
+		return fail(err.Error())
+	}
 	if len(targetIDs) > 256 {
 		return fail("native target Part count exceeds bounds")
 	}

@@ -27,10 +27,18 @@ func TestArtifactV3RecoveryStatusExactTuple(t *testing.T) {
 	principal := artifact.Principal{AccountScopeID: "account-1", UserID: "user-1", SessionID: "session-1"}
 	args := map[string]any{"action": "draft_status_v3", "artifact_id": "artifact", "turn_id": "turn", "candidate_id": "older-failed"}
 	result, err := r.locateDirectArtifactV3Draft(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, args)
-	if err != nil || repo.turn != "turn" || repo.candidate != "older-failed" { t.Fatalf("exact lookup: %v %v", result, err) }
+	if err != nil || repo.turn != "turn" || repo.candidate != "older-failed" {
+		t.Fatalf("exact lookup: %v %v", result, err)
+	}
 	request := result["resume_draft"].(ArtifactV3DraftResumeRequest)
-	if request.CandidateID != "older-failed" || request.ExpectedSequence != 2 || result["diagnostics"] == nil { t.Fatal("incomplete status") }
+	if request.CandidateID != "older-failed" || request.ExpectedSequence != 2 || result["diagnostics"] == nil {
+		t.Fatal("incomplete status")
+	}
 	repo.turn = ""
-	if _, err := r.locateDirectArtifactV3Draft(context.Background(), WorkspaceScope{SessionID: "foreign"}, principal, args); err == nil || repo.turn != "" { t.Fatal("foreign scope reached repository") }
-	if len(repo.turns) != 0 || len(repo.submits) != 0 || len(repo.selected) != 0 { t.Fatal("status mutated author state") }
+	if _, err := r.locateDirectArtifactV3Draft(context.Background(), WorkspaceScope{SessionID: "foreign"}, principal, args); err == nil || repo.turn != "" {
+		t.Fatal("foreign scope reached repository")
+	}
+	if len(repo.turns) != 0 || len(repo.submits) != 0 || len(repo.selected) != 0 {
+		t.Fatal("status mutated author state")
+	}
 }

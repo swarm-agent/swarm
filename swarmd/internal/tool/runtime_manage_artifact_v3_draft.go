@@ -116,8 +116,8 @@ func (r *Runtime) authorDirectArtifactV3Draft(ctx context.Context, scope Workspa
 // ArtifactV3DraftResumeRequest contains only owned locators and CAS evidence.
 // Empty ExpectedHead is explicit evidence for a draft with no published revision.
 type ArtifactV3DraftResumeRequest struct {
-	TurnID string `json:"turn_id,omitempty"`
-	CandidateID string `json:"candidate_id,omitempty"`
+	TurnID                string `json:"turn_id,omitempty"`
+	CandidateID           string `json:"candidate_id,omitempty"`
 	SessionID             string `json:"session_id"`
 	ArtifactID            string `json:"artifact_id"`
 	ExpectedSequence      uint64 `json:"expected_sequence"`
@@ -188,13 +188,19 @@ func (r *Runtime) locateDirectArtifactV3Draft(ctx context.Context, scope Workspa
 	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id", "turn_id", "candidate_id"); err != nil {
 		return nil, err
 	}
-	if scope.SessionID != principal.SessionID { return nil, ErrArtifactV3AuthorUnauthorized }
+	if scope.SessionID != principal.SessionID {
+		return nil, ErrArtifactV3AuthorUnauthorized
+	}
 	if locator, ok := r.artifactV3Author.repository.(ArtifactV3ExactDraftLocator); ok {
 		request, diagnostics, err := locator.LocateArtifactV3ExactDraft(ctx, ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: scope.SessionID, ProducerRunID: principal.RunID}, mapString(args, "artifact_id"), mapString(args, "turn_id"), mapString(args, "candidate_id"))
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{"resume_draft": request, "diagnostics": diagnostics}, nil
 	}
-	if mapString(args, "turn_id") != "" || mapString(args, "candidate_id") != "" { return nil, ErrArtifactV3AuthorInvalid }
+	if mapString(args, "turn_id") != "" || mapString(args, "candidate_id") != "" {
+		return nil, ErrArtifactV3AuthorInvalid
+	}
 	locator, ok := r.artifactV3Author.repository.(ArtifactV3DirectDraftLocator)
 	if !ok {
 		return nil, ErrArtifactV3AuthorInvalid

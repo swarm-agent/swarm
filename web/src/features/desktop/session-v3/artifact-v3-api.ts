@@ -528,6 +528,7 @@ export function desktopV3NativeArtifactIterationSelection(studio: DesktopV3Nativ
     artifact_id: studio.artifact.artifactId,
     revision_ref: head.revisionRef,
     target_part_ids: ids,
+    revision_intent: ids.length ? 'focused_parts' : 'whole_project',
     label: label.length <= 256 ? label : 'Selected artifact Parts',
     action: 'use',
   }

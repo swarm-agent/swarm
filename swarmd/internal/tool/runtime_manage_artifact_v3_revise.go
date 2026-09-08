@@ -39,7 +39,9 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 		return nil, err
 	}
 	manifest, err := directArtifactV3ProjectManifest(project)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	html := project[manifest.Entrypoint]
 	if len(html) == 0 || len(html) > manageArtifactMaxCreateBytes {
 		return nil, errors.New("manage_artifact read_v3 exact HTML is unavailable or exceeds the bounded authoring limit")
@@ -89,9 +91,15 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		}
 		for _, alternative := range alternatives {
 			candidateArgs := make(map[string]any, len(args))
-			for key, value := range args { if key != "alternatives" { candidateArgs[key] = value } }
+			for key, value := range args {
+				if key != "alternatives" {
+					candidateArgs[key] = value
+				}
+			}
 			candidateArgs["content"], candidateArgs["candidate_index"] = alternative.Content, alternative.CandidateIndex
-			if _, err := r.reviseDirectArtifactV3(ctx, scope, principal, callID, candidateArgs, true); err != nil { return nil, err }
+			if _, err := r.reviseDirectArtifactV3(ctx, scope, principal, callID, candidateArgs, true); err != nil {
+				return nil, err
+			}
 		}
 		results := make([]map[string]any, 0, len(alternatives))
 		for _, alternative := range alternatives {
@@ -138,7 +146,9 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 	if intent != pebblestore.ArtifactV3RevisionWholeProject || args["target_part_ids"] != nil {
 		requestedTargets, err = parseDirectArtifactV3TargetIDs(args["target_part_ids"])
 	}
-	if err == nil { err = pebblestore.ValidateArtifactV3RevisionIntent(intent, requestedTargets) }
+	if err == nil {
+		err = pebblestore.ValidateArtifactV3RevisionIntent(intent, requestedTargets)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +161,12 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		return nil, err
 	}
 	manifest, err := directArtifactV3ProjectManifest(baseProject)
-	if err != nil { return nil, err }
-	if !beginOnly && (len(body) > manageArtifactMaxCreateBytes || !utf8.ValidString(body)) { return nil, ErrArtifactV3AuthorQuota }
+	if err != nil {
+		return nil, err
+	}
+	if !beginOnly && (len(body) > manageArtifactMaxCreateBytes || !utf8.ValidString(body)) {
+		return nil, ErrArtifactV3AuthorQuota
+	}
 	if beginOnly {
 		if _, supplied := args["content"]; supplied {
 			return nil, ErrArtifactV3AuthorInvalid
@@ -194,19 +208,29 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		manifestParts = append(manifestParts, basePart)
 	}
 	if raw, supplied := args["native_parts"]; supplied {
-		if intent != pebblestore.ArtifactV3RevisionWholeProject { return nil, ErrArtifactV3AuthorLocked }
+		if intent != pebblestore.ArtifactV3RevisionWholeProject {
+			return nil, ErrArtifactV3AuthorLocked
+		}
 		var err error
 		manifestParts, err = parseArtifactV3NativeParts(raw)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 	}
 	manifest.Parts = manifestParts
 	proposedManifest, err := json.Marshal(manifest)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	proposed := make(map[string][]byte, len(baseProject))
-	for name, bytes := range baseProject { proposed[name] = bytes }
+	for name, bytes := range baseProject {
+		proposed[name] = bytes
+	}
 	proposed[manifest.Entrypoint] = []byte(body)
 	proposed[pebblestore.ArtifactV3ManifestFilename] = proposedManifest
-	if _, err := pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: proposed}, pebblestore.ArtifactV3Limits{}); err != nil { return nil, err }
+	if _, err := pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: proposed}, pebblestore.ArtifactV3Limits{}); err != nil {
+		return nil, err
+	}
 	if manifestBody, ok := baseProject[pebblestore.ArtifactV3ManifestFilename]; !ok || len(manifestBody) == 0 {
 		return nil, errors.New("manage_artifact revise_v3 exact base has no manifest")
 	}
@@ -222,10 +246,14 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 	var sourceSeq uint64
 	if resolver, ok := r.artifactV3Author.repository.(ArtifactV3NativeDiscovery); ok {
 		source, err := resolver.ResolveArtifactV3SelectedSource(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, baseCommit, 0)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		sourceSeq = source.ProjectionSeq
 	}
-	if preflight { return nil, nil }
+	if preflight {
+		return nil, nil
+	}
 	grant, err := r.artifactV3Author.PrepareTurn(ctx, ArtifactV3PrepareTurnRequest{
 		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, OwnerSessionID: principal.SessionID,
 		TaskCallID: "direct-revise:" + turnKey, Prompt: "Primary Swarm targeted Artifact V3 revision",
@@ -254,7 +282,9 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		return fail("html_write_failed", err)
 	}
 	if _, supplied := args["native_parts"]; supplied {
-		if err := r.artifactV3Author.ReconcileParts(ctx, author, grant, manifestParts); err != nil { return fail("parts_reconciliation_failed", err) }
+		if err := r.artifactV3Author.ReconcileParts(ctx, author, grant, manifestParts); err != nil {
+			return fail("parts_reconciliation_failed", err)
+		}
 	}
 	gate, err := r.artifactV3Author.BuildPreview(ctx, author, grant)
 	if err != nil {

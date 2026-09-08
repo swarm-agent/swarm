@@ -221,6 +221,7 @@ export interface DesktopV3ArtifactMessageSelection {
   artifact_id?: string
   revision_ref?: string
   target_part_ids?: string[]
+  revision_intent?: 'focused_parts' | 'whole_project'
   label: string
   description?: string
   /** Hidden provider instruction queued by Artifact Studio; never rendered as composer or chat text. */
@@ -1077,7 +1078,9 @@ export function normalizeDesktopV3ArtifactMessageSelection(value: unknown): Desk
       || !Array.isArray(ids) || ids.length > 256 || ids.some((id) => typeof id !== 'string' || !id.trim() || id.trim().length > 128)) return null
     const targetPartIds = ids.map((id: string) => id.trim())
     if (new Set(targetPartIds).size !== targetPartIds.length) return null
-    selection = { session_id: sessionId, artifact_id: artifactId, revision_ref: revisionRef, target_part_ids: targetPartIds }
+    const intent = record.revision_intent ?? (targetPartIds.length ? 'focused_parts' : 'whole_project')
+    if ((intent !== 'focused_parts' && intent !== 'whole_project') || (intent === 'focused_parts') !== (targetPartIds.length > 0)) return null
+    selection = { session_id: sessionId, artifact_id: artifactId, revision_ref: revisionRef, target_part_ids: targetPartIds, revision_intent: intent }
   } else {
     selection = normalizeDesktopV3ArtifactSelection(value)
   }

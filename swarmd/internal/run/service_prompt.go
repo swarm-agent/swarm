@@ -966,6 +966,7 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 	var selections []struct {
 		ArtifactID              string                           `json:"artifact_id"`
 		RevisionRef             string                           `json:"revision_ref"`
+		RevisionIntent          string                           `json:"revision_intent"`
 		TargetPartIDs           []string                         `json:"target_part_ids"`
 		CommitOID               string                           `json:"commit_oid"`
 		ProjectionSeq           uint64                           `json:"projection_seq"`
@@ -1004,7 +1005,17 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 			if selection.SessionID == "" || selection.ArtifactID == "" || selection.CommitOID == "" || selection.RevisionRef != "revision-"+selection.CommitOID || selection.ProjectionSeq == 0 || selection.CollectionID != "" || selection.VariantID != "" || selection.EventSeq != 0 || selection.PartID != "" || selection.PendingRequest != "" || len(selection.TargetPartIDs) > 256 {
 				return ""
 			}
-			sourceFields := map[string]any{"session_id": selection.SessionID, "artifact_id": selection.ArtifactID, "commit_oid": selection.CommitOID, "projection_seq": selection.ProjectionSeq}
+			intent := selection.RevisionIntent
+			if intent == "" {
+				intent = pebblestore.ArtifactV3RevisionWholeProject
+				if len(selection.TargetPartIDs) > 0 {
+					intent = pebblestore.ArtifactV3RevisionFocusedParts
+				}
+			}
+			if pebblestore.ValidateArtifactV3RevisionIntent(intent, selection.TargetPartIDs) != nil {
+				return ""
+			}
+			sourceFields := map[string]any{"revision_intent": intent, "session_id": selection.SessionID, "artifact_id": selection.ArtifactID, "commit_oid": selection.CommitOID, "projection_seq": selection.ProjectionSeq}
 			if len(selection.TargetPartIDs) > 0 {
 				sourceFields["target_part_ids"] = selection.TargetPartIDs
 			}

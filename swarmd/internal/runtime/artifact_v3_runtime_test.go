@@ -27,7 +27,7 @@ import (
 type artifactV3RuntimeRenderer struct{}
 
 func (artifactV3RuntimeRenderer) Capture(_ context.Context, request htmlcapture.Request) ([]htmlcapture.Result, error) {
-	if request.Entry == "" || len(request.Files) == 0 || request.ViewportWidth != 1440 || request.ViewportHeight != 900 {
+	if request.Entry == "" || len(request.Files) == 0 || request.ViewportWidth != 1920 || request.ViewportHeight != 1080 {
 		return nil, htmlcapture.NewError("capture_invalid", "invalid capture")
 	}
 	selectors := append([]string(nil), request.RequiredSelectors...)
@@ -900,7 +900,7 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 	}
 	follow.ProducerSessionID, follow.ProducerRunID = "child", "run"
 	ctx = tool.WithArtifactV3AuthorRunContext(ctx, tool.ArtifactV3AuthorRunContext{Grant: follow})
-	if err := author.Edit(ctx, principal, follow, inspected.ManifestFilename, []byte(inspected.ManifestVersion), []byte("invalid"), false); err != nil {
+	if err := author.Edit(ctx, principal, follow, "index.html", []byte("<body>"), []byte("<invalid>"), false); err != nil {
 		t.Fatal(err)
 	}
 	if gate, err := author.BuildPreview(ctx, principal, follow); err != nil || gate.Ready || renderer.calls != 1 {
@@ -909,7 +909,7 @@ func TestArtifactV3RuntimeThreePartManifestRepair(t *testing.T) {
 	if _, err := author.Finish(ctx, principal, follow); !errors.Is(err, tool.ErrArtifactV3AuthorNotReady) {
 		t.Fatalf("followup invalid finish=%v", err)
 	}
-	if err := author.Edit(ctx, principal, follow, inspected.ManifestFilename, []byte(`"invalid"`), []byte(`"`+inspected.ManifestVersion+`"`), false); err != nil {
+	if err := author.Edit(ctx, principal, follow, "index.html", []byte("<invalid>"), []byte("<body>"), false); err != nil {
 		t.Fatal(err)
 	}
 	renderer.reject = true

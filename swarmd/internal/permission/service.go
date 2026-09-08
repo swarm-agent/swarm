@@ -1506,6 +1506,9 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		}
 		return "manage_theme"
 	case "manage_artifact":
+		if identity := nativeArtifactApprovalIdentity(toolArguments); identity != "" {
+			return identity
+		}
 		_, bypass := splitPolicyMode(mode)
 		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
 			return "manage_artifact_generate_image"
@@ -1537,6 +1540,17 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		return "tool"
 	default:
 		return toolName
+	}
+}
+
+func nativeArtifactApprovalIdentity(arguments string) string {
+	switch manageAction(arguments) {
+	case "select_v3":
+		return "artifact_v3_select"
+	case "resume_v3":
+		return "artifact_v3_resume"
+	default:
+		return ""
 	}
 }
 

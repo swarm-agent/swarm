@@ -292,12 +292,12 @@ func manageArtifactDefinition() Definition {
 				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
 				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
 				"artifact_v3_reference":  artifactV3Reference,
-				"native_parts": artifactV3NativePartsSchema(),
-				"turn_id": map[string]any{"type": "string"},
-				"candidate_id": map[string]any{"type": "string"},
-				"expected_head": map[string]any{"type": "string"},
+				"native_parts":           artifactV3NativePartsSchema(),
+				"turn_id":                map[string]any{"type": "string"},
+				"candidate_id":           map[string]any{"type": "string"},
+				"expected_head":          map[string]any{"type": "string"},
 				"expected_turn_revision": map[string]any{"type": "integer", "minimum": 1},
-				"revision_intent": map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}, "description": "Explicit native revision intent. whole_project omits target_part_ids; focused_parts requires targets."},
+				"revision_intent":        map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}, "description": "Explicit native revision intent. whole_project omits target_part_ids; focused_parts requires targets."},
 				"target_part_ids":        map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "uniqueItems": true, "description": "Native Artifact V3 Part IDs; required for focused_parts, omitted for whole_project."},
 				"turn_key":               map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Optional lowercase stable key shared by sibling revise_v3 candidates from one exact base. When omitted for a single candidate, the server derives a replay-stable key from trusted run and call identity. Required for alternatives."},
 				"candidate_index":        map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Optional one-based sibling candidate index for revise_v3; defaults to 1."},
@@ -491,11 +491,15 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["reference"] = artifactV3Result["reference"]
 	case "select_v3":
 		result, err := r.selectDirectArtifactV3(ctx, scope, principal, callID, args)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["artifact_v3"] = result
 	case "list_v3", "source_v3":
 		result, err := r.discoverDirectArtifactV3(ctx, scope, principal, args)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		response["artifact_v3"] = result
 	case "read_v3":
 		artifactV3Result, err := r.readDirectArtifactV3HTML(ctx, scope, principal, args)

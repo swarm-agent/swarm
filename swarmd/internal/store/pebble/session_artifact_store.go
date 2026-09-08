@@ -279,6 +279,7 @@ type SessionArtifactCollection struct {
 type SessionArtifactSelectionReference struct {
 	ArtifactID              string               `json:"artifact_id,omitempty"`
 	RevisionRef             string               `json:"revision_ref,omitempty"`
+	RevisionIntent          string               `json:"revision_intent,omitempty"`
 	TargetPartIDs           *[]string            `json:"target_part_ids,omitempty"`
 	CommitOID               string               `json:"commit_oid,omitempty"`
 	ProjectionSeq           uint64               `json:"projection_seq,omitempty"`

@@ -134,11 +134,12 @@ type taskSwarmSectionTarget struct {
 }
 
 type taskArtifactV3Source struct {
-	SessionID     string   `json:"session_id"`
-	ArtifactID    string   `json:"artifact_id"`
-	CommitOID     string   `json:"commit_oid"`
-	ProjectionSeq uint64   `json:"projection_seq"`
-	TargetPartIDs []string `json:"target_part_ids,omitempty"`
+	RevisionIntent string   `json:"revision_intent,omitempty"`
+	SessionID      string   `json:"session_id"`
+	ArtifactID     string   `json:"artifact_id"`
+	CommitOID      string   `json:"commit_oid"`
+	ProjectionSeq  uint64   `json:"projection_seq"`
+	TargetPartIDs  []string `json:"target_part_ids,omitempty"`
 }
 
 type taskArtifactV2Source struct {
@@ -1921,6 +1922,9 @@ func parseTaskArtifactV3Source(raw any) (*taskArtifactV3Source, error) {
 	source.ArtifactID = strings.TrimSpace(source.ArtifactID)
 	source.CommitOID = strings.TrimSpace(source.CommitOID)
 	source.TargetPartIDs = uniqueNonEmptyStrings(source.TargetPartIDs)
+	if err := pebblestore.ValidateArtifactV3RevisionIntent(source.RevisionIntent, source.TargetPartIDs); err != nil {
+		return nil, err
+	}
 	if source.SessionID == "" || source.ArtifactID == "" || source.CommitOID == "" || source.ProjectionSeq == 0 {
 		return nil, errors.New("task artifact_v3_source requires session_id, artifact_id, commit_oid, and projection_seq")
 	}
