@@ -252,6 +252,9 @@ rendererCapacityAcquired:
 	defer allocCancel()
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	defer browserCancel()
+	// Tabs share the browser compositor. Own foreground/paint/readback as one
+	// transaction; per-tab CDP sessions do not serialize that shared resource.
+	browserCtx = withAnimationCaptureGate(browserCtx)
 
 	var blockedMu sync.Mutex
 	blocked, blockedReason := false, ""
@@ -720,6 +723,14 @@ return {code:"ok",outcome:"ready",lifecycle:finalLifecycle};
 }
 
 func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStability bool) (data []byte, diagnostics []AnimationDiagnostic, resultErr error) {
+	// Queue under the render/pipeline deadline, not a frame's execution budget.
+	// Hold ownership across seek, paint and both stability screenshots so a
+	// sibling cannot hide this tab or race a compositor readback midway through.
+	release, err := acquireAnimationCapture(browserCtx)
+	if err != nil {
+		return nil, nil, newErrorWithCause("animation_timeout", "animation capture cancelled waiting for browser compositor", err)
+	}
+	defer release()
 	started := time.Now()
 	stage := "seek_and_paint"
 	frameTimeout := animationFrameTimeout
@@ -733,6 +744,11 @@ func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStabilit
 			resultErr = animationFrameFailure(browserCtx, ctx, resultErr, stage, timeMS, frameTimeout, time.Since(started))
 		}
 	}()
+	// Focus emulation alone changes DOM focus, not the headless compositor's
+	// active page. Explicitly activate the owned tab before awaiting its paint.
+	if err := chromedp.Run(ctx, page.BringToFront()); err != nil {
+		return nil, nil, newErrorWithCause("animation_renderer_failed", "animation page could not become active", err)
+	}
 	timestamp := timeMS
 	diagnostics = make([]AnimationDiagnostic, 0, 3)
 	var audit animationAudit
