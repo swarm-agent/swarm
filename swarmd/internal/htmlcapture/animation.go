@@ -523,6 +523,10 @@ func resolveAnimationEncoding(req AnimationRequest) (animationEncoding, error) {
 	return encoding, nil
 }
 
+// Accept the native scene acknowledgement without accepting arbitrary metadata.
+// Both bootstrap echo bookkeeping and frame capture use this exact predicate.
+const animationSeekAckValidator = `const validSeekAck=(ack,time)=>!!ack&&typeof ack==="object"&&!Array.isArray(ack)&&Object.hasOwn(ack,"time_ms")&&Number.isFinite(ack.time_ms)&&ack.time_ms===time&&Object.keys(ack).every(key=>key==="time_ms"||key==="scene_id")&&(!Object.hasOwn(ack,"scene_id")||(typeof ack.scene_id==="string"&&ack.scene_id.trim().length>0));`
+
 // The bootstrap is installed through Page.addScriptToEvaluateOnNewDocument, so
 // it exists synchronously before any author classic/module script can execute.
 const animationBootstrapScriptPrefix = `(function () {
@@ -558,7 +562,7 @@ const bind=candidate=>{
 addEventListener("DOMContentLoaded",()=>{if(!claimed)settle("missing_before_dom_content_loaded")},{once:true});
 setTimeout(()=>{if(!settled)settle(claimed?"bind_timeout":"missing_before_dom_content_loaded")},`
 
-const animationBootstrapScriptSuffix = `);
+const animationBootstrapScriptSuffix = `);` + animationSeekAckValidator + `
 const runtime={
   version:"swarm.animation/v1",
   bind,
@@ -569,7 +573,7 @@ const runtime={
   },
   seek:async timeMs=>{
     if (!bound) return {__swarm_outcome:"runtime_unbound"};
-    try { const ack=await bound.seek(timeMs); if(ack&&Object.keys(ack).length===1&&ack.time_ms===timeMs)document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs); return ack; } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
+    try { const ack=await bound.seek(timeMs); if(validSeekAck(ack,timeMs))document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs); return ack; } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
   }
 };
 // Keep the trusted proxy immutable while accepting the original parser-time
@@ -724,6 +728,7 @@ func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStabilit
 	diagnostics := make([]AnimationDiagnostic, 0, 3)
 	var audit animationAudit
 	expression := fmt.Sprintf(`(async () => {
+`+animationSeekAckValidator+`
 const time=%d, api=globalThis.__SWARM_ANIMATION_V1__;
 let ack; try { ack=await Promise.race([Promise.resolve().then(()=>api.seek(time)),new Promise(resolve=>setTimeout(()=>resolve({__swarm_outcome:"seek_timeout"}),%d))]); } catch (_) { return {code:"animation_seek_rejected",outcome:"seek_rejected"}; }
 if (ack&&typeof ack.__swarm_outcome==="string") {
@@ -731,7 +736,7 @@ if (ack&&typeof ack.__swarm_outcome==="string") {
   if (ack.__swarm_outcome==="seek_timeout") return {code:"animation_seek_timeout",outcome:ack.__swarm_outcome};
   return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
 }
-if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
+if (!validSeekAck(ack,time) || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
 const animations=document.getAnimations();
 for (const animation of animations) animation.pause();
 // A seek acknowledgement and style/layout flush do not imply a presented
