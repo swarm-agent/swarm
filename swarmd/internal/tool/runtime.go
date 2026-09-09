@@ -6964,7 +6964,7 @@ func (r *Runtime) manageWorktreeCommitIntegrated(parentPath, baseCommit, headCom
 }
 
 func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]any) (string, error) {
-	workspacePath, err := r.manageWorktreeResolveWorkspacePath(scope, strings.TrimSpace(asString(args["workspace_path"])))
+	workspacePath, configPath, err := r.manageWorktreeInspectionPaths(scope, strings.TrimSpace(asString(args["workspace_path"])))
 	if err != nil {
 		return "", err
 	}
@@ -6982,7 +6982,7 @@ func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]an
 
 	config := manageWorktreeConfig{}
 	if r != nil && r.worktrees != nil {
-		cfg, cfgErr := r.worktrees.GetConfigForPrincipal(scope.Principal, workspacePath)
+		cfg, cfgErr := r.worktrees.GetConfigForPrincipal(scope.Principal, configPath)
 		if cfgErr != nil {
 			return "", fmt.Errorf("manage-worktree get config failed: %w", cfgErr)
 		}
