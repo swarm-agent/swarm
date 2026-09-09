@@ -19,6 +19,7 @@ export interface DesktopV3NativeArtifactHead {
 }
 
 export interface DesktopV3NativeGenerationMember {
+  label?: string
   waveId: string
   index: number
   count: number
@@ -245,9 +246,9 @@ function normalizeNativeGenerationGroups(value: unknown): DesktopV3NativeGenerat
     const waveId = stringValue(field(group, 'wave_id', 'waveId'))
     const count = numberValue(group?.count)
     if (!waveId || !Number.isInteger(count) || count < 1 || count > 256 || !Array.isArray(group?.members)) return null
-    const members = group.members.map((rawMember) => {
+    const members: DesktopV3NativeGenerationMember[] = group.members.map((rawMember) => {
       const member = record(rawMember)
-      return { waveId: stringValue(field(member, 'wave_id', 'waveId')), index: numberValue(member?.index), count: numberValue(member?.count), artifactId: stringValue(field(member, 'artifact_id', 'artifactId')), turnId: stringValue(field(member, 'turn_id', 'turnId')), candidateId: stringValue(field(member, 'candidate_id', 'candidateId')), commitOid: stringValue(field(member, 'commit_oid', 'commitOid')), status: stringValue(member?.status), projectionSeq: numberValue(field(member, 'projection_seq', 'projectionSeq')) }
+      return { label: stringValue(member?.label), waveId: stringValue(field(member, 'wave_id', 'waveId')), index: numberValue(member?.index), count: numberValue(member?.count), artifactId: stringValue(field(member, 'artifact_id', 'artifactId')), turnId: stringValue(field(member, 'turn_id', 'turnId')), candidateId: stringValue(field(member, 'candidate_id', 'candidateId')), commitOid: stringValue(field(member, 'commit_oid', 'commitOid')), status: stringValue(member?.status), projectionSeq: numberValue(field(member, 'projection_seq', 'projectionSeq')) }
     })
     if (members.length > count || new Set(members.map((m) => m.index)).size !== members.length || members.some((m) => m.waveId !== waveId || m.count !== count || !Number.isInteger(m.index) || m.index < 1 || m.index > count || !m.artifactId || !m.turnId || !m.candidateId || (m.commitOid && !/^[a-f0-9]{40}$/.test(m.commitOid)))) return null
     return { waveId, count, members: members.sort((a, b) => a.index - b.index) }

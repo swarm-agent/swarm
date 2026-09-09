@@ -806,7 +806,7 @@ func (a *artifactV3RuntimeAdapter) GetArtifact(ctx context.Context, principal ap
 	if err != nil {
 		return result, err
 	}
-	result.GenerationGroups, err = a.generationGroups(principal, repository)
+	result.GenerationGroups, err = a.generationGroups(ctx, principal, repository)
 	return result, err
 }
 

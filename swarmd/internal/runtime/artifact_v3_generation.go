@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"swarm/packages/swarmd/internal/api"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -9,7 +10,7 @@ import (
 
 // Detail hydration returns bounded exact sibling slots, not recursive artifacts.
 // List hydration carries local memberships; navigation never invokes selection.
-func (a *artifactV3RuntimeAdapter) generationGroups(principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) ([]api.ArtifactV3GenerationGroup, error) {
+func (a *artifactV3RuntimeAdapter) generationGroups(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) ([]api.ArtifactV3GenerationGroup, error) {
 	groups := make([]api.ArtifactV3GenerationGroup, 0)
 	seen := map[string]bool{}
 	total := 0
@@ -68,6 +69,21 @@ func (a *artifactV3RuntimeAdapter) generationGroups(principal api.ArtifactV3Prin
 				if !matched {
 					return nil, pebblestore.ErrArtifactV3Integrity
 				}
+			}
+			if sibling.CommitOID != "" {
+				revision, err := a.revision(ctx, principal, repo, sibling.CommitOID)
+				if err != nil {
+					return nil, err
+				}
+				gitRepo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, repo.ArtifactID, pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: repo.OwnerSessionID}, a.limits)
+				if err != nil {
+					return nil, err
+				}
+				entrypoint, err := gitRepo.ReadFile(ctx, sibling.CommitOID, revision.Manifest.Entrypoint)
+				if err != nil {
+					return nil, err
+				}
+				sibling.Label = artifactV3DocumentTitle(entrypoint)
 			}
 			group.Members = append(group.Members, sibling)
 		}

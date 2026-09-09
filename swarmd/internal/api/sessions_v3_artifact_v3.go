@@ -62,6 +62,7 @@ type ArtifactV3DraftGate struct {
 
 type ArtifactV3GenerationSibling struct {
 	pebblestore.ArtifactV3GenerationMember
+	Label         string `json:"label,omitempty"`
 	Status        string `json:"status"`
 	CommitOID     string `json:"commit_oid,omitempty"`
 	ProjectionSeq uint64 `json:"projection_seq"`

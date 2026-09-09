@@ -82,6 +82,13 @@ func TestArtifactV3SceneLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Exact title hydration is read-only and uses the published Git entrypoint.
+	t.Run("generation title", func(t *testing.T) {
+		hydrated, err := adapter.GetArtifact(ctx, api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "scene-owner", g.ArtifactID)
+		if err != nil || len(hydrated.GenerationGroups) != 1 || hydrated.GenerationGroups[0].Members[0].Label != "Scenes" {
+			t.Fatalf("generation title lost: %+v %v", hydrated.GenerationGroups, err)
+		}
+	})
 	original, _, err := sessions.Store().GetArtifactV3Repository("account", "user", g.ArtifactID)
 	if err != nil {
 		t.Fatal(err)
