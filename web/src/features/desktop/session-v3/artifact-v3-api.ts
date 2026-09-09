@@ -567,16 +567,17 @@ export function desktopV3NativeArtifactIterationPrompt(studio: DesktopV3NativeAr
 }
 
 /** Stage intent through the normal composer envelope; never replace or submit the draft. */
-export function desktopV3NativeArtifactIterationSelection(studio: DesktopV3NativeArtifactStudio, partIds: readonly string[]): import('./artifact-api').DesktopV3ArtifactMessageSelection {
-  const head = studio.artifact.head
-  if (!head || !/^revision-[a-f0-9]{40}$/.test(head.revisionRef) || head.revisionRef !== `revision-${head.commitOid}`) throw new Error('Artifact V3 iteration requires an exact current head')
+export function desktopV3NativeArtifactIterationSelection(studio: DesktopV3NativeArtifactStudio, partIds: readonly string[], revisionRef: string): import('./artifact-api').DesktopV3ArtifactMessageSelection {
+  const revision = studio.revisions.find((entry) => entry.revisionRef === revisionRef)
+  if (!revision || revision.status !== 'ready' || !/^revision-[a-f0-9]{40}$/.test(revisionRef) || revisionRef !== `revision-${revision.commitOid}` || !revision.parts) throw new Error('The exact viewed Artifact V3 revision or its Parts are unavailable')
+  const parts = revision.parts
   const ids = partIds.map((id) => id.trim())
-  if (ids.length > 256 || new Set(ids).size !== ids.length || ids.some((id) => !studio.parts.some((part) => part.id === id))) throw new Error('Unknown or duplicate Artifact V3 Part')
-  const label = ids.length ? ids.map((id) => studio.parts.find((part) => part.id === id)!.label || id).join(', ') : studio.artifact.label || 'Artifact'
+  if (ids.length > 256 || new Set(ids).size !== ids.length || ids.some((id) => !parts.some((part) => part.id === id))) throw new Error('Unknown or duplicate Artifact V3 Part')
+  const label = ids.length ? ids.map((id) => parts.find((part) => part.id === id)!.label || id).join(', ') : studio.artifact.label || 'Artifact'
   return {
     session_id: studio.artifact.ownerSessionId,
     artifact_id: studio.artifact.artifactId,
-    revision_ref: head.revisionRef,
+    revision_ref: revision.revisionRef,
     target_part_ids: ids,
     revision_intent: ids.length ? 'focused_parts' : 'whole_project',
     label: label.length <= 256 ? label : 'Selected artifact Parts',

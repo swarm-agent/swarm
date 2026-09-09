@@ -11,7 +11,7 @@ import (
 )
 
 // Requirement: OpenTurn must reject malformed/unknown focus before durable
-// mutation, and ResolveSelectedSource must authenticate exact selected identity
+// mutation, and ResolveSelectedSource must authenticate exact ready identity
 // without recovery writes. This store-layer test observes projections directly;
 // it prevents stale or foreign source handoffs and partial preflight state.
 func TestArtifactV3RemixSourcePreflight(t *testing.T) {
@@ -36,8 +36,8 @@ func TestArtifactV3RemixSourcePreflight(t *testing.T) {
 	if err != nil || source.CommitOID != before.HeadCommitOID || source.RevisionRef != "revision-"+source.CommitOID || source.SessionID != owner.SessionID {
 		t.Fatalf("source=%+v error=%v", source, err)
 	}
-	if _, err := service.ResolveSelectedSource(owner, "remix", gitOID("f"), before.EventSeq); !errors.Is(err, ErrArtifactV3Conflict) {
-		t.Fatalf("stale: %v", err)
+	if _, err := service.ResolveSelectedSource(owner, "remix", gitOID("f"), before.EventSeq); !errors.Is(err, ErrArtifactV3Integrity) {
+		t.Fatalf("unknown revision: %v", err)
 	}
 	foreign := owner
 	foreign.AccountScopeID = "foreign"
@@ -209,7 +209,7 @@ func TestArtifactV3RemixThreeCandidatesRepeat(t *testing.T) {
 		}
 		// Read-only discovery supplies actual candidate IDs and turn CAS for explicit selection.
 		source, err := service.ResolveSelectedSource(owner, "rounds", head, 0)
-		if err != nil || len(source.Candidates) != 3 || len(source.Turns) != 1 || source.Turns[0].EventSeq == 0 || source.Turns[0].TurnID != turnID {
+		if err != nil || len(source.Candidates) != 3*(round+1) || len(source.Turns) != round+1 {
 			t.Fatalf("selection handoff: %+v %v", source, err)
 		}
 		_, err = service.Select(ctx, ArtifactV3SelectInput{Owner: owner, ArtifactID: "rounds", TurnID: turnID, CandidateID: fmt.Sprintf("candidate-%d-1", round), TransactionID: "select-" + turnID, ExpectedHead: head})

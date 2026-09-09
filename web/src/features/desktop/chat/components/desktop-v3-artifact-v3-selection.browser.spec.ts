@@ -30,7 +30,7 @@ test('native narration preview selection is exact, sandboxed and intent-only', {
   })
   const part = (id: string) => ({ id, label: id, locator: { kind: 'selector', path: 'index.html', value: `#${id}` } })
   const parts = ['scene', 'narration-one', 'narration-two', 'visual-one'].map(part)
-  const head = { revision_ref: `revision-${'a'.repeat(40)}`, commit_oid: 'a'.repeat(40), manifest: { parts } }
+  const head = { status: 'ready', revision_ref: `revision-${'a'.repeat(40)}`, commit_oid: 'a'.repeat(40), manifest: { parts } }
   const prior = { ...head, revision_ref: `revision-${'b'.repeat(40)}`, commit_oid: 'b'.repeat(40) }
   const mutations: string[] = []
   const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
@@ -110,7 +110,7 @@ test('native narration preview selection is exact, sandboxed and intent-only', {
     assert.deepEqual(mutations, [], 'selection only stages composer intent')
     await page.locator(`[data-artifact-v3-revision="${prior.commit_oid}"]`).click()
     await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === '0 selected')
-    assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)
+    assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
     // Authored playback controls inside a Part keep their click handler and do
     // not become selection intent (production selection capture listener).
     await frame.locator('#play').click()
@@ -118,7 +118,7 @@ test('native narration preview selection is exact, sandboxed and intent-only', {
     assert.equal(await button('scene').getAttribute('aria-pressed'), 'false')
     await frame.locator('#narration-one strong').click()
     await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === '1 selected')
-    assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)
+    assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
     assert.deepEqual(mutations, [])
     await page.locator(`[data-artifact-v3-revision="${head.commit_oid}"]`).click()
     await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === '0 selected')

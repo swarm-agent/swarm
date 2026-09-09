@@ -63,14 +63,11 @@ func (s *SessionStore) validateNativeArtifactMessageSelection(account, user stri
 	if !ok || repository.OwnerSessionID != ref.SessionID {
 		return fail("native artifact was not found for the source session")
 	}
-	if repository.HeadCommitOID != commit {
-		return fail("native artifact revision is stale")
-	}
 	revision, ok, err := s.GetArtifactV3Revision(account, user, ref.ArtifactID, commit)
 	if err != nil {
 		return ref, err
 	}
-	if !ok || revision.OwnerSessionID != ref.SessionID || revision.CommitOID != commit || revision.Build.Status != "succeeded" || revision.Preview.Status != "succeeded" || revision.Build.CommitOID != commit || revision.Preview.CommitOID != commit {
+	if !ok || revision.OwnerSessionID != ref.SessionID || revision.CommitOID != commit || !artifactV3EvidenceReady(revision.Build, commit) || !artifactV3EvidenceReady(revision.Preview, commit) {
 		return fail("native revision lacks exact ready evidence")
 	}
 	labels := make([]string, 0, len(targetIDs))

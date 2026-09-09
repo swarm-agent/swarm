@@ -1022,6 +1022,10 @@ func attachedArtifactSelectionsForProvider(metadata map[string]any) string {
 			}
 			source, _ := json.Marshal(sourceFields)
 			reference, _ := json.Marshal(map[string]string{"session_id": selection.SessionID, "artifact_id": selection.ArtifactID, "revision_ref": selection.RevisionRef})
+			if selection.Action == "select" {
+				lines = append(lines, "Native Artifact V3 style/example reference only: artifact_v3_reference="+string(reference)+". Do not revise or select the source unless separately requested. Target Part IDs: "+strings.Join(selection.TargetPartIDs, ", "))
+				continue
+			}
 			lines = append(lines, "Selected native Artifact V3 (authenticated exact source; hidden composer context): artifact_v3_reference="+string(reference), "For a requested Designer iteration, copy artifact_v3_source="+string(source)+". Never translate this reference into legacy collection/variant identity. Parts express intent, not byte ownership; preserve the complete project tree and repair shared files as needed. For direct edits use read_v3/revise_v3 with this exact reference and target Part IDs. Do not echo this context into visible chat text.")
 			continue
 		}

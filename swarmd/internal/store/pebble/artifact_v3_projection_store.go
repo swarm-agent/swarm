@@ -465,12 +465,12 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		if copy.CreatedAt == 0 {
 			copy.CreatedAt = now
 		}
-		turn, found, readErr := s.GetArtifactV3Turn(input.AccountScopeID, input.UserID, artifactID, copy.TurnID)
+		_, found, readErr := s.GetArtifactV3Turn(input.AccountScopeID, input.UserID, artifactID, copy.TurnID)
 		if readErr != nil && currentOK {
 			return preparedArtifactV3Mutation{}, readErr
 		}
 		if !found && p.Turn != nil && p.Turn.TurnID == copy.TurnID {
-			turn, found = *p.Turn, true
+			found = true
 		}
 		if !found {
 			return preparedArtifactV3Mutation{}, errors.New("artifact v3 candidate turn was not found")
@@ -487,9 +487,6 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 			return preparedArtifactV3Mutation{}, errors.New("artifact v3 candidate requires complete build and preview evidence")
 		}
 		if input.Kind == V3SessionMutationArtifactV3HeadSelected {
-			if turn.BaseCommitOID != m.ExpectedHeadCommitOID {
-				return preparedArtifactV3Mutation{}, errors.New("artifact v3 turn base does not match expected head")
-			}
 			if m.Repository == nil || m.Repository.HeadCommitOID != copy.CommitOID {
 				return preparedArtifactV3Mutation{}, errors.New("artifact v3 selection repository head does not match candidate")
 			}

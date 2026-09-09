@@ -33,7 +33,7 @@ test('generation navigation and shared-playhead scene reference remain intent-on
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<html><body><div id="root"></div></body></html>' })
       const id = url.pathname.split('/artifacts-v3/')[1]?.split('/')[0] || 'one'
       const commit = (id === 'one' ? 'a' : 'b').repeat(40)
-      const revision = { revision_ref: `revision-${commit}`, commit_oid: commit, manifest: { parts } }
+      const revision = { status: 'ready', revision_ref: `revision-${commit}`, commit_oid: commit, manifest: { parts } }
       if (url.pathname.includes('/preview/access/token')) {
         const config = { revision_ref: revision.revision_ref, part_ids: parts.map(p => p.id), parts: parts.map((p, i) => ({ id: p.id, selector: '#canvas', time_ms: i * 1000 + 500 })) }
         return route.fulfill({ contentType: 'text/html', body: `<html><head><script>${bridge.replace('__SWARM_ARTIFACT_V3_SELECTION_CONFIG__', JSON.stringify(config))}</script></head><body><canvas id="canvas"></canvas><p id="time">0</p><script>globalThis.__SWARM_ANIMATION_V1__={version:'swarm.animation/v1',seek(ms){document.getElementById('time').textContent=String(ms);return {time_ms:globalThis.badAck?-1:ms}}}</script></body></html>` })
@@ -68,7 +68,9 @@ test('generation navigation and shared-playhead scene reference remain intent-on
     assert.equal(staged.artifact_id, 'two')
     assert.equal(staged.revision_ref, `revision-${'b'.repeat(40)}`)
     assert.deepEqual(staged.target_part_ids, ['resolve'])
-    assert.match(staged.pending_request, /reference only/)
+    assert.equal(staged.action, 'select')
+assert.match(staged.description, /reference only/)
+assert.equal(staged.pending_request, undefined)
     assert.equal(new URL(page.url()).searchParams.get('native_artifact'), null)
     assert.equal(new URL(page.url()).searchParams.get('keep'), 'yes')
     await page.getByRole('button', { name: 'Reopen', exact: true }).click()

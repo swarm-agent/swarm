@@ -126,23 +126,12 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 		}
 		repository, ok, err := a.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID || repository.HeadCommitOID != strings.TrimSpace(request.BaseCommitOID) {
+		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID {
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
 		}
-		if request.ProjectionSeq != 0 && repository.EventSeq != request.ProjectionSeq {
-			// A sibling allocation may follow draft events from its already-authorized
-			// exact-base turn; unrelated stale turns must still fail closed.
-			matched := false
-			for _, draft := range repository.Drafts {
-				var prior tool.ArtifactV3AuthorGrant
-				if json.Unmarshal(draft.Grant, &prior) == nil && prior.TurnID == artifactV3StableID("turn", artifactID, request.TaskCallID) && prior.BaseCommitOID == request.BaseCommitOID && prior.SourceProjectionSeq == request.ProjectionSeq && prior.OwnerSessionID == owner.SessionID && prior.ExpiresAt > time.Now().UnixMilli() {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
-			}
+		// Discovery sequence is provenance, not mutable-head authorization.
+		if _, err := a.service.ResolveSelectedSource(owner, artifactID, request.BaseCommitOID, 0); err != nil {
+			return tool.ArtifactV3AuthorGrant{}, err
 		}
 		source, sourceErr := a.revision(ctx, api.ArtifactV3Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}, repository, request.BaseCommitOID)
 		if sourceErr != nil {
@@ -167,7 +156,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		}
 		request.OutputRequirements = source.Manifest.OutputRequirements
 		if len(request.TargetPartIDs) != 0 {
-			revision, revisionOK, revisionErr := a.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, repository.HeadCommitOID)
+			revision, revisionOK, revisionErr := a.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, request.BaseCommitOID)
 			if revisionErr != nil || !revisionOK {
 				return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Integrity
 			}
@@ -188,6 +177,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	if err := artifact.ValidateAnimationProfileSnapshot(request.AnimationProfile); err != nil {
 		return tool.ArtifactV3AuthorGrant{}, err
 	}
+	defer a.lockPublication(artifactID)()
 	turnID := artifactV3StableID("turn", artifactID, request.TaskCallID)
 	candidateID := artifactV3StableID("candidate", turnID, fmt.Sprint(request.CandidateIndex))
 	grantID := artifactV3StableID("grant", artifactID, turnID, candidateID)
@@ -962,14 +952,12 @@ func artifactV3APIValidationEvidence(e pebblestore.ArtifactV3EvidenceProjection,
 }
 
 func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3OpenTurnRequest) (api.ArtifactV3Turn, error) {
+	defer a.lockPublication(request.ArtifactID)()
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
 	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {
 		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3NotFound
 	}
 	baseCommit := strings.TrimPrefix(strings.TrimSpace(request.BaseRevisionRef), "revision-")
-	if baseCommit != repository.HeadCommitOID {
-		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Conflict
-	}
 	turnID := artifactV3StableID("turn", request.ArtifactID, request.ClientRequestID)
 	target := ""
 	if len(request.TargetPartIDs) != 0 {
@@ -1044,6 +1032,9 @@ func (a *artifactV3RuntimeAdapter) SelectArtifactV3DirectHead(ctx context.Contex
 }
 
 func (a *artifactV3RuntimeAdapter) SelectCandidate(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3SelectCandidateRequest) (api.ArtifactV3SelectionResult, error) {
+	// Serialize the turn/head preflight with candidate publication through Git
+	// and its durable projection. Never refresh tokens or retry a mutation.
+	defer a.lockPublication(request.ArtifactID)()
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
 	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {
 		return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3NotFound
@@ -1695,7 +1686,7 @@ func (a *artifactV3RuntimeAdapter) LoadAuthorDraft(ctx context.Context, p tool.A
 	if state.ProducerSessionID != p.ProducerSessionID || state.ProducerRunID != p.ProducerRunID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
-	if !state.Publishing && state.Finished == nil && r.HeadCommitOID != g.BaseCommitOID {
+	if g.Initial && !state.Publishing && state.Finished == nil && r.HeadCommitOID != g.BaseCommitOID {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
 	return state, nil
@@ -1970,7 +1961,7 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
-	if state.Finished != nil || (!state.Publishing && grant.BaseCommitOID != repository.HeadCommitOID) {
+	if state.Finished != nil || (grant.Initial && !state.Publishing && grant.BaseCommitOID != repository.HeadCommitOID) {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
 	oldID := draft.GrantID
