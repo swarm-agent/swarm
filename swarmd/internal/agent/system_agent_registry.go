@@ -338,6 +338,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_actions":  {Enabled: pebblestore.BoolPtr(true)},
 			"manage_agent":    {Enabled: pebblestore.BoolPtr(false)},
 			"manage_theme":    {Enabled: pebblestore.BoolPtr(true)},
+			"manage_memory":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_video":    {Enabled: pebblestore.BoolPtr(true)},

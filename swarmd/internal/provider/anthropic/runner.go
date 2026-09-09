@@ -378,6 +378,9 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 		System:    system,
 		Tools:     tools,
 	}
+	if req.MaxOutputTokens > 0 {
+		params.MaxTokens = int64(req.MaxOutputTokens)
+	}
 	if thinking, effort := anthropicThinkingConfig(req.ModelCatalog, req.Thinking); thinking != nil {
 		params.Thinking = *thinking
 		if effort != "" {

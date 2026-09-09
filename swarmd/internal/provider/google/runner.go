@@ -100,7 +100,8 @@ type googleFunctionCallingConfig struct {
 }
 
 type googleGenerationConfig struct {
-	ThinkingConfig *googleThinkingConfig `json:"thinkingConfig,omitempty"`
+	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
+	ThinkingConfig  *googleThinkingConfig `json:"thinkingConfig,omitempty"`
 }
 
 type googleThinkingConfig struct {
@@ -364,6 +365,12 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 	}
 	if thinkingConfig := googleThinkingConfigForRequest(req); thinkingConfig != nil {
 		out.GenerationConfig = &googleGenerationConfig{ThinkingConfig: thinkingConfig}
+	}
+	if req.MaxOutputTokens > 0 {
+		if out.GenerationConfig == nil {
+			out.GenerationConfig = &googleGenerationConfig{}
+		}
+		out.GenerationConfig.MaxOutputTokens = req.MaxOutputTokens
 	}
 	if len(req.Tools) > 0 {
 		declarations := make([]googleFunctionDeclaration, 0, len(req.Tools))

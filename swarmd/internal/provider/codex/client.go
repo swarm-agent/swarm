@@ -271,6 +271,7 @@ type Request struct {
 	ServiceTier                   string
 	ContextMode                   string
 	ContextWindow                 int
+	MaxOutputTokens               int
 	MediaContract                 provideriface.SessionMediaContract
 	ParallelToolCalls             bool
 }
@@ -872,6 +873,9 @@ func buildCodexRequestProperties(req Request) (map[string]any, error) {
 		"text": map[string]any{
 			"verbosity": defaultCodexTextVerbosity,
 		},
+	}
+	if req.MaxOutputTokens > 0 {
+		properties["max_output_tokens"] = req.MaxOutputTokens
 	}
 	if cacheKey := codexPromptCacheKey(firstNonEmpty(req.ProviderCacheKey, req.ProviderLineageID)); cacheKey != "" {
 		properties["prompt_cache_key"] = cacheKey

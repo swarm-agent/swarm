@@ -112,6 +112,7 @@ export function DesktopSettingsPage() {
 
         <div className="mt-6 px-2">
           <h1 className="text-sm font-semibold tracking-tight text-[var(--app-text)]">Settings</h1>
+          <a href="/memory" className="text-sm underline">Memory</a>
           <p className="mt-1 text-xs text-[var(--app-text-muted)]">Desktop preferences in one place.</p>
         </div>
 

@@ -1290,6 +1290,7 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+		manageMemoryDefinition(),
 		manageSessionsDefinition(),
 		{
 			Type:        "function",

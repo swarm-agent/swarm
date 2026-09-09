@@ -196,11 +196,14 @@ type Request struct {
 	ServiceTier               string
 	ContextMode               string
 	ContextWindow             int
-	ModelCatalog              any
-	MediaContract             SessionMediaContract
-	ParallelToolCalls         bool
-	WorkspacePath             string
-	ToolInvoker               ToolInvoker
+	// MaxOutputTokens is an explicit provider-enforced cap, including reasoning.
+	// Zero preserves ordinary conversational defaults.
+	MaxOutputTokens   int
+	ModelCatalog      any
+	MediaContract     SessionMediaContract
+	ParallelToolCalls bool
+	WorkspacePath     string
+	ToolInvoker       ToolInvoker
 }
 
 func (r Request) EffectiveProviderCacheKey() string {

@@ -1341,6 +1341,14 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
+	case "manage_memory":
+		var args struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(toolArguments), &args) == nil && args.Action == "inspect" {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
 	case "manage_worktree":
 		// Internal integration is constrained to clean, committed children recorded
 		// in the current parent's durable lineage and may advance only that parent's
