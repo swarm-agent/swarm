@@ -27,7 +27,7 @@ import (
 
 const (
 	AnimationVersion            = "swarm.animation/v1"
-	MaxAnimationDurationMS      = 10 * 60 * 1000
+	MaxAnimationDurationMS      = MaxAnimationFrames * 1000 // derived at 1 FPS
 	MaxAnimationFPS             = 60
 	MaxAnimationFrames          = 36_000
 	MaxMP4Bytes                 = 512 << 20
@@ -160,13 +160,17 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 	if err != nil {
 		return AnimationResult{}, err
 	}
+	// Preflight must reject an oversized selected derivative as well as source timing.
+	if _, err := AnimationFrameBudget(int64(req.DurationMS), encoding.FPS); err != nil {
+		return AnimationResult{}, err
+	}
 	renderFPS := encoding.FPS
 	if preflightOnly {
 		renderFPS = req.FPS
 	}
-	frameCount = (req.DurationMS*renderFPS + 999) / 1000
-	if frameCount < 1 || frameCount > MaxAnimationFrames {
-		return AnimationResult{}, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
+	frameCount, err = AnimationFrameBudget(int64(req.DurationMS), renderFPS)
+	if err != nil {
+		return AnimationResult{}, err
 	}
 	capacity := r.sem
 	if preflightOnly {
@@ -195,7 +199,7 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 
 rendererCapacityAcquired:
 
-	ctx, cancel := context.WithTimeout(parent, animationRenderTimeout(frameCount))
+	ctx, cancel := context.WithTimeoutCause(parent, animationRenderTimeout(frameCount), errAnimationRenderDeadline)
 	defer cancel()
 	if err := os.MkdirAll(r.CacheRoot, 0o700); err != nil {
 		return AnimationResult{}, NewError("animation_renderer_unavailable", "private animation cache is unavailable")
@@ -248,6 +252,9 @@ rendererCapacityAcquired:
 	defer allocCancel()
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 	defer browserCancel()
+	// Tabs share the browser compositor. Own foreground/paint/readback as one
+	// transaction; per-tab CDP sessions do not serialize that shared resource.
+	browserCtx = withAnimationCaptureGate(browserCtx)
 
 	var blockedMu sync.Mutex
 	blocked, blockedReason := false, ""
@@ -413,7 +420,9 @@ rendererCapacityAcquired:
 		if err := captureCtx.Err(); err != nil {
 			return nil, newErrorWithCause("animation_timeout", "animation frame capture was cancelled", err)
 		}
-		frame, frameDiagnostics, captureErr := captureAnimationFrame(workerPages[worker], index*1000/encoding.FPS, false)
+		frameCtx, frameCancel := animationCaptureContext(workerPages[worker], captureCtx)
+		defer frameCancel()
+		frame, frameDiagnostics, captureErr := captureAnimationFrame(frameCtx, index*1000/encoding.FPS, false)
 		if captureErr != nil {
 			return nil, captureErr
 		}
@@ -424,12 +433,17 @@ rendererCapacityAcquired:
 			return nil, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
 		}
 		var location string
-		if navErr := chromedp.Run(workerPages[worker], chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
+		if navErr := chromedp.Run(frameCtx, chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
 			return nil, NewError("animation_seek_failed", "animation runtime attempted to navigate away from its canonical document")
 		}
 		return frame, nil
 	}
-	writeFrame := func(frame []byte) error { return writeAll(encoderInput, frame) }
+	writeFrame := func(frame []byte) error {
+		if info, err := os.Stat(outputPath); err == nil && info.Size() > MaxMP4Bytes {
+			return NewError("animation_source_limit_exceeded", "MP4 exceeds the 512 MiB storage budget; reduce complexity or split the job")
+		}
+		return writeAll(encoderInput, frame)
+	}
 	pipelineErr := runOrderedFramePipeline(ctx, frameCount, encoding.Workers, encoding.BufferFrames, capture, writeFrame, func(completed int) {
 		emit("frame_capture", completed, frameCount)
 	})
@@ -448,6 +462,10 @@ rendererCapacityAcquired:
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, newErrorWithCause("animation_encode_failed", "trusted MP4 encoder failed", errors.New(strings.TrimSpace(encoderOutput.String())))
 	}
 	timings["frame_capture_and_encode"] = time.Since(captureStartedAt)
+	info, err := os.Stat(outputPath)
+	if err != nil || info.Size() <= 0 || info.Size() > MaxMP4Bytes {
+		return AnimationResult{}, NewError("animation_mp4_invalid", "encoded MP4 exceeds the 512 MiB storage budget; reduce complexity or split the job")
+	}
 	mp4, err := os.ReadFile(outputPath)
 	if err != nil || len(mp4) == 0 || len(mp4) > MaxMP4Bytes {
 		return AnimationResult{DurationMS: req.DurationMS, FPS: encoding.FPS, Quality: encoding.Quality, FrameCount: frameCount, Timings: timings, Diagnostics: boundedAnimationDiagnostics(diagnostics)}, NewError("animation_mp4_invalid", "encoded MP4 is missing or exceeds fixed bounds")
@@ -468,11 +486,7 @@ func validateAnimationRequest(req AnimationRequest) (int, error) {
 	if strings.TrimSpace(req.Entry) == "" || len(req.Files) == 0 || !entryExists || entry == nil || len(entry) == 0 || req.DurationMS < 100 || req.DurationMS > MaxAnimationDurationMS || req.FPS < 1 || req.FPS > MaxAnimationFPS {
 		return 0, NewError("animation_source_limit_exceeded", "animation request exceeds fixed renderer bounds")
 	}
-	frameCount := (req.DurationMS*req.FPS + 999) / 1000
-	if frameCount < 1 || frameCount > MaxAnimationFrames {
-		return 0, NewError("animation_source_limit_exceeded", fmt.Sprintf("animation frame count exceeds the fixed %d-frame renderer bound", MaxAnimationFrames))
-	}
-	return frameCount, nil
+	return AnimationFrameBudget(int64(req.DurationMS), req.FPS)
 }
 
 type animationEncoding struct {
@@ -514,6 +528,10 @@ func resolveAnimationEncoding(req AnimationRequest) (animationEncoding, error) {
 	return encoding, nil
 }
 
+// Accept the native scene acknowledgement without accepting arbitrary metadata.
+// Both bootstrap echo bookkeeping and frame capture use this exact predicate.
+const animationSeekAckValidator = `const validSeekAck=(ack,time)=>!!ack&&typeof ack==="object"&&!Array.isArray(ack)&&Object.hasOwn(ack,"time_ms")&&Number.isFinite(ack.time_ms)&&ack.time_ms===time&&Object.keys(ack).every(key=>key==="time_ms"||key==="scene_id")&&(!Object.hasOwn(ack,"scene_id")||(typeof ack.scene_id==="string"&&ack.scene_id.trim().length>0));`
+
 // The bootstrap is installed through Page.addScriptToEvaluateOnNewDocument, so
 // it exists synchronously before any author classic/module script can execute.
 const animationBootstrapScriptPrefix = `(function () {
@@ -549,7 +567,7 @@ const bind=candidate=>{
 addEventListener("DOMContentLoaded",()=>{if(!claimed)settle("missing_before_dom_content_loaded")},{once:true});
 setTimeout(()=>{if(!settled)settle(claimed?"bind_timeout":"missing_before_dom_content_loaded")},`
 
-const animationBootstrapScriptSuffix = `);
+const animationBootstrapScriptSuffix = `);` + animationSeekAckValidator + `
 const runtime={
   version:"swarm.animation/v1",
   bind,
@@ -560,7 +578,7 @@ const runtime={
   },
   seek:async timeMs=>{
     if (!bound) return {__swarm_outcome:"runtime_unbound"};
-    try { const ack=await bound.seek(timeMs); if(ack&&Object.keys(ack).length===1&&ack.time_ms===timeMs)document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs); return ack; } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
+    try { const ack=await bound.seek(timeMs); if(validSeekAck(ack,timeMs))document.documentElement.dataset.swarmAnimationTimeMs=String(timeMs); return ack; } catch (_) { return {__swarm_outcome:"seek_rejected"}; }
   }
 };
 // Keep the trusted proxy immutable while accepting the original parser-time
@@ -704,17 +722,38 @@ return {code:"ok",outcome:"ready",lifecycle:finalLifecycle};
 	return diagnostic, nil
 }
 
-func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStability bool) ([]byte, []AnimationDiagnostic, error) {
+func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStability bool) (data []byte, diagnostics []AnimationDiagnostic, resultErr error) {
+	// Queue under the render/pipeline deadline, not a frame's execution budget.
+	// Hold ownership across seek, paint and both stability screenshots so a
+	// sibling cannot hide this tab or race a compositor readback midway through.
+	release, err := acquireAnimationCapture(browserCtx)
+	if err != nil {
+		return nil, nil, newErrorWithCause("animation_timeout", "animation capture cancelled waiting for browser compositor", err)
+	}
+	defer release()
+	started := time.Now()
+	stage := "seek_and_paint"
 	frameTimeout := animationFrameTimeout
 	if auditStability {
 		frameTimeout = animationStableTimeout
 	}
 	ctx, cancel := context.WithTimeout(browserCtx, frameTimeout)
 	defer cancel()
+	defer func() {
+		if resultErr != nil {
+			resultErr = animationFrameFailure(browserCtx, ctx, resultErr, stage, timeMS, frameTimeout, time.Since(started))
+		}
+	}()
+	// Focus emulation alone changes DOM focus, not the headless compositor's
+	// active page. Explicitly activate the owned tab before awaiting its paint.
+	if err := chromedp.Run(ctx, page.BringToFront()); err != nil {
+		return nil, nil, newErrorWithCause("animation_renderer_failed", "animation page could not become active", err)
+	}
 	timestamp := timeMS
-	diagnostics := make([]AnimationDiagnostic, 0, 3)
+	diagnostics = make([]AnimationDiagnostic, 0, 3)
 	var audit animationAudit
 	expression := fmt.Sprintf(`(async () => {
+`+animationSeekAckValidator+`
 const time=%d, api=globalThis.__SWARM_ANIMATION_V1__;
 let ack; try { ack=await Promise.race([Promise.resolve().then(()=>api.seek(time)),new Promise(resolve=>setTimeout(()=>resolve({__swarm_outcome:"seek_timeout"}),%d))]); } catch (_) { return {code:"animation_seek_rejected",outcome:"seek_rejected"}; }
 if (ack&&typeof ack.__swarm_outcome==="string") {
@@ -722,7 +761,7 @@ if (ack&&typeof ack.__swarm_outcome==="string") {
   if (ack.__swarm_outcome==="seek_timeout") return {code:"animation_seek_timeout",outcome:ack.__swarm_outcome};
   return {code:"animation_seek_failed",outcome:ack.__swarm_outcome};
 }
-if (!ack || Object.keys(ack).length!==1 || ack.time_ms!==time || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
+if (!validSeekAck(ack,time) || document.documentElement.dataset.swarmAnimationTimeMs!==String(time)) return {code:"animation_seek_ack_mismatch",outcome:"seek_ack_mismatch"};
 const animations=document.getAnimations();
 for (const animation of animations) animation.pause();
 // A seek acknowledgement and style/layout flush do not imply a presented
@@ -747,12 +786,14 @@ return {code:"ok",outcome:"seek_acknowledged"};
 		return nil, diagnostics, NewError(audit.Code, animationSafeMessage(audit.Code))
 	}
 	if auditStability {
+		stage = "viewport_audit"
 		boundsDiagnostics, err := auditAnimationViewport(ctx, timeMS)
 		diagnostics = append(diagnostics, boundsDiagnostics...)
 		if err != nil {
 			return nil, diagnostics, err
 		}
 	}
+	stage = "screenshot"
 	first, err := animationScreenshot(ctx)
 	if err != nil {
 		return nil, diagnostics, err
@@ -760,11 +801,13 @@ return {code:"ok",outcome:"seek_acknowledged"};
 	if !auditStability {
 		return first, diagnostics, nil
 	}
+	stage = "stability_wait"
 	select {
 	case <-time.After(10 * time.Millisecond):
 	case <-ctx.Done():
 		return nil, diagnostics, NewError("animation_timeout", "animation frame stability audit timed out")
 	}
+	stage = "stability_screenshot"
 	second, err := animationScreenshot(ctx)
 	if err != nil {
 		return nil, diagnostics, err
@@ -1015,7 +1058,7 @@ func animationScreenshot(ctx context.Context) ([]byte, error) {
 		return captureErr
 	})); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, NewError("animation_timeout", "animation frame capture exceeded the quality-adjusted deadline")
+			return nil, newErrorWithCause("animation_timeout", "animation screenshot exceeded the shared frame deadline", context.DeadlineExceeded)
 		}
 		return nil, newErrorWithCause("animation_renderer_failed", "renderer could not capture an animation frame", err)
 	}
@@ -1072,6 +1115,7 @@ func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames 
 	results := make(chan animationCapturedFrame, bufferFrames)
 	permits := make(chan struct{}, bufferFrames)
 	var group sync.WaitGroup
+	defer func() { cancel(); group.Wait() }()
 	for worker := 0; worker < workers; worker++ {
 		group.Add(1)
 		go func(worker int) {
@@ -1097,7 +1141,9 @@ func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames 
 			}
 		}(worker)
 	}
+	group.Add(1)
 	go func() {
+		defer group.Done()
 		defer close(jobs)
 		for index := 0; index < frames; index++ {
 			select {
@@ -1141,6 +1187,9 @@ func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames 
 				progress(next)
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return newErrorWithCause("animation_timeout", "concurrent frame pipeline was cancelled during capture", err)
 	}
 	if next != frames {
 		return NewError("animation_renderer_failed", "concurrent frame pipeline ended before all ordered frames were written")

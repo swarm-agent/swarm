@@ -252,11 +252,11 @@ func TestManageArtifactCreateV3FlexiblePartCounts(t *testing.T) {
 	}
 }
 
-// Requirement: the advertised motion_ui profile reaches the immutable native
+// Requirement: the advertised motion_ui and spatial_3d profiles reach the immutable native
 // project and sequential Parts retain bounded midpoint samples. Reject override,
 // missing-profile and invalid-time inputs before allocating any turn.
 func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
-	for _, invalid := range []string{"", "override", "missing-profile", "invalid-time", "missing-manifest", "duplicate-manifest", "beyond-duration"} {
+	for _, invalid := range []string{"", "spatial", "unsupported", "override", "missing-profile", "invalid-time", "missing-manifest", "duplicate-manifest", "beyond-duration"} {
 		t.Run("case-"+invalid, func(t *testing.T) {
 			repository := &directArtifactV3RepoFake{}
 			runtime := NewRuntime(1)
@@ -264,7 +264,13 @@ func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
 			scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
 			ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
 			args := map[string]any{"action": "create", "media_type": "text/html", "content": `<html><body><section id="scene">A scene</section></body></html>` + nativeAnimationTestManifest, "animation_profile": map[string]any{"profile": "motion_ui"}, "parts": []map[string]any{{"id": "scene", "label": "Scene", "kind": "temporal", "start_ms": 0, "end_ms": 4000}}}
+			expectedProfile := "motion_ui"
 			switch invalid {
+			case "spatial":
+				expectedProfile = "spatial_3d"
+				args["animation_profile"] = map[string]any{"profile": expectedProfile}
+			case "unsupported":
+				args["animation_profile"] = map[string]any{"profile": "vector_playback"}
 			case "missing-manifest":
 				args["content"] = strings.ReplaceAll(args["content"].(string), nativeAnimationTestManifest, "")
 			case "duplicate-manifest":
@@ -280,7 +286,7 @@ func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
 			}
 			encoded, _ := json.Marshal(args)
 			_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "temporal", Name: "manage_artifact", Arguments: string(encoded)})
-			if invalid != "" {
+			if invalid != "" && invalid != "spatial" {
 				if err == nil || len(repository.turns) != 0 || len(repository.submits) != 0 {
 					t.Fatalf("invalid input mutated publication: err=%v", err)
 				}
@@ -293,7 +299,7 @@ func TestManageArtifactCreateV3TemporalContract(t *testing.T) {
 			if err := json.Unmarshal(repository.submits[0].Project[pebblestore.ArtifactV3ManifestFilename], &manifest); err != nil {
 				t.Fatal(err)
 			}
-			if manifest.AnimationProfile == nil || manifest.AnimationProfile.ProfileID != "motion_ui" || manifest.AnimationProfile.Budgets.NetworkAllowed || len(manifest.Parts) != 1 || manifest.Parts[0].CaptureTimeMS == nil || *manifest.Parts[0].CaptureTimeMS != 2000 || manifest.Parts[0].Locator.Value != "#scene" {
+			if manifest.AnimationProfile == nil || manifest.AnimationProfile.ProfileID != expectedProfile || manifest.AnimationProfile.Budgets.NetworkAllowed || len(manifest.Parts) != 1 || manifest.Parts[0].CaptureTimeMS == nil || *manifest.Parts[0].CaptureTimeMS != 2000 || manifest.Parts[0].Locator.Value != "#scene" {
 				t.Fatalf("temporal contract lost: %#v", manifest)
 			}
 		})

@@ -1244,7 +1244,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-theme",
-			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the active workspace when available.",
+			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the saved source workspace, not the managed execution worktree; explicit workspace paths must resolve to exact saved workspace roots.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1531,6 +1531,7 @@ func (r *Runtime) Definitions() []Definition {
 					"output_contract":     map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
 					"output_requirements": artifact.OutputRequirementsToolSchema(),
 					"animation_profile":   artifact.AnimationProfileToolSchema(),
+					"scene_contract":      ArtifactV3SceneContractSchema(),
 					"source_artifact": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
@@ -1538,6 +1539,7 @@ func (r *Runtime) Definitions() []Definition {
 					"artifact_v3_source": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string", "minLength": 1}, "artifact_id": map[string]any{"type": "string", "minLength": 1}, "commit_oid": map[string]any{"type": "string", "minLength": 1}, "projection_seq": map[string]any{"type": "integer", "minimum": 1},
 						"target_part_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}},
+						"revision_intent": map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}},
 					}, "required": []string{"session_id", "artifact_id", "commit_oid", "projection_seq"}, "additionalProperties": false, "description": "Exact native Artifact V3 source for managed Designer follow-up work. session_id must own the artifact. Trusted orchestration authenticates the artifact, exact immutable head commit, projection sequence, and target Part IDs before branching a complete candidate."},
 					"artifact_v2_source": map[string]any{"type": "object", "properties": map[string]any{
 						"artifact_id": map[string]any{"type": "string", "minLength": 1}, "published_head_id": map[string]any{"type": "string", "minLength": 1}, "composition_id": map[string]any{"type": "string", "minLength": 1},
@@ -1608,6 +1610,7 @@ func (r *Runtime) Definitions() []Definition {
 								"concurrency_reason":  map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
 								"output_requirements": artifact.OutputRequirementsToolSchema(),
 								"animation_profile":   artifact.AnimationProfileToolSchema(),
+								"scene_contract":      ArtifactV3SceneContractSchema(),
 								"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
 								"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder. Each Coder gets a worktree based on that target repository HEAD; omitted uses the parent workspace."},
 								"owned_scope":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target. Required for workspace-mode Designer as a concrete clean workspace-relative path and must not overlap another concurrent workspace Designer launch; forbidden for managed Designer. An omitted Coder scope defaults to its isolated worktree. " + taskscope.Guidance},
@@ -1657,6 +1660,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"deliverable":         map[string]any{"type": "string", "minLength": 1},
 					"output_requirements": artifact.OutputRequirementsToolSchema(),
 					"animation_profile":   artifact.AnimationProfileToolSchema(),
+					"scene_contract":      ArtifactV3SceneContractSchema(),
 					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
 					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs. " + taskscope.Guidance + " Workspace Designers require concrete paths without wildcard suffixes; program jobs cannot use whole-workspace sentinels."},
 					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},

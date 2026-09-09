@@ -60,22 +60,38 @@ type ArtifactV3DraftGate struct {
 	Diagnostics []ArtifactV3Diagnostic `json:"diagnostics"`
 }
 
+type ArtifactV3GenerationSibling struct {
+	pebblestore.ArtifactV3GenerationMember
+	Label         string `json:"label,omitempty"`
+	Status        string `json:"status"`
+	CommitOID     string `json:"commit_oid,omitempty"`
+	ProjectionSeq uint64 `json:"projection_seq"`
+}
+
+type ArtifactV3GenerationGroup struct {
+	WaveID  string                        `json:"wave_id"`
+	Count   int                           `json:"count"`
+	Members []ArtifactV3GenerationSibling `json:"members"`
+}
+
 type ArtifactV3Artifact struct {
-	CurrentDraft    *ArtifactV3DraftSummary      `json:"current_draft,omitempty"`
-	Label           string                       `json:"label"`
-	ID              string                       `json:"id"`
-	OwnerSessionID  string                       `json:"owner_session_id"`
-	IntentReference string                       `json:"intent_reference,omitempty"`
-	ArtifactRef     string                       `json:"artifact_ref"`
-	Status          string                       `json:"status"`
-	Revision        uint64                       `json:"revision"`
-	PartCount       int                          `json:"part_count"`
-	Parts           []pebblestore.ArtifactV3Part `json:"parts"`
-	Head            *ArtifactV3Revision          `json:"head,omitempty"`
-	CurrentRevision *ArtifactV3Revision          `json:"current_revision,omitempty"`
-	Revisions       []ArtifactV3Revision         `json:"revisions,omitempty"`
-	Turns           []ArtifactV3Turn             `json:"turns,omitempty"`
-	UpdatedAt       int64                        `json:"updated_at"`
+	Generations      []pebblestore.ArtifactV3GenerationMember `json:"generations,omitempty"`
+	GenerationGroups []ArtifactV3GenerationGroup              `json:"generation_groups,omitempty"`
+	CurrentDraft     *ArtifactV3DraftSummary                  `json:"current_draft,omitempty"`
+	Label            string                                   `json:"label"`
+	ID               string                                   `json:"id"`
+	OwnerSessionID   string                                   `json:"owner_session_id"`
+	IntentReference  string                                   `json:"intent_reference,omitempty"`
+	ArtifactRef      string                                   `json:"artifact_ref"`
+	Status           string                                   `json:"status"`
+	Revision         uint64                                   `json:"revision"`
+	PartCount        int                                      `json:"part_count"`
+	Parts            []pebblestore.ArtifactV3Part             `json:"parts"`
+	Head             *ArtifactV3Revision                      `json:"head,omitempty"`
+	CurrentRevision  *ArtifactV3Revision                      `json:"current_revision,omitempty"`
+	Revisions        []ArtifactV3Revision                     `json:"revisions,omitempty"`
+	Turns            []ArtifactV3Turn                         `json:"turns,omitempty"`
+	UpdatedAt        int64                                    `json:"updated_at"`
 }
 
 type ArtifactV3Revision struct {
@@ -108,12 +124,13 @@ type ArtifactV3BuildEvidence struct {
 }
 
 type ArtifactV3ValidationEvidence struct {
-	ID              string                 `json:"id"`
-	Status          string                 `json:"status"`
-	CommitOID       string                 `json:"commit_oid"`
-	TreeOID         string                 `json:"tree_oid"`
-	EvidenceDigests []string               `json:"evidence_digests,omitempty"`
-	Diagnostics     []ArtifactV3Diagnostic `json:"diagnostics,omitempty"`
+	Scenes          []pebblestore.ArtifactV3SceneEvidence `json:"scenes,omitempty"`
+	ID              string                                `json:"id"`
+	Status          string                                `json:"status"`
+	CommitOID       string                                `json:"commit_oid"`
+	TreeOID         string                                `json:"tree_oid"`
+	EvidenceDigests []string                              `json:"evidence_digests,omitempty"`
+	Diagnostics     []ArtifactV3Diagnostic                `json:"diagnostics,omitempty"`
 }
 
 type ArtifactV3Diagnostic struct {
@@ -156,6 +173,7 @@ type ArtifactV3Preview struct {
 }
 
 type ArtifactV3OpenTurnRequest struct {
+	RevisionIntent  string
 	SessionID       string
 	ArtifactID      string
 	ClientRequestID string
@@ -349,6 +367,15 @@ func (s *Server) handleSessionV3ArtifactsV3(w http.ResponseWriter, r *http.Reque
 		// explicit CORP policy Chromium blocks same-endpoint CSS/JS as
 		// ERR_BLOCKED_BY_ORB even though the authenticated request succeeds.
 		w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+		// Module scripts use CORS even inside the opaque sandbox. Only an
+		// authenticated, revision-bound preview capability may expose module
+		// bytes to that null origin; this does not allow credentialed CORS.
+		if accessToken != "" && r.Header.Get("Origin") == "null" && strings.HasSuffix(assetPath, ".js") {
+			if _, valid := s.validateSessionV3ArtifactPreviewRequest(r); valid {
+				w.Header().Set("Access-Control-Allow-Origin", "null")
+				w.Header().Add("Vary", "Origin")
+			}
+		}
 		w.Header().Set("Cache-Control", "private, no-store")
 		if strings.TrimSpace(preview.ETag) != "" {
 			w.Header().Set("ETag", preview.ETag)
@@ -406,6 +433,7 @@ func (s *Server) handleArtifactV3Turns(w http.ResponseWriter, r *http.Request, p
 			ClientRequestID string   `json:"client_request_id"`
 			Intent          string   `json:"intent"`
 			BaseRevisionRef string   `json:"base_revision_ref"`
+			RevisionIntent  string   `json:"revision_intent,omitempty"`
 			TargetPartIDs   []string `json:"target_part_ids,omitempty"`
 			CandidateCount  int      `json:"candidate_count,omitempty"`
 		}
@@ -421,7 +449,7 @@ func (s *Server) handleArtifactV3Turns(w http.ResponseWriter, r *http.Request, p
 			writeError(w, http.StatusBadRequest, errors.New("intent, exact base_revision_ref, and a bounded candidate_count are required"))
 			return
 		}
-		turn, err := s.artifactV3.OpenTurn(r.Context(), artifactV3APIPrincipal(principal), ArtifactV3OpenTurnRequest{SessionID: sessionID, ArtifactID: artifactID, ClientRequestID: strings.TrimSpace(req.ClientRequestID), Intent: strings.TrimSpace(req.Intent), BaseRevisionRef: strings.TrimSpace(req.BaseRevisionRef), TargetPartIDs: canonicalArtifactV3IDs(req.TargetPartIDs), CandidateCount: req.CandidateCount})
+		turn, err := s.artifactV3.OpenTurn(r.Context(), artifactV3APIPrincipal(principal), ArtifactV3OpenTurnRequest{RevisionIntent: req.RevisionIntent, SessionID: sessionID, ArtifactID: artifactID, ClientRequestID: strings.TrimSpace(req.ClientRequestID), Intent: strings.TrimSpace(req.Intent), BaseRevisionRef: strings.TrimSpace(req.BaseRevisionRef), TargetPartIDs: canonicalArtifactV3IDs(req.TargetPartIDs), CandidateCount: req.CandidateCount})
 		if err != nil {
 			s.writeArtifactV3Error(w, err)
 			return

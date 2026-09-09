@@ -75,6 +75,7 @@ type taskProgramStage struct {
 }
 
 type taskProgramJob struct {
+	SceneContract         *pebblestore.ArtifactV3SceneContract           `json:"scene_contract,omitempty"`
 	ID                    string                                         `json:"id"`
 	StageID               string                                         `json:"stage_id"`
 	DependsOn             []string                                       `json:"depends_on,omitempty"`
@@ -134,11 +135,12 @@ type taskSwarmSectionTarget struct {
 }
 
 type taskArtifactV3Source struct {
-	SessionID     string   `json:"session_id"`
-	ArtifactID    string   `json:"artifact_id"`
-	CommitOID     string   `json:"commit_oid"`
-	ProjectionSeq uint64   `json:"projection_seq"`
-	TargetPartIDs []string `json:"target_part_ids,omitempty"`
+	RevisionIntent string   `json:"revision_intent,omitempty"`
+	SessionID      string   `json:"session_id"`
+	ArtifactID     string   `json:"artifact_id"`
+	CommitOID      string   `json:"commit_oid"`
+	ProjectionSeq  uint64   `json:"projection_seq"`
+	TargetPartIDs  []string `json:"target_part_ids,omitempty"`
 }
 
 type taskArtifactV2Source struct {
@@ -434,6 +436,15 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		return taskCallArguments{}, errors.New("task program lifecycle supports only mode=regular")
 	}
 	parseLaunchSpec := func(raw map[string]any, label string) (taskLaunchSpec, error) {
+		// Source bindings belong to the complete wave. Silently discarding a
+		// nested binding would allocate a blank genesis instead of a remix.
+		if strings.HasPrefix(label, "task launches[") {
+			for _, key := range []string{"artifact_v3_source", "artifact_v2_source", "source_artifact"} {
+				if _, supplied := raw[key]; supplied {
+					return taskLaunchSpec{}, fmt.Errorf("%s: %s must be supplied at task top level, not inside launches; no workers launched", label, key)
+				}
+			}
+		}
 		if err := rejectTaskLaunchTrustFields(raw, label); err != nil {
 			return taskLaunchSpec{}, err
 		}
@@ -840,7 +851,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "acceptance_criteria", "dependency_evidence":
+			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "scene_contract", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
@@ -917,6 +928,13 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if job.OutputRequirements != nil {
 			row["output_requirements"] = cloneTaskOutputRequirements(job.OutputRequirements)
 		}
+		if raw, exists := row["scene_contract"]; exists {
+			contract, err := tool.ParseArtifactV3SceneContract(raw)
+			if err != nil {
+				return nil, nil, err
+			}
+			job.SceneContract = contract
+		}
 		if rawProfile, exists := row["animation_profile"]; exists {
 			if rawProfile == nil {
 				return nil, nil, fmt.Errorf("task program jobs[%d] animation_profile must be an object", i)
@@ -958,6 +976,9 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		stageJobCounts[job.StageID]++
 		program.Jobs = append(program.Jobs, job)
 		sourceArguments := map[string]any{"program_id": program.ID, "program_job_id": job.ID, "program_stage_id": job.StageID, "acceptance_criteria": append([]string(nil), job.AcceptanceCriteria...), "depends_on": append([]string(nil), job.DependsOn...)}
+		if job.SceneContract != nil {
+			sourceArguments["scene_contract"] = job.SceneContract
+		}
 		if job.TargetWorkspacePath != "" {
 			sourceArguments["workspace_path"] = job.TargetWorkspacePath
 		}
@@ -1080,7 +1101,7 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		"action": true, "description": true, "prompt": true, "message": true, "mode": true, "swarm_mode": true,
 		"swarm_strategy": true, "agent_type": true, "subagent_type": true, "agent": true, "purpose": true, "count": true,
 		"themes": true, "groups": true, "iteration_controls": true, "output_contract": true, "output_mode": true, "assembly_parts": true,
-		"integration_contract": true, "output_requirements": true, "animation_profile": true, "source_artifact": true, "artifact_v3_source": true, "artifact_v2_source": true, "section_target": true, "section_targets": true, "launches": true,
+		"integration_contract": true, "output_requirements": true, "animation_profile": true, "scene_contract": true, "source_artifact": true, "artifact_v3_source": true, "artifact_v2_source": true, "section_target": true, "section_targets": true, "launches": true,
 		// concurrency_reason is a regular-launch field. Accept and discard it here as a
 		// compatibility no-op so one misplaced advisory hint cannot abort a swarm wave.
 		"concurrency_reason": true,
@@ -1352,6 +1373,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 			assignmentLabel = fmt.Sprintf("Agent #%d", index)
 		}
 		sourceArguments := map[string]any{"swarm_index": index, "swarm_count": count, "swarm_mode": true, "swarm_strategy": strategy, "output_mode": outputMode}
+		if raw, ok := args["scene_contract"]; ok {
+			sourceArguments["scene_contract"] = raw
+		}
 		if outputRequirements != nil {
 			sourceArguments["output_requirements"] = cloneTaskOutputRequirements(outputRequirements)
 		}
@@ -1921,6 +1945,9 @@ func parseTaskArtifactV3Source(raw any) (*taskArtifactV3Source, error) {
 	source.ArtifactID = strings.TrimSpace(source.ArtifactID)
 	source.CommitOID = strings.TrimSpace(source.CommitOID)
 	source.TargetPartIDs = uniqueNonEmptyStrings(source.TargetPartIDs)
+	if err := pebblestore.ValidateArtifactV3RevisionIntent(source.RevisionIntent, source.TargetPartIDs); err != nil {
+		return nil, err
+	}
 	if source.SessionID == "" || source.ArtifactID == "" || source.CommitOID == "" || source.ProjectionSeq == 0 {
 		return nil, errors.New("task artifact_v3_source requires session_id, artifact_id, commit_oid, and projection_seq")
 	}
@@ -4045,7 +4072,18 @@ func buildPermissionWorkspaceScope(session pebblestore.SessionSnapshot) tool.Wor
 		}
 		add(validated)
 	}
-	scope := tool.WorkspaceScope{PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID)}
+	// Permission previews and approved execution must retain the same saved
+	// workspace identity as ordinary runtime dispatch. PrimaryPath remains the
+	// execution lane; workspace settings use SourceWorkspacePath instead.
+	scope := tool.WorkspaceScope{
+		PrimaryPath: primaryPath, Roots: roots, SessionID: strings.TrimSpace(session.ID),
+		WorktreeEnabled:     session.WorktreeEnabled,
+		WorktreeRootPath:    strings.TrimSpace(session.WorktreeRootPath),
+		WorktreeBranch:      strings.TrimSpace(session.WorktreeBranch),
+		WorktreeBaseBranch:  strings.TrimSpace(session.WorktreeBaseBranch),
+		WorktreeBaseCommit:  strings.TrimSpace(mapString(session.Metadata, "base_commit")),
+		SourceWorkspacePath: strings.TrimSpace(mapString(session.Metadata, "swarm_v3_source_workspace_path")),
+	}
 	if userID, accountScopeID := strings.TrimSpace(session.UserID), strings.TrimSpace(session.AccountScopeID); userID != "" && accountScopeID != "" {
 		scope.Principal = identity.Principal{
 			Type:               identity.PrincipalTypeUser,

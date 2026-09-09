@@ -34,3 +34,18 @@ test('native preview message boundary fails closed without changing selection', 
   assert.deepEqual(toggleNativeArtifactPart(['first'], 'second'), ['first', 'second'])
   assert.deepEqual(toggleNativeArtifactPart(['first', 'second'], 'first'), ['second'])
 })
+
+// Requirement: playback acknowledgments belong to the current iframe, revision
+// and command. Threat: stale seeks or forged/nonfinite times move the transport.
+// This parser test is the narrowest test of the parent message boundary.
+test('playback rejects foreign, stale and malformed acknowledgments', async () => {
+  const { nativeArtifactPlaybackEvent } = await import('./artifact-v3-preview-selection')
+  const source = {} as Window
+  const data = { protocol: 'swarm.artifact/v3', revision_ref: 'revision-test', type: 'playback-state', command_id: 2, duration_ms: 1000, time_ms: 500, playing: false, error: '' }
+  const event = { source, origin: 'null', data } as unknown as MessageEvent
+  assert.deepEqual(nativeArtifactPlaybackEvent(event, source, 'revision-test', 2), { commandId: 2, durationMs: 1000, timeMs: 500, playing: false, error: '' })
+  for (const patch of [{ command_id: 1 }, { command_id: 3 }, { time_ms: NaN }, { time_ms: Infinity }, { time_ms: -1 }, { time_ms: 1001 }, { playing: 'yes' }, { revision_ref: 'old' }, { protocol: 'other' }]) {
+    assert.equal(nativeArtifactPlaybackEvent({ ...event, data: { ...data, ...patch } } as MessageEvent, source, 'revision-test', 2), null)
+  }
+  assert.equal(nativeArtifactPlaybackEvent({ ...event, source: {} } as MessageEvent, source, 'revision-test', 2), null)
+})

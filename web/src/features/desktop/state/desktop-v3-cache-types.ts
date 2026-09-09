@@ -148,6 +148,7 @@ export interface DesktopV3ArtifactSelectionReference {
   artifact_id?: string
   revision_ref?: string
   target_part_ids?: string[]
+  revision_intent?: 'focused_parts' | 'whole_project'
   label?: string
   description?: string
   pending_request?: string
@@ -565,6 +566,7 @@ export type RealtimeKind =
   | 'live.patch'
   | 'notification.resource.updated'
   | 'task.lifecycle.updated'
+  | 'workspace.catalog.updated'
   | 'auth.credentials.updated'
 
 export interface RealtimeMessage {

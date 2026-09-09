@@ -267,7 +267,7 @@ func TestMasterHarnessPromptGuidesDeterministicHTMLAnimationExport(t *testing.T)
 	for _, want := range []string{
 		"exactly one #swarm-animation-manifest",
 		"application/json, version swarm.animation/v1",
-		"duration_ms 100–120000, fps 1–60",
+		"duration_ms >=100, fps 1–60, ceil(duration_ms*fps/1000) <=36000 at 1920x1080",
 		"matching ready()",
 		"acknowledging time_ms",
 		"preserve normal controls/autoplay outside capture",

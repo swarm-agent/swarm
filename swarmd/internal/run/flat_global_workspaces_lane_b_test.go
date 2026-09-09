@@ -117,8 +117,11 @@ func TestLaneB_E2E016_E2E017_E2E018_TemporaryGrantIsSessionOnlyAndReusable(t *te
 	}
 }
 
+// Requirement: ResolveRuntimeWorkspaceScope rejects stale captured ID/generation
+// before returning authority. Use a committed repository to reach that boundary
+// under the current admission contract rather than failing during fixture setup.
 func TestLaneB_E2E027_E2E028_RejectsStaleWorkspaceIdentityBeforeScope(t *testing.T) {
-	primary := t.TempDir()
+	primary := programFixtureRepo(t)
 	principal := testRunPrincipal()
 	workspaceSvc, cleanup := newTestRunWorkspaceService(t)
 	defer cleanup()
@@ -244,8 +247,11 @@ func TestLaneE_E2E035AutoManagedWorkspaceCannotDowngradeDestructiveBash(t *testi
 	}
 }
 
+// Requirement: account-scoped catalog lookup and ScopeForPathForPrincipal must
+// not disclose another account's saved authority; the real service/store layer
+// proves that boundary using an admitted committed-repository fixture.
 func TestLaneB_E2E029_AccountWorkspaceIdentityCannotCrossAccounts(t *testing.T) {
-	primary := t.TempDir()
+	primary := programFixtureRepo(t)
 	owner := testRunPrincipal()
 	other := owner
 	other.UserID = "user-2"

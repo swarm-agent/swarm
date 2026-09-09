@@ -18,10 +18,21 @@ import (
 
 var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
 
+type LocalBindingService interface {
+	EnsureLocalSelfPlacementForPrincipal(string, string) (pebblestore.TopologyRuntimePlacementRecord, error)
+	EnsureLocalWorkspaceSelfBindingForPrincipal(string, string, pebblestore.WorkspaceEntry) (pebblestore.TopologyWorkspaceBindingRecord, error)
+}
+
 type Service struct {
-	store   *pebblestore.WorkspaceStore
-	events  *pebblestore.EventLog
-	publish func(pebblestore.EventEnvelope)
+	localBindings LocalBindingService
+	store         *pebblestore.WorkspaceStore
+	events        *pebblestore.EventLog
+	publish       func(pebblestore.EventEnvelope)
+}
+
+// SetLocalBindingService wires the canonical topology authority before serving requests.
+func (s *Service) SetLocalBindingService(service LocalBindingService) {
+	s.localBindings = service
 }
 
 type Resolution struct {
@@ -158,6 +169,12 @@ func (s *Service) FailDefinitionForPrincipal(principal identity.Principal, path 
 	return s.store.FailDefinitionForAccount(principal.AccountScopeID, path, generation, failure, suggestion, attempts)
 }
 
+func (s *Service) SetCatalogPublisher(publish func(pebblestore.V3RealtimeOutboxRecord)) {
+	if s != nil && s.store != nil {
+		s.store.SetCatalogPublisher(publish)
+	}
+}
+
 func (s *Service) SetEventPublisher(events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) {
 	if s == nil {
 		return
@@ -275,6 +292,12 @@ func (s *Service) CreateCatalogEntryForPrincipal(principal identity.Principal, p
 	if name == "" {
 		name = defaultWorkspaceName(resolved)
 	}
+	if s.localBindings == nil {
+		return Resolution{}, errors.New("workspace local binding service is not configured")
+	}
+	if _, err := s.localBindings.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {
+		return Resolution{}, err
+	}
 	entry, created, err := s.store.CreateForAccountIfAbsent(principal.AccountScopeID, resolved, name, themeID)
 	if err != nil {
 		return Resolution{}, fmt.Errorf("create workspace entry: %w", err)
@@ -282,7 +305,16 @@ func (s *Service) CreateCatalogEntryForPrincipal(principal identity.Principal, p
 	if !created {
 		return Resolution{}, fmt.Errorf("workspace already exists for path %q with id %q", resolved, entry.WorkspaceID)
 	}
-	return resolutionForEntry(path, resolved, entry, entry.Name), nil
+	binding, err := s.localBindings.EnsureLocalWorkspaceSelfBindingForPrincipal(principal.AccountScopeID, principal.UserID, entry)
+	if err != nil {
+		if rollbackErr := s.RollbackCreatedWorkspaceForPrincipal(principal, entry); rollbackErr != nil {
+			return Resolution{}, fmt.Errorf("create workspace self binding: %w; rollback failed: %w", err, rollbackErr)
+		}
+		return Resolution{}, fmt.Errorf("create workspace self binding: %w", err)
+	}
+	resolution := resolutionForEntry(path, resolved, entry, entry.Name)
+	resolution.LocalWorkspaceBindingID = binding.BindingID
+	return resolution, nil
 }
 
 // UpdateCatalogEntryForPrincipal edits the exact saved workspace identity and

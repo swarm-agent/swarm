@@ -13,6 +13,9 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// Requirement: opening Plan must not alter parent model, proposal or checkpoint
+// authority. The V3 handler is the narrowest integration boundary; compare stored
+// canonical state before/after and reject direct sidechat model mutation.
 func TestSessionsV3PlanSidechatUsesImmutableSnapshotAndPreservesParentState(t *testing.T) {
 	server, sessionSvc, permissionSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	created := createSessionsV3PrimaryTestSession(t, server, "plan-state-create", "plan state")
@@ -49,7 +52,9 @@ func TestSessionsV3PlanSidechatUsesImmutableSnapshotAndPreservesParentState(t *t
 			Tasks: []string{"preserve parent authority"}, AcceptanceCriteria: []string{"state remains unchanged"},
 		}},
 	}
-	beforePlan := sessionsV3PlanModeSeedPlan(t, sessionSvc, created.ID, planDoc.ID, planDoc, "approved")
+	// Compare persisted canonical documents, not the pre-normalization seed.
+	sessionsV3PlanModeSeedPlan(t, sessionSvc, created.ID, planDoc.ID, planDoc, "approved")
+	beforePlan := sessionsV3PlanModeGetPlan(t, sessionSvc, created.ID, planDoc.ID)
 	pending := createSessionsV3PlanInvariantPermission(t, permissionSvc, created.ID)
 	before, ok, err = sessionSvc.GetSession(created.ID)
 	if err != nil || !ok {

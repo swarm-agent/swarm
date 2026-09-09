@@ -336,6 +336,24 @@ func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) 
 	}
 	// Dedicated capabilities are evaluated before generic rules and bypass so a
 	// broad manage_sessions/plan_manage rule cannot authorize either boundary.
+	if ctx.ToolName == "artifact_v3_select" || ctx.ToolName == "artifact_v3_resume" {
+		// Only an explicit rule for this exact capability can preauthorize it.
+		// Generic artifact/wildcard rules and bypass are not selection consent.
+		exact := policy
+		exact.Rules = nil
+		for _, rule := range policy.Rules {
+			if rule.Kind == PolicyRuleKindTool && rule.Tool == ctx.ToolName {
+				exact.Rules = append(exact.Rules, rule)
+			}
+		}
+		if explain, ok := explainExplicitDeny(ctx, exact); ok {
+			return explain
+		}
+		if explain, ok := explainExplicitRule(ctx, exact); ok {
+			return explain
+		}
+		return PolicyExplain{Decision: PolicyDecisionAsk, Source: "native_artifact_exact_action", Reason: "native selection and producer rebinding require approval or an explicit exact-action rule", ToolName: ctx.ToolName}
+	}
 	if ctx.ToolName == "session_deploy" {
 		decision := PolicyDecisionAsk
 		reason := "session deployment policy requires approval"
@@ -533,6 +551,11 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	}
 	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
 		toolName = "skill_change"
+	}
+	if toolName == "manage_artifact" {
+		if identity := nativeArtifactApprovalIdentity(toolArguments); identity != "" {
+			toolName = identity
+		}
 	}
 	invalidReason := ""
 	if toolName == "manage_workspace" {

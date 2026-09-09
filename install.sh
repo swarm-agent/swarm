@@ -107,7 +107,9 @@ is_stable_release_tag() {
 resolve_release_version() {
   latest_api="https://api.github.com/repos/${REPO}/releases/latest"
 
-  version="$(curl -fsSL "$latest_api" 2>/dev/null | parse_first_tag_name || true)"
+  printf 'resolving latest release...\n' >&2
+  metadata="$(curl -q --fail --location --silent --show-error --connect-timeout 10 --max-time 30 "$latest_api")" || return 1
+  version="$(printf '%s\n' "$metadata" | parse_first_tag_name)"
   if [ -z "$version" ]; then
     return 1
   fi
@@ -118,6 +120,35 @@ resolve_release_version() {
   printf '%s\n' "$version"
   return 0
 }
+
+# Ignore ambient curlrc settings: they can silently add retries, rate limits,
+# or suppress output. Keep proxy/CA environment support and TLS verification.
+download_release_file() (
+  label="$1"
+  url="$2"
+  destination="$3"
+  deadline="$4"
+  printf 'downloading %s\n  %s\n' "$label" "$url" >&2
+  printf 'Connection limit: 10s; stalled transfer: 20s below 1 KiB/s; total limit: %ss.\n' "$deadline" >&2
+  if curl -q --fail --location --show-error --connect-timeout 10 \
+    --speed-limit 1024 --speed-time 20 --max-time "$deadline" \
+    --output "$destination" \
+    --write-out '\nDownloaded %{size_download} bytes in %{time_total}s (%{speed_download} bytes/s).\n' \
+    "$url"; then
+    printf '%s download complete.\n' "$label" >&2
+  else
+    status=$?
+    printf '\nFailed to download %s (curl exit %s).\nURL: %s\n' "$label" "$status" "$url" >&2
+    case "$status" in
+      28) echo 'Connection, stalled-transfer, or total download time limit reached.' >&2 ;;
+      22) echo 'The release server returned an HTTP error; check that this release asset exists.' >&2 ;;
+      5|6|7) echo 'Could not resolve or connect to the release server; check DNS, proxy, and firewall access.' >&2 ;;
+      60) echo 'TLS certificate verification failed; check the system clock and trusted CA certificates.' >&2 ;;
+    esac
+    echo 'Installation stopped before archive extraction or Swarm path provisioning. Check the error above and network access to GitHub and its release CDN, then rerun the installer.' >&2
+    return "$status"
+  fi
+)
 
 print_installing() {
   version="$1"
@@ -812,10 +843,8 @@ checksum_name="${asset_name}.sha256"
 checksum_url="${asset_url}.sha256"
 checksum_path="$tmp_dir/$checksum_name"
 need_cmd sha256sum
-printf 'downloading release and checksum... '
-curl -fsSL "$asset_url" -o "$archive_path"
-curl -fsSL "$checksum_url" -o "$checksum_path"
-print_ok
+download_release_file 'release archive' "$asset_url" "$archive_path" 600
+download_release_file 'release checksum' "$checksum_url" "$checksum_path" 30
 printf 'verifying release checksum... '
 checksum_line="$(awk -v name="$asset_name" '
   NF >= 2 {

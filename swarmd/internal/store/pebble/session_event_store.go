@@ -77,6 +77,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	workspaceCatalog     *workspaceCatalogMutation
 	SessionID            string                        `json:"session_id"`
 	UserID               string                        `json:"user_id,omitempty"`
 	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
@@ -1006,6 +1007,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if input.workspaceCatalog != nil {
+		if err := setWorkspaceCatalogMutationInBatch(batch, input.AccountScopeID, input.workspaceCatalog); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if input.PlanSave != nil {
 		if err := setV3PlanSaveInBatch(batch, input.SessionID, *input.PlanSave); err != nil {
 			return V3SessionMutationResult{}, err

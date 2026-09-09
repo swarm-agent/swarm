@@ -27,6 +27,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     const candidate = revision('b'.repeat(40), 'new-part')
     let head = base
     let ready = false
+    let unavailable = false
     let selected = false
     let draftError = true
     const draftDiagnostic = { stage: 'validation', code: 'draft_validation_failed', message: 'The artifact needs a preview or validation repair.' }
@@ -44,9 +45,9 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
         payload = { ok: true, head }
       } else if (path.endsWith('/revisions')) payload = { ok: true, revisions: [base], next_cursor: 'more' }
       else if (path.endsWith('/artifacts-v3/artifact')) payload = { ok: true, artifact: {
-        id: 'artifact', owner_session_id: 'parent', label: 'Fixture', revision: 9, head, revisions: [head], parts: head.manifest.parts,
+        id: 'artifact', owner_session_id: 'parent', label: 'Fixture', revision: 9, head, revisions: unavailable ? [base] : [head], parts: head.manifest.parts,
         current_draft: { status: draftError ? 'error' : 'ready', sequence: 3, diagnostics: draftError ? [draftDiagnostic] : [], history: [{ ready: false, diagnostics: [draftDiagnostic] }] },
-        turns: ready ? [{ turn_id: 'new', revision: 12, created_at: 20, status: selected ? 'selected' : 'awaiting_selection', selected_candidate_id: selected ? 'option' : '', target_part_ids: ['orbit'], candidates: [{ candidate_id: 'option', status: 'ready', revision: candidate }] }] : [],
+        turns: ready && !unavailable ? [{ turn_id: 'new', revision: 12, created_at: 20, status: selected ? 'selected' : 'awaiting_selection', selected_candidate_id: selected ? 'option' : '', target_part_ids: ['orbit'], candidates: [{ candidate_id: 'one', status: 'ready', revision: base }, { candidate_id: 'two', status: 'failed' }, { candidate_id: 'option', status: 'ready', revision: candidate }] }] : [],
       } }
       else return route.abort('blockedbyclient')
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify(payload) })
@@ -73,6 +74,9 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     assert.equal(staged.artifact_id, 'artifact')
     assert.equal(staged.revision_ref, base.revision_ref)
     assert.deepEqual(staged.target_part_ids, ['orbit'])
+    await page.getByRole('button', { name: 'Remix whole project', exact: true }).click()
+    assert.deepEqual(await page.evaluate(() => (window as any).stagedSelection.target_part_ids), [])
+    assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').getAttribute('aria-pressed'), 'true')
     assert.equal(selections.length, 0)
     ready = true
     await page.evaluate(() => (window as unknown as { refreshArtifacts(): Promise<void> }).refreshArtifacts())
@@ -83,11 +87,35 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     await page.keyboard.press('Enter')
     await page.locator('[data-artifact-v3-part="new-part"]').waitFor()
     assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').count(), 0)
+    assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
+    await page.locator('[data-artifact-v3-iterate]').click()
+    assert.equal(await page.evaluate(() => (window as any).stagedSelection.revision_ref), candidate.revision_ref)
+    await page.locator('[data-artifact-v3-part="new-part"]').click()
+    await page.getByRole('button', { name: 'Use as style/example reference' }).click()
+    const reference = await page.evaluate(() => (window as any).stagedSelection)
+    assert.equal(reference.action, 'select')
+    assert.equal(reference.revision_ref, candidate.revision_ref)
+    assert.deepEqual(reference.target_part_ids, ['new-part'])
+    head = { ...base, ...revision('c'.repeat(40), 'concurrent-head-part') }
+    await page.evaluate(() => (window as any).refreshArtifacts())
+    assert.equal(await page.locator('[data-artifact-v3-part="new-part"]').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('[data-artifact-v3-part="concurrent-head-part"]').count(), 0)
+    unavailable = true
+    await page.evaluate(() => (window as any).refreshArtifacts())
+    await page.getByRole('alert').filter({ hasText: 'exact viewed revision' }).waitFor()
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)
+    assert.equal(await page.evaluate(() => (window as any).stagedSelection.revision_ref), candidate.revision_ref)
+    assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').count(), 0)
+    unavailable = false; head = base
+    await page.evaluate(() => (window as any).refreshArtifacts())
+    assert.equal(await page.locator('[data-artifact-v3-part="new-part"]').getAttribute('aria-pressed'), 'true')
+    await page.locator('[data-artifact-v3-part="new-part"]').click()
     assert.equal(selections.length, 0, 'preview must leave head unchanged')
-    await page.getByRole('button', { name: 'Select head' }).click()
+    await page.locator('[data-artifact-v3-candidate="option"]').getByRole('button', { name: 'Select head' }).focus()
+    await page.keyboard.press('Enter')
     // Selection completes only after the authoritative refresh clears busy;
     // the same button label is already visible while the request is pending.
+    await page.waitForFunction(() => document.querySelector('[data-artifact-v3-candidate="option"] > button')?.textContent?.includes('Selected')).catch(async (error) => { throw new Error(`${error}\n${await page.locator('[role="alert"]').allTextContents()}`) })
     await page.locator('[data-artifact-v3-iterate]:enabled').waitFor()
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
     assert.equal(await page.locator('[data-artifact-v3-diagnostics]').count(), 0, 'old revision diagnostics clear after successful selection')
@@ -100,5 +128,52 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     const continued = await page.evaluate(() => (window as unknown as { stagedSelection: Record<string, unknown> }).stagedSelection)
     assert.equal(continued.revision_ref, candidate.revision_ref)
     assert.deepEqual(continued.target_part_ids, ['new-part'])
+  } finally { await browser.close() }
+})
+
+// Requirement: the actual ephemeral bridge owns serialized seek playback without
+// new authored methods. Threat: overlapping async seeks, stale completion after
+// scene navigation, paused playback that cannot resume, and silent seek failure.
+// Execute the embedded production script in an opaque iframe with a fake runtime.
+test('native playback bridge serializes scene seek, resume, end and failure', { timeout: 30_000 }, async () => {
+  const { readFile } = await import('node:fs/promises')
+  const script = (await readFile('../swarmd/internal/runtime/artifact_v3_preview_selection.js', 'utf8')).replace('__SWARM_ARTIFACT_V3_SELECTION_CONFIG__', JSON.stringify({ revision_ref: 'revision-test', parts: [], part_ids: [] }))
+  const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
+  try {
+    const page = await browser.newPage()
+    page.setDefaultTimeout(5000)
+    await page.setContent('<iframe sandbox="allow-scripts"></iframe>')
+    await page.evaluate(({ script }) => {
+      ;(window as any).states = []
+      window.addEventListener('message', event => (window as any).states.push(event.data))
+      document.querySelector('iframe')!.srcdoc = `<script>${script}</script><script>
+        let active=0;
+        window.__SWARM_ANIMATION_V1__={version:'swarm.animation/v1',ready:()=>({duration_ms:1000}),seek:async(time_ms)=>{
+          if (++active>1) throw Error('overlap');
+          await new Promise(r=>setTimeout(r,30)); active--;
+          if(time_ms===777) throw Error('injected');
+          return {time_ms};
+        }};
+      </script>`
+    }, { script })
+    const waitState = async (id: number, time?: number) => {
+      await page.waitForFunction(({ id, time }) => (window as any).states.some((s: any) => s.type === 'playback-state' && s.command_id === id && (time === undefined || s.time_ms === time)), { id, time })
+    }
+    const command = async (id: number, action: string, time_ms?: number) => page.evaluate(({ id, action, time_ms }) => document.querySelector('iframe')!.contentWindow!.postMessage({ protocol: 'swarm.artifact/v3', revision_ref: 'revision-test', type: 'playback-command', command_id: id, action, time_ms }, '*'), { id, action, time_ms })
+    await waitState(0, 0)
+    await command(1, 'seek', 500)
+    await command(2, 'seek', 600)
+    await waitState(2, 600)
+    assert.equal(await page.evaluate(() => (window as any).states.some((s: any) => s.command_id === 2 && s.time_ms === 500)), false)
+    await command(3, 'play')
+    await waitState(3, 1000)
+    assert.equal(await page.evaluate(() => (window as any).states.at(-1).playing), false)
+    await command(4, 'play')
+    await waitState(4, 0)
+    await command(5, 'pause')
+    await waitState(5)
+    await command(6, 'seek', 777)
+    await page.waitForFunction(() => (window as any).states.some((s: any) => s.command_id === 6 && s.error))
+    assert.equal(await page.evaluate(() => (window as any).states.at(-1).playing), false)
   } finally { await browser.close() }
 })

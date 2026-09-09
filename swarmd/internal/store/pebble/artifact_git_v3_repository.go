@@ -473,6 +473,9 @@ func validateArtifactV3Manifest(body []byte, files map[string][]byte, limits Art
 			}
 		}
 	}
+	if err := ValidateArtifactV3Scenes(manifest, 0); err != nil {
+		return manifest, artifactV3ManifestInvalid("manifest_scene_invalid", "temporal scenes must match required stable IDs and form ordered complete intervals")
+	}
 	return manifest, nil
 }
 

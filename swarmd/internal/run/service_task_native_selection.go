@@ -43,9 +43,9 @@ func bindTaskNativeArtifactSelection(parsed *taskCallArguments, launches []taskL
 	if selection.TargetPartIDs != nil {
 		targetPartIDs = append([]string(nil), (*selection.TargetPartIDs)...)
 	}
-	source := &taskArtifactV3Source{SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, CommitOID: selection.CommitOID, ProjectionSeq: selection.ProjectionSeq, TargetPartIDs: targetPartIDs}
+	source := &taskArtifactV3Source{RevisionIntent: selection.RevisionIntent, SessionID: selection.SessionID, ArtifactID: selection.ArtifactID, CommitOID: selection.CommitOID, ProjectionSeq: selection.ProjectionSeq, TargetPartIDs: targetPartIDs}
 	matches := func(requested *taskArtifactV3Source) bool {
-		return requested == nil || (requested.SessionID == source.SessionID && requested.ArtifactID == source.ArtifactID && requested.CommitOID == source.CommitOID && requested.ProjectionSeq == source.ProjectionSeq && (len(requested.TargetPartIDs) == 0 || equalStringSet(requested.TargetPartIDs, source.TargetPartIDs)))
+		return requested == nil || ((requested.RevisionIntent == "" || requested.RevisionIntent == source.RevisionIntent) && requested.SessionID == source.SessionID && requested.ArtifactID == source.ArtifactID && requested.CommitOID == source.CommitOID && requested.ProjectionSeq == source.ProjectionSeq && (len(requested.TargetPartIDs) == 0 || equalStringSet(requested.TargetPartIDs, source.TargetPartIDs)))
 	}
 	if !matches(parsed.ArtifactV3Source) {
 		return errors.New("task artifact_v3_source does not match the authenticated Artifact Studio selection")

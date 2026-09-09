@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/artifact"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -37,11 +38,15 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 	if err != nil {
 		return nil, err
 	}
-	html := project["index.html"]
+	manifest, err := directArtifactV3ProjectManifest(project)
+	if err != nil {
+		return nil, err
+	}
+	html := project[manifest.Entrypoint]
 	if len(html) == 0 || len(html) > manageArtifactMaxCreateBytes {
 		return nil, errors.New("manage_artifact read_v3 exact HTML is unavailable or exceeds the bounded authoring limit")
 	}
-	return map[string]any{"status": "ok", "reference": map[string]any{"session_id": reference.SessionID, "artifact_id": reference.ArtifactID, "revision_ref": reference.RevisionRef}, "media_type": "text/html", "content": string(html), "parts": parts}, nil
+	return map[string]any{"status": "ok", "reference": map[string]any{"session_id": reference.SessionID, "artifact_id": reference.ArtifactID, "revision_ref": reference.RevisionRef}, "media_type": "text/html", "content": string(html), "entrypoint": manifest.Entrypoint, "files_base64": project, "manifest": manifest, "parts": parts}, nil
 }
 
 type directArtifactV3Alternative struct {
@@ -50,18 +55,22 @@ type directArtifactV3Alternative struct {
 }
 
 func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID string, args map[string]any) (map[string]any, error) {
+	return r.reviseDirectArtifactV3(ctx, scope, principal, callID, args, false)
+}
+
+func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID string, args map[string]any, preflight bool) (map[string]any, error) {
 	if r == nil || r.artifactV3Author == nil {
 		return nil, errors.New("manage_artifact revise_v3 requires the Artifact V3 author service")
 	}
 	for key := range args {
 		switch key {
-		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index", "alternatives":
+		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index", "alternatives", "revision_intent", "native_parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact revise_v3 contains unsupported field %q", key)
 		}
 	}
 	if asString(args["action"]) == "begin_v3" {
-		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference", "target_part_ids", "turn_key", "candidate_index"); err != nil {
+		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference", "target_part_ids", "turn_key", "candidate_index", "revision_intent"); err != nil {
 			return nil, err
 		}
 	}
@@ -80,6 +89,18 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		if err != nil {
 			return nil, err
 		}
+		for _, alternative := range alternatives {
+			candidateArgs := make(map[string]any, len(args))
+			for key, value := range args {
+				if key != "alternatives" {
+					candidateArgs[key] = value
+				}
+			}
+			candidateArgs["content"], candidateArgs["candidate_index"] = alternative.Content, alternative.CandidateIndex
+			if _, err := r.reviseDirectArtifactV3(ctx, scope, principal, callID, candidateArgs, true); err != nil {
+				return nil, err
+			}
+		}
 		results := make([]map[string]any, 0, len(alternatives))
 		for _, alternative := range alternatives {
 			candidateArgs := make(map[string]any, len(args)+1)
@@ -92,7 +113,7 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			candidateArgs["candidate_index"] = alternative.CandidateIndex
 			candidate, err := r.reviseDirectArtifactV3HTML(ctx, scope, principal, callID, candidateArgs)
 			if err != nil {
-				return nil, fmt.Errorf("manage_artifact revise_v3 alternative %d of %d failed: %w", alternative.CandidateIndex, len(alternatives), err)
+				candidate = map[string]any{"status": "failed", "candidate_index": alternative.CandidateIndex, "diagnostic": err.Error()}
 			}
 			results = append(results, candidate)
 		}
@@ -120,7 +141,14 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if !beginOnly && (!ok || strings.TrimSpace(body) == "") {
 		return nil, errors.New("manage_artifact revise_v3 requires the complete corrected UTF-8 HTML content")
 	}
-	requestedTargets, err := parseDirectArtifactV3TargetIDs(args["target_part_ids"])
+	intent := asString(args["revision_intent"])
+	var requestedTargets []string
+	if intent != pebblestore.ArtifactV3RevisionWholeProject || args["target_part_ids"] != nil {
+		requestedTargets, err = parseDirectArtifactV3TargetIDs(args["target_part_ids"])
+	}
+	if err == nil {
+		err = pebblestore.ValidateArtifactV3RevisionIntent(intent, requestedTargets)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -132,11 +160,18 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if err != nil {
 		return nil, err
 	}
+	manifest, err := directArtifactV3ProjectManifest(baseProject)
+	if err != nil {
+		return nil, err
+	}
+	if !beginOnly && (len(body) > manageArtifactMaxCreateBytes || !utf8.ValidString(body)) {
+		return nil, ErrArtifactV3AuthorQuota
+	}
 	if beginOnly {
 		if _, supplied := args["content"]; supplied {
 			return nil, ErrArtifactV3AuthorInvalid
 		}
-		body = string(baseProject["index.html"])
+		body = string(baseProject[manifest.Entrypoint])
 	}
 	declared := make(map[string]bool, len(baseParts))
 	basePartIDs := make([]string, 0, len(baseParts))
@@ -162,11 +197,39 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for _, id := range basePartIDs {
 		part, found := derived[id]
+		basePart := baseByID[id]
+		if beginOnly || intent == pebblestore.ArtifactV3RevisionWholeProject || basePart.Locator.Kind != "selector" || basePart.Locator.Path != manifest.Entrypoint {
+			manifestParts = append(manifestParts, basePart)
+			continue
+		}
 		if !found || strings.TrimSpace(part.Selector) == "" {
 			return nil, fmt.Errorf("manage_artifact revise_v3 must preserve stable Part %q in the complete corrected HTML", id)
 		}
-		basePart := baseByID[id]
-		manifestParts = append(manifestParts, pebblestore.ArtifactV3Part{ID: id, Label: strings.TrimSpace(basePart.Label), CaptureTimeMS: basePart.CaptureTimeMS, Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: strings.TrimSpace(part.Selector)}})
+		manifestParts = append(manifestParts, basePart)
+	}
+	if raw, supplied := args["native_parts"]; supplied {
+		if intent != pebblestore.ArtifactV3RevisionWholeProject {
+			return nil, ErrArtifactV3AuthorLocked
+		}
+		var err error
+		manifestParts, err = parseArtifactV3NativeParts(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	manifest.Parts = manifestParts
+	proposedManifest, err := json.Marshal(manifest)
+	if err != nil {
+		return nil, err
+	}
+	proposed := make(map[string][]byte, len(baseProject))
+	for name, bytes := range baseProject {
+		proposed[name] = bytes
+	}
+	proposed[manifest.Entrypoint] = []byte(body)
+	proposed[pebblestore.ArtifactV3ManifestFilename] = proposedManifest
+	if _, err := pebblestore.ValidateArtifactV3Project(pebblestore.ArtifactV3Project{Files: proposed}, pebblestore.ArtifactV3Limits{}); err != nil {
+		return nil, err
 	}
 	if manifestBody, ok := baseProject[pebblestore.ArtifactV3ManifestFilename]; !ok || len(manifestBody) == 0 {
 		return nil, errors.New("manage_artifact revise_v3 exact base has no manifest")
@@ -180,11 +243,22 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		return nil, err
 	}
 	baseCommit := strings.TrimPrefix(reference.RevisionRef, "revision-")
+	var sourceSeq uint64
+	if resolver, ok := r.artifactV3Author.repository.(ArtifactV3NativeDiscovery); ok {
+		source, err := resolver.ResolveArtifactV3SelectedSource(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, baseCommit, 0)
+		if err != nil {
+			return nil, err
+		}
+		sourceSeq = source.ProjectionSeq
+	}
+	if preflight {
+		return nil, nil
+	}
 	grant, err := r.artifactV3Author.PrepareTurn(ctx, ArtifactV3PrepareTurnRequest{
 		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, OwnerSessionID: principal.SessionID,
 		TaskCallID: "direct-revise:" + turnKey, Prompt: "Primary Swarm targeted Artifact V3 revision",
 		ArtifactID: reference.ArtifactID, BaseCommitOID: baseCommit, PolicyRevision: "direct-primary-html-v1",
-		CandidateIndex: candidateIndex, Initial: false, TargetPartIDs: requestedTargets, ExpiresAt: time.Now().Add(15 * time.Minute).UnixMilli(),
+		ProjectionSeq: sourceSeq, RevisionIntent: intent, CandidateIndex: candidateIndex, Initial: false, TargetPartIDs: requestedTargets, ExpiresAt: time.Now().Add(15 * time.Minute).UnixMilli(),
 	})
 	if err != nil {
 		return nil, err
@@ -194,18 +268,23 @@ func (r *Runtime) reviseDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	ctx = WithArtifactV3AuthorRunContext(ctx, ArtifactV3AuthorRunContext{Grant: grant})
 	author := ArtifactV3AuthorPrincipal{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, ProducerSessionID: grant.ProducerSessionID, ProducerRunID: producerRunID}
 	fail := func(code string, cause error) (map[string]any, error) {
-		// Retain source without converting terminal failures into success.
-		return nil, cause
+		// Keep exact candidate identity and failure visible alongside successful siblings.
+		return map[string]any{"status": "failed", "draft_handle": directArtifactV3Handle(grant), "artifact_id": grant.ArtifactID, "turn_id": grant.TurnID, "candidate_id": grant.CandidateID, "candidate_index": candidateIndex, "diagnostic_code": code, "diagnostic": cause.Error()}, nil
 	}
-	current, err := r.artifactV3Author.Read(ctx, author, grant, "index.html", 0, 0)
+	current, err := r.artifactV3Author.Read(ctx, author, grant, manifest.Entrypoint, 0, 0)
 	if err != nil {
 		return fail("html_read_failed", err)
 	}
 	if beginOnly {
-		return map[string]any{"status": "editing", "draft_handle": directArtifactV3Handle(grant), "parts": baseParts}, nil
+		return map[string]any{"status": "editing", "draft_handle": directArtifactV3Handle(grant), "parts": baseParts, "manifest": manifest, "revision_intent": intent}, nil
 	}
-	if err := r.artifactV3Author.Edit(ctx, author, grant, "index.html", []byte(current.Content), []byte(body), false); err != nil {
+	if err := r.artifactV3Author.Edit(ctx, author, grant, manifest.Entrypoint, []byte(current.Content), []byte(body), false); err != nil {
 		return fail("html_write_failed", err)
+	}
+	if _, supplied := args["native_parts"]; supplied {
+		if err := r.artifactV3Author.ReconcileParts(ctx, author, grant, manifestParts); err != nil {
+			return fail("parts_reconciliation_failed", err)
+		}
 	}
 	gate, err := r.artifactV3Author.BuildPreview(ctx, author, grant)
 	if err != nil {
@@ -317,7 +396,7 @@ func parseDirectArtifactV3Alternatives(raw any) ([]directArtifactV3Alternative, 
 		}
 		candidateIndex := directArtifactV3CandidateIndex(value["candidate_index"])
 		content, contentOK := value["content"].(string)
-		if candidateIndex < 1 || candidateIndex > len(items) || seen[candidateIndex] || !contentOK || strings.TrimSpace(content) == "" {
+		if candidateIndex < 1 || candidateIndex > len(items) || seen[candidateIndex] || !contentOK || strings.TrimSpace(content) == "" || len(content) > manageArtifactMaxCreateBytes || !utf8.ValidString(content) {
 			return nil, errors.New("manage_artifact revise_v3 alternatives require each candidate_index from 1 through the candidate count exactly once and non-empty complete HTML content")
 		}
 		seen[candidateIndex] = true

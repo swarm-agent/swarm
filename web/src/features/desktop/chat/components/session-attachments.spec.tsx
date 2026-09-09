@@ -27,8 +27,34 @@ test('collapsed header names the default and working roots without attachment co
   const html = renderToStaticMarkup(<SessionAttachmentsView {...props} items={items} workingSources={[items[2].source_path]} />)
   const button = html.slice(0, html.indexOf('</button>'))
   assert.match(button, /aria-label="Workspaces: Project 0, Project 2"/)
-  assert.match(button, />Project 0, Project 2$/)
+  assert.match(button, />Project 0, Project 2<\/span>/)
   assert.doesNotMatch(button, /Working on/)
   assert.doesNotMatch(button, /9 workspaces|Default:|Project 1|Active workspaces/)
   assert.match(html, /<details><summary[^>]*>Available workspaces/)
+})
+
+// Requirement: background invalidation must not change the visible identity or
+// slot geometry; failures must remain discoverable without resizing the header.
+// SessionAttachmentsView owns this presentation. SSR proves text/class stability,
+// not actual browser layout; that still requires a browser geometry check.
+test('workspace identity and slot remain stable through refresh and failure', () => {
+  const items = [{ id: 'source', workspace_id: 'project', workspace_name: 'Project', source_path: '/workspaces/project', kind: 'source', attached: true, default: true, availability: 'available' }]
+  const render = (patch: Partial<SessionAttachmentsViewProps>) => renderToStaticMarkup(<SessionAttachmentsView {...props} items={items} {...patch} />)
+  const initial = render({})
+  const slot = initial.match(/class="([^"]+)"/)?.[1]
+  for (const patch of [{ stale: true }, { stale: true, loading: true }, { stale: true, error: true }]) {
+    const html = render(patch)
+    const button = html.slice(0, html.indexOf('</button>'))
+    assert.equal(button.match(/class="([^"]+)"/)?.[1], slot)
+    assert.match(button, />Project<\/span>/)
+    assert.doesNotMatch(button, /· Stale|>Loading workspaces|>Workspaces unavailable/)
+    if (patch.error) {
+      assert.match(button, /unable to update/)
+      assert.match(html, /role="alert"[^>]*>Unable to update workspace information/)
+    }
+    if (patch.loading) {
+      assert.match(html, /Updating workspace information/)
+      assert.doesNotMatch(html, /displayed entries may no longer be attached/)
+    }
+  }
 })

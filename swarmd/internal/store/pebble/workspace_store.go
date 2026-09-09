@@ -70,9 +70,16 @@ type WorkspaceEntry struct {
 }
 
 type WorkspaceStore struct {
-	store        *Store
-	definitionMu sync.Mutex
-	catalogMu    sync.Mutex
+	store          *Store
+	definitionMu   sync.Mutex
+	catalogMu      sync.Mutex
+	publishCatalog func(V3RealtimeOutboxRecord)
+}
+
+// SetCatalogPublisher installs a startup-only post-commit wakeup. Durable replay
+// remains authoritative if no listener is attached.
+func (s *WorkspaceStore) SetCatalogPublisher(publish func(V3RealtimeOutboxRecord)) {
+	s.publishCatalog = publish
 }
 
 func NewWorkspaceStore(store *Store) *WorkspaceStore {
@@ -89,7 +96,7 @@ func (s *WorkspaceStore) SetCurrentForAccount(accountScopeID, userID, path, name
 		return WorkspaceBinding{}, err
 	}
 	binding := WorkspaceBinding{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: entry.Path, Name: entry.Name, ResolvedAt: time.Now().UnixMilli()}
-	if err := s.store.PutJSON(KeyWorkspaceCurrentForAccount(accountScopeID, userID), binding); err != nil {
+	if err := s.putWorkspaceCatalogMutationAtomic(accountScopeID, userID, entry, "", &binding, false); err != nil {
 		return WorkspaceBinding{}, err
 	}
 	return binding, nil
@@ -494,26 +501,20 @@ func (s *WorkspaceStore) DeleteForAccount(accountScopeID, userID, path string) e
 	if err != nil {
 		return err
 	}
-	if err := s.store.Delete(KeyWorkspaceEntryForAccount(accountScopeID, path)); err != nil {
-		return err
+	if !ok {
+		return nil
 	}
-	if ok && strings.TrimSpace(entry.WorkspaceID) != "" {
-		if err := s.store.Delete(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID)); err != nil {
-			return err
-		}
-	}
+	var binding *WorkspaceBinding
 	if userID != "" {
 		current, hasCurrent, err := s.GetCurrentForAccount(accountScopeID, userID)
 		if err != nil {
 			return err
 		}
 		if hasCurrent && current.Path == path {
-			if err := s.store.Delete(KeyWorkspaceCurrentForAccount(accountScopeID, userID)); err != nil {
-				return err
-			}
+			binding = &WorkspaceBinding{}
 		}
 	}
-	return nil
+	return s.putWorkspaceCatalogMutationAtomic(accountScopeID, userID, entry, "", binding, true)
 }
 
 func (s *WorkspaceStore) GetForAccount(accountScopeID, path string) (WorkspaceEntry, bool, error) {
@@ -1120,6 +1121,33 @@ func (s *WorkspaceStore) putWorkspaceEntryAtomicForAccount(accountScopeID string
 }
 
 func (s *WorkspaceStore) putWorkspaceCatalogMutationAtomic(accountScopeID, userID string, entry WorkspaceEntry, oldPath string, binding *WorkspaceBinding, deleting bool) error {
+	mutation := &workspaceCatalogMutation{entry: entry, oldPath: oldPath, userID: userID, binding: binding, deleting: deleting}
+	requestID := uuid.NewString()
+	result, err := NewSessionStore(s.store).ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID: "__workspace_catalog__:" + accountScopeID, AccountScopeID: accountScopeID,
+		UserID: "desktop", ClientRequestID: requestID, IdempotencyKey: requestID,
+		PayloadHash: requestID, Kind: WorkspaceCatalogEventType, EventType: WorkspaceCatalogEventType,
+		EventPayload: json.RawMessage(`{}`), workspaceCatalog: mutation,
+	})
+	if err == nil && result.RealtimeOutbox != nil && s.publishCatalog != nil {
+		s.publishCatalog(*result.RealtimeOutbox)
+	}
+	return err
+}
+
+const WorkspaceCatalogEventType = "workspace.catalog.updated"
+
+// Only the catalog authority can attach these writes to the canonical V3 batch.
+// No workspace paths or user content are carried by the invalidation event.
+type workspaceCatalogMutation struct {
+	entry           WorkspaceEntry
+	oldPath, userID string
+	binding         *WorkspaceBinding
+	deleting        bool
+}
+
+func setWorkspaceCatalogMutationInBatch(batch *pebble.Batch, accountScopeID string, mutation *workspaceCatalogMutation) error {
+	entry, oldPath, userID, binding, deleting := mutation.entry, mutation.oldPath, mutation.userID, mutation.binding, mutation.deleting
 	entry = normalizeWorkspaceEntryForAccount(accountScopeID, entry)
 	if strings.TrimSpace(entry.Path) == "" {
 		return fmt.Errorf("workspace path is required")
@@ -1131,8 +1159,6 @@ func (s *WorkspaceStore) putWorkspaceCatalogMutationAtomic(accountScopeID, userI
 	if err != nil {
 		return err
 	}
-	batch := s.store.NewBatch()
-	defer batch.Close()
 	entryKey := []byte(KeyWorkspaceEntryForAccount(accountScopeID, entry.Path))
 	idKey := []byte(KeyWorkspaceEntryByIDForAccount(accountScopeID, entry.WorkspaceID))
 	if deleting {
@@ -1175,9 +1201,6 @@ func (s *WorkspaceStore) putWorkspaceCatalogMutationAtomic(accountScopeID, userI
 				return err
 			}
 		}
-	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return fmt.Errorf("commit workspace catalog mutation: %w", err)
 	}
 	return nil
 }

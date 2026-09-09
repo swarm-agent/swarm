@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -104,6 +105,17 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 	if s == nil || s.tools == nil || s.tools.ArtifactV3AuthorService() == nil {
 		return nil, errors.New("managed Designer Artifact V3 author service is unavailable")
 	}
+	requests := make([]tool.ArtifactV3PrepareTurnRequest, len(specs))
+	waveSeed := parent.ID + "\x00" + taskCallID
+	managedCount := 0
+	for _, spec := range specs {
+		if agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+			managedCount++
+			waveSeed += "\x00" + mapString(spec.SourceArguments, "program_id") + ":" + mapString(spec.SourceArguments, "program_job_id")
+		}
+	}
+	waveID := fmt.Sprintf("wave-%x", sha256.Sum256([]byte(waveSeed)))
+	memberIndex := 0
 	for index, spec := range specs {
 		if !agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 			continue
@@ -128,17 +140,28 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 			// accidentally reusing a previous cohort's genesis or candidate slot.
 			artifactCallID += ":program:" + programID + ":job:" + jobID
 		}
+		memberIndex++
 		request := tool.ArtifactV3PrepareTurnRequest{
-			AccountScopeID: parent.AccountScopeID,
-			UserID:         parent.UserID,
-			OwnerSessionID: parent.ID,
-			TaskCallID:     artifactCallID,
-			Prompt:         strings.TrimSpace(spec.MetaPrompt),
-			PolicyRevision: artifactV3PolicyRevision,
-			CandidateIndex: index + 1,
-			Initial:        spec.ArtifactV3Source == nil && spec.SourceArtifact == nil,
-			TargetPartIDs:  targetPartIDs,
-			ExpiresAt:      time.Now().Add(2 * time.Hour).UnixMilli(),
+			GenerationWaveID: waveID, GenerationIndex: memberIndex, GenerationCount: managedCount,
+			AnimationProfile:   spec.AnimationProfile,
+			OutputRequirements: spec.OutputRequirements,
+			AccountScopeID:     parent.AccountScopeID,
+			UserID:             parent.UserID,
+			OwnerSessionID:     parent.ID,
+			TaskCallID:         artifactCallID,
+			Prompt:             strings.TrimSpace(spec.MetaPrompt),
+			PolicyRevision:     artifactV3PolicyRevision,
+			CandidateIndex:     index + 1,
+			Initial:            spec.ArtifactV3Source == nil && spec.SourceArtifact == nil,
+			TargetPartIDs:      targetPartIDs,
+			ExpiresAt:          time.Now().Add(2 * time.Hour).UnixMilli(),
+		}
+		if raw, exists := spec.SourceArguments["scene_contract"]; exists {
+			contract, err := tool.ParseArtifactV3SceneContract(raw)
+			if err != nil || spec.AnimationProfile == nil {
+				return nil, errors.New("invalid native scene_contract; requires animation profile and ordered complete scenes")
+			}
+			request.SceneContract = contract
 		}
 		if spec.ArtifactV3Source != nil {
 			if spec.ArtifactV3Source.SessionID != parent.ID {
@@ -147,6 +170,7 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 			if spec.ArtifactV3Source.ProjectionSeq == 0 {
 				return nil, errors.New("managed Designer Artifact V3 source is missing its projection sequence")
 			}
+			request.RevisionIntent = spec.ArtifactV3Source.RevisionIntent
 			request.Initial = false
 			request.ArtifactID = strings.TrimSpace(spec.ArtifactV3Source.ArtifactID)
 			request.BaseCommitOID = strings.TrimSpace(spec.ArtifactV3Source.CommitOID)
@@ -156,6 +180,27 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 			request.TargetPartIDs = uniqueNonEmptyStrings(combinedTargets)
 		} else if spec.SourceArtifact != nil {
 			return nil, errors.New("managed Designer Artifact V3 follow-up requires artifact_v3_source; legacy source_artifact cannot seed native Git history")
+		}
+		if !request.Initial && request.RevisionIntent == "" {
+			request.RevisionIntent = pebblestore.ArtifactV3RevisionWholeProject
+			if len(request.TargetPartIDs) > 0 {
+				request.RevisionIntent = pebblestore.ArtifactV3RevisionFocusedParts
+			}
+		}
+		if err := pebblestore.ValidateArtifactV3RevisionIntent(request.RevisionIntent, request.TargetPartIDs); err != nil {
+			return nil, err
+		}
+		// Independent initial designs have no common committed base; allocate
+		// distinct genesis artifacts rather than racing one repository genesis.
+		if request.Initial {
+			request.TaskCallID += fmt.Sprintf(":initial:%d", index+1)
+		}
+		requests[index] = request
+	}
+	// Validate every launch before allocating any capability or starting children.
+	for index, request := range requests {
+		if request.OwnerSessionID == "" {
+			continue
 		}
 		grant, err := s.tools.ArtifactV3AuthorService().PrepareTurn(ctx, request)
 		if err != nil {
@@ -170,6 +215,8 @@ func (s *Service) allocateManagedDesignerArtifactV3(ctx context.Context, parent 
 		if len(grant.AllowedActions) == 0 {
 			return nil, errors.New("managed Designer Artifact V3 coordinator returned no author actions")
 		}
+		specs[index].AnimationProfile = cloneTaskAnimationProfile(grant.AnimationProfile)
+		specs[index].OutputRequirements = cloneTaskOutputRequirements(grant.OutputRequirements)
 		contexts[index] = &tool.ArtifactV3AuthorRunContext{Grant: grant}
 	}
 	return contexts, nil

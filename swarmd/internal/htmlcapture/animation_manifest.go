@@ -10,6 +10,13 @@ import (
 	"golang.org/x/net/html"
 )
 
+// The absolute duration bound is derived from the frame budget at minimum FPS.
+// Admission at the actual frame rate uses AnimationFrameBudget.
+const (
+	MinAuthoredAnimationDurationMS = 100
+	MaxAuthoredAnimationDurationMS = MaxAnimationDurationMS
+)
+
 // AnimationTiming reads the authored declaration without executing or rewriting
 // source. Absence is distinct from an invalid declaration: only absence permits
 // a caller's legacy timing policy.
@@ -53,8 +60,11 @@ func AnimationTiming(body []byte) (duration, fps int, present bool, err error) {
 		}
 		decoder := json.NewDecoder(bytes.NewReader(z.Text()))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&value) != nil || decoder.Decode(new(any)) != io.EOF || value.Version != AnimationVersion || value.Duration < 100 || value.Duration > 120000 || value.FPS < 1 || value.FPS > 60 {
+		if decoder.Decode(&value) != nil || decoder.Decode(new(any)) != io.EOF || value.Version != AnimationVersion || value.Duration < MinAuthoredAnimationDurationMS || value.Duration > MaxAuthoredAnimationDurationMS || value.FPS < 1 || value.FPS > MaxAnimationFPS {
 			return 0, 0, true, errors.New("invalid animation timing declaration")
+		}
+		if _, err := AnimationFrameBudget(int64(value.Duration), value.FPS); err != nil {
+			return 0, 0, true, err
 		}
 		duration, fps = value.Duration, value.FPS
 	}

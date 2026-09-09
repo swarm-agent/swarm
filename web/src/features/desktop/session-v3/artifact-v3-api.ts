@@ -18,7 +18,27 @@ export interface DesktopV3NativeArtifactHead {
   selectedEventSeq: number
 }
 
+export interface DesktopV3NativeGenerationMember {
+  label?: string
+  waveId: string
+  index: number
+  count: number
+  artifactId: string
+  turnId: string
+  candidateId: string
+  commitOid: string
+  status: string
+  projectionSeq: number
+}
+export interface DesktopV3NativeGenerationGroup {
+  waveId: string
+  count: number
+  members: DesktopV3NativeGenerationMember[]
+}
+
 export interface DesktopV3NativeArtifactSummary {
+  generations?: { waveId: string; index: number; count: number }[]
+  generationGroups?: DesktopV3NativeGenerationGroup[]
   artifactId: string
   artifactRef: string
   ownerSessionId: string
@@ -34,6 +54,8 @@ export interface DesktopV3NativeArtifactSummary {
 }
 
 export interface DesktopV3NativeArtifactPart {
+  temporal?: { sceneId: string; startMs: number; endMs: number }
+  captureTimeMs?: number
   id: string
   label: string
   description: string
@@ -185,6 +207,11 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
   if (!artifactId || !ownerSessionId) return null
   return {
     artifactId,
+    generations: Array.isArray(item.generations) ? item.generations.flatMap((raw) => {
+      const member = record(raw), waveId = stringValue(field(member, 'wave_id', 'waveId')), index = numberValue(member?.index), count = numberValue(member?.count)
+      return waveId && Number.isInteger(index) && index >= 1 && index <= count && count <= 256 ? [{ waveId, index, count }] : []
+    }) : [],
+    generationGroups: normalizeNativeGenerationGroups(field(item, 'generation_groups', 'generationGroups')),
     // The native HTTP contract currently identifies the artifact by its stable ID.
     // Preserve an explicit artifact_ref when the service supplies one, otherwise use
     // that canonical ID instead of dropping the complete catalog entry.
@@ -212,6 +239,22 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
   }
 }
 
+function normalizeNativeGenerationGroups(value: unknown): DesktopV3NativeGenerationGroup[] {
+  if (!Array.isArray(value)) return []
+  return value.map((raw) => {
+    const group = record(raw)
+    const waveId = stringValue(field(group, 'wave_id', 'waveId'))
+    const count = numberValue(group?.count)
+    if (!waveId || !Number.isInteger(count) || count < 1 || count > 256 || !Array.isArray(group?.members)) return null
+    const members: DesktopV3NativeGenerationMember[] = group.members.map((rawMember) => {
+      const member = record(rawMember)
+      return { label: stringValue(member?.label), waveId: stringValue(field(member, 'wave_id', 'waveId')), index: numberValue(member?.index), count: numberValue(member?.count), artifactId: stringValue(field(member, 'artifact_id', 'artifactId')), turnId: stringValue(field(member, 'turn_id', 'turnId')), candidateId: stringValue(field(member, 'candidate_id', 'candidateId')), commitOid: stringValue(field(member, 'commit_oid', 'commitOid')), status: stringValue(member?.status), projectionSeq: numberValue(field(member, 'projection_seq', 'projectionSeq')) }
+    })
+    if (members.length > count || new Set(members.map((m) => m.index)).size !== members.length || members.some((m) => m.waveId !== waveId || m.count !== count || !Number.isInteger(m.index) || m.index < 1 || m.index > count || !m.artifactId || !m.turnId || !m.candidateId || (m.commitOid && !/^[a-f0-9]{40}$/.test(m.commitOid)))) return null
+    return { waveId, count, members: members.sort((a, b) => a.index - b.index) }
+  }).filter((group): group is DesktopV3NativeGenerationGroup => group !== null)
+}
+
 function normalizePart(value: unknown): DesktopV3NativeArtifactPart | null {
   const item = record(value)
   const locator = record(item?.locator)
@@ -219,9 +262,17 @@ function normalizePart(value: unknown): DesktopV3NativeArtifactPart | null {
   const label = stringValue(item?.label)
   const kind = stringValue(locator?.kind)
   if (!id || !label || !['file', 'selector', 'state', 'semantic'].includes(kind)) return null
+  const temporal = record(item?.temporal)
+  const start = field(temporal, 'start_ms', 'startMs')
+  const end = field(temporal, 'end_ms', 'endMs')
+  const sceneId = stringValue(field(temporal, 'scene_id', 'sceneId'))
+  if (temporal && (sceneId !== id || typeof start !== 'number' || !Number.isSafeInteger(start) || start < 0 || typeof end !== 'number' || !Number.isSafeInteger(end) || end <= start)) return null
+  const capture = field(item, 'capture_time_ms', 'captureTimeMs')
   return {
     id,
     label,
+    ...(temporal ? { temporal: { sceneId, startMs: start as number, endMs: end as number } } : {}),
+    ...(typeof capture === 'number' && Number.isSafeInteger(capture) && capture >= 0 ? { captureTimeMs: capture } : {}),
     description: stringValue(item?.description),
     locator: {
       kind: kind as DesktopV3NativeArtifactPart['locator']['kind'],
@@ -517,17 +568,19 @@ export function desktopV3NativeArtifactIterationPrompt(studio: DesktopV3NativeAr
 }
 
 /** Stage intent through the normal composer envelope; never replace or submit the draft. */
-export function desktopV3NativeArtifactIterationSelection(studio: DesktopV3NativeArtifactStudio, partIds: readonly string[]): import('./artifact-api').DesktopV3ArtifactMessageSelection {
-  const head = studio.artifact.head
-  if (!head || !/^revision-[a-f0-9]{40}$/.test(head.revisionRef) || head.revisionRef !== `revision-${head.commitOid}`) throw new Error('Artifact V3 iteration requires an exact current head')
+export function desktopV3NativeArtifactIterationSelection(studio: DesktopV3NativeArtifactStudio, partIds: readonly string[], revisionRef: string): import('./artifact-api').DesktopV3ArtifactMessageSelection {
+  const revision = studio.revisions.find((entry) => entry.revisionRef === revisionRef)
+  if (!revision || revision.status !== 'ready' || !/^revision-[a-f0-9]{40}$/.test(revisionRef) || revisionRef !== `revision-${revision.commitOid}` || !revision.parts) throw new Error('The exact viewed Artifact V3 revision or its Parts are unavailable')
+  const parts = revision.parts
   const ids = partIds.map((id) => id.trim())
-  if (ids.length > 256 || new Set(ids).size !== ids.length || ids.some((id) => !studio.parts.some((part) => part.id === id))) throw new Error('Unknown or duplicate Artifact V3 Part')
-  const label = ids.length ? ids.map((id) => studio.parts.find((part) => part.id === id)!.label || id).join(', ') : studio.artifact.label || 'Artifact'
+  if (ids.length > 256 || new Set(ids).size !== ids.length || ids.some((id) => !parts.some((part) => part.id === id))) throw new Error('Unknown or duplicate Artifact V3 Part')
+  const label = ids.length ? ids.map((id) => parts.find((part) => part.id === id)!.label || id).join(', ') : studio.artifact.label || 'Artifact'
   return {
     session_id: studio.artifact.ownerSessionId,
     artifact_id: studio.artifact.artifactId,
-    revision_ref: head.revisionRef,
+    revision_ref: revision.revisionRef,
     target_part_ids: ids,
+    revision_intent: ids.length ? 'focused_parts' : 'whole_project',
     label: label.length <= 256 ? label : 'Selected artifact Parts',
     action: 'use',
   }

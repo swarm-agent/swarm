@@ -10,6 +10,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Added
 
+- Added native Artifact V3 revision and scene remix controls, including exact historical revision sources and reference-only attachments that do not request a remix.
+- Added sandboxed Three.js support for native 3D artifacts, with a pinned offline runtime for previews and capture.
 - Added workspace Actions with structured inputs, quick-access pins, AI-assisted commit orchestration, and Desktop/TUI management surfaces.
 - Added Git-aware workspace controls, worktree integration improvements, AI commit commands, and final handoff links to public pull requests.
 - Added account-scoped model favorites and richer model controls, including complete catalog pagination, provider service-tier metadata, and current Google Gemini thinking support.
@@ -21,6 +23,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Changed
 
+- Removed automatic final-handoff commit suggestions based on historical changed-file lists, so already-committed work no longer appears to need another commit.
+- Grouped native artifact alternatives by generation, named generation options, and added revision-bound click-to-play previews with scene navigation.
+- Unified native animation duration limits around the shared frame budget, allowing longer timelines at lower frame rates without increasing the capture budget.
 - Show pending review worktrees before expensive Git checks, bound review enrichment concurrency, and scope integration reads to the selected session instead of repeatedly scanning all review lanes. Background refreshes no longer keep completed integrations pending.
 - Updated the daemon compression dependency to `github.com/klauspost/compress` v1.18.7 for the new build.
 - Reworked durable V3 plan and checkpoint execution so boundary transitions, resumptions, source-message provenance, and conversation context remain in the canonical session epoch.
@@ -39,6 +44,11 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Preserved native artifact scene identity and source lineage across repeated remix rounds, serialized sibling publication, and restored retained Designer draft recovery with clearer preview diagnostics.
+- Fixed animation capture cancellation, deadline reporting, scene seek acknowledgements, and shared compositor ownership during concurrent captures.
+- Synchronized workspace catalog changes through durable realtime updates, stabilized session workspace headers, and suppressed errors from intentional overview cancellation.
+- Corrected saved-workspace theme targeting from managed worktrees, excluded revoked secondary workspace grants, and validated parent identity for plan sidechat worktrees.
+- Improved TUI custom question answers and the display of previously saved responses.
 - Reduced workspace-launcher startup work with catalog-first loading: saved workspaces no longer wait for session/permission payloads, todo summaries, Git probes, or folder discovery. Return visits reuse the existing in-memory query cache; background details remain independent, and theme/browser updates no longer trigger redundant refreshes. Catalog worktree settings use exact account-owned lookups instead of repeated full-catalog scans.
 - Gave managed Designers one bounded refinement round for allowlisted author-correctable animation failures, using a fresh immutable candidate in the same collection while preserving failed artifacts and all strict trust checks.
 - Made managed Designer task failures report the artifact's concrete failure code separately from trusted-lineage and composition rejection.
@@ -60,6 +70,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Docs impact
 
+- Public artifact docs should explain generation grouping, revision-bound playback, scene remix, exact historical sources, reference-only attachments, retained-draft recovery, sandboxed Three.js support, and frame-budget-based animation duration limits.
+- Public TUI guidance should reflect custom question answers and saved-response display; workspace synchronization, theme targeting, and capture lifecycle fixes need no new setup instructions.
 - Public docs should cover workspace Actions, AI-assisted commits, Git/worktree controls, account-scoped model favorites, and provider service-tier choices.
 - Public docs should describe the current durable V3 checkpoint/resume behavior and the updated Desktop/TUI workspace, routing, and onboarding surfaces.
 - Public update docs should reflect the hardened non-privileged update, systemd relaunch, readiness, and rollback behavior.

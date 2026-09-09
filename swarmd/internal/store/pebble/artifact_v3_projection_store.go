@@ -35,6 +35,7 @@ type ArtifactV3DraftProjection struct {
 }
 
 type ArtifactV3RepositoryProjection struct {
+	Generations     []ArtifactV3GenerationMember         `json:"generations,omitempty"`
 	Drafts          map[string]ArtifactV3DraftProjection `json:"-"`
 	DraftStatus     string                               `json:"draft_status,omitempty"`
 	Version         int                                  `json:"version"`
@@ -51,12 +52,14 @@ type ArtifactV3RepositoryProjection struct {
 }
 
 type ArtifactV3PartProjection struct {
-	ID          string   `json:"id"`
-	Label       string   `json:"label"`
-	LocatorKind string   `json:"locator_kind"`
-	Path        string   `json:"path,omitempty"`
-	Value       string   `json:"value,omitempty"`
-	Paths       []string `json:"paths,omitempty"`
+	Temporal      *ArtifactV3TemporalScene `json:"temporal,omitempty"`
+	CaptureTimeMS *int64                   `json:"capture_time_ms,omitempty"`
+	ID            string                   `json:"id"`
+	Label         string                   `json:"label"`
+	LocatorKind   string                   `json:"locator_kind"`
+	Path          string                   `json:"path,omitempty"`
+	Value         string                   `json:"value,omitempty"`
+	Paths         []string                 `json:"paths,omitempty"`
 }
 
 type ArtifactV3RevisionProjection struct {
@@ -79,6 +82,7 @@ type ArtifactV3RevisionProjection struct {
 }
 
 type ArtifactV3TurnProjection struct {
+	RevisionIntent      string   `json:"revision_intent,omitempty"`
 	Version             int      `json:"version"`
 	ArtifactID          string   `json:"artifact_id"`
 	TurnID              string   `json:"turn_id"`
@@ -93,11 +97,18 @@ type ArtifactV3TurnProjection struct {
 	EventSeq            uint64   `json:"event_seq"`
 }
 
-type ArtifactV3EvidenceProjection struct {
-	Status       string `json:"status"`
-	CommitOID    string `json:"commit_oid"`
+type ArtifactV3SceneEvidence struct {
+	PartID       string `json:"part_id"`
+	SampleMS     int64  `json:"sample_ms"`
 	DigestSHA256 string `json:"digest_sha256"`
-	Reference    string `json:"reference"`
+}
+
+type ArtifactV3EvidenceProjection struct {
+	Scenes       []ArtifactV3SceneEvidence `json:"scenes,omitempty"`
+	Status       string                    `json:"status"`
+	CommitOID    string                    `json:"commit_oid"`
+	DigestSHA256 string                    `json:"digest_sha256"`
+	Reference    string                    `json:"reference"`
 }
 
 type ArtifactV3CandidateProjection struct {
@@ -366,6 +377,9 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		copy.EventSeq = seq
 		copy.UpdatedAt = now
 		copy.Drafts = current.Drafts
+		if err := s.prepareArtifactV3Generation(input, current, &copy); err != nil {
+			return preparedArtifactV3Mutation{}, err
+		}
 		if input.Kind == V3SessionMutationArtifactV3DraftSaved {
 			d := *m.Draft
 			previous, found := current.Drafts[d.GrantID]
@@ -381,8 +395,10 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 			if copy.HeadCommitOID != current.HeadCommitOID || (found && (previous.Sequence != m.ExpectedDraftSequence || previous.ExpiresAt <= now || string(previous.Grant) != string(d.Grant) || previous.ExpiresAt != d.ExpiresAt)) || (!found && m.ExpectedDraftSequence != 0) {
 				return preparedArtifactV3Mutation{}, ErrArtifactV3Conflict
 			}
-			if !found && len(current.Drafts) >= 16 {
-				return preparedArtifactV3Mutation{}, ErrArtifactV3Invalid
+			// Drafts include immutable completed history, not just active producers.
+			// Permit bounded repeat rounds while retaining the aggregate byte cap below.
+			if !found && len(current.Drafts) >= 256 {
+				return preparedArtifactV3Mutation{}, fmt.Errorf("%w: artifact retained draft limit (256) reached", ErrArtifactV3Invalid)
 			}
 			copy.Drafts = make(map[string]ArtifactV3DraftProjection, len(current.Drafts)+1)
 			for key, value := range current.Drafts {
@@ -435,7 +451,7 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		} else if found {
 			candidateTransition := input.Kind == V3SessionMutationArtifactV3CandidateCommitted && (existing.Status == "open" || existing.Status == "awaiting_selection") && copy.Status == "awaiting_selection" && existing.BaseCommitOID == copy.BaseCommitOID
 			selectTransition := input.Kind == V3SessionMutationArtifactV3HeadSelected && existing.Status == "awaiting_selection" && copy.Status == "selected" && existing.BaseCommitOID == copy.BaseCommitOID
-			if existing.BaseCommitOID != copy.BaseCommitOID || !reflect.DeepEqual(existing.TargetPartIDs, copy.TargetPartIDs) || existing.TargetPartID != copy.TargetPartID || (!candidateTransition && !selectTransition && existing.Status != copy.Status) {
+			if existing.RevisionIntent != copy.RevisionIntent || existing.BaseCommitOID != copy.BaseCommitOID || !reflect.DeepEqual(existing.TargetPartIDs, copy.TargetPartIDs) || existing.TargetPartID != copy.TargetPartID || (!candidateTransition && !selectTransition && existing.Status != copy.Status) {
 				return preparedArtifactV3Mutation{}, errors.New("artifact v3 turn identity is immutable")
 			}
 		}
@@ -449,12 +465,12 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		if copy.CreatedAt == 0 {
 			copy.CreatedAt = now
 		}
-		turn, found, readErr := s.GetArtifactV3Turn(input.AccountScopeID, input.UserID, artifactID, copy.TurnID)
+		_, found, readErr := s.GetArtifactV3Turn(input.AccountScopeID, input.UserID, artifactID, copy.TurnID)
 		if readErr != nil && currentOK {
 			return preparedArtifactV3Mutation{}, readErr
 		}
 		if !found && p.Turn != nil && p.Turn.TurnID == copy.TurnID {
-			turn, found = *p.Turn, true
+			found = true
 		}
 		if !found {
 			return preparedArtifactV3Mutation{}, errors.New("artifact v3 candidate turn was not found")
@@ -471,9 +487,6 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 			return preparedArtifactV3Mutation{}, errors.New("artifact v3 candidate requires complete build and preview evidence")
 		}
 		if input.Kind == V3SessionMutationArtifactV3HeadSelected {
-			if turn.BaseCommitOID != m.ExpectedHeadCommitOID {
-				return preparedArtifactV3Mutation{}, errors.New("artifact v3 turn base does not match expected head")
-			}
 			if m.Repository == nil || m.Repository.HeadCommitOID != copy.CommitOID {
 				return preparedArtifactV3Mutation{}, errors.New("artifact v3 selection repository head does not match candidate")
 			}
@@ -490,6 +503,17 @@ func artifactV3EvidenceReady(e ArtifactV3EvidenceProjection, commit string) bool
 
 func setArtifactV3MutationInBatch(batch *pebble.Batch, accountScopeID string, prepared preparedArtifactV3Mutation) error {
 	p := prepared.Projection
+	if p.Repository != nil {
+		for _, member := range p.Repository.Generations {
+			raw, err := json.Marshal(member)
+			if err != nil {
+				return err
+			}
+			if err := batch.Set([]byte(artifactV3GenerationKey(accountScopeID, p.Repository.OwnerSessionID, member.WaveID, member.Index)), raw, nil); err != nil {
+				return err
+			}
+		}
+	}
 	for key, value := range map[string]any{
 		func() string {
 			if p.Repository == nil {
@@ -710,14 +734,17 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 		return ErrArtifactV3Integrity
 	}
 	var producerSession, producerRun string
-	if json.Unmarshal(before["ProducerSessionID"], &producerSession) != nil || json.Unmarshal(before["ProducerRunID"], &producerRun) != nil || producerSession != input.SessionID || producerRun == "" || producerRun == r.ProducerRunID {
+	if json.Unmarshal(before["ProducerSessionID"], &producerSession) != nil || json.Unmarshal(before["ProducerRunID"], &producerRun) != nil || producerSession == "" || producerRun == "" || producerRun == r.ProducerRunID {
 		return ErrArtifactV3Unauthorized
 	}
 	var publishing bool
 	if json.Unmarshal(before["Publishing"], &publishing) != nil || string(before["Finished"]) != "null" {
 		return ErrArtifactV3Conflict
 	}
-	previous, found, err := s.GetV3SessionRunIntent(input.SessionID, producerRun)
+	if err := s.ValidateArtifactV3DraftProducer(input.AccountScopeID, input.UserID, input.SessionID, producerSession); err != nil {
+		return err
+	}
+	previous, found, err := s.GetV3SessionRunIntent(producerSession, producerRun)
 	if err != nil {
 		return err
 	}
@@ -729,6 +756,10 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 		return err
 	}
 	if !found || active.RunID != r.ProducerRunID || active.UserID != input.UserID || active.AccountScopeID != input.AccountScopeID {
+		return ErrArtifactV3Unauthorized
+	}
+	var nextSession string
+	if json.Unmarshal(after["ProducerSessionID"], &nextSession) != nil || nextSession != input.SessionID {
 		return ErrArtifactV3Unauthorized
 	}
 	var nextRun string
@@ -764,6 +795,8 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	}
 	// A frozen publication handoff preserves every validated byte and gate;
 	// only its terminal producer may change. It cannot become an editable draft.
+	delete(before, "ProducerSessionID")
+	delete(after, "ProducerSessionID")
 	delete(before, "ProducerRunID")
 	delete(after, "ProducerRunID")
 	left, _ := json.Marshal(before)
@@ -793,6 +826,34 @@ func (s *SessionStore) validateArtifactV3DraftResume(input V3SessionMutationInpu
 	left, _ = json.Marshal(before)
 	right, _ = json.Marshal(after)
 	if string(left) != string(right) {
+		return ErrArtifactV3Unauthorized
+	}
+	return nil
+}
+
+// ValidateArtifactV3DraftProducer authenticates durable task lineage, not caller
+// claims. Resume also invokes it under the canonical mutation serialization.
+func (s *SessionStore) ValidateArtifactV3DraftProducer(account, user, owner, producer string) error {
+	if account == "" || user == "" || owner == "" || producer == "" {
+		return ErrArtifactV3Unauthorized
+	}
+	if producer == owner {
+		return nil
+	}
+	child, found, err := s.GetSession(producer)
+	if err != nil {
+		return err
+	}
+	if !found || child.AccountScopeID != account || child.UserID != user {
+		return ErrArtifactV3Unauthorized
+	}
+	parent, parentOK := child.Metadata["parent_session_id"].(string)
+	kind, kindOK := child.Metadata["lineage_kind"].(string)
+	agent, agentOK := child.Metadata["subagent"].(string)
+	// Delegation persists the code-owned profile ID (system-designer). The
+	// older short name remains valid for already-retained drafts. Keep this
+	// allowlist exact: display labels and arbitrary profile names are not authority.
+	if !parentOK || parent != owner || !kindOK || kind != "delegated_subagent" || !agentOK || (agent != "designer" && agent != "system-designer") {
 		return ErrArtifactV3Unauthorized
 	}
 	return nil

@@ -343,6 +343,13 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 	return results, nil
 }
 
+// Only fixed contract codes cross the browser boundary; authored exception text
+// may contain private content and must never become a diagnostic.
+const captureSelectionScript = `try { await api.select(id); } catch (error) {
+const allowed=["capture_animation_runtime_invalid","capture_animation_ready_failed","capture_animation_timing_mismatch","capture_animation_seek_failed","capture_animation_time_mismatch","capture_animation_scene_mismatch"];
+return {code:allowed.includes(error?.message)?error.message:"capture_state_select_failed"};
+}`
+
 type browserAudit struct {
 	Code string  `json:"code"`
 	Next float64 `json:"next"`
@@ -366,7 +373,7 @@ func captureState(browserCtx context.Context, stateID string, viewportWidth, vie
 	expression := fmt.Sprintf(`(async () => {
 const id=%q, api=globalThis.__SWARM_CAPTURE_V1__;
 if (!api || api.version!=="swarm.capture/v1" || typeof api.select!=="function" || typeof api.ready!=="function") return {code:"capture_runtime_missing"};
-try { await api.select(id); } catch (_) { return {code:"capture_state_select_failed"}; }
+`+captureSelectionScript+`
 if (document.documentElement.dataset.swarmCaptureState!==id) return {code:"capture_state_select_failed"};
 let ack; try { ack=await api.ready(id); } catch (_) { return {code:"capture_state_not_ready"}; }
 if (!ack || Object.keys(ack).length!==1 || ack.state_id!==id) return {code:"capture_state_not_ready"};
@@ -493,6 +500,9 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 		w.WriteHeader(http.StatusNoContent)
 	})
 	prefix := "/" + token + "/"
+	// Opaque sandbox origins need explicit CORS and a token-scoped script source
+	// for ES modules. This does not grant same-origin privileges or network access.
+	scriptSource := "http://" + listener.Addr().String() + prefix
 	mux.HandleFunc(prefix, func(w http.ResponseWriter, req *http.Request) {
 		name := strings.TrimPrefix(req.URL.Path, prefix)
 		if req.Method != "GET" || name == "" || path.Clean(name) != name || strings.Contains(name, "\\") {
@@ -504,7 +514,7 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 			http.NotFound(w, req)
 			return
 		}
-		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'none'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'")
+		w.Header().Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self'; script-src 'self' 'unsafe-inline' "+scriptSource+"; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; media-src 'none'; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
 		switch strings.ToLower(filepath.Ext(name)) {
@@ -513,6 +523,8 @@ func serveFiles(ctx context.Context, files map[string][]byte) (string, func(), e
 		case ".css":
 			w.Header().Set("Content-Type", "text/css; charset=utf-8")
 		case ".js":
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		}
 		_, _ = w.Write(body)
@@ -542,6 +554,18 @@ func safeMessage(code string) string {
 		return "capture document exceeds bounded section, tile or element limits"
 	case "capture_runtime_missing":
 		return "capture runtime is missing or incompatible"
+	case "capture_animation_runtime_invalid":
+		return "animation API requires version swarm.animation/v1 and ready/seek functions"
+	case "capture_animation_ready_failed":
+		return "animation ready() rejected; inspect animation initialization"
+	case "capture_animation_timing_mismatch":
+		return "animation ready() must return duration_ms and fps matching the manifest"
+	case "capture_animation_seek_failed":
+		return "animation seek() rejected at the requested scene sample"
+	case "capture_animation_time_mismatch":
+		return "animation seek() must acknowledge the exact requested time_ms"
+	case "capture_animation_scene_mismatch":
+		return "animation seek() must acknowledge the requested stable scene_id"
 	case "capture_state_select_failed":
 		return "capture state selection failed"
 	case "capture_state_not_ready":

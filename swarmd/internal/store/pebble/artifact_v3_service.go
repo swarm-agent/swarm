@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 )
@@ -30,13 +31,14 @@ type ArtifactV3CreateInput struct {
 }
 
 type ArtifactV3OpenTurnInput struct {
-	Owner         ArtifactV3Owner
-	ArtifactID    string
-	TurnID        string
-	ExpectedHead  string
-	TargetPartID  string
-	TargetPartIDs []string
-	NowUnixMs     int64
+	RevisionIntent string
+	Owner          ArtifactV3Owner
+	ArtifactID     string
+	TurnID         string
+	ExpectedHead   string
+	TargetPartID   string
+	TargetPartIDs  []string
+	NowUnixMs      int64
 }
 
 type ArtifactV3SubmitCandidateInput struct {
@@ -75,6 +77,9 @@ func NewArtifactV3Service(sessions *SessionStore, root string, limits ArtifactV3
 }
 
 func (s *ArtifactV3Service) Create(ctx context.Context, input ArtifactV3CreateInput) (ArtifactV3Projection, error) {
+	if err := validateArtifactV3SceneEvidence(input.Project, input.Preview, s.limits); err != nil {
+		return ArtifactV3Projection{}, err
+	}
 	if input.Owner.AccountScopeID == "" || input.Owner.UserID == "" || input.Owner.SessionID == "" || input.ArtifactID == "" || input.TransactionID == "" {
 		return ArtifactV3Projection{}, ErrArtifactV3Invalid
 	}
@@ -143,22 +148,35 @@ func (s *ArtifactV3Service) Create(ctx context.Context, input ArtifactV3CreateIn
 }
 
 func (s *ArtifactV3Service) OpenTurn(ctx context.Context, input ArtifactV3OpenTurnInput) (ArtifactV3Projection, error) {
-	repository, err := s.open(ctx, input.Owner, input.ArtifactID)
+	if err := ValidateArtifactV3RevisionIntent(input.RevisionIntent, input.TargetPartIDs); err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	source, err := s.ResolveSelectedSource(input.Owner, input.ArtifactID, input.ExpectedHead, 0)
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
-	head, err := repository.Head(ctx)
-	if err != nil {
-		return ArtifactV3Projection{}, err
+	known := make(map[string]bool)
+	for _, part := range source.Revision.Parts {
+		known[part.ID] = true
 	}
-	if head != input.ExpectedHead {
-		return ArtifactV3Projection{}, ErrArtifactV3Conflict
+	for _, target := range append(append([]string(nil), input.TargetPartIDs...), input.TargetPartID) {
+		if target != "" && !known[target] {
+			return ArtifactV3Projection{}, ErrArtifactV3Invalid
+		}
 	}
-	turn := ArtifactV3TurnProjection{ArtifactID: input.ArtifactID, TurnID: input.TurnID, OwnerSessionID: input.Owner.SessionID, BaseCommitOID: head, TargetPartID: input.TargetPartID, TargetPartIDs: append([]string(nil), input.TargetPartIDs...), Status: "open"}
-	return s.apply(input.Owner, input.TurnID, V3SessionMutationArtifactV3TurnOpened, ArtifactV3Mutation{Turn: &turn, ExpectedHeadCommitOID: head}, input.NowUnixMs)
+	if input.RevisionIntent == ArtifactV3RevisionWholeProject && input.TargetPartID != "" {
+		return ArtifactV3Projection{}, ErrArtifactV3Invalid
+	}
+	// Opening a turn records an immutable source; it does not select a head.
+	head := source.CommitOID
+	turn := ArtifactV3TurnProjection{RevisionIntent: input.RevisionIntent, ArtifactID: input.ArtifactID, TurnID: input.TurnID, OwnerSessionID: input.Owner.SessionID, BaseCommitOID: head, TargetPartID: input.TargetPartID, TargetPartIDs: append([]string(nil), input.TargetPartIDs...), Status: "open"}
+	return s.apply(input.Owner, input.TurnID, V3SessionMutationArtifactV3TurnOpened, ArtifactV3Mutation{Turn: &turn}, input.NowUnixMs)
 }
 
 func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV3SubmitCandidateInput) (ArtifactV3Projection, error) {
+	if err := validateArtifactV3SceneEvidence(input.Project, input.Preview, s.limits); err != nil {
+		return ArtifactV3Projection{}, err
+	}
 	stored, found, err := s.sessions.GetArtifactV3Repository(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID)
 	if err != nil {
 		return ArtifactV3Projection{}, err
@@ -169,7 +187,7 @@ func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV
 	if previous, found, err := s.sessions.GetArtifactV3Candidate(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID, input.TurnID, input.CandidateID); err != nil {
 		return ArtifactV3Projection{}, err
 	} else if found {
-		if previous.TransactionID != input.TransactionID || previous.Build != input.Build || previous.Preview != input.Preview || (previous.Status != "ready" && previous.Status != "selected") {
+		if previous.TransactionID != input.TransactionID || !reflect.DeepEqual(previous.Build, input.Build) || !reflect.DeepEqual(previous.Preview, input.Preview) || (previous.Status != "ready" && previous.Status != "selected") {
 			return ArtifactV3Projection{}, ErrArtifactV3Conflict
 		}
 		repo, err := s.open(ctx, input.Owner, input.ArtifactID)
@@ -199,19 +217,27 @@ func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
-	head, err := repository.Head(ctx)
-	if err != nil {
-		return ArtifactV3Projection{}, err
-	}
-	if head != input.ExpectedHead {
-		return ArtifactV3Projection{}, ErrArtifactV3Conflict
-	}
+	// ExpectedHead is the legacy field name for the immutable candidate base.
+	head := input.ExpectedHead
 	turn, ok, err := s.sessions.GetArtifactV3Turn(input.Owner.AccountScopeID, input.Owner.UserID, input.ArtifactID, input.TurnID)
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
 	if !ok || turn.BaseCommitOID != head || (turn.Status != "open" && turn.Status != "awaiting_selection") {
 		return ArtifactV3Projection{}, ErrArtifactV3Conflict
+	}
+	base, err := repository.ReadRevision(ctx, head)
+	if err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	var proposed ArtifactV3Manifest
+	if json.Unmarshal(input.Project.Files[ArtifactV3ManifestFilename], &proposed) != nil {
+		return ArtifactV3Projection{}, ErrArtifactV3Invalid
+	}
+	basePolicy, proposedPolicy := base.Manifest, proposed
+	basePolicy.Parts, proposedPolicy.Parts = nil, nil
+	if !reflect.DeepEqual(basePolicy, proposedPolicy) || (turn.RevisionIntent != ArtifactV3RevisionWholeProject && !reflect.DeepEqual(base.Manifest.Parts, proposed.Parts)) {
+		return ArtifactV3Projection{}, ErrArtifactV3Invalid
 	}
 	if _, _, validationErr := repository.validateProject(input.Project); validationErr != nil {
 		return ArtifactV3Projection{}, validationErr
@@ -252,7 +278,7 @@ func (s *ArtifactV3Service) SubmitCandidate(ctx context.Context, input ArtifactV
 		return ArtifactV3Projection{}, err
 	}
 	turn.Status = "awaiting_selection"
-	return s.apply(input.Owner, input.TransactionID, V3SessionMutationArtifactV3CandidateCommitted, ArtifactV3Mutation{Revision: &projectedRevision, Turn: &turn, Candidate: &candidate, ExpectedHeadCommitOID: head}, input.NowUnixMs)
+	return s.apply(input.Owner, input.TransactionID, V3SessionMutationArtifactV3CandidateCommitted, ArtifactV3Mutation{Revision: &projectedRevision, Turn: &turn, Candidate: &candidate}, input.NowUnixMs)
 }
 
 func (s *ArtifactV3Service) Select(ctx context.Context, input ArtifactV3SelectInput) (ArtifactV3Projection, error) {
@@ -271,7 +297,7 @@ func (s *ArtifactV3Service) Select(ctx context.Context, input ArtifactV3SelectIn
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
-	if !ok || turn.BaseCommitOID != input.ExpectedHead {
+	if !ok || turn.Status != "awaiting_selection" {
 		return ArtifactV3Projection{}, ErrArtifactV3Conflict
 	}
 	revision, err := repository.Select(ctx, ArtifactV3SelectionRequest{TurnID: input.TurnID, CandidateID: input.CandidateID, TransactionID: input.TransactionID, ExpectedHead: input.ExpectedHead, Candidate: candidate.CommitOID})
@@ -396,7 +422,7 @@ func (s *ArtifactV3Service) revisionProjection(ctx context.Context, repository *
 	}
 	parts := make([]ArtifactV3PartProjection, 0, len(revision.Manifest.Parts))
 	for _, part := range revision.Manifest.Parts {
-		parts = append(parts, ArtifactV3PartProjection{ID: part.ID, Label: part.Label, LocatorKind: part.Locator.Kind, Path: part.Locator.Path, Value: part.Locator.Value, Paths: append([]string(nil), part.Locator.Paths...)})
+		parts = append(parts, ArtifactV3PartProjection{Temporal: part.Temporal, CaptureTimeMS: part.PreviewTimeMS(), ID: part.ID, Label: part.Label, LocatorKind: part.Locator.Kind, Path: part.Locator.Path, Value: part.Locator.Value, Paths: append([]string(nil), part.Locator.Paths...)})
 	}
 	return ArtifactV3RevisionProjection{ArtifactID: artifactID, RepositoryID: artifactID, OwnerSessionID: owner.SessionID, CommitOID: revision.CommitOID, TreeOID: revision.TreeOID, ManifestBlobOID: revision.ManifestBlobOID, ParentCommitOIDs: append([]string(nil), revision.Parents...), ChangedFiles: changed, Parts: parts, Build: build, Preview: preview, FileCount: revision.FileCount, TreeBytes: revision.TreeBytes, CreatedAt: now}, nil
 }
@@ -482,4 +508,101 @@ func (s *ArtifactV3Service) ResumeDraft(owner ArtifactV3Owner, artifactID, reque
 	repository.Drafts = nil
 	_, err = s.apply(owner, requestID, V3SessionMutationArtifactV3DraftSaved, ArtifactV3Mutation{Repository: &repository, Draft: &draft, ExpectedDraftSequence: expected, Resume: &resume}, 0)
 	return err
+}
+
+// ArtifactV3SelectedSource is a native read-only handoff, never a recovery result.
+type ArtifactV3SelectedSource struct {
+	Owner         ArtifactV3Owner                 `json:"owner"`
+	SessionID     string                          `json:"session_id"`
+	ArtifactID    string                          `json:"artifact_id"`
+	RevisionRef   string                          `json:"revision_ref"`
+	CommitOID     string                          `json:"commit_oid"`
+	ProjectionSeq uint64                          `json:"projection_seq"`
+	Revision      ArtifactV3RevisionProjection    `json:"revision"`
+	Candidates    []ArtifactV3CandidateProjection `json:"candidates,omitempty"`
+	Turns         []ArtifactV3TurnProjection      `json:"turns,omitempty"`
+}
+
+// ResolveSelectedSource resolves the selected head when commitOID is omitted,
+// otherwise an exact ready historical/candidate revision. projectionSeq describes
+// the discovery snapshot, not a remix CAS. Only head selection consumes head CAS.
+// Resolution never repairs Git, publishes events, or creates grants.
+func (s *ArtifactV3Service) ResolveSelectedSource(owner ArtifactV3Owner, artifactID, commitOID string, projectionSeq uint64) (ArtifactV3SelectedSource, error) {
+	repository, found, err := s.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
+	if err != nil {
+		return ArtifactV3SelectedSource{}, err
+	}
+	if !found || repository.OwnerSessionID != owner.SessionID {
+		return ArtifactV3SelectedSource{}, ErrArtifactV3Unauthorized
+	}
+	if repository.HeadCommitOID == "" && commitOID == "" && projectionSeq == 0 {
+		return ArtifactV3SelectedSource{}, fmt.Errorf("%w: artifact_v3_unpublished: no selected revision exists; inspect the retained draft with draft_status_v3, then use its exact resume_draft with resume_v3 after the producer is terminal", ErrArtifactV3Conflict)
+	}
+	if repository.HeadCommitOID == "" {
+		return ArtifactV3SelectedSource{}, ErrArtifactV3Conflict
+	}
+	if commitOID == "" {
+		commitOID = repository.HeadCommitOID
+	}
+	if decoded, err := hex.DecodeString(commitOID); err != nil || len(decoded) != 20 || commitOID != strings.ToLower(commitOID) {
+		return ArtifactV3SelectedSource{}, ErrArtifactV3Invalid
+	}
+	revision, found, err := s.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, commitOID)
+	if err != nil {
+		return ArtifactV3SelectedSource{}, err
+	}
+	if !found || revision.OwnerSessionID != owner.SessionID || !artifactV3EvidenceReady(revision.Build, commitOID) || !artifactV3EvidenceReady(revision.Preview, commitOID) {
+		return ArtifactV3SelectedSource{}, ErrArtifactV3Integrity
+	}
+	source := ArtifactV3SelectedSource{Owner: owner, SessionID: owner.SessionID, ArtifactID: artifactID, RevisionRef: "revision-" + commitOID, CommitOID: commitOID, ProjectionSeq: repository.EventSeq, Revision: revision}
+	candidates, err := s.sessions.ListArtifactV3CandidateProjections(owner.AccountScopeID, owner.UserID, artifactID)
+	if err != nil {
+		return ArtifactV3SelectedSource{}, err
+	}
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		if candidate.CandidateRef == "refs/heads/artifact" {
+			continue
+		}
+		turn, found, err := s.sessions.GetArtifactV3Turn(owner.AccountScopeID, owner.UserID, artifactID, candidate.TurnID)
+		if err != nil || !found {
+			return ArtifactV3SelectedSource{}, ErrArtifactV3Integrity
+		}
+		if len(source.Candidates) >= 50 {
+			break
+		}
+		source.Candidates = append(source.Candidates, candidate)
+		if !seen[turn.TurnID] {
+			source.Turns = append(source.Turns, turn)
+			seen[turn.TurnID] = true
+		}
+	}
+	return source, nil
+}
+
+// Bind every declared scene to ordered trusted evidence before any Git mutation.
+func validateArtifactV3SceneEvidence(project ArtifactV3Project, evidence ArtifactV3EvidenceProjection, limits ArtifactV3Limits) error {
+	m, err := ValidateArtifactV3Project(project, limits)
+	if err != nil {
+		return err
+	}
+	index := 0
+	for _, p := range m.Parts {
+		if p.Temporal == nil {
+			continue
+		}
+		if index >= len(evidence.Scenes) {
+			return ErrArtifactV3Integrity
+		}
+		e := evidence.Scenes[index]
+		digest, err := hex.DecodeString(e.DigestSHA256)
+		if e.PartID != p.ID || e.SampleMS != *p.PreviewTimeMS() || err != nil || len(digest) != sha256.Size {
+			return ErrArtifactV3Integrity
+		}
+		index++
+	}
+	if index != len(evidence.Scenes) {
+		return ErrArtifactV3Integrity
+	}
+	return nil
 }

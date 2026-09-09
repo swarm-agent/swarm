@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { appendDesktopV3ArtifactMessageSelections, normalizeDesktopV3ArtifactMessageSelection, removeDesktopV3ArtifactMessageSelection } from './artifact-api'
-import { desktopV3NativeArtifactIterationSelection, type DesktopV3NativeArtifactStudio } from './artifact-v3-api'
+import { normalizeDesktopV3NativeArtifactRevision, desktopV3NativeArtifactIterationSelection, type DesktopV3NativeArtifactStudio } from './artifact-v3-api'
 import { createDesktopV3ExistingMessageOperation, persistDesktopV3ExistingMessageOperation, loadDesktopV3ExistingMessageOperation } from './existing-session-flow'
 import { createDesktopV3RoutedComposerSnapshot } from './new-session-flow'
 import { portableDesktopV3ArtifactMessageSelection, postDesktopV3AppendMessage, postDesktopV3RoutedSessionStart } from './write-api'
@@ -14,9 +14,11 @@ const studio: DesktopV3NativeArtifactStudio = {
  artifact: { artifactId:'native', artifactRef:'native', ownerSessionId:'source',label:'Design',description:'',status:'ready',partCount:1,turnCount:0,updatedAt:1,head:{revisionRef:`revision-${'a'.repeat(40)}`,commitOid:'a'.repeat(40),treeOid:'b'.repeat(40),generation:1,selectedEventSeq:1}},
  parts:[{id:'pricing',label:'Pricing',description:'',locator:{kind:'selector',path:'index.html',value:'#pricing',paths:[]}}], turns:[],revisions:[],
 }
+studio.revisions = [normalizeDesktopV3NativeArtifactRevision({ revision_ref: studio.artifact.head!.revisionRef, commit_oid: studio.artifact.head!.commitOid, status: 'ready', parts: studio.parts })!]
+const viewed = studio.revisions[0].revisionRef
 
 test('native selection stages removable Parts and preserves draft and exact retry snapshot', () => {
- const selection=desktopV3NativeArtifactIterationSelection(studio,['pricing'])
+ const selection=desktopV3NativeArtifactIterationSelection(studio,['pricing'],viewed)
  const chips=appendDesktopV3ArtifactMessageSelections([], [selection])
  assert.equal(chips[0].label,'Pricing')
  assert.equal(chips[0].collection_id,undefined)
@@ -42,18 +44,18 @@ test('native selection stages removable Parts and preserves draft and exact retr
 })
 
 test('native selection normalization fails closed for malformed mixed and duplicate targets', () => {
- const valid=desktopV3NativeArtifactIterationSelection(studio,['pricing'])
+ const valid=desktopV3NativeArtifactIterationSelection(studio,['pricing'],viewed)
  for(const patch of [{collection_id:'legacy'},{event_seq:4},{part_id:'pricing'},{revision_ref:'revision-bad'},{target_part_ids:['pricing','pricing']},{target_part_ids:[null]},{artifact_id:''}]) {
   assert.equal(normalizeDesktopV3ArtifactMessageSelection({...valid,...patch}),null)
   assert.throws(()=>portableDesktopV3ArtifactMessageSelection({...valid,...patch} as typeof valid))
  }
- assert.throws(()=>desktopV3NativeArtifactIterationSelection(studio,['unknown']))
- assert.throws(()=>desktopV3NativeArtifactIterationSelection(studio,['pricing','pricing']))
+ assert.throws(()=>desktopV3NativeArtifactIterationSelection(studio,['unknown'],viewed))
+ assert.throws(()=>desktopV3NativeArtifactIterationSelection(studio,['pricing','pricing'],viewed))
 })
 
 // Transport failure must retain exactly the same native envelope for both entry paths.
 test('native append and routed HTTP submissions preserve targets without hidden draft text', async () => {
- const selection=desktopV3NativeArtifactIterationSelection(studio,['pricing'])
+ const selection=desktopV3NativeArtifactIterationSelection(studio,['pricing'],viewed)
  const original=globalThis.fetch
  const bodies:Record<string,unknown>[]=[]
  globalThis.fetch=(async (_url,init)=>{ bodies.push(JSON.parse(String(init?.body))); return new Response(JSON.stringify({error:'test transport failure'}),{status:503,headers:{'Content-Type':'application/json'}}) }) as typeof fetch
@@ -70,4 +72,48 @@ test('native append and routed HTTP submissions preserve targets without hidden 
   assert.equal(body.content??body.input,'My draft')
   assert.doesNotMatch(JSON.stringify(body),/pending_request|collection_id|variant_id|projection_seq/)
  }
+})
+
+// Requirement: after focused refinement, whole remix uses the newly selected
+// exact head and drops old target intent; transport must not lose explicit intent.
+test('native focused to whole repeat preserves selected head and explicit intent', () => {
+ const focused=desktopV3NativeArtifactIterationSelection(studio,['pricing'],viewed)
+ assert.equal(focused.revision_intent,'focused_parts')
+ const next={...studio,artifact:{...studio.artifact,head:{...studio.artifact.head!,commitOid:'c'.repeat(40),revisionRef:`revision-${'c'.repeat(40)}`}}}
+ next.revisions = [{...studio.revisions[0], revisionRef: next.artifact.head.revisionRef, commitOid: next.artifact.head.commitOid}]
+ const whole=desktopV3NativeArtifactIterationSelection(next,[],next.artifact.head.revisionRef)
+ assert.equal(whole.revision_intent,'whole_project')
+ assert.equal(whole.revision_ref,next.artifact.head.revisionRef)
+ assert.deepEqual(whole.target_part_ids,[])
+ assert.equal(portableDesktopV3ArtifactMessageSelection(whole).revision_intent,'whole_project')
+ assert.equal(normalizeDesktopV3ArtifactMessageSelection({...whole,target_part_ids:['pricing']}),null)
+ assert.equal(focused.revision_ref,studio.artifact.head!.revisionRef)
+})
+
+// Requirement: viewed ready candidates survive composer normalization, retry and
+// hydration independently of head. Threat: replacing option 3 with head/its Parts.
+// The selection and operation boundaries are the narrowest portable-envelope proof.
+test('viewed option carries its own Parts and reference intent without accepting head', () => {
+ const option = {...studio.revisions[0], revisionRef:`revision-${'d'.repeat(40)}`, commitOid:'d'.repeat(40), parts:[{...studio.parts[0],id:'option-part',label:'Option 3 Part'}]}
+ const next = {...studio,revisions:[...studio.revisions,option]}
+ const focused = desktopV3NativeArtifactIterationSelection(next,['option-part'],option.revisionRef)
+ assert.equal(focused.label,'Option 3 Part')
+ assert.equal(focused.revision_ref,option.revisionRef)
+ assert.throws(()=>desktopV3NativeArtifactIterationSelection(next,['pricing'],option.revisionRef))
+ for (const broken of [{...option,status:'error' as const},{...option,parts:undefined}]) {
+  assert.throws(()=>desktopV3NativeArtifactIterationSelection({...next,revisions:[broken]},[],option.revisionRef))
+ }
+ assert.throws(()=>desktopV3NativeArtifactIterationSelection(studio,[],option.revisionRef))
+ const reference = {...focused,action:'select' as const,description:'Style/example reference only'}
+ const chips = appendDesktopV3ArtifactMessageSelections([], [reference])
+ const operation = createDesktopV3ExistingMessageOperation({sessionId:'chat',prompt:'Preserved draft',artifactSelections:chips})
+ const hydrated = normalizeDesktopV3ArtifactMessageSelection(JSON.parse(JSON.stringify(operation.request.artifact_selections![0])))!
+ assert.equal(hydrated.action,'select')
+ assert.equal(hydrated.revision_ref,option.revisionRef)
+ assert.deepEqual(hydrated.target_part_ids,['option-part'])
+ assert.equal(operation.request.content,'Preserved draft')
+ next.artifact = {...next.artifact,head:{...next.artifact.head!,revisionRef:`revision-${'e'.repeat(40)}`,commitOid:'e'.repeat(40)}}
+ assert.equal(hydrated.revision_ref,option.revisionRef)
+ assert.equal(desktopV3NativeArtifactIterationSelection(next,[],option.revisionRef).revision_ref,option.revisionRef)
+ assert.deepEqual(removeDesktopV3ArtifactMessageSelection(chips,reference),[])
 })

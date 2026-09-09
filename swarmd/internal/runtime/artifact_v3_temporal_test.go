@@ -119,7 +119,7 @@ func TestArtifactV3DefaultAnimationPreviewRequest(t *testing.T) {
 	if !reflect.DeepEqual(before, files) {
 		t.Fatal("source mutated")
 	}
-	for _, invalid := range []string{"", nativePreviewAnimationManifest + nativePreviewAnimationManifest, strings.ReplaceAll(nativePreviewAnimationManifest, "8000", "120001"), strings.ReplaceAll(nativePreviewAnimationManifest, "8000", "0"), strings.ReplaceAll(nativePreviewAnimationManifest, `"fps":30`, `"fps":0`)} {
+	for _, invalid := range []string{"", nativePreviewAnimationManifest + nativePreviewAnimationManifest, strings.ReplaceAll(nativePreviewAnimationManifest, "8000", "1200001"), strings.ReplaceAll(nativePreviewAnimationManifest, "8000", "0"), strings.ReplaceAll(nativePreviewAnimationManifest, `"fps":30`, `"fps":0`)} {
 		bad := map[string][]byte{"index.html": []byte(invalid)}
 		if _, err := artifactV3PreviewCaptureRequest(manifest, bad); err == nil || string(bad["index.html"]) != invalid {
 			t.Fatal("invalid timing accepted or source mutated")

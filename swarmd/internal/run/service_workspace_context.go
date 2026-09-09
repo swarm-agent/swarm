@@ -44,7 +44,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		return tool.WorkspaceScope{}, errors.New("workspace onboarding agent cannot run outside the dedicated pre-admission flow")
 	}
 	if session.WorktreeEnabled {
-		if err := validateSessionRepositoryIdentity(session); err != nil {
+		if err := s.validateRunRepositoryIdentity(session, principal); err != nil {
 			return tool.WorkspaceScope{}, err
 		}
 		resolvedPath, err := normalizeRunScopePath(session.WorktreeRootPath)
@@ -327,6 +327,13 @@ func (s *Service) mergeAuthorizedSessionWorkspaceGrantRoots(principal identity.P
 		entry, ok, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, workspaceID)
 		if err != nil {
 			return nil, err
+		}
+		// Additional attachments are revocable access, not required execution
+		// identity. Keep their historical grants intact, but never admit a
+		// missing, foreign, or inactive catalog entry into the runtime roots.
+		// Primary/source identity and stale live grants still fail closed.
+		if grant.Kind == pebblestore.WorkspaceGrantAdditional && (!ok || !strings.EqualFold(strings.TrimSpace(entry.State), "active")) {
+			continue
 		}
 		if !ok {
 			return nil, fmt.Errorf("session workspace grant %q is no longer authorized for this account", workspaceID)

@@ -5236,9 +5236,18 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			// artifact_v3_author call; Finished uses the stable capability identity.
 			finished, ok := s.tools.ArtifactV3AuthorService().Finished(grant)
 			if !ok || strings.TrimSpace(finished.Revision.CommitOID) == "" || strings.TrimSpace(finished.Revision.TreeOID) == "" {
-				_ = s.tools.ArtifactV3AuthorService().MarkFailed(ctx, grant, "managed_output_missing", "The Designer completed without finish_turn on a ready complete project.")
+				code, message := "managed_output_missing", "The Designer completed without finish_turn on a ready complete project."
+				if diagnostic, found := s.tools.ArtifactV3AuthorService().FailureDiagnostic(grant); found {
+					code, message = diagnostic.Code, diagnostic.Message
+				}
+				outcome.ArtifactReference = taskArtifactV3Reference(grant, "", 0, "failed")
+				outcome.ArtifactReference.FailureCode = code
+				outcome.BlockerCode = code
+				if err := s.tools.ArtifactV3AuthorService().MarkFailed(ctx, grant, code, message); err != nil {
+					return outcome, err
+				}
 				_ = s.tools.ArtifactV3AuthorService().Discard(grant)
-				return outcome, errors.New("managed Designer completed without a finished Artifact V3 candidate")
+				return outcome, fmt.Errorf("managed Designer retained candidate %s: %s: %s; inspect exact turn/candidate with draft_status_v3 before permissioned resume", grant.CandidateID, code, message)
 			}
 			outcome.ArtifactReference = taskArtifactV3Reference(grant, finished.Revision.CommitOID, 0, pebblestore.SessionArtifactStatusReady)
 			if s.sessions != nil && s.sessions.Store() != nil {

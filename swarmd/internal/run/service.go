@@ -2974,7 +2974,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 }
 
 type designerToolFailureState struct {
-	attempts int
+	attempts                    int
+	nativeFailuresSinceProgress int
+	nativeFailures              int
 }
 
 func (s *designerToolFailureState) Observe(calls []tool.Call, results []tool.Result) (string, bool) {
@@ -2993,6 +2995,27 @@ func (s *designerToolFailureState) ObserveSkipping(calls []tool.Call, results []
 			continue
 		}
 		detail := strings.TrimSpace(results[i].Error)
+		if calls[i].Name == "artifact_v3_author" {
+			var args struct {
+				Action string `json:"action"`
+			}
+			_ = json.Unmarshal([]byte(calls[i].Arguments), &args)
+			if detail == "" {
+				// Reads alone are not recovery progress; only accepted project changes
+				// or a successful publication reset the consecutive budget.
+				switch args.Action {
+				case "edit_file", "create_file", "rename_file", "delete_file", "reconcile_parts", "finish_turn":
+					s.nativeFailuresSinceProgress = 0
+				}
+				continue
+			}
+			s.nativeFailures++
+			s.nativeFailuresSinceProgress++
+			if s.nativeFailuresSinceProgress >= designerToolFailureLimit || s.nativeFailures >= 12 {
+				return fmt.Sprintf("Designer stopped after %d native failures (%d since project progress). Exact reason: %s", s.nativeFailures, s.nativeFailuresSinceProgress, detail), true
+			}
+			continue
+		}
 		if detail == "" {
 			continue
 		}

@@ -123,7 +123,10 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       onFrame: ({ frame }) => this.handleFrame(frame as RealtimeMessage),
       onStatus: ({ status, reason }) => {
         // Catalogs are separate durable resources, not included in chat hydration.
-        if (status === 'open') this.clientEffectRunner.refreshArtifactCatalogs()
+        if (status === 'open') {
+          this.clientEffectRunner.refreshArtifactCatalogs()
+          this.clientEffectRunner.refreshWorkspaceCatalog()
+        }
         this.dispatch({
           type: 'realtime.statusChanged',
           status: mapTransportStatus(status),

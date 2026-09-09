@@ -48,10 +48,13 @@ type artifactV3RuntimeAdapter struct {
 	renderer       htmlcapture.Renderer
 	publish        func(identity.Principal, api.ArtifactV3Artifact, string, string) error
 
-	mu       sync.RWMutex
-	grants   map[string]artifactV3GrantOwner
-	builds   map[string]tool.ArtifactV3BuildResult
-	previews map[string]tool.ArtifactV3PreviewResult
+	// Serialize Git/projection publication for siblings in one repository.
+	// Preview rendering and editing remain concurrent.
+	publicationLocks [64]sync.Mutex
+	mu               sync.RWMutex
+	grants           map[string]artifactV3GrantOwner
+	builds           map[string]tool.ArtifactV3BuildResult
+	previews         map[string]tool.ArtifactV3PreviewResult
 }
 
 type artifactV3GrantOwner struct {
@@ -99,6 +102,19 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 	if a == nil || a.service == nil || a.sessions == nil || strings.TrimSpace(request.AccountScopeID) == "" || strings.TrimSpace(request.UserID) == "" || strings.TrimSpace(request.OwnerSessionID) == "" || strings.TrimSpace(request.TaskCallID) == "" {
 		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 	}
+	if err := pebblestore.ValidateArtifactV3RevisionIntent(request.RevisionIntent, request.TargetPartIDs); err != nil {
+		return tool.ArtifactV3AuthorGrant{}, err
+	}
+	if request.Initial && (request.RevisionIntent != "" || len(request.TargetPartIDs) != 0) {
+		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+	}
+	if request.SceneContract != nil {
+		contract, err := tool.ParseArtifactV3SceneContract(request.SceneContract)
+		if err != nil || (request.Initial && request.AnimationProfile == nil) {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		request.SceneContract = contract
+	}
 	owner := pebblestore.ArtifactV3Owner{AccountScopeID: strings.TrimSpace(request.AccountScopeID), UserID: strings.TrimSpace(request.UserID), SessionID: strings.TrimSpace(request.OwnerSessionID)}
 	artifactID := strings.TrimSpace(request.ArtifactID)
 	if request.Initial {
@@ -110,26 +126,37 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
 		}
 		repository, ok, err := a.sessions.GetArtifactV3Repository(owner.AccountScopeID, owner.UserID, artifactID)
-		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID || repository.HeadCommitOID != strings.TrimSpace(request.BaseCommitOID) {
+		if err != nil || !ok || repository.OwnerSessionID != owner.SessionID {
 			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
 		}
-		if request.ProjectionSeq != 0 && repository.EventSeq != request.ProjectionSeq {
-			// A sibling allocation may follow draft events from its already-authorized
-			// exact-base turn; unrelated stale turns must still fail closed.
-			matched := false
-			for _, draft := range repository.Drafts {
-				var prior tool.ArtifactV3AuthorGrant
-				if json.Unmarshal(draft.Grant, &prior) == nil && prior.TurnID == artifactV3StableID("turn", artifactID, request.TaskCallID) && prior.BaseCommitOID == request.BaseCommitOID && prior.SourceProjectionSeq == request.ProjectionSeq && prior.OwnerSessionID == owner.SessionID && prior.ExpiresAt > time.Now().UnixMilli() {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Conflict
+		// Discovery sequence is provenance, not mutable-head authorization.
+		if _, err := a.service.ResolveSelectedSource(owner, artifactID, request.BaseCommitOID, 0); err != nil {
+			return tool.ArtifactV3AuthorGrant{}, err
+		}
+		source, sourceErr := a.revision(ctx, api.ArtifactV3Principal{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID}, repository, request.BaseCommitOID)
+		if sourceErr != nil {
+			return tool.ArtifactV3AuthorGrant{}, sourceErr
+		}
+		if request.AnimationProfile != nil && (source.Manifest.AnimationProfile == nil || request.AnimationProfile.ProfileID != source.Manifest.AnimationProfile.ProfileID) {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		if request.SceneContract != nil && !reflect.DeepEqual(request.SceneContract, source.Manifest.SceneContract) {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		request.SceneContract = source.Manifest.SceneContract
+		request.AnimationProfile = source.Manifest.AnimationProfile
+		if request.OutputRequirements != nil && !reflect.DeepEqual(request.OutputRequirements, source.Manifest.OutputRequirements) {
+			// An omitted native output policy already renders at landscape_video's
+			// 1920x1080 default. Accept that exact resolved assertion, not a policy
+			// replacement; the grant must still inherit the original nil snapshot.
+			defaultOutput, err := artifact.ResolveOutputRequirements(&artifact.OutputRequirementsInput{Preset: "landscape_video"})
+			if err != nil || source.Manifest.OutputRequirements != nil || !reflect.DeepEqual(request.OutputRequirements, defaultOutput) {
+				return tool.ArtifactV3AuthorGrant{}, fmt.Errorf("%w: output_requirements conflicts with the selected source output policy", pebblestore.ErrArtifactV3Invalid)
 			}
 		}
+		request.OutputRequirements = source.Manifest.OutputRequirements
 		if len(request.TargetPartIDs) != 0 {
-			revision, revisionOK, revisionErr := a.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, repository.HeadCommitOID)
+			revision, revisionOK, revisionErr := a.sessions.GetArtifactV3Revision(owner.AccountScopeID, owner.UserID, artifactID, request.BaseCommitOID)
 			if revisionErr != nil || !revisionOK {
 				return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Integrity
 			}
@@ -144,10 +171,21 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 			}
 		}
 	}
+	if output := request.OutputRequirements; output != nil && (output.Width < 1 || output.Height < 1 || output.Width > 1920 || output.Height > 1920 || int64(output.Width)*int64(output.Height) > 1920*1080) {
+		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+	}
+	if err := artifact.ValidateAnimationProfileSnapshot(request.AnimationProfile); err != nil {
+		return tool.ArtifactV3AuthorGrant{}, err
+	}
+	defer a.lockPublication(artifactID)()
 	turnID := artifactV3StableID("turn", artifactID, request.TaskCallID)
 	candidateID := artifactV3StableID("candidate", turnID, fmt.Sprint(request.CandidateIndex))
 	grantID := artifactV3StableID("grant", artifactID, turnID, candidateID)
 	grant := tool.ArtifactV3AuthorGrant{
+		AnimationProfile:    request.AnimationProfile,
+		SceneContract:       request.SceneContract,
+		OutputRequirements:  request.OutputRequirements,
+		RevisionIntent:      request.RevisionIntent,
 		SourceProjectionSeq: request.ProjectionSeq,
 		AccountScopeID:      owner.AccountScopeID, UserID: owner.UserID,
 		ID: grantID, ArtifactID: artifactID, OwnerSessionID: owner.SessionID, TurnID: turnID, CandidateID: candidateID,
@@ -155,6 +193,12 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		AllowedActions: []string{"inspect_context", "list_files", "read_file", "create_file", "edit_file", "rename_file", "delete_file", "diff", "build_preview", "finish_turn"},
 		PolicyRevision: strings.TrimSpace(request.PolicyRevision), ExpiresAt: request.ExpiresAt,
 		Limits: tool.ArtifactV3AuthorLimits{MaxFileBytes: 64 << 20, MaxTreeBytes: 256 << 20, MaxFiles: 4096, MaxPathBytes: 512, MaxPathDepth: 32, MaxListPage: 500, MaxReadBytes: 1 << 20, MaxDiffEntries: 1000},
+	}
+	if request.GenerationWaveID != "" {
+		if request.GenerationIndex < 1 || request.GenerationCount < request.GenerationIndex || request.GenerationCount > 256 || len(request.GenerationWaveID) > 128 {
+			return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
+		}
+		grant.Generation = &pebblestore.ArtifactV3GenerationMember{WaveID: request.GenerationWaveID, Index: request.GenerationIndex, Count: request.GenerationCount, ArtifactID: artifactID, TurnID: turnID, CandidateID: candidateID, BaseCommitOID: grant.BaseCommitOID, SourceProjectionSeq: request.ProjectionSeq}
 	}
 	if grant.PolicyRevision == "" || grant.ExpiresAt <= time.Now().UnixMilli() {
 		return tool.ArtifactV3AuthorGrant{}, pebblestore.ErrArtifactV3Invalid
@@ -164,7 +208,7 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		if len(grant.TargetPartIDs) != 0 {
 			target = grant.TargetPartIDs[0]
 		}
-		if _, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: artifactID, TurnID: turnID, ExpectedHead: grant.BaseCommitOID, TargetPartID: target, TargetPartIDs: grant.TargetPartIDs}); err != nil {
+		if _, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: artifactID, TurnID: turnID, ExpectedHead: grant.BaseCommitOID, RevisionIntent: grant.RevisionIntent, TargetPartID: target, TargetPartIDs: grant.TargetPartIDs}); err != nil {
 			return tool.ArtifactV3AuthorGrant{}, err
 		}
 	}
@@ -240,6 +284,7 @@ func (a *artifactV3RuntimeAdapter) MaterializeBase(ctx context.Context, artifact
 }
 
 func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request tool.ArtifactV3SubmitRequest) (tool.ArtifactV3Revision, error) {
+	defer a.lockPublication(request.ArtifactID)()
 	grant, ok := tool.ArtifactV3GrantFromContext(ctx)
 	if !ok || grant.ArtifactID != request.ArtifactID || grant.TurnID != request.TurnID || grant.CandidateID != request.CandidateID || grant.BaseCommitOID != request.BaseCommitOID || grant.Initial != request.Initial || grant.PolicyRevision != request.PolicyRevision {
 		return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorUnauthorized
@@ -256,6 +301,10 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 	}
 	if draft.Gate == nil || !draft.Gate.Ready || draft.Gate.ProjectDigest != request.ProjectDigest || digestArtifactProject(request.Project) != request.ProjectDigest || !reflect.DeepEqual(draft.Project, request.Project) {
 		return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorConflict
+	}
+	manifest, diagnostics := parseArtifactV3Manifest(request.Project)
+	if len(diagnostics) != 0 || (grant.AnimationProfile != nil && !reflect.DeepEqual(grant.AnimationProfile, manifest.AnimationProfile)) || (grant.OutputRequirements != nil && !reflect.DeepEqual(grant.OutputRequirements, manifest.OutputRequirements)) {
+		return tool.ArtifactV3Revision{}, tool.ErrArtifactV3AuthorInvalid
 	}
 	if !draft.Publishing {
 		if draft.Sequence != request.DraftSequence {
@@ -287,6 +336,7 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 			previewDigest = request.Preview.EvidenceDigests[0]
 		}
 		preview := artifactV3Evidence(request.Preview.ID, "succeeded", "", previewDigest)
+		preview.Scenes = request.Preview.Scenes
 		created, err := a.service.Create(ctx, pebblestore.ArtifactV3CreateInput{Owner: owner.Owner, ArtifactID: request.ArtifactID, TransactionID: transactionID, Project: project, Message: owner.Prompt, Build: build, Preview: preview})
 		if err != nil {
 			return tool.ArtifactV3Revision{}, err
@@ -314,6 +364,7 @@ func (a *artifactV3RuntimeAdapter) SubmitProject(ctx context.Context, request to
 		previewDigest = request.Preview.EvidenceDigests[0]
 	}
 	preview := artifactV3Evidence(request.Preview.ID, "succeeded", candidate.CommitOID, previewDigest)
+	preview.Scenes = request.Preview.Scenes
 	committed, err := a.service.SubmitCandidate(ctx, pebblestore.ArtifactV3SubmitCandidateInput{Owner: owner.Owner, ArtifactID: request.ArtifactID, TurnID: request.TurnID, CandidateID: request.CandidateID, TransactionID: transactionID, ExpectedHead: request.BaseCommitOID, Project: project, Message: owner.Prompt, Build: build, Preview: preview})
 	if err != nil {
 		return tool.ArtifactV3Revision{}, err
@@ -361,6 +412,11 @@ func (a *artifactV3RuntimeAdapter) FailArtifactV3Turn(_ context.Context, failure
 		if state.ProducerSessionID != "" && (state.ProducerSessionID != failure.ProducerSessionID || state.ProducerRunID != failure.ProducerRunID) {
 			return tool.ErrArtifactV3AuthorUnauthorized
 		}
+		// A missing finish must not mask an actionable retained build/preview failure.
+		if failure.Code == "managed_output_missing" && state.Gate != nil && !state.Gate.Ready && len(state.Gate.Diagnostics) > 0 {
+			failure.Code = state.Gate.Diagnostics[0].Code
+			failure.Message = state.Gate.Diagnostics[0].Message
+		}
 		draft.Status = "error"
 		_, err = a.service.SaveDraft(owner.Owner, failure.ArtifactID, artifactV3StableID("failed", id, fmt.Sprint(draft.Sequence)), repository.IntentReference, draft, draft.Sequence)
 		if err != nil || repository.HeadCommitOID == "" {
@@ -394,7 +450,63 @@ func (a *artifactV3RuntimeAdapter) Build(_ context.Context, request tool.Artifac
 }
 
 func bytesContainsFold(body []byte, text string) bool {
-	return strings.Contains(strings.ToLower(string(body)), strings.ToLower(text))
+	// Most build/Part markers are ASCII. Search without allocating or lowering
+	// the whole document, stopping as soon as a marker is found. Preserve the
+	// previous Unicode lowercasing semantics (not Unicode simple folding) for
+	// non-ASCII inputs, including malformed UTF-8.
+	needle := strings.ToLower(text)
+	if needle == "" {
+		return true
+	}
+	// Bound candidate comparisons for long user-authored selectors.
+	if len(needle) > 64 {
+		return strings.Contains(strings.ToLower(string(body)), needle)
+	}
+	for i := range needle {
+		if needle[i] >= 0x80 {
+			return strings.Contains(strings.ToLower(string(body)), needle)
+		}
+	}
+	// Repeated prefixes can otherwise multiply scan cost by needle length.
+	// Cap speculative candidate work before using the standard matcher.
+	comparisons := 256
+	for i, c := range body {
+		if c >= 0x80 {
+			return strings.Contains(strings.ToLower(string(body)), needle)
+		}
+		if artifactV3LowerASCII(c) != needle[0] {
+			continue
+		}
+		matched := true
+		for j := 1; j < len(needle); j++ {
+			if comparisons == 0 {
+				return strings.Contains(strings.ToLower(string(body)), needle)
+			}
+			comparisons--
+			if i+j >= len(body) {
+				matched = false
+				break
+			}
+			if body[i+j] >= 0x80 {
+				return strings.Contains(strings.ToLower(string(body)), needle)
+			}
+			if artifactV3LowerASCII(body[i+j]) != needle[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func artifactV3LowerASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 func parseArtifactV3Manifest(project map[string][]byte) (pebblestore.ArtifactV3Manifest, []tool.ArtifactV3Diagnostic) {
@@ -451,6 +563,7 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 		return tool.ArtifactV3PreviewResult{Status: "failed", Diagnostics: missing}, nil
 	}
 	evidenceDigests := make([]string, 0, len(results))
+	var sceneEvidence []pebblestore.ArtifactV3SceneEvidence
 	for index, result := range results {
 		if result.StateID != capture.StateIDs[index] || len(result.PNG) == 0 {
 			return tool.ArtifactV3PreviewResult{}, errors.New("temporal preview evidence is incomplete")
@@ -458,6 +571,11 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 		sum := sha256.Sum256(result.PNG)
 		evidenceDigests = append(evidenceDigests, hex.EncodeToString(sum[:]))
 		evidenceDigests = append(evidenceDigests, result.SectionDigests...)
+		for _, part := range manifest.Parts {
+			if part.Temporal != nil && part.ID == result.StateID {
+				sceneEvidence = append(sceneEvidence, pebblestore.ArtifactV3SceneEvidence{PartID: part.ID, SampleMS: *part.PreviewTimeMS(), DigestSHA256: hex.EncodeToString(sum[:])})
+			}
+		}
 	}
 	digest := sha256.Sum256(results[0].PNG)
 	digestHex := hex.EncodeToString(digest[:])
@@ -468,7 +586,7 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 	if err := os.WriteFile(filepath.Join(a.evidenceRoot, id+".png"), results[0].PNG, 0o600); err != nil {
 		return tool.ArtifactV3PreviewResult{}, err
 	}
-	result := tool.ArtifactV3PreviewResult{ID: id, Status: "valid", EvidenceDigests: evidenceDigests}
+	result := tool.ArtifactV3PreviewResult{ID: id, Status: "valid", EvidenceDigests: evidenceDigests, Scenes: sceneEvidence}
 	a.mu.Lock()
 	a.previews[id] = result
 	a.mu.Unlock()
@@ -478,29 +596,42 @@ func (a *artifactV3RuntimeAdapter) Preview(ctx context.Context, request tool.Art
 // Temporal Parts are verified at their declared playhead samples, never made
 // artificially visible. Static documents capture independently reachable sections.
 func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, files map[string][]byte) (htmlcapture.Request, error) {
-	request := htmlcapture.Request{Entry: manifest.Entrypoint, Files: cloneArtifactProject(files), StateIDs: []string{"default"}, ViewportWidth: 1440, ViewportHeight: 900}
+	request := htmlcapture.Request{Entry: manifest.Entrypoint, Files: cloneArtifactProject(files), StateIDs: []string{"default"}, ViewportWidth: 1920, ViewportHeight: 1080}
+	if output := manifest.OutputRequirements; output != nil {
+		if output.Width < 1 || output.Height < 1 || output.Width > 1920 || output.Height > 1920 || int64(output.Width)*int64(output.Height) > 1920*1080 {
+			return htmlcapture.Request{}, errors.New("native preview output exceeds reviewed viewport budget")
+		}
+		request.ViewportWidth, request.ViewportHeight = output.Width, output.Height
+	}
 	var durationMS int64
 	if manifest.AnimationProfile != nil {
-		canonical, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: manifest.AnimationProfile.ProfileID})
-		if err != nil || canonical.ProfileID != "motion_ui" || !reflect.DeepEqual(canonical, manifest.AnimationProfile) {
-			return request, errors.New("native HTML requires an unchanged reviewed motion_ui profile")
+		err := artifact.ValidateAnimationProfileSnapshot(manifest.AnimationProfile)
+		if err != nil || (manifest.AnimationProfile.ProfileID != "motion_ui" && manifest.AnimationProfile.ProfileID != "spatial_3d") {
+			return request, errors.New("native HTML requires an unchanged reviewed motion_ui or spatial_3d profile")
 		}
 		durationMS, err = tool.ArtifactHTMLAnimationDurationMS(files[manifest.Entrypoint])
 		if err != nil {
 			return request, err
 		}
 	}
+	if err := pebblestore.ValidateArtifactV3Scenes(manifest, durationMS); err != nil {
+		return request, err
+	}
 	times := map[string]int64{}
+	scenes := map[string]string{}
 	request.StateRequiredSelectors = map[string][]string{}
 	for _, part := range manifest.Parts {
-		if part.CaptureTimeMS != nil {
-			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.CaptureTimeMS < 0 || *part.CaptureTimeMS > durationMS {
+		if part.PreviewTimeMS() != nil {
+			if manifest.AnimationProfile == nil || part.Locator.Kind != "selector" || part.Locator.Path != manifest.Entrypoint || strings.TrimSpace(part.Locator.Value) == "" || *part.PreviewTimeMS() < 0 || *part.PreviewTimeMS() > durationMS {
 				return request, errors.New("invalid native temporal Part capture contract")
 			}
 			if len(times) >= htmlcapture.MaxStates {
 				return request, errors.New("native temporal preview exceeds bounded state count")
 			}
-			times[part.ID] = *part.CaptureTimeMS
+			times[part.ID] = *part.PreviewTimeMS()
+			if part.Temporal != nil {
+				scenes[part.ID] = part.Temporal.SceneID
+			}
 			request.StateRequiredSelectors[part.ID] = []string{part.Locator.Value}
 		} else if part.Locator.Kind == "selector" && part.Locator.Path == manifest.Entrypoint && strings.TrimSpace(part.Locator.Value) != "" {
 			request.RequiredSelectors = append(request.RequiredSelectors, part.Locator.Value)
@@ -512,7 +643,7 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 	} else {
 		request.StateIDs = nil
 		for _, part := range manifest.Parts {
-			if part.CaptureTimeMS != nil {
+			if part.PreviewTimeMS() != nil {
 				request.StateIDs = append(request.StateIDs, part.ID)
 			}
 		}
@@ -536,12 +667,20 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 		request.Files[manifest.Entrypoint] = injectArtifactV3CaptureRuntime(request.Files[manifest.Entrypoint])
 		return request, nil
 	}
+	if err := prepareArtifactV3Runtime(manifest.AnimationProfile, manifest.Entrypoint, request.Files); err != nil {
+		return htmlcapture.Request{}, err
+	}
 	request.TemporalStates = true
 	encoded, err := json.Marshal(times)
 	if err != nil {
 		return request, err
 	}
-	bridge := `<script data-swarm-capture-ui>(()=>{const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("temporal Part requires swarm.animation/v1 ready/seek");await api.ready();if(typeof api.pause==="function")await api.pause();const ack=await api.seek(times[id]);if(!ack||ack.time_ms!==times[id])throw Error("temporal seek acknowledgement mismatch");document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
+	sceneJSON, _ := json.Marshal(scenes)
+	_, sceneFPS, _, timingErr := htmlcapture.AnimationTiming(files[manifest.Entrypoint])
+	if timingErr != nil {
+		return request, timingErr
+	}
+	bridge := `<script data-swarm-capture-ui>(()=>{const duration=` + fmt.Sprint(durationMS) + `,fps=` + fmt.Sprint(sceneFPS) + `;const scenes=` + string(sceneJSON) + `;const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("capture_animation_runtime_invalid");let ready;try{ready=await api.ready()}catch(_){throw Error("capture_animation_ready_failed")}if(scenes[id]&&(!ready||ready.duration_ms!==duration||ready.fps!==fps))throw Error("capture_animation_timing_mismatch");if(typeof api.pause==="function")await api.pause();let ack;try{ack=await api.seek(times[id])}catch(_){throw Error("capture_animation_seek_failed")}if(!ack||ack.time_ms!==times[id])throw Error("capture_animation_time_mismatch");if(scenes[id]&&ack.scene_id!==scenes[id])throw Error("capture_animation_scene_mismatch");document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
 	body := request.Files[manifest.Entrypoint]
 	if index := strings.LastIndex(strings.ToLower(string(body)), "</body>"); index >= 0 {
 		request.Files[manifest.Entrypoint] = []byte(string(body[:index]) + bridge + string(body[index:]))
@@ -663,7 +802,12 @@ func (a *artifactV3RuntimeAdapter) GetArtifact(ctx context.Context, principal ap
 	if err != nil || !ok || repository.OwnerSessionID != sessionID {
 		return api.ArtifactV3Artifact{}, pebblestore.ErrArtifactV3NotFound
 	}
-	return a.artifact(ctx, principal, repository)
+	result, err := a.artifact(ctx, principal, repository)
+	if err != nil {
+		return result, err
+	}
+	result.GenerationGroups, err = a.generationGroups(ctx, principal, repository)
+	return result, err
 }
 
 func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.ArtifactV3Principal, repository pebblestore.ArtifactV3RepositoryProjection) (api.ArtifactV3Artifact, error) {
@@ -672,7 +816,7 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 		return api.ArtifactV3Artifact{}, err
 	}
 	if repository.HeadCommitOID == "" {
-		return api.ArtifactV3Artifact{ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
+		return api.ArtifactV3Artifact{Generations: repository.Generations, ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
 	}
 	revision, err := a.revision(ctx, principal, repository, repository.HeadCommitOID)
 	if err != nil {
@@ -690,7 +834,7 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 	if err != nil {
 		return api.ArtifactV3Artifact{}, err
 	}
-	return api.ArtifactV3Artifact{CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
+	return api.ArtifactV3Artifact{Generations: repository.Generations, CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ListRevisions(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, cursor string, limit int) (api.ArtifactV3RevisionPage, error) {
@@ -775,9 +919,26 @@ func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal ap
 			mediaType = "application/octet-stream"
 		}
 	}
-	body, err := repository.ReadFile(ctx, revision.CommitOID, filePath)
-	if err != nil {
-		return api.ArtifactV3Preview{}, err
+	var body []byte
+	if profile := revision.Manifest.AnimationProfile; profile != nil && profile.ProfileID == "spatial_3d" && (filePath == revision.Manifest.Entrypoint || strings.HasPrefix(filePath, "swarm-animation-runtime/")) {
+		source, readErr := repository.ReadFile(ctx, revision.CommitOID, revision.Manifest.Entrypoint)
+		if readErr != nil {
+			return api.ArtifactV3Preview{}, readErr
+		}
+		files, prepareErr := artifactV3LiveRuntimeFiles(profile, revision.Manifest.Entrypoint, source, sessionID, artifactID, revision.RevisionRef, accessToken)
+		if prepareErr != nil {
+			return api.ArtifactV3Preview{}, prepareErr
+		}
+		var ok bool
+		body, ok = files[filePath]
+		if !ok {
+			return api.ArtifactV3Preview{}, pebblestore.ErrArtifactV3NotFound
+		}
+	} else {
+		body, err = repository.ReadFile(ctx, revision.CommitOID, filePath)
+		if err != nil {
+			return api.ArtifactV3Preview{}, err
+		}
 	}
 	if filePath == revision.Manifest.Entrypoint {
 		body = rewriteArtifactV3PreviewReferences(body, revision.Manifest.Entrypoint, sessionID, artifactID, revision.RevisionRef, accessToken)
@@ -843,24 +1004,22 @@ func artifactV3APIValidationEvidence(e pebblestore.ArtifactV3EvidenceProjection,
 	if e.Reference == "" || e.Status != "succeeded" || e.CommitOID == "" || e.DigestSHA256 == "" {
 		return nil
 	}
-	return &api.ArtifactV3ValidationEvidence{ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}}
+	return &api.ArtifactV3ValidationEvidence{Scenes: append([]pebblestore.ArtifactV3SceneEvidence(nil), e.Scenes...), ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}}
 }
 
 func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3OpenTurnRequest) (api.ArtifactV3Turn, error) {
+	defer a.lockPublication(request.ArtifactID)()
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
 	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {
 		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3NotFound
 	}
 	baseCommit := strings.TrimPrefix(strings.TrimSpace(request.BaseRevisionRef), "revision-")
-	if baseCommit != repository.HeadCommitOID {
-		return api.ArtifactV3Turn{}, pebblestore.ErrArtifactV3Conflict
-	}
 	turnID := artifactV3StableID("turn", request.ArtifactID, request.ClientRequestID)
 	target := ""
 	if len(request.TargetPartIDs) != 0 {
 		target = request.TargetPartIDs[0]
 	}
-	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: request.SessionID}, ArtifactID: request.ArtifactID, TurnID: turnID, ExpectedHead: baseCommit, TargetPartID: target, TargetPartIDs: canonicalStrings(request.TargetPartIDs)})
+	projection, err := a.service.OpenTurn(ctx, pebblestore.ArtifactV3OpenTurnInput{Owner: pebblestore.ArtifactV3Owner{AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: request.SessionID}, ArtifactID: request.ArtifactID, TurnID: turnID, ExpectedHead: baseCommit, RevisionIntent: request.RevisionIntent, TargetPartID: target, TargetPartIDs: canonicalStrings(request.TargetPartIDs)})
 	if err != nil {
 		return api.ArtifactV3Turn{}, err
 	}
@@ -929,6 +1088,9 @@ func (a *artifactV3RuntimeAdapter) SelectArtifactV3DirectHead(ctx context.Contex
 }
 
 func (a *artifactV3RuntimeAdapter) SelectCandidate(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3SelectCandidateRequest) (api.ArtifactV3SelectionResult, error) {
+	// Serialize the turn/head preflight with candidate publication through Git
+	// and its durable projection. Never refresh tokens or retry a mutation.
+	defer a.lockPublication(request.ArtifactID)()
 	repository, ok, err := a.sessions.GetArtifactV3Repository(principal.AccountScopeID, principal.UserID, request.ArtifactID)
 	if err != nil || !ok || repository.OwnerSessionID != request.SessionID {
 		return api.ArtifactV3SelectionResult{}, pebblestore.ErrArtifactV3NotFound
@@ -1281,6 +1443,9 @@ func (r artifactV3AnimationRenderer) request(input artifactv3video.RenderRequest
 		}
 		files[manifest.Entrypoint] = injectArtifactV3AnimationAdapter(files[manifest.Entrypoint], input.DurationMs, int(input.FPS))
 	}
+	if err := prepareArtifactV3Runtime(manifest.AnimationProfile, manifest.Entrypoint, files); err != nil {
+		return htmlcapture.AnimationRequest{}, err
+	}
 	// Native V3 accepts CSS/WAAPI motion. The server-owned adapter below makes
 	// those timelines deterministically seekable even when author code does not
 	// own a requestAnimationFrame loop, so requiring artifact-owned rAF here would
@@ -1577,7 +1742,7 @@ func (a *artifactV3RuntimeAdapter) LoadAuthorDraft(ctx context.Context, p tool.A
 	if state.ProducerSessionID != p.ProducerSessionID || state.ProducerRunID != p.ProducerRunID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
-	if !state.Publishing && state.Finished == nil && r.HeadCommitOID != g.BaseCommitOID {
+	if g.Initial && !state.Publishing && state.Finished == nil && r.HeadCommitOID != g.BaseCommitOID {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
 	return state, nil
@@ -1837,11 +2002,9 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	if repository.EventSeq != request.ExpectedProjectionSeq || repository.HeadCommitOID != request.ExpectedHead {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
-	var draft pebblestore.ArtifactV3DraftProjection
-	for _, candidate := range repository.Drafts {
-		if draft.GrantID == "" || candidate.EventSeq > draft.EventSeq || (candidate.EventSeq == draft.EventSeq && candidate.GrantID > draft.GrantID) {
-			draft = candidate
-		}
+	draft, err := artifactV3ExactDraft(repository, request.TurnID, request.CandidateID)
+	if err != nil {
+		return zero, err
 	}
 	if draft.GrantID == "" || draft.Sequence != request.ExpectedSequence {
 		return zero, tool.ErrArtifactV3AuthorConflict
@@ -1851,16 +2014,16 @@ func (a *artifactV3RuntimeAdapter) ResumeArtifactV3DirectDraft(ctx context.Conte
 	if json.Unmarshal(draft.Grant, &grant) != nil || json.Unmarshal(draft.State, &state) != nil || digestArtifactProject(state.Project) != draft.Digest {
 		return zero, pebblestore.ErrArtifactV3Integrity
 	}
-	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID || state.ProducerSessionID != p.ProducerSessionID {
+	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID || grant.OwnerSessionID != p.ProducerSessionID || grant.ArtifactID != request.ArtifactID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
-	if state.Finished != nil || (!state.Publishing && grant.BaseCommitOID != repository.HeadCommitOID) {
+	if state.Finished != nil || (grant.Initial && !state.Publishing && grant.BaseCommitOID != repository.HeadCommitOID) {
 		return zero, tool.ErrArtifactV3AuthorConflict
 	}
 	oldID := draft.GrantID
 	grant.ID = artifactV3StableID("resume", oldID, p.ProducerRunID, fmt.Sprint(draft.Sequence))
 	grant.ExpiresAt = time.Now().Add(30 * time.Minute).UnixMilli()
-	state.ProducerRunID = p.ProducerRunID
+	state.ProducerSessionID, state.ProducerRunID = p.ProducerSessionID, p.ProducerRunID
 	// A deliberate later-run handoff gets a new bounded repair budget. Source
 	// and diagnostic history remain intact; ordinary retries never reset it.
 	if !state.Publishing {
@@ -1910,6 +2073,15 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	if !found || repository.OwnerSessionID != p.ProducerSessionID {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
+	draft, err := artifactV3ExactDraft(repository, "", "")
+	if err != nil {
+		return zero, err
+	}
+	var grant tool.ArtifactV3AuthorGrant
+	if json.Unmarshal(draft.Grant, &grant) != nil {
+		return zero, pebblestore.ErrArtifactV3Integrity
+	}
+	repository.Drafts = map[string]pebblestore.ArtifactV3DraftProjection{draft.GrantID: draft}
 	public, _, err := artifactV3PublicDraft(repository)
 	if err != nil {
 		return zero, err
@@ -1917,5 +2089,126 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	if public == nil {
 		return zero, tool.ErrArtifactV3AuthorInvalid
 	}
-	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
+	return tool.ArtifactV3DraftResumeRequest{TurnID: grant.TurnID, CandidateID: grant.CandidateID, SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
+}
+
+func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(_ context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+	return a.service.ResolveSelectedSource(pebblestore.ArtifactV3Owner{AccountScopeID: account, UserID: user, SessionID: session}, artifactID, commit, seq)
+}
+
+func (a *artifactV3RuntimeAdapter) ListArtifactV3SelectedSources(ctx context.Context, account, user, session string, limit int) ([]pebblestore.ArtifactV3SelectedSource, error) {
+	if account == "" || user == "" || session == "" || limit < 1 || limit > 50 {
+		return nil, pebblestore.ErrArtifactV3Invalid
+	}
+	repositories, err := a.sessions.ListArtifactV3Repositories(account, user, session, limit)
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]pebblestore.ArtifactV3SelectedSource, 0, len(repositories))
+	for _, repository := range repositories {
+		if repository.HeadCommitOID == "" {
+			continue
+		}
+		source, err := a.ResolveArtifactV3SelectedSource(ctx, account, user, session, repository.ArtifactID, repository.HeadCommitOID, repository.EventSeq)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	return sources, nil
+}
+
+func (a *artifactV3RuntimeAdapter) SelectArtifactV3Exact(ctx context.Context, account, user, session, artifactID, turn, candidate, head, requestID string, seq uint64) (tool.ArtifactV3Revision, error) {
+	selected, err := a.SelectCandidate(ctx, api.ArtifactV3Principal{AccountScopeID: account, UserID: user}, api.ArtifactV3SelectCandidateRequest{SessionID: session, ArtifactID: artifactID, TurnID: turn, CandidateID: candidate, ExpectedHeadRef: "revision-" + head, ExpectedTurnRevision: seq, ClientRequestID: requestID})
+	if err != nil {
+		return tool.ArtifactV3Revision{}, err
+	}
+	return tool.ArtifactV3Revision{CommitOID: selected.Head.CommitOID, TreeOID: selected.Head.TreeOID, ManifestBlobOID: selected.Head.ManifestBlobOID}, nil
+}
+
+// Exact identity, never update time, selects a retained candidate. Omitted IDs
+// are accepted only for a singleton repository (older direct-author callers).
+func artifactV3ExactDraft(repository pebblestore.ArtifactV3RepositoryProjection, turn, candidate string) (pebblestore.ArtifactV3DraftProjection, error) {
+	var selected pebblestore.ArtifactV3DraftProjection
+	if (turn == "") != (candidate == "") {
+		return selected, tool.ErrArtifactV3AuthorInvalid
+	}
+	if turn == "" && len(repository.Drafts) != 1 {
+		return selected, tool.ErrArtifactV3AuthorConflict
+	}
+	for id, draft := range repository.Drafts {
+		var grant tool.ArtifactV3AuthorGrant
+		if json.Unmarshal(draft.Grant, &grant) != nil || grant.ID != id || draft.GrantID != id || grant.ArtifactID != repository.ArtifactID || grant.OwnerSessionID != repository.OwnerSessionID {
+			return selected, pebblestore.ErrArtifactV3Integrity
+		}
+		if turn != "" && (grant.TurnID != turn || grant.CandidateID != candidate) {
+			continue
+		}
+		if selected.GrantID != "" {
+			return selected, tool.ErrArtifactV3AuthorConflict
+		}
+		selected = draft
+	}
+	if selected.GrantID == "" {
+		return selected, tool.ErrArtifactV3AuthorInvalid
+	}
+	return selected, nil
+}
+
+func (a *artifactV3RuntimeAdapter) LocateArtifactV3ExactDraft(ctx context.Context, p tool.ArtifactV3AuthorPrincipal, artifactID, turn, candidate string) (tool.ArtifactV3DraftResumeRequest, any, error) {
+	zero := tool.ArtifactV3DraftResumeRequest{}
+	if ctx == nil || a == nil || a.sessions == nil || p.AccountScopeID == "" || p.UserID == "" || p.ProducerSessionID == "" {
+		return zero, nil, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, nil, err
+	}
+	repository, found, err := a.sessions.GetArtifactV3Repository(p.AccountScopeID, p.UserID, artifactID)
+	if err != nil {
+		return zero, nil, err
+	}
+	if !found || repository.OwnerSessionID != p.ProducerSessionID {
+		return zero, nil, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	draft, err := artifactV3ExactDraft(repository, turn, candidate)
+	if err != nil {
+		return zero, nil, err
+	}
+	var grant tool.ArtifactV3AuthorGrant
+	var state tool.ArtifactV3AuthorDraft
+	if json.Unmarshal(draft.Grant, &grant) != nil || json.Unmarshal(draft.State, &state) != nil || digestArtifactProject(state.Project) != draft.Digest {
+		return zero, nil, pebblestore.ErrArtifactV3Integrity
+	}
+	if grant.AccountScopeID != p.AccountScopeID || grant.UserID != p.UserID {
+		return zero, nil, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	if err := a.sessions.ValidateArtifactV3DraftProducer(p.AccountScopeID, p.UserID, repository.OwnerSessionID, state.ProducerSessionID); err != nil {
+		return zero, nil, err
+	}
+	repository.Drafts = map[string]pebblestore.ArtifactV3DraftProjection{draft.GrantID: draft}
+	public, _, err := artifactV3PublicDraft(repository)
+	if err != nil {
+		return zero, nil, err
+	}
+	// Exact owner-authorized recovery exposes bounded repair diagnostics, never
+	// the private grant or project envelope. General gallery summaries remain
+	// fixed-message only.
+	if public != nil && state.Gate != nil {
+		gate := boundedArtifactV3Gate(state.Gate)
+		public.Diagnostics = nil
+		for _, diagnostic := range gate.Diagnostics {
+			public.Diagnostics = append(public.Diagnostics, api.ArtifactV3Diagnostic{Stage: diagnostic.Stage, Code: diagnostic.Code, Message: diagnostic.Message})
+		}
+	}
+	return tool.ArtifactV3DraftResumeRequest{SessionID: repository.OwnerSessionID, ArtifactID: artifactID, TurnID: grant.TurnID, CandidateID: grant.CandidateID, ExpectedSequence: draft.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, public, nil
+}
+
+func (a *artifactV3RuntimeAdapter) lockPublication(artifactID string) func() {
+	var bucket uint32
+	for i := 0; i < len(artifactID); i++ {
+		bucket = bucket*33 + uint32(artifactID[i])
+	}
+	lock := &a.publicationLocks[bucket%uint32(len(a.publicationLocks))]
+	lock.Lock()
+	return lock.Unlock
 }

@@ -60,7 +60,7 @@ func projectSections(project Project, selection Selection) ([]TemporalSection, e
 	}
 	ids, states := map[string]bool{}, map[string]bool{}
 	var selected []TemporalSection
-	var total int64
+	var totalFrames int
 	for _, section := range board.Sections {
 		if strings.TrimSpace(section.ID) == "" || strings.TrimSpace(section.Title) == "" || strings.TrimSpace(section.CaptureStateID) == "" || ids[section.ID] || states[section.CaptureStateID] {
 			return nil, errors.New("storyboard requires unique stable section and capture-state IDs")
@@ -69,7 +69,7 @@ func projectSections(project Project, selection Selection) ([]TemporalSection, e
 		if section.Entrypoint == "" || path.Clean(section.Entrypoint) != section.Entrypoint || strings.HasPrefix(section.Entrypoint, "/") || strings.HasPrefix(section.Entrypoint, "../") || strings.Contains(section.Entrypoint, "\\") || !strings.HasSuffix(section.Entrypoint, ".html") || len(project.Files[section.Entrypoint]) == 0 {
 			return nil, fmt.Errorf("section %q requires an exact project HTML entrypoint", section.ID)
 		}
-		if section.DurationMs <= 0 || section.DurationMs > maxDurationMs || (section.ProductionState != "pending" && section.ProductionState != "ready") || len(section.FilmingRequirements) == 0 {
+		if section.DurationMs < htmlcapture.MinAuthoredAnimationDurationMS || section.DurationMs > maxDurationMs || (section.ProductionState != "pending" && section.ProductionState != "ready") || len(section.FilmingRequirements) == 0 {
 			return nil, fmt.Errorf("section %q requires bounded duration, production state and filming requirements", section.ID)
 		}
 		for _, requirement := range section.FilmingRequirements {
@@ -82,9 +82,13 @@ func projectSections(project Project, selection Selection) ([]TemporalSection, e
 			return nil, err
 		}
 		section.FPS = fps
-		total += section.DurationMs
-		if total > maxDurationMs {
-			return nil, errors.New("storyboard total duration exceeds 60 seconds")
+		frames, err := htmlcapture.AnimationFrameBudget(section.DurationMs, int(fps))
+		if err != nil {
+			return nil, err
+		}
+		totalFrames += frames
+		if totalFrames > htmlcapture.MaxAnimationFrames {
+			return nil, fmt.Errorf("storyboard exceeds aggregate %d-frame budget at 1920x1080; lower FPS or split into separate jobs", htmlcapture.MaxAnimationFrames)
 		}
 		if selection.CaptureStateID == "" || selection.CaptureStateID == section.CaptureStateID {
 			selected = append(selected, section)

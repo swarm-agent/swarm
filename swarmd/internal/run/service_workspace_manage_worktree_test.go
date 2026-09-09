@@ -15,6 +15,7 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -412,6 +413,8 @@ func TestManageWorkspaceActiveUpdateSwitchesMutatesAndRestores(t *testing.T) {
 	}
 }
 
+// Requirement: tool creation must persist a real account-owned local route before
+// restoring the session; fabricated canonicalizer bindings hid catalog-only creation.
 func TestManageWorkspaceActiveCreateSwitchesAndRestores(t *testing.T) {
 	principal := testRunPrincipal()
 	currentPath := t.TempDir()
@@ -423,6 +426,12 @@ func TestManageWorkspaceActiveCreateSwitchesAndRestores(t *testing.T) {
 		t.Fatalf("add safe: %v", err)
 	}
 	sessionStore := pebblestore.NewSessionStore(rawStore)
+	swarmStore := pebblestore.NewSwarmStore(rawStore)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "swarm", Name: "Local", Role: "host"}); err != nil {
+		t.Fatal(err)
+	}
+	topologyStore := pebblestore.NewTopologyStore(rawStore)
+	workspaceSvc.SetLocalBindingService(topologyruntime.NewService(topologyStore, swarmStore))
 	sessionID := "safe-create"
 	if err := sessionStore.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: sessionID, WorkspacePath: currentPath, WorkspaceName: "unsaved", Metadata: map[string]any{}}, principal.UserID, principal.AccountScopeID); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -446,6 +455,10 @@ func TestManageWorkspaceActiveCreateSwitchesAndRestores(t *testing.T) {
 	createdScope, scopeErr := workspaceSvc.ScopeForPathForPrincipal(principal, currentPath)
 	if scopeErr != nil || !createdScope.Matched || createdScope.WorkspaceID == "" {
 		t.Fatalf("created workspace scope = %+v err=%v", createdScope, scopeErr)
+	}
+	bindings, err := topologyStore.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 10)
+	if err != nil || len(bindings) != 1 || bindings[0].SourceWorkspaceID != createdScope.WorkspaceID || bindings[0].DestinationWorkspacePath != currentPath {
+		t.Fatalf("tool-created workspace lacks local binding: %+v err=%v", bindings, err)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(output), &payload); err != nil {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	"swarm/packages/swarmd/internal/htmlcapture"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -19,7 +20,7 @@ const (
 	DefaultDurationMs       int64   = 4000
 	DefaultFPS              float64 = 30
 	DefaultAnimationProfile         = "motion_ui"
-	maxDurationMs           int64   = 60000
+	maxDurationMs           int64   = htmlcapture.MaxAuthoredAnimationDurationMS
 	animationAdapterVersion         = "swarm.animation/v1"
 )
 
@@ -156,6 +157,7 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 	}
 	conversion := Conversion{Plan: pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Summary: "Native Artifact V3 temporal conversion"}}
 	var derivatives []Derivative
+	var derivativeBytes int64
 	for _, section := range sections {
 		fps := section.FPS
 		request := RenderRequest{Project: cloneProject(project), CaptureStateID: section.CaptureStateID, Entrypoint: section.Entrypoint, DurationMs: section.DurationMs, FPS: fps, AnimationAdapter: animationAdapterVersion}
@@ -171,6 +173,10 @@ func (s *Service) Convert(ctx context.Context, accountScopeID string, selection 
 		}
 		if err := validateRenderedDerivatives(rendered.FallbackPNG, rendered.SilentMP4); err != nil {
 			return Conversion{}, err
+		}
+		derivativeBytes += int64(len(rendered.FallbackPNG)) + int64(len(rendered.SilentMP4))
+		if derivativeBytes > htmlcapture.MaxMP4Bytes {
+			return Conversion{}, errors.New("native conversion exceeds aggregate 512 MiB derivative storage budget; reduce complexity or split into separate jobs")
 		}
 		fallback, mp4 := derivative("image/png", rendered.FallbackPNG), derivative("video/mp4", rendered.SilentMP4)
 		sectionSelection := selection
@@ -330,8 +336,11 @@ func normalizedTiming(duration int64, fps float64) (int64, float64, error) {
 	if fps == 0 {
 		fps = DefaultFPS
 	}
-	if duration <= 0 || duration > maxDurationMs || fps <= 0 || fps > 60 || fps != float64(int(fps)) {
+	if duration < htmlcapture.MinAuthoredAnimationDurationMS || duration > maxDurationMs || fps <= 0 || fps > htmlcapture.MaxAnimationFPS || fps != float64(int(fps)) {
 		return 0, 0, errors.New("Artifact V3 video duration/fps are outside supported bounds")
+	}
+	if _, err := htmlcapture.AnimationFrameBudget(duration, int(fps)); err != nil {
+		return 0, 0, err
 	}
 	return duration, fps, nil
 }
