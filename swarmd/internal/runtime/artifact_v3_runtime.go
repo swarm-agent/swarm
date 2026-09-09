@@ -460,7 +460,63 @@ func (a *artifactV3RuntimeAdapter) Build(_ context.Context, request tool.Artifac
 }
 
 func bytesContainsFold(body []byte, text string) bool {
-	return strings.Contains(strings.ToLower(string(body)), strings.ToLower(text))
+	// Most build/Part markers are ASCII. Search without allocating or lowering
+	// the whole document, stopping as soon as a marker is found. Preserve the
+	// previous Unicode lowercasing semantics (not Unicode simple folding) for
+	// non-ASCII inputs, including malformed UTF-8.
+	needle := strings.ToLower(text)
+	if needle == "" {
+		return true
+	}
+	// Bound candidate comparisons for long user-authored selectors.
+	if len(needle) > 64 {
+		return strings.Contains(strings.ToLower(string(body)), needle)
+	}
+	for i := range needle {
+		if needle[i] >= 0x80 {
+			return strings.Contains(strings.ToLower(string(body)), needle)
+		}
+	}
+	// Repeated prefixes can otherwise multiply scan cost by needle length.
+	// Cap speculative candidate work before using the standard matcher.
+	comparisons := 256
+	for i, c := range body {
+		if c >= 0x80 {
+			return strings.Contains(strings.ToLower(string(body)), needle)
+		}
+		if artifactV3LowerASCII(c) != needle[0] {
+			continue
+		}
+		matched := true
+		for j := 1; j < len(needle); j++ {
+			if comparisons == 0 {
+				return strings.Contains(strings.ToLower(string(body)), needle)
+			}
+			comparisons--
+			if i+j >= len(body) {
+				matched = false
+				break
+			}
+			if body[i+j] >= 0x80 {
+				return strings.Contains(strings.ToLower(string(body)), needle)
+			}
+			if artifactV3LowerASCII(body[i+j]) != needle[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func artifactV3LowerASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
 }
 
 func parseArtifactV3Manifest(project map[string][]byte) (pebblestore.ArtifactV3Manifest, []tool.ArtifactV3Diagnostic) {
