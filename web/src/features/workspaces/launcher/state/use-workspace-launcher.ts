@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { isCancelledError, useQueryClient } from '@tanstack/react-query'
 import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId } from '../services/workspace-theme'
 import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { moveWorkspace } from '../mutations/move-workspace'
@@ -351,7 +351,9 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
         }
       }
     } catch (err) {
-      if (isCurrent()) setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
+      // Another shared-cache consumer may supersede this read without changing
+      // this hook's generation. The replacement publishes through the cache.
+      if (isCurrent() && !isCancelledError(err)) setLoadError(err instanceof Error ? err.message : 'Failed to load workspaces')
     } finally {
       if (isCurrent()) {
         setLoading(false)
