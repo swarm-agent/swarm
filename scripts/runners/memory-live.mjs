@@ -46,7 +46,7 @@ try {
   restoreClient();const s=state.sessions[0]
   await c.run(s.id,'This disposable project uses the protocol name Copper Finch and stores its generated reports as UTF-8 JSON. This is a factual project convention for future work. Reply ACK only, without tools.')
   await post({action:'settings',settings:{...state.originalSettings,automation_enabled:true,included_sessions:[s.id],included_workspaces:[state.fixture.workspace.workspace_id],review_before_apply:true}})
-  state.jobID=`${state.id}-learn`;await save()
+  state.jobID=`${state.id}-${randomUUID()}`;await save()
   let job
   try{job=await post({action:'run_now',job_id:state.jobID})}catch(e){const j=(await mem()).jobs?.find(j=>j.id===state.jobID);console.log(JSON.stringify({job_status:j?.status,job_error:j?.error}));throw e}
   assert.equal(job.status,'review',`learning status ${job.status}`);assert(job.proposal?.content);state.proposal=job.proposal
