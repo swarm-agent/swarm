@@ -20,7 +20,7 @@ type systemDirSpec struct {
 }
 
 func EnsureSystemInstallReady() error {
-	if err := validateInstallOwner(); err != nil {
+	if err := prepareInstallOwner(); err != nil {
 		return err
 	}
 	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
@@ -28,6 +28,12 @@ func EnsureSystemInstallReady() error {
 		return err
 	}
 	dirs := systemInstallDirSpecs(roots)
+	if os.Geteuid() == 0 {
+		if err := ensureDirsPrivileged(dirs); err != nil {
+			return err
+		}
+		return ensureTmpfilesConfig(roots)
+	}
 	if err := ensureDirsLocal(dirs); err == nil {
 		return ensureTmpfilesConfig(roots)
 	}
@@ -196,6 +202,15 @@ func ensureDirsPrivileged(dirs []systemDirSpec) error {
 			if err := validateExistingDirectoryTarget(dir.Path, info); err != nil {
 				return err
 			}
+			if dir.Owner && os.Geteuid() == 0 {
+				resolved, err := os.Stat(dir.Path)
+				if err != nil {
+					return err
+				}
+				if err := validateOwnedDirectory(dir.Path, resolved, uid, gid); err != nil {
+					return err
+				}
+			}
 			if dir.Owner && !dirWritable(dir.Path) {
 				return fmt.Errorf("existing directory is not writable; refusing to change its ownership or mode: %s", dir.Path)
 			}
@@ -210,6 +225,15 @@ func ensureDirsPrivileged(dirs []systemDirSpec) error {
 		args = append(args, dir.Path)
 		if err := runPrivilegedCommand(args...); err != nil {
 			return fmt.Errorf("provision system directory %q: %w", dir.Path, err)
+		}
+		if dir.Owner && os.Geteuid() == 0 {
+			info, err := os.Lstat(dir.Path)
+			if err != nil {
+				return fmt.Errorf("verify provisioned directory: %w", err)
+			}
+			if err := validateOwnedDirectory(dir.Path, info, uid, gid); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -239,7 +263,7 @@ func EnsureSystemdServiceUnit() error {
 	if os.Getenv("SWARM_SKIP_SYSTEMD_UNIT") == "1" {
 		return nil
 	}
-	if err := validateInstallOwner(); err != nil {
+	if err := prepareInstallOwner(); err != nil {
 		return err
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
@@ -285,6 +309,7 @@ ConfigurationDirectory=swarmd
 ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
 LogsDirectoryMode=0755
+Environment="HOME=%s"
 Environment=SWARM_SYSTEMD_SCOPE=system
 Environment=SWARM_SYSTEMD_UNIT=swarm.service
 Environment=SWARMD_DATA_DIR=%s
@@ -296,7 +321,7 @@ WorkingDirectory=/
 
 [Install]
 WantedBy=multi-user.target
-`, uid, gid, launcherPath, roots.DataDir, roots.CacheDir, roots.RuntimeDir, roots.ConfigDir, roots.LogsDir)
+`, uid, gid, launcherPath, installOwnerHome(), roots.DataDir, roots.CacheDir, roots.RuntimeDir, roots.ConfigDir, roots.LogsDir)
 }
 
 func installTextFileIfChanged(path, content string, mode os.FileMode, label string) error {
@@ -352,8 +377,12 @@ func validateInstallOwner() error {
 	if err != nil || gidNumber <= 0 {
 		return fmt.Errorf("trusted non-root install group is required (gid %q)", gid)
 	}
-	if _, err := user.LookupId(uid); err != nil {
+	owner, err := user.LookupId(uid)
+	if err != nil {
 		return fmt.Errorf("resolve install owner uid %q: %w", uid, err)
+	}
+	if owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\n\r\"%") {
+		return errors.New("install owner requires its primary group and a safe non-root home")
 	}
 	if _, err := user.LookupGroupId(gid); err != nil {
 		return fmt.Errorf("resolve install group gid %q: %w", gid, err)
@@ -362,13 +391,24 @@ func validateInstallOwner() error {
 }
 
 func installOwnerIDs() (string, string) {
-	uid := strings.TrimSpace(os.Getenv("SUDO_UID"))
-	gid := strings.TrimSpace(os.Getenv("SUDO_GID"))
-	if uid == "" || gid == "" {
-		uid = strconv.Itoa(os.Getuid())
-		gid = strconv.Itoa(os.Getgid())
+	return resolveInstallOwnerIDs(os.Geteuid(), os.Getuid(), os.Getgid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"), user.Lookup)
+}
+
+func resolveInstallOwnerIDs(euid, realUID, realGID int, sudoUID, sudoGID string, lookup func(string) (*user.User, error)) (string, string) {
+	// Unprivileged callers cannot select another principal through environment.
+	if euid != 0 {
+		return strconv.Itoa(realUID), strconv.Itoa(realGID)
 	}
-	return uid, gid
+	if sudoUID != "" || sudoGID != "" {
+		if sudoUID == "" || sudoGID == "" {
+			return "", ""
+		}
+		return sudoUID, sudoGID
+	}
+	if owner, err := lookup(serviceAccountName); err == nil {
+		return owner.Uid, owner.Gid
+	}
+	return "", ""
 }
 
 func runPrivilegedCommand(args ...string) error {
