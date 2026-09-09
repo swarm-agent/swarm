@@ -225,3 +225,52 @@ func TestMemoryJobsConflictProtectionAndIncrementalRead(t *testing.T) {
 		t.Fatal("rule protection failed")
 	}
 }
+
+// Purpose: memorySessionSource must accept the canonical ID-less execution lane
+// of an isolated session without treating arbitrary paths as catalog authority.
+// This store-layer regression reproduces live V3 grants and rejects mismatched,
+// unavailable, foreign and excluded scope with no document mutation.
+func TestMemoryIsolatedSessionSourceScope(t *testing.T) {
+	_, s, _ := memoryJobFixture(t)
+	d, err := s.GetForAccount("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := SessionSnapshot{ID: "allowed", AccountScopeID: "a", UserID: "user", WorktreeEnabled: true, WorktreeRootPath: "/isolated/lane", WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: "w", Path: "/workspace"}, {Kind: WorkspaceGrantWorktree, Path: "/isolated/lane"}}}
+	for _, mode := range []string{"valid", "wrong-path", "disabled", "unavailable", "unknown-kind", "no-catalog", "foreign", "excluded"} {
+		t.Run(mode, func(t *testing.T) {
+			sess := base
+			sess.WorkspaceGrants = append([]WorkspaceGrant(nil), base.WorkspaceGrants...)
+			doc := d
+			switch mode {
+			case "wrong-path":
+				sess.WorkspaceGrants[1].Path = "/unowned"
+			case "disabled":
+				sess.WorktreeEnabled = false
+			case "unavailable":
+				available := false
+				sess.WorkspaceGrants[1].Available = &available
+			case "unknown-kind":
+				sess.WorkspaceGrants[1].Kind = WorkspaceGrantTemporary
+			case "no-catalog":
+				sess.WorkspaceGrants = sess.WorkspaceGrants[1:]
+			case "foreign":
+				sess.AccountScopeID = "foreign"
+			case "excluded":
+				doc.Settings.ExcludedWorkspaces = []string{"w"}
+			}
+			src, err := s.memorySessionSource(doc, sess, "user")
+			if mode == "valid" {
+				if err != nil || src.WorkspaceID != "w" || src.SessionID != "allowed" {
+					t.Fatal(src, err)
+				}
+			} else if err == nil {
+				t.Fatal("unauthorized source accepted")
+			}
+			after, err := s.GetForAccount("a")
+			if err != nil || !reflect.DeepEqual(d, after) {
+				t.Fatal("source validation mutated memory", err)
+			}
+		})
+	}
+}

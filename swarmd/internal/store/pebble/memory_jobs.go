@@ -115,6 +115,12 @@ func (s *MemoryStore) memorySessionSource(d MemoryDocument, sess SessionSnapshot
 	included := containsMemory(d.Settings.IncludedSessions, sess.ID)
 	for _, g := range sess.WorkspaceGrants {
 		if g.WorkspaceID == "" {
+			// The canonical isolated execution lane is not a catalog workspace.
+			// It supplies no source scope; catalog grants below still authorize
+			// every source and enforce exclusions and generation revocation.
+			if g.Kind == WorkspaceGrantWorktree && sess.WorktreeEnabled && g.Path != "" && g.Path == sess.WorktreeRootPath && (g.Available == nil || *g.Available) {
+				continue
+			}
 			return MemorySource{}, ErrMemoryPolicy
 		}
 		var workspace WorkspaceEntry

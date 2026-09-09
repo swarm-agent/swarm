@@ -37,8 +37,10 @@ export class AttachClient {
     const mutationRoutes = ['/v1/workspace/folders/create', '/v1/workspace/repository/setup', '/v1/workspace/add', '/v3/sessions', '/v3/sync/hydrate']
     const ownedRoute = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/(repositories\?limit=20(?:&cursor=[a-zA-Z0-9_%.-]+)?|permissions\?status=pending&limit=20|messages|run\/stop)$/.test(route)
     const permissionResolve = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/permissions\/[a-zA-Z0-9_-]+\/resolve$/.test(route)
+    const memoryRoute = route === '/v1/memory' || method === 'GET' && /^\/v1\/memory\?session_id=[a-zA-Z0-9_-]*$/.test(route)
+    const memoryOperation = this.memoryTrial === true && memoryRoute && (method === 'GET' || method === 'POST' && ['remember', 'forget', 'settings', 'restore', 'run_now', 'cancel', 'approve'].includes(body?.action))
     const statusRoute = route.startsWith('/v1/workspace/git/status?session_id=')
-    if (!(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&
+    if (!memoryOperation && !(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&
         !(method === 'POST' && (permissionResolve || mutationRoutes.includes(route) || ownedRoute && (route.endsWith('/messages') || route.endsWith('/run/stop'))))) throw new Error('unreviewed attach operation')
     if (permissionResolve && (body?.action !== 'allow_once' || Object.keys(body).some(key => !['action', 'reason'].includes(key)))) throw new Error('only exact allow-once permission resolution is permitted')
     if (route === '/v1/workspace/add' && body?.make_current !== false) throw new Error('attach cannot change shared selection')
