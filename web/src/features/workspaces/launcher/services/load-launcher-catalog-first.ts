@@ -1,3 +1,4 @@
+import { isCancelledError } from '@tanstack/react-query'
 import type { WorkspaceOverviewResponse } from '../types/workspace-overview'
 import type { WorkspaceDiscoverEntry } from '../types/workspace'
 
@@ -21,7 +22,9 @@ export async function loadLauncherCatalogFirst(load: LauncherCatalogLoad): Promi
   setTimeout(() => {
     if (!load.isCurrent()) return
     const report = (error: unknown) => {
-      if (load.isCurrent()) load.reportBackgroundError(error)
+      // Shared catalog refreshes deliberately retire stale enrichment queries.
+      // Their typed cancellation is control flow, not a failed workspace action.
+      if (load.isCurrent() && !isCancelledError(error)) load.reportBackgroundError(error)
     }
     void load.loadDetails().then((overview) => {
       if (load.isCurrent()) load.publishDetails(overview)

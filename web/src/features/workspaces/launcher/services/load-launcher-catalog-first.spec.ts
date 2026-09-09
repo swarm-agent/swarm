@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { QueryClient } from '@tanstack/react-query'
 import { loadLauncherCatalogFirst } from './load-launcher-catalog-first'
 import type { WorkspaceOverviewResponse } from '../types/workspace-overview'
 import type { WorkspaceDiscoverEntry } from '../types/workspace'
@@ -90,4 +91,49 @@ test('unmount before deferred startup prevents background requests', { timeout: 
   f.cancel()
   await nextTask()
   assert.deepEqual(f.events, ['catalog'])
+})
+
+// Requirement: shared QueryClient cancellation must not surface as a launcher
+// action failure while this load is still current. Exercise the real cancellation
+// boundary (including AbortSignal) rather than matching an error message; genuine
+// failures with the same text must remain visible. No network or React is needed.
+test('shared-cache cancellation aborts stale details without a background error', { timeout: 1000 }, async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+  const f = fixture()
+  const key = ['workspace-overview', { roots: [], sessionLimit: 25 }] as const
+  let signal: AbortSignal | undefined
+  f.load.loadDetails = () => {
+    f.events.push('details-start')
+    return client.fetchQuery({
+      queryKey: key,
+      queryFn: (context) => { signal = context.signal; return f.details.promise },
+    })
+  }
+  try {
+    await loadLauncherCatalogFirst(f.load)
+    await nextTask()
+    assert.ok(signal)
+    await client.cancelQueries({ queryKey: ['workspace-overview'] })
+    assert.equal(signal.aborted, true)
+    client.setQueryData(key, catalog)
+    f.details.resolve({ ...catalog, ok: false })
+    f.discovery.resolve([])
+    await nextTask()
+    assert.deepEqual(f.errors, [])
+    assert.deepEqual(f.events, ['catalog', 'details-start', 'discovery-start', 'discovery'])
+    assert.deepEqual(client.getQueryData(key), catalog)
+  } finally {
+    client.clear()
+  }
+})
+
+test('an ordinary failure named CancelledError is not suppressed', { timeout: 1000 }, async () => {
+  const f = fixture()
+  await loadLauncherCatalogFirst(f.load)
+  await nextTask()
+  const error = new Error('CancelledError')
+  f.details.reject(error)
+  f.discovery.resolve([])
+  await nextTask()
+  assert.deepEqual(f.errors, [error])
 })
