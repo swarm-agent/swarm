@@ -24,18 +24,18 @@ func TestInstallerProvisionsMissingRuntimePrerequisitesAndSkipsPresentOnes(t *te
 		{
 			name:       "git missing",
 			missing:    []string{"git"},
-			wantOutput: []string{"Installing missing mandatory Swarm runtime prerequisites: git", "Swarm install plan", "downloading release and checksum..."},
+			wantOutput: []string{"Installing missing mandatory Swarm runtime prerequisites: git", "Swarm install plan", "downloading release archive"},
 			wantCalls:  []string{"update", "install -y --no-install-recommends git"},
 		},
 		{
 			name:       "git and bash missing",
 			missing:    []string{"git", "bash"},
-			wantOutput: []string{"Installing missing mandatory Swarm runtime prerequisites: git, bash", "Swarm install plan", "downloading release and checksum..."},
+			wantOutput: []string{"Installing missing mandatory Swarm runtime prerequisites: git, bash", "Swarm install plan", "downloading release archive"},
 			wantCalls:  []string{"update", "install -y --no-install-recommends git bash"},
 		},
 		{
 			name:       "already installed",
-			wantOutput: []string{"Swarm install plan", "downloading release and checksum..."},
+			wantOutput: []string{"Swarm install plan", "downloading release archive"},
 			noCalls:    true,
 		},
 	}
@@ -181,7 +181,7 @@ esac
 			if !strings.Contains(text, "No Swarm files, service definitions, or state paths were changed.") || !strings.Contains(text, "Swarm installation has not started.") {
 				t.Fatalf("output %q does not explain the pre-mutation failure", text)
 			}
-			if strings.Contains(text, "release download must not run") || strings.Contains(text, "downloading release and checksum...") || strings.Contains(text, "Swarm install plan") {
+			if strings.Contains(text, "release download must not run") || strings.Contains(text, "downloading release archive") || strings.Contains(text, "Swarm install plan") {
 				t.Fatalf("installer reached planning or release download after prerequisite failure: %q", text)
 			}
 		})
@@ -227,7 +227,7 @@ esac
 	if !strings.Contains(text, "Install the missing commands, then rerun install.sh.") || !strings.Contains(text, "No Swarm files, service definitions, or state paths were changed.") || !strings.Contains(text, "Swarm installation has not started.") {
 		t.Fatalf("output %q does not provide fail-closed remediation", text)
 	}
-	if strings.Contains(text, "release download must not run") || strings.Contains(text, "downloading release and checksum...") || strings.Contains(text, "Swarm install plan") {
+	if strings.Contains(text, "release download must not run") || strings.Contains(text, "downloading release archive") || strings.Contains(text, "Swarm install plan") {
 		t.Fatalf("installer reached planning or release download without prerequisite authority: %q", text)
 	}
 }
