@@ -35,10 +35,12 @@ ARCHIVE=""
 CHECKSUM=""
 DISTRO=""
 INSTALL_IDENTITY=sudo
+ROOT_PROOF_SCRIPT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --archive) [[ $# -ge 2 ]] || fail "--archive requires a path"; ARCHIVE="$2"; shift 2 ;;
     --checksum) [[ $# -ge 2 ]] || fail "--checksum requires a path"; CHECKSUM="$2"; shift 2 ;;
+    --root-proof-script) [[ $# -ge 2 ]] || fail "--root-proof-script requires a path"; ROOT_PROOF_SCRIPT="$2"; shift 2 ;;
     --identity) [[ $# -ge 2 ]] || fail "--identity requires root or sudo"; INSTALL_IDENTITY="$2"; shift 2 ;;
     --distro) [[ $# -ge 2 ]] || fail "--distro requires a value"; DISTRO="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -57,6 +59,9 @@ case "${DISTRO}" in
   *) fail "--distro must be ubuntu, arch, or omarchy" ;;
 esac
 [[ "$INSTALL_IDENTITY" == root || "$INSTALL_IDENTITY" == sudo ]] || fail "--identity must be root or sudo"
+if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
+  [[ "$INSTALL_IDENTITY" == root && -f "$ROOT_PROOF_SCRIPT" && ! -L "$ROOT_PROOF_SCRIPT" ]] || fail "root proof requires a regular script and root identity"
+fi
 ARCHIVE="$(cd -- "$(dirname -- "${ARCHIVE}")" && pwd)/$(basename -- "${ARCHIVE}")"
 CHECKSUM="$(cd -- "$(dirname -- "${CHECKSUM}")" && pwd)/$(basename -- "${CHECKSUM}")"
 archive_name="$(basename -- "${ARCHIVE}")"
@@ -106,6 +111,10 @@ if [[ "${DISTRO}" == ubuntu ]]; then
   cp -- "$(dirname -- "${BASH_SOURCE[0]}")/install-distro-ubuntu-bootstrap.sh" "${build_root}/bootstrap-ubuntu.sh"
   printf 'COPY bootstrap-ubuntu.sh /bootstrap-ubuntu.sh\n' >>"${build_root}/Containerfile"
 fi
+if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
+  [[ "$DISTRO" == ubuntu ]] || fail "authenticated root proof currently requires Ubuntu"
+  BOOTSTRAP+=' && apt-get install -y --no-install-recommends python3'
+fi
 printf 'RUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/usr/lib/systemd/systemd"]\n' "${BOOTSTRAP}" >>"${build_root}/Containerfile"
 "${RUNTIME}" build --pull -t "${test_image}" -f "${build_root}/Containerfile" "${build_root}"
 
@@ -142,6 +151,19 @@ done
 
 if [[ "$INSTALL_IDENTITY" == root ]]; then
   "${RUNTIME}" exec -i "${container_name}" bash -se -- "$archive_name" "$checksum_name" "$expected_digest" < "$(dirname -- "${BASH_SOURCE[0]}")/test-install-root-scenario.sh"
+  if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
+    "${RUNTIME}" cp "$ROOT_PROOF_SCRIPT" "${container_name}:/run/root-proof.py"
+    # The credential is stdin only, never a runtime argument or image layer.
+    timeout --signal=TERM --kill-after=10s 540s "${RUNTIME}" exec -i "${container_name}" python3 /run/root-proof.py
+    "${RUNTIME}" exec -i "${container_name}" bash -se <<'VERIFY'
+set -euo pipefail
+uid=$(id -u swarm) gid=$(id -g swarm)
+[[ $(cat /var/lib/swarm/root-install-workspace/agent-proof) == "$uid:$gid" ]]
+[[ $(stat -c %u:%g /var/lib/swarm/root-install-workspace/agent-proof) == "$uid:$gid" ]]
+systemctl is-active --quiet swarm.service
+VERIFY
+    printf 'root_agent_proof=passed\n'
+  fi
   printf 'distro=%s\nidentity=root\ncandidate_sha256=%s\nroot_install=passed\n' "$DISTRO" "$expected_digest"
   exit 0
 fi

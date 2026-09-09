@@ -518,7 +518,11 @@ kernel records (two tests passed); this does not prove live process behavior. `b
 before signing. This is not yet executed distro evidence and does not prove
 authenticated onboarding or provider-backed agent command execution. Required pre-merge
 candidate evidence remains a separate integration gap; do not infer PR readiness
-from this release-workflow step.
+from this release-workflow step. An optional `--root-proof-script` supplies an authenticated
+Python validation client after install/reinstall. Its credential arrives only on stdin;
+the runner verifies the resulting command-proof file against the actual service owner's
+numeric identity and ownership. This hook is not itself evidence of a successful agent
+run and remains pending executed validation.
 
 ## 14. Revision ledger and update template
 
