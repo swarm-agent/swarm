@@ -3,9 +3,9 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +19,7 @@ import (
 // siblings when landscape_video merely asserts the native default viewport.
 // Real Git/Pebble is the narrowest layer proving IDs, durable lineage and source
 // immutability; synthetic evidence intentionally does not prove browser/provider
-// execution. Foreign/stale/policy-changing requests must allocate nothing.
+// execution. Foreign/unknown-source/policy-changing requests must allocate nothing.
 func TestArtifactV3DesignerDefaultOutputSiblings(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -72,7 +72,7 @@ func TestArtifactV3DesignerDefaultOutputSiblings(t *testing.T) {
 		return r
 	}
 	before := snapshot()
-	for _, kind := range []string{"portrait", "forged-output", "profile", "owner", "stale"} {
+	for _, kind := range []string{"portrait", "forged-output", "profile", "owner", "unknown-source"} {
 		bad := request
 		switch kind {
 		case "portrait":
@@ -85,8 +85,8 @@ func TestArtifactV3DesignerDefaultOutputSiblings(t *testing.T) {
 			bad.AnimationProfile, _ = artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: "motion_ui"})
 		case "owner":
 			bad.OwnerSessionID = "foreign"
-		case "stale":
-			bad.ProjectionSeq++
+		case "unknown-source":
+			bad.BaseCommitOID = strings.Repeat("f", 40)
 		}
 		if _, e := adapter.PrepareArtifactV3Turn(ctx, bad); e == nil {
 			t.Fatalf("accepted %s", kind)
@@ -117,11 +117,11 @@ func TestArtifactV3DesignerDefaultOutputSiblings(t *testing.T) {
 		t.Fatalf("source/sibling drift: %+v", after)
 	}
 	request.TaskCallID = "unrelated"
-	if _, e := adapter.PrepareArtifactV3Turn(ctx, request); !errors.Is(e, pebblestore.ErrArtifactV3Conflict) {
-		t.Fatalf("stale unrelated turn: %v", e)
+	if g, e := adapter.PrepareArtifactV3Turn(ctx, request); e != nil || g.BaseCommitOID != request.BaseCommitOID {
+		t.Fatalf("immutable source after draft events: %+v %v", g, e)
 	}
-	if !reflect.DeepEqual(after, snapshot()) {
-		t.Fatal("stale turn changed siblings")
+	if snapshot().HeadCommitOID != after.HeadCommitOID {
+		t.Fatal("new turn selected itself")
 	}
 	revision, ok, err := sessions.Store().GetArtifactV3Revision("account", "user", request.ArtifactID, request.BaseCommitOID)
 	if err != nil || !ok || revision.CommitOID != request.BaseCommitOID {

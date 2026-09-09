@@ -148,6 +148,7 @@ export interface DesktopV3ArtifactSelectionReference {
   artifact_id?: string
   revision_ref?: string
   target_part_ids?: string[]
+  revision_intent?: 'focused_parts' | 'whole_project'
   label?: string
   description?: string
   pending_request?: string

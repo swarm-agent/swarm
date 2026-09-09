@@ -27,6 +27,7 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     const candidate = revision('b'.repeat(40), 'new-part')
     let head = base
     let ready = false
+    let unavailable = false
     let selected = false
     let draftError = true
     const draftDiagnostic = { stage: 'validation', code: 'draft_validation_failed', message: 'The artifact needs a preview or validation repair.' }
@@ -44,9 +45,9 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
         payload = { ok: true, head }
       } else if (path.endsWith('/revisions')) payload = { ok: true, revisions: [base], next_cursor: 'more' }
       else if (path.endsWith('/artifacts-v3/artifact')) payload = { ok: true, artifact: {
-        id: 'artifact', owner_session_id: 'parent', label: 'Fixture', revision: 9, head, revisions: [head], parts: head.manifest.parts,
+        id: 'artifact', owner_session_id: 'parent', label: 'Fixture', revision: 9, head, revisions: unavailable ? [base] : [head], parts: head.manifest.parts,
         current_draft: { status: draftError ? 'error' : 'ready', sequence: 3, diagnostics: draftError ? [draftDiagnostic] : [], history: [{ ready: false, diagnostics: [draftDiagnostic] }] },
-        turns: ready ? [{ turn_id: 'new', revision: 12, created_at: 20, status: selected ? 'selected' : 'awaiting_selection', selected_candidate_id: selected ? 'option' : '', target_part_ids: ['orbit'], candidates: [{ candidate_id: 'option', status: 'ready', revision: candidate }] }] : [],
+        turns: ready && !unavailable ? [{ turn_id: 'new', revision: 12, created_at: 20, status: selected ? 'selected' : 'awaiting_selection', selected_candidate_id: selected ? 'option' : '', target_part_ids: ['orbit'], candidates: [{ candidate_id: 'one', status: 'ready', revision: base }, { candidate_id: 'two', status: 'failed' }, { candidate_id: 'option', status: 'ready', revision: candidate }] }] : [],
       } }
       else return route.abort('blockedbyclient')
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify(payload) })
@@ -83,11 +84,35 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     await page.keyboard.press('Enter')
     await page.locator('[data-artifact-v3-part="new-part"]').waitFor()
     assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').count(), 0)
+    assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
+    await page.locator('[data-artifact-v3-iterate]').click()
+    assert.equal(await page.evaluate(() => (window as any).stagedSelection.revision_ref), candidate.revision_ref)
+    await page.locator('[data-artifact-v3-part="new-part"]').click()
+    await page.getByRole('button', { name: 'Use as style/example reference' }).click()
+    const reference = await page.evaluate(() => (window as any).stagedSelection)
+    assert.equal(reference.action, 'select')
+    assert.equal(reference.revision_ref, candidate.revision_ref)
+    assert.deepEqual(reference.target_part_ids, ['new-part'])
+    head = { ...base, ...revision('c'.repeat(40), 'concurrent-head-part') }
+    await page.evaluate(() => (window as any).refreshArtifacts())
+    assert.equal(await page.locator('[data-artifact-v3-part="new-part"]').getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.locator('[data-artifact-v3-part="concurrent-head-part"]').count(), 0)
+    unavailable = true
+    await page.evaluate(() => (window as any).refreshArtifacts())
+    await page.getByRole('alert').filter({ hasText: 'exact viewed revision' }).waitFor()
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)
+    assert.equal(await page.evaluate(() => (window as any).stagedSelection.revision_ref), candidate.revision_ref)
+    assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').count(), 0)
+    unavailable = false; head = base
+    await page.evaluate(() => (window as any).refreshArtifacts())
+    assert.equal(await page.locator('[data-artifact-v3-part="new-part"]').getAttribute('aria-pressed'), 'true')
+    await page.locator('[data-artifact-v3-part="new-part"]').click()
     assert.equal(selections.length, 0, 'preview must leave head unchanged')
-    await page.getByRole('button', { name: 'Select head' }).click()
+    await page.locator('[data-artifact-v3-candidate="option"]').getByRole('button', { name: 'Select head' }).focus()
+    await page.keyboard.press('Enter')
     // Selection completes only after the authoritative refresh clears busy;
     // the same button label is already visible while the request is pending.
+    await page.waitForFunction(() => document.querySelector('[data-artifact-v3-candidate="option"] > button')?.textContent?.includes('Selected')).catch(async (error) => { throw new Error(`${error}\n${await page.locator('[role="alert"]').allTextContents()}`) })
     await page.locator('[data-artifact-v3-iterate]:enabled').waitFor()
     assert.equal(await page.locator('[data-artifact-v3-iterate]').isEnabled(), true)
     assert.equal(await page.locator('[data-artifact-v3-diagnostics]').count(), 0, 'old revision diagnostics clear after successful selection')
