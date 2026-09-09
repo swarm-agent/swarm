@@ -44,6 +44,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Made root-only Linux installation automatically provision a non-root Swarm service identity with a usable home and workspace, while continuing to reject workspaces under the root home.
+- Added bounded download attempts and visible installer progress, plus authenticated fresh-install command assertions that distinguish explicit root-home rejection from unrelated failures.
 - Preserved native artifact scene identity and source lineage across repeated remix rounds, serialized sibling publication, and restored retained Designer draft recovery with clearer preview diagnostics.
 - Fixed animation capture cancellation, deadline reporting, scene seek acknowledgements, and shared compositor ownership during concurrent captures.
 - Synchronized workspace catalog changes through durable realtime updates, stabilized session workspace headers, and suppressed errors from intentional overview cancellation.

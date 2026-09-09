@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/test-install-distro.sh --archive <archive.tar.gz> --checksum <archive.tar.gz.sha256> --distro <ubuntu|arch|omarchy>
+  ./scripts/test-install-distro.sh --archive <archive.tar.gz> --checksum <archive.tar.gz.sha256> --distro <ubuntu|arch|omarchy> [--identity root|sudo]
 
 Download one checksum-bound release archive inside a fresh privileged distro
 environment. The runner installs only the downloader, certificate, sudo, and
@@ -12,7 +12,9 @@ systemd bootstrap needed to invoke the public installer, creates a non-root
 service owner with passwordless sudo, proves the mandatory Git prerequisite is
 initially missing, curls the exact candidate into that user's fresh home,
 unsets TMPDIR, runs the archive's install.sh in systemd service mode, and
-verifies prerequisite provisioning plus full readiness.
+verifies prerequisite provisioning plus full readiness. --identity root instead
+runs the exact mounted candidate as a fresh root shell with no pre-created owner,
+checks the running service identity and workspace access, then reinstalls it.
 
 Environment:
   SWARM_INSTALL_DISTRO_RUNTIME  Container runtime command (default: podman, then docker)
@@ -32,10 +34,14 @@ fail() {
 ARCHIVE=""
 CHECKSUM=""
 DISTRO=""
+INSTALL_IDENTITY=sudo
+ROOT_PROOF_SCRIPT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --archive) [[ $# -ge 2 ]] || fail "--archive requires a path"; ARCHIVE="$2"; shift 2 ;;
     --checksum) [[ $# -ge 2 ]] || fail "--checksum requires a path"; CHECKSUM="$2"; shift 2 ;;
+    --root-proof-script) [[ $# -ge 2 ]] || fail "--root-proof-script requires a path"; ROOT_PROOF_SCRIPT="$2"; shift 2 ;;
+    --identity) [[ $# -ge 2 ]] || fail "--identity requires root or sudo"; INSTALL_IDENTITY="$2"; shift 2 ;;
     --distro) [[ $# -ge 2 ]] || fail "--distro requires a value"; DISTRO="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "unsupported argument: $1" ;;
@@ -52,6 +58,10 @@ case "${DISTRO}" in
   omarchy) fail "Omarchy requires the official-ISO VM runner: scripts/test-install-omarchy-vm.sh" ;;
   *) fail "--distro must be ubuntu, arch, or omarchy" ;;
 esac
+[[ "$INSTALL_IDENTITY" == root || "$INSTALL_IDENTITY" == sudo ]] || fail "--identity must be root or sudo"
+if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
+  [[ "$INSTALL_IDENTITY" == root && -f "$ROOT_PROOF_SCRIPT" && ! -L "$ROOT_PROOF_SCRIPT" ]] || fail "root proof requires a regular script and root identity"
+fi
 ARCHIVE="$(cd -- "$(dirname -- "${ARCHIVE}")" && pwd)/$(basename -- "${ARCHIVE}")"
 CHECKSUM="$(cd -- "$(dirname -- "${CHECKSUM}")" && pwd)/$(basename -- "${CHECKSUM}")"
 archive_name="$(basename -- "${ARCHIVE}")"
@@ -67,6 +77,10 @@ if [[ -z "${RUNTIME}" ]]; then
   fi
 fi
 command -v "${RUNTIME}" >/dev/null 2>&1 || fail "container runtime not found: ${RUNTIME}"
+if [[ "$INSTALL_IDENTITY" == root ]]; then
+  [[ "$RUNTIME" == podman ]] || fail "root scenario requires rootless podman"
+  [[ $(podman info --format '{{.Host.Security.Rootless}}') == true ]] || fail "root scenario refuses host-root containers"
+fi
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to serve the exact candidate over loopback HTTP"
 
 case "${DISTRO}" in
@@ -97,16 +111,26 @@ if [[ "${DISTRO}" == ubuntu ]]; then
   cp -- "$(dirname -- "${BASH_SOURCE[0]}")/install-distro-ubuntu-bootstrap.sh" "${build_root}/bootstrap-ubuntu.sh"
   printf 'COPY bootstrap-ubuntu.sh /bootstrap-ubuntu.sh\n' >>"${build_root}/Containerfile"
 fi
+if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
+  [[ "$DISTRO" == ubuntu ]] || fail "authenticated root proof currently requires Ubuntu"
+  BOOTSTRAP+=' && apt-get install -y --no-install-recommends python3'
+fi
 printf 'RUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/usr/lib/systemd/systemd"]\n' "${BOOTSTRAP}" >>"${build_root}/Containerfile"
 "${RUNTIME}" build --pull -t "${test_image}" -f "${build_root}/Containerfile" "${build_root}"
 
-run_args=(run --rm --name "${container_name}" --privileged)
-if [[ "${RUNTIME}" == docker ]]; then
-  run_args+=(--cgroupns=host --add-host=host.containers.internal:host-gateway)
+run_args=(run --rm --name "${container_name}" --privileged --cpus=2 --memory=3g --pids-limit=512)
+if [[ "$INSTALL_IDENTITY" == root ]]; then
+  # Candidate installer code must never receive the host cgroup tree or host
+  # root privileges. This scenario requires rootless Podman and a private cgroup.
+  run_args+=(--cgroupns=private --systemd=always)
+else
+  run_args+=(-v /sys/fs/cgroup:/sys/fs/cgroup:rw)
+  if [[ "${RUNTIME}" == docker ]]; then
+    run_args+=(--cgroupns=host --add-host=host.containers.internal:host-gateway)
+  fi
 fi
 "${RUNTIME}" "${run_args[@]}" \
   --tmpfs /run --tmpfs /run/lock \
-  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
   -v "${ARCHIVE}:/candidate-source/${archive_name}:ro" \
   -v "${CHECKSUM}:/candidate-source/${checksum_name}:ro" \
   "${test_image}" >/dev/null &
@@ -124,6 +148,25 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 [[ "${systemd_ready}" == "true" ]] || fail "systemd did not become ready in the ${DISTRO} test container"
+
+if [[ "$INSTALL_IDENTITY" == root ]]; then
+  "${RUNTIME}" exec -i "${container_name}" bash -se -- "$archive_name" "$checksum_name" "$expected_digest" < "$(dirname -- "${BASH_SOURCE[0]}")/test-install-root-scenario.sh"
+  if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
+    "${RUNTIME}" cp "$ROOT_PROOF_SCRIPT" "${container_name}:/run/root-proof.py"
+    # The credential is stdin only, never a runtime argument or image layer.
+    timeout --signal=TERM --kill-after=10s 540s "${RUNTIME}" exec -i "${container_name}" python3 /run/root-proof.py
+    "${RUNTIME}" exec -i "${container_name}" bash -se <<'VERIFY'
+set -euo pipefail
+uid=$(id -u swarm) gid=$(id -g swarm)
+[[ $(cat /var/lib/swarm/root-install-workspace/agent-proof) == "$uid:$gid" ]]
+[[ $(stat -c %u:%g /var/lib/swarm/root-install-workspace/agent-proof) == "$uid:$gid" ]]
+systemctl is-active --quiet swarm.service
+VERIFY
+    printf 'root_agent_proof=passed\n'
+  fi
+  printf 'distro=%s\nidentity=root\ncandidate_sha256=%s\nroot_install=passed\n' "$DISTRO" "$expected_digest"
+  exit 0
+fi
 
 candidate_host="$("${RUNTIME}" exec "${container_name}" getent ahostsv4 host.containers.internal | awk 'NR == 1 { print $1 }')"
 [[ "${candidate_host}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "could not resolve the container-to-host candidate address"

@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,6 +188,7 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 	t.Setenv("SUDO_UID", "1234")
 	t.Setenv("SUDO_GID", "5678")
 
+	uid, gid := installOwnerIDs()
 	unit := renderSystemdServiceUnit(storagecontract.Roots{
 		DataDir:    dataRoot,
 		CacheDir:   cacheRoot,
@@ -205,8 +207,9 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 		"ConfigurationDirectoryMode=0700",
 		"LogsDirectory=swarmd",
 		"LogsDirectoryMode=0755",
-		"User=1234",
-		"Group=5678",
+		fmt.Sprintf("User=%s", uid),
+		fmt.Sprintf("Group=%s", gid),
+		"Environment=\"HOME=" + installOwnerHome() + "\"",
 		"Environment=SWARM_SYSTEMD_SCOPE=system",
 		"Environment=SWARM_SYSTEMD_UNIT=swarm.service",
 		"Environment=SWARMD_DATA_DIR=" + dataRoot,
@@ -223,7 +226,7 @@ func TestRenderSystemdServiceUnitIncludesStorageDirectives(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
-		"$HOME", "XDG_", "/root", "/home/",
+		"$HOME", "XDG_", "HOME=/root",
 		"Delegate=", "PrivateTmp=", "TemporaryFileSystem=",
 		"MemoryMax=", "TasksMax=", "CPUQuota=",
 		"SWARMD_BASH_CONTAINMENT_POLICY", "SWARMD_COMMAND_TEMP_ROOT",

@@ -104,6 +104,13 @@ jobs:
           SWARM_INSTALL_DISTRO_RUNTIME: docker
         run: ./scripts/test-install-distro.sh --archive "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" --checksum "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --distro ubuntu
 
+      - name: Verify fresh root-server installation and repeat install
+        timeout-minutes: 10
+        env:
+          TMPDIR: ${{ runner.temp }}
+          SWARM_INSTALL_DISTRO_RUNTIME: podman
+        run: ./scripts/test-install-distro.sh --archive "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" --checksum "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --distro ubuntu --identity root
+
       - name: Provision mandatory prerequisites and install on Arch
         env:
           TMPDIR: ${{ runner.temp }}

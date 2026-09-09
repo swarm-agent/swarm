@@ -163,26 +163,6 @@ print_ok() {
   printf 'ok\n'
 }
 
-current_owner_uid() {
-  uid="${SUDO_UID:-$(id -u)}"
-  case "$uid" in ''|*[!0-9]*|0) echo "Swarm requires a trusted non-root service owner; refusing uid=$uid" >&2; return 1 ;; esac
-  if command -v getent >/dev/null 2>&1 && ! getent passwd "$uid" >/dev/null; then
-    echo "unknown service uid: $uid" >&2
-    return 1
-  fi
-  printf '%s\n' "$uid"
-}
-
-current_owner_gid() {
-  gid="${SUDO_GID:-$(id -g)}"
-  case "$gid" in ''|*[!0-9]*|0) echo "Swarm requires a trusted non-root service group; refusing gid=$gid" >&2; return 1 ;; esac
-  if command -v getent >/dev/null 2>&1 && ! getent group "$gid" >/dev/null; then
-    echo "unknown service gid: $gid" >&2
-    return 1
-  fi
-  printf '%s\n' "$gid"
-}
-
 require_safe_target() {
   kind="$1"
   path="$2"
@@ -307,56 +287,6 @@ ensure_runtime_prerequisites() {
   done
 }
 
-dir_writable() {
-  path="$1"
-  probe="$(mktemp "$path/.swarm-write-check.XXXXXX" 2>/dev/null)" || return 1
-  rm -f "$probe"
-}
-
-provision_owned_dir() {
-  mode="$1"
-  path="$2"
-  require_safe_target directory "$path" || return 1
-  if [ -d "$path" ]; then
-    if dir_writable "$path"; then
-      return 0
-    fi
-    echo "existing directory is not writable; refusing to change its ownership or mode: $path" >&2
-    return 1
-  fi
-  if mkdir -p "$path" 2>/dev/null && chmod "$mode" "$path" 2>/dev/null && dir_writable "$path"; then
-    return 0
-  fi
-  run_privileged install -d -m "$mode" -o "$(current_owner_uid)" -g "$(current_owner_gid)" "$path"
-}
-
-provision_system_dir() {
-  mode="$1"
-  path="$2"
-  require_safe_target directory "$path" || return 1
-  if mkdir -p "$path" 2>/dev/null && [ -d "$path" ]; then
-    return 0
-  fi
-  run_privileged install -d -m "$mode" "$path"
-}
-
-provision_tmpfiles_config() {
-  require_safe_target file "/etc/tmpfiles.d/swarmd.conf" || return 1
-  uid="$(current_owner_uid)"
-  gid="$(current_owner_gid)"
-  tmp_path="$(mktemp -t swarmd-tmpfiles.XXXXXX)"
-  cat >"$tmp_path" <<EOF
-d /run/swarmd 0700 ${uid} ${gid} -
-d /run/swarmd/dev 0700 ${uid} ${gid} -
-d /run/swarmd/ports 0700 ${uid} ${gid} -
-EOF
-  if ! run_privileged install -m 0644 "$tmp_path" "/etc"/tmpfiles.d/swarmd.conf; then
-    rm -f "$tmp_path"
-    return 1
-  fi
-  rm -f "$tmp_path"
-}
-
 service_plan_label() {
   case "$SERVICE_MODE" in
     systemd)
@@ -384,6 +314,8 @@ Swarm install plan
   Daemon data: /var/lib/swarmd
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
+  Direct root installs: locked non-root swarm account with home /var/lib/swarm.
+  Sudo/non-root installs: retain the invoking user's identity and home.
   Service: $(service_plan_label)
   Mandatory runtime prerequisites: Git and Bash; missing packages are installed with a detected supported package manager before Swarm paths are changed, and existing installations are left unchanged.
 
@@ -481,38 +413,6 @@ enable_start_service() {
     return 1
   fi
   print_ok
-}
-
-provision_system_paths() {
-  provision_system_dir 0755 /usr/local/bin
-  provision_system_dir 0755 /usr/local/share
-  if [ "$SERVICE_MODE" = "systemd" ]; then
-    provision_system_dir 0755 "/etc"/tmpfiles.d
-    provision_system_dir 0755 "/etc"/systemd/system
-  fi
-
-  # Provision every owned parent before its children. A privileged `install -d`
-  # otherwise creates a missing intermediate parent as root before applying the
-  # requested owner to only the leaf, and the next safety check correctly
-  # refuses that root-owned parent.
-  provision_owned_dir 0755 /usr/local/share/swarm
-  provision_owned_dir 0755 /usr/local/share/swarm/bin
-  provision_owned_dir 0755 /usr/local/share/swarm/libexec
-  provision_owned_dir 0755 /usr/local/share/swarm/share
-  provision_owned_dir 0755 /usr/local/share/swarm/lib
-
-  provision_owned_dir 0700 "/etc"/swarmd
-  provision_owned_dir 0700 /var/lib/swarmd
-  provision_owned_dir 0700 /var/lib/swarmd/dev
-  provision_owned_dir 0700 /var/cache/swarmd
-  provision_owned_dir 0700 /run/swarmd
-  provision_owned_dir 0700 /run/swarmd/dev
-  provision_owned_dir 0700 /run/swarmd/ports
-  provision_owned_dir 0755 /var/log/swarmd
-  provision_owned_dir 0755 /var/log/swarmd/dev
-  if [ "$SERVICE_MODE" = "systemd" ]; then
-    provision_tmpfiles_config
-  fi
 }
 
 bin_home() {
@@ -652,11 +552,11 @@ print_path_refresh_instructions() {
 
 print_no_service_commands() {
   printf '\nNo service manager was configured. To run Swarm, configure your supervisor to execute:\n'
-  printf '  /usr/local/bin/swarm main server run\n'
+  printf '  /usr/local/bin/swarm main server run (as the non-root install owner, never root)\n'
   printf '\nOr install/start the systemd service later with:\n'
   printf '  swarm install --service\n'
   printf '\nIf PATH still fails, run it directly:\n'
-  printf '  /usr/local/bin/swarm main server run\n'
+  printf '  /usr/local/bin/swarm main server run (as the non-root install owner, never root)\n'
 }
 
 print_service_commands() {
@@ -773,11 +673,7 @@ if [ -n "$script_dir" ] && [ -x "$bundle_installer" ] && [ -f "$bundle_index" ];
   print_installing "$version"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT INT TERM
-  printf 'provisioning system paths... '
-  if ! provision_system_paths; then
-    exit 1
-  fi
-  print_ok
+  # swarmsetup owns account and path provisioning; do not pre-create root-owned state.
   if [ "$SERVICE_MODE" = "none" ]; then
     printf 'installing runtime and launchers... '
   else
@@ -875,11 +771,7 @@ if [ ! -d "$artifact_root" ]; then
 fi
 validate_artifact_root "$artifact_root"
 
-printf 'provisioning system paths... '
-if ! provision_system_paths; then
-  exit 1
-fi
-print_ok
+# swarmsetup owns account and path provisioning; errors are printed from its log.
 if [ "$SERVICE_MODE" = "none" ]; then
   printf 'installing runtime and launchers... '
 else

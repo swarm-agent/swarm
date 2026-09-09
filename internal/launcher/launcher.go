@@ -1151,6 +1151,9 @@ func RunBackend(profile Profile, opts StartBackendOptions) error {
 }
 
 func backendPathAndArgs(profile Profile, opts StartBackendOptions) (string, []string, error) {
+	if os.Geteuid() == 0 {
+		return "", nil, errors.New("refusing to run swarmd or agents as root; start swarm.service or run as the non-root install owner")
+	}
 	if opts.DesktopPort == 0 {
 		opts.DesktopPort = profile.DesktopPort
 	}

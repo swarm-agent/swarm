@@ -52,7 +52,8 @@ filter_allowed() {
   # - ArtifactV3AuthorService.Rename renames a validated project file within one private turn;
   #   allow only its exact call, not other renames or storage defaults in the author service.
   # Workspace path tokens require a lexical boundary so schema identifiers such as workspace_path are not mistaken for filesystem paths.
-  grep -Ev \
+  # Permit only the complete reviewed rejection predicate, never a home default.
+  grep -vFx -f <(printf '%s\n' 'internal/launcher/system_paths.go:	if owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\n\r\"%") {') < <(sed -E 's/^(internal\/launcher\/system_paths\.go):[0-9]+:/\1:/') | grep -Ev \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
     -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
@@ -115,6 +116,14 @@ fi
 echo "[storage-path-check] PASS"
 
 if [[ "${self_test}" == "1" ]]; then
+  # Requirement: rejecting the root home is not a storage default. Only the
+  # complete owner guard may pass; a default assignment must remain detectable.
+  guard_hit=$'internal/launcher/system_paths.go:384:\tif owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\\n\\r\\\"%") {'
+  if [[ -n "$(printf '%s\n' "${guard_hit}" | filter_allowed)" ]] ||
+     [[ -z "$(printf '%s\n' 'internal/launcher/system_paths.go:384:home := "/root"' | filter_allowed)" ]]; then
+    echo "[storage-path-check] FAIL: exact owner-rejection exception" >&2
+    exit 1
+  fi
   tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"
   trap 'rm -rf "${tmp_dir}"' EXIT
   fixture="${tmp_dir}/bad-storage.sh"
