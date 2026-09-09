@@ -23,6 +23,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Changed
 
+- Removed automatic final-handoff commit suggestions based on historical changed-file lists, so already-committed work no longer appears to need another commit.
 - Grouped native artifact alternatives by generation, named generation options, and added revision-bound click-to-play previews with scene navigation.
 - Unified native animation duration limits around the shared frame budget, allowing longer timelines at lower frame rates without increasing the capture budget.
 - Show pending review worktrees before expensive Git checks, bound review enrichment concurrency, and scope integration reads to the selected session instead of repeatedly scanning all review lanes. Background refreshes no longer keep completed integrations pending.

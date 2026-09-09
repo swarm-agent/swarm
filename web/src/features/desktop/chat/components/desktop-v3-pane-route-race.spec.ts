@@ -428,6 +428,9 @@ test('Desktop V3 structured final handoff is compact, keeps evidence collapsed, 
 })
 
 
+// Requirement: historical changedFiles must never imply pending Git changes.
+// buildDesktopV3FinalHandoffNextSteps owns defaults; this unit layer directly
+// proves that a clean, already-integrated handoff cannot invent a commit action.
 test('Desktop V3 final handoff derives actionable defaults without a review button', () => {
   const steps = buildDesktopV3FinalHandoffNextSteps({
     schemaVersion: 1,
@@ -452,9 +455,39 @@ test('Desktop V3 final handoff derives actionable defaults without a review butt
     },
   })
 
-  assert.deepEqual(steps.map((step) => step.label), ['Commit changes', 'Run focused tests', 'Ask for clarity'])
-  assert.equal(steps[2]?.behavior, 'prefill')
+  assert.deepEqual(steps.map((step) => step.label), ['Run focused tests', 'Ask for clarity'])
+  assert.equal(steps[1]?.behavior, 'prefill')
   assert.equal(steps.some((step) => /review/i.test(step.label)), false)
+})
+
+// Requirement: replayed completion cards must not manufacture commit prompts
+// from historical file evidence, including single-file commits and no-op work.
+// Exercise the real projection and server-rendered card to catch UI regressions.
+test('Desktop V3 committed and no-change handoffs never render a default commit suggestion', () => {
+  for (const changedFiles of [[], ['CHANGELOG.md']]) {
+    const items = buildDesktopV3ConversationRenderItems({
+      committed: [{
+        id: 'completed-handoff', session_id: 'session-a', global_seq: 403,
+        role: 'system', content: 'Work complete', created_at: 10,
+        metadata: {
+          source: 'plan_execution_final_handoff', kind: 'plan_final_checkpoint_handoff',
+          final_handoff: {
+            schema_version: 1, title: 'Work complete', overview: 'Worktree is clean.',
+            suggested_prompts: [],
+            recommendation: { decision: 'ship', action: 'Keep the commit local', reason: 'Complete', action_state: 'taken' },
+            details: { report: 'Complete', result: 'done', changed_files: changedFiles, validation: ['Focused checks passed'] },
+          },
+        },
+      }], pendingUser: [], liveRuns: [], runIntents: [],
+    })
+    assert.equal(items[0]?.type, 'plan-final-handoff')
+    const markup = renderToStaticMarkup(createElement(DesktopV3RenderItemView, {
+      item: items[0]!, thinkingTagsEnabled: true, timerNow: 0, index: 0,
+      onSuggestedPrompt: () => {},
+    }))
+    assert.match(markup, /Worktree is clean/)
+    assert.doesNotMatch(markup, /Commit changes|Commit the completed changes/)
+  }
 })
 
 test('Desktop V3 final handoff preserves AI-authored next steps', () => {

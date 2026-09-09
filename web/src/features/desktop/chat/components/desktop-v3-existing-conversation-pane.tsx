@@ -4219,13 +4219,8 @@ export function buildDesktopV3FinalHandoffNextSteps(
     });
   }
 
-  if (handoff.details.changedFiles.length > 0 && steps.length < 3) {
-    steps.push({
-      label: "Commit changes",
-      prompt: "Commit the completed changes with an appropriate commit message.",
-      behavior: "send",
-    });
-  }
+  // changedFiles records completed work, not live Git status. Never infer a
+  // commit action from it: those files may already be committed or unchanged.
 
   const validationWasSkipped = handoff.details.validation.length === 0
     || handoff.details.validation.every((entry) => /not run|not requested|skipped/i.test(entry));
