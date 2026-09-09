@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, ChevronRight, FileDiff, GitCommitHorizontal, Loader2, MessageSquarePlus, RefreshCw, Search, X } from 'lucide-react'
 
+import { defaultNativeGenerationGroup } from '../../session-v3/artifact-v3-groups'
 import { readNativeArtifactNavigation, writeNativeArtifactNavigation } from '../../session-v3/artifact-v3-navigation'
 import { cn } from '../../../../lib/cn'
 import {
@@ -105,7 +106,7 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   }, [open, artifact?.artifactId, selectedRevisionRef, waveId])
   const close = () => { writeNativeArtifactNavigation(null); onOpenChange(false) }
   const groups = studio?.artifact.generationGroups ?? []
-  const group = groups.find((entry) => entry.waveId === waveId) ?? groups[groups.length - 1]
+  const group = defaultNativeGenerationGroup(groups, waveId)
   const navigateMember = (member: NonNullable<typeof group>['members'][number]) => {
     if (!artifact || !group || !member.commitOid || !['ready', 'selected'].includes(member.status)) return
     const revisionRef = `revision-${member.commitOid}`

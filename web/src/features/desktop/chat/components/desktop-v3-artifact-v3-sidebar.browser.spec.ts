@@ -70,7 +70,10 @@ test('native sidebar opens pending option without selecting head', { timeout: 30
     assert.equal(await page.locator('[data-artifact-v3-turns] > details').first().getAttribute('data-artifact-v3-turn'), 'pending')
     assert.equal(await page.locator('[data-artifact-v3-turn="pending"]').getAttribute('open'), '')
     assert.match(await page.locator('[data-artifact-v3-candidate="first"]').textContent() ?? '', /Viewing/)
-    assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), true)
+    // Ready candidate revisions support exact-source whole-project remix even
+    // without selected Parts; navigation itself must still never accept head.
+    assert.equal(await page.locator('[data-artifact-v3-iterate]').isDisabled(), false)
+    assert.equal(await page.locator('[data-artifact-v3-iterate]').textContent(), 'Remix whole project')
     assert.deepEqual(mutations, [])
     // Refresh never overrides a user's explicit history navigation.
     await page.locator(`[data-artifact-v3-revision="${base.commit_oid}"]`).click()
@@ -146,5 +149,45 @@ test('native sidebar first creation and catalog recovery', { timeout: 30_000 }, 
     await page.evaluate(() => (window as unknown as { changeSession(id: string): void }).changeSession('parent'))
     await item.waitFor()
     assert.match(await item.textContent() ?? '', /Ready/)
+  } finally { await browser.close() }
+})
+
+// Requirement: a generation is one collapsed entry; expanding it never opens
+// or selects a candidate. Individual corrected siblings keep family navigation.
+// Authority: real native Sidebar + navigation writer, intercepted browser only.
+// Negative assertion: neither expansion nor option navigation issues mutations.
+test('native sidebar expands a five-option family before opening an artifact', { timeout: 30_000 }, async () => {
+  const bundle = await build({
+    stdin: { contents: `import React from 'react';import {createRoot} from 'react-dom/client';
+      import {DesktopV3ArtifactV3Sidebar} from './src/features/desktop/chat/components/desktop-v3-artifact-v3-sidebar';
+      const items=[5,3,1,4,2].map(i=>({artifactId:'option-'+i,ownerSessionId:'parent',artifactRef:'option-'+i,label:'Animation alternative '+i,status:i===4?'error':'ready',head:null,partCount:2,turnCount:i===3?2:1,generations:[{waveId:'family',index:i,count:5},...(i===3?[{waveId:'repair',index:1,count:1}]:[])]}));
+      window.opened=[];createRoot(document.getElementById('root')).render(<DesktopV3ArtifactV3Sidebar artifacts={items} onOpenArtifact={a=>window.opened.push(a.artifactId)}/>);`, resolveDir: process.cwd(), loader: 'tsx' },
+    bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', logLevel: 'silent',
+  })
+  const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+    page.setDefaultTimeout(5_000)
+    const requests: string[] = []
+    await page.route('**/*', route => {
+      if (new URL(route.request().url()).pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<html><style>svg{width:16px;height:16px}</style><div id="root"></div></html>' })
+      requests.push(route.request().url())
+      return route.abort()
+    })
+    await page.goto('https://artifact.test/')
+    await page.addScriptTag({ content: bundle.outputFiles[0]!.text })
+    const family = page.locator('[data-artifact-v3-group="family"]')
+    await family.waitFor()
+    assert.equal(await page.locator('[data-artifact-v3-group]').count(), 1)
+    assert.equal(await page.locator('[data-artifact-v3-sidebar-id]:visible').count(), 0)
+    await family.locator('summary').click()
+    assert.equal(await page.locator('[data-artifact-v3-sidebar-id]:visible').count(), 5)
+    assert.deepEqual(await page.evaluate(() => (window as unknown as { opened: string[] }).opened), [])
+    assert.deepEqual(await family.locator('[data-artifact-v3-sidebar-id]').evaluateAll(nodes => nodes.map(n => n.getAttribute('data-artifact-v3-sidebar-id'))), [1,2,3,4,5].map(i => `option-${i}`))
+    await page.locator('[data-artifact-v3-sidebar-id="option-3"]').click()
+    assert.deepEqual(await page.evaluate(() => (window as unknown as { opened: string[] }).opened), ['option-3'])
+    const search = new URL(page.url()).searchParams
+    assert.equal(search.get('native_wave'), 'family')
+    assert.deepEqual(requests, [])
   } finally { await browser.close() }
 })
