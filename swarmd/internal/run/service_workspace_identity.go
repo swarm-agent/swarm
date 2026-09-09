@@ -37,6 +37,38 @@ func validateSessionRepositoryIdentity(session pebblestore.SessionSnapshot) erro
 	return worktreeruntime.ValidateOwnedIdentity(source, session.WorktreeRootPath, session.WorktreeBranch, firstNonEmptyString(mapString(session.Metadata, "swarm_v3_worktree_base_commit"), mapString(session.Metadata, "base_commit")))
 }
 
+// Sidechats borrow the authenticated parent's lane for execution only. Ownership
+// validation used by workspace transitions deliberately remains unchanged.
+func (s *Service) validateRunRepositoryIdentity(session pebblestore.SessionSnapshot, principal identity.Principal) error {
+	if mapString(session.Metadata, "lineage_kind") != "system_sidechat" {
+		return validateSessionRepositoryIdentity(session)
+	}
+	kind := mapString(session.Metadata, "system_sidechat_kind")
+	parentID := mapString(session.Metadata, "parent_session_id")
+	if (kind != "plan" && kind != "ai") || parentID == "" || parentID == session.ID || s == nil || s.sessions == nil {
+		return errors.New("sidechat worktree parent identity is incomplete")
+	}
+	parent, ok, err := s.sessions.GetSession(parentID)
+	if err != nil {
+		return err
+	}
+	if !ok || !parent.WorktreeEnabled || mapString(parent.Metadata, "swarm_v3_worktree_owner_session_id") != parent.ID || parent.UserID != session.UserID || parent.AccountScopeID != session.AccountScopeID || principal.UserID != session.UserID || principal.AccountScopeID != session.AccountScopeID || mapString(parent.Metadata, "lineage_kind") == "system_sidechat" {
+		return errors.New("sidechat worktree parent ownership mismatch")
+	}
+	if err := validateSessionRepositoryIdentity(parent); err != nil {
+		return err
+	}
+	if session.WorkspacePath != parent.WorkspacePath || session.WorktreeRootPath != parent.WorktreeRootPath || session.WorktreeBranch != parent.WorktreeBranch || session.WorktreeBaseBranch != parent.WorktreeBaseBranch {
+		return errors.New("sidechat worktree binding is stale")
+	}
+	for _, key := range []string{"swarm_v3_source_workspace_id", "swarm_v3_source_workspace_generation", "swarm_v3_source_workspace_path", "swarm_v3_runtime_workspace_path", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit", "base_commit"} {
+		if mapString(session.Metadata, key) != mapString(parent.Metadata, key) {
+			return fmt.Errorf("sidechat inherited repository identity mismatch: %s", key)
+		}
+	}
+	return nil
+}
+
 // A target transition must not retarget a worker or abandon a scheduler lane.
 // Retained descendants remain inspectable; this conservative gate requires their
 // explicit integration before changing the parent's execution/attachment contract.
