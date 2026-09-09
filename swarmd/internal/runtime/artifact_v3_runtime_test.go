@@ -218,11 +218,11 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	}
 	staleTurn := followup
 	staleTurn.TaskCallID = "unrelated-stale-turn"
-	if _, err := adapter.PrepareArtifactV3Turn(context.Background(), staleTurn); !errors.Is(err, pebblestore.ErrArtifactV3Conflict) {
-		t.Fatalf("unrelated stale turn accepted: %v", err)
+	if g, err := adapter.PrepareArtifactV3Turn(context.Background(), staleTurn); err != nil || g.BaseCommitOID != followup.BaseCommitOID {
+		t.Fatalf("exact source after unrelated events: %+v %v", g, err)
 	}
 	unchanged, _, err := sessions.Store().GetArtifactV3Repository("account", "user", grant.ArtifactID)
-	if err != nil || unchanged.HeadCommitOID != artifact.Head.CommitOID || len(unchanged.Drafts) != 3 {
+	if err != nil || unchanged.HeadCommitOID != artifact.Head.CommitOID || len(unchanged.Drafts) != 4 {
 		t.Fatalf("stale turn mutated repository: head=%s drafts=%d err=%v", unchanged.HeadCommitOID, len(unchanged.Drafts), err)
 	}
 	followPrincipal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "repair-run"}
@@ -296,9 +296,54 @@ func TestArtifactV3RuntimeAdapterProductionPathAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Requirement: managed and direct authoring share immutable source grants.
+	// Prepare from an unselected option, then edit/publish after head acceptance;
+	// the real adapter must retain exact bytes, Parts and parentage, not rebase.
+	remixRequest := followup
+	remixRequest.TaskCallID = "option-remix"
+	remixRequest.BaseCommitOID = repair.Revision.CommitOID
+	remixGrant, err := adapter.PrepareArtifactV3Turn(context.Background(), remixRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remixGrant.ProducerSessionID, remixGrant.ProducerRunID = "child", "remix-run"
+	remixPrincipal := tool.ArtifactV3AuthorPrincipal{AccountScopeID: "account", UserID: "user", ProducerSessionID: "child", ProducerRunID: "remix-run"}
+	remixCtx := tool.WithArtifactV3AuthorRunContext(context.Background(), tool.ArtifactV3AuthorRunContext{Grant: remixGrant})
+	if _, err := author.Inspect(remixCtx, remixPrincipal, remixGrant); err != nil {
+		t.Fatal(err)
+	}
+	// The HTTP selection adapter must reject a stale turn token before touching
+	// either Git head or the durable projection, even with the correct head.
+	beforeCAS, err := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.SelectCandidate(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, api.ArtifactV3SelectCandidateRequest{
+		SessionID: "artifact-v3-runtime", ArtifactID: grant.ArtifactID, TurnID: preparedFollowup.TurnID, CandidateID: preparedFollowup.CandidateID,
+		ExpectedHeadRef: beforeCAS.Head.RevisionRef, ExpectedTurnRevision: 0, ClientRequestID: "stale-turn-token",
+	}); !errors.Is(err, pebblestore.ErrArtifactV3Conflict) {
+		t.Fatalf("stale turn token: %v", err)
+	}
+	if afterCAS, err := adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID); err != nil || !reflect.DeepEqual(beforeCAS, afterCAS) {
+		t.Fatalf("stale turn token changed authority: %v", err)
+	}
 	selected, err := adapter.SelectArtifactV3DirectHead(context.Background(), "account", "user", "artifact-v3-runtime", grant.ArtifactID, preparedFollowup.TurnID, preparedFollowup.CandidateID)
 	if err != nil || selected.CommitOID != repair.Revision.CommitOID {
 		t.Fatalf("direct repair selection=%+v repair=%+v err=%v", selected, repair, err)
+	}
+	if err := author.Edit(remixCtx, remixPrincipal, remixGrant, "index.html", []byte("Artifact V3 repaired"), []byte("Artifact V3 remixed"), false); err != nil {
+		t.Fatal(err)
+	}
+	if gate, err := author.BuildPreview(remixCtx, remixPrincipal, remixGrant); err != nil || !gate.Ready {
+		t.Fatalf("remix gate: %+v %v", gate, err)
+	}
+	remixed, err := author.Finish(remixCtx, remixPrincipal, remixGrant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remixRevision, ok, err := sessions.Store().GetArtifactV3Revision("account", "user", grant.ArtifactID, remixed.Revision.CommitOID)
+	if err != nil || !ok || !reflect.DeepEqual(remixRevision.ParentCommitOIDs, []string{repair.Revision.CommitOID}) {
+		t.Fatalf("remix lineage: %+v %v", remixRevision, err)
 	}
 	artifact, err = adapter.GetArtifact(context.Background(), api.ArtifactV3Principal{AccountScopeID: "account", UserID: "user"}, "artifact-v3-runtime", grant.ArtifactID)
 	if err != nil || artifact.Head.CommitOID != repair.Revision.CommitOID || len(artifact.Head.Parents) != 1 || artifact.Head.Parents[0] != finished.Revision.CommitOID {

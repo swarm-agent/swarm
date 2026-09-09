@@ -93,7 +93,7 @@ func artifactV3SelectionCalls(source pebblestore.ArtifactV3SelectedSource) []map
 			continue
 		}
 		for _, turn := range source.Turns {
-			if turn.TurnID != candidate.TurnID || turn.BaseCommitOID != source.CommitOID || turn.EventSeq == 0 {
+			if turn.TurnID != candidate.TurnID || turn.Status != "awaiting_selection" || turn.EventSeq == 0 {
 				continue
 			}
 			calls = append(calls, map[string]any{"action": "select_v3", "artifact_id": source.ArtifactID, "turn_id": turn.TurnID, "candidate_id": candidate.CandidateID, "expected_head": source.CommitOID, "expected_turn_revision": turn.EventSeq})
