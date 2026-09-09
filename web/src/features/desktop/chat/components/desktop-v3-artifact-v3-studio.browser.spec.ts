@@ -74,6 +74,9 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     assert.equal(staged.artifact_id, 'artifact')
     assert.equal(staged.revision_ref, base.revision_ref)
     assert.deepEqual(staged.target_part_ids, ['orbit'])
+    await page.getByRole('button', { name: 'Remix whole project', exact: true }).click()
+    assert.deepEqual(await page.evaluate(() => (window as any).stagedSelection.target_part_ids), [])
+    assert.equal(await page.locator('[data-artifact-v3-part="orbit"]').getAttribute('aria-pressed'), 'true')
     assert.equal(selections.length, 0)
     ready = true
     await page.evaluate(() => (window as unknown as { refreshArtifacts(): Promise<void> }).refreshArtifacts())
@@ -125,5 +128,52 @@ test('native Studio Part iteration and candidate decision controls', { timeout: 
     const continued = await page.evaluate(() => (window as unknown as { stagedSelection: Record<string, unknown> }).stagedSelection)
     assert.equal(continued.revision_ref, candidate.revision_ref)
     assert.deepEqual(continued.target_part_ids, ['new-part'])
+  } finally { await browser.close() }
+})
+
+// Requirement: the actual ephemeral bridge owns serialized seek playback without
+// new authored methods. Threat: overlapping async seeks, stale completion after
+// scene navigation, paused playback that cannot resume, and silent seek failure.
+// Execute the embedded production script in an opaque iframe with a fake runtime.
+test('native playback bridge serializes scene seek, resume, end and failure', { timeout: 30_000 }, async () => {
+  const { readFile } = await import('node:fs/promises')
+  const script = (await readFile('../swarmd/internal/runtime/artifact_v3_preview_selection.js', 'utf8')).replace('__SWARM_ARTIFACT_V3_SELECTION_CONFIG__', JSON.stringify({ revision_ref: 'revision-test', parts: [], part_ids: [] }))
+  const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_BROWSER_CHANNEL ? { channel: process.env.SWARM_TEST_BROWSER_CHANNEL } : {}) })
+  try {
+    const page = await browser.newPage()
+    page.setDefaultTimeout(5000)
+    await page.setContent('<iframe sandbox="allow-scripts"></iframe>')
+    await page.evaluate(({ script }) => {
+      ;(window as any).states = []
+      window.addEventListener('message', event => (window as any).states.push(event.data))
+      document.querySelector('iframe')!.srcdoc = `<script>${script}</script><script>
+        let active=0;
+        window.__SWARM_ANIMATION_V1__={version:'swarm.animation/v1',ready:()=>({duration_ms:1000}),seek:async(time_ms)=>{
+          if (++active>1) throw Error('overlap');
+          await new Promise(r=>setTimeout(r,30)); active--;
+          if(time_ms===777) throw Error('injected');
+          return {time_ms};
+        }};
+      </script>`
+    }, { script })
+    const waitState = async (id: number, time?: number) => {
+      await page.waitForFunction(({ id, time }) => (window as any).states.some((s: any) => s.type === 'playback-state' && s.command_id === id && (time === undefined || s.time_ms === time)), { id, time })
+    }
+    const command = async (id: number, action: string, time_ms?: number) => page.evaluate(({ id, action, time_ms }) => document.querySelector('iframe')!.contentWindow!.postMessage({ protocol: 'swarm.artifact/v3', revision_ref: 'revision-test', type: 'playback-command', command_id: id, action, time_ms }, '*'), { id, action, time_ms })
+    await waitState(0, 0)
+    await command(1, 'seek', 500)
+    await command(2, 'seek', 600)
+    await waitState(2, 600)
+    assert.equal(await page.evaluate(() => (window as any).states.some((s: any) => s.command_id === 2 && s.time_ms === 500)), false)
+    await command(3, 'play')
+    await waitState(3, 1000)
+    assert.equal(await page.evaluate(() => (window as any).states.at(-1).playing), false)
+    await command(4, 'play')
+    await waitState(4, 0)
+    await command(5, 'pause')
+    await waitState(5)
+    await command(6, 'seek', 777)
+    await page.waitForFunction(() => (window as any).states.some((s: any) => s.command_id === 6 && s.error))
+    assert.equal(await page.evaluate(() => (window as any).states.at(-1).playing), false)
   } finally { await browser.close() }
 })

@@ -7,6 +7,72 @@
   const parts = config.parts;
   let selected = [];
   const send = (type, extra = {}) => parent.postMessage({ protocol, type, revision_ref: config.revision_ref, ...extra }, '*');
+  let runtime, duration = 0, time = 0, playing = false, failed = false;
+  let command = 0, generation = 0, pending = null, running = false, frame = 0;
+  let anchorTime = 0, anchorClock = 0;
+  const state = (error = '') => send('playback-state', { command_id: command, duration_ms: duration, time_ms: time, playing, error });
+  const stop = () => { playing = false; cancelAnimationFrame(frame); };
+  const bounded = (operation) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Animation operation timed out')), 5000);
+    Promise.resolve().then(operation).then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+  const sample = async (target) => {
+    pending = { target, generation };
+    if (running || failed) return;
+    running = true;
+    while (pending && !failed) {
+      const request = pending; pending = null;
+      try {
+        const result = await bounded(() => runtime.seek(request.target));
+        if (result?.time_ms !== request.target) throw new Error('Animation seek was not acknowledged');
+        if (request.generation === generation) {
+          time = request.target;
+          if (time === duration) stop();
+          state();
+        }
+      } catch {
+        // A timed-out runtime may still be running: fail closed, never overlap it.
+        failed = true; pending = null; stop(); state('Animation seek failed or timed out. Reload the preview to retry.');
+      }
+    }
+    running = false;
+    if (playing && !failed) frame = requestAnimationFrame(tick);
+  };
+  const tick = () => {
+    if (!playing || document.hidden) { stop(); state(); return; }
+    void sample(Math.min(duration, Math.round(anchorTime + performance.now() - anchorClock)));
+  };
+  const control = (action, target = time) => {
+    if (!runtime || failed) return;
+    generation++; stop();
+    if (action === 'play') {
+      if (target >= duration) target = 0;
+      playing = true; anchorTime = target; anchorClock = performance.now();
+    }
+    void sample(target);
+  };
+  window.addEventListener('message', (event) => {
+    const m = event.data;
+    if (event.source !== parent || !m || m.protocol !== protocol || m.revision_ref !== config.revision_ref || m.type !== 'playback-command') return;
+    if (!Number.isSafeInteger(m.command_id) || m.command_id <= command || !['play', 'pause', 'seek'].includes(m.action)) return;
+    if (m.action === 'seek' && (!Number.isSafeInteger(m.time_ms) || m.time_ms < 0 || m.time_ms > duration)) return;
+    command = m.command_id;
+    control(m.action, m.action === 'seek' ? m.time_ms : time);
+  });
+  document.addEventListener('visibilitychange', () => { if (document.hidden && runtime) control('pause'); });
+  window.addEventListener('pagehide', () => { generation++; failed = true; pending = null; stop(); });
+  const initializePlayback = async () => {
+    const candidate = globalThis.__SWARM_ANIMATION_V1__;
+    if (!candidate) return; // Static documents retain their original layout/behavior.
+    try {
+      if (candidate.version !== 'swarm.animation/v1' || typeof candidate.ready !== 'function' || typeof candidate.seek !== 'function') throw new Error();
+      const ready = await bounded(() => candidate.ready());
+      if (!Number.isSafeInteger(ready?.duration_ms) || ready.duration_ms < 100 || ready.duration_ms > 36000000) throw new Error();
+      runtime = candidate; duration = ready.duration_ms;
+      control('pause', 0);
+    } catch { send('playback-error'); }
+  };
+  window.addEventListener('load', initializePlayback, { once: true });
   const elementFor = (part) => {
     try { return document.querySelector(part.selector); } catch { return null; }
   };
@@ -27,12 +93,8 @@
     paint();
     const part = parts.find((part) => part.id === message.focus_part_id);
     if (part && Number.isSafeInteger(part.time_ms)) {
-      const runtime = globalThis.__SWARM_ANIMATION_V1__;
-      if (runtime?.version === 'swarm.animation/v1' && typeof runtime.seek === 'function') {
-        Promise.resolve().then(() => runtime.seek(part.time_ms)).then((result) => {
-          if (result?.time_ms !== part.time_ms) throw new Error('Scene seek was not acknowledged');
-        }).catch(() => send('scene-seek-error', { part_id: part.id }));
-      } else send('scene-seek-error', { part_id: part.id });
+      // Temporal navigation is a sequenced playback-command from Studio. Selection
+      // synchronization only paints; repeating it must never pause/resample playback.
       return;
     }
     const element = part && elementFor(part);
