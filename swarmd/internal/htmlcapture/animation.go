@@ -199,7 +199,7 @@ func (r *ChromedpRenderer) renderAnimation(parent context.Context, req Animation
 
 rendererCapacityAcquired:
 
-	ctx, cancel := context.WithTimeout(parent, animationRenderTimeout(frameCount))
+	ctx, cancel := context.WithTimeoutCause(parent, animationRenderTimeout(frameCount), errAnimationRenderDeadline)
 	defer cancel()
 	if err := os.MkdirAll(r.CacheRoot, 0o700); err != nil {
 		return AnimationResult{}, NewError("animation_renderer_unavailable", "private animation cache is unavailable")
@@ -417,7 +417,9 @@ rendererCapacityAcquired:
 		if err := captureCtx.Err(); err != nil {
 			return nil, newErrorWithCause("animation_timeout", "animation frame capture was cancelled", err)
 		}
-		frame, frameDiagnostics, captureErr := captureAnimationFrame(workerPages[worker], index*1000/encoding.FPS, false)
+		frameCtx, frameCancel := animationCaptureContext(workerPages[worker], captureCtx)
+		defer frameCancel()
+		frame, frameDiagnostics, captureErr := captureAnimationFrame(frameCtx, index*1000/encoding.FPS, false)
 		if captureErr != nil {
 			return nil, captureErr
 		}
@@ -428,7 +430,7 @@ rendererCapacityAcquired:
 			return nil, newErrorWithCause("animation_network_blocked", "animation document attempted a prohibited network request", errors.New(reason))
 		}
 		var location string
-		if navErr := chromedp.Run(workerPages[worker], chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
+		if navErr := chromedp.Run(frameCtx, chromedp.Location(&location)); navErr != nil || location != canonicalLocation {
 			return nil, NewError("animation_seek_failed", "animation runtime attempted to navigate away from its canonical document")
 		}
 		return frame, nil
@@ -717,15 +719,22 @@ return {code:"ok",outcome:"ready",lifecycle:finalLifecycle};
 	return diagnostic, nil
 }
 
-func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStability bool) ([]byte, []AnimationDiagnostic, error) {
+func captureAnimationFrame(browserCtx context.Context, timeMS int, auditStability bool) (data []byte, diagnostics []AnimationDiagnostic, resultErr error) {
+	started := time.Now()
+	stage := "seek_and_paint"
 	frameTimeout := animationFrameTimeout
 	if auditStability {
 		frameTimeout = animationStableTimeout
 	}
 	ctx, cancel := context.WithTimeout(browserCtx, frameTimeout)
 	defer cancel()
+	defer func() {
+		if resultErr != nil {
+			resultErr = animationFrameFailure(browserCtx, ctx, resultErr, stage, timeMS, frameTimeout, time.Since(started))
+		}
+	}()
 	timestamp := timeMS
-	diagnostics := make([]AnimationDiagnostic, 0, 3)
+	diagnostics = make([]AnimationDiagnostic, 0, 3)
 	var audit animationAudit
 	expression := fmt.Sprintf(`(async () => {
 `+animationSeekAckValidator+`
@@ -761,12 +770,14 @@ return {code:"ok",outcome:"seek_acknowledged"};
 		return nil, diagnostics, NewError(audit.Code, animationSafeMessage(audit.Code))
 	}
 	if auditStability {
+		stage = "viewport_audit"
 		boundsDiagnostics, err := auditAnimationViewport(ctx, timeMS)
 		diagnostics = append(diagnostics, boundsDiagnostics...)
 		if err != nil {
 			return nil, diagnostics, err
 		}
 	}
+	stage = "screenshot"
 	first, err := animationScreenshot(ctx)
 	if err != nil {
 		return nil, diagnostics, err
@@ -774,11 +785,13 @@ return {code:"ok",outcome:"seek_acknowledged"};
 	if !auditStability {
 		return first, diagnostics, nil
 	}
+	stage = "stability_wait"
 	select {
 	case <-time.After(10 * time.Millisecond):
 	case <-ctx.Done():
 		return nil, diagnostics, NewError("animation_timeout", "animation frame stability audit timed out")
 	}
+	stage = "stability_screenshot"
 	second, err := animationScreenshot(ctx)
 	if err != nil {
 		return nil, diagnostics, err
@@ -1029,7 +1042,7 @@ func animationScreenshot(ctx context.Context) ([]byte, error) {
 		return captureErr
 	})); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, NewError("animation_timeout", "animation frame capture exceeded the quality-adjusted deadline")
+			return nil, newErrorWithCause("animation_timeout", "animation screenshot exceeded the shared frame deadline", context.DeadlineExceeded)
 		}
 		return nil, newErrorWithCause("animation_renderer_failed", "renderer could not capture an animation frame", err)
 	}
@@ -1086,6 +1099,7 @@ func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames 
 	results := make(chan animationCapturedFrame, bufferFrames)
 	permits := make(chan struct{}, bufferFrames)
 	var group sync.WaitGroup
+	defer func() { cancel(); group.Wait() }()
 	for worker := 0; worker < workers; worker++ {
 		group.Add(1)
 		go func(worker int) {
@@ -1111,7 +1125,9 @@ func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames 
 			}
 		}(worker)
 	}
+	group.Add(1)
 	go func() {
+		defer group.Done()
 		defer close(jobs)
 		for index := 0; index < frames; index++ {
 			select {
@@ -1155,6 +1171,9 @@ func runOrderedFramePipeline(ctx context.Context, frames, workers, bufferFrames 
 				progress(next)
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return newErrorWithCause("animation_timeout", "concurrent frame pipeline was cancelled during capture", err)
 	}
 	if next != frames {
 		return NewError("animation_renderer_failed", "concurrent frame pipeline ended before all ordered frames were written")
