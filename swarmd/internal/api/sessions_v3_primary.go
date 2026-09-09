@@ -483,6 +483,9 @@ func inheritSessionsV3SystemSidechatWorkspace(parent pebblestore.SessionSnapshot
 	sidechat.WorkspaceGrants = append([]pebblestore.WorkspaceGrant(nil), parent.WorkspaceGrants...)
 	sidechat.WorkspaceUsage = append([]pebblestore.WorkspaceUsageProjection(nil), parent.WorkspaceUsage...)
 	for _, key := range []string{
+		"swarm_v3_worktree_owner_session_id",
+		"swarm_v3_worktree_base_commit",
+		"base_commit",
 		"workspace_id",
 		"swarm_v3_workspace_binding_id",
 		"swarm_v3_source_workspace_id",
@@ -694,6 +697,10 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, getErr)
 		return
 	} else if exists {
+		if existing.UserID != principal.UserID || existing.AccountScopeID != principal.AccountScopeID || sessionsV3MetadataString(existing.Metadata, "parent_session_id") != parentSessionID || sessionsV3MetadataString(existing.Metadata, "lineage_kind") != "system_sidechat" || sessionsV3MetadataString(existing.Metadata, "system_sidechat_kind") != kind {
+			writeError(w, http.StatusConflict, errors.New("existing sidechat ownership mismatch"))
+			return
+		}
 		next := existing
 		inheritSessionsV3SystemSidechatWorkspace(parent, &next, metadata)
 		next.Metadata = metadata
@@ -701,7 +708,15 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		next.ModelProfile = pebblestore.CloneSessionModelProfileSnapshot(modelProfile)
 		next.Mode = sessionruntime.ModeAuto
 		next.UpdatedAt = time.Now().UnixMilli()
-		updateKey := fmt.Sprintf("system-sidechat-bind:%s:%s:%d", kind, req.PermissionID, req.PlanRevision)
+		// Bind retries are scoped to the captured prior snapshot. An old binding
+		// receipt must not suppress repair of legacy provenance or a later rebind.
+		priorJSON, marshalErr := json.Marshal(existing)
+		if marshalErr != nil {
+			writeError(w, http.StatusBadRequest, marshalErr)
+			return
+		}
+		priorHash := sha256.Sum256(priorJSON)
+		updateKey := fmt.Sprintf("system-sidechat-bind:%s:%s:%d:%x", kind, req.PermissionID, req.PlanRevision, priorHash[:])
 		updateKind := sessionruntime.SessionMutationUpdateMetadata
 		if kind == "plan" {
 			updateKind = sessionruntime.SessionMutationUpdateModelProfile
