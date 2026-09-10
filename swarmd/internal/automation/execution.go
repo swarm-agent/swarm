@@ -96,6 +96,9 @@ func (e *ExecutionService) Dispatch(ctx context.Context, p Principal, scope stor
 	if r.Occurrence.State != "pending" { return r, nil }
 	def, err := s.CheckRun(ctx, p, scope, id, r.Occurrence.DefinitionRevision)
 	if err != nil { return r, err }
+	claims, ok := s.repo.(interface { ClaimAutomationDispatch(store.AutomationScope, string, string) error })
+	if !ok { return r, ErrInvalid }
+	if err := claims.ClaimAutomationDispatch(scope, id, occurrenceID); err != nil { return r, err }
 	sessionID, err := e.runtime.Ensure(ctx, p, def, r)
 	if err != nil { return r, err }
 	if sessionID == "" { return r, ErrInvalid }
@@ -133,4 +136,20 @@ func (e *ExecutionService) RecordOutcome(ctx context.Context, p Principal, scope
 	if err != nil { return r, err }
 	if r.Occurrence.State == state { return r, nil }
 	return e.transition(p, r, state, "")
+}
+
+// Cancel fences dispatch durably before publishing a terminal occurrence. A
+// failed stop remains nonterminal and retains the serialize reservation.
+func (e *ExecutionService) Cancel(ctx context.Context, p Principal, scope store.AutomationScope, id, occurrenceID string) (store.AutomationRecord, error) {
+	if err := e.domain.authorize(ctx, p, scope, "cancel"); err != nil { return store.AutomationRecord{}, err }
+	if p.Role != "user" { return store.AutomationRecord{}, ErrDenied }
+	r, found, err := e.domain.repo.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
+	if err != nil { return r, err }
+	if !found || r.Occurrence == nil { return r, ErrNotFound }
+	if r.Occurrence.State == "cancelled" { return r, nil }
+	switch r.Occurrence.State { case "pending", "running", "blocked": default: return r, store.ErrAutomationConflict }
+	canceller, ok := e.runtime.(interface { Cancel(context.Context, Principal, store.AutomationRecord) error })
+	if !ok { return r, ErrInvalid }
+	if err := canceller.Cancel(ctx, p, r); err != nil { return r, err }
+	return e.transition(p, r, "cancelled", "")
 }

@@ -504,3 +504,64 @@ func (s *Store) SearchAutomationRecords(q AutomationSearch) ([]AutomationRecord,
 	}
 	return rows, base64.RawURLEncoding.EncodeToString(data), nil
 }
+
+// ClaimAutomationDispatch durably reserves a serialize lane before external
+// effects. Claims do not expire: recovery resumes the same occurrence; a clock
+// timeout must never permit a second execution while the first may still run.
+func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID string) error {
+	prefix, err := automationPrefix(scope)
+	if err != nil || !automationValidID(id) || !automationValidID(occurrenceID) { return ErrAutomationInvalid }
+	s.automationsMu.Lock()
+	defer s.automationsMu.Unlock()
+	r, found, err := s.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
+	if err != nil { return err }
+	if !found || r.Occurrence == nil || r.Occurrence.State != "pending" { return ErrAutomationConflict }
+	def, found, err := s.GetAutomationRecord(scope, id, "definition", id, r.Occurrence.DefinitionRevision)
+	if err != nil { return err }
+	if !found || def.Definition == nil { return ErrAutomationInvalid }
+	if def.Definition.Schedule.OverlapPolicy != "serialize" { return nil }
+	key := prefix + automationPart(id) + ":dispatch-owner"
+	var owner string
+	found, err = s.GetJSON(key, &owner)
+	if err != nil { return err }
+	if found && owner != occurrenceID {
+		prior, exists, err := s.GetAutomationRecord(scope, id, "occurrence", owner, 0)
+		if err != nil { return err }
+		if !exists || prior.Occurrence == nil { return ErrAutomationConflict }
+		switch prior.Occurrence.State { case "completed", "failed", "cancelled", "skipped": default: return ErrAutomationConflict }
+	}
+	data, err := json.Marshal(occurrenceID)
+	if err != nil { return err }
+	batch := s.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(key), data, nil); err != nil { return err }
+	return batch.Commit(pebble.Sync)
+}
+
+// AdvanceAutomationCursor is called only after all admissions for the bounded
+// interval have durable receipts. A crash before this write replays admissions.
+func (s *Store) AdvanceAutomationCursor(scope AutomationScope, id string, revision uint64, expected, next int64) error {
+	prefix, err := automationPrefix(scope)
+	if err != nil || !automationValidID(id) || revision == 0 || expected < 0 || next <= expected { return ErrAutomationInvalid }
+	s.automationsMu.Lock()
+	defer s.automationsMu.Unlock()
+	key := fmt.Sprintf("%s%s:schedule:%d", prefix, automationPart(id), revision)
+	var current int64
+	_, err = s.GetJSON(key, &current)
+	if err != nil { return err }
+	if current != expected { return ErrAutomationConflict }
+	data, err := json.Marshal(next)
+	if err != nil { return err }
+	batch := s.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(key), data, nil); err != nil { return err }
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *Store) GetAutomationCursor(scope AutomationScope, id string, revision uint64) (int64, error) {
+	prefix, err := automationPrefix(scope)
+	if err != nil || !automationValidID(id) || revision == 0 { return 0, ErrAutomationInvalid }
+	var current int64
+	_, err = s.GetJSON(fmt.Sprintf("%s%s:schedule:%d", prefix, automationPart(id), revision), &current)
+	return current, err
+}

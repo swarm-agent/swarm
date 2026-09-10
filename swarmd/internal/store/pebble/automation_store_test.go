@@ -239,3 +239,31 @@ func TestAutomationStoreCommitFailure(t *testing.T) {
 		t.Fatalf("receipt leaked: %+v %v %v", r, fresh, err)
 	}
 }
+
+// Purpose: real Pebble dispatch reservations and scheduler cursors must survive
+// restart, reject competing occurrences/stale cursors, and preserve the winner.
+// This is the narrowest layer proving the durable claim, not provider execution.
+func TestAutomationDispatchClaimAndCursorRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	s, err := Open(path)
+	if err != nil { t.Fatal(err) }
+	m := automationFixture()
+	m.Record.Definition.Schedule.OverlapPolicy = "serialize"
+	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
+	scope := m.Record.Scope
+	for _, id := range []string{"first", "second"} {
+		_, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: AutomationRecord{Scope: scope, AutomationID: "check", Kind: "occurrence", ID: id, Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: id, State: "pending", ScheduledAt: 100000}}, MutationID: id, Actor: "system", SubjectID: "scheduler", WrittenAt: 100000})
+		if err != nil { t.Fatal(err) }
+	}
+	if err := s.ClaimAutomationDispatch(scope, "check", "first"); err != nil { t.Fatal(err) }
+	if err := s.AdvanceAutomationCursor(scope, "check", 1, 0, 100000); err != nil { t.Fatal(err) }
+	if err := s.Close(); err != nil { t.Fatal(err) }
+	s, err = Open(path)
+	if err != nil { t.Fatal(err) }
+	defer s.Close()
+	if err := s.ClaimAutomationDispatch(scope, "check", "second"); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("competing claim: %v", err) }
+	if err := s.ClaimAutomationDispatch(scope, "check", "first"); err != nil { t.Fatalf("owner recovery: %v", err) }
+	if err := s.AdvanceAutomationCursor(scope, "check", 1, 0, 200000); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("stale cursor: %v", err) }
+	if current, err := s.GetAutomationCursor(scope, "check", 1); err != nil || current != 100000 { t.Fatalf("cursor changed: %d %v", current, err) }
+	if _, found, err := s.GetAutomationRecord(scope, "check", "occurrence", "second", 0); err != nil || !found { t.Fatal("competing admission lost") }
+}
