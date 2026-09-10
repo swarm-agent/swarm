@@ -21,6 +21,7 @@ type Store struct {
 	swarmProfilesMu      sync.Mutex
 	agentModelSettingsMu sync.Mutex
 	tailscaleAllowlistMu sync.Mutex
+	automationsMu        sync.Mutex
 }
 
 func Open(path string) (*Store, error) {
