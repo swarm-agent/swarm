@@ -32,6 +32,9 @@ PROXY_HELPER = '/usr/lib/systemd/systemd-socket-proxyd'
 # No source checkout, home, database, or host manager socket is mounted.
 # Build/install is deliberately in the guest; dependency caches must be in base.
 GUEST = r'''set -euo pipefail
+phase() { printf '%s\n' "$1" > /exchange/phase; }
+trap 'phase failed' ERR
+phase source
 export TMPDIR=/var/tmp
 export HOME=/root
 export GOMAXPROCS=2 GOROOT=/opt/go
@@ -47,12 +50,16 @@ cd /candidate/source
 git -c core.hooksPath=/dev/null checkout --detach "$CANDIDATE_HEAD"
 test "$(git rev-parse HEAD)" = "$CANDIDATE_HEAD"
 cd /candidate/source/swarmd
+phase go-build
 CGO_ENABLED=1 go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
 cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
 cd /candidate/source/web
-pnpm install --offline --frozen-lockfile
+phase web-install
+pnpm install --offline --frozen-lockfile --ignore-scripts --reporter=append-only
+phase web-build
 pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
+phase daemon-start
 socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
 socat UNIX-LISTEN:/exchange/desktop.sock,fork,mode=0600 TCP:127.0.0.1:5655 &
 id swarm >/dev/null
@@ -327,10 +334,10 @@ class NspawnRuntime:
                 # Guest can create only bounded exchange entries. Never recursively
                 # follow or remove unrecognized content supplied by a candidate.
                 names = os.listdir(directory)
-                if set(names) - {'api.sock', 'desktop.sock'}:
+                if set(names) - {'api.sock', 'desktop.sock', 'phase'}:
                     raise PoolError('unknown exchange content; cleanup retained')
                 for entry in names:
-                    if not stat.S_ISSOCK(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode):
+                    if not (stat.S_ISSOCK(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode) or (entry == 'phase' and stat.S_ISREG(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode))):
                         raise PoolError('unexpected exchange entry type')
                     os.unlink(entry, dir_fd=directory)
             finally:
@@ -493,7 +500,20 @@ class NspawnRuntime:
             now = time.monotonic()
             if now >= next_touch:
                 self.pool.touch(lane, record['generation'])
-                print('local testbench: building/starting owned candidate', file=sys.stderr, flush=True)
+                phase = 'starting'
+                try:
+                    path = Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'phase'
+                    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(fd, 'rb') as stream:
+                        if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                            value = stream.read(32).decode('ascii', errors='ignore').strip()
+                            if value in {'source', 'go-build', 'web-install', 'web-build', 'daemon-start', 'failed'}:
+                                phase = value
+                except OSError:
+                    pass
+                print('local testbench: phase=' + phase, file=sys.stderr, flush=True)
+                if phase == 'failed':
+                    raise PoolError('guest build failed')
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
             if values.get('Description') != self.description(record) or values.get('ActiveState') != 'active':
