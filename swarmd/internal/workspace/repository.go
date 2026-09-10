@@ -6,12 +6,90 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"swarm/packages/swarmd/internal/identity"
 )
+
+// RuntimeWorkspaceGuidance is advisory only: setup must revalidate the selected
+// path. Identity comes from the effective daemon UID, never HOME or the caller.
+type RuntimeWorkspaceGuidance struct {
+	RuntimeUsername        string `json:"runtime_username,omitempty"`
+	RuntimeUID             string `json:"runtime_uid"`
+	RuntimeNonRoot         bool   `json:"runtime_non_root"`
+	SuggestedWorkspacePath string `json:"suggested_workspace_path,omitempty"`
+	SetupRequired          bool   `json:"setup_required"`
+	Message                string `json:"message"`
+}
+
+func DaemonWorkspaceGuidance() RuntimeWorkspaceGuidance {
+	uid := strconv.Itoa(os.Geteuid())
+	account, err := user.LookupId(uid)
+	if err != nil {
+		account = nil
+	}
+	return daemonWorkspaceGuidance(account, uid)
+}
+
+func daemonWorkspaceGuidance(account *user.User, uid string) RuntimeWorkspaceGuidance {
+	g := RuntimeWorkspaceGuidance{
+		RuntimeUID: uid, RuntimeNonRoot: uid != "0", SetupRequired: true,
+		Message: "Workspace operations run as the daemon account; root access in your terminal does not give the daemon access. Choose an accessible project directory. Repository creation requires explicit setup consent.",
+	}
+	if account == nil || account.Uid != uid {
+		return g
+	}
+	g.RuntimeUsername = account.Username
+	home, err := writableDaemonHome(account, uid)
+	if err != nil {
+		return g
+	}
+	// Bounded collision search never adopts or modifies an existing directory.
+	for i := 1; i <= 100; i++ {
+		name := "swarm-workspace"
+		if i > 1 {
+			name += "-" + strconv.Itoa(i)
+		}
+		candidate := filepath.Join(home, name)
+		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
+			g.SuggestedWorkspacePath = candidate
+			break
+		} else if err != nil {
+			break
+		}
+	}
+	return g
+}
+
+func writableDaemonHome(account *user.User, uid string) (string, error) {
+	if account == nil || account.Uid != uid || !filepath.IsAbs(account.HomeDir) {
+		return "", errors.New("daemon account home is unavailable")
+	}
+	home := filepath.Clean(account.HomeDir)
+	resolved, err := filepath.EvalSymlinks(home)
+	if err != nil || resolved != home || filepath.Dir(home) == home {
+		return "", errors.New("daemon account home must be a canonical directory")
+	}
+	info, err := os.Stat(home)
+	if err != nil || !info.IsDir() {
+		return "", errors.New("daemon account home is unavailable")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || strconv.FormatUint(uint64(stat.Uid), 10) != uid || info.Mode().Perm()&0o300 != 0o300 || info.Mode().Perm()&0o022 != 0 {
+		return "", errors.New("daemon account home must be owned and writable by the daemon, not writable by other users")
+	}
+	if err := unix.Faccessat(unix.AT_FDCWD, home, unix.W_OK|unix.X_OK, unix.AT_EACCESS); err != nil {
+		return "", errors.New("daemon cannot write to its account home")
+	}
+	return home, nil
+}
 
 const repositoryCommandTimeout = 12 * time.Second
 
@@ -234,6 +312,11 @@ func inspectRepository(path string) RepositoryState {
 // initializes an empty canonical directory, or completes an exact unborn
 // repository with an empty first commit while preserving its index and files.
 func (s *Service) SetupRepositoryForPrincipal(principal identity.Principal, path, expectedResolvedPath string) (RepositoryState, error) {
+	account, _ := user.LookupId(strconv.Itoa(os.Geteuid()))
+	return s.setupRepositoryForPrincipal(principal, path, expectedResolvedPath, account)
+}
+
+func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path, expectedResolvedPath string, account *user.User) (RepositoryState, error) {
 	if s == nil || s.store == nil {
 		return RepositoryState{}, errors.New("workspace service is not configured")
 	}
@@ -267,11 +350,26 @@ func (s *Service) SetupRepositoryForPrincipal(principal identity.Principal, path
 	if filepath.Clean(expected) != resolved {
 		return RepositoryState{}, fmt.Errorf("selected directory is stale: expected %q, current canonical path is %q", filepath.Clean(expected), resolved)
 	}
+	if _, err := os.Lstat(resolved); errors.Is(err, os.ErrNotExist) {
+		uid := strconv.Itoa(os.Geteuid())
+		home, homeErr := writableDaemonHome(account, uid)
+		if homeErr != nil || filepath.Dir(resolved) != home {
+			return RepositoryState{}, errors.New("new workspace must be a direct child of the writable daemon account home; terminal root access is not daemon access")
+		}
+		if _, err := exec.LookPath("git"); err != nil {
+			return RepositoryState{}, errors.New("Git is required before creating a workspace directory")
+		}
+		if err := os.Mkdir(resolved, 0o700); err != nil {
+			return RepositoryState{}, fmt.Errorf("create new workspace directory: %w", err)
+		}
+	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
 		return RepositoryState{}, err
 	}
-	home, _ := os.UserHomeDir()
-	canonicalHome, _ := filepath.EvalSymlinks(home)
+	canonicalHome := ""
+	if account != nil {
+		canonicalHome, _ = filepath.EvalSymlinks(account.HomeDir)
+	}
 	if filepath.Dir(resolved) == resolved || resolved == canonicalHome {
 		return RepositoryState{}, errors.New("choose a project directory instead of home or the filesystem root; change workspace location and retry")
 	}

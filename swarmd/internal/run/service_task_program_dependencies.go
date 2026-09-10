@@ -77,7 +77,11 @@ func (p *taskProgramScheduler) sourceHandoffsForJob(index int) (string, error) {
 		}
 	}
 	if hasCoder {
-		evidence, err := p.integratedCoderSourceEvidence()
+		// Coders inherit the complete integrated tree through ProgramRepositoryLane.
+		// Other consumers may not have that checkout capability and still need
+		// bounded inline source evidence.
+		inline := !agentruntime.IsCoderAgentName(p.record.Definition.Jobs[index].AgentType)
+		evidence, err := p.integratedCoderSourceEvidence(inline)
 		if err != nil {
 			return "", err
 		}
@@ -93,7 +97,7 @@ func (p *taskProgramScheduler) sourceHandoffsForJob(index int) (string, error) {
 // from the authenticated integrated lane instead of instructing them to inspect
 // the parent checkout (which may be a different repository). No new file/tool
 // grant is conferred. Read the immutable revision, never mutable working bytes.
-func (p *taskProgramScheduler) integratedCoderSourceEvidence() (string, error) {
+func (p *taskProgramScheduler) integratedCoderSourceEvidence(inline bool) (string, error) {
 	path, err := p.programWorkspacePath()
 	if err != nil {
 		return "", err
@@ -114,6 +118,9 @@ func (p *taskProgramScheduler) integratedCoderSourceEvidence() (string, error) {
 	}
 	if !state.Clean || state.HeadCommit != p.record.ParentHead {
 		return "", errors.New("integrated Coder source head is stale or dirty")
+	}
+	if !inline {
+		return fmt.Sprintf("\nIntegrated source is available in the allocated Coder worktree at program lane head %s (base %s). Inspect source with workspace tools; no inline patch is attached. Owned mutation scope is unchanged.\n", p.record.ParentHead, lane.BaseCommit), nil
 	}
 	ctx := p.ctx
 	if ctx == nil {

@@ -29,7 +29,7 @@ func taskProgramDefinitionFromSpec(spec *taskProgramSpec) (pebblestore.TaskProgr
 			ID: job.ID, StageID: job.StageID, DependsOn: append([]string(nil), job.DependsOn...), AgentType: job.RequestedSubagentType,
 			WorkspacePath: job.TargetWorkspacePath,
 			Title:         job.AssignmentLabel, MetaPrompt: job.MetaPrompt, Deliverable: job.Deliverable,
-			OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
+			RecoverySourceDigest: job.RecoverySourceDigest, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), AcceptanceCriteria: append([]string(nil), job.AcceptanceCriteria...), DependencyEvidence: job.DependencyEvidence,
 		})
 	}
 	raw, err := json.Marshal(definition)

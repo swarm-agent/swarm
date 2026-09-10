@@ -22,6 +22,7 @@ func run(args []string) error {
 	artifactRoot := ""
 	applyRelease := false
 	installService := false
+	createServiceAccount := false
 	lane := "main"
 	plan := client.UpdateApplyPlan{}
 	parentPID := 0
@@ -37,6 +38,8 @@ func run(args []string) error {
 			}
 			i++
 			artifactRoot = strings.TrimSpace(args[i])
+		case "--create-service-account":
+			createServiceAccount = true
 		case "--apply-release":
 			applyRelease = true
 		case "--service", "--systemd":
@@ -102,6 +105,23 @@ func run(args []string) error {
 		return launcher.RunUpdateHelper(profile, plan, parentPID, relaunchArgs)
 	}
 
+	if err := launcher.PreflightInstallation(installService); err != nil {
+		return err
+	}
+	if createServiceAccount {
+		fmt.Fprintln(os.Stderr, "Account consent: create locked non-root swarm with home /var/lib/swarm if needed. No sudo, password, interactive login, or SSH changes.")
+		previous, present := os.LookupEnv("SWARM_CREATE_SERVICE_ACCOUNT")
+		if err := os.Setenv("SWARM_CREATE_SERVICE_ACCOUNT", "1"); err != nil {
+			return err
+		}
+		defer func() {
+			if present {
+				_ = os.Setenv("SWARM_CREATE_SERVICE_ACCOUNT", previous)
+			} else {
+				_ = os.Unsetenv("SWARM_CREATE_SERVICE_ACCOUNT")
+			}
+		}()
+	}
 	var (
 		report launcher.InstallReport
 		err    error
@@ -124,7 +144,7 @@ func run(args []string) error {
 	}
 	if installService {
 		if err := launcher.InstallInstalledService(); err != nil {
-			return err
+			return fmt.Errorf("runtime and launchers installed, but service installation/start failed (not rolled back): %w", err)
 		}
 		fmt.Println("installed runtime, launchers, and swarm.service:")
 	} else {
@@ -143,11 +163,20 @@ func run(args []string) error {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
-  swarmsetup [--no-service]
-  swarmsetup --service
+  swarmsetup [--no-service] [--create-service-account]
+  swarmsetup --service [--create-service-account]
   swarmsetup --artifact-root /path/to/dist [--no-service]
   swarmsetup --artifact-root /path/to/dist --service
   swarmsetup --apply-release --lane main --target-version <tag> --asset-name <name> --asset-url <url> --sha256 <digest> [--parent-pid <pid>] [--relaunch-arg <arg>...]
+
+Root-only first install requires --create-service-account consent: Swarm creates
+locked non-root swarm with home /var/lib/swarm; no password, sudo, login, or SSH
+changes. Reinstall preserves consistent existing install directory ownership.
+For a human login/password, an administrator can separately use the distribution's
+interactive account tools (Ubuntu/Debian: adduser NAME, then passwd NAME if needed).
+Optional sudo access is a separate administrator decision using the distribution's
+sudo policy; never unlock or grant sudo to the swarm service account. Swarm does
+not collect passwords or alter SSH access.
 `)
 }
 

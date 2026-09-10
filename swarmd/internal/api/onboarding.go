@@ -19,6 +19,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
+	"swarm/packages/swarmd/internal/workspace"
 )
 
 const bootstrapRoleMaster = "master"
@@ -96,13 +97,14 @@ type onboardingTailscalePayload struct {
 }
 
 type onboardingResponse struct {
-	OK              bool                        `json:"ok"`
-	NeedsOnboarding bool                        `json:"needs_onboarding"`
-	Identity        onboardingIdentityPayload   `json:"identity"`
-	Session         *onboardingSessionPayload   `json:"session,omitempty"`
-	Config          onboardingConfigPayload     `json:"config"`
-	Heuristics      onboardingHeuristicsPayload `json:"heuristics"`
-	Tailscale       onboardingTailscalePayload  `json:"tailscale"`
+	WorkspaceGuidance *workspace.RuntimeWorkspaceGuidance `json:"workspace_guidance,omitempty"`
+	OK                bool                                `json:"ok"`
+	NeedsOnboarding   bool                                `json:"needs_onboarding"`
+	Identity          onboardingIdentityPayload           `json:"identity"`
+	Session           *onboardingSessionPayload           `json:"session,omitempty"`
+	Config            onboardingConfigPayload             `json:"config"`
+	Heuristics        onboardingHeuristicsPayload         `json:"heuristics"`
+	Tailscale         onboardingTailscalePayload          `json:"tailscale"`
 }
 
 type onboardingUpdateRequest struct {
@@ -195,6 +197,14 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
+		}
+		// Bootstrap GET is auth-exempt. Validate the TUI's product bearer
+		// explicitly before exposing only the runtime workspace guidance.
+		if response.WorkspaceGuidance == nil && s.identitySessions != nil {
+			if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil && isCompleteProductActor(actor) {
+				guidance := workspace.DaemonWorkspaceGuidance()
+				response.WorkspaceGuidance = &guidance
+			}
 		}
 		writeJSON(w, http.StatusOK, response)
 	case http.MethodPost:
@@ -359,6 +369,8 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		response.Tailscale = redactSensitiveOnboardingTailscale(response.Tailscale)
 		return response, nil
 	}
+	guidance := workspace.DaemonWorkspaceGuidance()
+	response.WorkspaceGuidance = &guidance
 	response.Tailscale.CandidateURL = tailscaleCandidateURL(cfg, tailscale)
 	if detectServe && shouldDetectTailscaleServeForOnboarding(cfg, response.Tailscale) {
 		response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)

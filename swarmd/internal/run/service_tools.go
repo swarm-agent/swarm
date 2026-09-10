@@ -30,6 +30,8 @@ import (
 )
 
 type taskLaunchPrepared struct {
+	RecoverySourceDigest    string
+	RecoveryPrincipal       identity.Principal
 	LaunchIndex             int
 	VirtualTarget           bool
 	SourceAgentName         string
@@ -1237,6 +1239,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 
 	childMode := effectiveTaskChildMode(sessionMode)
 	isCoderTarget := agentruntime.IsCoderAgentName(requestedSubagent)
+	if launch.RecoverySourceDigest != "" && !isCoderTarget {
+		return taskLaunchPrepared{}, errors.New("recovery source requires a Coder target")
+	}
 	preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 	assignmentLabel := taskAssignmentLabel(launch.AssignmentLabel, launch.MetaPrompt, description, strings.TrimSpace(subagentProfile.Name))
 	childTitle := assignmentLabel
@@ -1429,7 +1434,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if launch.TaskBase == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
-		allocation, allocErr := s.worktrees.AllocateTaskWorkspace(targetWorkspacePath, *launch.TaskBase, childSessionID, launch.OwnedScope)
+		allocation, allocErr := s.allocateRecoveryTaskWorkspace(parentSession, launch, targetWorkspacePath, childSessionID)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
 		}
@@ -1478,6 +1483,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		// captured base for runtime identity validation; never invent a new base.
 		childMetadata["swarm_v3_source_workspace_path"] = strings.TrimSpace(mapString(parentSession.Metadata, "swarm_v3_source_workspace_path"))
 		childMetadata["base_commit"] = strings.TrimSpace(firstNonEmptyString(mapString(parentSession.Metadata, "swarm_v3_worktree_base_commit"), mapString(parentSession.Metadata, "base_commit")))
+	}
+	if launch.RecoverySourceDigest != "" {
+		childMetadata["recovery_source_digest"] = launch.RecoverySourceDigest
+		childMetadata["recovery_source_parent_session_id"] = parentSession.ID
+		launch.MetaPrompt += "\nRecovered source is already in your own worktree within owned_scope. Never read the preserved sibling. Ignored documentation remains unstaged: return its exact relative paths to the parent for permission-gated inclusion or an explicit tracked handoff destination. Do not force-add or classify ordinary unfinished implementation as an external blocker."
 	}
 	if isCoderTarget {
 		childMetadata["worktree_path"] = childWorktreeRootPath
@@ -4671,6 +4681,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		for i := range launchSpecs {
 			row := manifest.Launches[i]
+			launchSpecs[i].RecoverySourceDigest = row.RecoverySourceDigest
 			launchSpecs[i].OwnedScope = append([]string(nil), row.OwnedScope...)
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
@@ -4819,6 +4830,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			RequestedSubagent:       requestedSubagent,
 			MetaPrompt:              metaPrompt,
 			AssignmentLabel:         spec.AssignmentLabel,
+			RecoverySourceDigest:    spec.RecoverySourceDigest,
+			RecoveryPrincipal:       req.Principal,
 			OwnedScope:              append([]string(nil), spec.OwnedScope...),
 			OutputMode:              strings.TrimSpace(spec.OutputMode),
 			OutputRequirements:      cloneTaskOutputRequirements(spec.OutputRequirements),

@@ -89,6 +89,29 @@ try:
         else:
             child.send("s")
             expect("STEP 3 OF 3")
+            if scenario == "daemon-suggestion":
+                # The parent harness must start the daemon with a private,
+                # owned account home and supply its exact advisory path.
+                suggestion = Path(env["SWARM_TEST_SUGGESTED_WORKSPACE"])
+                assert suggestion.is_relative_to(root)
+                assert not suggestion.exists()
+                original = workspace
+                expect("Ctrl+S selects")
+                child.sendcontrol("s")
+                expect("Press y to create this folder")
+                assert not suggestion.exists() and not (original / ".git").exists()
+                child.send("\x1b")
+                expect("STEP 2 OF 3")
+                child.send("s")
+                expect("STEP 3 OF 3")
+                assert not suggestion.exists()
+                child.sendcontrol("s")
+                expect("Press y to create this folder")
+                child.send("y")
+                workspace = suggestion
+                verify_complete()
+                assert not (original / ".git").exists()
+                sys.exit(0)
             if scenario == "permission":
                 denied = root / "denied"
                 denied.mkdir(mode=0o500)

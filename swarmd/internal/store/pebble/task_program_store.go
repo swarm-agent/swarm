@@ -76,20 +76,21 @@ type TaskProgramStageSpec struct {
 }
 
 type TaskProgramJobSpec struct {
-	ID                 string                             `json:"id"`
-	StageID            string                             `json:"stage_id"`
-	DependsOn          []string                           `json:"depends_on,omitempty"`
-	AgentType          string                             `json:"agent_type"`
-	WorkspacePath      string                             `json:"workspace_path,omitempty"`
-	Title              string                             `json:"title"`
-	MetaPrompt         string                             `json:"meta_prompt"`
-	Deliverable        string                             `json:"deliverable"`
-	OwnedScope         []string                           `json:"owned_scope,omitempty"`
-	OutputMode         string                             `json:"output_mode,omitempty"`
-	OutputRequirements *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	AnimationProfile   *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
-	AcceptanceCriteria []string                           `json:"acceptance_criteria"`
-	DependencyEvidence string                             `json:"dependency_evidence"`
+	ID                   string                             `json:"id"`
+	StageID              string                             `json:"stage_id"`
+	DependsOn            []string                           `json:"depends_on,omitempty"`
+	AgentType            string                             `json:"agent_type"`
+	WorkspacePath        string                             `json:"workspace_path,omitempty"`
+	Title                string                             `json:"title"`
+	MetaPrompt           string                             `json:"meta_prompt"`
+	Deliverable          string                             `json:"deliverable"`
+	RecoverySourceDigest string                             `json:"recovery_source_digest,omitempty"`
+	OwnedScope           []string                           `json:"owned_scope,omitempty"`
+	OutputMode           string                             `json:"output_mode,omitempty"`
+	OutputRequirements   *SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile     *SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	AcceptanceCriteria   []string                           `json:"acceptance_criteria"`
+	DependencyEvidence   string                             `json:"dependency_evidence"`
 }
 
 // UnmarshalJSON accepts the tool-advertised alias at the durable plan boundary

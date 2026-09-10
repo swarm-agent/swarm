@@ -260,6 +260,7 @@ type App struct {
 	homeWorkspaceBootstrapped atomic.Bool
 	authLoginCh               chan authLoginResult
 	authLogging               atomic.Bool
+	onboardingDifferentUser   bool
 	onboardingWorkspaceCh     chan onboardingWorkspaceResult
 	codexPending              *codexCodeLoginState
 
@@ -452,6 +453,7 @@ func (a *App) Close() {
 }
 
 func (a *App) Run() error {
+	a.refreshOnboardingWorkspaceGuidance()
 	dirty := true
 	for {
 		if dirty {
@@ -6453,7 +6455,7 @@ func (a *App) saveOnboarding(username, swarmName string) {
 		a.api.SetToken(session.Token)
 	}
 	a.home.SetOnboardingRequired(status.NeedsOnboarding, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
-	a.home.SetOnboardingWorkspacePath(a.startupCWD)
+	a.refreshOnboardingWorkspaceGuidance()
 	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
 	a.refreshAuthModalData("Loading providers...")
 }
@@ -6465,6 +6467,23 @@ func (a *App) refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event *tcell.Ev
 	a.refreshOnboardingWorkspaceGitReadiness()
 }
 
+func (a *App) refreshOnboardingWorkspaceGuidance() {
+	if a.api == nil || a.home == nil || !a.home.OnboardingVisible() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	status, err := a.api.GetOnboardingStatus(ctx)
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Could not load daemon workspace guidance: %v", err))
+		return
+	}
+	if g := status.WorkspaceGuidance; g != nil {
+		a.onboardingDifferentUser = g.RuntimeUID != fmt.Sprint(os.Geteuid())
+		a.home.SetOnboardingWorkspaceGuidance(firstNonEmpty(g.RuntimeUsername, g.RuntimeUID), g.SuggestedWorkspacePath)
+	}
+}
+
 func (a *App) refreshOnboardingWorkspaceGitReadiness() {
 	if a == nil || a.home == nil {
 		return
@@ -6474,6 +6493,11 @@ func (a *App) refreshOnboardingWorkspaceGitReadiness() {
 		return
 	}
 	status, _ := gitStatusForPath(path)
+	// A privileged terminal cannot establish the daemon's filesystem access.
+	// Keep admission on the authenticated API, not a root-local Git verdict.
+	if a.onboardingDifferentUser {
+		status.Readiness = model.GitReadinessUnknown
+	}
 	a.home.SetOnboardingWorkspaceGitReadiness(path, status.HasGit, status.Readiness)
 	a.homeModel.WorkspaceSetupPath = path
 	a.homeModel.WorkspaceSetupHasGit = status.HasGit
@@ -7677,6 +7701,7 @@ func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
 	if a.home.OnboardingProviderActive() && !wasProvider {
+		a.refreshOnboardingWorkspaceGuidance()
 		a.refreshAuthModalData("Loading providers...")
 	}
 	route := a.selectedChatRouteForWorkspace(a.activeWorkspacePath())
