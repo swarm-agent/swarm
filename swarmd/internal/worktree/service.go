@@ -328,7 +328,7 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 	return s.allocateSessionWorkspaceWithOptions(workspacePath, useCurrentBranch, baseBranch, configuredBranchName, sessionID, exactBranchName, nil, false)
 }
 
-func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string, exactBranchName bool, ownedScopes []string, sparseTask bool) (Allocation, error) {
+func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string, exactBranchName bool, ownedScopes []string, sparseTask bool, initialize ...func(string) error) (Allocation, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	sessionID = strings.TrimSpace(sessionID)
 	if workspacePath == "" {
@@ -408,6 +408,14 @@ func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useC
 		if err := prepareTaskWorktreeCheckout(worktreePath, ownedScopes); err != nil {
 			cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 			return Allocation{}, fmt.Errorf("prepare sparse task worktree: %w", allocationFailureWithCleanup(err, cleanupErr))
+		}
+	}
+	for _, init := range initialize {
+		if init != nil {
+			if err := init(worktreePath); err != nil {
+				cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
+				return Allocation{}, fmt.Errorf("initialize task source: %w", allocationFailureWithCleanup(err, cleanupErr))
+			}
 		}
 	}
 	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
@@ -1012,6 +1020,12 @@ func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState
 }
 
 func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string, ownedScopes []string) (Allocation, error) {
+	return s.AllocateTaskWorkspaceWithSource(workspacePath, base, nameSeed, ownedScopes, nil)
+}
+
+// AllocateTaskWorkspaceWithSource initializes a new lane before publication.
+// Failure removes the new allocation, never the preserved source.
+func (s *Service) AllocateTaskWorkspaceWithSource(workspacePath string, base TaskBase, nameSeed string, ownedScopes []string, initialize func(string) error) (Allocation, error) {
 	if _, _, err := canonicalTaskSparseScopes(ownedScopes); err != nil {
 		return Allocation{}, err
 	}
@@ -1029,7 +1043,7 @@ func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nam
 	if !sameCleanPath(resolvedRoot, base.RepoRoot) {
 		return Allocation{}, fmt.Errorf("task base repository %q does not match workspace repository %q", base.RepoRoot, resolvedRoot)
 	}
-	allocation, err := s.allocateSessionWorkspaceWithOptions(workspacePath, false, base.BaseCommit, "", nameSeed, false, ownedScopes, true)
+	allocation, err := s.allocateSessionWorkspaceWithOptions(workspacePath, false, base.BaseCommit, "", nameSeed, false, ownedScopes, true, initialize)
 	if err != nil {
 		return Allocation{}, err
 	}

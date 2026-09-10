@@ -84,6 +84,7 @@ type taskProgramJob struct {
 	MetaPrompt            string                                         `json:"meta_prompt"`
 	AssignmentLabel       string                                         `json:"title"`
 	Deliverable           string                                         `json:"deliverable"`
+	RecoverySourceDigest  string                                         `json:"recovery_source_digest,omitempty"`
 	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
 	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
@@ -182,6 +183,7 @@ type taskLaunchSpec struct {
 	AssignmentLabel       string
 	Deliverable           string
 	ConcurrencyReason     string
+	RecoverySourceDigest  string `json:"recovery_source_digest,omitempty"`
 	OwnedScope            []string
 	OutputMode            string
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
@@ -318,6 +320,7 @@ type taskLaunchManifestRow struct {
 	AssignmentLabel       string                                         `json:"assignment_label,omitempty"`
 	Deliverable           string                                         `json:"deliverable,omitempty"`
 	ConcurrencyReason     string                                         `json:"concurrency_reason,omitempty"`
+	RecoverySourceDigest  string                                         `json:"recovery_source_digest,omitempty"`
 	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
 	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
@@ -467,12 +470,13 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "assignment_label"),
 				mapString(raw, "label"),
 			)),
-			TargetWorkspacePath: strings.TrimSpace(mapString(raw, "workspace_path")),
-			Deliverable:         strings.TrimSpace(mapString(raw, "deliverable")),
-			ConcurrencyReason:   strings.TrimSpace(mapString(raw, "concurrency_reason")),
-			OwnedScope:          ownedScope,
-			DependencyEvidence:  strings.TrimSpace(mapString(raw, "dependency_evidence")),
-			SourceArguments:     cloneGenericMap(raw),
+			TargetWorkspacePath:  strings.TrimSpace(mapString(raw, "workspace_path")),
+			Deliverable:          strings.TrimSpace(mapString(raw, "deliverable")),
+			ConcurrencyReason:    strings.TrimSpace(mapString(raw, "concurrency_reason")),
+			RecoverySourceDigest: mapString(raw, "recovery_source_digest"),
+			OwnedScope:           ownedScope,
+			DependencyEvidence:   strings.TrimSpace(mapString(raw, "dependency_evidence")),
+			SourceArguments:      cloneGenericMap(raw),
 		}
 		if launch.RequestedSubagentType == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires subagent_type, agent, or purpose", label)
@@ -508,6 +512,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			if err := applyTaskAnimationProfile(&launch, rawProfile, label); err != nil {
 				return taskLaunchSpec{}, err
 			}
+		}
+		if err := validateRecoveryLaunch(launch.RecoverySourceDigest, launch.RequestedSubagentType, launch.OwnedScope); err != nil {
+			return taskLaunchSpec{}, err
 		}
 		applyCanonicalCoderOwnedScope(&launch)
 		return launch, nil
@@ -851,7 +858,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "scene_contract", "acceptance_criteria", "dependency_evidence":
+			case "recovery_source_digest", "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "scene_contract", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
@@ -910,6 +917,10 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			if err := taskscope.ValidateProgram(scope); err != nil {
 				return nil, nil, fmt.Errorf("task program jobs[%d].owned_scope[%d]: %w", i, scopeIndex, err)
 			}
+		}
+		job.RecoverySourceDigest = mapString(row, "recovery_source_digest")
+		if err := validateRecoveryLaunch(job.RecoverySourceDigest, job.RequestedSubagentType, ownedScope); err != nil {
+			return nil, nil, err
 		}
 		job.OwnedScope = ownedScope
 		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, OwnedScope: append([]string(nil), ownedScope...)}
@@ -990,7 +1001,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		launches = append(launches, taskLaunchSpec{
 			RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, MetaPrompt: job.MetaPrompt, AssignmentLabel: job.AssignmentLabel,
-			Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), DependencyEvidence: job.DependencyEvidence,
+			RecoverySourceDigest: job.RecoverySourceDigest, Deliverable: job.Deliverable, OwnedScope: append([]string(nil), job.OwnedScope...), OutputMode: job.OutputMode, OutputRequirements: cloneTaskOutputRequirements(job.OutputRequirements), AnimationProfile: cloneTaskAnimationProfile(job.AnimationProfile), DependencyEvidence: job.DependencyEvidence,
 			SourceArguments: sourceArguments,
 		})
 	}
@@ -3690,6 +3701,9 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 			}
 		}
 		approvedLaunches[i] = row
+		if row.RecoverySourceDigest != launchSpecs[i].RecoverySourceDigest {
+			return taskLaunchManifest{}, errors.New("approved recovery source differs from requested digest")
+		}
 		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
@@ -3925,6 +3939,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			AssignmentLabel:       assignmentLabel,
 			Deliverable:           strings.TrimSpace(launch.Deliverable),
 			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
+			RecoverySourceDigest:  launch.RecoverySourceDigest,
 			OwnedScope:            append([]string(nil), launch.OwnedScope...),
 			OutputMode:            strings.TrimSpace(launch.OutputMode),
 			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
