@@ -18,8 +18,8 @@ type keyedSessionLock struct {
 
 type sessionMutationCoordinator struct {
 	worktreeMu sync.Mutex
-	locksMu sync.Mutex
-	locks   map[string]*keyedSessionLock
+	locksMu    sync.Mutex
+	locks      map[string]*keyedSessionLock
 
 	outboxMu          sync.Mutex
 	outboxCond        *sync.Cond

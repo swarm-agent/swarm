@@ -23,6 +23,7 @@ const recoveryFileLimit = 2048
 // Callers must authorize the saved repository and candidate before inspecting it.
 type RecoveryIdentity struct {
 	Path, CommonDir, GitDir, HEAD, Fingerprint string
+	Branch                                     string
 }
 
 // RecoverySelection accepts exact relative files only. Commits and arbitrary
@@ -167,6 +168,14 @@ func recoveryIdentity(repository, candidate string) (RecoveryIdentity, error) {
 		return id, err
 	}
 	id = RecoveryIdentity{Path: candidate, CommonDir: common, GitDir: admin, HEAD: strings.TrimSpace(string(head))}
+	adminHead, err := recoveryRead(admin, "HEAD")
+	if err != nil {
+		return id, err
+	}
+	ref := strings.TrimSpace(string(adminHead.Data))
+	if strings.HasPrefix(ref, "ref: refs/heads/") {
+		id.Branch = strings.TrimPrefix(ref, "ref: refs/heads/")
+	}
 	return id, nil
 }
 

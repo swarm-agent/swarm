@@ -157,16 +157,25 @@ func TestWorktreeAdmissionDelegatedRuntime(t *testing.T) {
 			next := SessionSnapshot{ID: "child", WorkspacePath: runtime, WorktreeEnabled: true, WorktreeRootPath: runtime, WorktreeBranch: "agent/child", Metadata: map[string]interface{}{"subagent": "coder", "swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": runtime, "swarm_v3_worktree_owner_session_id": "child"}}
 			e := &WorktreeAdmissionEvidence{Kind: "allocated", Path: runtime, SourcePath: source, OwnerSessionID: "child", Branch: next.WorktreeBranch, DelegatedCoder: true}
 			switch scenario {
-			case "metadata-only": e.DelegatedCoder = false
-			case "finder": next.Metadata["subagent"] = "finder"
-			case "wrong-source": next.Metadata["swarm_v3_source_workspace_path"] = runtime
+			case "metadata-only":
+				e.DelegatedCoder = false
+			case "finder":
+				next.Metadata["subagent"] = "finder"
+			case "wrong-source":
+				next.Metadata["swarm_v3_source_workspace_path"] = runtime
 			}
 			_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "child", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationCreateSession, IdempotencyKey: "create", PayloadHash: "create", Session: &next, WorktreeAdmission: e})
 			if scenario == "coder" {
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 			} else {
-				if !errors.Is(err, ErrWorktreeRecoveryConflict) { t.Fatalf("admission: %v", err) }
-				if _, err := s.InspectWorktreeOwnership("account", "user", []string{runtime}); err == nil { t.Fatal("partial claim") }
+				if !errors.Is(err, ErrWorktreeRecoveryConflict) {
+					t.Fatalf("admission: %v", err)
+				}
+				if _, err := s.InspectWorktreeOwnership("account", "user", []string{runtime}); err == nil {
+					t.Fatal("partial claim")
+				}
 			}
 		})
 	}
@@ -182,30 +191,58 @@ func TestWorktreeRecoveryLegacyMigration(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "lane")
 			createRecoverySession(t, s, "owner", path)
 			createRecoverySession(t, s, "receiver", "")
-			if scenario != "live" { if err := s.DeleteSession("owner"); err != nil { t.Fatal(err) } }
-			if err := s.store.db.Delete([]byte(worktreeOwnershipKey(path)), nil); err != nil { t.Fatal(err) }
+			if scenario != "live" {
+				if err := s.DeleteSession("owner"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.store.db.Delete([]byte(worktreeOwnershipKey(path)), nil); err != nil {
+				t.Fatal(err)
+			}
 			source, account, candidate := path, "account", path
-			if scenario == "foreign" { account = "foreign" }
-			if scenario == "wrong-source" { source = filepath.Join(t.TempDir(), "other") }
-			if scenario == "unknown" { candidate = filepath.Join(t.TempDir(), "unknown") }
+			if scenario == "foreign" {
+				account = "foreign"
+			}
+			if scenario == "wrong-source" {
+				source = filepath.Join(t.TempDir(), "other")
+			}
+			if scenario == "unknown" {
+				candidate = filepath.Join(t.TempDir(), "unknown")
+			}
 			claims, err := s.InspectRecoveryOwnership(account, "user", source, candidate)
 			if scenario == "deleted" || scenario == "live" {
-				if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != "owner" { t.Fatalf("history: %+v %v", claims, err) }
-			} else if err == nil || claims != nil { t.Fatalf("unauthorized history: %+v %v", claims, err) }
-			if _, err := s.InspectWorktreeOwnership("account", "user", []string{path}); err == nil { t.Fatal("discovery persisted a claim") }
+				if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != "owner" {
+					t.Fatalf("history: %+v %v", claims, err)
+				}
+			} else if err == nil || claims != nil {
+				t.Fatalf("unauthorized history: %+v %v", claims, err)
+			}
+			if _, err := s.InspectWorktreeOwnership("account", "user", []string{path}); err == nil {
+				t.Fatal("discovery persisted a claim")
+			}
 			input := recoveryInput("receiver", "reserve", candidate, 1, 1)
 			input.WorktreeRecovery.SourcePath = source
 			input.AccountScopeID = account
 			_, err = s.ApplyV3SessionMutation(input)
 			if scenario == "deleted" {
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				claims, err = s.InspectWorktreeOwnership("account", "user", []string{path})
-				if err != nil || claims[0].OwnerSessionID != "owner" || claims[0].ClaimantSessionID != "receiver" || claims[0].Revision != 2 { t.Fatalf("migration: %+v %v", claims, err) }
+				if err != nil || claims[0].OwnerSessionID != "owner" || claims[0].ClaimantSessionID != "receiver" || claims[0].Revision != 2 {
+					t.Fatalf("migration: %+v %v", claims, err)
+				}
 			} else {
-				if err == nil { t.Fatal("invalid migration accepted") }
-				if _, err := s.InspectWorktreeOwnership("account", "user", []string{path}); err == nil { t.Fatal("partial claim") }
+				if err == nil {
+					t.Fatal("invalid migration accepted")
+				}
+				if _, err := s.InspectWorktreeOwnership("account", "user", []string{path}); err == nil {
+					t.Fatal("partial claim")
+				}
 				events, err := s.ListV3SessionEvents("receiver", 0, 10)
-				if err != nil || len(events) != 1 { t.Fatalf("partial events: %+v %v", events, err) }
+				if err != nil || len(events) != 1 {
+					t.Fatalf("partial events: %+v %v", events, err)
+				}
 			}
 		})
 	}

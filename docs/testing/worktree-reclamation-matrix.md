@@ -97,3 +97,23 @@ Once attached and candidate identity is proven, run one disposable same-account 
 - External resolution: provide a valid non-secret testbench config through the supported override (configured SSH alias and fixed defaults), restore the authorized slot-2 forward to the requested endpoint, and return broker slot/lane/full-HEAD evidence. A port responding alone is insufficient. Re-run bounded attach plus pool inspection before any live mutation.
 
 This inspection checkpoint can complete because its endpoint criterion permits an evidenced actionable external blocker. Live proof remains blocked until that dependency is resolved; implementation work is not represented as live-tested.
+
+## Implementation evidence (2026-09-10)
+
+Integrated implementation baseline `ec5554e16e9a64ac5fd0801b7834636842d986df` plus parent formatting/routing/backfill/browser-selection corrections. This supplements, not replaces, the required matrix above.
+
+- R01/R02: focused new successor and dirty owned resume tests pass.
+- R04/R05/R06/R19/R20: ownership admission, legacy provenance migration, tombstone, foreign/archive/stale rejection, concurrent exclusive publication and store reopen tests pass.
+- R08–R11/R22: real copy-action tests pass with separate staged A / working B, untracked binary executable, unchanged source index/fingerprint, injected publication failure retaining destination/reservation, and no duplicate allocation on stale retry.
+- R17: 14 repository state tests and one actual Chromium recovery DOM test pass. Browser executable override is explicit; no visual screenshot claim or live Desktop claim.
+- R18: restart flag/fencing source inspected; actual provider continuation and installed daemon restart remain for live proof.
+- R03/R12/R13: unknown external ownership and arbitrary commit/patch imports explicitly reject. These are not implemented positive matrix outcomes.
+- Recovery fingerprints are not hostile external writer locks. Reservation protects canonical admission, not arbitrary host processes. Complete interrupted-operation repair and every allocation/store crash window remain unproved.
+
+Executed backend command: `GOMAXPROCS=2 go test ./internal/run ./internal/store/pebble ./internal/worktree ./internal/permission ./internal/api -run '^(TestWorktreeRecovery.*|TestWorktreeAdmission.*|TestRecovery.*|TestManageWorkspaceAdoptWorktree.*|TestWorkspaceSuccessor.*|TestSessionsV3AdmissionRejectsExistingAndInvalidLanes|TestProviderWorkspace.*)$' -count=1 -parallel=1 -p=1 -timeout=120s` from `swarmd`: five packages pass. Selectors are existing focused families, not evidence for every proposed Rnn test.
+
+A wider nearby `TestManageWorkspace.*` check also found eight unrelated legacy fixture/automatic-map-policy failures (empty/noncommitted workspace fixtures and old automatic approval expectation). These were not suppressed or included in passing evidence. Dirty-successor backfill and copy-routing failures introduced by new authority were corrected and rerun successfully.
+
+Frontend: `node --import tsx --test --test-timeout=30000 src/features/desktop/state/session-repositories.spec.ts`; focused browser `--test-name-pattern='recovery refresh'` with explicit `SWARM_TEST_BROWSER_EXECUTABLE`: pass. Default bundled browser absent; scratch browser download timed out; installed Chromium provided a distinct successful recovery path.
+
+No testbench deployment, host restart, tunnel replacement or live provider recovery performed in this implementation checkpoint. Independent two-pass test review remains pending.

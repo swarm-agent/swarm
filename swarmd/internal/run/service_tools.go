@@ -1524,17 +1524,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		applyMutation = s.sessions.ApplySessionMutation
 	}
 	created, err := applyMutation(sessionruntime.SessionMutationInput{
-		SessionID:       childSessionID,
-		UserID:          strings.TrimSpace(parentSession.UserID),
-		AccountScopeID:  strings.TrimSpace(parentSession.AccountScopeID),
-		ClientRequestID: "task-child-create:" + childSessionID,
-		IdempotencyKey:  "task-child-create:" + childSessionID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationCreateSession,
-		Session:         &childSession,
+		SessionID:         childSessionID,
+		UserID:            strings.TrimSpace(parentSession.UserID),
+		AccountScopeID:    strings.TrimSpace(parentSession.AccountScopeID),
+		ClientRequestID:   "task-child-create:" + childSessionID,
+		IdempotencyKey:    "task-child-create:" + childSessionID,
+		PayloadHash:       payloadHash,
+		RequestHash:       payloadHash,
+		Kind:              sessionruntime.SessionMutationCreateSession,
+		Session:           &childSession,
 		WorktreeAdmission: childAdmission,
-		NowUnixMs:       nowMS,
+		NowUnixMs:         nowMS,
 	})
 	if err != nil {
 		return taskLaunchPrepared{}, fmt.Errorf("task failed to create canonical v3 subagent session: %w", err)

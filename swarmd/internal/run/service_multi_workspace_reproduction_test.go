@@ -114,6 +114,9 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 				}
 			}
 			store := pebblestore.NewSessionStore(rawStore)
+			if err := store.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 			sessions := sessionruntime.NewService(store, nil)
 			id := "incident-fixture"
 			available := true

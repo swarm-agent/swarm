@@ -881,16 +881,16 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		WorktreeAdmission: admission,
-		SessionID:       sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationCreateSession,
-		Session:         &session,
-		NowUnixMs:       now,
+		SessionID:         sessionID,
+		UserID:            principal.UserID,
+		AccountScopeID:    principal.AccountScopeID,
+		ClientRequestID:   clientRequestID,
+		IdempotencyKey:    clientRequestID,
+		PayloadHash:       payloadHash,
+		RequestHash:       payloadHash,
+		Kind:              sessionruntime.SessionMutationCreateSession,
+		Session:           &session,
+		NowUnixMs:         now,
 	})
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {

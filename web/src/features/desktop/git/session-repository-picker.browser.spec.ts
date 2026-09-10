@@ -23,7 +23,7 @@ test('browser repository selection remains explicit across default changes', { t
     }
     createRoot(document.getElementById('root')).render(<Fixture/>);
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"test"' } })
-  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined, executablePath: process.env.SWARM_TEST_BROWSER_EXECUTABLE || undefined })
   try {
     const page = await browser.newPage({ viewport: { width: 360, height: 640 } })
     await page.setContent('<div id="root"></div>')
@@ -72,7 +72,7 @@ test('styled repository windows reach late workers without implicit retargeting'
   assert.ok(!Array.isArray(result) && 'output' in result)
   const js = result.output.filter(item => item.type === 'chunk').map(item => item.code).join('\n')
   const css = result.output.filter(item => item.type === 'asset' && item.fileName.endsWith('.css')).map(item => String(item.source)).join('\n')
-  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined, executablePath: process.env.SWARM_TEST_BROWSER_EXECUTABLE || undefined })
   try {
     const page = await browser.newPage()
     await page.route('**/*', route => route.abort())
@@ -123,7 +123,7 @@ test('recovery refresh preserves exact browser inspection and missing selection'
     function Fixture(){const state=React.useSyncExternalStore(inventory.subscribe,inventory.snapshot);return <><SessionRepositoryPicker inventory={state} onSelect={inventory.select} onRefresh={inventory.refresh} onLoadMore={inventory.loadMore}/><button onClick={recover}>Publish recovery</button></>;}
     createRoot(document.getElementById('root')).render(<Fixture/>); inventory.refresh();
   `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"test"' } })
-  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined, executablePath: process.env.SWARM_TEST_BROWSER_EXECUTABLE || undefined })
   try {
     const page = await browser.newPage()
     await page.route('**/*', route => route.abort())

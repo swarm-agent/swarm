@@ -27,7 +27,7 @@ const manageWorkspacePathID = "tool.manage-workspace.v1"
 // and remains in the safe workspace after delete. Worktree runtime checkout
 // identities fail closed. Delete only unlinks catalog data.
 type manageWorkspaceArguments struct {
-	Recovery recoveryArguments
+	Recovery             recoveryArguments
 	Action               string
 	WorkspaceID          string
 	WorkspaceGeneration  int64
@@ -136,16 +136,20 @@ func parseManageWorkspaceArguments(arguments string) (manageWorkspaceArguments, 
 		return manageWorkspaceArguments{}, fmt.Errorf("manage_workspace arguments invalid: %w", err)
 	}
 	allowed := map[string]bool{"action": true, "workspace_id": true, "workspace_generation": true, "workspace_ids": true, "primary_workspace_id": true, "worktree_name": true, "worktree_path": true, "expected_worktree_path": true, "workspace_path": true, "workspace_name": true, "theme_id": true, "intent": true, "permission_scope": true, "expected_revision": true, "content": true}
-	for _, key := range []string{"owner_session_id", "ownership_revision", "head", "fingerprint", "operation_id", "files"} { allowed[key] = true }
+	for _, key := range []string{"owner_session_id", "ownership_revision", "head", "fingerprint", "operation_id", "files"} {
+		allowed[key] = true
+	}
 	for key := range raw {
 		if !allowed[key] {
 			return manageWorkspaceArguments{}, fmt.Errorf("manage_workspace unknown field %q", key)
 		}
 	}
 	recovery, err := parseRecoveryArguments(raw)
-	if err != nil { return manageWorkspaceArguments{}, err }
+	if err != nil {
+		return manageWorkspaceArguments{}, err
+	}
 	args := manageWorkspaceArguments{
-		Recovery: recovery,
+		Recovery:             recovery,
 		Action:               strings.ToLower(strings.TrimSpace(mapString(raw, "action"))),
 		WorkspaceID:          strings.TrimSpace(mapString(raw, "workspace_id")),
 		WorkspaceGeneration:  manageWorkspaceInt64(raw["workspace_generation"]),

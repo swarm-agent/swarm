@@ -77,8 +77,8 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	WorktreeAdmission    *WorktreeAdmissionEvidence     `json:"-"`
-	WorktreeRecovery     *WorktreeRecoveryMutation      `json:"worktree_recovery,omitempty"`
+	WorktreeAdmission    *WorktreeAdmissionEvidence `json:"-"`
+	WorktreeRecovery     *WorktreeRecoveryMutation  `json:"worktree_recovery,omitempty"`
 	workspaceCatalog     *workspaceCatalogMutation
 	SessionID            string                        `json:"session_id"`
 	UserID               string                        `json:"user_id,omitempty"`

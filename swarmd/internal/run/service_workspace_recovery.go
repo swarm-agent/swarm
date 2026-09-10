@@ -9,11 +9,11 @@ import (
 )
 
 type sessionRecoveryCandidate struct {
-	Path string `json:"path"`
-	OwnerSessionID string `json:"owner_session_id"`
+	Path              string `json:"path"`
+	OwnerSessionID    string `json:"owner_session_id"`
 	OwnershipRevision uint64 `json:"ownership_revision"`
-	HEAD string `json:"head"`
-	Fingerprint string `json:"fingerprint"`
+	HEAD              string `json:"head"`
+	Fingerprint       string `json:"fingerprint"`
 }
 
 // authorizedRecoveryCandidates deliberately separates registration from content
