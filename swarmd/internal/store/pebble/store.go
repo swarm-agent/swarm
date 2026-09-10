@@ -14,16 +14,16 @@ import (
 )
 
 type Store struct {
-	db                   *pebble.DB
-	path                 string
-	sessionMutations     *sessionMutationCoordinator
-	modelProfilesMu      sync.Mutex
-	swarmProfilesMu      sync.Mutex
-	agentModelSettingsMu sync.Mutex
-	tailscaleAllowlistMu sync.Mutex
-	automationsMu        sync.Mutex
+	db                    *pebble.DB
+	path                  string
+	sessionMutations      *sessionMutationCoordinator
+	modelProfilesMu       sync.Mutex
+	swarmProfilesMu       sync.Mutex
+	agentModelSettingsMu  sync.Mutex
+	tailscaleAllowlistMu  sync.Mutex
+	automationsMu         sync.Mutex
 	automationPublisherMu sync.RWMutex
-	automationPublisher func(V3RealtimeOutboxRecord)
+	automationPublisher   func(V3RealtimeOutboxRecord)
 }
 
 func Open(path string) (*Store, error) {
