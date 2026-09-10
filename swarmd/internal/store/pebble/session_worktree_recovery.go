@@ -275,7 +275,7 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 			return nil, ErrWorktreeRecoveryConflict
 		}
 		if mutation.Action == "publish_copy" {
-			if record.OperationState != "reserved_copy" || input.Session == nil || !next.WorktreeEnabled || next.WorktreeRootPath == path || input.WorktreeAdmission == nil || input.WorktreeAdmission.Kind != "allocated" {
+			if record.OperationState != "reserved_copy" || input.Session == nil || next.WorkspacePath != current.WorkspacePath || !next.WorktreeEnabled || next.WorktreeRootPath == path || input.WorktreeAdmission == nil || input.WorktreeAdmission.Kind != "allocated" {
 				return nil, ErrWorktreeRecoveryConflict
 			}
 			if err := s.worktreeSourceIdle(record.OwnerSessionID, input.SessionID); err != nil {
