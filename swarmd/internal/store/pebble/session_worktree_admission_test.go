@@ -143,3 +143,31 @@ func TestWorktreeAdmissionRestartReservation(t *testing.T) {
 		t.Fatalf("partial switch: %+v %v", current, err)
 	}
 }
+
+// Purpose: explicit trusted Coder evidence permits runtime WorkspacePath only
+// with exact original-source metadata; metadata alone and Finder allocations
+// cannot create exclusive ownership. The store boundary observes no partial claim.
+func TestWorktreeAdmissionDelegatedRuntime(t *testing.T) {
+	for _, scenario := range []string{"coder", "metadata-only", "finder", "wrong-source"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := NewSessionStore(openV3SessionEventTestStore(t))
+			createRecoverySession(t, s, "seed", "")
+			root := t.TempDir()
+			source, runtime := filepath.Join(root, "source"), filepath.Join(root, "runtime")
+			next := SessionSnapshot{ID: "child", WorkspacePath: runtime, WorktreeEnabled: true, WorktreeRootPath: runtime, WorktreeBranch: "agent/child", Metadata: map[string]interface{}{"subagent": "coder", "swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": runtime, "swarm_v3_worktree_owner_session_id": "child"}}
+			e := &WorktreeAdmissionEvidence{Kind: "allocated", Path: runtime, SourcePath: source, OwnerSessionID: "child", Branch: next.WorktreeBranch, DelegatedCoder: true}
+			switch scenario {
+			case "metadata-only": e.DelegatedCoder = false
+			case "finder": next.Metadata["subagent"] = "finder"
+			case "wrong-source": next.Metadata["swarm_v3_source_workspace_path"] = runtime
+			}
+			_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "child", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationCreateSession, IdempotencyKey: "create", PayloadHash: "create", Session: &next, WorktreeAdmission: e})
+			if scenario == "coder" {
+				if err != nil { t.Fatal(err) }
+			} else {
+				if !errors.Is(err, ErrWorktreeRecoveryConflict) { t.Fatalf("admission: %v", err) }
+				if _, err := s.InspectWorktreeOwnership("account", "user", []string{runtime}); err == nil { t.Fatal("partial claim") }
+			}
+		})
+	}
+}

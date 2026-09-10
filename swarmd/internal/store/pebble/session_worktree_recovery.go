@@ -26,6 +26,16 @@ type WorktreeOwnership struct {
 	ClaimantSessionID string   `json:"claimant_session_id,omitempty"`
 	OperationState    string   `json:"operation_state,omitempty"`
 	Evidence          string   `json:"evidence,omitempty"`
+	CopySource        *WorktreeCopySource `json:"copy_source,omitempty"`
+}
+
+// WorktreeCopySource is immutable attribution captured at copy publication.
+// Copies reference their immediate source; ownership history is never flattened.
+type WorktreeCopySource struct {
+	Path string `json:"path"`
+	OwnerSessionID string `json:"owner_session_id"`
+	Revision uint64 `json:"revision"`
+	Evidence string `json:"evidence"`
 }
 
 // WorktreeRecoveryMutation uses a caller-generated stable OperationID and exact
@@ -34,7 +44,7 @@ type WorktreeOwnership struct {
 // Release only cancels a reservation; it never releases session ownership or
 // deletes Git resources. Failed cleanup therefore remains safely reserved.
 type WorktreeRecoveryMutation struct {
-	Action           string `json:"action"` // reserve, publish, release
+	Action           string `json:"action"` // reserve, reserve_copy, publish, publish_copy, release
 	Path             string `json:"path"`
 	OwnerSessionID   string `json:"owner_session_id"`
 	ExpectedRevision uint64 `json:"expected_revision"`
@@ -96,8 +106,29 @@ func (s *SessionStore) worktreeTransitionIdle(sessionID string) error {
 	return nil
 }
 
-func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, next SessionSnapshot) (*WorktreeOwnership, error) {
+func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, next SessionSnapshot) ([]WorktreeOwnership, error) {
+	// Run admission must not start a writer against a reserved source lane.
+	if input.RunIntent != nil && (input.RunIntent.Status == V3RunIntentPendingExecutor || input.RunIntent.Status == V3RunIntentRunning) {
+		current, exists, err := s.GetSession(input.SessionID)
+		if err != nil { return nil, err }
+		if exists && current.WorktreeRootPath != "" {
+			var claim WorktreeOwnership
+			found, err := s.store.GetJSON(worktreeOwnershipKey(current.WorktreeRootPath), &claim)
+			if err != nil { return nil, err }
+			if found && claim.ClaimantSessionID != "" { return nil, ErrWorktreeRecoveryConflict }
+		}
+	}
 	mutation := input.WorktreeRecovery
+	if mutation == nil && input.Session != nil {
+		current, exists, err := s.GetSession(input.SessionID)
+		if err != nil { return nil, err }
+		if exists && current.WorktreeRootPath != "" {
+			var claim WorktreeOwnership
+			found, err := s.store.GetJSON(worktreeOwnershipKey(current.WorktreeRootPath), &claim)
+			if err != nil { return nil, err }
+			if found && claim.ClaimantSessionID != "" { return nil, ErrWorktreeRecoveryConflict }
+		}
+	}
 	if mutation == nil && input.Session == nil {
 		return nil, nil
 	}
@@ -121,7 +152,9 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 	if !validWorktreePath(path) {
 		return nil, ErrWorktreeRecoveryConflict
 	}
-	if err := s.validateRetainedWorktreeProgramClaims(path, input.SessionID); err != nil {
+	claimOwner := input.SessionID
+	if mutation != nil && (mutation.Action == "reserve_copy" || mutation.Action == "publish_copy" || mutation.Action == "release") { claimOwner = mutation.OwnerSessionID }
+	if err := s.validateRetainedWorktreeProgramClaims(path, claimOwner); err != nil {
 		return nil, err
 	}
 	var record WorktreeOwnership
@@ -152,7 +185,7 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 		if err := s.validateWorktreeAdmission(input, next); err != nil {
 			return nil, err
 		}
-		return &WorktreeOwnership{Path: path, AccountScopeID: input.AccountScopeID, UserID: input.UserID, OwnerSessionID: input.SessionID, Revision: 1}, nil
+		return []WorktreeOwnership{{Path: path, AccountScopeID: input.AccountScopeID, UserID: input.UserID, OwnerSessionID: input.SessionID, Revision: 1}}, nil
 	}
 	if input.Kind != V3SessionMutationUpdateSettings || input.ExpectedLastEventSeq == nil || !found || mutation.ExpectedRevision != record.Revision || mutation.OwnerSessionID != record.OwnerSessionID || mutation.OperationID == "" || len(mutation.OperationID) > 128 || len(mutation.Evidence) != 64 {
 		return nil, ErrWorktreeRecoveryConflict
@@ -171,14 +204,17 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 		return nil, err
 	}
 	switch mutation.Action {
-	case "reserve":
+	case "reserve", "reserve_copy":
 		if record.ClaimantSessionID != "" || record.OperationID == mutation.OperationID {
 			return nil, ErrWorktreeRecoveryConflict
 		}
-		if next.WorktreeRootPath != current.WorktreeRootPath {
+		if next.WorktreeRootPath != current.WorktreeRootPath || next.WorkspacePath != current.WorkspacePath {
 			return nil, ErrWorktreeRecoveryConflict
 		}
-		if record.OwnerSessionID != input.SessionID {
+		if mutation.Action == "reserve_copy" {
+			if err := s.worktreeSourceIdle(record.OwnerSessionID, input.SessionID); err != nil { return nil, err }
+		}
+		if record.OwnerSessionID != input.SessionID && mutation.Action != "reserve_copy" {
 			if _, live, err := s.GetSession(record.OwnerSessionID); err != nil {
 				return nil, err
 			} else if live {
@@ -202,11 +238,29 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 			}
 		}
 		record.OperationID, record.ClaimantSessionID, record.OperationState, record.Evidence = mutation.OperationID, input.SessionID, "reserved", mutation.Evidence
-	case "publish", "release":
-		if record.OperationState != "reserved" || record.ClaimantSessionID != input.SessionID || record.OperationID != mutation.OperationID || record.Evidence != mutation.Evidence {
+		if mutation.Action == "reserve_copy" { record.OperationState = "reserved_copy" }
+	case "publish", "publish_copy", "release":
+		if (record.OperationState != "reserved" && record.OperationState != "reserved_copy") || record.ClaimantSessionID != input.SessionID || record.OperationID != mutation.OperationID || record.Evidence != mutation.Evidence {
 			return nil, ErrWorktreeRecoveryConflict
 		}
+		if mutation.Action == "publish_copy" {
+			if record.OperationState != "reserved_copy" || input.Session == nil || !next.WorktreeEnabled || next.WorktreeRootPath == path || input.WorktreeAdmission == nil || input.WorktreeAdmission.Kind != "allocated" {
+				return nil, ErrWorktreeRecoveryConflict
+			}
+			if err := s.worktreeSourceIdle(record.OwnerSessionID, input.SessionID); err != nil { return nil, err }
+			if err := s.validateWorktreeAdmission(input, next); err != nil { return nil, err }
+			if !validWorktreePath(next.WorktreeRootPath) { return nil, ErrWorktreeRecoveryConflict }
+			if err := s.validateRetainedWorktreeProgramClaims(next.WorktreeRootPath, input.SessionID); err != nil { return nil, err }
+			var existing WorktreeOwnership
+			if exists, err := s.store.GetJSON(worktreeOwnershipKey(next.WorktreeRootPath), &existing); err != nil { return nil, err } else if exists { return nil, ErrWorktreeRecoveryConflict }
+			destination := []WorktreeOwnership{{Path: next.WorktreeRootPath, AccountScopeID: input.AccountScopeID, UserID: input.UserID, OwnerSessionID: input.SessionID, Revision: 1}}
+			destination[0].CopySource = &WorktreeCopySource{Path: path, OwnerSessionID: record.OwnerSessionID, Revision: record.Revision, Evidence: record.Evidence}
+			record.OperationState, record.ClaimantSessionID = "copied", ""
+			record.Revision++
+			return append(destination, record), nil
+		}
 		if mutation.Action == "publish" {
+			if record.OperationState != "reserved" { return nil, ErrWorktreeRecoveryConflict }
 			if input.Session == nil || !next.WorktreeEnabled || next.WorktreeRootPath != path || next.WorkspacePath != current.WorkspacePath {
 				return nil, ErrWorktreeRecoveryConflict
 			}
@@ -219,11 +273,12 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 				return nil, err
 			}
 			if record.OwnerSessionID != input.SessionID {
+				if len(record.PreviousOwners) >= 128 { return nil, ErrWorktreeRecoveryConflict }
 				record.PreviousOwners = append(record.PreviousOwners, record.OwnerSessionID)
 			}
 			record.OwnerSessionID, record.OperationState = input.SessionID, "published"
 		} else {
-			if next.WorktreeRootPath != current.WorktreeRootPath {
+			if next.WorktreeRootPath != current.WorktreeRootPath || next.WorkspacePath != current.WorkspacePath {
 				return nil, ErrWorktreeRecoveryConflict
 			}
 			record.OperationState = "released"
@@ -233,16 +288,30 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 		return nil, ErrWorktreeRecoveryConflict
 	}
 	record.Revision++
-	return &record, nil
+	return []WorktreeOwnership{record}, nil
 }
 
-func setWorktreeOwnershipInBatch(batch *pebble.Batch, record *WorktreeOwnership) error {
-	if record == nil {
-		return nil
+func setWorktreeOwnershipInBatch(batch *pebble.Batch, records []WorktreeOwnership) error {
+	for _, record := range records {
+		payload, err := json.Marshal(record)
+		if err != nil { return err }
+		if err := batch.Set([]byte(worktreeOwnershipKey(record.Path)), payload, nil); err != nil { return err }
 	}
-	payload, err := json.Marshal(record)
-	if err != nil {
-		return err
+	return nil
+}
+
+func (s *SessionStore) worktreeSourceIdle(owner, claimant string) error {
+	if owner != claimant {
+		_, live, err := s.GetSession(owner)
+		if err != nil { return err }
+		if !live {
+			tombstone, exists, err := s.GetV3SessionTombstone(owner)
+			if err != nil { return err }
+			if !exists || !tombstone.Deleted { return ErrWorktreeRecoveryConflict }
+		}
+		state, exists, err := s.GetV3SessionRunState(owner)
+		if err != nil { return err }
+		if exists && state.Active { return ErrWorktreeRecoveryConflict }
 	}
-	return batch.Set([]byte(worktreeOwnershipKey(record.Path)), payload, nil)
+	return s.worktreeTransitionIdle(owner)
 }

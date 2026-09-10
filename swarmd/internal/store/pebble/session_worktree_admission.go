@@ -17,13 +17,20 @@ type WorktreeAdmissionEvidence struct {
 	SourcePath     string
 	OwnerSessionID string
 	Branch         string
+	// DelegatedCoder explicitly attests an isolated Coder allocation whose
+	// WorkspacePath is the runtime root, not the original source. Never set
+	// for shared Finder lanes or based solely on decoded session metadata.
+	DelegatedCoder bool
 }
 
 func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, next SessionSnapshot) error {
 	e := input.WorktreeAdmission
+	if agent := v3LibraryMetadataString(next.Metadata, "subagent"); agent == "finder" || agent == "system-finder" {
+		return ErrWorktreeRecoveryConflict
+	}
 	if e == nil || (e.Kind != "allocated" && e.Kind != "legacy") ||
 		e.Path != next.WorktreeRootPath || e.OwnerSessionID != input.SessionID ||
-		!validWorktreePath(e.SourcePath) || e.SourcePath != next.WorkspacePath ||
+		!validWorktreePath(e.SourcePath) || !worktreeAdmissionSourceMatches(e, next) ||
 		e.Branch == "" || e.Branch != next.WorktreeBranch {
 		return ErrWorktreeRecoveryConflict
 	}
@@ -40,7 +47,7 @@ func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, n
 	if err != nil {
 		return err
 	}
-	if exists && (current.WorkspacePath != e.SourcePath || current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID) {
+	if exists && (!worktreeAdmissionSourceMatches(e, current) || current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID) {
 		return ErrWorktreeRecoveryConflict
 	}
 	if e.Kind == "allocated" {
@@ -85,7 +92,7 @@ func (s *SessionStore) validateWorktreeHistoryClaims(input V3SessionMutationInpu
 			continue
 		}
 		if owner.ID != input.SessionID || owner.AccountScopeID != input.AccountScopeID || owner.UserID != input.UserID ||
-			owner.WorkspacePath != input.WorktreeAdmission.SourcePath || owner.WorktreeBranch != input.WorktreeAdmission.Branch || !owner.WorktreeEnabled || row.Deleted {
+			!worktreeAdmissionSourceMatches(input.WorktreeAdmission, owner) || owner.WorktreeBranch != input.WorktreeAdmission.Branch || !owner.WorktreeEnabled || row.Deleted {
 			return ErrWorktreeRecoveryConflict
 		}
 		matched = true
@@ -127,4 +134,14 @@ func (s *SessionStore) validateRetainedWorktreeProgramClaims(path, owner string)
 		}
 	}
 	return iter.Error()
+}
+
+func worktreeAdmissionSourceMatches(e *WorktreeAdmissionEvidence, snapshot SessionSnapshot) bool {
+	if !e.DelegatedCoder {
+		return snapshot.WorkspacePath == e.SourcePath
+	}
+	return snapshot.WorkspacePath == e.Path &&
+		v3LibraryMetadataString(snapshot.Metadata, "swarm_v3_source_workspace_path") == e.SourcePath &&
+		v3LibraryMetadataString(snapshot.Metadata, "swarm_v3_runtime_workspace_path") == e.Path &&
+		v3LibraryMetadataString(snapshot.Metadata, "swarm_v3_worktree_owner_session_id") == e.OwnerSessionID
 }
