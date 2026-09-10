@@ -467,6 +467,13 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 
 	updated := cfg
 	changed := false
+	// Fresh identity bootstrap starts onboarding; an absent legacy completion
+	// flag must not dismiss the remaining provider and workspace steps.
+	if !identityBootstrapped && req.DesktopOnboardingComplete == nil {
+		updated.DesktopOnboardingComplete = false
+		updated.DesktopOnboardingCompleteSet = true
+		changed = true
+	}
 	restartRequired := false
 	var restartReasons []string
 

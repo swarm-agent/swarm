@@ -1673,7 +1673,7 @@ func (c *API) GetOnboardingStatus(ctx context.Context) (OnboardingStatus, error)
 
 func (c *API) SaveOnboarding(ctx context.Context, input SaveOnboardingInput) (OnboardingStatus, error) {
 	var status OnboardingStatus
-	if err := c.postJSON(ctx, "/v1/onboarding", input, &status, false); err != nil {
+	if err := c.postJSON(ctx, "/v1/onboarding", input, &status, strings.TrimSpace(c.Token()) != ""); err != nil {
 		return OnboardingStatus{}, err
 	}
 	return status, nil
@@ -2602,6 +2602,11 @@ func (c *API) SelectWorkspace(ctx context.Context, path string) (WorkspaceResolu
 		return WorkspaceResolution{}, err
 	}
 	return resp.Workspace, nil
+}
+
+// CreateOnboardingFolder creates only the explicitly selected leaf folder.
+func (c *API) CreateOnboardingFolder(ctx context.Context, parent, name string) error {
+	return c.postJSON(ctx, "/v1/workspace/folders/create", map[string]string{"parent_path": parent, "name": name}, nil, true)
 }
 
 // SetupOnboardingRepository uses the canonical consent-aware setup endpoint.

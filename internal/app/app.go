@@ -5174,6 +5174,21 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.openAuthModal()
 	case ui.HomeActionSaveOnboarding:
 		a.saveOnboarding(action.Username, action.SwarmName)
+	case ui.HomeActionCreateOnboardingFolder:
+		path := normalizePath(strings.TrimSpace(action.WorkspacePath))
+		if path == "" || !filepath.IsAbs(path) {
+			a.home.SetOnboardingError("Choose an absolute location with Ctrl+L first.")
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		err := a.api.CreateOnboardingFolder(ctx, filepath.Dir(path), filepath.Base(path))
+		cancel()
+		if err != nil {
+			a.home.SetOnboardingError(fmt.Sprintf("Folder creation failed: %v. Ctrl+L changes location.", err))
+		} else {
+			a.home.ShowOnboardingWorkspace("Folder created. Enter verifies; Git setup requires separate confirmation.")
+			a.refreshOnboardingWorkspaceGitReadiness()
+		}
 	case ui.HomeActionSetupOnboardingRepository:
 		a.createOnboardingWorkspaceWithSetup(action.WorkspacePath, true)
 	case ui.HomeActionCreateOnboardingWorkspace:
@@ -6437,7 +6452,7 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	if session, err := a.api.IssueLocalProductSession(ctx); err == nil && strings.TrimSpace(session.Token) != "" {
 		a.api.SetToken(session.Token)
 	}
-	a.home.SetOnboardingRequired(false, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
+	a.home.SetOnboardingRequired(status.NeedsOnboarding, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
 	a.home.SetOnboardingWorkspacePath(a.startupCWD)
 	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
 	a.refreshAuthModalData("Loading providers...")
@@ -6454,7 +6469,7 @@ func (a *App) refreshOnboardingWorkspaceGitReadiness() {
 	if a == nil || a.home == nil {
 		return
 	}
-	path := normalizePath(strings.TrimSpace(a.startupCWD))
+	path := normalizePath(strings.TrimSpace(a.home.OnboardingWorkspacePath()))
 	if path == "" {
 		return
 	}
@@ -6472,7 +6487,7 @@ func (a *App) createOnboardingWorkspace(path string) {
 func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 	path = normalizePath(strings.TrimSpace(path))
 	if path == "" {
-		a.home.SetOnboardingError("The launch directory is unavailable; restart Swarm from the workspace you want to use.")
+		a.home.SetOnboardingError("Choose a workspace location with Ctrl+L.")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -6501,6 +6516,9 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 		if err == nil {
 			complete := true
 			_, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
+			if err == nil {
+				next.OnboardingRequired = false
+			}
 		}
 		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
 		select {
@@ -7655,8 +7673,12 @@ func (a *App) currentHomeModel() model.HomeModel {
 }
 
 func (a *App) applyHomeModel(next model.HomeModel) {
+	wasProvider := a.home.OnboardingProviderActive()
 	a.homeModel = next
 	a.home.SetModel(next)
+	if a.home.OnboardingProviderActive() && !wasProvider {
+		a.refreshAuthModalData("Loading providers...")
+	}
 	route := a.selectedChatRouteForWorkspace(a.activeWorkspacePath())
 	a.home.SetSessionIntent(buildHomeSessionIntent(a.home, route))
 	a.home.SetSwarmNotificationCount(a.swarmNotificationCount)

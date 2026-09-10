@@ -23,7 +23,10 @@ func readyOnboardingPage() *HomePage {
 }
 
 func TestOnboardingIdentityAdvancesOnlyAfterSaveCompletion(t *testing.T) {
-	page := readyOnboardingPage()
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	// Unsaved typed names are distinct from persisted identity on resume.
+	page.model.OnboardingUsername = "alice"
+	page.model.OnboardingSwarmName = "Local Swarm"
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	action, ok := page.PopHomeAction()
@@ -157,7 +160,7 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 	page.ShowOnboardingWorkspace("Confirm workspace")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Creating workspace in", "/repo/project", "Git repository ready"} {
+	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Workspace location (Ctrl+L to edit)", "/repo/project", "Git repository ready"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}
