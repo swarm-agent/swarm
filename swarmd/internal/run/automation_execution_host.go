@@ -15,18 +15,19 @@ import (
 // AutomationExecutionHost admits durable intents; the existing V3 executor owns
 // dispatch and recovery. apply must be the runtime's canonical mutation publisher.
 type AutomationExecutionHost struct {
-	runs  *Service
-	store *store.SessionStore
-	apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error)
+	runs    *Service
+	store   *store.SessionStore
+	apply   func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error)
+	enqueue func(identity.Principal, store.V3SessionRunIntent) bool
 }
 
 var _ automation.V3ExecutionHost = (*AutomationExecutionHost)(nil)
 
-func NewAutomationExecutionHost(runs *Service, repository *store.SessionStore, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error)) (*AutomationExecutionHost, error) {
-	if runs == nil || runs.sessions == nil || repository == nil || apply == nil {
+func NewAutomationExecutionHost(runs *Service, repository *store.SessionStore, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error), enqueue func(identity.Principal, store.V3SessionRunIntent) bool) (*AutomationExecutionHost, error) {
+	if runs == nil || runs.sessions == nil || repository == nil || apply == nil || enqueue == nil {
 		return nil, automation.ErrInvalid
 	}
-	return &AutomationExecutionHost{runs: runs, store: repository, apply: apply}, nil
+	return &AutomationExecutionHost{runs: runs, store: repository, apply: apply, enqueue: enqueue}, nil
 }
 
 func (h *AutomationExecutionHost) Prepare(ctx context.Context, p automation.Principal, def store.AutomationRecord) (store.SessionSnapshot, error) {
@@ -127,9 +128,12 @@ func (h *AutomationExecutionHost) Start(ctx context.Context, snapshot store.Sess
 			return err
 		}
 		runID := "automation-run:" + key
-		_, exists, err := h.runs.sessions.GetSessionRunIntent(current.ID, runID)
-		if err != nil || exists {
+		intent, exists, err := h.runs.sessions.GetSessionRunIntent(current.ID, runID)
+		if err != nil {
 			return err
+		}
+		if exists {
+			return h.enqueuePending(current, intent)
 		}
 		plan, ok, err := h.runs.sessions.GetActivePlan(current.ID)
 		if err != nil {
@@ -153,8 +157,32 @@ func (h *AutomationExecutionHost) Start(ctx context.Context, snapshot store.Sess
 		}
 		request := "automation-start:" + key
 		_, err = h.apply(sessions.SessionMutationInput{SessionID: current.ID, UserID: current.UserID, AccountScopeID: current.AccountScopeID, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, Kind: sessions.SessionMutationRecordRunIntent, EventType: "session.run_intent.recorded", RunIntent: &store.V3SessionRunIntent{RunID: runID, Status: sessions.RunIntentPendingExecutor, PlanID: plan.ID, CheckpointID: cp.ID, AttemptID: attempt, RunSessionID: current.ID, ParentSessionID: current.ID}, NowUnixMs: time.Now().UnixMilli()})
-		return err
+		if err != nil {
+			return err
+		}
+		intent, found, err = h.runs.sessions.GetSessionRunIntent(current.ID, runID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return automation.ErrNotFound
+		}
+		return h.enqueuePending(current, intent)
 	})
+}
+
+// Persisted intent is the authority; wake only pending work, including replay
+// after an interrupted handoff. Executor deduplication and this cancellation
+// fence prevent duplicate starts and wake-after-cancel.
+func (h *AutomationExecutionHost) enqueuePending(snapshot store.SessionSnapshot, intent store.V3SessionRunIntent) error {
+	if intent.Status != sessions.RunIntentPendingExecutor {
+		return nil
+	}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
+	if !h.enqueue(p, intent) {
+		return errors.New("automation executor did not accept pending run")
+	}
+	return nil
 }
 
 func (h *AutomationExecutionHost) Cancel(ctx context.Context, snapshot store.SessionSnapshot, key string) error {

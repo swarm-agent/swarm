@@ -641,7 +641,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		}
 		return result, nil
 	}
-	automationHost, err := run.NewAutomationExecutionHost(runSvc, sessionSvc.Store(), automationApply)
+	automationHost, err := run.NewAutomationExecutionHost(runSvc, sessionSvc.Store(), automationApply, apiServer.EnqueueAutomationRun)
 	if err != nil {
 		bgCancel()
 		_ = secretStore.Close()
