@@ -68,7 +68,7 @@ socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
 socat UNIX-LISTEN:/exchange/desktop.sock,fork,mode=0600 TCP:127.0.0.1:5655 &
 id swarm >/dev/null
 chown -R swarm:swarm /candidate /out /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd
-runuser -u swarm -- env HOME=/var/lib/swarmd LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source
+runuser -u swarm -- env HOME=/var/lib/swarmd LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source 2>/exchange/startup-error
 '''
 
 
@@ -338,10 +338,10 @@ class NspawnRuntime:
                 # Guest can create only bounded exchange entries. Never recursively
                 # follow or remove unrecognized content supplied by a candidate.
                 names = os.listdir(directory)
-                if set(names) - {'api.sock', 'desktop.sock', 'phase'}:
+                if set(names) - {'api.sock', 'desktop.sock', 'phase', 'startup-error'}:
                     raise PoolError('unknown exchange content; cleanup retained')
                 for entry in names:
-                    if not (stat.S_ISSOCK(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode) or (entry == 'phase' and stat.S_ISREG(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode))):
+                    if not (stat.S_ISSOCK(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode) or (entry in {'phase', 'startup-error'} and stat.S_ISREG(os.stat(entry, dir_fd=directory, follow_symlinks=False).st_mode))):
                         raise PoolError('unexpected exchange entry type')
                     os.unlink(entry, dir_fd=directory)
             finally:
@@ -528,6 +528,16 @@ class NspawnRuntime:
                         phase = last
                 except OSError:
                     pass
+                if phase == 'failed-daemon-start':
+                    error_path = Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'startup-error'
+                    try:
+                        fd = os.open(error_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                        with os.fdopen(fd, 'rb') as stream:
+                            if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                                diagnostic = stream.read(4096).decode('utf-8', errors='replace')
+                                print('isolated unauthenticated startup diagnostic: ' + diagnostic, file=sys.stderr)
+                    except OSError:
+                        pass
                 raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
             for endpoint in ('api', 'desktop'):
