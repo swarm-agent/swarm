@@ -58,3 +58,31 @@ func TestOnboardingWorkspaceGuidanceUsesDaemonIdentityAndSensitiveGate(t *testin
 		t.Fatalf("response mutated caller home: entries=%v err=%v", entries, err)
 	}
 }
+
+// Requirement: a real product-session bearer used by the non-browser TUI may
+// retrieve guidance, but an absent/invalid bearer must not disclose it. Exercise
+// the handler rather than bypassing authentication with a response-builder flag.
+func TestOnboardingWorkspaceGuidanceProductBearer(t *testing.T) {
+	server := newLocalAuthTestServer(t)
+	t.Setenv("PATH", t.TempDir())
+	issued, err := server.identitySessions.IssueForCurrentSelection()
+	if err != nil || issued.Token == "" {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	for _, token := range []string{"", "invalid", issued.Token} {
+		req := httptest.NewRequest("GET", "http://example.test/v1/onboarding", nil)
+		req.RemoteAddr = "192.0.2.1:1234"
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		server.handleOnboarding(rec, req)
+		var response onboardingResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if (response.WorkspaceGuidance != nil) != (token == issued.Token) {
+			t.Fatal("guidance bearer gate mismatch")
+		}
+	}
+}

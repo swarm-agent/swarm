@@ -198,6 +198,14 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		// Bootstrap GET is auth-exempt. Validate the TUI's product bearer
+		// explicitly before exposing only the runtime workspace guidance.
+		if response.WorkspaceGuidance == nil && s.identitySessions != nil {
+			if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil && isCompleteProductActor(actor) {
+				guidance := workspace.DaemonWorkspaceGuidance()
+				response.WorkspaceGuidance = &guidance
+			}
+		}
 		writeJSON(w, http.StatusOK, response)
 	case http.MethodPost:
 		var req onboardingUpdateRequest
