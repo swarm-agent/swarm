@@ -97,6 +97,7 @@ func TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope(t *testin
 		t.Fatalf("add workspace: %v", err)
 	}
 	sessionStore := pebblestore.NewSessionStore(rawStore)
+	if err := sessionStore.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil { t.Fatal(err) }
 	sessionID := "same-session"
 	if err := sessionStore.CreateSessionForAccount(pebblestore.SessionSnapshot{
 		ID: sessionID, WorkspacePath: workspacePath, WorkspaceName: "repo", Title: "same", Metadata: map[string]any{},
@@ -164,6 +165,29 @@ func TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope(t *testin
 	if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != sessionID {
 		t.Fatalf("resume claim: %+v, %v", claims, err)
 	}
+	// Purpose: the actual recovery consumer must reject stale evidence without
+	// publication, preserve dirty bytes on reclaim, and retain a failed CAS reservation.
+	id, err := worktreeruntime.InspectRecoveryWorktree(workspacePath, worktreePath)
+	if err != nil { t.Fatal(err) }
+	recovery := map[string]any{"action": "reclaim_worktree", "workspace_id": entry.WorkspaceID, "workspace_generation": entry.WorkspaceGeneration, "worktree_path": worktreePath, "owner_session_id": sessionID, "ownership_revision": claims[0].Revision, "head": id.HEAD, "fingerprint": strings.Repeat("0", 64), "operation_id": "reclaim-one"}
+	invoke := func(apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) error {
+		data, _ := json.Marshal(recovery)
+		_, err := runSvc.executeManageWorkspaceTool(sessionID, string(data), principal, apply)
+		return err
+	}
+	if err := invoke(sessionSvc.ApplySessionMutation); err == nil { t.Fatal("accepted stale fingerprint") }
+	recovery["fingerprint"] = id.Fingerprint
+	if err := invoke(sessionSvc.ApplySessionMutation); err != nil { t.Fatal(err) }
+	if data, err := os.ReadFile(resumePath); err != nil || string(data) != "unfinished work" { t.Fatalf("reclaim changed source: %q %v", data, err) }
+	claims, err = sessionStore.InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{worktreePath})
+	if err != nil || claims[0].OperationState != "published" { t.Fatalf("claim: %+v %v", claims, err) }
+	recovery["ownership_revision"], recovery["operation_id"] = claims[0].Revision, "reclaim-two"
+	if err := invoke(func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		if input.WorktreeRecovery.Action == "publish" { return sessionruntime.SessionMutationResult{}, errors.New("injected publication failure") }
+		return sessionSvc.ApplySessionMutation(input)
+	}); err == nil { t.Fatal("publication failure reported success") }
+	claims, err = sessionStore.InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{worktreePath})
+	if err != nil || claims[0].OperationState != "reserved" || claims[0].OwnerSessionID != sessionID { t.Fatalf("failed publication lost reservation: %+v %v", claims, err) }
 }
 
 // Purpose: setSessionWorkspaces must preserve authorized grants and request a

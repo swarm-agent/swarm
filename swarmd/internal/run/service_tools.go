@@ -1489,6 +1489,16 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childMetadata["base_commit"] = strings.TrimSpace(launch.TaskBase.BaseCommit)
 		}
 	}
+	// Shared read-only workers carry a runtime root, never an ownership claim.
+	if !isCoderTarget {
+		childWorktreeEnabled = false
+		childWorktreeRootPath, childWorktreeBaseBranch, childWorktreeBranch = "", "", ""
+	}
+	var childAdmission *pebblestore.WorktreeAdmissionEvidence
+	if isCoderTarget {
+		childMetadata["swarm_v3_worktree_owner_session_id"] = childSessionID
+		childAdmission = &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: childWorktreeRootPath, SourcePath: mapString(childMetadata, "swarm_v3_source_workspace_path"), OwnerSessionID: childSessionID, Branch: childWorktreeBranch, DelegatedCoder: true}
+	}
 	nowMS := time.Now().UnixMilli()
 	childSession := pebblestore.SessionSnapshot{
 		ID:                      childSessionID,
@@ -1523,6 +1533,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		RequestHash:     payloadHash,
 		Kind:            sessionruntime.SessionMutationCreateSession,
 		Session:         &childSession,
+		WorktreeAdmission: childAdmission,
 		NowUnixMs:       nowMS,
 	})
 	if err != nil {
