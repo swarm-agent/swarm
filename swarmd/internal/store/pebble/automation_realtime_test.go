@@ -18,7 +18,15 @@ func TestAutomationRealtimeAtomicRestart(t *testing.T) {
 	defer func() { s.Close() }()
 	m := automationFixture()
 	wakes := 0
-	s.SetAutomationPublisher(func(V3RealtimeOutboxRecord) { wakes++ })
+	s.SetAutomationPublisher(func(record V3RealtimeOutboxRecord) {
+		wakes++
+		// Requirement: post-commit callbacks may reenter domain authorities.
+		// TryLock proves release without leaving a hung goroutine on regression.
+		if !s.automationsMu.TryLock() { t.Fatal("publisher holds automation lock") }
+		s.automationsMu.Unlock()
+		if _, fresh, err := s.ApplyAutomationMutation(m); err != nil || fresh { t.Fatalf("callback retry: %v %v", fresh, err) }
+		if _, found, err := NewSessionStore(s).GetSession(record.SessionID); err != nil || found { t.Fatalf("synthetic session exposed: %v %v", found, err) }
+	})
 	check := func(want int) {
 		t.Helper()
 		rows, err := NewSessionStore(s).ListV3RealtimeOutboxAfter(0, 100)
@@ -36,6 +44,9 @@ func TestAutomationRealtimeAtomicRestart(t *testing.T) {
 	key, _ := automationKey(m.Record)
 	participant := &automationRealtimeMutation{scope: m.Record.Scope, writes: map[string]json.RawMessage{key + ":head": json.RawMessage(`{}`), "zz:foreign:key": json.RawMessage(`{}`)}}
 	if err := s.commitAutomationRealtime(participant); err == nil { t.Fatal("foreign participant accepted") }
+	if participant.outbox != nil { t.Fatal("failed participant retained publication") }
+	var foreign any
+	if found, err := s.GetJSON("zz:foreign:key", &foreign); err != nil || found { t.Fatalf("foreign write persisted: %v %v", found, err) }
 	got, found, err := s.GetAutomationRecord(m.Record.Scope, "check", "definition", "check", 0)
 	if err != nil || !found || got.Revision != 1 || got.Definition == nil { t.Fatalf("partial head: %+v %v", got, err) }
 	check(1)

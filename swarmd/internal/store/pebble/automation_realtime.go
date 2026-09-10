@@ -17,6 +17,7 @@ const AutomationChangedEventType = "automation.updated"
 type automationRealtimeMutation struct {
 	scope AutomationScope
 	writes map[string]json.RawMessage
+	outbox *V3RealtimeOutboxRecord
 }
 
 func (m *automationRealtimeMutation) put(key string, value any) error {
@@ -41,7 +42,7 @@ func setAutomationRealtimeMutationInBatch(batch *pebble.Batch, account string, m
 }
 
 // SetAutomationPublisher installs an instance-owned wakeup, not a persistence
-// authority. The callback must only enqueue publication, never mutate automations.
+// authority. Callbacks run after releasing domain and canonical mutation locks.
 func (s *Store) SetAutomationPublisher(publish func(V3RealtimeOutboxRecord)) {
 	s.automationPublisherMu.Lock()
 	defer s.automationPublisherMu.Unlock()
@@ -57,9 +58,15 @@ func (s *Store) commitAutomationRealtime(m *automationRealtimeMutation) error {
 		EventPayload: json.RawMessage(`{}`), automationRealtime: m,
 	})
 	if err != nil { return err }
+	m.outbox = result.RealtimeOutbox
+	return nil
+}
+
+// publishAutomationRealtime is called only after releasing automationsMu.
+func (s *Store) publishAutomationRealtime(m *automationRealtimeMutation) {
+	if m == nil || m.outbox == nil { return }
 	s.automationPublisherMu.RLock()
 	publish := s.automationPublisher
 	s.automationPublisherMu.RUnlock()
-	if result.RealtimeOutbox != nil && publish != nil { publish(*result.RealtimeOutbox) }
-	return nil
+	if publish != nil { publish(*m.outbox) }
 }

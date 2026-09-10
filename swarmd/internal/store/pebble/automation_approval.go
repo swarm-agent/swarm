@@ -44,6 +44,8 @@ func (s *Store) CreateAutomationApproval(g AutomationApproval) (AutomationApprov
 	if err != nil || !automationValidID(g.AutomationID) || !automationValidID(g.SubjectID) || len(g.PolicySHA256) != 64 || g.DefinitionRevision == 0 || g.WrittenAt <= 0 || g.ExpiresAt <= g.WrittenAt || g.Revision != 0 || g.RevokedAt != 0 {
 		return AutomationApproval{}, ErrAutomationInvalid
 	}
+	participant := &automationRealtimeMutation{scope: g.Scope, writes: map[string]json.RawMessage{}}
+	defer s.publishAutomationRealtime(participant)
 	s.automationsMu.Lock()
 	defer s.automationsMu.Unlock()
 	var old AutomationApproval
@@ -62,7 +64,7 @@ func (s *Store) CreateAutomationApproval(g AutomationApproval) (AutomationApprov
 		return AutomationApproval{}, ErrAutomationConflict
 	}
 	g.Revision = 1
-	return s.writeAutomationApproval(key, g)
+	return s.writeAutomationApproval(key, g, participant)
 }
 
 func (s *Store) RevokeAutomationApproval(scope AutomationScope, id, subject string, expected uint64, now int64) (AutomationApproval, error) {
@@ -70,6 +72,8 @@ func (s *Store) RevokeAutomationApproval(scope AutomationScope, id, subject stri
 	if err != nil || !automationValidID(subject) || expected == 0 || now <= 0 {
 		return AutomationApproval{}, ErrAutomationInvalid
 	}
+	participant := &automationRealtimeMutation{scope: scope, writes: map[string]json.RawMessage{}}
+	defer s.publishAutomationRealtime(participant)
 	s.automationsMu.Lock()
 	defer s.automationsMu.Unlock()
 	g, found, err := s.GetAutomationApproval(scope, id)
@@ -81,11 +85,10 @@ func (s *Store) RevokeAutomationApproval(scope AutomationScope, id, subject stri
 	}
 	g.Revision++
 	g.RevokedAt = now
-	return s.writeAutomationApproval(key, g)
+	return s.writeAutomationApproval(key, g, participant)
 }
 
-func (s *Store) writeAutomationApproval(key string, g AutomationApproval) (AutomationApproval, error) {
-	participant := &automationRealtimeMutation{scope: g.Scope, writes: map[string]json.RawMessage{}}
+func (s *Store) writeAutomationApproval(key string, g AutomationApproval, participant *automationRealtimeMutation) (AutomationApproval, error) {
 	if err := participant.put(key+":head", g); err != nil {
 		return AutomationApproval{}, err
 	}

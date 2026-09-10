@@ -280,6 +280,8 @@ func (s *Store) applyAutomationMutation(m AutomationMutation, cancellation bool)
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256(data))
 	receiptKey := key + ":mutation:" + automationPart(m.MutationID)
+	participant := &automationRealtimeMutation{scope: m.Record.Scope, writes: map[string]json.RawMessage{}}
+	defer s.publishAutomationRealtime(participant)
 	s.automationsMu.Lock()
 	defer s.automationsMu.Unlock()
 	var receipt automationReceipt
@@ -379,7 +381,6 @@ func (s *Store) applyAutomationMutation(m AutomationMutation, cancellation bool)
 	}
 	r.Revision = m.ExpectedRevision + 1
 	r.SubjectID, r.Actor, r.WrittenAt = m.SubjectID, m.Actor, m.WrittenAt
-	participant := &automationRealtimeMutation{scope: r.Scope, writes: map[string]json.RawMessage{}}
 	put := participant.put
 	for _, k := range []string{key + ":head", automationRevisionKey(key, r.Revision)} {
 		if err := put(k, r); err != nil {

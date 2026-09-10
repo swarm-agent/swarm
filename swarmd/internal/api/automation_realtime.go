@@ -11,7 +11,7 @@ import (
 func (s *Server) ConfigureAutomationRealtime(store *pebblestore.Store) {
 	store.SetAutomationPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
 		if err := s.publishCommittedV3RealtimeOutbox(record); err != nil {
-			log.Printf("automation realtime wake failed: %v", err)
+			log.Print("automation realtime wake failed; durable replay required")
 		}
 	})
 }

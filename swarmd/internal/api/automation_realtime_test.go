@@ -12,7 +12,7 @@ import (
 // boundary; the delivery test below exercises durable reconnect replay.
 func TestAutomationRealtimeAdmission(t *testing.T) {
 	p := testPrincipal()
-	r := sessionruntime.RealtimeOutboxRecord{AccountScopeID: p.AccountScopeID, UserID: "desktop", Event: pebblestore.V3SessionEvent{EventType: pebblestore.AutomationChangedEventType}}
+	r := sessionruntime.RealtimeOutboxRecord{AccountScopeID: p.AccountScopeID, UserID: "desktop", Event: pebblestore.V3SessionEvent{Seq: 1, EventType: pebblestore.AutomationChangedEventType}}
 	if !v3RealtimeRecordVisibleToPrincipal(p, r) { t.Fatal("own account denied") }
 	for _, account := range []string{"foreign", ""} {
 		r.AccountScopeID = account
