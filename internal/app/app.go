@@ -6511,7 +6511,7 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 		}
 		readyPath := firstNonEmpty(normalizePath(resolution.WorkspacePath), normalizePath(resolution.ResolvedPath), path)
 		if err == nil && !homeModelHasActiveWorkspace(next, readyPath) {
-			err = fmt.Errorf("workspace API completed but refreshed state does not include the active workspace at %s", displayPath(readyPath))
+			err = fmt.Errorf("workspace API completed but refreshed workspace is not active and Git-ready at %s (Git readiness: %s)", displayPath(readyPath), homeModelWorkspaceGitReadiness(next, readyPath))
 		}
 		if err == nil {
 			complete := true
