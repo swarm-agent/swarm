@@ -1,26 +1,75 @@
-# Automation composition handoff
+# Automation daemon integration
 
-This change is partial integration, not a runnable automation product.
+## Implemented composition
 
-- Runtime registers `manage_automation` schema/dispatch/normalization. Principal derives from authenticated workspace scope; writer identity is the calling session with role agent. Bounded reads use domain policy. update_context delegates occurrence ownership and immutable user locks to the domain.
-- Primary compiled agent receives capability; restricted contract denies it. Permission identities separate read/change/run/cancel. These identities are not approval records.
-- Daemon composes one domain service against its existing Pebble and canonical SessionStore, shared by API and tools. Current Access deliberately permits only live catalog-owned reads. All mutations remain denied. No goroutine, alternate shutdown path or polling was introduced.
-- save/pause/enable/run/cancel are explicit unavailable tool operations, not fake successes. Definition bodies/user grants are not accepted by this partial schema. The existing domain requires user role for definition edits/manual admission; impersonating a user after generic tool approval would violate that boundary.
-- No notification delivery was added: the prerequisite contains no durable automation outbox. Calling notification delivery inline would lose restart durability. Consequently notification cannot rewrite an execution outcome in this integration.
+`runtime.New` constructs `PolicyApproval` with live account-user membership,
+workspace catalog lookup, and canonical session/grant ownership, then constructs
+`Service`, `run.NewAutomationExecutionHost`, `NewV3Runtime`, and
+`NewExecutionService`. Session mutations use `session.Service.ApplySessionMutation`
+and wake `api.Server.PublishCommittedV3RealtimeOutbox` after durable commit. Wake
+failure is reported without replaying execution. No notification adapter is added.
 
-## Required next implementation boundaries
+`ConfigureAutomations(domain, execution, nil, nil)` now receives execution;
+`SetManageAutomationService(domain)` receives the policy-backed domain.
+`(*Daemon).AutomationServices() (*automation.PolicyApproval, *automation.ExecutionService)`
+exposes both concrete authorities for the next consumer wiring job.
 
-1. Canonical user-approved automation proposal/application adapter (not a tool boolean), bound to exact definition/plan/target revision; occurrence owner adapter for agent summaries. Replace read-only Access only after these exist.
-2. Idempotent session-owned managed-worktree V3 ExecutionRuntime.Ensure, pinned canonical checkpoint installation, cancellation and durable schedule/recovery cursor. API dependency explicitly reports these missing; interface comments are not implementations.
-3. Atomic automation mutation/outbox and independently acknowledged notification delivery, with injected delivery failure/restart tests. Do not infer execution completion from delivery.
-4. Parent updates atlas and test audit ledger outside this child's scope. No critical runner promotion. Check broader tool catalogs/run-layer capability allowlists outside tool/agent ownership before claiming provider availability.
+## Trusted identity consumer requirements
 
-## Parent inspection / validation
+Before every API/tool call, use:
 
-Inspect runtime_manage_automation.go ingress, WorkspaceScope principal resolution, automationAccess read-only guard, daemon shared-service lifetime and permission buildPolicyEvalContext identities. New tests assert strict schema/unknown authority and bounds, separated action identities, compiled primary capability, and missing adapter/cross-account no-side-effect rejection.
+`automation.BindRuntimeIdentity(ctx context.Context, verified identity.Principal, origin, sessionID string) (context.Context, error)`
 
-Working directory: repository swarmd module. Prerequisites: repository Go toolchain and native FFF dependencies. Proposed focused command (only after user permits execution):
+Only authenticated adapters may bind this private typed context. API uses the
+verified request principal, origin `user`, empty session ID. Tool uses its verified
+WorkspaceScope principal, origin `agent`, canonical execution session ID. Never
+bind from request JSON principal/role fields. Agent subjects remain session IDs;
+ownership resolves their stored user and current active account membership.
+The API/tool calls currently lack this binding and therefore fail closed until the
+consumer job adds it. Approval must remain exclusive to explicit user routes.
 
-`go test ./internal/tool ./internal/agent ./internal/permission ./internal/runtime -run 'TestAutomation(ToolIngress|PrimaryCapability|PolicyIsolation|CompositionFailClosed)$' -count=1 -timeout=120s`
+Extend API startup wiring with a `*automation.PolicyApproval` setter and route
+`ApproveUser`/`RevokeUser` explicitly. Extend the tool setter to receive execution
+only when implementing authorized mutations. The existing API cancellation
+interface has a different signature than `ExecutionService.Cancel`; the consumer
+must preserve exact-revision semantics, not cast it away. Event verification is
+unavailable: `RuntimeTriggers` rejects event names without a credential adapter.
+Manual user and daemon schedule triggers are implemented.
 
-Formatting also not run. Status: not run; parent validation required. Explicit user request prohibits running tests now.
+## Dormant bounded lifecycle
+
+`(*Daemon).StartAutomationScheduling(context.Context) error` is explicit and is
+**not called** by construction or Run. No daemon, scheduler, provider, or test was
+started during this change. The caller must wait for consumer integration and
+validation before activation. Close cancels and joins its sole worker before DB
+shutdown; duplicate/after-close starts are rejected.
+
+Sweeps use canonical `IdentityStore.ListAccountScopes` and
+`WorkspaceStore.ListForAccount`, capped at 128 each (129 detects overflow), 20
+pages of 50 definitions and 20 pages of 50 occurrences per definition, with a
+30-second context budget and minute wakeup. There is no recurring Git refresh.
+Opaque record cursors are forwarded unchanged; durable schedule cursor CAS and
+trigger receipts remain owned by Tick/RecoverPage and Pebble. Approval owner is
+resolved from the durable grant and ownership/revocation is checked again on work.
+Per-definition failures do not prevent other definitions from being attempted.
+
+Limits are explicit errors, not silent truncation. Catalogs above these bounds
+need canonical paginated account/workspace APIs before scale expansion; historical
+occurrences beyond 1000 need durable recovery-scan continuation to avoid starvation.
+No new storage authority or legacy global workspace list is introduced.
+
+## Parent validation and documentation
+
+Tests authored, **not run; parent validation required**. From repository root,
+format the six owned Go/source files as appropriate with gofmt (Markdown excluded).
+From `swarmd/`, with the repository's Go/FFF build prerequisites:
+
+- `go test ./internal/automation -run '^TestRuntimeIdentityOrigins$' -count=1 -timeout=30s`
+- `go test ./internal/runtime -run '^TestAutomation(CompositionOwnership|RecoveryBounds|LoopShutdown)$' -count=1 -timeout=60s`
+
+Assertions cover live revocation before catalog effects, cross-account rejection,
+agent occurrence confinement, origin/trigger substitution rejection, opaque cursor
+forwarding, recovery failure bounds and cancel/join ordering. These are not live
+provider, worktree crash-recovery or end-to-end API proofs. Parent owns atlas and
+test-audit-ledger updates outside this child's scope, source formatting, and any
+requested test execution. Do not claim launch readiness from this handoff.

@@ -126,6 +126,11 @@ func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapS
 }
 
 type Daemon struct {
+	automationMu sync.Mutex
+	automationClosed bool
+	automationLoop *automationLoop
+	automationExecution *automation.ExecutionService
+	automationApproval *automation.PolicyApproval
 	cfg                       config.Config
 	lock                      *lock.FileLock
 	store                     *pebblestore.Store
@@ -466,7 +471,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
-	automationSvc, err := automation.New(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc}, time.Now)
+	automationApproval, err := automation.NewPolicyApproval(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc, sessions: sessionSvc, members: pebblestore.NewIdentityStore(store)}, automation.RuntimeApprovalIdentity(), time.Now)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automation approval: %w", err)
+	}
+	automationSvc, err := automation.New(store, sessionSvc.Store(), automationApproval, time.Now)
 	if err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()
@@ -611,7 +623,25 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
-	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
+	// Automation mutations always commit through canonical V3 authority before
+	// waking realtime. Wake failures cannot turn a committed execution into retry.
+	automationApply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		result, err := sessionSvc.ApplySessionMutation(input)
+		if err != nil { return result, err }
+		outboxes := result.RealtimeOutboxes
+		if len(outboxes) == 0 && result.RealtimeOutbox != nil { outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox} }
+		for _, outbox := range outboxes {
+			if err := apiServer.PublishCommittedV3RealtimeOutbox(outbox); err != nil { log.Print("automation realtime wake failed after durable commit") }
+		}
+		return result, nil
+	}
+	automationHost, err := run.NewAutomationExecutionHost(runSvc, sessionSvc.Store(), automationApply)
+	if err != nil { bgCancel(); _ = secretStore.Close(); _ = store.Close(); _ = lk.Release(); return nil, err }
+	automationRuntime, err := automation.NewV3Runtime(automationSvc, sessionSvc, worktreeSvc, automationApproval, automationHost, automationApply)
+	if err != nil { bgCancel(); _ = secretStore.Close(); _ = store.Close(); _ = lk.Release(); return nil, err }
+	automationExecution, err := automation.NewExecutionService(automationSvc, automationRuntime, automation.RuntimeTriggers{})
+	if err != nil { bgCancel(); _ = secretStore.Close(); _ = store.Close(); _ = lk.Release(); return nil, err }
+	apiServer.ConfigureAutomations(automationSvc, automationExecution, nil, nil)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -712,6 +742,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		notificationService:       notificationSvc,
 		bgCtx:                     bgCtx,
 		bgCancel:                  bgCancel,
+		automationExecution: automationExecution,
+		automationApproval: automationApproval,
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
@@ -848,6 +880,10 @@ func (d *Daemon) cleanup() error {
 
 	d.cleanupOnce.Do(func() {
 		var errs []error
+		d.automationMu.Lock()
+		d.automationClosed = true
+		if d.automationLoop != nil { d.automationLoop.Close(); d.automationLoop = nil }
+		d.automationMu.Unlock()
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
