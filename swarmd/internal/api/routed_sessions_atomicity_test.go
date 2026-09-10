@@ -309,7 +309,11 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "routed-user", AccountScopeID: "routed-account", AccountScopeSource: identity.AccountScopeSourceServerState}
 
-	sessionService := sessionruntime.NewService(pebblestore.NewSessionStore(store), eventLog)
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatalf("initialize empty repository history: %v", err)
+	}
+	sessionService := sessionruntime.NewService(sessionStore, eventLog)
 	catalogStore := pebblestore.NewModelCatalogStore(store)
 	for _, record := range []pebblestore.ModelCatalogRecord{
 		{Provider: routerRunner.id, Model: "router-model", ThinkingOptions: []string{"high"}, ServiceTiers: []string{"priority"}},
@@ -334,7 +338,12 @@ func newRoutedSessionAtomicityServer(t *testing.T, routerRunner *sessionRouterRe
 	runService := runruntime.NewService(sessionService, modelService, providers, tool.NewRuntime(1), permissionService, agentService, nil, nil)
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	workspaceService := workspace.NewService(workspaceStore)
-	workspacePath := filepath.Join(t.TempDir(), "workspace")
+	// The deployment bridge resolves source repository identity before publishing
+	// a session. Use a real committed repository so routing/rollback assertions
+	// reach that boundary instead of failing on a nonexistent catalog path.
+	workspacePath := t.TempDir()
+	runGitCommitTestCommand(t, workspacePath, "init", "-b", "dev")
+	runGitCommitTestCommand(t, workspacePath, "-c", "user.name=Swarm Test", "-c", "user.email=swarm-test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
 	workspaceID := ""
 	workspaceGeneration := int64(0)
 	if workspaceEnabled {

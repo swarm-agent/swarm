@@ -1197,3 +1197,7 @@ Python/Go gates passed; atlas/diff checks were repeated. This closes basic
 entitlement/socket/streaming and simultaneous-lane gaps, not forced refresh,
 revocation, sustained load or independent test audit. Proof resources are
 explicitly stopped after verification; dedicated login storage is retained.
+
+### 2026-09-10 — local recovery candidate gate reconciliation
+
+Inspected `worktree.ValidateOwnedIdentity`, `RepositoryIdentity`, repository-history startup maintenance and the background Router handler assertions. The API test fixtures now use a committed source, opt-in real linked allocation with `BaseCommit`, and completed empty history maintenance instead of nonexistent/plain-directory identities. Production rejection boundaries and curated manifest are unchanged. `TestBackgroundRouterSessionStart*` passed twice and `scripts/run-critical-tests.sh fast` passed on this integration diff. Three fixture file digests require reinventory and independent review (ledger note); this is not live recovery proof.
