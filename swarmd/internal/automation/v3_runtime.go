@@ -88,7 +88,9 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 			return "", ErrDenied
 		}
 		principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID}
-		allocation, err := v.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, snapshot.WorkspacePath, id, "", "agent/automation-"+key[:16])
+		// Execute the saved repository's current commit, including detached checkouts.
+		// An empty base selects current-branch mode and rejects valid detached HEADs.
+		allocation, err := v.allocateWorkspace(principal, snapshot.WorkspacePath, id, key)
 		if err != nil {
 			return "", err
 		}
@@ -147,6 +149,10 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 		return "", err
 	}
 	return id, nil
+}
+
+func (v *V3Runtime) allocateWorkspace(principal identity.Principal, path, id, key string) (worktree.Allocation, error) {
+	return v.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, path, id, "HEAD", "agent/automation-"+key[:16])
 }
 
 // The canonical engine executes bindings in declared topological order. Each
