@@ -97,3 +97,17 @@ func TestAutomationLoopShutdown(t *testing.T) {
 	select { case <-done: case <-time.After(time.Second): t.Fatal("shutdown did not join") }
 	select { case <-stopped: default: t.Fatal("close returned before worker stopped") }
 }
+
+// Purpose: outcome recovery is independently bounded and cancellation-safe even
+// without an execution service. Real empty-store pagination proves no admission
+// or notification dependency is invoked for absent work or a cancelled turn.
+func TestAutomationOutcomeEmptyRecovery(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	d := &Daemon{store: db}
+	row := store.AutomationRecord{Scope: store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}, AutomationID: "automation"}
+	if err := d.automationOutcomes(context.Background(), automation.Principal{}, row); err != nil { t.Fatal(err) }
+	ctx, cancel := context.WithCancel(context.Background()); cancel()
+	if err := d.automationOutcomes(ctx, automation.Principal{}, row); !errors.Is(err, context.Canceled) { t.Fatalf("cancel: %v", err) }
+}

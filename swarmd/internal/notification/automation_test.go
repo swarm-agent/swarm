@@ -31,3 +31,26 @@ func TestAutomationDeliveryFailureAndRedaction(t *testing.T) {
 	if err := s.Deliver(context.Background(), r); err != nil { t.Fatal(err) }
 	if o.ack != 1 || n.account != r.Scope.AccountID || n.record.ID != r.NotificationID() || n.record.Body != "Automation failed. Open the execution session for details." || n.record.ActionURL != "" { t.Fatal("delivery identity/redaction mismatch") }
 }
+
+type automationAckFailure struct { automationOutboxFake; fail bool }
+func (f *automationAckFailure) AckAutomationDelivery(d store.AutomationDelivery) error {
+	if f.fail { return errors.New("ack interrupted") }
+	return f.automationOutboxFake.AckAutomationDelivery(d)
+}
+
+// Purpose: a crash/failure between notification persistence and outbox ack must
+// replay the exact notification ID, not an execution action or duplicate ID.
+// Fake ack injection is the narrowest delivery-service partial-failure test.
+func TestAutomationDeliveryAckRecovery(t *testing.T) {
+	o := &automationAckFailure{fail: true}
+	n := &automationNotificationsFake{}
+	s, err := NewAutomationDeliveryService(o, n, "local")
+	if err != nil { t.Fatal(err) }
+	ref := store.AutomationDeliveryReference{Scope: store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}, AutomationID: "automation", OccurrenceID: "occurrence", Revision: 3}
+	if err := s.Deliver(context.Background(), ref); err == nil || o.ack != 0 { t.Fatal("ack failure lost") }
+	id := n.record.ID
+	o.fail = false
+	s, err = NewAutomationDeliveryService(o, n, "local")
+	if err != nil { t.Fatal(err) }
+	if err := s.Deliver(context.Background(), ref); err != nil || o.ack != 1 || n.record.ID != id { t.Fatalf("recovery: %v", err) }
+}

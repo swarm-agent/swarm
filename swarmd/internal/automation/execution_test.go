@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -135,4 +136,57 @@ func TestExecutionCancellationFenceRecovery(t *testing.T) {
 	if _, err := e.Cancel(ctx, p, scope, "automation", r.ID, r.Revision, "cancel"); err != nil { t.Fatal(err) }
 	if runtime.stops != 2 { t.Fatal("terminal replay stopped again") }
 	if err := db.ClaimAutomationDispatch(scope, "automation", next.ID); err != nil { t.Fatalf("confirmed stop retained reservation: %v", err) }
+}
+
+type outcomeCatalog struct {
+	CanonicalPlans
+	session store.SessionSnapshot
+	plan store.SessionPlanSnapshot
+}
+func (c *outcomeCatalog) GetSession(string) (store.SessionSnapshot, bool, error) { return c.session, true, nil }
+func (c *outcomeCatalog) GetPlan(string, string) (store.SessionPlanSnapshot, bool, error) { return c.plan, true, nil }
+
+// Purpose: canonical reconciliation must reject foreign evidence without writes,
+// persist blocked-to-completed progress with append-only audits, repair duplicate
+// observations and bound maintained context while preserving locks. Real Pebble
+// mutations with a fake canonical reader isolate this boundary without execution.
+func TestExecutionCanonicalOutcomeRecovery(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _, p, scope, d := fixture(t)
+	db, err := store.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	s.repo = db
+	if _, _, err := s.SaveDefinition(ctx, p, scope, "automation", "save", 0, d); err != nil { t.Fatal(err) }
+	key := executionKey(scope, "automation", "occurrence")
+	sid := "automation-" + key
+	r := store.AutomationRecord{Scope: scope, AutomationID: "automation", Kind: "occurrence", ID: "occurrence", Occurrence: &store.AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "trigger", ScheduledAt: 100000, State: "pending"}}
+	r, _, err = db.ApplyAutomationMutation(store.AutomationMutation{Record: r, MutationID: "pending", Actor: "user", SubjectID: p.SubjectID, WrittenAt: 100000})
+	if err != nil { t.Fatal(err) }
+	e, err := NewExecutionService(s, &executionRuntimeFake{}, triggerAuthorityFake{})
+	if err != nil { t.Fatal(err) }
+	r, err = e.transition(p, r, "running", sid)
+	if err != nil { t.Fatal(err) }
+	c := &outcomeCatalog{CanonicalPlans: s.plans, session: store.SessionSnapshot{ID: sid, AccountScopeID: scope.AccountID, UserID: p.SubjectID, WorktreeEnabled: true, Metadata: map[string]any{"automation_execution_key": key, "automation_occurrence_id": r.ID}}, plan: store.SessionPlanSnapshot{ID: sid, SessionID: sid, AccountScopeID: scope.AccountID, UserID: p.SubjectID, Version: 1, Document: &store.SessionPlanDocument{Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp", Status: "blocked"}}}}}
+	s.plans = c
+	locked := map[string]string{"instruction": "preserve"}
+	maintained := map[string]string{}
+	for i := 0; i < 64; i++ { maintained[fmt.Sprint(i)] = "old" }
+	_, _, err = db.ApplyAutomationMutation(store.AutomationMutation{Record: store.AutomationRecord{Scope: scope, AutomationID: "automation", Kind: "context", ID: "automation", Context: &store.AutomationContext{UserLocked: locked, AgentOwned: maintained}}, MutationID: "context", Actor: "user", SubjectID: p.SubjectID, WrittenAt: 100000})
+	if err != nil { t.Fatal(err) }
+	p.Role = "system"
+	c.plan.AccountScopeID = "foreign"
+	if _, err := e.ReconcileOutcome(ctx, p, scope, "automation", r.ID); !errors.Is(err, ErrDenied) { t.Fatal(err) }
+	head, _, _ := db.GetAutomationRecord(scope, "automation", "occurrence", r.ID, 0)
+	if head.Revision != r.Revision { t.Fatal("foreign evidence mutated occurrence") }
+	c.plan.AccountScopeID = scope.AccountID
+	for _, state := range []string{"blocked", "completed", "completed"} {
+		c.plan.Document.Checkpoints[0].Status = state
+		out, err := e.ReconcileOutcome(ctx, p, scope, "automation", r.ID)
+		if err != nil || out.Occurrence.State != state { t.Fatalf("%s: %+v %v", state, out, err) }
+	}
+	b, err := s.Context(ctx, p, scope, "automation")
+	if err != nil || b.UserInstructions["instruction"] != "preserve" || len(b.Summaries) > 32 { t.Fatalf("context: %+v %v", b, err) }
+	audits, _, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, AutomationID: "automation", Kind: "audit", Limit: 50})
+	if err != nil || len(audits) != 2 { t.Fatalf("audit replay: %d %v", len(audits), err) }
 }

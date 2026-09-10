@@ -8,6 +8,7 @@ import (
 
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/notification"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -74,7 +75,7 @@ type automationScheduleExecution interface {
 
 // automationSweep performs one bounded definition page per turn. Position writes
 // follow effects; crashes replay stable trigger receipts, never skip unfinished pages.
-func automationSweep(ctx context.Context, db *store.Store, execution automationScheduleExecution) error {
+func automationSweep(ctx context.Context, db *store.Store, execution automationScheduleExecution, outcomes ...func(context.Context, automation.Principal, store.AutomationRecord) error) error {
 	if err := ctx.Err(); err != nil { return err }
 	var pos store.AutomationSchedulerPosition
 	if err := db.GetAutomationSchedulerPosition("catalog", &pos); err != nil { return err }
@@ -113,6 +114,7 @@ func automationSweep(ctx context.Context, db *store.Store, execution automationS
 		if err != nil { failures = append(failures, err); continue }
 		p, _ := automation.RuntimePrincipal(trusted)
 		failures = append(failures, automationRunDefinition(trusted, db, execution, p, row))
+		for _, reconcile := range outcomes { failures = append(failures, reconcile(trusted, p, row)) }
 	}
 	pos.Definitions = next
 	if next == "" { pos.WorkspaceID = "" }
@@ -166,7 +168,7 @@ func (d *Daemon) StartAutomationScheduling(ctx context.Context) error {
 	defer d.automationMu.Unlock()
 	if d.automationClosed || d.automationLoop != nil || d.automationExecution == nil { return automation.ErrInvalid }
 	d.automationLoop = startAutomationLoop(ctx, time.Minute, func(ctx context.Context) error {
-		return automationSweep(ctx, d.store, d.automationExecution)
+		return automationSweep(ctx, d.store, d.automationExecution, d.automationOutcomes)
 	}, func(error) { log.Print("automation scheduler sweep failed; durable pending work retained") })
 	return nil
 }
@@ -176,4 +178,38 @@ func (d *Daemon) StartAutomationScheduling(ctx context.Context) error {
 // possession does not bypass the trusted-context and current ownership checks.
 func (d *Daemon) AutomationServices() (*automation.PolicyApproval, *automation.ExecutionService) {
 	return d.automationApproval, d.automationExecution
+}
+
+// Outcome recovery has its own cursor and runs even when admission fails. Each
+// terminal occurrence is itself a durable delivery source, including a crash
+// before the first delivery claim. Delivery never calls Dispatch or Ensure.
+func (d *Daemon) automationOutcomes(ctx context.Context, p automation.Principal, definition store.AutomationRecord) error {
+	if err := ctx.Err(); err != nil { return err }
+	key := "outcomes-" + store.AutomationRecoveryPositionKey(definition.Scope, definition.AutomationID)
+	var cursor string
+	if err := d.store.GetAutomationSchedulerPosition(key, &cursor); err != nil { return err }
+	rows, next, err := d.store.SearchAutomationRecords(store.AutomationSearch{Scope: definition.Scope, AutomationID: definition.AutomationID, Kind: "occurrence", Cursor: cursor, Limit: 25})
+	if err != nil {
+		if errors.Is(err, store.ErrAutomationInvalid) && cursor != "" { return errors.Join(err, d.store.SaveAutomationSchedulerPosition(key, cursor, "")) }
+		return err
+	}
+	var failures []error
+	for _, row := range rows {
+		if err := ctx.Err(); err != nil { return err }
+		updated, err := d.automationExecution.ReconcileOutcome(ctx, p, row.Scope, row.AutomationID, row.ID)
+		failures = append(failures, err)
+		// A context failure after a committed outcome must not suppress delivery.
+		if updated.Occurrence != nil { row = updated }
+		if row.Occurrence == nil { continue }
+		switch row.Occurrence.State {
+		case "completed", "failed", "cancelled", "skipped":
+			node, found, err := store.NewSwarmStore(d.store).GetLocalNode()
+			if err != nil { failures = append(failures, err); continue }
+			if !found { failures = append(failures, automation.ErrInvalid); continue }
+			delivery, err := notification.NewAutomationDeliveryService(d.store, d.notificationService, node.SwarmID)
+			if err == nil { err = delivery.Deliver(ctx, store.AutomationDeliveryReference{Scope: row.Scope, AutomationID: row.AutomationID, OccurrenceID: row.ID, Revision: row.Revision}) }
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(append(failures, d.store.SaveAutomationSchedulerPosition(key, cursor, next))...)
 }

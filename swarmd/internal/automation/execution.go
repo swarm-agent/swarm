@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -131,14 +132,26 @@ func (e *ExecutionService) RecordOutcome(ctx context.Context, p Principal, scope
 	if err != nil { return r, err }
 	if !found || r.Occurrence == nil || r.Occurrence.SessionID == "" { return r, ErrDenied }
 	if err := s.access.OccurrenceSession(ctx, p, scope, r.Occurrence.SessionID); err != nil { return r, err }
-	if r.Occurrence.State != "running" && r.Occurrence.State != state { return r, store.ErrAutomationConflict }
+	return e.recordOutcome(p, r, state, summary, facts)
+}
+
+func (e *ExecutionService) recordOutcome(p Principal, r store.AutomationRecord, state, summary string, facts map[string]string) (store.AutomationRecord, error) {
+	s := e.domain
+	scope, id, occurrenceID := r.Scope, r.AutomationID, r.ID
+	if r.Occurrence.State != "running" && r.Occurrence.State != "blocked" && r.Occurrence.State != state { return r, store.ErrAutomationConflict }
 	evidence := cloneMap(facts)
 	if evidence == nil { evidence = map[string]string{} }
 	evidence["session_id"] = r.Occurrence.SessionID
-	auditID := executionKey(occurrenceID, "outcome")
-	_, _, err = s.repo.ApplyAutomationMutation(store.AutomationMutation{Record: store.AutomationRecord{Scope: scope, AutomationID: id, Kind: "audit", ID: auditID, Outcome: &store.AutomationOutcome{OccurrenceID: occurrenceID, Kind: state, Summary: summary, Facts: evidence}}, MutationID: auditID, Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli()})
+	auditID := executionKey(occurrenceID, "outcome", p.Role, p.SubjectID, state, summary, evidence)
+	_, _, err := s.repo.ApplyAutomationMutation(store.AutomationMutation{Record: store.AutomationRecord{Scope: scope, AutomationID: id, Kind: "audit", ID: auditID, Outcome: &store.AutomationOutcome{OccurrenceID: occurrenceID, Kind: state, Summary: summary, Facts: evidence}}, MutationID: auditID, Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli()})
 	if err != nil { return r, err }
 	if r.Occurrence.State == state { return r, nil }
+	// The store requires an explicit resumed state before completion. This is
+	// evidence reconciliation only: it never dispatches or starts execution.
+	if r.Occurrence.State == "blocked" && state == "completed" {
+		r, err = e.transition(p, r, "running", "")
+		if err != nil { return r, err }
+	}
 	return e.transition(p, r, state, "")
 }
 
@@ -163,4 +176,74 @@ func (e *ExecutionService) Cancel(ctx context.Context, p Principal, scope store.
 	if r.Occurrence.State == "cancelled" { return r, nil }
 	if err := canceller.Cancel(ctx, p, r); err != nil { return r, err }
 	return repo.FinishAutomationCancellation(r, p.SubjectID, e.domain.now().UnixMilli())
+}
+
+// ReconcileOutcome reads canonical evidence itself; callers cannot supply a
+// status or impersonate an execution agent. The daemon retains system attribution.
+func (e *ExecutionService) ReconcileOutcome(ctx context.Context, p Principal, scope store.AutomationScope, id, occurrenceID string) (store.AutomationRecord, error) {
+	s := e.domain
+	if p.Role != "system" { return store.AutomationRecord{}, ErrDenied }
+	if err := s.authorize(ctx, p, scope, "outcome"); err != nil { return store.AutomationRecord{}, err }
+	r, found, err := s.repo.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
+	if err != nil { return r, err }
+	if !found || r.Occurrence == nil { return r, ErrNotFound }
+	switch r.Occurrence.State { case "running", "blocked", "completed", "failed": default: return r, nil }
+	catalog, ok := s.plans.(interface {
+		GetSession(string) (store.SessionSnapshot, bool, error)
+		GetPlan(string, string) (store.SessionPlanSnapshot, bool, error)
+	})
+	if !ok { return r, ErrInvalid }
+	key := executionKey(scope, id, occurrenceID)
+	sid := "automation-" + key
+	if r.Occurrence.SessionID != sid { return r, ErrDenied }
+	if err := s.access.OccurrenceSession(ctx, p, scope, sid); err != nil { return r, err }
+	session, found, err := catalog.GetSession(sid)
+	if err != nil { return r, err }
+	if !found || session.ID != sid || session.AccountScopeID != scope.AccountID || session.UserID != p.SubjectID || session.Metadata["automation_execution_key"] != key || session.Metadata["automation_occurrence_id"] != occurrenceID || !session.WorktreeEnabled { return r, ErrDenied }
+	plan, found, err := catalog.GetPlan(sid, sid)
+	if err != nil { return r, err }
+	if !found || plan.ID != sid || plan.SessionID != sid || plan.AccountScopeID != scope.AccountID || plan.UserID != session.UserID || plan.Version <= 0 || plan.Document == nil { return r, ErrDenied }
+	state := canonicalOutcome(plan.Document)
+	if state == "" { return r, nil }
+	data, err := json.Marshal(plan.Document)
+	if err != nil { return r, err }
+	summary := "Canonical execution plan " + state + "."
+	r, err = e.recordOutcome(p, r, state, summary, map[string]string{"plan_revision": fmt.Sprint(plan.Version), "document_sha256": executionDocumentDigest(data)})
+	if err != nil { return r, err }
+	// Keep a bounded maintained summary without borrowing an agent identity.
+	// CAS and the store's lock-preservation check protect concurrent user edits.
+	b, err := s.Context(ctx, p, scope, id)
+	if err != nil { return r, err }
+	value := fmt.Sprintf("%s occurrence=%s revision=%d", summary, r.ID, r.Revision)
+	contextKey := "canonical-" + r.ID
+	if b.Summaries[contextKey] == value { return r, nil }
+	maintained := cloneMap(b.Summaries)
+	if maintained == nil { maintained = map[string]string{} }
+	maintained[contextKey] = value
+	keys := make([]string, 0, len(maintained))
+	for k := range maintained { if k != contextKey { keys = append(keys, k) } }
+	sort.Strings(keys)
+	for {
+		encoded, err := json.Marshal(store.AutomationContext{UserLocked: b.UserInstructions, AgentOwned: maintained})
+		if err != nil { return r, err }
+		if len(encoded) <= 20000 && len(maintained) <= 32 { break }
+		if len(keys) == 0 { return r, ErrInvalid }
+		delete(maintained, keys[0]); keys = keys[1:]
+	}
+	_, _, err = s.repo.ApplyAutomationMutation(store.AutomationMutation{Record: store.AutomationRecord{Scope: scope, AutomationID: id, Kind: "context", ID: id, Context: &store.AutomationContext{UserLocked: b.UserInstructions, AgentOwned: maintained}}, ExpectedRevision: b.Revision, MutationID: executionKey("canonical-context", id, b.Revision, value), Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli()})
+	return r, err
+}
+
+func canonicalOutcome(doc *store.SessionPlanDocument) string {
+	if doc == nil || len(doc.Checkpoints) == 0 { return "" }
+	all := true
+	for _, cp := range doc.Checkpoints {
+		switch cp.Status {
+		case "blocked", "failed": return cp.Status
+		case "completed":
+		default: all = false
+		}
+	}
+	if all { return "completed" }
+	return ""
 }
