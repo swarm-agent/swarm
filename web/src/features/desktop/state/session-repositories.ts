@@ -57,7 +57,8 @@ export class SessionRepositoryInventory {
       const previous = append && this.state.items.length + page.items.length <= 200 ? this.state.items : []
       const items = mergeRepositoryRows(previous, page.items).slice(0, 200)
       // A missing selection remains unresolved, never silently replaced by a default.
-      const initial = items.find(row => row.kind === 'parent' && row.default) || items.find(row => row.kind === 'parent') || items[0]
+      const initial = items.find(row => row.kind === 'parent' && row.active)
+        || items.find(row => row.kind === 'parent' && row.default) || items.find(row => row.kind === 'parent') || items[0]
       const selectedKey = this.state.selectedKey || (initial ? repositoryKey(initial) : '')
       this.update({ items, selectedKey, nextCursor: page.next_cursor || '', historyCoverage: page.history_coverage, stale: invalidation !== this.invalidation, loading: false })
     } catch (error) {
@@ -99,8 +100,12 @@ export function repositoryEventInvalidates(action: DesktopV3CacheAction, session
       return progress?.tool === 'task' && progress.phase === 'repository.allocated'
     } catch { return false }
   }
+  // Recovery publications change the canonical execution root and grants too.
+  // Reservation events only affect inventory freshness, not attachment identity.
+  const recoveryPublished = (event: CacheEvent) => ['session.worktree.reclaimed', 'session.worktree.copied',
+    'session.worktree.recovery.publish', 'session.worktree.recovery.publish_copy'].includes(event.eventType)
   const relevant = (event: CacheEvent) => sessionIds.has(event.sessionId)
-    && (allocated(event) || event.eventType === 'session.settings.updated' || event.eventType === 'session.created' || event.eventType === 'session.metadata.updated'
+    && (recoveryPublished(event) || allocated(event) || event.eventType === 'session.settings.updated' || event.eventType === 'session.created' || event.eventType === 'session.metadata.updated'
       || (!attachmentsOnly && /^(session\.(tool|run)\.(completed|failed|cancelled)|session\.worktree\.)/.test(event.eventType)))
   switch (action.type) {
     case 'realtime.applyEvent': return relevant(action.event)

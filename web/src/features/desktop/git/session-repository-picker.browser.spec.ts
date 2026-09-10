@@ -101,3 +101,49 @@ test('styled repository windows reach late workers without implicit retargeting'
     assert.match(await page.locator('button[aria-pressed="true"]').innerText(), /branch-0/)
   } finally { await browser.close() }
 })
+
+// Requirement: recovery-driven refresh keeps exact inspection selection in the
+// real picker, with dirty duplicate labels and an explicit missing-row warning.
+// The only transport is a read fixture: selecting a lane cannot adopt it.
+test('recovery refresh preserves exact browser inspection and missing selection', { timeout: 30_000 }, async () => {
+  const bundle = await build({ stdin: { contents: `
+    import React from 'react'; import {createRoot} from 'react-dom/client';
+    import {SessionRepositoryPicker} from './src/features/desktop/git/session-repository-picker';
+    import {SessionRepositoryInventory,repositoryEventInvalidates,scheduleRepositoryRefresh} from './src/features/desktop/state/session-repositories';
+    const base={session_id:'parent',workspace_id:'project',workspace_name:'Project',source_path:'/project',kind:'parent',branch:'same',attached:true,default:false,base_commit:'base',retained:true,availability:'available',files_truncated:false,lifecycle:'retained',status:{has_git:true,staged_count:1,modified_count:2,untracked_count:3,conflict_count:0}};
+    const old={...base,id:'old',workspace_path:'/project/old',active:false};
+    const current={...base,id:'current',workspace_path:'/project/current',active:true};
+    let rows=[old,current];
+    const inventory=new SessionRepositoryInventory(async()=>({ok:true,items:rows,history_coverage:'retained'}));
+    const scheduler=scheduleRepositoryRefresh(inventory,()=>true);
+    function recover(){ rows=[{...current,active:false},{...base,id:'copy',workspace_path:'/project/copy',active:true}];
+      const action={type:'realtime.applyEvent',event:{source:'realtime',sessionId:'parent',eventType:'session.worktree.copied',payload:{}}};
+      if(repositoryEventInvalidates(action,new Set(['parent']))) scheduler.invalidate();
+    }
+    function Fixture(){const state=React.useSyncExternalStore(inventory.subscribe,inventory.snapshot);return <><SessionRepositoryPicker inventory={state} onSelect={inventory.select} onRefresh={inventory.refresh} onLoadMore={inventory.loadMore}/><button onClick={recover}>Publish recovery</button></>;}
+    createRoot(document.getElementById('root')).render(<Fixture/>); inventory.refresh();
+  `, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, platform: 'browser', format: 'iife', jsx: 'automatic', define: { 'process.env.NODE_ENV': '"test"' } })
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || undefined })
+  try {
+    const page = await browser.newPage()
+    await page.route('**/*', route => route.abort())
+    await page.setContent('<div id="root"></div>')
+    await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    const current = page.getByRole('button', { name: 'parent · same · /project/current', exact: true })
+    await current.waitFor()
+    assert.equal(await current.getAttribute('aria-pressed'), 'true')
+    const old = page.getByRole('button', { name: 'parent · same · /project/old', exact: true })
+    await old.click()
+    assert.equal(await old.getAttribute('aria-pressed'), 'true')
+    assert.equal(await current.getAttribute('aria-pressed'), 'false')
+    assert.equal(await page.getByText('Active execution lane', { exact: false }).count(), 1)
+    await page.getByRole('button', { name: 'Publish recovery', exact: true }).click()
+    await page.getByRole('button', { name: 'parent · same · /project/copy', exact: true }).waitFor()
+    assert.equal(await page.locator('button[aria-pressed="true"]').count(), 0)
+    assert.equal(await page.getByText('Selected repository is not in the loaded inventory.', { exact: false }).count(), 1)
+    assert.equal(await page.getByText('1 staged · 2 unstaged · 3 untracked · 0 conflicts', { exact: true }).count(), 2)
+    await current.click()
+    assert.equal(await current.getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.getByText('Active execution lane', { exact: false }).count(), 1)
+  } finally { await browser.close() }
+})

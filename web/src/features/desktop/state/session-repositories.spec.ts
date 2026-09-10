@@ -236,3 +236,50 @@ test('commit dialog target is exact and requires current authority', () => {
   assert.equal(repositoryDialogTargetMatches(target, { ...target, workspacePath: '/successor' }, true), false)
   assert.equal(repositoryDialogTargetMatches(target, { ...target, sessionId: 'other' }, true), false)
 })
+
+// Requirement: recovery publication repairs both Git inventory and attachment
+// consumers, but cannot refresh another session or interpret token payloads as
+// authority. Exercise the shared filter used by runtime subscribers and replay.
+test('recovery publication invalidates scoped inventory and attachments on live and repair paths', () => {
+  const owners = new Set(['parent'])
+  for (const eventType of ['session.worktree.reclaimed', 'session.worktree.copied', 'session.worktree.recovery.publish', 'session.worktree.recovery.publish_copy']) {
+    const event = { source: 'realtime' as const, sessionId: 'parent', eventType, payload: {} }
+    for (const attachmentsOnly of [false, true]) {
+      assert.equal(repositoryEventInvalidates({ type: 'realtime.applyEvent', event }, owners, attachmentsOnly), true)
+      assert.equal(repositoryEventInvalidates({ type: 'realtime.applyEvent', event: { ...event, sessionId: 'other' } }, owners, attachmentsOnly), false)
+      assert.equal(repositoryEventInvalidates({ type: 'liveRun.mergeRepairEvents', sessionId: 'parent', events: [event] } as never, owners, attachmentsOnly), true)
+    }
+  }
+  for (const eventType of ['session.worktree.recovery.reserve', 'session.worktree.recovery.reserve_copy', 'session.message.appended']) {
+    assert.equal(repositoryEventInvalidates({ type: 'realtime.applyEvent', event: { source: 'realtime', sessionId: 'parent', eventType, payload: {} } }, owners, true), false)
+  }
+})
+
+// Requirement: initial/reconnect inventory selects the actual active root even
+// when history sorts first with duplicate branch labels. Subsequent recovery must
+// preserve explicit inspection (including missing rows), never silently adopt.
+test('recovered active root wins initial selection but never retargets inspection', async () => {
+  const history = repositoryFixture({ id: 'old', active: false, default: true })
+  const current = repositoryFixture({ id: 'recovered', workspace_path: '/project/recovered', active: true, default: false })
+  const extra = repositoryFixture({ id: 'extra', kind: 'source', workspace_id: 'extra', source_path: '/extra', workspace_path: '/extra' })
+  const terminal = repositoryFixture({ id: 'program', kind: 'lane', workspace_path: '/project/program', lifecycle: 'completed', active: false })
+  let rows = [history, extra, terminal, current]
+  const inventory = new SessionRepositoryInventory(async () => page(rows))
+  await inventory.refresh()
+  assert.equal(inventory.state.selectedKey, repositoryKey(current))
+  assert.equal(inventory.state.items.length, 4)
+  inventory.select(repositoryKey(history))
+  const copied = repositoryFixture({ id: 'copy', workspace_path: '/project/copy', active: true })
+  rows = [history, extra, terminal, { ...current, active: false }, copied]
+  inventory.invalidate()
+  assert.equal(inventory.state.selectedKey, repositoryKey(history))
+  await inventory.refresh()
+  assert.equal(inventory.state.selectedKey, repositoryKey(history))
+  assert.equal(inventory.state.items.find(row => row.id === 'old')?.status?.dirty_count, 4)
+  rows = [copied]
+  await inventory.refresh()
+  assert.equal(inventory.state.selectedKey, repositoryKey(history))
+  assert.equal(inventory.state.items.some(row => repositoryKey(row) === inventory.state.selectedKey), false)
+  inventory.select('unknown')
+  assert.equal(inventory.state.selectedKey, repositoryKey(history))
+})
