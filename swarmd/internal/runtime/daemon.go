@@ -20,6 +20,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 	actionruntime "swarm/packages/swarmd/internal/action"
+	"swarm/packages/swarmd/internal/automation"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
@@ -465,6 +466,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
+	automationSvc, err := automation.New(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc}, time.Now)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automations: %w", err)
+	}
+	toolRuntime.SetManageAutomationService(automationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
@@ -602,6 +611,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)

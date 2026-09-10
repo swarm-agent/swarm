@@ -42,6 +42,7 @@ import (
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/videosource"
+	"swarm/packages/swarmd/internal/automation"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -162,6 +163,7 @@ type Runtime struct {
 	agents                manageAgentService
 	orchestration         manageOrchestrationPolicyService
 	todos                 manageTodoService
+	automations           *automation.Service
 	actions               manageActionService
 	uiSettings            manageThemeUISettingsService
 	themeWorkspace        manageThemeWorkspaceService
@@ -1343,6 +1345,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageAutomationDefinition(),
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
@@ -1940,6 +1943,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workspace must be handled by run-service control-plane")
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
+	case "manage-automation", "manage_automation":
+		return r.executeManageAutomation(ctx, scope, args)
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
 	case "artifact-v2-author", "artifact_v2_author":
@@ -8971,6 +8976,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-workspace", "manage_workspace":
 		return "manage_workspace"
+	case "manage-automation", "manage_automation":
+		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-artifact", "manage_artifact":
@@ -9556,6 +9563,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_worktree"
 	case "manage-workspace", "manage_workspace":
 		return "manage_workspace"
+	case "manage-automation", "manage_automation":
+		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-artifact", "manage_artifact":
@@ -10019,6 +10028,8 @@ func toolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
+	case "manage-automation", "manage_automation":
+		return "tool.manage-automation.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
 	case "manage-artifact", "manage_artifact":
