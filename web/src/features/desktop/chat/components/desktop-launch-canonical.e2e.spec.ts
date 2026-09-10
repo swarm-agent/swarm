@@ -401,7 +401,8 @@ async function verifySimpleLaunch(
   assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, expected.model)), `${name} has no matching runtime usage evidence`)
   const view = settled.session_views_by_id?.[sessionID] || {}
   assert.equal(Boolean(view.has_active_plan || view.active_plan), false, `${name} unexpectedly created a plan`)
-  await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
+  const literalPrefix = commandPrefix === '/new worktree' ? 'worktree ' : commandPrefix === '/new wp' ? 'wp ' : ''
+  await verifyFirstUserMessageAfterCompletion(context, sessionID, literalPrefix + modePrompt(mode, marker), settled, name)
   return { name, mode, worktree, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
 
@@ -665,13 +666,13 @@ test('canonical remote Desktop launch suite', { skip: !ENABLED, timeout: Math.ma
       return
     }
     await t.test('/new plan prompt starts a Plan session', async () => {
-      evidence.push(await verifySimpleLaunch(active, 'new-plan', '/new plan', 'plan', false))
+      evidence.push(await verifySimpleLaunch(active, 'new-plan', '/new plan', 'plan', true))
     })
-    await t.test('/new worktree prompt starts a managed-worktree Auto session', async () => {
+    await t.test('/new worktree text stays literal in a managed Auto session', async () => {
       evidence.push(await verifySimpleLaunch(active, 'new-worktree', '/new worktree', 'auto', true))
     })
-    await t.test('/new wp prompt starts a managed-worktree Plan session', async () => {
-      evidence.push(await verifySimpleLaunch(active, 'new-wp', '/new wp', 'plan', true))
+    await t.test('/new wp text stays literal in a managed Auto session', async () => {
+      evidence.push(await verifySimpleLaunch(active, 'new-wp', '/new wp', 'auto', true))
     })
     await t.test('/task starts and completes an Auto Router worktree session', async () => {
       evidence.push(await verifyTaskLaunch(active, 'auto'))
