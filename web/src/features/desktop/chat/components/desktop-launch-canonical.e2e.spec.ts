@@ -277,6 +277,11 @@ function usageRecords(events: EventWire[]): JsonRecord[] {
   return records
 }
 
+function sameRuntimeModel(actual: unknown, expected: string): boolean {
+  const model = String(actual || '')
+  return model === expected || (PROVIDER === 'fireworks' && model === `accounts/fireworks/models/${expected}`)
+}
+
 async function allUsage(page: Page, sessionID: string, events: EventWire[]): Promise<JsonRecord[]> {
   const response = await browserJSON<{ turn_usage_records?: JsonRecord[] }>(page, `/v1/sessions/${encodeURIComponent(sessionID)}/usage?limit=100`)
   return [...usageRecords(events), ...(response.turn_usage_records || [])]
@@ -393,7 +398,7 @@ async function verifySimpleLaunch(
   const events = settled.events_by_session?.[sessionID] || []
   assert.equal(events.some((event) => FAILURE_PATTERN.test(String(event.event_type || ''))), false, `${name} emitted a failure event`)
   const usage = await allUsage(context.page, sessionID, events)
-  assert(usage.some((record) => record.provider === PROVIDER && record.model === expected.model), `${name} has no matching runtime usage evidence`)
+  assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, expected.model)), `${name} has no matching runtime usage evidence`)
   const view = settled.session_views_by_id?.[sessionID] || {}
   assert.equal(Boolean(view.has_active_plan || view.active_plan), false, `${name} unexpectedly created a plan`)
   await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
@@ -427,7 +432,7 @@ async function verifyTaskLaunch(context: TestContext, mode: 'auto' | 'plan'): Pr
   assert.equal(profile?.model, expected.model, `${name} used the wrong model profile`)
   const events = settled.events_by_session?.[sessionID] || []
   const usage = await allUsage(context.page, sessionID, events)
-  assert(usage.some((record) => record.provider === PROVIDER && record.model === expected.model), `${name} has no matching runtime usage evidence`)
+  assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, expected.model)), `${name} has no matching runtime usage evidence`)
   await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
   return { name, mode, worktree: true, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
@@ -546,12 +551,12 @@ async function verifyPlanLifecycle(context: TestContext): Promise<ScenarioEviden
   const events = completed.snapshot.events_by_session?.[sessionID] || []
   assert.equal(events.some((event) => FAILURE_PATTERN.test(String(event.event_type || ''))), false, 'plan lifecycle emitted a failure event')
   const usage = await allUsage(context.page, sessionID, events)
-  assert(usage.some((record) => record.provider === PROVIDER && record.model === context.assignments.plan.model), 'no Plan-agent runtime usage was recorded')
+  assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, context.assignments.plan.model)), 'no Plan-agent runtime usage was recorded')
   const checkpointRunIDs = new Set((completed.snapshot.run_intents_by_session?.[sessionID] || [])
     .filter((intent) => intent.checkpoint_id)
     .map((intent) => String(intent.run_id || '')))
   const autoUsage = usage.filter((record) => record.provider === PROVIDER
-    && record.model === context.assignments.action.model
+    && sameRuntimeModel(record.model, context.assignments.action.model)
     && [...checkpointRunIDs].some((runID) => String(record.run_id || '') === runID || String(record.run_id || '').startsWith(`${runID}/`)))
   assert(autoUsage.length >= 2, `expected Auto-agent usage for both checkpoints, found ${autoUsage.length}`)
   const pending = await browserJSON<{ permissions?: JsonRecord[] }>(context.page, `/v3/sessions/${encodeURIComponent(sessionID)}/permissions?status=pending&limit=50`)

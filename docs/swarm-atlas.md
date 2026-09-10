@@ -587,6 +587,14 @@ rejects unsafe members before extraction. `release_archive_permissions_test.py`
 executes six real archive cases, including private directory/binary, writable,
 special-bit and foreign-owner rejection with no installer side effect. A rebuilt
 installed matrix remains required; earlier archive successes do not cover new bytes.
+Further canonical live gates identified and corrected a routed new-chat mode overwrite:
+`DesktopV3NewSessionPane.handleSubmit` preserves the composer snapshot's explicit Plan
+intent rather than replacing it with stale pane state. The full Desktop runner retains
+its Plan/Auto assertions and recognizes only the exact Fireworks canonical model prefix
+in usage evidence. Task Program proof now uses mandatory managed parents for same/linked
+repositories and explicitly rejects opt-out. Tunnel heartbeat termination reaps its own
+sleep child; a real shell/supervisor regression prevents false orphan failures. These
+changes require refreshed exact-candidate live evidence, not inferred success.
 
 - 2026-09-10 — Required installed-onboarding automation (base `5e0a6543b` plus scoped diff): inspected canonical manifest/supervisor, distro and client runners, account selection, authenticated onboarding/repository handler/service/client contracts and test assertions. Added three required installed account dispatch cases with explicit runner/archive/checksum inputs and isolated preflight selection. Actual fake-process dispatch/failure/stall tests, existing shell manifest regression and 12 supervisor tests pass; focused installation-account and API authentication/baseline/resume tests pass twice. Operator-owned runner/recipe retention and packaging-owner negative tests are separate from public source. Fresh installed matrix, full Desktop and final release gates are not executed in this automation checkpoint. Independent audit remains pending; no curated promotion.
 

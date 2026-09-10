@@ -273,7 +273,7 @@ export function DesktopV3NewSessionPane({
         ...snapshot,
         prompt,
         attachments: snapshot.attachments,
-        planModeRequested: mode === 'plan',
+        planModeRequested: snapshot.planModeRequested,
         modelProfileChoice: chatOnlyModelProfile ? {
           kind: 'temporary',
           profile: {
