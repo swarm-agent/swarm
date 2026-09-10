@@ -580,6 +580,13 @@ The storage scanner's exact exception now follows the extracted safe-home predic
 and the literal identity guidance message, neither of which supplies a storage root.
 Its self-test rejects changed predicates and actual home/workspace assignments;
 precommit including vulnerability scans passed with those corrections.
+Installed normal-user proof then exposed private umask inheritance in release archives.
+`build-main-dist.sh` now serializes numeric root ownership and public read/traverse
+permissions without group/other writes or special bits; `verify-release-candidate.sh`
+rejects unsafe members before extraction. `release_archive_permissions_test.py`
+executes six real archive cases, including private directory/binary, writable,
+special-bit and foreign-owner rejection with no installer side effect. A rebuilt
+installed matrix remains required; earlier archive successes do not cover new bytes.
 
 - 2026-09-10 — Required installed-onboarding automation (base `5e0a6543b` plus scoped diff): inspected canonical manifest/supervisor, distro and client runners, account selection, authenticated onboarding/repository handler/service/client contracts and test assertions. Added three required installed account dispatch cases with explicit runner/archive/checksum inputs and isolated preflight selection. Actual fake-process dispatch/failure/stall tests, existing shell manifest regression and 12 supervisor tests pass; focused installation-account and API authentication/baseline/resume tests pass twice. Operator-owned runner/recipe retention and packaging-owner negative tests are separate from public source. Fresh installed matrix, full Desktop and final release gates are not executed in this automation checkpoint. Independent audit remains pending; no curated promotion.
 
