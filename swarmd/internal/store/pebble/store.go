@@ -22,6 +22,8 @@ type Store struct {
 	agentModelSettingsMu sync.Mutex
 	tailscaleAllowlistMu sync.Mutex
 	automationsMu        sync.Mutex
+	automationPublisherMu sync.RWMutex
+	automationPublisher func(V3RealtimeOutboxRecord)
 }
 
 func Open(path string) (*Store, error) {

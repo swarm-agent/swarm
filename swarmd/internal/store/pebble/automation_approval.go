@@ -2,7 +2,6 @@ package pebblestore
 
 import (
 	"encoding/json"
-	"github.com/cockroachdb/pebble"
 )
 
 // AutomationApproval is internal authorization state, never writable through the
@@ -86,19 +85,14 @@ func (s *Store) RevokeAutomationApproval(scope AutomationScope, id, subject stri
 }
 
 func (s *Store) writeAutomationApproval(key string, g AutomationApproval) (AutomationApproval, error) {
-	data, err := json.Marshal(g)
-	if err != nil {
+	participant := &automationRealtimeMutation{scope: g.Scope, writes: map[string]json.RawMessage{}}
+	if err := participant.put(key+":head", g); err != nil {
 		return AutomationApproval{}, err
 	}
-	batch := s.NewBatch()
-	defer batch.Close()
-	if err := batch.Set([]byte(key+":head"), data, nil); err != nil {
+	if err := participant.put(automationRevisionKey(key, g.Revision), g); err != nil {
 		return AutomationApproval{}, err
 	}
-	if err := batch.Set([]byte(automationRevisionKey(key, g.Revision)), data, nil); err != nil {
-		return AutomationApproval{}, err
-	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := s.commitAutomationRealtime(participant); err != nil {
 		return AutomationApproval{}, err
 	}
 	return g, nil

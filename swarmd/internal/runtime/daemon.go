@@ -666,6 +666,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
+	apiServer.ConfigureAutomationRealtime(store)
 	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, automationEvents)
 	apiServer.ConfigureAutomationApproval(automationApproval)
 	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)

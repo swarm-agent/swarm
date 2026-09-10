@@ -379,15 +379,8 @@ func (s *Store) applyAutomationMutation(m AutomationMutation, cancellation bool)
 	}
 	r.Revision = m.ExpectedRevision + 1
 	r.SubjectID, r.Actor, r.WrittenAt = m.SubjectID, m.Actor, m.WrittenAt
-	batch := s.NewBatch()
-	defer batch.Close()
-	put := func(k string, v any) error {
-		b, err := json.Marshal(v)
-		if err != nil {
-			return err
-		}
-		return batch.Set([]byte(k), b, nil)
-	}
+	participant := &automationRealtimeMutation{scope: r.Scope, writes: map[string]json.RawMessage{}}
+	put := participant.put
 	for _, k := range []string{key + ":head", automationRevisionKey(key, r.Revision)} {
 		if err := put(k, r); err != nil {
 			return zero, false, err
@@ -402,7 +395,7 @@ func (s *Store) applyAutomationMutation(m AutomationMutation, cancellation bool)
 	if err := put(receiptKey, automationReceipt{Hash: hash, Record: r}); err != nil {
 		return zero, false, err
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	if err := s.commitAutomationRealtime(participant); err != nil {
 		return zero, false, err
 	}
 	return r, true, nil
