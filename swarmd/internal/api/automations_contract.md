@@ -1,83 +1,41 @@
 # Automation HTTP integration contract
 
-`/v3/automations` uses the existing authenticated daemon listener and trusted request principal. Account and user attribution are never JSON inputs. Domain Access must resolve current workspace ownership for every operation. Configure once at startup with `Server.ConfigureAutomations(domain, execution, cancellation, eventVerifier)`. Missing domain returns 503; missing execution/cancellation/event adapters fail closed.
+`/v3/automations` uses the authenticated daemon listener and trusted request principal, never JSON attribution. `handleAutomations` binds explicit user origin and rejects a pre-bound agent/system identity. `PolicyApproval` rechecks current account membership and workspace ownership. Missing services fail closed.
 
 ## Reads (GET)
 
-All reads require `workspace_id`. `limit` defaults to 20, maximum 50.
+All reads require `workspace_id`. Limit defaults to 20, maximum 50.
 
-- `action=list`: definition heads; optional `query`, opaque `cursor`.
-- `action=search`: optional `id` (automation), `kind` (definition/occurrence/context/audit), `query`, opaque `cursor`. Response `{records,next_cursor}`. Empty pages can have a continuation. Never synthesize cursors or assume chronological search order.
-- `action=get&id=...`: optional `kind`, `record_id`, exact positive `revision`; absent revision returns head. Response `{records,next_before}`; records contains at most one record.
-- `action=history&id=...`: optional `kind` (default definition), `record_id` (default automation ID), `before` exclusive revision. Response `{records,next_before}` newest first. Zero next_before ends pagination.
-- `action=context&id=...`: `{context: {Trust,Revision,UserInstructions,Summaries}}`. Summaries are untrusted attributed evidence, not permission grants.
+- `list`: definition heads, optional automation `id`, query and opaque cursor.
+- `search`: optional automation `id`, kind (definition/occurrence/context/audit), query and cursor. `{records,next_cursor}`; empty pages may continue. Search is not chronological; clients may group only the loaded page by date.
+- `get`: automation `id`, optional kind/record_id, optional exact positive revision. Returns `{records,next_before}` with at most one row.
+- `history`: exclusive `before` revision, kind and record_id; newest first. Zero next_before ends pagination.
+- `context`: `{context:{Trust,Revision,UserInstructions,Summaries}}`. Agent summaries are untrusted evidence, never authorization.
+- `policy`: current definition `record`, computed `policy_sha256`, and nullable linked `approval`. `CurrentGrant` checks workspace ownership and exact automation/scope linkage. Grant revision is independent of definition revision; revoked grants remain readable for status. Reads grant nothing.
 
 ## Mutations (POST)
 
-Strict single JSON object, 64 KiB maximum; unknown fields rejected. Common fields: `action`, `workspace_id`, `id`, `mutation_id`, `expected_revision`.
+Strict single JSON object, maximum 64 KiB; unknown fields rejected. Common fields: action, workspace_id, id, mutation_id, expected_revision.
 
-- `save`: full `definition` in canonical AutomationDefinition shape. Expected revision zero creates; positive revision edits. Enable/disable and 1–16 ordered plan associations are full revision-guarded definition edits. Save checks canonical approved plan revisions and document pins; enabling also checks live approval policy. No hard deletion exists in the foundation; disable preserves audit history.
-- `context`: complete replacement `user_instructions` map; expected revision refers to context. HTTP users cannot write agent summaries or attribution.
-- `run`: `scheduled_at` fixed UTC epoch milliseconds chosen once per user gesture; mutation_id is the stable manual trigger identity. Expected revision is the definition revision. Reuse the exact body on retry.
-- `event`: `source`, `identity`, fixed `scheduled_at`; expected revision is the definition revision. Requires both authenticated local principal and injected payload-bound EventVerifier, followed by domain TriggerAuthority. No unauthenticated public webhook. Credential format belongs to the configured adapter, not this API.
-- `cancel`: `occurrence_id`; expected revision is the exact occurrence revision. Injected cancellation adapter must authorize and durably stop canonical V3 execution before recording cancellation. No adapter returns 503.
+- `save`: full definition; zero revision creates, otherwise CAS. Canonical approved plans and immutable document pins are checked. Enabling checks live policy.
+- `enable`/`pause`: full definition CAS after reading the current head.
+- `context`: complete user_instructions replacement; CAS refers to context revision. HTTP users cannot author agent summaries.
+- `run`: positive `scheduled_at` UTC epoch milliseconds fixed once per gesture; mutation_id identifies that trigger. Expected revision is the definition revision. Reuse the exact body on retry. HTTP 202 means durable admission, not dispatch or success.
+- `event`: exact source, identity and scheduled_at; authenticated local approved-policy event authority checks approving user, current definition and configured source. No public webhook or source-string-only authentication.
+- `cancel`: occurrence_id and exact occurrence revision. `ExecutionService.Cancel` durably fences dispatch before canonical runtime cancellation; stop failure stays nonterminal and retains serialize reservations. Retry the original mutation identity and revision.
+- `/approve`: explicit user gesture with definition revision and reviewed policy digest. Returns a grant; it does not enable or link the definition. Link approval_reference and approved_policy mode using a subsequent definition CAS. Partial failure must remain visible.
+- `/revoke`: explicit user gesture with approval_reference and **grant** revision, not definition revision. Revocation blocks future authorization; it is not cancellation of an existing execution.
 
-Save/context return `{record,fresh}` with immutable attribution; admission returns HTTP 202 `{record}` (durable pending, NOT execution success). Cancellation returns `{record,fresh:false}`; clients must not infer replay state from that field. Errors are redacted: 400 invalid, 401 no principal, 403 denied, 404 absent exact reference, 409 stale/changed replay, 503 missing adapter, 500 unexpected failure.
+Save/context return `{record,fresh}`; approval routes return `{approval}`. Cancellation returns `{record,fresh:false}` (not replay evidence). Errors are redacted: 400 invalid, 401 no principal, 403 denied, 404 absent reference, 409 conflict, 503 unavailable, 500 unexpected failure.
 
-## Remaining composition responsibilities
+## Integrated execution and Desktop
 
-The integrated foundation has no delete/tombstone, cancellation implementation, scheduler loop, V3 runtime adapter, or durable automation outbox. This transport deliberately does not fabricate these authorities or publish ephemeral notifications. Daemon integration must supply live Access/TriggerAuthority, payload-bound event verification, cancellation, recovery and durable V3 publication/hydration. HTTP admission does not dispatch inline. Consumers must not add polling to hide the missing outbox integration. Automation history is hydrated through the bounded reads above; execution sessions remain canonical V3 resources.
+`runtime/daemon.go` composes policy, domain, V3 execution host, event authority, API/tool adapters and durable publication. `runtime/automation.go` owns bounded scheduling/recovery and independent outcome/notification reconciliation. Session creation/checkpoints cross canonical V3 mutation authority with managed worktree isolation and pinned plan documents. Automation persistence and metadata-free account-workset `automation.updated` outbox entries commit atomically; Desktop hydrates bounded reads after invalidation/reconnect, not polling.
 
-Parent must reconcile docs/swarm-atlas.md and docs/testing/test-audit-ledger.tsv (outside this job's ownership). New request tests verify ownership/attribution rejection, stale no-write, forged-event no-occurrence, verified replay uniqueness and strict body bounds using real Pebble with fake external authority. They do not establish real authentication middleware, approval adapters, cancellation, outbox or V3 worktree safety. Tests/build/formatter not run; parent validation required.
+`manage_automation` retains agent identity. User management operations return non-applied proposals; dispatch is limited to already-admitted occurrences. Context writes attribute exact occurrence/session evidence and cannot replace user instructions.
 
-## Consumer wiring update (partial; cancellation dependency blocked)
+Desktop configuration reviews saved policy and performs approve→link CAS; expiry is editable. Linked grants can be revoked after reload. Main workspace navigation opens the updates-first automation route. Linked plan conversations provide management chat without a new session authority. Audit outcome occurrence_id is resolved through scoped get before opening its session; facts.session_id is not trusted. Canonical conversation artifact galleries own typed artifact inspection; no duplicate automation artifact cache is introduced.
 
-HTTP now binds the verified request principal using BindRuntimeIdentity and rejects
-pre-bound non-user origins. ConfigureAutomationApproval(policy) is startup-only
-and independent of ConfigureAutomations order. Daemon must call that setter with
-its concrete PolicyApproval. GET action=policy returns the current definition
-record and computed policy_sha256 for review. POST /v3/automations/approve uses
-expected_revision (definition) and that digest; POST /v3/automations/revoke uses
-approval_reference and expected_revision (grant). Both require the common envelope
-fields and explicit authenticated user origin. Approval returns a grant, not an
-enabled definition; save its reference and approved_policy mode via a subsequent
-CAS. enable/pause read the current definition then perform SaveDefinition CAS;
-enable retains live execution approval checks. Manual admission remains HTTP 202.
+## Explicit gaps and validation
 
-Exact cancellation cannot safely be wired to current ExecutionService.Cancel:
-that method accepts no expected revision and re-reads the head before external
-stop side effects. A transport pre-read would be a TOCTOU check, not exact CAS.
-The existing injected cancellation interface remains fail-closed (503 when nil).
-Parent must add an exact-revision execution cancellation boundary in
-internal/automation/execution.go and its runtime fence, then wire the API. Those
-files are outside this job's mutation scope. No implementation of that missing
-contract is claimed here. CI event verification also remains a separate adapter.
-
-Tests/formatter not run; parent validation required. Proposed focused command
-from swarmd/ with Go and repository FFF prerequisites:
-`go test ./internal/api -run '^TestAutomationHTTP' -count=1 -timeout=60s`.
-Parent must update atlas route/boundary evidence and test inventory outside scope.
-
-### Registered CI events and local outcome delivery
-
-Startup wiring: construct `automation.NewEventAuthority([]automation.EventRegistration{...})`
-from explicitly configured account/user/workspace/automation/revision/source registrations;
-pass the same authority to `NewExecutionService` and `ConfigureAutomations`.
-An empty registration list denies all events. The authenticated local API identity
-is required; source strings and headers alone never authorize intake. The existing
-64-KiB strict request decoder bounds payloads; event identities/sources are capped
-at 256 UTF-8 bytes. Event admission rechecks exact registration before persistence.
-Registration is startup-only; dynamic registration/revocation requires reconstruction.
-
-Construct `notification.NewAutomationDeliveryService(store, notificationService, localSwarmID)`.
-Call `Deliver(ctx, pebblestore.AutomationDeliveryReference{Scope: scope, AutomationID: id,
-OccurrenceID: occurrenceID, Revision: exactTerminalRevision})` outside execution handling.
-Terminal immutable occurrence revisions themselves are the durable outbox source:
-there is no separate enqueue crash window. Parent daemon wiring must enumerate bounded
-occurrence history pages on recovery (including blocked revisions) and feed exact
-references, plus feed newly persisted terminal outcomes/cancellations. This adapter
-does not install that daemon lifecycle automatically. Delivery receipts contain five
-bounded leased attempts and an idempotent ack; deferred/exhausted calls return errors.
-Ack means durable local notification, not successful optional Web Push. Summaries,
-facts and request content are never copied to notifications. No external URL authority
-is introduced. Parent-owned atlas and test-audit inventory updates remain required.
+No delete/tombstone API. No complete daily digest, dedicated management-session creation, automatic application of chat proposals, or rich deliverable index on outcome cards. Approval and link are two operations: failed linking can leave an unlinked expiring grant; no background retry or false success. Browser usability, full UI workflow, live schedule/restart, socket authentication, provider execution and deployment have not been validated by this source audit. Tests/builds/browser trials not run; parent validation required. Source assertions are not execution evidence.

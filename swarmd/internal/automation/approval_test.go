@@ -88,6 +88,26 @@ func TestPolicyApprovalRejectsUntrustedAndStaleGrants(t *testing.T) {
 	if err := a.Verify(ctx, user, r); err != nil {
 		t.Fatal(err)
 	}
+	// CurrentGrant is the policy-read boundary: expose the grant's CAS revision,
+	// reject cross-automation/account references, and never mutate on reads.
+	linked, err := a.CurrentGrant(ctx, user, r)
+	if err != nil || linked == nil || linked.ID != g.ID || linked.Revision != 1 || r.Revision != 2 {
+		t.Fatal("grant revision confused with definition", linked, err)
+	}
+	foreign := r
+	foreign.AutomationID = "other"
+	if got, err := a.CurrentGrant(ctx, user, foreign); err == nil || got != nil {
+		t.Fatal("cross-automation grant exposed")
+	}
+	foreign = r
+	foreign.Scope.AccountID = "other"
+	if got, err := a.CurrentGrant(ctx, user, foreign); err == nil || got != nil {
+		t.Fatal("cross-account grant exposed")
+	}
+	unchanged, _, err := db.GetAutomationApproval(scope, g.ID)
+	if err != nil || unchanged.Revision != 1 || unchanged.RevokedAt != 0 {
+		t.Fatal("grant read changed state", unchanged, err)
+	}
 	changed := d
 	changed.Authorization.TargetIDs = []string{"different"}
 	if err := a.Execution(ctx, user, scope, changed, "run"); err == nil {
@@ -118,5 +138,9 @@ func TestPolicyApprovalRejectsUntrustedAndStaleGrants(t *testing.T) {
 	}
 	if err := a.Verify(ctx, user, r); err == nil {
 		t.Fatal("revoked grant accepted")
+	}
+	linked, err = a.CurrentGrant(ctx, user, r)
+	if err != nil || linked == nil || linked.Revision != 2 || linked.RevokedAt == 0 {
+		t.Fatal("revoked status hidden from policy review", linked, err)
 	}
 }

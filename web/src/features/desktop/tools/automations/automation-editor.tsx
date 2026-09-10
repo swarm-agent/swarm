@@ -48,6 +48,7 @@ export function AutomationEditor({ initial, revision = 0, disabled, onSave }: { 
       <button className={automationControl} type="button" disabled={draft.plans.length >= 16} onClick={() => setDraft({ ...draft, plans: [...draft.plans, { id: crypto.randomUUID(), plan: { session_id: '', plan_id: '', revision: 1 } }] })}>Add plan</button>
       {field('Allowed tools (comma-separated)', (draft.authorization.allowed_tools ?? []).join(', '), value => setDraft({ ...draft, authorization: { ...draft.authorization, allowed_tools: value.split(',').map(item => item.trim()).filter(Boolean) } }))}
       {field('Target IDs (comma-separated)', (draft.authorization.target_ids ?? []).join(', '), value => setDraft({ ...draft, authorization: { ...draft.authorization, target_ids: value.split(',').map(item => item.trim()).filter(Boolean) } }))}
+      <label className="flex flex-col">Policy expiry (UTC epoch milliseconds)<input className={automationControl} type="number" min="1" step="1" value={draft.authorization.expires_at ?? ''} onChange={event => setDraft({ ...draft, authorization: { ...draft.authorization, expires_at: event.target.value ? Number(event.target.value) : undefined } })} /></label>
       <p>Authorization mode: {draft.authorization.mode}. Editing does not grant permission.</p>
       <button className={automationControl} type="submit">Save configuration</button>
     </fieldset>

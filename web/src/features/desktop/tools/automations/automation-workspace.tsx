@@ -87,7 +87,7 @@ function AutomationDetail({ workspaceId, id }: { workspaceId: string; id: string
   const disabled = operation.pending || !record || !!definitionPage?.stale || !!definitionPage?.loading
   const act = (action: 'enable' | 'pause' | 'run') => {
     if (!record || disabled) return
-    void operation.mutate({ workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, action }).catch(() => {})
+    void operation.mutate({ workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, ...(action === 'run' ? { action, scheduled_at: Date.now() } : { action }) }).catch(() => {})
   }
   return <div className="flex min-w-0 flex-1 flex-col lg:flex-row"><main className="min-w-0 flex-1 space-y-5 p-4 lg:p-6">
     <header><h2 className="text-2xl font-semibold break-words">{id ? record?.definition?.name ?? 'Automation' : 'Daily updates'}</h2><p className="text-[var(--app-text-muted)]">Readable outcomes, with each blocked incident kept separate.</p></header>
@@ -95,10 +95,11 @@ function AutomationDetail({ workspaceId, id }: { workspaceId: string; id: string
     <p role="status">{operation.message}</p>
     <nav aria-label="Automation sections" className="flex flex-wrap gap-2">{(id ? ['Updates', 'History', 'Configuration', 'Context'] : ['Updates', 'History']).map(value => <button className={control} key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value}</button>)}</nav>
     {(tab === 'Updates' || tab === 'History') && <><label>Display timezone <select className={control} value={timezone} onChange={event => setTimezone(event.target.value)}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', record?.definition?.schedule.timezone].filter((zone): zone is string => !!zone))].map(zone => <option key={zone}>{zone}</option>)}</select></label><UpdateFeed key={tab} workspaceId={workspaceId} id={id} timezone={timezone} today={dayKey(now, timezone)} history={tab === 'History'} onChat={setSession} /></>}
-    {tab === 'Configuration' && record?.definition && <><RecordHistory record={record} /><AutomationEditor key={record.id} initial={record.definition} revision={record.revision} disabled={disabled} onSave={async definition => { await operation.mutate({ action: 'save', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, definition }) }} /></>}
+    {tab === 'Configuration' && record?.definition && <><PolicyPanel workspaceId={workspaceId} id={id} /><RecordHistory record={record} /><AutomationEditor key={record.id} initial={record.definition} revision={record.revision} disabled={disabled} onSave={async definition => { await operation.mutate({ action: 'save', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, definition }) }} /></>}
     {tab === 'Context' && <ContextPanel workspaceId={workspaceId} id={id} />}
-    {!session && <p className="text-sm text-[var(--app-text-muted)]">Open an occurrence’s AI chat to inspect its canonical V3 conversation. No separate management conversation is linked by this API.</p>}
-  </main>{session && <div className="min-w-0"><button className={control} onClick={() => setSession('')}>Close AI chat</button><AutomationChat key={session} sessionId={session} /></div>}</div>
+    {record?.definition?.plans.map(binding => <button key={binding.id} className={control} onClick={() => setSession(binding.plan.session_id)}>Manage with plan {binding.id} AI chat</button>)}
+    {!session && <p className="text-sm text-[var(--app-text-muted)]">Use a linked plan conversation for management, or an occurrence conversation to inspect its deliverables. Changes in chat do not replace pinned automation plans or grant execution permission.</p>}
+  </main>{session && <div className="min-w-0"><button className={control} onClick={() => setSession('')}>Close AI chat</button><AutomationChat key={session} sessionId={session} automationId={id || undefined} /></div>}</div>
 }
 function UpdateFeed({ workspaceId, id, timezone, today, history, onChat }: { workspaceId: string; id: string; timezone: string; today: string; history: boolean; onChat: (id: string) => void }) {
   const [draft, setDraft] = useState('')
@@ -107,6 +108,7 @@ function UpdateFeed({ workspaceId, id, timezone, today, history, onChat }: { wor
   const [kind, setKind] = useState<'audit' | 'occurrence'>('audit')
   const [attention, setAttention] = useState(false)
   const [historyRecord, setHistoryRecord] = useState<AutomationRecord>()
+  const [outcomeRecord, setOutcomeRecord] = useState<AutomationRecord>()
   const input: AutomationRead = { workspace_id: workspaceId, action: 'search', id: id || undefined, kind, query: query || undefined, cursor, limit: 20 }
   const page = usePage(input)
   const operation = useMutation()
@@ -123,9 +125,11 @@ function UpdateFeed({ workspaceId, id, timezone, today, history, onChat }: { wor
       <p className="whitespace-pre-wrap">{row.outcome?.summary ?? `Occurrence ${row.id}: ${row.occurrence?.state ?? 'recorded'}`}</p>
       <time dateTime={new Date(row.written_at).toISOString()}>{new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: 'numeric', minute: '2-digit' }).format(row.written_at)}</time>
       <details><summary className="cursor-pointer">Details and recorded deliverables</summary><dl className="space-y-2"><dt>Automation</dt><dd>{row.automation_id}</dd><dt>Record revision</dt><dd>{row.revision}</dd>{Object.entries(row.outcome?.facts ?? {}).map(([key, value]) => <div key={key}><dt className="font-semibold">{key}</dt><dd className="whitespace-pre-wrap">{value}</dd></div>)}</dl><p className="text-sm">Facts are recorded text, not verified artifact references.</p><button className={control} onClick={() => setHistoryRecord(row)}>Inspect revision history</button></details>
-      {row.occurrence?.session_id && <button className={control} onClick={() => onChat(row.occurrence!.session_id!)}>Open occurrence AI chat</button>}
-      {row.occurrence && ['admitted', 'running', 'blocked'].includes(row.occurrence.state) && <button className={control} disabled={operation.pending || page?.stale || page?.loading} onClick={() => { void operation.mutate({ action: 'cancel', workspace_id: workspaceId, id: row.automation_id, occurrence_id: row.id, expected_revision: row.revision, mutation_id: crypto.randomUUID() }).catch(() => {}) }}>Cancel occurrence</button>}
+      {row.outcome?.occurrence_id && <button className={control} onClick={() => setOutcomeRecord(row)}>Inspect outcome session and artifacts</button>}
+      {row.occurrence?.session_id && <button className={control} onClick={() => onChat(row.occurrence!.session_id!)}>Open occurrence chat and artifacts</button>}
+      {row.occurrence && ['pending', 'running', 'blocked'].includes(row.occurrence.state) && <button className={control} disabled={operation.pending || page?.stale || page?.loading} onClick={() => { void operation.mutate({ action: 'cancel', workspace_id: workspaceId, id: row.automation_id, occurrence_id: row.id, expected_revision: row.revision, mutation_id: crypto.randomUUID() }).catch(() => {}) }}>Cancel occurrence</button>}
     </article>)}</section>)}
+    {outcomeRecord && <OutcomeSession key={outcomeRecord.id} record={outcomeRecord} onChat={onChat} />}
     {historyRecord && <section aria-label="Selected record history"><button className={control} onClick={() => setHistoryRecord(undefined)}>Close revision history</button><HistoryPage key={`${historyRecord.kind}:${historyRecord.id}`} record={historyRecord} /></section>}
     <div className="flex gap-2"><button className={control} onClick={() => void desktopAutomations.refresh(input)}>Refresh updates</button>{cursor && <button className={control} onClick={() => setCursor(undefined)}>First page</button>}{page?.data?.next_cursor && <button className={control} disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>Next page</button>}</div>
   </section>
@@ -162,4 +166,45 @@ function ContextHistory({ workspaceId, id }: { workspaceId: string; id: string }
   const input: AutomationRead = { workspace_id: workspaceId, action: 'search', id, kind: 'context', limit: 1 }
   const page = usePage(input)
   return <>{page?.data?.records?.map(record => <RecordHistory key={record.id} record={record} />)}</>
+}
+
+function PolicyPanel({ workspaceId, id }: { workspaceId: string; id: string }) {
+  const input: AutomationRead = { workspace_id: workspaceId, action: 'policy', id }
+  const page = usePage(input)
+  const record = page?.data?.record
+  const grant = page?.data?.approval
+  const operation = useMutation()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const disabled = busy || operation.pending || !record?.definition || page?.stale || page?.loading
+  async function approve() {
+    if (disabled || !record?.definition || !page?.data?.policy_sha256) return
+    setBusy(true); setError('')
+    try {
+      const result = await operation.mutate({ action: 'approve', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, policy_sha256: page.data.policy_sha256 })
+      if (!result.approval) throw new Error('Approval response missing; refresh policy before retrying.')
+      try {
+        await operation.mutate({ action: 'save', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, definition: { ...record.definition, authorization: { ...record.definition.authorization, mode: 'approved_policy', approval_reference: result.approval.id } } })
+      } catch {
+        throw new Error('Policy grant was created but configuration was not linked. Refresh and review before approving again; execution was not enabled by this request.')
+      }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Approval failed') }
+    finally { setBusy(false) }
+  }
+  return <section aria-label="Execution policy" className="space-y-3 rounded border border-[var(--app-border)] p-3">
+    <h3 className="font-semibold">Execution policy approval</h3><PageStatus input={input} />
+    <p>Review the exact saved plans, tools, targets, schedule and expiry below. Approval links a grant; enabling remains a separate user action.</p>
+    {record && <details><summary>Review saved policy · revision {record.revision}</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(record.definition, null, 2)}</pre><p className="break-all">Digest: {page?.data?.policy_sha256}</p></details>}
+    <button className={control} disabled={disabled || !page?.data?.policy_sha256} onClick={() => void approve()}>Approve and link reviewed policy</button>{' '}
+    {grant && <><p>Grant revision {grant.revision} · {grant.revoked_at ? 'Revoked' : 'Recorded (server rechecks expiry and ownership)'}</p><button className={control} disabled={disabled || !!grant.revoked_at} onClick={() => { void operation.mutate({ action: 'revoke', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: grant.revision, approval_reference: grant.id }).catch(() => {}) }}>Revoke execution approval</button></>}
+    <p role="status">{operation.message}</p>{error && <p role="alert">{error}</p>}
+  </section>
+}
+
+// Resolve the typed occurrence reference, never the untrusted facts.session_id.
+function OutcomeSession({ record, onChat }: { record: AutomationRecord; onChat: (id: string) => void }) {
+  const input: AutomationRead = { workspace_id: record.scope.workspace_id, action: 'get', id: record.automation_id, kind: 'occurrence', record_id: record.outcome!.occurrence_id, limit: 1 }
+  const page = usePage(input)
+  const occurrence = page?.data?.records?.find(row => row.id === record.outcome?.occurrence_id && row.kind === 'occurrence')
+  return <section aria-label="Outcome deliverables"><PageStatus input={input} />{occurrence?.occurrence?.session_id ? <button className={control} disabled={page?.loading || page?.stale} onClick={() => onChat(occurrence.occurrence!.session_id!)}>Open canonical conversation and artifact gallery</button> : <p>No execution session available for this outcome.</p>}</section>
 }

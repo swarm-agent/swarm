@@ -149,6 +149,25 @@ func (a *PolicyApproval) Request(ctx context.Context, p Principal, r store.Autom
 	return g.ID, err
 }
 
+// CurrentGrant returns only the grant linked to this authorized definition.
+// Clients need its own revision for revocation; a definition revision is not a grant CAS.
+func (a *PolicyApproval) CurrentGrant(ctx context.Context, p Principal, r store.AutomationRecord) (*store.AutomationApproval, error) {
+	if err := a.Workspace(ctx, p, r.Scope, "read"); err != nil {
+		return nil, err
+	}
+	if r.Definition == nil || r.Definition.Authorization.ApprovalReference == "" {
+		return nil, nil
+	}
+	g, found, err := a.repo.GetAutomationApproval(r.Scope, r.Definition.Authorization.ApprovalReference)
+	if err != nil {
+		return nil, err
+	}
+	if !found || g.AutomationID != r.AutomationID || g.Scope != r.Scope {
+		return nil, ErrDenied
+	}
+	return &g, nil
+}
+
 func (a *PolicyApproval) RevokeUser(ctx context.Context, scope store.AutomationScope, reference string, expected uint64) (store.AutomationApproval, error) {
 	p, err := a.identity.ExplicitUser(ctx)
 	if err != nil {

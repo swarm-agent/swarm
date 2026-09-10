@@ -23,11 +23,15 @@ test('configuration uses accessible inputs and refuses stale draft submission', 
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
     await page.goto('https://automation.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    // PolicyApproval.ApproveUser rejects absent expiry: the actual editor must
+    // expose and persist this field, not force users to craft API bodies.
+    await page.getByLabel('Policy expiry (UTC epoch milliseconds)', { exact: true }).fill('2000000000000')
     await page.getByLabel('Name', { exact: true }).fill('Keyboard review')
     await page.getByRole('button', { name: 'Save configuration' }).focus()
     await page.keyboard.press('Enter')
     await page.waitForFunction(() => (window as any).calls.length === 1)
     assert.equal(await page.evaluate(() => (window as any).calls[0].name), 'Keyboard review')
+    assert.equal(await page.evaluate(() => (window as any).calls[0].authorization.expires_at), 2000000000000)
     await page.getByLabel('Name', { exact: true }).fill('Unsaved draft')
     await page.evaluate(() => (window as any).show(2))
     await page.getByRole('alert').filter({ hasText: 'Configuration changed' }).waitFor()

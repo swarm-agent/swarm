@@ -14,7 +14,13 @@ test('automation client preserves opaque cursor and rejects unbounded reads and 
   assert.equal(url.searchParams.get('workspace_id'), 'workspace')
   assert.throws(() => automationReadURL({ ...input, limit: 51 }))
   assert.throws(() => automationReadURL({ ...input, workspace_id: '' }))
-  assert.throws(() => validateAutomationMutation({ action: 'run', workspace_id: 'workspace', id: 'automation', mutation_id: 'mutation', expected_revision: 0 }))
+  assert.throws(() => validateAutomationMutation({ action: 'run', scheduled_at: 1000, workspace_id: 'workspace', id: 'automation', mutation_id: 'mutation', expected_revision: 0 }))
+  // ExecutionService.Admit requires a positive fixed timestamp; retry serialization
+  // must preserve it rather than generating a new trigger time inside transport.
+  const run = { action: 'run' as const, scheduled_at: 1000, workspace_id: 'workspace', id: 'automation', mutation_id: 'stable', expected_revision: 1 }
+  assert.doesNotThrow(() => validateAutomationMutation(run))
+  for (const scheduled_at of [0, -1, NaN, 1.5]) assert.throws(() => validateAutomationMutation({ ...run, scheduled_at }))
+  assert.equal(JSON.parse(JSON.stringify(run)).scheduled_at, 1000)
   assert.throws(() => validateAutomationMutation({ action: 'pause', workspace_id: 'workspace', id: 'automation', mutation_id: 'mutation', expected_revision: Number.MAX_SAFE_INTEGER + 1 }))
 })
 

@@ -159,7 +159,15 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 				automationHTTPError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"record": rows[0], "policy_sha256": digest})
+			var grant *store.AutomationApproval
+			if a.approval != nil {
+				grant, err = a.approval.CurrentGrant(ctx, p, rows[0])
+				if err != nil {
+					automationHTTPError(w, err)
+					return
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"record": rows[0], "policy_sha256": digest, "approval": grant})
 		case "context":
 			bundle, err := a.domain.Context(ctx, p, scope, q.Get("id"))
 			if err != nil {

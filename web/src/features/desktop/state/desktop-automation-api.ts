@@ -52,14 +52,15 @@ export interface AutomationResponse {
   context?: AutomationContextBundle
   record?: AutomationRecord
   policy_sha256?: string
-  approval?: AutomationApproval
+  approval?: AutomationApproval | null
   fresh?: boolean
 }
 type MutationBase = { workspace_id: string; id: string; mutation_id: string; expected_revision: number }
 export type AutomationMutation = MutationBase & (
   | { action: 'save'; definition: AutomationDefinition }
   | { action: 'context'; user_instructions: Record<string, string> }
-  | { action: 'enable' | 'pause' | 'run' }
+  | { action: 'enable' | 'pause' }
+  | { action: 'run'; scheduled_at: number }
   | { action: 'cancel'; occurrence_id: string }
   | { action: 'approve'; policy_sha256: string }
   | { action: 'revoke'; approval_reference: string }
@@ -81,6 +82,7 @@ export function automationReadURL(input: AutomationRead): string {
   return `/v3/automations?${query}`
 }
 export function validateAutomationMutation(input: AutomationMutation): void {
+  if (input.action === 'run' && (!Number.isSafeInteger(input.scheduled_at) || input.scheduled_at <= 0)) throw new Error('Fixed scheduled_at required')
   if (!input.workspace_id.trim() || !input.id.trim() || !input.mutation_id.trim() || input.mutation_id.length > 256) throw new Error('Mutation identity required')
   if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0 || (input.expected_revision === 0 && input.action !== 'save' && input.action !== 'context')) throw new Error('Exact revision required')
 }
