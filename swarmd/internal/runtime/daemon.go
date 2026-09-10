@@ -1090,6 +1090,11 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
+	// New composes authorities without executing schedules. Run activates them
+	// only after listener setup succeeds; cleanup joins the worker before DB close.
+	if err := d.StartAutomationScheduling(context.Background()); err != nil {
+		return fmt.Errorf("start automation scheduler: %w", err)
+	}
 	return d.waitForShutdown()
 }
 

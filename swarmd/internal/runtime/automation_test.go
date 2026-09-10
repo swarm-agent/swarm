@@ -52,21 +52,32 @@ func (f *automationExecutionFake) RecoverPage(_ context.Context, _ automation.Pr
 	return "", nil
 }
 
-// Purpose: the daemon recovery adapter must preserve opaque cursors, stop on a
-// failed admission, reject nonadvancing pages, and honor shutdown before effects.
-// Fake execution isolates lifecycle orchestration from provider/Git execution.
+type automationPositionFake struct { cursor string }
+func (f *automationPositionFake) GetAutomationSchedulerPosition(_ string, out any) error { *out.(*string) = f.cursor; return nil }
+func (f *automationPositionFake) SaveAutomationSchedulerPosition(_ string, old, next any) error {
+	if old.(string) != f.cursor { return store.ErrAutomationConflict }
+	f.cursor = next.(string)
+	return nil
+}
+
+// Purpose: recovery continuation must survive worker replacement, remain bounded
+// to one page, and continue after admission denial. Fake execution isolates the
+// runtime orchestration boundary from providers and proves shutdown has no effects.
 func TestAutomationRecoveryBounds(t *testing.T) {
+	db := &automationPositionFake{}
 	f := &automationExecutionFake{}
-	row := store.AutomationRecord{AutomationID: "definition", Revision: 1}
-	if err := automationRunDefinition(context.Background(), f, automation.Principal{}, row); err != nil { t.Fatal(err) }
-	if len(f.cursors) != 2 || f.cursors[0] != "" || f.cursors[1] != "opaque-cursor" { t.Fatal(f.cursors) }
+	row := store.AutomationRecord{AutomationID: "definition", Revision: 1, Definition: &store.AutomationDefinition{Enabled: true}}
+	if err := automationRunDefinition(context.Background(), db, f, automation.Principal{}, row); err != nil { t.Fatal(err) }
+	if len(f.cursors) != 1 || db.cursor != "opaque-cursor" { t.Fatal(f.cursors, db.cursor) }
+	if err := automationRunDefinition(context.Background(), db, f, automation.Principal{}, row); err != nil { t.Fatal(err) }
+	if len(f.cursors) != 2 || f.cursors[1] != "opaque-cursor" || db.cursor != "" { t.Fatal(f.cursors, db.cursor) }
 	f = &automationExecutionFake{tickErr: errors.New("revoked")}
-	if err := automationRunDefinition(context.Background(), f, automation.Principal{}, row); err == nil || len(f.cursors) != 0 { t.Fatal("failed admission recovered") }
+	if err := automationRunDefinition(context.Background(), db, f, automation.Principal{}, row); err == nil || len(f.cursors) != 1 { t.Fatal("admission failure blocked recovery") }
 	f = &automationExecutionFake{repeat: true}
-	if err := automationRunDefinition(context.Background(), f, automation.Principal{}, row); err == nil || len(f.cursors) != 2 { t.Fatal("repeated cursor unbounded") }
+	if err := automationRunDefinition(context.Background(), db, f, automation.Principal{}, row); err == nil || len(f.cursors) != 1 { t.Fatal("repeated cursor unbounded") }
 	ctx, cancel := context.WithCancel(context.Background()); cancel()
 	f = &automationExecutionFake{}
-	if err := automationRunDefinition(ctx, f, automation.Principal{}, row); !errors.Is(err, context.Canceled) || len(f.cursors) != 0 { t.Fatal("cancelled sweep had effects") }
+	if err := automationRunDefinition(ctx, db, f, automation.Principal{}, row); !errors.Is(err, context.Canceled) || len(f.cursors) != 0 { t.Fatal("cancelled sweep had effects") }
 }
 
 // Purpose: daemon shutdown must cancel and join the sole scheduler worker before

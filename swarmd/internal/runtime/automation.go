@@ -72,60 +72,70 @@ type automationScheduleExecution interface {
 	RecoverPage(context.Context, automation.Principal, store.AutomationScope, string, string) (string, error)
 }
 
-// automationSweep enumerates only canonical account catalogs. Oversized catalogs
-// fail explicitly rather than silently starving entries beyond a truncated list.
-// Opaque search cursors are passed unchanged; durable schedule cursors and trigger
-// receipts live in ExecutionService's repository, never in this timer loop.
+// automationSweep performs one bounded definition page per turn. Position writes
+// follow effects; crashes replay stable trigger receipts, never skip unfinished pages.
 func automationSweep(ctx context.Context, db *store.Store, execution automationScheduleExecution) error {
-	var failed bool
-	accounts, err := store.NewIdentityStore(db).ListAccountScopes(129)
-	if err != nil { return err }
-	if len(accounts) > 128 { return errors.New("automation account catalog exceeds bounded sweep") }
-	for _, account := range accounts {
-		entries, err := store.NewWorkspaceStore(db).ListForAccount(account.ID, 129)
+	if err := ctx.Err(); err != nil { return err }
+	var pos store.AutomationSchedulerPosition
+	if err := db.GetAutomationSchedulerPosition("catalog", &pos); err != nil { return err }
+	old := pos
+	save := func() error { return db.SaveAutomationSchedulerPosition("catalog", old, pos) }
+	if pos.AccountID == "" {
+		key, account, _, err := db.SchedulerCatalogNext("", pos.AccountKey)
+		if errors.Is(err, store.ErrAutomationInvalid) { pos = store.AutomationSchedulerPosition{}; return errors.Join(err, save()) }
 		if err != nil { return err }
-		if len(entries) > 128 { return errors.New("automation workspace catalog exceeds bounded sweep") }
-		for _, entry := range entries {
-			scope := store.AutomationScope{AccountID: account.ID, WorkspaceID: entry.WorkspaceID}
-			cursor := ""
-			for page := 0; page < 20; page++ {
-				if err := ctx.Err(); err != nil { return err }
-				rows, next, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "definition", Cursor: cursor, Limit: 50})
-				if err != nil { return err }
-				for _, row := range rows {
-					if row.Definition == nil || !row.Definition.Enabled { continue }
-					grant, found, err := db.GetAutomationApproval(scope, row.Definition.Authorization.ApprovalReference)
-					if err != nil { return err }
-					if !found { continue }
-					verified := identity.Principal{Type: identity.PrincipalTypeUser, UserID: grant.SubjectID, AccountScopeID: scope.AccountID}
-					trusted, err := automation.BindRuntimeIdentity(ctx, verified, "system", "")
-					if err != nil { return err }
-					p, _ := automation.RuntimePrincipal(trusted)
-					if err := automationRunDefinition(trusted, execution, p, row); err != nil { failed = true }
-				}
-				if next == "" { break }
-				if next == cursor || page == 19 { return errors.New("automation definition catalog exceeds bounded sweep") }
-				cursor = next
-			}
-		}
+		pos.AccountKey, pos.AccountID = key, account.ID
+		if key == "" { return save() }
 	}
-	if failed { return errors.New("one or more automation definitions could not be processed") }
-	return nil
+	if pos.WorkspaceID == "" {
+		key, _, entry, err := db.SchedulerCatalogNext(pos.AccountID, pos.WorkspaceKey)
+		if errors.Is(err, store.ErrAutomationInvalid) { pos.WorkspaceKey = ""; return errors.Join(err, save()) }
+		if err != nil { return err }
+		pos.WorkspaceKey, pos.WorkspaceID = key, entry.WorkspaceID
+		if key == "" { pos.AccountID = ""; return save() }
+		if pos.WorkspaceID == "" { return save() }
+	}
+	scope := store.AutomationScope{AccountID: pos.AccountID, WorkspaceID: pos.WorkspaceID}
+	rows, next, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "definition", Cursor: pos.Definitions, Limit: 10})
+	if errors.Is(err, store.ErrAutomationInvalid) && pos.Definitions != "" {
+		pos.Definitions = ""
+		return errors.Join(err, save())
+	}
+	if err != nil { return err }
+	var failures []error
+	for _, row := range rows {
+		if err := ctx.Err(); err != nil { return err }
+		if row.Definition == nil { continue }
+		grant, found, err := db.GetAutomationApproval(scope, row.Definition.Authorization.ApprovalReference)
+		if err != nil { failures = append(failures, err); continue }
+		if !found { continue }
+		trusted, err := automation.BindRuntimeIdentity(ctx, identity.Principal{Type: identity.PrincipalTypeUser, UserID: grant.SubjectID, AccountScopeID: scope.AccountID}, "system", "")
+		if err != nil { failures = append(failures, err); continue }
+		p, _ := automation.RuntimePrincipal(trusted)
+		failures = append(failures, automationRunDefinition(trusted, db, execution, p, row))
+	}
+	pos.Definitions = next
+	if next == "" { pos.WorkspaceID = "" }
+	return errors.Join(append(failures, save())...)
 }
 
-func automationRunDefinition(ctx context.Context, execution automationScheduleExecution, p automation.Principal, row store.AutomationRecord) error {
+type automationPositionStore interface {
+	GetAutomationSchedulerPosition(string, any) error
+	SaveAutomationSchedulerPosition(string, any, any) error
+}
+
+func automationRunDefinition(ctx context.Context, db automationPositionStore, execution automationScheduleExecution, p automation.Principal, row store.AutomationRecord) error {
 	if err := ctx.Err(); err != nil { return err }
-	if err := execution.Tick(ctx, p, row.Scope, row.AutomationID, row.Revision); err != nil { return err }
-	cursor := ""
-	for page := 0; page < 20; page++ {
-		if err := ctx.Err(); err != nil { return err }
-		next, err := execution.RecoverPage(ctx, p, row.Scope, row.AutomationID, cursor)
-		if err != nil { return err }
-		if next == "" { return nil }
-		if next == cursor { return errors.New("automation recovery cursor did not advance") }
-		cursor = next
-	}
-	return errors.New("automation recovery exceeds bounded sweep")
+	key := store.AutomationRecoveryPositionKey(row.Scope, row.AutomationID)
+	var cursor string
+	if err := db.GetAutomationSchedulerPosition(key, &cursor); err != nil { return err }
+	// A disabled/revoked definition must not prevent completion of a durable stop.
+	var tickErr error
+	if row.Definition != nil && row.Definition.Enabled { tickErr = execution.Tick(ctx, p, row.Scope, row.AutomationID, row.Revision) }
+	next, err := execution.RecoverPage(ctx, p, row.Scope, row.AutomationID, cursor)
+	if errors.Is(err, automation.ErrRecoveryCursor) { next = "" }
+	if next == cursor && next != "" && err == nil { err = errors.New("automation recovery cursor did not advance") }
+	return errors.Join(tickErr, err, db.SaveAutomationSchedulerPosition(key, cursor, next))
 }
 
 type automationLoop struct { cancel context.CancelFunc; done chan struct{} }
@@ -149,8 +159,8 @@ func startAutomationLoop(parent context.Context, interval time.Duration, sweep f
 }
 func (l *automationLoop) Close() { l.cancel(); <-l.done }
 
-// StartAutomationScheduling is explicit, not called by NewDaemon or Run during
-// development. Lifecycle ownership ensures cancellation completes before DB close.
+// StartAutomationScheduling is owned by Run, never construction. Lifecycle
+// ownership ensures cancellation completes before DB close.
 func (d *Daemon) StartAutomationScheduling(ctx context.Context) error {
 	d.automationMu.Lock()
 	defer d.automationMu.Unlock()

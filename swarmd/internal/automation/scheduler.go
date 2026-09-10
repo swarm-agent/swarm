@@ -2,11 +2,14 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
+
+var ErrRecoveryCursor = errors.New("invalid automation recovery cursor")
 
 type ScheduleRepository interface {
 	GetAutomationCursor(store.AutomationScope, string, uint64) (int64, error)
@@ -19,14 +22,15 @@ func (e *ExecutionService) Tick(ctx context.Context, p Principal, scope store.Au
 	if p.Role != "system" { return ErrDenied }
 	def, err := e.domain.CheckRun(ctx, p, scope, id, revision)
 	if err != nil { return err }
-	s := def.Definition.Schedule
+	s, err := NormalizeSchedule(def.Definition.Schedule)
+	if err != nil { return err }
 	if s.Kind != "cron" && s.Kind != "interval" { return nil }
 	cursor, ok := e.domain.repo.(ScheduleRepository)
 	if !ok { return ErrInvalid }
 	previous, err := cursor.GetAutomationCursor(scope, id, revision)
 	if err != nil { return err }
 	now := e.domain.now().UnixMilli()
-	if now <= previous { return nil }
+	if now <= previous || now < def.WrittenAt { return nil }
 	var candidate int64
 	if s.Kind == "interval" {
 		step := s.IntervalSeconds*1000
@@ -49,17 +53,33 @@ func (e *ExecutionService) Tick(ctx context.Context, p Principal, scope store.Au
 	return cursor.AdvanceAutomationCursor(scope, id, revision, previous, now)
 }
 
-// RecoverPage resumes only pending admissions. Blocked/failed runs require an
+// RecoverPage resumes pending admissions and durable cancellation fences. Blocked/failed runs require an
 // explicit user decision; transient Ensure failures keep their original identity.
 func (e *ExecutionService) RecoverPage(ctx context.Context, p Principal, scope store.AutomationScope, id, cursor string) (string, error) {
-	if err := e.domain.authorize(ctx, p, scope, "run"); err != nil { return "", err }
+	if err := e.domain.authorize(ctx, p, scope, "run"); err != nil { return cursor, err }
 	records, next, err := e.domain.repo.SearchAutomationRecords(store.AutomationSearch{Scope: scope, AutomationID: id, Kind: "occurrence", Cursor: cursor, Limit: 50})
-	if err != nil { return "", err }
+	if errors.Is(err, store.ErrAutomationInvalid) && cursor != "" { return "", ErrRecoveryCursor }
+	if err != nil { return cursor, err }
+	var failures []error
 	for _, r := range records {
 		if err := ctx.Err(); err != nil { return cursor, err }
-		if r.Occurrence != nil && r.Occurrence.State == "pending" {
-			if _, err := e.Dispatch(ctx, p, scope, id, r.ID); err != nil { return cursor, err }
+		if r.Occurrence == nil { continue }
+		switch r.Occurrence.State {
+		case "pending":
+			_, err := e.Dispatch(ctx, p, scope, id, r.ID)
+			failures = append(failures, err)
+		case "cancelling":
+			if r.SubjectID != p.SubjectID { failures = append(failures, ErrDenied); continue }
+			// The durable stop was already authorized. Resume its runtime fence,
+			// not a new cancellation admission against a different revision.
+			canceller, ok := e.runtime.(interface { Cancel(context.Context, Principal, store.AutomationRecord) error })
+			repo, stored := e.domain.repo.(interface { FinishAutomationCancellation(store.AutomationRecord, string, int64) (store.AutomationRecord, error) })
+			if !ok || !stored { failures = append(failures, ErrInvalid); continue }
+			if err := canceller.Cancel(ctx, p, r); err != nil { failures = append(failures, err); continue }
+			_, err := repo.FinishAutomationCancellation(r, p.SubjectID, e.domain.now().UnixMilli())
+			failures = append(failures, err)
 		}
 	}
-	return next, nil
+	// Individual failures are revisited on wrap, never starve later pages.
+	return next, errors.Join(failures...)
 }
