@@ -13,8 +13,9 @@ const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/des
 const IntegrationsPage = withStartupScreen(lazy(() => import('../features/desktop/integrations/pages/integrations-page').then((module) => ({ default: module.IntegrationsPage }))))
 const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
+const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations'])
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -243,6 +244,13 @@ const workspaceVideoSessionRoute = createRoute({
   component: VideoToolPage,
 })
 
+const workspaceAutomationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/automations',
+  parseParams: validateWorkspaceParams,
+  component: AutomationToolPage,
+})
+
 const workspaceTaskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/task',
@@ -325,6 +333,7 @@ const routeTree = rootRoute.addChildren([
   conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
+  workspaceAutomationsRoute,
   workspaceWorktreeRoute,
   workspaceSettingsRoute,
   workspaceToolsRoute,
