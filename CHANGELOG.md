@@ -46,6 +46,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Fixed fresh and interrupted TUI onboarding so identity setup continues to provider and workspace setup, incomplete setup resumes on relaunch, completion uses the authenticated session, and the setup overlay stays dismissed after successful completion.
+- Added editable workspace locations (`Ctrl+L`) and explicit folder creation (`Ctrl+N`) during TUI onboarding, allowing recovery from home/root launches, populated non-repositories, missing Git, and permission failures by retrying or choosing a safe project. Git initialization rejects home and filesystem roots, requires explicit consent, and preserves existing files and staged changes.
 - Made root-only Linux installation automatically provision a non-root Swarm service identity with a usable home and workspace, while continuing to reject workspaces under the root home.
 - Added bounded download attempts and visible installer progress, plus authenticated fresh-install command assertions that distinguish explicit root-home rejection from unrelated failures.
 - Preserved native artifact scene identity and source lineage across repeated remix rounds, serialized sibling publication, and restored retained Designer draft recovery with clearer preview diagnostics.
@@ -74,6 +76,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Docs impact
 
+- Public TUI onboarding docs should explain resumed provider/workspace setup, `Ctrl+L` location editing, `Ctrl+U` clearing, `Enter` confirmation, `Esc` cancellation, and `Ctrl+N` folder creation. Document explicit Git consent, home/root protection, and choosing another project when a folder cannot be safely initialized; the Swarm Atlas records these controls and completion behavior.
 - Public artifact docs should explain generation grouping, revision-bound playback, scene remix, exact historical sources, reference-only attachments, retained-draft recovery, sandboxed Three.js support, and frame-budget-based animation duration limits.
 - Public TUI guidance should reflect custom question answers and saved-response display; workspace synchronization, theme targeting, and capture lifecycle fixes need no new setup instructions.
 - Public docs should cover workspace Actions, AI-assisted commits, Git/worktree controls, account-scoped model favorites, and provider service-tier choices.
