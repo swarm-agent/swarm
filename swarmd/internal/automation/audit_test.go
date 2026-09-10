@@ -16,16 +16,30 @@ func TestAutomationPlanContentPin(t *testing.T) {
 	d.Enabled = true
 	d.Authorization = store.AutomationAuthorizationPolicy{Mode: "approved_policy", ApprovalReference: "approval", ExpiresAt: 100001}
 	created, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "create", 0, d)
-	if err != nil { t.Fatal(err) }
-	if len(created.Definition.Plans[0].Plan.DocumentSHA256) != 64 { t.Fatal("missing content pin") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Definition.Plans[0].Plan.DocumentSHA256) != 64 {
+		t.Fatal("missing content pin")
+	}
 	plans.plan.Document.Title = "Replaced instructions"
-	if _, err := s.CheckRun(context.Background(), p, scope, "check", 1); !errors.Is(err, ErrDenied) { t.Fatal("mutable plan accepted", err) }
-	if _, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "repin", 1, d); !errors.Is(err, ErrDenied) { t.Fatal("omitted digest repinned plan", err) }
-	if r.writes != 1 || a.executions != 1 { t.Fatal("rejected pin reached write/grant") }
+	if _, err := s.CheckRun(context.Background(), p, scope, "check", 1); !errors.Is(err, ErrDenied) {
+		t.Fatal("mutable plan accepted", err)
+	}
+	if _, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "repin", 1, d); !errors.Is(err, ErrDenied) {
+		t.Fatal("omitted digest repinned plan", err)
+	}
+	if r.writes != 1 || a.executions != 1 {
+		t.Fatal("rejected pin reached write/grant")
+	}
 	// Revocation must not prevent disabling the original pinned binding.
 	d.Enabled = false
-	if _, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "disable", 1, d); err != nil { t.Fatal(err) }
-	if _, err := s.CheckRun(context.Background(), p, scope, "check", 2); !errors.Is(err, ErrDenied) { t.Fatal("disabled execution", err) }
+	if _, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "disable", 1, d); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CheckRun(context.Background(), p, scope, "check", 2); !errors.Is(err, ErrDenied) {
+		t.Fatal("disabled execution", err)
+	}
 }
 
 // Purpose: Search must reject forged account scope before repository reads;
@@ -37,13 +51,21 @@ func TestAutomationSearchRejection(t *testing.T) {
 			s, r, _, _, p, scope, _ := fixture(t)
 			q := store.AutomationSearch{Scope: scope, Limit: 20}
 			switch kind {
-			case "account": q.Scope.AccountID = "foreign"
-			case "cursor": q.Cursor = string(make([]byte, 4097))
-			case "query": q.Query = string(make([]byte, 257))
-			case "negative-limit": q.Limit = -1
+			case "account":
+				q.Scope.AccountID = "foreign"
+			case "cursor":
+				q.Cursor = string(make([]byte, 4097))
+			case "query":
+				q.Query = string(make([]byte, 257))
+			case "negative-limit":
+				q.Limit = -1
 			}
-			if rows, cursor, err := s.Search(context.Background(), p, q); err == nil || len(rows) != 0 || cursor != "" { t.Fatal("invalid search accepted") }
-			if r.reads != 0 || r.writes != 0 { t.Fatal("invalid search reached repository") }
+			if rows, cursor, err := s.Search(context.Background(), p, q); err == nil || len(rows) != 0 || cursor != "" {
+				t.Fatal("invalid search accepted")
+			}
+			if r.reads != 0 || r.writes != 0 {
+				t.Fatal("invalid search reached repository")
+			}
 		})
 	}
 }
