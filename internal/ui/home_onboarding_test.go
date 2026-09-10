@@ -55,9 +55,9 @@ func TestOnboardingProviderSkipRequiresWorkspaceConfirmation(t *testing.T) {
 	}
 }
 
-// Requirement: TUI onboarding must not save an unborn repository because normal
-// sessions require managed worktrees. The threat is bypassing the backend
-// prerequisite from the beginner flow; this UI action gate is the narrowest proof.
+// Requirement: TUI onboarding must not admit an unborn repository before explicit
+// setup consent creates HEAD. The UI action gate proves Enter only requests
+// consent and does not bypass canonical managed-worktree admission.
 func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) {
 	page := readyOnboardingPage()
 	page.model.WorkspaceSetupGitReadiness = model.GitReadinessNeedsCommit
@@ -66,7 +66,7 @@ func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) 
 	if _, ok := page.PopHomeAction(); ok {
 		t.Fatal("unborn repository queued workspace creation")
 	}
-	if !strings.Contains(page.onboarding.Error, "no initial commit") || !strings.Contains(page.onboarding.Error, "explicit permission") {
+	if !strings.Contains(page.onboarding.Status, "Press y") {
 		t.Fatalf("unborn repository guidance = %q", page.onboarding.Error)
 	}
 }

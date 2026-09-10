@@ -231,7 +231,8 @@ func inspectRepository(path string) RepositoryState {
 
 // SetupRepositoryForPrincipal performs the only automatic repository setup
 // Swarm can do without deciding which user files belong in source control. It
-// initializes an empty, canonical directory and creates an empty first commit.
+// initializes an empty canonical directory, or completes an exact unborn
+// repository with an empty first commit while preserving its index and files.
 func (s *Service) SetupRepositoryForPrincipal(principal identity.Principal, path, expectedResolvedPath string) (RepositoryState, error) {
 	if s == nil || s.store == nil {
 		return RepositoryState{}, errors.New("workspace service is not configured")
@@ -272,6 +273,26 @@ func (s *Service) SetupRepositoryForPrincipal(principal identity.Principal, path
 	state := inspectRepository(resolved)
 	if state.State == RepositoryStateGitUnavailable {
 		return state, &RepositoryPrerequisiteError{Repository: state}
+	}
+	if state.State == RepositoryStateNeedsInitialCommit && state.Repository == resolved {
+		// Build an explicitly empty tree, never the user's index. Compare-and-swap
+		// the unborn HEAD so a concurrent first commit cannot be overwritten.
+		tree, err := runRepositoryGit(resolved, "hash-object", "-w", "-t", "tree", "--stdin")
+		if err != nil {
+			return state, err
+		}
+		commit, err := runRepositoryGit(resolved, "-c", "user.name=Swarm Workspace Setup", "-c", "user.email=swarm-workspace-setup@localhost", "commit-tree", tree, "-m", "Initialize Swarm workspace")
+		if err != nil {
+			return state, err
+		}
+		if _, err := runRepositoryGit(resolved, "update-ref", "HEAD", commit, ""); err != nil {
+			return state, err
+		}
+		ready := inspectRepository(resolved)
+		if ready.State != RepositoryStateReady {
+			return ready, errors.New("repository setup did not produce a valid initial commit")
+		}
+		return ready, nil
 	}
 	if state.State == RepositoryStateReady || state.State == RepositoryStateNeedsInitialCommit || state.Repository != "" || state.Message == repositoryMessageNonWorkTree {
 		return state, errors.New("repository setup rejects directories that are already inside Git repositories")

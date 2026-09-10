@@ -303,7 +303,8 @@ type App struct {
 	mouseHintShown      bool
 	vault               client.VaultStatus
 
-	quitRequested bool
+	quitRequested    bool
+	onboardingCancel context.CancelFunc
 
 	startupNetworkWarningModal startupNetworkWarningModalState
 
@@ -601,6 +602,11 @@ func (a *App) Run() error {
 			a.setPasteActive(e.Start())
 			dirty = true
 		case *tcell.EventKey:
+			// Onboarding exit precedes modal and paste dispatch, even while pending.
+			if a.home != nil && a.home.OnboardingVisible() && e.Key() == tcell.KeyCtrlC {
+				a.requestQuit()
+				continue
+			}
 			if a.startupNetworkWarningModalActive() {
 				if a.handleStartupNetworkWarningModalKey(e) {
 					dirty = true
@@ -1813,6 +1819,10 @@ func (a *App) loadSessionSummary(ctx context.Context, sessionID string) (model.S
 }
 
 func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
+	if a.home != nil && a.home.OnboardingVisible() && ev != nil && ev.Key() == tcell.KeyCtrlC {
+		a.requestQuit()
+		return true
+	}
 	keybinds := a.activeKeyBindings()
 	if a.route == "chat" && a.chat != nil && a.chat.PermissionModalVisible() {
 		return false
@@ -5164,6 +5174,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.openAuthModal()
 	case ui.HomeActionSaveOnboarding:
 		a.saveOnboarding(action.Username, action.SwarmName)
+	case ui.HomeActionSetupOnboardingRepository:
+		a.createOnboardingWorkspaceWithSetup(action.WorkspacePath, true)
 	case ui.HomeActionCreateOnboardingWorkspace:
 		a.createOnboardingWorkspace(action.WorkspacePath)
 	}
@@ -6454,15 +6466,27 @@ func (a *App) refreshOnboardingWorkspaceGitReadiness() {
 }
 
 func (a *App) createOnboardingWorkspace(path string) {
+	a.createOnboardingWorkspaceWithSetup(path, false)
+}
+
+func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 	path = normalizePath(strings.TrimSpace(path))
 	if path == "" {
 		a.home.SetOnboardingError("The launch directory is unavailable; restart Swarm from the workspace you want to use.")
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	a.onboardingCancel = cancel
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		resolution, err := a.api.AddWorkspace(ctx, path, "", "", true)
+		var resolution client.WorkspaceResolution
+		var err error
+		if setup {
+			err = a.api.SetupOnboardingRepository(ctx, path)
+		}
+		if err == nil {
+			resolution, err = a.api.AddWorkspace(ctx, path, "", "", true)
+		}
 		if err == nil {
 			a.homeWorkspaceBootstrapped.Store(true)
 		}
@@ -6474,13 +6498,17 @@ func (a *App) createOnboardingWorkspace(path string) {
 		if err == nil && !homeModelHasActiveWorkspace(next, readyPath) {
 			err = fmt.Errorf("workspace API completed but refreshed state does not include the active workspace at %s", displayPath(readyPath))
 		}
+		if err == nil {
+			complete := true
+			_, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
+		}
 		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
 		select {
 		case a.onboardingWorkspaceCh <- result:
 		default:
 		}
-		if a.screen != nil {
-			a.screen.PostEventWait(tcell.NewEventInterrupt(interruptOnboardingReady))
+		if a.screen != nil && ctx.Err() == nil {
+			_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
 		}
 	}()
 }

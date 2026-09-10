@@ -64,3 +64,44 @@ func TestOnboardingSetupCommandFailureRollsBackForRetry(t *testing.T) {
 		t.Fatalf("selection changed: selected=%v err=%v", selected, err)
 	}
 }
+
+// Requirement: explicit unborn-repository recovery must create only an empty
+// commit, preserving staged and untracked content. Service-level Git inspection
+// proves the actual index/tree postconditions rather than response status alone.
+func TestOnboardingUnbornSetupPreservesIndexAndFiles(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	path := t.TempDir()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	if _, err := runRepositoryGit(path, "init", "--initial-branch=main", "--template="); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "existing.txt"), []byte("keep me"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRepositoryGit(path, "add", "existing.txt"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(path, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path)
+	if err != nil || state.State != RepositoryStateReady {
+		t.Fatalf("setup: %+v %v", state, err)
+	}
+	after, err := os.ReadFile(filepath.Join(path, ".git", "index"))
+	if err != nil || string(before) != string(after) {
+		t.Fatal("index changed")
+	}
+	files, err := runRepositoryGit(path, "ls-tree", "--name-only", "HEAD")
+	if err != nil || files != "" {
+		t.Fatalf("committed user files: %q %v", files, err)
+	}
+	content, err := os.ReadFile(filepath.Join(path, "existing.txt"))
+	if err != nil || string(content) != "keep me" {
+		t.Fatal("user file changed")
+	}
+}
