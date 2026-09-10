@@ -180,6 +180,7 @@ func newStartedWebsocketStreamError(cause error) error {
 
 type retryAwareStreamEmitter struct {
 	onEvent                 func(StreamEvent)
+	sawEvent                bool // Never replay over HTTP after any attempt emitted an event.
 	emittedOutputText       string
 	emittedReasoningSummary map[string]string
 	attemptOutputText       string
@@ -195,7 +196,11 @@ func (e *retryAwareStreamEmitter) beginAttempt() {
 }
 
 func (e *retryAwareStreamEmitter) emit(event StreamEvent) {
-	if e == nil || e.onEvent == nil {
+	if e == nil {
+		return
+	}
+	e.sawEvent = true
+	if e.onEvent == nil {
 		return
 	}
 	switch event.Type {
@@ -1312,6 +1317,13 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 			}
 			continue
 		}
+		if record.Type == pebblestore.CodexAuthTypeOAuth && !streamEmitter.sawEvent && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
+			payload, _, buildErr := buildRequestPayloadWithOptions(req)
+			if buildErr != nil {
+				return nil, 0, buildErr
+			}
+			return c.sendCodexResponsesHTTP(ctx, record, payload, streamEmitter.emit)
+		}
 		if record.Type != pebblestore.CodexAuthTypeOAuth && openAIWebsocketShouldFallbackHTTP(wsStatus) {
 			return c.sendOpenAIResponsesRequest(ctx, record, req, streamEmitter.emit)
 		}
@@ -1390,6 +1402,9 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 				return nil, 0, err
 			}
 			continue
+		}
+		if !streamEmitter.sawEvent && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
+			return c.sendCodexResponsesHTTP(ctx, record, payload, streamEmitter.emit)
 		}
 		return annotateRetryAttempts(annotateCodexTransportMetadata(wsDecoded, codexTransportWebsocket, true), attempt), wsStatus, nil
 	}
@@ -2145,7 +2160,8 @@ func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) 
 				return nil, nil, resp.StatusCode, fmt.Errorf("read websocket handshake failure body: %w", readErr)
 			}
 			return nil, map[string]any{
-				"raw_body": sanitizeDiagnosticText(string(body)),
+				"raw_body":                          sanitizeDiagnosticText(string(body)),
+				"_swarm_websocket_handshake_failed": true,
 			}, resp.StatusCode, nil
 		}
 		return nil, nil, 0, err
