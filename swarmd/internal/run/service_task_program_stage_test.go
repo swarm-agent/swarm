@@ -14,7 +14,9 @@ import (
 // from one immutable base, hydrate a managed Designer with exact bounded source,
 // and fork later work from that integrated HEAD. Real Git plus durable program
 // storage is the narrowest layer proving these postconditions. Unintegrated,
-// dirty, stale and oversized evidence must reject without advancing checkouts.
+// dirty and stale evidence must reject without advancing checkouts. Coder
+// consumers retain these guards but use their inherited source tree, not the
+// managed Designer's inline size/binary gate (sourceHandoffsForJob).
 func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	svc, id, cleanup := newTaskLaunchPermissionTestService(t)
@@ -78,6 +80,23 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := taskProgramScheduler{service: svc, parentSession: parent, record: record}
+	coderHandoff := func() (string, error) {
+		saved := p.record.Definition.Jobs[2]
+		p.record.Definition.Jobs[2].AgentType = "coder"
+		p.record.Definition.Jobs[2].OutputMode = ""
+		defer func() { p.record.Definition.Jobs[2] = saved }()
+		return p.sourceHandoffsForJob(2)
+	}
+	assertCoderSource := func() {
+		t.Helper()
+		evidence, err := coderHandoff()
+		if err != nil || !strings.Contains(evidence, p.record.ParentHead) || !strings.Contains(evidence, "allocated Coder worktree") || strings.Contains(evidence, "diff --git") || len(evidence) > 4096 {
+			t.Fatalf("Coder must receive bounded exact identity without inline diff: %q %v", evidence, err)
+		}
+	}
+	if _, err := coderHandoff(); err == nil {
+		t.Fatal("Coder accepted unintegrated dependency")
+	}
 	if _, err := p.sourceHandoffsForJob(2); err == nil {
 		t.Fatal("unintegrated source accepted")
 	}
@@ -124,12 +143,18 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	if _, err := p.sourceHandoffsForJob(2); err == nil {
 		t.Fatal("stale evidence accepted")
 	}
+	if _, err := coderHandoff(); err == nil {
+		t.Fatal("Coder accepted stale lane")
+	}
 	p.record.ParentHead = savedHead
 	if err := os.WriteFile(filepath.Join(lane.WorkspacePath, "dirty.txt"), []byte("preserve"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.sourceHandoffsForJob(2); err == nil {
 		t.Fatal("dirty source accepted")
+	}
+	if _, err := coderHandoff(); err == nil {
+		t.Fatal("Coder accepted dirty lane")
 	}
 	if data, _ := os.ReadFile(filepath.Join(lane.WorkspacePath, "dirty.txt")); string(data) != "preserve" {
 		t.Fatal("dirty evidence mutated")
@@ -143,6 +168,18 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	p.record.ParentHead = programFixtureGit(t, lane.WorkspacePath, "rev-parse", "HEAD")
 	if _, err := p.sourceHandoffsForJob(2); err == nil || !strings.Contains(err.Error(), "bounded") {
 		t.Fatalf("oversized evidence: %v", err)
+	}
+	assertCoderSource()
+	largeBase, err := wt.ResolveTaskBase(lane.WorkspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	largeChild, err := wt.AllocateTaskWorkspace(lane.WorkspacePath, largeBase, "large-next-child", []string{"first.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(largeChild.WorkspacePath, "large.txt")); err != nil || string(data) != strings.Repeat("x", 129*1024) {
+		t.Fatalf("large prerequisite missing outside mutation scope: %d bytes, %v", len(data), err)
 	}
 	// Remove the large content through a new fixture commit (no history reset)
 	// and add binary content to prove binary evidence rejects independently.
@@ -158,6 +195,7 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	if _, err := p.sourceHandoffsForJob(2); err == nil || !strings.Contains(err.Error(), "binary") {
 		t.Fatalf("binary evidence: %v", err)
 	}
+	assertCoderSource()
 	if programFixtureGit(t, source, "rev-parse", "HEAD") != original || programFixtureGit(t, source, "status", "--porcelain") != "" || programFixtureGit(t, unrelated, "worktree", "list", "--porcelain") != unrelatedBefore {
 		t.Fatal("captured or unrelated checkout changed")
 	}
