@@ -142,7 +142,7 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 	case "publish", "release":
 		if record.OperationState != "reserved" || record.ClaimantSessionID != input.SessionID || record.OperationID != mutation.OperationID || record.Evidence != mutation.Evidence { return nil, ErrWorktreeRecoveryConflict }
 		if mutation.Action == "publish" {
-			if input.Session == nil || !next.WorktreeEnabled || next.WorktreeRootPath != path || next.WorkspacePath != path { return nil, ErrWorktreeRecoveryConflict }
+			if input.Session == nil || !next.WorktreeEnabled || next.WorktreeRootPath != path || next.WorkspacePath != current.WorkspacePath { return nil, ErrWorktreeRecoveryConflict }
 			if err := s.worktreeTransitionIdle(record.OwnerSessionID); err != nil { return nil, err }
 			if record.OwnerSessionID != input.SessionID { record.PreviousOwners = append(record.PreviousOwners, record.OwnerSessionID) }
 			record.OwnerSessionID, record.OperationState = input.SessionID, "published"

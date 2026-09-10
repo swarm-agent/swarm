@@ -40,12 +40,12 @@ func TestWorktreeRecoveryExclusivePublication(t *testing.T) {
 	if err != nil || loserSession.WorktreeRootPath != "" { t.Fatalf("loser mutated: %+v %v", loserSession, err) }
 	events, err := s.ListV3SessionEvents(loser, 0, 10)
 	if err != nil || len(events) != 1 { t.Fatalf("loser events: %+v %v", events, err) }
-	loserSession.WorktreeEnabled, loserSession.WorktreeRootPath = true, path
+	loserSession.WorktreeEnabled, loserSession.WorktreeRootPath, loserSession.WorktreeBranch = true, path, "agent/owner"
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID:loser, UserID:"user", AccountScopeID:"account", PayloadHash:"test-payload", IdempotencyKey:"adopt", Kind:V3SessionMutationUpdateSettings, Session:&loserSession})
 	if !errors.Is(err, ErrWorktreeRecoveryConflict) { t.Fatalf("ordinary adoption bypass: %v", err) }
 	input := recoveryInput(winner, "publish", path, 2, 2)
 	current, _, _ := s.GetSession(winner)
-	current.WorktreeEnabled, current.WorktreeRootPath, current.WorkspacePath = true, path, path
+	current.WorktreeEnabled, current.WorktreeRootPath, current.WorktreeBranch = true, path, "agent/owner"
 	input.Session = &current
 	published, err := s.ApplyV3SessionMutation(input)
 	if err != nil { t.Fatal(err) }
@@ -84,10 +84,62 @@ func TestWorktreeRecoveryRejectsUnprovenAdmission(t *testing.T) {
 
 func createRecoverySession(t *testing.T, s *SessionStore, id, path string) {
 	t.Helper()
-	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID:id, UserID:"user", AccountScopeID:"account", PayloadHash:"test-payload", IdempotencyKey:"create", Kind:V3SessionMutationCreateSession, Session:&SessionSnapshot{ID:id, WorktreeEnabled:path != "", WorktreeRootPath:path, WorkspacePath:path}})
+	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID:id, UserID:"user", AccountScopeID:"account", PayloadHash:"test-payload", IdempotencyKey:"create", Kind:V3SessionMutationCreateSession, Session:&SessionSnapshot{ID:id, WorktreeEnabled:path != "", WorktreeRootPath:path, WorktreeBranch:"agent/"+id, WorkspacePath:path}})
 	if err != nil { t.Fatal(err) }
 }
 
 func recoveryInput(id, action, path string, revision, seq uint64) V3SessionMutationInput {
 	return V3SessionMutationInput{SessionID:id, UserID:"user", AccountScopeID:"account", PayloadHash:"test-payload", IdempotencyKey:action, Kind:V3SessionMutationUpdateSettings, ExpectedLastEventSeq:&seq, WorktreeRecovery:&WorktreeRecoveryMutation{Action:action, Path:path, OwnerSessionID:"owner", ExpectedRevision:revision, OperationID:"operation-"+id, Evidence:strings.Repeat("a", 64)}}
+}
+
+// Purpose: publication through prepareWorktreeOwnership must preserve the saved
+// source workspace, and a stale claim must leave both ownership and events intact.
+// This store-level test observes atomic postconditions without filesystem mocks.
+func TestWorktreeRecoveryPublicationPreservesSource(t *testing.T) {
+	s := NewSessionStore(openV3SessionEventTestStore(t))
+	path := filepath.Join(t.TempDir(), "lane")
+	source := filepath.Join(t.TempDir(), "source")
+	createRecoverySession(t, s, "owner", path)
+	createRecoverySession(t, s, "receiver", "")
+	current, _, err := s.GetSession("receiver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.WorkspacePath = source
+	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "receiver", UserID: "user", AccountScopeID: "account", PayloadHash: "source", IdempotencyKey: "source", Kind: V3SessionMutationUpdateSettings, Session: &current})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession("owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(recoveryInput("receiver", "reserve", path, 1, 2)); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err = s.GetSession("receiver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.WorktreeEnabled, current.WorktreeRootPath, current.WorktreeBranch = true, path, "agent/owner"
+	input := recoveryInput("receiver", "publish", path, 1, 3)
+	input.Session = &current
+	if _, err := s.ApplyV3SessionMutation(input); !errors.Is(err, ErrWorktreeRecoveryConflict) {
+		t.Fatalf("stale publication: %v", err)
+	}
+	records, err := s.InspectWorktreeOwnership("account", "user", []string{path})
+	if err != nil || len(records) != 1 || records[0].Revision != 2 || records[0].OwnerSessionID != "owner" || records[0].ClaimantSessionID != "receiver" {
+		t.Fatalf("partial publication: %+v %v", records, err)
+	}
+	events, err := s.ListV3SessionEvents("receiver", 0, 10)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("partial event: %+v %v", events, err)
+	}
+	input.WorktreeRecovery.ExpectedRevision = 2
+	if _, err := s.ApplyV3SessionMutation(input); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.GetSession("receiver")
+	if err != nil || !ok || got.WorkspacePath != source || got.WorktreeRootPath != path {
+		t.Fatalf("source/runtime identity lost: %+v %v", got, err)
+	}
 }
