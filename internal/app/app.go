@@ -7701,6 +7701,7 @@ func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
 	if a.home.OnboardingProviderActive() && !wasProvider {
+		a.refreshOnboardingWorkspaceGuidance()
 		a.refreshAuthModalData("Loading providers...")
 	}
 	route := a.selectedChatRouteForWorkspace(a.activeWorkspacePath())
