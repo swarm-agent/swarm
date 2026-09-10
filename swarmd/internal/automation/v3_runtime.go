@@ -53,6 +53,10 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 	if def.Definition == nil || occurrence.Occurrence == nil || def.Scope != occurrence.Scope || def.AutomationID != occurrence.AutomationID || def.Revision != occurrence.Occurrence.DefinitionRevision || p.AccountID != def.Scope.AccountID {
 		return "", ErrInvalid
 	}
+	// The canonical executor has no automation-specific tool/target overlay.
+	// Never reinterpret a restricted approval as the default Swarm contract,
+	// including recovery of an already-created session.
+	if err := ValidateExecutionPolicy(def.Definition.Authorization); err != nil { return "", err }
 	if err := v.approval.Verify(ctx, p, def); err != nil { return "", err }
 	key := executionKey(def.Scope, def.AutomationID, occurrence.ID)
 	id := "automation-" + key
@@ -144,4 +148,12 @@ func (v *V3Runtime) Cancel(ctx context.Context, p Principal, r store.AutomationR
 	if found && (snapshot.AccountScopeID != p.AccountID || snapshot.Metadata["automation_execution_key"] != key) { return ErrDenied }
 	if !found { snapshot = store.SessionSnapshot{ID: id, AccountScopeID: p.AccountID} }
 	return v.host.Cancel(ctx, snapshot, key)
+}
+
+// ValidateExecutionPolicy fails closed for restrictions that the canonical run
+// executor cannot yet enforce. Empty lists retain the default permissioned local
+// Swarm contract; they are not an automation permission bypass.
+func ValidateExecutionPolicy(policy store.AutomationAuthorizationPolicy) error {
+	if len(policy.AllowedTools) != 0 || len(policy.TargetIDs) != 0 { return ErrDenied }
+	return nil
 }

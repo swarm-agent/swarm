@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -101,6 +100,7 @@ func (e *ExecutionService) Dispatch(ctx context.Context, p Principal, scope stor
 	if r.Occurrence.State != "pending" { return r, nil }
 	def, err := s.CheckRun(ctx, p, scope, id, r.Occurrence.DefinitionRevision)
 	if err != nil { return r, err }
+	if err := ValidateExecutionPolicy(def.Definition.Authorization); err != nil { return r, err }
 	claims, ok := s.repo.(interface { ClaimAutomationDispatch(store.AutomationScope, string, string) error })
 	if !ok { return r, ErrInvalid }
 	if err := claims.ClaimAutomationDispatch(scope, id, occurrenceID); err != nil { return r, err }
@@ -214,22 +214,8 @@ func (e *ExecutionService) ReconcileOutcome(ctx context.Context, p Principal, sc
 	// CAS and the store's lock-preservation check protect concurrent user edits.
 	b, err := s.Context(ctx, p, scope, id)
 	if err != nil { return r, err }
-	value := fmt.Sprintf("%s occurrence=%s revision=%d", summary, r.ID, r.Revision)
-	contextKey := "canonical-" + r.ID
-	if b.Summaries[contextKey] == value { return r, nil }
-	maintained := cloneMap(b.Summaries)
-	if maintained == nil { maintained = map[string]string{} }
-	maintained[contextKey] = value
-	keys := make([]string, 0, len(maintained))
-	for k := range maintained { if k != contextKey { keys = append(keys, k) } }
-	sort.Strings(keys)
-	for {
-		encoded, err := json.Marshal(store.AutomationContext{UserLocked: b.UserInstructions, AgentOwned: maintained})
-		if err != nil { return r, err }
-		if len(encoded) <= 20000 && len(maintained) <= 32 { break }
-		if len(keys) == 0 { return r, ErrInvalid }
-		delete(maintained, keys[0]); keys = keys[1:]
-	}
+	maintained, value, changed := canonicalContext(b.UserInstructions, b.Summaries, r, summary)
+	if !changed { return r, nil }
 	_, _, err = s.repo.ApplyAutomationMutation(store.AutomationMutation{Record: store.AutomationRecord{Scope: scope, AutomationID: id, Kind: "context", ID: id, Context: &store.AutomationContext{UserLocked: b.UserInstructions, AgentOwned: maintained}}, ExpectedRevision: b.Revision, MutationID: executionKey("canonical-context", id, b.Revision, value), Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli()})
 	return r, err
 }
@@ -246,4 +232,35 @@ func canonicalOutcome(doc *store.SessionPlanDocument) string {
 	}
 	if all { return "completed" }
 	return ""
+}
+
+// canonicalContext retains one newest canonical observation, ordered by scheduled
+// time and occurrence identity, with revision breaking ties for the same run.
+// Historical sweeps cannot rotate the summary or evict user/agent-owned evidence.
+// This is only a bounded cache: full evidence remains in append-only audits.
+func canonicalContext(locked, summaries map[string]string, r store.AutomationRecord, summary string) (map[string]string, string, bool) {
+	const key = "canonical-latest"
+	type observation struct {
+		ScheduledAt int64 `json:"scheduled_at"`
+		OccurrenceID string `json:"occurrence_id"`
+		Revision uint64 `json:"revision"`
+		Summary string `json:"summary"`
+	}
+	current := observation{ScheduledAt: r.Occurrence.ScheduledAt, OccurrenceID: r.ID, Revision: r.Revision, Summary: summary}
+	if raw, exists := summaries[key]; exists {
+		var previous observation
+		// Malformed/untrusted cache content is not permission or execution
+		// authority. Preserve it rather than overwriting another writer's bytes.
+		if json.Unmarshal([]byte(raw), &previous) != nil { return summaries, "", false }
+		if previous.ScheduledAt > current.ScheduledAt || (previous.ScheduledAt == current.ScheduledAt && (previous.OccurrenceID > current.OccurrenceID || (previous.OccurrenceID == current.OccurrenceID && previous.Revision >= current.Revision))) { return summaries, "", false }
+	}
+	data, err := json.Marshal(current)
+	if err != nil { return summaries, "", false }
+	maintained := cloneMap(summaries)
+	if maintained == nil { maintained = map[string]string{} }
+	maintained[key] = string(data)
+	encoded, err := json.Marshal(store.AutomationContext{UserLocked: locked, AgentOwned: maintained})
+	// Do not evict unrelated evidence to make room for an optional cache.
+	if err != nil || len(encoded) > 20000 || len(maintained) > 64 { return summaries, "", false }
+	return maintained, string(data), true
 }

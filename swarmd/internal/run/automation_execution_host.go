@@ -32,6 +32,7 @@ func (h *AutomationExecutionHost) Prepare(ctx context.Context, p automation.Prin
 	if err := ctx.Err(); err != nil { return empty, err }
 	s := h.runs
 	if p.AccountID == "" || p.SubjectID == "" || p.AccountID != def.Scope.AccountID || def.Definition == nil { return empty, automation.ErrDenied }
+	if err := automation.ValidateExecutionPolicy(def.Definition.Authorization); err != nil { return empty, err }
 	if s.workspace == nil || s.agents == nil || s.agentModelSettings == nil || s.sessionDeployCanonicalize == nil { return empty, errors.New("automation preparation authorities are not configured") }
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: p.SubjectID, AccountScopeID: p.AccountID, AccountScopeSource: identity.AccountScopeSourceServerState}
 	entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, def.Scope.WorkspaceID)

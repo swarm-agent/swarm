@@ -186,7 +186,7 @@ func TestExecutionCanonicalOutcomeRecovery(t *testing.T) {
 		if err != nil || out.Occurrence.State != state { t.Fatalf("%s: %+v %v", state, out, err) }
 	}
 	b, err := s.Context(ctx, p, scope, "automation")
-	if err != nil || b.UserInstructions["instruction"] != "preserve" || len(b.Summaries) > 32 { t.Fatalf("context: %+v %v", b, err) }
+	if err != nil || b.UserInstructions["instruction"] != "preserve" || len(b.Summaries) != 64 || b.Summaries["0"] != "old" || b.Summaries["63"] != "old" { t.Fatalf("context: %+v %v", b, err) }
 	audits, _, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, AutomationID: "automation", Kind: "audit", Limit: 50})
 	if err != nil || len(audits) != 2 { t.Fatalf("audit replay: %d %v", len(audits), err) }
 }
