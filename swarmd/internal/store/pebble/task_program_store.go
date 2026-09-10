@@ -206,10 +206,12 @@ type TaskProgramPreservedChild struct {
 // TaskProgramRepositoryLane is an immutable integration destination owned by
 // ParentSessionID. Captured source checkouts are never integration destinations.
 type TaskProgramRepositoryLane struct {
-	SourcePath    string `json:"source_path"`
-	WorkspacePath string `json:"workspace_path"`
-	Branch        string `json:"branch"`
-	BaseCommit    string `json:"base_commit"`
+	WorkspaceID         string `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
+	SourcePath          string `json:"source_path"`
+	WorkspacePath       string `json:"workspace_path"`
+	Branch              string `json:"branch"`
+	BaseCommit          string `json:"base_commit"`
 }
 
 type TaskProgramTransition struct {
@@ -292,6 +294,12 @@ func (s *SessionStore) CreateTaskProgram(record TaskProgramRecord) (TaskProgramR
 	if err := validateTaskProgramRecord(record); err != nil {
 		return TaskProgramRecord{}, false, err
 	}
+	// Serialize admission with session identity changes. Adoption checks the
+	// program inventory under this same session lock before publishing.
+	unlockSession := s.store.sessionMutations.lockSessions(record.ParentSessionID)
+	defer unlockSession()
+	s.store.sessionMutations.worktreeMu.Lock()
+	defer s.store.sessionMutations.worktreeMu.Unlock()
 	lock := taskProgramLock(record.ParentSessionID, record.ProgramID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -302,6 +310,9 @@ func (s *SessionStore) CreateTaskProgram(record TaskProgramRecord) (TaskProgramR
 			return TaskProgramRecord{}, false, errors.New("task program ID already exists with a different validated definition")
 		}
 		return current, false, nil
+	}
+	if err := s.checkProgramRecoveryFence(record); err != nil {
+		return TaskProgramRecord{}, false, err
 	}
 	now := time.Now().UnixMilli()
 	record.Revision = 1
@@ -328,6 +339,10 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 	if transition.ExpectedRevision < 1 || strings.TrimSpace(transition.MutationID) == "" {
 		return TaskProgramRecord{}, false, errors.New("task program transition requires expected revision and mutation ID")
 	}
+	unlockSession := s.store.sessionMutations.lockSessions(parentSessionID)
+	defer unlockSession()
+	s.store.sessionMutations.worktreeMu.Lock()
+	defer s.store.sessionMutations.worktreeMu.Unlock()
 	lock := taskProgramLock(parentSessionID, programID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -400,6 +415,11 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 	record.UpdatedAt = now
 	if err := validateTaskProgramRecord(record); err != nil {
 		return TaskProgramRecord{}, false, err
+	}
+	if record.State == TaskProgramStateDeclared || record.State == TaskProgramStateRunning {
+		if err := s.checkProgramRecoveryFence(record); err != nil {
+			return TaskProgramRecord{}, false, err
+		}
 	}
 	if err := s.putTaskProgramHistory(record); err != nil {
 		return TaskProgramRecord{}, false, fmt.Errorf("persist task program transition: %w", err)

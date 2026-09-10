@@ -292,7 +292,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 				return "", rollbackAllocations(fmt.Errorf("proposal %q deterministic session id is already bound to another deployment", proposal.ID))
 			}
 			workspacePath, workspaceName = existing.WorkspacePath, existing.WorkspaceName
-			allocation = worktreeruntime.Allocation{WorkspacePath: existing.WorktreeRootPath, BaseBranch: existing.WorktreeBaseBranch, BranchName: existing.WorktreeBranch}
+			allocation = worktreeruntime.Allocation{WorkspacePath: existing.WorktreeRootPath, BaseBranch: existing.WorktreeBaseBranch, BranchName: existing.WorktreeBranch, BaseCommit: firstNonEmptyString(mapString(existing.Metadata, "swarm_v3_worktree_base_commit"), mapString(existing.Metadata, "base_commit"))}
 		} else {
 			if s.worktrees == nil {
 				return "", rollbackAllocations(fmt.Errorf("proposal %q requires the managed worktree service", proposal.ID))
@@ -345,6 +345,12 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 			{Kind: pebblestore.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available},
 		}
 		snapshot := pebblestore.SessionSnapshot{ID: sessionID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: workspaceName, Title: title, Mode: proposal.Mode, Preference: pebblestore.ModelPreference{Provider: proposal.Provider, Model: proposal.Model, Thinking: proposal.Thinking, ServiceTier: proposal.ServiceTier, ContextMode: proposal.ContextMode}, ModelProfile: cloneManageSessionsDeployModelProfile(proposal.ModelProfile), Metadata: metadata, WorkspaceGrants: workspaceGrants, WorkspaceUsage: pebblestore.WorkspaceUsageFromGrants(workspaceGrants), CreatedAt: now, UpdatedAt: now, WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName}
+		if err := worktreeruntime.ValidateOwnedIdentity(snapshot.WorkspacePath, snapshot.WorktreeRootPath, snapshot.WorktreeBranch, allocation.BaseCommit); err != nil {
+			return "", rollbackAllocations(err)
+		}
+		if err := s.rejectSessionWorktreeOwnershipConflict(principal, sessionID, snapshot.WorktreeRootPath); err != nil {
+			return "", rollbackAllocations(err)
+		}
 		ready = append(ready, prepared{proposal: proposal, profile: profile, session: snapshot, runID: runID})
 	}
 	if apply == nil {
@@ -355,7 +361,7 @@ func (s *Service) executeManageSessionsDeployBound(ctx context.Context, parentSe
 	for i, item := range ready {
 		results[i] = manageSessionsDeployResult{ProposalID: item.proposal.ID, SessionID: item.session.ID, Title: item.session.Title, Mode: item.proposal.Mode, Agent: item.profile.Name, Workspace: firstNonEmptyString(item.session.WorktreeRootPath, item.session.WorkspacePath), Worktree: item.proposal.ManagedWorktree, Status: "created", Navigation: deploySessionNavigation(item.session)}
 		createKey := "session-deploy:create:" + digest + ":" + item.proposal.ID
-		_, createErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: createKey, IdempotencyKey: createKey, PayloadHash: createKey, RequestHash: createKey, Kind: sessionruntime.SessionMutationCreateSession, Session: &item.session, NowUnixMs: time.Now().UnixMilli()})
+		_, createErr := apply(sessionruntime.SessionMutationInput{SessionID: item.session.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, ClientRequestID: createKey, IdempotencyKey: createKey, PayloadHash: createKey, RequestHash: createKey, Kind: sessionruntime.SessionMutationCreateSession, WorktreeAdmission: sessionLaneAdmission(item.session, true), Session: &item.session, NowUnixMs: time.Now().UnixMilli()})
 		if createErr == nil && aiTask != nil && s.aiTaskBinder != nil {
 			_ = s.aiTaskBinder.AppendAITaskAudit(aiTask.AccountScopeID, aiTask.WorkspacePath, aiTask.TaskID, pebblestore.AITaskAuditRecord{StageKey: "000002_final_session", Stage: "final_session", FinalSessionID: item.session.ID, FinalRunID: item.runID, Disposition: "created_or_reused", CreatedAt: time.Now().UnixMilli()})
 		}

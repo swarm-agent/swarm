@@ -458,7 +458,7 @@ func canonicalManageWorkspaceAction(raw any) (string, bool) {
 		action = "delete"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
 		return action, true
 	default:
 		return "", false
@@ -506,7 +506,11 @@ func manageWorkspacePolicyIdentity(arguments string) (string, string) {
 		return policyToolWorkspaceInvalid, "manage_workspace action must be a supported non-empty string"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+	case "reclaim_worktree", "cancel_worktree_recovery":
+		return "workspace_reclaim", ""
+	case "copy_worktree":
+		return "workspace_copy", ""
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
 		return "manage_workspace", ""
 	case "create":
 		return policyToolWorkspaceCreate, ""
@@ -1351,7 +1355,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// catalog. The control-plane handler independently enforces primary-agent,
 		// principal, ownership, generation, path, and dirty-worktree boundaries.
 		return PolicyDecisionAllow
-	case policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
+	case "workspace_reclaim", "workspace_copy", policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
 		// Catalog and account-map mutations are independent approval identities.
 		// A persistent rule for one action cannot authorize another action or
 		// broaden into the safe inspection/selection surface.

@@ -114,6 +114,9 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 				}
 			}
 			store := pebblestore.NewSessionStore(rawStore)
+			if err := store.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 			sessions := sessionruntime.NewService(store, nil)
 			id := "incident-fixture"
 			available := true
@@ -492,8 +495,19 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 			if _, err := workspaceSvc.DeleteCatalogEntryForPrincipal(principal, target.WorkspaceID, target.WorkspaceGeneration); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := svc.ResolveRuntimeWorkspaceScope(load(), principal); err == nil {
-				t.Fatal("revoked attachment retained execution")
+			// Additional attachment revocation removes access without disabling
+			// the independent primary lane (mergeAuthorizedSessionWorkspaceGrantRoots).
+			// Assert the security postcondition, not the retired whole-run failure.
+			scope, err = svc.ResolveRuntimeWorkspaceScope(load(), principal)
+			if retained.WorkspacePath == targetPath {
+				if err == nil {
+					t.Fatal("revoked primary retained execution")
+				}
+			} else if err != nil || scope.PrimaryPath != retained.WorktreeRootPath {
+				t.Fatalf("revocation disabled independent primary lane: %+v %v", scope, err)
+			}
+			if containsTrimmedString(scope.Roots, targetPath) || containsTrimmedString(scope.ReadOnlyRoots, targetPath) {
+				t.Fatal("revoked attachment retained filesystem access")
 			}
 			if !reflect.DeepEqual(retained, load()) {
 				t.Fatal("revocation check rewrote historical session")

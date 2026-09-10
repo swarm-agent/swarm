@@ -27,6 +27,7 @@ const manageWorkspacePathID = "tool.manage-workspace.v1"
 // and remains in the safe workspace after delete. Worktree runtime checkout
 // identities fail closed. Delete only unlinks catalog data.
 type manageWorkspaceArguments struct {
+	Recovery             recoveryArguments
 	Action               string
 	WorkspaceID          string
 	WorkspaceGeneration  int64
@@ -77,6 +78,12 @@ func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, princi
 	}
 	if s.workspace == nil {
 		return "", errors.New("manage_workspace catalog is not configured")
+	}
+	if args.Action == "reclaim_worktree" || args.Action == "copy_worktree" || args.Action == "cancel_worktree_recovery" {
+		return s.recoverSessionWorktree(sessionID, principal, args, applySessionMutation)
+	}
+	if args.Action == "discover_worktrees" {
+		return s.discoverSessionRecoveryWorktrees(principal, args)
 	}
 	if args.Action == "inspect" || args.Action == "list" {
 		if args.WorkspaceID != "" || args.WorkspaceGeneration != 0 || args.PrimaryWorkspaceID != "" || len(args.WorkspaceIDs) > 0 || args.WorktreeName != "" || args.WorktreePath != "" || args.ExpectedWorktreePath != "" || args.WorkspacePathSet || args.WorkspaceNameSet || args.ThemeIDSet || args.Intent != "" || args.PermissionScope != "" || args.ExpectedRevision != 0 || args.ContentSet {
@@ -129,12 +136,20 @@ func parseManageWorkspaceArguments(arguments string) (manageWorkspaceArguments, 
 		return manageWorkspaceArguments{}, fmt.Errorf("manage_workspace arguments invalid: %w", err)
 	}
 	allowed := map[string]bool{"action": true, "workspace_id": true, "workspace_generation": true, "workspace_ids": true, "primary_workspace_id": true, "worktree_name": true, "worktree_path": true, "expected_worktree_path": true, "workspace_path": true, "workspace_name": true, "theme_id": true, "intent": true, "permission_scope": true, "expected_revision": true, "content": true}
+	for _, key := range []string{"owner_session_id", "ownership_revision", "head", "fingerprint", "operation_id", "files"} {
+		allowed[key] = true
+	}
 	for key := range raw {
 		if !allowed[key] {
 			return manageWorkspaceArguments{}, fmt.Errorf("manage_workspace unknown field %q", key)
 		}
 	}
+	recovery, err := parseRecoveryArguments(raw)
+	if err != nil {
+		return manageWorkspaceArguments{}, err
+	}
 	args := manageWorkspaceArguments{
+		Recovery:             recovery,
 		Action:               strings.ToLower(strings.TrimSpace(mapString(raw, "action"))),
 		WorkspaceID:          strings.TrimSpace(mapString(raw, "workspace_id")),
 		WorkspaceGeneration:  manageWorkspaceInt64(raw["workspace_generation"]),
@@ -302,7 +317,7 @@ func (s *Service) inspectManageWorkspace(principal identity.Principal, action st
 	}
 	return marshalManageWorkspace(map[string]any{
 		"action": action, "status": "ok", "workspaces": workspaces,
-		"actions": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree"},
+		"actions": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"},
 	})
 }
 
@@ -955,13 +970,26 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 	if session.UserID != principal.UserID || session.AccountScopeID != principal.AccountScopeID {
 		return "", errors.New("manage_workspace session ownership does not match the authenticated principal")
 	}
-	if err := s.ensureWorkspaceTransitionIdle(session, principal); err != nil {
+	// Same-source adoption retains every historical child and integration lane.
+	// Unlike attachment changes it does not require integrating retained work.
+	if mapString(session.Metadata, "lineage_kind") == "delegated_subagent" {
+		return "", errors.New("delegated worker workspace assignment is immutable")
+	}
+	if err := s.sessions.EnsureWorkspaceTransitionIdle(session.ID); err != nil {
 		return "", err
 	}
 	if err := validateSessionRepositoryIdentity(session); err != nil {
 		return "", err
 	}
-	if len(sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"])) >= 64 && args.WorktreePath == "" {
+	historyCount := len(sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"]))
+	currentRecorded := false
+	for _, item := range sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"]) {
+		currentRecorded = currentRecorded || sameTaskProgramPath(mapString(item, "path"), session.WorktreeRootPath)
+	}
+	if session.WorktreeEnabled && !currentRecorded {
+		historyCount++
+	}
+	if historyCount >= 64 && args.WorktreePath == "" {
 		return "", errors.New("session worktree history limit reached; existing provenance is retained")
 	}
 	currentPath := strings.TrimSpace(session.WorktreeRootPath)
@@ -972,6 +1000,13 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 	canonical, err := s.canonicalSessionWorkspace(principal, workspaceID, args.WorkspaceGeneration)
 	if err != nil {
 		return "", err
+	}
+	// Successors preserve the old lane, including dirty/untracked bytes. They
+	// start from the saved source checkout's configured committed base, not the
+	// active lane's HEAD or working files. Cross-repository moves retain the
+	// stricter set_session contract rather than silently changing provenance.
+	if session.WorktreeEnabled && (canonical.WorkspaceID != mapString(session.Metadata, "swarm_v3_source_workspace_id") || canonical.WorkspaceGeneration != manageWorkspaceInt64(session.Metadata["swarm_v3_source_workspace_generation"]) || !sameTaskProgramPath(canonical.SourceWorkspacePath, mapString(session.Metadata, "swarm_v3_source_workspace_path"))) {
+		return "", errors.New("manage_workspace successor requires the current saved source identity; use set_session for a different workspace")
 	}
 	var allocation worktreeruntime.Allocation
 	allocated := false
@@ -991,21 +1026,9 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 		}
 		return "", err
 	}
-	if currentPath != "" && filepath.Clean(currentPath) != filepath.Clean(allocation.WorkspacePath) {
-		state, inspectErr := s.worktrees.InspectTaskWorkspace(currentPath)
-		if inspectErr != nil || !state.Clean {
-			if allocated {
-				_ = s.worktrees.RollbackAllocation(allocation)
-			}
-			if inspectErr != nil {
-				return "", fmt.Errorf("inspect current worktree before move: %w", inspectErr)
-			}
-			return "", errors.New("manage_workspace cannot leave a dirty worktree; commit or clean the current checkout first")
-		}
-	}
 	if err := s.rejectSessionWorktreeOwnershipConflict(principal, sessionID, allocation.WorkspacePath); err != nil {
 		if allocated {
-			_ = s.worktrees.RollbackAllocation(allocation)
+			err = errors.Join(err, s.worktrees.RollbackAllocation(allocation))
 		}
 		return "", err
 	}
@@ -1051,7 +1074,7 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 		return "", err
 	}
 	key := manageWorkspaceMutationKey("manage-workspace-adopt", sessionID, payload)
-	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.worktree.adopted", EventPayload: payload, Session: &next, NowUnixMs: next.UpdatedAt})
+	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.worktree.adopted", EventPayload: payload, WorktreeAdmission: sessionLaneAdmission(next, allocated), Session: &next, NowUnixMs: next.UpdatedAt})
 	if err == nil && result.Conflict != nil {
 		err = errors.New(result.Conflict.Message)
 	}
@@ -1106,11 +1129,8 @@ func (s *Service) resolveOwnedSessionWorktree(session pebblestore.SessionSnapsho
 			return worktreeruntime.Allocation{}, errors.New("manage_workspace worktree ownership or source identity is stale")
 		}
 		state, err := s.worktrees.InspectTaskWorkspace(targetPath)
-		if err != nil || !state.Clean {
-			if err != nil {
-				return worktreeruntime.Allocation{}, err
-			}
-			return worktreeruntime.Allocation{}, errors.New("manage_workspace selected worktree is dirty")
+		if err != nil {
+			return worktreeruntime.Allocation{}, err
 		}
 		if err := worktreeruntime.ValidateOwnedIdentity(canonical.SourceWorkspacePath, targetPath, mapString(item, "branch"), mapString(item, "base_commit")); err != nil {
 			return worktreeruntime.Allocation{}, err
@@ -1125,10 +1145,21 @@ func (s *Service) rejectSessionWorktreeOwnershipConflict(principal identity.Prin
 	if err != nil {
 		return err
 	}
+	if len(sessions) >= 10000 {
+		return errors.New("worktree ownership inventory exceeds bound")
+	}
 	path = filepath.Clean(path)
 	for _, candidate := range sessions {
-		if candidate.ID != sessionID && candidate.WorktreeEnabled && filepath.Clean(candidate.WorktreeRootPath) == path {
+		if candidate.ID == sessionID {
+			continue
+		}
+		if candidate.WorktreeEnabled && filepath.Clean(candidate.WorktreeRootPath) == path {
 			return fmt.Errorf("manage_workspace worktree is owned by session %q", candidate.ID)
+		}
+		for _, item := range sessionWorktreeHistory(candidate.Metadata["swarm_v3_worktree_history"]) {
+			if mapString(item, "owner_session_id") == candidate.ID && filepath.Clean(mapString(item, "path")) == path {
+				return fmt.Errorf("manage_workspace worktree is retained by session %q", candidate.ID)
+			}
 		}
 	}
 	return nil
@@ -1329,6 +1360,11 @@ func (s *Service) setSessionWorkspaces(sessionID string, principal identity.Prin
 		}
 		return "", cause
 	}
+	if next.WorktreeEnabled {
+		if err := s.rejectSessionWorktreeOwnershipConflict(principal, sessionID, next.WorktreeRootPath); err != nil {
+			return rollback(err)
+		}
+	}
 	available := true
 	grants := []pebblestore.WorkspaceGrant{{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: primary.WorkspaceID, WorkspaceGeneration: primary.WorkspaceGeneration, Path: primary.SourceWorkspacePath, Name: primary.WorkspaceName, Available: &available}}
 	for id, canonical := range canonicalByID {
@@ -1347,7 +1383,7 @@ func (s *Service) setSessionWorkspaces(sessionID string, principal identity.Prin
 		return rollback(err)
 	}
 	key := manageWorkspaceMutationKey("manage-workspace", sessionID, payload)
-	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.workspace.updated", EventPayload: payload, Session: &next, NowUnixMs: next.UpdatedAt})
+	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.workspace.updated", EventPayload: payload, WorktreeAdmission: sessionLaneAdmission(next, allocation != nil), Session: &next, NowUnixMs: next.UpdatedAt})
 	if err != nil {
 		return rollback(err)
 	}

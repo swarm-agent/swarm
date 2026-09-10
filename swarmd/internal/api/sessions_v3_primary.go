@@ -874,17 +874,23 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	} else {
 		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
+	admission, err := sessionsV3AllocatedLaneAdmission(session)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationCreateSession,
-		Session:         &session,
-		NowUnixMs:       now,
+		WorktreeAdmission: admission,
+		SessionID:         sessionID,
+		UserID:            principal.UserID,
+		AccountScopeID:    principal.AccountScopeID,
+		ClientRequestID:   clientRequestID,
+		IdempotencyKey:    clientRequestID,
+		PayloadHash:       payloadHash,
+		RequestHash:       payloadHash,
+		Kind:              sessionruntime.SessionMutationCreateSession,
+		Session:           &session,
+		NowUnixMs:         now,
 	})
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
@@ -3517,7 +3523,7 @@ func (s *Server) handleSessionsV3CreateReplay(w http.ResponseWriter, principal i
 
 func (s *Server) resolveSessionsV3CreateWorktree(principal identity.Principal, workspacePath, sessionID string, requestedUseCurrentBranch *bool, requestedBaseBranch, requestedBranchName, requestedExistingPath string) (worktreeruntime.Allocation, error) {
 	if strings.TrimSpace(requestedExistingPath) != "" {
-		return s.reuseSessionsV3CreateWorktree(principal, workspacePath, requestedBranchName, requestedExistingPath)
+		return worktreeruntime.Allocation{}, errors.New("existing worktrees require explicit same-session adoption or recovery; creation cannot claim an existing lane")
 	}
 	return s.allocateSessionsV3CreateWorktree(principal, workspacePath, sessionID, requestedUseCurrentBranch, requestedBaseBranch, requestedBranchName)
 }

@@ -30,7 +30,7 @@ func validateSessionRepositoryIdentity(session pebblestore.SessionSnapshot) erro
 		if filepath.Clean(mapString(item, "path")) != filepath.Clean(session.WorktreeRootPath) {
 			continue
 		}
-		if mapString(item, "owner_session_id") != session.ID || mapString(item, "workspace_id") != mapString(session.Metadata, "swarm_v3_source_workspace_id") || mapString(item, "branch") != session.WorktreeBranch {
+		if mapString(item, "owner_session_id") != session.ID || mapString(item, "workspace_id") != mapString(session.Metadata, "swarm_v3_source_workspace_id") || mapString(item, "branch") != session.WorktreeBranch || manageWorkspaceInt64(item["workspace_generation"]) != manageWorkspaceInt64(session.Metadata["swarm_v3_source_workspace_generation"]) || !sameTaskProgramPath(mapString(item, "source_workspace_path"), source) || mapString(item, "base_commit") != firstNonEmptyString(mapString(session.Metadata, "swarm_v3_worktree_base_commit"), mapString(session.Metadata, "base_commit")) {
 			return errors.New("session worktree history contradicts current identity")
 		}
 	}
@@ -76,6 +76,9 @@ func (s *Service) ensureWorkspaceTransitionIdle(session pebblestore.SessionSnaps
 	if mapString(session.Metadata, "lineage_kind") == "delegated_subagent" {
 		return errors.New("delegated worker workspace assignment is immutable")
 	}
+	if err := s.sessions.EnsureWorkspaceTransitionIdle(session.ID); err != nil {
+		return err
+	}
 	lanes, err := s.sessions.TaskProgramRepositoryLanes(session.ID)
 	if err != nil {
 		return err
@@ -94,7 +97,12 @@ func (s *Service) ensureWorkspaceTransitionIdle(session pebblestore.SessionSnaps
 	}
 	for _, child := range children {
 		if mapString(child.Metadata, "parent_session_id") == session.ID && mapString(child.Metadata, "lineage_kind") == "delegated_subagent" {
-			return errors.New("workspace transition is pinned by retained delegated work; preserve its source and integration target")
+			// Managed creative workers have no checkout write identity. Their
+			// original discovery path and artifact lineage remain untouched.
+			if !child.WorktreeEnabled && child.WorktreeRootPath == "" && mapBool(child.Metadata, "managed_artifact_read_only_checkout") && (mapString(child.Metadata, "designer_output_mode") == "managed" || mapString(child.Metadata, "image_output_mode") == "managed") {
+				continue
+			}
+			return fmt.Errorf("workspace transition is pinned by retained repository worker %q; preserve its source and integration target", child.ID)
 		}
 	}
 	return nil

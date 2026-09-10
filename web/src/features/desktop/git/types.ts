@@ -96,6 +96,11 @@ export interface SessionRepository {
   base_commit: string
   lifecycle: string
   retained: boolean
+  active?: boolean
+  workspace_generation?: number
+  program_id?: string
+  job_id?: string
+  base_branch?: string
   availability: string
   error?: string
   status?: GitSnapshot

@@ -53,7 +53,7 @@ import { executeDesktopTipsCommand } from '../chat/services/home-tips'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, suggestWorkspaceCommitMessage } from '../git/api'
 import { SessionRepositoryPicker } from '../git/session-repository-picker'
 import { useSessionRepositories } from '../runtime/use-session-repositories'
-import { repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
+import { repositoryDialogTargetMatches, repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
@@ -4641,6 +4641,10 @@ export function DesktopAppPage() {
     const modal = gitCommitModal
     const message = gitCommitMessage.trim()
     if (!modal || gitCommitBusy || !message) return
+    if (modal.sessionId && !repositoryDialogTargetMatches(modal, { sessionId: selectedGitSessionId, workspacePath: selectedGitWorkspacePath }, selectedRepositoryActionsEnabled)) {
+      setGitCommitError('Repository selection or authority changed. Close this dialog and refresh the selected repository before committing.')
+      return
+    }
 
     setGitCommitBusy(true)
     setGitCommitError(null)
@@ -4714,6 +4718,10 @@ export function DesktopAppPage() {
   const handleGitIntegrate = async (archiveAfterIntegration = gitIntegrateArchive) => {
     const modal = gitIntegrateModal
     if (!modal || gitIntegrateBusy) return
+    if (modal.presentation === 'sidebar-popout' && !modal.integrationComplete && (modal.sessionId !== selectedGitSessionId || !activeSessionIntegrateEligible)) {
+      setGitIntegrateError('Repository selection or authority changed. Refresh and reopen integration for the selected active lane.')
+      return
+    }
     setGitIntegrateArchive(archiveAfterIntegration)
     setGitIntegrateBusy(true)
     setGitIntegrateError(null)

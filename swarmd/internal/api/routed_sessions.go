@@ -609,7 +609,12 @@ func (s *Server) handleRoutedSessionStart(w http.ResponseWriter, r *http.Request
 		writeRoutedSessionError(w, err)
 		return
 	}
-	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: createHash, RequestHash: createHash, Kind: sessionruntime.SessionMutationCreateSession, Session: &candidate, Message: &message, RunIntent: runIntent, MediaStagingBindings: stagingBindings, NowUnixMs: now})
+	admission, err := sessionsV3AllocatedLaneAdmission(candidate)
+	if err != nil {
+		writeRoutedSessionError(w, err)
+		return
+	}
+	mutation, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{WorktreeAdmission: admission, SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: createHash, RequestHash: createHash, Kind: sessionruntime.SessionMutationCreateSession, Session: &candidate, Message: &message, RunIntent: runIntent, MediaStagingBindings: stagingBindings, NowUnixMs: now})
 	if err != nil {
 		writeRoutedSessionError(w, err)
 		return

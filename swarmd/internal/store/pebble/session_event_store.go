@@ -77,6 +77,8 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	WorktreeAdmission    *WorktreeAdmissionEvidence `json:"-"`
+	WorktreeRecovery     *WorktreeRecoveryMutation  `json:"worktree_recovery,omitempty"`
 	workspaceCatalog     *workspaceCatalogMutation
 	SessionID            string                        `json:"session_id"`
 	UserID               string                        `json:"user_id,omitempty"`
@@ -652,8 +654,16 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return s.applyV3PlanAcceptanceMutation(input)
 	}
 
-	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
+	lockIDs := []string{input.SessionID}
+	if input.WorktreeRecovery != nil {
+		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
+	}
+	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
 	defer unlockSession()
+	if input.Session != nil || input.WorktreeRecovery != nil {
+		s.store.sessionMutations.worktreeMu.Lock()
+		defer s.store.sessionMutations.worktreeMu.Unlock()
+	}
 
 	if len(input.MediaStagingBindings) > 0 {
 		mediaStaging := NewMediaStagingStore(s.store)
@@ -686,6 +696,24 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		result.Replayed = true
 		result.Plan = committedV3PlanSaveResult(input.PlanSave)
 		return result, nil
+	}
+
+	if input.Kind == V3SessionMutationUpdateSettings && input.EventType == "session.worktree.adopted" {
+		programs, err := s.ListTaskPrograms(input.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		for _, program := range programs {
+			if program.State != TaskProgramStateRunning && program.State != TaskProgramStateDeclared {
+				continue
+			}
+			for _, job := range program.Definition.Jobs {
+				if job.AgentType == "designer" && (job.OutputMode == "" || job.OutputMode == "managed") {
+					continue
+				}
+				return V3SessionMutationResult{}, fmt.Errorf("workspace adoption conflicts with active Task Program %q; finish or stop repository scheduling first", program.ProgramID)
+			}
+		}
 	}
 
 	// Live metric maintenance uses disjoint per-session keys. A shared repair
@@ -831,6 +859,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		runIntent = v3SessionRunIntentWithStateTiming(runIntent, nextRunState)
 	}
 	session, sessionProvided, err := s.prepareV3SessionForMutation(input, seq, now)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	worktreeOwnership, err := s.prepareWorktreeOwnership(input, session)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1007,6 +1039,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := setWorktreeOwnershipInBatch(batch, worktreeOwnership); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if input.workspaceCatalog != nil {
 		if err := setWorkspaceCatalogMutationInBatch(batch, input.AccountScopeID, input.workspaceCatalog); err != nil {
 			return V3SessionMutationResult{}, err

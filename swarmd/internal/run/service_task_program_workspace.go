@@ -14,6 +14,14 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 	if p.service == nil || p.service.sessions == nil || p.service.worktrees == nil {
 		return "", errors.New("Task Program repository lane authorities unavailable")
 	}
+	if lane := p.record.RepositoryLane; lane != nil {
+		// Explicit alternate requests must not repurpose an admitted program.
+		if requested != "" && !sameTaskProgramPath(requested, lane.SourcePath) && !sameTaskProgramPath(requested, lane.WorkspacePath) {
+			return "", errors.New("Task Program repository lane source mismatch")
+		}
+		path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane})
+		return path, err
+	}
 	target, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
 	if err != nil {
 		return "", err
@@ -54,11 +62,18 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 			return "", err
 		}
 		lane = &pebblestore.TaskProgramRepositoryLane{SourcePath: target, WorkspacePath: allocation.WorkspacePath, Branch: allocation.BranchName, BaseCommit: base.BaseCommit}
+		for _, grant := range p.parentSession.WorkspaceGrants {
+			if grant.Path == target && grant.WorkspaceID != "" {
+				lane.WorkspaceID, lane.WorkspaceGeneration = grant.WorkspaceID, grant.WorkspaceGeneration
+				break
+			}
+		}
 		record, _, persistErr := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
 		if persistErr != nil {
 			return "", errors.Join(persistErr, p.service.worktrees.RollbackAllocation(allocation))
 		}
 		p.record = record
+		p.emitProgramProgress("repository.allocated", "Task Program repository inventory changed")
 	}
 	validator, ok := p.service.worktrees.(interface {
 		ValidateTaskRepositoryLane(string, string, string, string) error
@@ -91,6 +106,7 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 			return "", err
 		}
 		p.record = record
+		p.emitProgramProgress("repository.allocated", "Task Program repository inventory changed")
 	}
 	return lane.WorkspacePath, nil
 }

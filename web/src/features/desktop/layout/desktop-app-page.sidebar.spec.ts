@@ -112,7 +112,9 @@ test('selecting a session only classifies that needs-review worktree for Git int
   assert.match(querySource, /refetchOnWindowFocus: false/)
 })
 
-test('plan Git panel keeps changed files compact and expandable so integration remains visible', async () => {
+// Purpose: the expandable dock owns bounded scrolling; integration remains outside
+// that scroll region. This wiring assertion complements rendered picker tests.
+test('plan Git panel bounds the expanded dock and keeps integration outside scrolling', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
   const panelEnd = source.indexOf('const sidebarContent =', panelStart)
@@ -120,10 +122,11 @@ test('plan Git panel keeps changed files compact and expandable so integration r
 
   assert.ok(panelStart >= 0 && panelEnd > panelStart)
   assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden/)
-  assert.match(panelSource, /flex min-h-0 flex-1 flex-col overflow-hidden[^\n]*data-plan-git-scroll-region/)
+  assert.match(panelSource, /id="session-git-dock-details"[^\n]*max-h-\[60vh\][^\n]*overflow-y-auto/)
   assert.match(panelSource, /<details[^\n]*data-plan-git-file-details>/)
   assert.match(panelSource, /gitSnapshot\.files\.length\} file\{gitSnapshot\.files\.length === 1 \? '' : 's'\} changed/)
-  assert.match(panelSource, /max-h-40 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="inside-disclosure"/)
+  assert.match(panelSource, /data-plan-git-file-list data-plan-git-scroll="dock"/)
+  assert.match(panelSource, /<\/div>\s*\{activeSessionIntegrateEligible[^\n]*data-plan-git-integrate-anchor/)
   assert.match(panelSource, /shrink-0[^\n]*data-plan-git-commit|data-plan-git-commit[^\n]*shrink-0/)
   assert.match(panelSource, /data-plan-git-integrate-anchor/)
   assert.doesNotMatch(panelSource, /data-plan-git-scroll="at-sidebar-edge"/)
@@ -141,7 +144,8 @@ test('plan Git commit form submits on Enter through the shared commit handler an
 
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handlerSource, /await commitWorkspaceChanges/)
-  assert.match(handlerSource, /setDesktopToast\(\{ message: 'Changes committed successfully\.', tone: 'success' \}\)/)
+  assert.match(handlerSource, /let completionMessage = 'Changes committed successfully\.'/)
+  assert.match(handlerSource, /setDesktopToast\(\{ message: completionMessage, tone: 'success' \}\)/)
   assert.match(handlerSource, /const archiveAfterCommit = !modal\.worktree && Boolean\(modal\.sessionId\) && gitCommitArchive/)
   assert.match(handlerSource, /await archiveDesktopV3Sessions\(\[modal\.sessionId\]\)/)
   assert.match(handlerSource, /Changes committed and session archived\./)

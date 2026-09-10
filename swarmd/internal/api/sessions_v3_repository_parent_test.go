@@ -46,6 +46,28 @@ func TestSessionRepositoryParentIdentityIsExactAndOwned(t *testing.T) {
 	if got.SourcePath != source || got.laneOwnerID != "parent" || got.BaseCommit != "base" || got.currentAuthority || got.Lifecycle != "dirty-recoverable" {
 		t.Fatalf("wrong provenance: %+v", got)
 	}
+	// A later successor must leave the old exact parent lane resolvable from
+	// durable history, without borrowing the successor's branch or base.
+	parent, _, _ := server.sessions.GetSession("parent")
+	parent.WorktreeRootPath = filepath.Join(t.TempDir(), "successor")
+	parent.WorktreeBranch = "agent/successor"
+	parent.Metadata["base_commit"] = "new-base"
+	if _, err := sessions.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: parent.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: pebblestore.V3SessionMutationUpdateMetadata, Session: &parent, IdempotencyKey: "successor", RequestHash: "successor", NowUnixMs: 200}); err != nil {
+		t.Fatal(err)
+	}
+	for n := 0; n < 20; n++ {
+		ready, err := sessions.BackfillRepositoryHistory(100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ready {
+			break
+		}
+	}
+	got = server.resolveRepositoryParentIdentity(principal, item)
+	if got.SourcePath != source || got.laneOwnerID != "parent" || got.Branch != "agent/parent" || got.BaseCommit != "base" || got.currentAuthority {
+		t.Fatalf("successor relabeled retained lane: %+v", got)
+	}
 	foreign := principal
 	foreign.AccountScopeID = "foreign"
 	if got := server.resolveRepositoryParentIdentity(foreign, item); got.SourcePath != lane || got.laneOwnerID != "" {
