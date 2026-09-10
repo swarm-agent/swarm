@@ -57,3 +57,27 @@ Tests/formatter not run; parent validation required. Proposed focused command
 from swarmd/ with Go and repository FFF prerequisites:
 `go test ./internal/api -run '^TestAutomationHTTP' -count=1 -timeout=60s`.
 Parent must update atlas route/boundary evidence and test inventory outside scope.
+
+### Registered CI events and local outcome delivery
+
+Startup wiring: construct `automation.NewEventAuthority([]automation.EventRegistration{...})`
+from explicitly configured account/user/workspace/automation/revision/source registrations;
+pass the same authority to `NewExecutionService` and `ConfigureAutomations`.
+An empty registration list denies all events. The authenticated local API identity
+is required; source strings and headers alone never authorize intake. The existing
+64-KiB strict request decoder bounds payloads; event identities/sources are capped
+at 256 UTF-8 bytes. Event admission rechecks exact registration before persistence.
+Registration is startup-only; dynamic registration/revocation requires reconstruction.
+
+Construct `notification.NewAutomationDeliveryService(store, notificationService, localSwarmID)`.
+Call `Deliver(ctx, pebblestore.AutomationDeliveryReference{Scope: scope, AutomationID: id,
+OccurrenceID: occurrenceID, Revision: exactTerminalRevision})` outside execution handling.
+Terminal immutable occurrence revisions themselves are the durable outbox source:
+there is no separate enqueue crash window. Parent daemon wiring must enumerate bounded
+occurrence history pages on recovery (including blocked revisions) and feed exact
+references, plus feed newly persisted terminal outcomes/cancellations. This adapter
+does not install that daemon lifecycle automatically. Delivery receipts contain five
+bounded leased attempts and an idempotent ack; deferred/exhausted calls return errors.
+Ack means durable local notification, not successful optional Web Push. Summaries,
+facts and request content are never copied to notifications. No external URL authority
+is introduced. Parent-owned atlas and test-audit inventory updates remain required.

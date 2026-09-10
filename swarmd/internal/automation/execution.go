@@ -58,7 +58,11 @@ func (e *ExecutionService) Admit(ctx context.Context, p Principal, scope store.A
 	if len(trigger.Identity) == 0 || len(trigger.Identity) > 256 || trigger.ScheduledAt <= 0 || trigger.ScheduledAt > s.now().UnixMilli() {
 		return store.AutomationRecord{}, ErrInvalid
 	}
-	if err := e.triggers.Verify(ctx, p, scope, trigger); err != nil { return store.AutomationRecord{}, err }
+	if trigger.Kind == "event" {
+		exact, ok := e.triggers.(interface { VerifyAdmission(context.Context, Principal, store.AutomationScope, string, uint64, Trigger) error })
+		if !ok { return store.AutomationRecord{}, ErrDenied }
+		if err := exact.VerifyAdmission(ctx, p, scope, id, revision, trigger); err != nil { return store.AutomationRecord{}, err }
+	} else if err := e.triggers.Verify(ctx, p, scope, trigger); err != nil { return store.AutomationRecord{}, err }
 	def, err := s.CheckRun(ctx, p, scope, id, revision)
 	if err != nil { return store.AutomationRecord{}, err }
 	schedule := def.Definition.Schedule

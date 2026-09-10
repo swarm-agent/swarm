@@ -322,7 +322,7 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 		trigger := automation.Trigger{Kind: "manual", Identity: req.MutationID, ScheduledAt: req.ScheduledAt}
 		if req.Action == "event" {
 			trigger.Kind, trigger.Source, trigger.Identity = "event", req.Source, req.Identity
-			if err := a.events.VerifyEvent(r, p, scope, req.ID, req.ExpectedRevision, trigger); err != nil {
+			if err := a.events.VerifyEvent(r.WithContext(ctx), p, scope, req.ID, req.ExpectedRevision, trigger); err != nil {
 				automationHTTPError(w, automation.ErrDenied)
 				return
 			}
