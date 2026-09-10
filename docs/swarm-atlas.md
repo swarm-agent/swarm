@@ -534,7 +534,37 @@ run and remains pending executed validation.
 
 `provider/codex/client.go:sendRequest` / `send` retain two WebSocket attempts with the existing context-cancellable 300 ms backoff. `dialCodexWebsocket` marks rejected handshakes separately from established-socket error frames. `http_fallback.go:codexHandshakeShouldFallbackHTTP` admits only marked 5xx/426 responses after retry processing, with no earlier emitted event; authentication, rate-limit, cancellation, idle-timeout and partial-stream failures do not gain HTTP replay. `sendCodexResponsesHTTP` POSTs full input to the same OAuth endpoint with account/session headers and incremental SSE decoding, reporting `responses_http` rather than a successful WebSocket connection. No sticky fallback preference is stored: the next request starts with WebSockets again. Attack point: confusing a server error frame or prior output with a rejected handshake and duplicating generation. `http_fallback_test.go` authors local retry/order, OAuth routing, next-request preference, classifier and no-replay/cancellation assertions; all four focused fallback tests pass locally with Go 1.26.7, and repository pre-push plus critical-fast gates pass; live-provider evidence remains pending.
 
+### Required installed onboarding release dispatch
+
+The canonical `scripts/run-testbench-launch-prerun.sh` default manifest includes
+`installed-new-user`, `installed-existing-user`, and `installed-normal-user` in
+addition to identity bootstrap. Each invokes an explicitly supplied reviewed
+Python runner with structured `--archive`, `--checksum`, and `--case` arguments;
+missing inputs fail, never skip. Guest-only selections do not load SSH environment
+or preflight an unrelated pool. Attach-only refuses these mutating suites.
+The existing supervisor retains the 600-second wall limit, bounded logs/heartbeat,
+per-case outcomes and aggregate failure; installed cases receive 25 seconds of
+cleanup grace. Recipe preparation is a separate prerequisite, not a second suite
+manifest. Operator-owned runner locations and installation procedures stay outside
+public source. Its contract checks real non-root process credentials, authenticated
+resumability, optional-provider skip, explicit empty/selected-content Git consent,
+retry uniqueness, access refusal/nonmutation and reinstall/reconnect preservation.
+Runtime-user Git worktree writes are not provider-backed V3 allocation evidence.
+
+Attack points: a bootstrap-only false pass, missing proof inputs, argv splitting,
+rootful guests, process timeouts and swallowed child/cleanup failures.
+`tests/scripts/installed_onboarding_dispatch_test.py` executes fake workers through
+the actual manifest/supervisor and asserts exact argv, all outcomes, failure and
+stall rejection. This is dispatch evidence, not installed-client proof. Existing
+API regressions exercise `handleWorkspaceRepositoryBaseline`/`Review` and
+`updateOnboarding` authentication, selected-content retries and resumability.
+No API registration or product permission/ownership boundary changed. Independent
+two-pass test review and fresh installed execution remain separate requirements;
+no curated critical-test promotion is made.
+
 ## 14. Revision ledger and update template
+
+- 2026-09-10 — Required installed-onboarding automation (base `5e0a6543b` plus scoped diff): inspected canonical manifest/supervisor, distro and client runners, account selection, authenticated onboarding/repository handler/service/client contracts and test assertions. Added three required installed account dispatch cases with explicit runner/archive/checksum inputs and isolated preflight selection. Actual fake-process dispatch/failure/stall tests, existing shell manifest regression and 12 supervisor tests pass; focused installation-account and API authentication/baseline/resume tests pass twice. Operator-owned runner/recipe retention and packaging-owner negative tests are separate from public source. Fresh installed matrix, full Desktop and final release gates are not executed in this automation checkpoint. Independent audit remains pending; no curated promotion.
 
 - 2026-09-10 — Installed onboarding evidence for source `3903f849f89221050ec2b01ad57166e63358c3d6`: checksum-bound Linux archive executed in rootless Ubuntu systemd guests. Direct-root locked-service install/reinstall passed real process-ID and preservation assertions. Root-created human, root-selected existing human and sudo-assisted normal-user journeys passed installed TUI identity interruption/resume, provider skip, explicit Git baseline, disconnect/reconnect, conflicting-owner rejection, reinstall preservation, new guest PID-1 startup with enabled service, and later key-authenticated guest SSH attachment. Separate full built Desktop proof completed identity/provider skip/new-folder/Git consent and reached the usable workspace; rendered identity/workspace pixels were inspected. Live authenticated API proof allocated one idempotent V3 managed worktree; non-root file write left source unchanged. Selected-content baseline and catalog retries preserved one commit/identity; access denial preserved unrelated bytes and mode. Harness defects (root-owned packaging directories, missing rootless network helper and minimal-image D-Bus) were corrected outside product ownership policy. These are guest userspace restart proofs, not physical host/kernel reboot; Desktop was not repeated for every OS account permutation, and no provider-backed AI run was performed. Earlier hermetic negative-case evidence remains separate, not relabeled as installed proof.
 
