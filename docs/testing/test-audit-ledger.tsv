@@ -6389,3 +6389,6 @@ ta-handoff-no-default-commit	web-test	web/src/features/desktop/chat/components/d
 # tests/onboarding_terminal.py sha256=7b0a4c52a1680127f1c484876a9a9f2f39cc5681f12829d5bc13339112491569
 # web/src/features/desktop/onboarding/components/repository-review-panel.browser.spec.ts sha256=e525de456474cc5b0e86a4636fb7400f5bc62da492b4ad104f47d053658205c6
 # web/src/features/workspaces/launcher/services/workspace-repository.spec.ts sha256=43309da03b25069b85e946b8c7aeee430256e14209e8531754b898250660c938
+# Release gate correction: prior digests/verdicts for the following files are invalidated; P1/P2 remain unreviewed, no curated promotion.
+# source_sha256 tests/scripts/launch_prerun_supervisor_test.py f29c73b52c77198c53668bc4f80d5689825a97c8169b1dc105ccbfea3d363bbe; 14 OS tests passed twice, including paused-supervisor dead orphan reaping and live unlabelled orphan fail-closed termination.
+# source_sha256 tests/swarmd/identity_bootstrap_e2e.sh 4ae4abe7b3fc32adbd3053aff569cee6d069f33132746269d14f55f57b3f280e; canonical onboarding lane passed after authenticated non-repository rejection/nonmutation and explicit setup API baseline assertions; real isolated daemon and restart, not TUI pixels.

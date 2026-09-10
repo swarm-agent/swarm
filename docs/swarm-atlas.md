@@ -564,6 +564,20 @@ no curated critical-test promotion is made.
 
 ## 14. Revision ledger and update template
 
+### Release pre-run correction: exited helpers and explicit repository preparation
+
+Inspected the canonical pre-run manifest, supervisor `run`, onboarding route registration,
+`handleWorkspaceRepositorySetup`, workspace admission and their actual API assertions.
+The supervisor now reaps already-dead adopted children missed between process samples;
+live unattributed children still fail closed and are terminated. Fourteen process tests
+include forced sampling gaps for both dead and live unlabelled descendants. The identity
+bootstrap lane now asserts authenticated non-repository rejection with no Git mutation,
+then explicitly prepares the empty baseline through the product API before admission.
+Corrected canonical critical (fast/deep/agents) and onboarding lanes passed locally;
+this is not full release, installed archive or provider-backed evidence. Independent
+two-pass test audit remains pending; no curated-test promotion occurred.
+
+
 - 2026-09-10 — Required installed-onboarding automation (base `5e0a6543b` plus scoped diff): inspected canonical manifest/supervisor, distro and client runners, account selection, authenticated onboarding/repository handler/service/client contracts and test assertions. Added three required installed account dispatch cases with explicit runner/archive/checksum inputs and isolated preflight selection. Actual fake-process dispatch/failure/stall tests, existing shell manifest regression and 12 supervisor tests pass; focused installation-account and API authentication/baseline/resume tests pass twice. Operator-owned runner/recipe retention and packaging-owner negative tests are separate from public source. Fresh installed matrix, full Desktop and final release gates are not executed in this automation checkpoint. Independent audit remains pending; no curated promotion.
 
 - 2026-09-10 — Installed onboarding evidence for source `3903f849f89221050ec2b01ad57166e63358c3d6`: checksum-bound Linux archive executed in rootless Ubuntu systemd guests. Direct-root locked-service install/reinstall passed real process-ID and preservation assertions. Root-created human, root-selected existing human and sudo-assisted normal-user journeys passed installed TUI identity interruption/resume, provider skip, explicit Git baseline, disconnect/reconnect, conflicting-owner rejection, reinstall preservation, new guest PID-1 startup with enabled service, and later key-authenticated guest SSH attachment. Separate full built Desktop proof completed identity/provider skip/new-folder/Git consent and reached the usable workspace; rendered identity/workspace pixels were inspected. Live authenticated API proof allocated one idempotent V3 managed worktree; non-root file write left source unchanged. Selected-content baseline and catalog retries preserved one commit/identity; access denial preserved unrelated bytes and mode. Harness defects (root-owned packaging directories, missing rootless network helper and minimal-image D-Bus) were corrected outside product ownership policy. These are guest userspace restart proofs, not physical host/kernel reboot; Desktop was not repeated for every OS account permutation, and no provider-backed AI run was performed. Earlier hermetic negative-case evidence remains separate, not relabeled as installed proof.

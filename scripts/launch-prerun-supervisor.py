@@ -181,6 +181,16 @@ def run(root, jobs, commands, wall=600, stall=120, cap=1048576, heartbeat=15):
                     if len(matching) == 1:
                         matching[0]['owned'][pid] = _ticks
                         continue
+                    # A dead adopted child cannot execute or retain descendants.
+                    # Fast helpers can exit before the first /proc sample, making
+                    # their environment unavailable. Reap only this exact child;
+                    # live unattributed processes still fail every active suite.
+                    if status == 'Z':
+                        try:
+                            os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            pass
+                        continue
                     # Attribution was lost during a double-fork. Fail active work
                     # conservatively instead of silently accepting an escaped task.
                     for state in active.values():

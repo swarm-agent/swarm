@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Purpose: exercise registered onboarding/auth/workspace routes through a real
+# isolated daemon and restart. Prevent implicit identity creation and implicit
+# Git admission: handleWorkspaceAdd must reject until the explicit authenticated
+# handleWorkspaceRepositorySetup action creates the baseline, without mutation
+# on rejection. API and filesystem assertions are not a rendered TUI proof.
+
 EVIDENCE_DIR="${1:-.tmp/checkpoint-1/slice-1.7/$(date -u +%Y%m%dT%H%M%SZ)-vm-final-gate}"
 HOST_EVIDENCE_DIR="${SWARM_HOST_EVIDENCE_DIR:-}"
 mkdir -p "${EVIDENCE_DIR}"
@@ -267,6 +273,14 @@ identity_summary "${EVIDENCE_DIR}/identity-summary-after-bootstrap.json"
 jq -e '.identity.counts.users == 1 and .identity.counts.account_scopes == 1 and .identity.counts.account_users == 1 and .identity.counts.teams == 0 and .identity.counts.team_memberships == 0 and .identity.counts.current_selections == 1 and .identity.current_user.username == "slice17-user" and .identity.current_user.account_scope_id == .identity.account_scope.id and .identity.current_selection.user_id == .identity.current_user.id and (.identity.current_selection.team_id // "") == "" and .identity.current_team == null and .identity.current_membership == null' "${EVIDENCE_DIR}/identity-summary-after-bootstrap.json" >/dev/null || fail "identity summary after bootstrap failed canonical personal-account invariants"
 
 start_daemon
+workspace_unready_status="$(record_request guarded-workspace-unready POST "${DESKTOP_URL}/v1/workspace/add" "$(jq -nc --arg path "${WORKSPACE_PATH}" '{path:$path}')" "${EVIDENCE_DIR}/guarded-workspace-unready.json")"
+[[ "${workspace_unready_status}" == "409" ]] || fail "unready workspace status ${workspace_unready_status}, want 409"
+jq -e '.code == "workspace_repository_not_ready"' "${EVIDENCE_DIR}/guarded-workspace-unready.json" >/dev/null || fail "missing repository prerequisite rejection"
+[[ ! -e "${WORKSPACE_PATH}/.git" ]] || fail "rejected admission initialized Git"
+setup_status="$(record_request explicit-repository-setup POST "${DESKTOP_URL}/v1/workspace/repository/setup" "$(jq -nc --arg path "${WORKSPACE_PATH}" '{path:$path,expected_resolved_path:$path}')" "${EVIDENCE_DIR}/repository-setup.json")"
+[[ "${setup_status}" == "200" ]] || fail "explicit repository setup status ${setup_status}, want 200"
+jq -e '.ok == true and .repository.state == "ready" and .repository.head_commit != ""' "${EVIDENCE_DIR}/repository-setup.json" >/dev/null || fail "explicit setup did not create a ready baseline"
+[[ -z "$(git -C "${WORKSPACE_PATH}" ls-tree --name-only HEAD)" ]] || fail "empty setup committed unexpected files"
 workspace_pos_status="$(record_request guarded-workspace-positive POST "${DESKTOP_URL}/v1/workspace/add" "$(jq -nc --arg path "${WORKSPACE_PATH}" '{path:$path}')" "${EVIDENCE_DIR}/guarded-api-positive.json")"
 [[ "${workspace_pos_status}" == "200" ]] || fail "guarded workspace positive status ${workspace_pos_status}, want 200"
 jq -e '.ok == true and .workspace.workspace_path == "'"${WORKSPACE_PATH}"'"' "${EVIDENCE_DIR}/guarded-api-positive.json" >/dev/null || fail "guarded workspace positive response missing workspace path"
