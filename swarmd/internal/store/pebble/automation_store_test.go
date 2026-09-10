@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func automationFixture() AutomationMutation {
@@ -300,4 +301,44 @@ func TestAutomationSharedTargetClaims(t *testing.T) {
 	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil { t.Fatalf("owner recovery: %v", err) }
 	row, found, err := s.GetAutomationRecord(b, "b", "occurrence", "run", 0)
 	if err != nil || !found || row.Revision != 1 || row.Occurrence.State != "pending" { t.Fatalf("loser mutated: %+v %v", row, err) }
+}
+
+// Purpose: the persistence CAS, not an HTTP read, must choose exactly one
+// cancellation admission under concurrent requests. The real store proves the
+// losing request writes neither a revision nor a usable cancellation receipt.
+func TestAutomationCancellationConcurrentCAS(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	defer s.Close()
+	m := automationFixture()
+	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
+	r := AutomationRecord{Scope: m.Record.Scope, AutomationID: "check", Kind: "occurrence", ID: "occurrence", Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "trigger", ScheduledAt: 100000, State: "pending"}}
+	if _, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: r, MutationID: "admit", Actor: "user", SubjectID: "writer", WrittenAt: 100000}); err != nil { t.Fatal(err) }
+	type result struct { id string; err error }
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for _, id := range []string{"cancel-a", "cancel-b"} {
+		go func(id string) {
+			<-start
+			_, err := s.AdmitAutomationCancellation(r.Scope, "check", r.ID, 1, id, "writer", 100001)
+			results <- result{id, err}
+		}(id)
+	}
+	close(start)
+	wins := 0
+	loser := ""
+	for i := 0; i < 2; i++ {
+		var got result
+		select {
+		case got = <-results:
+		case <-time.After(5 * time.Second):
+			t.Fatal("cancellation admission deadlocked")
+		}
+		if got.err == nil { wins++ } else if errors.Is(got.err, ErrAutomationConflict) { loser = got.id } else { t.Fatal(got.err) }
+	}
+	if wins != 1 { t.Fatalf("admissions: %d", wins) }
+	head, found, err := s.GetAutomationRecord(r.Scope, "check", "occurrence", r.ID, 0)
+	if err != nil || !found || head.Revision != 2 || head.Occurrence.State != "cancelling" { t.Fatalf("head: %+v %v", head, err) }
+	if _, err := s.AdmitAutomationCancellation(r.Scope, "check", r.ID, 1, loser, "writer", 100002); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("loser receipt: %v", err) }
+	if _, found, err := s.GetAutomationRecord(r.Scope, "check", "occurrence", r.ID, 3); err != nil || found { t.Fatalf("partial revision: %v %v", found, err) }
 }

@@ -225,7 +225,7 @@ func validateAutomationRecord(r AutomationRecord) error {
 			return ErrAutomationInvalid
 		}
 		switch r.Occurrence.State {
-		case "pending", "running", "blocked", "completed", "failed", "cancelled", "skipped":
+		case "pending", "running", "blocked", "cancelling", "completed", "failed", "cancelled", "skipped":
 		default:
 			return ErrAutomationInvalid
 		}
@@ -251,6 +251,11 @@ func validateAutomationRecord(r AutomationRecord) error {
 // idempotency receipt in one synced batch. Replays return the original result,
 // even after later updates or restart; changed payloads with the same ID fail.
 func (s *Store) ApplyAutomationMutation(m AutomationMutation) (AutomationRecord, bool, error) {
+	return s.applyAutomationMutation(m, false)
+}
+
+// cancellation is private: generic occurrence writers cannot admit or finish a stop.
+func (s *Store) applyAutomationMutation(m AutomationMutation, cancellation bool) (AutomationRecord, bool, error) {
 	var zero AutomationRecord
 	key, err := automationKey(m.Record)
 	if err != nil || !automationValidID(m.MutationID) || m.Record.Revision != 0 || (m.Actor != "user" && m.Actor != "agent" && m.Actor != "system") {
@@ -326,6 +331,9 @@ func (s *Store) ApplyAutomationMutation(m AutomationMutation) (AutomationRecord,
 		if !ok {
 			return zero, false, ErrAutomationInvalid
 		}
+		if occurrence.Occurrence != nil && occurrence.Occurrence.State == "cancelling" {
+			return zero, false, ErrAutomationConflict
+		}
 	}
 	if r.Context != nil && m.Actor != "user" {
 		var locked map[string]string
@@ -338,6 +346,9 @@ func (s *Store) ApplyAutomationMutation(m AutomationMutation) (AutomationRecord,
 	}
 	if r.Occurrence != nil {
 		o := r.Occurrence
+		if !cancellation && (o.State == "cancelling" || (found && old.Occurrence.State == "cancelling")) {
+			return zero, false, ErrAutomationConflict
+		}
 		if !found && o.State != "pending" {
 			return zero, false, ErrAutomationInvalid
 		}
@@ -400,7 +411,12 @@ func automationStateTransition(from, to string) bool {
 	if from == to {
 		return true
 	}
+	if to == "cancelling" {
+		return from == "pending" || from == "running" || from == "blocked"
+	}
 	switch from {
+	case "cancelling":
+		return to == "cancelled"
 	case "pending":
 		return to == "running" || to == "cancelled" || to == "skipped"
 	case "running":
@@ -604,4 +620,35 @@ func (s *Store) GetAutomationCursor(scope AutomationScope, id string, revision u
 	var current int64
 	_, err = s.GetJSON(fmt.Sprintf("%s%s:schedule:%d", prefix, automationPart(id), revision), &current)
 	return current, err
+}
+
+// AdmitAutomationCancellation CASes the exact source revision before any runtime
+// effect. Replays use the immutable source to reproduce the receipt after restart.
+// No store lock is held while a caller invokes the runtime (which may use this store).
+func (s *Store) AdmitAutomationCancellation(scope AutomationScope, id, occurrenceID string, expected uint64, mutationID, subject string, now int64) (AutomationRecord, error) {
+	if expected == 0 || !automationValidID(mutationID) { return AutomationRecord{}, ErrAutomationInvalid }
+	source, found, err := s.GetAutomationRecord(scope, id, "occurrence", occurrenceID, expected)
+	if err != nil { return source, err }
+	if !found || source.Occurrence == nil { return source, ErrAutomationConflict }
+	switch source.Occurrence.State { case "pending", "running", "blocked": default: return source, ErrAutomationConflict }
+	o := *source.Occurrence
+	o.State = "cancelling"
+	r := AutomationRecord{Scope: scope, AutomationID: id, Kind: "occurrence", ID: occurrenceID, Occurrence: &o}
+	admitted, _, err := s.applyAutomationMutation(AutomationMutation{Record: r, ExpectedRevision: expected, MutationID: mutationID, Actor: "user", SubjectID: subject, WrittenAt: now}, true)
+	if err != nil { return admitted, err }
+	head, found, err := s.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
+	if err != nil { return head, err }
+	if !found || head.Occurrence == nil || (head.Revision != admitted.Revision && !(head.Revision == admitted.Revision+1 && head.Occurrence.State == "cancelled")) { return head, ErrAutomationConflict }
+	return head, nil
+}
+
+// FinishAutomationCancellation is called only after the canonical host has
+// confirmed its durable start fence and stop. An ambiguous failure retains the fence.
+func (s *Store) FinishAutomationCancellation(r AutomationRecord, subject string, now int64) (AutomationRecord, error) {
+	if r.Occurrence == nil || r.Occurrence.State != "cancelling" || r.Actor != "user" || r.SubjectID != subject { return AutomationRecord{}, ErrAutomationConflict }
+	o := *r.Occurrence
+	o.State = "cancelled"
+	next := AutomationRecord{Scope: r.Scope, AutomationID: r.AutomationID, Kind: "occurrence", ID: r.ID, Occurrence: &o}
+	out, _, err := s.applyAutomationMutation(AutomationMutation{Record: next, ExpectedRevision: r.Revision, MutationID: fmt.Sprintf("cancel-finished-%d", r.Revision), Actor: "user", SubjectID: subject, WrittenAt: now}, true)
+	return out, err
 }

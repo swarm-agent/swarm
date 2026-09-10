@@ -98,6 +98,11 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 		snapshot = accepted.Session
 	}
 	if err := v.approval.Verify(ctx, p, def); err != nil { return "", err }
+	// Recheck the durable occurrence fence after preparation. The host's own
+	// Start/Cancel fence still owns the race after this check.
+	claims, ok := v.domain.repo.(interface { ClaimAutomationDispatch(store.AutomationScope, string, string) error })
+	if !ok { return "", ErrInvalid }
+	if err := claims.ClaimAutomationDispatch(occurrence.Scope, occurrence.AutomationID, occurrence.ID); err != nil { return "", err }
 	if err := v.host.Start(ctx, snapshot, key); err != nil { return "", err }
 	return id, nil
 }
@@ -131,6 +136,7 @@ func (v *V3Runtime) pinnedDocument(ctx context.Context, p Principal, def store.A
 }
 
 func (v *V3Runtime) Cancel(ctx context.Context, p Principal, r store.AutomationRecord) error {
+	if r.Occurrence == nil || r.Occurrence.State != "cancelling" || p.AccountID != r.Scope.AccountID { return ErrDenied }
 	key := executionKey(r.Scope, r.AutomationID, r.ID)
 	id := "automation-"+key
 	snapshot, found, err := v.sessions.GetSession(id)

@@ -140,16 +140,23 @@ func (e *ExecutionService) RecordOutcome(ctx context.Context, p Principal, scope
 
 // Cancel fences dispatch durably before publishing a terminal occurrence. A
 // failed stop remains nonterminal and retains the serialize reservation.
-func (e *ExecutionService) Cancel(ctx context.Context, p Principal, scope store.AutomationScope, id, occurrenceID string) (store.AutomationRecord, error) {
+// Retry with the original expectedRevision and mutationID, including after restart.
+// Concurrent identical retries may call Cancel again: the runtime must durably
+// deduplicate/fence the same execution key, as required by V3ExecutionHost.
+func (e *ExecutionService) Cancel(ctx context.Context, p Principal, scope store.AutomationScope, id, occurrenceID string, expectedRevision uint64, mutationID string) (store.AutomationRecord, error) {
 	if err := e.domain.authorize(ctx, p, scope, "cancel"); err != nil { return store.AutomationRecord{}, err }
 	if p.Role != "user" { return store.AutomationRecord{}, ErrDenied }
-	r, found, err := e.domain.repo.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
-	if err != nil { return r, err }
-	if !found || r.Occurrence == nil { return r, ErrNotFound }
-	if r.Occurrence.State == "cancelled" { return r, nil }
-	switch r.Occurrence.State { case "pending", "running", "blocked": default: return r, store.ErrAutomationConflict }
+	if expectedRevision == 0 || mutationID == "" { return store.AutomationRecord{}, ErrInvalid }
 	canceller, ok := e.runtime.(interface { Cancel(context.Context, Principal, store.AutomationRecord) error })
-	if !ok { return r, ErrInvalid }
+	if !ok { return store.AutomationRecord{}, ErrInvalid }
+	repo, ok := e.domain.repo.(interface {
+		AdmitAutomationCancellation(store.AutomationScope, string, string, uint64, string, string, int64) (store.AutomationRecord, error)
+		FinishAutomationCancellation(store.AutomationRecord, string, int64) (store.AutomationRecord, error)
+	})
+	if !ok { return store.AutomationRecord{}, ErrInvalid }
+	r, err := repo.AdmitAutomationCancellation(scope, id, occurrenceID, expectedRevision, mutationID, p.SubjectID, e.domain.now().UnixMilli())
+	if err != nil { return r, err }
+	if r.Occurrence.State == "cancelled" { return r, nil }
 	if err := canceller.Cancel(ctx, p, r); err != nil { return r, err }
-	return e.transition(p, r, "cancelled", "")
+	return repo.FinishAutomationCancellation(r, p.SubjectID, e.domain.now().UnixMilli())
 }
