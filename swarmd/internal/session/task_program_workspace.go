@@ -43,15 +43,8 @@ func (s *Service) TaskProgramRepositoryLanes(parentID string) ([]pebblestore.Tas
 	}
 	lanes := []pebblestore.TaskProgramRepositoryLane{}
 	for _, record := range records {
-		if record.State == pebblestore.TaskProgramStateRunning {
-			reconciled, ok, err := s.GetTaskProgram(parentID, record.ProgramID)
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return nil, errors.New("task program disappeared during lane lookup")
-			}
-			record = reconciled
+		if record.State == pebblestore.TaskProgramStateRunning || record.State == pebblestore.TaskProgramStateDeclared {
+			return nil, errors.New("active Task Program requires explicit reconciliation before lane lookup")
 		}
 		if record.ParentSessionID == parentID && record.RepositoryLane != nil {
 			if record.State == pebblestore.TaskProgramStateRunning {
