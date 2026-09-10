@@ -360,7 +360,7 @@ Repository inventory invariant: retained provenance cannot become an execution o
 | Critical area | Invariant / likely attack point | Authority | High-value test evidence to inspect |
 |---|---|---|---|
 | Automation Desktop hydration and policy review | remount cannot reuse released hydration or let an obsolete completion clear a newer slot; generation reuse, cross-workspace responses, stale policy drafts and confusing grant/definition revisions are attack points | `DesktopAutomationRuntime` detaches final-release requests and identity-guards success/error/finally; `reduceAutomationPages` owns request/generation checks; `PolicyPanel` and server `PolicyApproval` retain exact review/CAS authority; `OutcomeSession` resolves typed occurrence linkage | `desktop-automations.spec.ts` deferred success/error responses in both completion orders, shared leases and no resurrection; `desktop-automation.spec.ts` scoped reads/stale reducer/protocol; `automation-view.spec.ts` DST/grouping/input rejection; `automation-editor.browser.spec.ts` keyboard/expiry/stale-submit assertions; `approval_test.go` foreign linkage/unchanged grants/revoked visibility. All unrun; StrictMode lifecycle is simulated at runtime boundary, not browser-rendered; no visual/live proof or P1/P2 promotion. |
-| Dedicated local Codex runner | no host credentials; one refresh owner; private lane sockets; exact profile/model; uncertain requests cannot replay rotating credentials | `testbench-codex-broker` process lock/guard; `testbenchcodex.Broker.Handler`; candidate-only overlay; `local_testbench_codex.inspect_ready` | Executed broker model/operation rejection, lane serialization/affinity, guard failure replay rejection and canonical all-role configuration with empty candidate OAuth store. Live device approval, real refresh and guest socket mapping remain unproven. |
+| Dedicated local Codex runner | no host credentials; one refresh owner; private lane sockets; exact profile/model; uncertain requests cannot replay rotating credentials | `testbench-codex-broker` process lock/guard; `testbenchcodex.Broker.Handler`; candidate-only overlay; `local_testbench_codex.inspect_ready` | Executed broker model/operation rejection, lane serialization/affinity, guard failure replay rejection and canonical all-role configuration with empty candidate OAuth store. Live dedicated device approval, guest socket mapping and two tool-free Luna/medium V3 completions now observed on candidate `1a8db654f`; forced refresh/revocation remains unproven. `scripts/runners/local-codex-smoke.mjs` verifies authenticated assignments and assistant-only marker with owned-run failure cleanup. |
 | Attach-only runner lifecycle | existing endpoint is never replaced; unreviewed shared-state runners, redirects, stalls and orphaned descendants fail closed | canonical launch-prerun manifest, `AttachClient`, structured-argv supervisor `run` | `testbench_attach_test.mjs` executes exact-origin/auth/deadline/drift and wrapper rejection; `launch_prerun_supervisor_test.py` executes overlap, hang/cancel/output/orphan negatives with sibling preservation; not provider cancellation or OS sandbox proof |
 | Listener exposure | normal API/Desktop defaults remain loopback; wildcard/LAN listen addresses fail startup; remote origin admission is explicit | `startupconfig.Default`, `config.validateLoopbackListenAddr`, `runtime.Daemon.Run`, `api/desktop_boundary.go` | curated `TestParseRejectsNonLoopbackListen`; `desktop_boundary_test.go` |
 | Authentication/bootstrap | exemptions cannot widen; attach/session tokens and preview tickets cannot cross scope | `Server.withAuth`, `isAuthExemptRequest`, `desktop_local_auth.go` | `desktop_local_auth_jwt_test.go`, `protected_identity_guard_test.go`, onboarding security tests |
@@ -1128,3 +1128,21 @@ first-deployment gaps in `scripts/local-testbench-pool.md` were reconciled with
 observed evidence. Candidate changes remain uncommitted pending live-proof
 continuation; independent test audit and authenticated guest identity/socket
 mapping remain explicit gaps.
+
+### Local testbench live-proof result
+
+Candidate `1a8db654f238ddd7d8d7247165b036c63e32ae26` deployed with the
+runner-only broker. Dedicated login presence and socket readiness were verified
+without token export. Fresh guest workspace registration was necessary before
+canonical topology exposed the self runtime; the maintained smoke runner now
+performs that explicit candidate-only registration. Authenticated settings reads
+verified all seven Luna/medium assignments, and two V3 requests completed with
+the exact assistant marker. The runner was executed against that candidate;
+its later source/documentation commit is not a separately deployed binary.
+Two independent checkouts ran concurrently in the configured two-slot pool;
+owned peer cleanup preserved the primary candidate. Host Swarm and the existing
+pool supervisor retained their process identities. Required fast and focused
+Python/Go gates passed; atlas/diff checks were repeated. This closes basic
+entitlement/socket/streaming and simultaneous-lane gaps, not forced refresh,
+revocation, sustained load or independent test audit. Proof resources are
+explicitly stopped after verification; dedicated login storage is retained.

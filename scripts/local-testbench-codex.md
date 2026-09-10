@@ -106,8 +106,11 @@ sudo bash scripts/testbench-local-deploy.sh status --env-file "$CONFIG" --worktr
 sudo bash scripts/testbench-local-deploy.sh stop --env-file "$CONFIG" --worktree "$WORKTREE" --generation "$GENERATION"
 ```
 
-Choose a maintained scenario with an endpoint-aware contract; `SCENARIO.mjs` is
-not a supplied default. The wrapper supplies loopback endpoints, renews the lane
+Use `scripts/runners/local-codex-smoke.mjs` for the bounded provider proof in place
+of `SCENARIO.mjs`. It registers `/candidate/source` in the fresh guest account if
+needed (without changing shared selection), verifies all seven assignments,
+creates one owned V3 session, checks the assistant's exact marker and durable
+completion, and stops only that run on failure. Authentication stays in memory. The wrapper supplies loopback endpoints, renews the lane
 and drops runner privileges. Another chat must use its own clean worktree and
 private broker socket, acquire its own generation, and never stop yours. Full
 capacity fails explicitly; do not evict another lane. Configure slot and total
@@ -116,10 +119,17 @@ CPU/memory/disk budgets before pool initialization as described in
 `reap` reconciles expired owned resources, while `supervise` performs periodic
 bounded sweeps. Do not change initialized pool configuration in place.
 
-Final proof preflight: the fast critical gate, 31 focused Python tests, broker
-and bridge Go tests, remote routing regression and atlas gate passed. The prior
-unauthenticated lane was observed inactive after lease expiry. A new dedicated
-broker store now reports `dedicated_login_configured=true` after user device
-approval. This establishes login presence only; authenticated guest deployment
-and Luna smoke proof remain required. No successful live provider request is
-claimed by login status.
+Final proof: candidate `1a8db654f238ddd7d8d7247165b036c63e32ae26` built and
+ran with the dedicated broker socket. Authenticated Desktop topology/settings
+reads succeeded after registering the fresh guest workspace. Two tool-free V3
+requests completed with the assistant's exact `LOCAL_CODEX_OK` response and
+saved Codex `gpt-5.6-luna` / `medium` preference; all seven settings matched and
+remained unchanged. The second proof executed the checked-in smoke runner.
+A second independent checkout deployed simultaneously into slot 2; stopping
+that exact generation left slot 1 ready. Both used the same committed candidate.
+The fast gate, 31 Python tests and focused broker/bridge Go tests passed.
+This proves basic live entitlement and guest socket transport, not forced OAuth
+refresh/revocation, sustained load, hostile same-UID isolation or media support.
+The proof candidates and dedicated broker are stopped after verification; the
+login store remains private for later explicit use. The pool supervisor is
+unchanged. Deployment always needs a fresh generation; never reuse proof IDs.

@@ -37,11 +37,11 @@ The build/start wait emits a heartbeat and renews allocation every ten seconds w
 
 - Runtime packages, a private ext4 base and offline caches were provisioned. A clean committed candidate built and ran in the private-network/user-namespaced guest; Desktop returned HTTP 200 and unauthenticated API access returned HTTP 401. This is not authenticated identity or provider proof.
 - Provisioning entrypoints: testbench-local-image.sh, testbench-local-tools.sh, testbench-local-cache.sh. They require explicit image paths and privileged invocation; they do not deploy host Swarm. Fast build gate passed after installing this checkout's pinned frontend dependencies.
-- Codex uses the separate runner-only broker documented in [local-testbench-codex.md](local-testbench-codex.md), with a dedicated test login—not host credentials or a host credential lease. Live OAuth, broker socket mapping and authenticated Luna streaming require separate evidence.
-- Generation-specific guest endpoint forwarding worked in the first deployment. Strict authenticated source-identity evidence and simultaneous live multi-container proof remain outstanding.
+- Codex uses the separate runner-only broker documented in [local-testbench-codex.md](local-testbench-codex.md), with a dedicated test login—not host credentials or a host credential lease. Dedicated device login, guest broker socket mapping and two authenticated Luna/medium V3 completions were observed on candidate `1a8db654f238ddd7d8d7247165b036c63e32ae26`; forced token refresh/revocation remains untested.
+- Generation-specific guest endpoint forwarding worked in the first deployment. Later exact-HEAD broker checks and authenticated candidate topology/settings reads established candidate identity. Two independent checkouts of the same commit ran simultaneously in the two configured slots.
 - A transient supervisor reaped the expired first lane to `inactive`; final inspection found no active pool candidate. Image copying checks byte bounds/deadlines between blocks and renews leases; blocking filesystem operations remain a supervision limitation.
 - Two proxies reserve 20% CPU, 64 MiB memory and 16 tasks from each slot's configured totals. Applied systemd CPU, memory and task limits were inspected on the first live guest; stress enforcement was not tested.
-- Lifecycle concurrency/cleanup evidence is bounded hermetic testing plus one observed real expired-lane cleanup, not a live two-container capacity stress test.
+- Lifecycle evidence includes bounded competing-process tests, one real expired-lane cleanup, two simultaneous live candidates and an owned peer stop that left the primary ready. This is not sustained capacity or resource-exhaustion stress.
 
 ## Focused validation
 
