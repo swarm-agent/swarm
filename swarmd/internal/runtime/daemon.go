@@ -657,7 +657,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
-	automationExecution, err := automation.NewExecutionService(automationSvc, automationRuntime, automation.RuntimeTriggers{})
+	automationEvents := automation.NewApprovedEventAuthority(automationApproval)
+	automationExecution, err := automation.NewExecutionService(automationSvc, automationRuntime, automationEvents)
 	if err != nil {
 		bgCancel()
 		_ = secretStore.Close()
@@ -665,7 +666,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, err
 	}
-	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, nil)
+	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, automationEvents)
 	apiServer.ConfigureAutomationApproval(automationApproval)
 	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
