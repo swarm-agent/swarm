@@ -32,6 +32,11 @@ timeout --signal=TERM --kill-after=10s 600s systemd-nspawn --quiet --settings=no
     go mod download
     cd /cache-manifests/web
     pnpm install --frozen-lockfile --ignore-scripts --network-concurrency=4 --reporter=append-only
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o APT::Update::Error-Mode=any update -qq
+    apt-get install -y --no-install-recommends npm
+    pnpm rebuild node esbuild --reporter=append-only
+    test "$(./node_modules/node/bin/node --version)" = v24.16.0
     printf "offline-caches-ready\n"
   '
 sha256sum -- "$image"

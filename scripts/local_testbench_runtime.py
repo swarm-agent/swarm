@@ -32,8 +32,8 @@ PROXY_HELPER = '/usr/lib/systemd/systemd-socket-proxyd'
 # No source checkout, home, database, or host manager socket is mounted.
 # Build/install is deliberately in the guest; dependency caches must be in base.
 GUEST = r'''set -euo pipefail
-phase() { printf '%s\n' "$1" > /exchange/phase; }
-trap 'phase failed' ERR
+phase() { current_phase=$1; printf '%s\n' "$1" > /exchange/phase; }
+trap 'printf "failed-%s\n" "$current_phase" > /exchange/phase' ERR
 phase source
 export TMPDIR=/var/tmp
 export HOME=/root
@@ -509,14 +509,14 @@ class NspawnRuntime:
                     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                     with os.fdopen(fd, 'rb') as stream:
                         if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                            value = stream.read(32).decode('ascii', errors='ignore').strip()
-                            if value in {'source', 'go-build', 'web-install', 'web-build', 'daemon-start', 'failed'}:
+                            value = stream.read(64).decode('ascii', errors='ignore').strip()
+                            if value.removeprefix('failed-') in {'source', 'go-build', 'web-install', 'web-build', 'daemon-start', 'failed'}:
                                 phase = value
                 except OSError:
                     pass
                 print('local testbench: phase=' + phase, file=sys.stderr, flush=True)
-                if phase == 'failed':
-                    raise PoolError('guest build failed')
+                if phase == 'failed' or phase.startswith('failed-'):
+                    raise PoolError('guest build failed at ' + phase)
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
             if values.get('Description') != self.description(record) or values.get('ActiveState') != 'active':
