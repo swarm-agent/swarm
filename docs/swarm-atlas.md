@@ -598,6 +598,10 @@ changes require refreshed exact-candidate live evidence, not inferred success.
 Desktop launch assertions also follow the inspected slash parser: only `plan` is a
 mode directive; retired `worktree`/`wp` words remain literal prompt content, and all
 sessions (including Plan) require managed isolation. All seven cases are retained.
+The first-message browser assertion scrolls the completed multi-checkpoint transcript
+to its beginning before requiring visibility; durable content equality remains checked.
+Task Program prompts spell out the canonical lowercase agent type and complete schema
+fields after provider-generated malformed arguments; rejection remains a failed run.
 
 - 2026-09-10 — Required installed-onboarding automation (base `5e0a6543b` plus scoped diff): inspected canonical manifest/supervisor, distro and client runners, account selection, authenticated onboarding/repository handler/service/client contracts and test assertions. Added three required installed account dispatch cases with explicit runner/archive/checksum inputs and isolated preflight selection. Actual fake-process dispatch/failure/stall tests, existing shell manifest regression and 12 supervisor tests pass; focused installation-account and API authentication/baseline/resume tests pass twice. Operator-owned runner/recipe retention and packaging-owner negative tests are separate from public source. Fresh installed matrix, full Desktop and final release gates are not executed in this automation checkpoint. Independent audit remains pending; no curated promotion.
 

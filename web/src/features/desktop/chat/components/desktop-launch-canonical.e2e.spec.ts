@@ -367,6 +367,9 @@ async function verifyFirstUserMessageAfterCompletion(
 
   await context.page.goto(`${context.appURL}${context.workspaceRoute}/${encodeURIComponent(sessionID)}`, { waitUntil: 'domcontentloaded' })
   await context.page.getByTestId('desktop-chat-scroller').waitFor({ state: 'visible', timeout: 30_000 })
+  // Completed multi-checkpoint conversations open at the bottom. The first
+  // message remains durable but may be virtualized outside the viewport.
+  await context.page.getByTestId('desktop-chat-scroller').evaluate((element) => { element.scrollTop = 0 })
   await context.page.getByText(expectedContent, { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
 }
 

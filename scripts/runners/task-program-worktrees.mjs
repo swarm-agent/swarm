@@ -200,7 +200,7 @@ function programPrompt({ label, targetWorkspace, markerName }) {
   const targetClause = targetWorkspace ? ` Set top-level workspace_path to exactly ${JSON.stringify(targetWorkspace)}.` : ''
   return [
     `Critical task-program worktree probe ${testID} case ${label}.`,
-    'Call the task tool exactly once with action=start and one fully declared Task Program.',
+    'Call the task tool exactly once with action=start, a non-empty top-level prompt, and one fully declared Task Program. Every job must set agent_type exactly "coder" (lowercase), stage_id, id, title, meta_prompt, deliverable, dependency_evidence, acceptance_criteria and owned_scope. The stage must include id and dependency_evidence. Do not put max_concurrency at top level.',
     targetClause,
     `Use program id ${label === 'same-repo-current-parent' ? 'same_repo_probe' : 'linked_repo_probe'}, one stage id verify, max_concurrency 1, and exactly one Coder job.`,
     `The Coder job must own only docs/task-program-probes/** and must create docs/task-program-probes/${markerName} containing one short public-safe line, commit it, and finish clean.`,
