@@ -25,6 +25,9 @@ export class DesktopAutomationRuntime {
       const entry = this.demand.get(key)
       if (entry && --entry.count === 0) {
         this.demand.delete(key)
+        // Detach the released request so a remount starts fresh hydration.
+        // The old transport may finish, but no longer owns this page's slot.
+        this.inFlight.delete(key)
         this.deps.dispatch({ type: 'automation.evict', key })
       }
     } }
@@ -37,13 +40,17 @@ export class DesktopAutomationRuntime {
     const requestId = crypto.randomUUID()
     this.deps.dispatch({ type: 'automation.begin', key, input, requestId })
     const generation = this.deps.pages()[key].generation
-    const promise = this.deps.read(input).then(data => {
+    const promise: Promise<void> = this.deps.read(input).then(data => {
+      if (this.inFlight.get(key) !== promise) return
       const records = [...(data.records ?? []), ...(data.record ? [data.record] : [])]
       if (records.some(record => record.scope.workspace_id !== input.workspace_id || (input.id && record.automation_id !== input.id))) throw new Error('Automation response scope mismatch')
       this.deps.dispatch({ type: 'automation.finish', key, requestId, generation, data })
     }).catch((error: unknown) => {
+      if (this.inFlight.get(key) !== promise) return
       this.deps.dispatch({ type: 'automation.finish', key, requestId, generation, error: error instanceof Error ? error.message : 'Automation request failed' })
     }).finally(() => {
+      // An obsolete completion must not remove or repair a remount's request.
+      if (this.inFlight.get(key) !== promise) return
       this.inFlight.delete(key)
       const page = this.deps.pages()[key]
       // One completion-triggered repair for new invalidations, never a timer or
