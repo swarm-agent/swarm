@@ -458,7 +458,7 @@ func canonicalManageWorkspaceAction(raw any) (string, bool) {
 		action = "delete"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
 		return action, true
 	default:
 		return "", false
@@ -506,7 +506,7 @@ func manageWorkspacePolicyIdentity(arguments string) (string, string) {
 		return policyToolWorkspaceInvalid, "manage_workspace action must be a supported non-empty string"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
 		return "manage_workspace", ""
 	case "create":
 		return policyToolWorkspaceCreate, ""

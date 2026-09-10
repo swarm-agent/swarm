@@ -146,6 +146,24 @@ func TestManageWorkspaceAdoptWorktreeKeepsSameSessionAndRefreshesScope(t *testin
 	if scope.PrimaryPath != worktreePath || !scope.WorktreeEnabled || scope.SessionID != sessionID {
 		t.Fatalf("scope = %+v", scope)
 	}
+	// Same-owner resume must retain dirty bytes and the durable claim rather
+	// than requiring an implicit commit, reset, or replacement session.
+	resumePath := filepath.Join(worktreePath, "resume.txt")
+	if err := os.WriteFile(resumePath, []byte("unfinished work"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	worktrees.states[worktreePath] = worktreeruntime.TaskWorkspaceState{WorkspacePath: worktreePath, BranchName: "agent/same-session", Clean: false}
+	resumeArgs, _ := json.Marshal(map[string]any{"action": "adopt_worktree", "workspace_id": entry.WorkspaceID, "worktree_path": worktreePath})
+	if _, err := runSvc.executeManageWorkspaceTool(sessionID, string(resumeArgs), principal, sessionSvc.ApplySessionMutation); err != nil {
+		t.Fatalf("dirty resume: %v", err)
+	}
+	if data, err := os.ReadFile(resumePath); err != nil || string(data) != "unfinished work" {
+		t.Fatalf("resume bytes changed: %q, %v", data, err)
+	}
+	claims, err := sessionStore.InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{worktreePath})
+	if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != sessionID {
+		t.Fatalf("resume claim: %+v, %v", claims, err)
+	}
 }
 
 // Purpose: setSessionWorkspaces must preserve authorized grants and request a

@@ -78,6 +78,9 @@ func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, princi
 	if s.workspace == nil {
 		return "", errors.New("manage_workspace catalog is not configured")
 	}
+	if args.Action == "discover_worktrees" {
+		return s.discoverSessionRecoveryWorktrees(principal, args)
+	}
 	if args.Action == "inspect" || args.Action == "list" {
 		if args.WorkspaceID != "" || args.WorkspaceGeneration != 0 || args.PrimaryWorkspaceID != "" || len(args.WorkspaceIDs) > 0 || args.WorktreeName != "" || args.WorktreePath != "" || args.ExpectedWorktreePath != "" || args.WorkspacePathSet || args.WorkspaceNameSet || args.ThemeIDSet || args.Intent != "" || args.PermissionScope != "" || args.ExpectedRevision != 0 || args.ContentSet {
 			return "", errors.New("manage_workspace inspect/list do not accept workspace selectors")
@@ -302,7 +305,7 @@ func (s *Service) inspectManageWorkspace(principal identity.Principal, action st
 	}
 	return marshalManageWorkspace(map[string]any{
 		"action": action, "status": "ok", "workspaces": workspaces,
-		"actions": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree"},
+		"actions": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees"},
 	})
 }
 
@@ -1011,18 +1014,6 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 		}
 		return "", err
 	}
-	if !allocated && currentPath != "" && filepath.Clean(currentPath) != filepath.Clean(allocation.WorkspacePath) {
-		state, inspectErr := s.worktrees.InspectTaskWorkspace(currentPath)
-		if inspectErr != nil || !state.Clean {
-			if allocated {
-				_ = s.worktrees.RollbackAllocation(allocation)
-			}
-			if inspectErr != nil {
-				return "", fmt.Errorf("inspect current worktree before move: %w", inspectErr)
-			}
-			return "", errors.New("manage_workspace cannot leave a dirty worktree; commit or clean the current checkout first")
-		}
-	}
 	if err := s.rejectSessionWorktreeOwnershipConflict(principal, sessionID, allocation.WorkspacePath); err != nil {
 		if allocated {
 			err = errors.Join(err, s.worktrees.RollbackAllocation(allocation))
@@ -1071,7 +1062,7 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 		return "", err
 	}
 	key := manageWorkspaceMutationKey("manage-workspace-adopt", sessionID, payload)
-	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.worktree.adopted", EventPayload: payload, Session: &next, NowUnixMs: next.UpdatedAt})
+	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.worktree.adopted", EventPayload: payload, WorktreeAdmission: sessionLaneAdmission(next, allocated), Session: &next, NowUnixMs: next.UpdatedAt})
 	if err == nil && result.Conflict != nil {
 		err = errors.New(result.Conflict.Message)
 	}
@@ -1126,11 +1117,8 @@ func (s *Service) resolveOwnedSessionWorktree(session pebblestore.SessionSnapsho
 			return worktreeruntime.Allocation{}, errors.New("manage_workspace worktree ownership or source identity is stale")
 		}
 		state, err := s.worktrees.InspectTaskWorkspace(targetPath)
-		if err != nil || !state.Clean {
-			if err != nil {
-				return worktreeruntime.Allocation{}, err
-			}
-			return worktreeruntime.Allocation{}, errors.New("manage_workspace selected worktree is dirty")
+		if err != nil {
+			return worktreeruntime.Allocation{}, err
 		}
 		if err := worktreeruntime.ValidateOwnedIdentity(canonical.SourceWorkspacePath, targetPath, mapString(item, "branch"), mapString(item, "base_commit")); err != nil {
 			return worktreeruntime.Allocation{}, err
@@ -1360,6 +1348,11 @@ func (s *Service) setSessionWorkspaces(sessionID string, principal identity.Prin
 		}
 		return "", cause
 	}
+	if next.WorktreeEnabled {
+		if err := s.rejectSessionWorktreeOwnershipConflict(principal, sessionID, next.WorktreeRootPath); err != nil {
+			return rollback(err)
+		}
+	}
 	available := true
 	grants := []pebblestore.WorkspaceGrant{{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: primary.WorkspaceID, WorkspaceGeneration: primary.WorkspaceGeneration, Path: primary.SourceWorkspacePath, Name: primary.WorkspaceName, Available: &available}}
 	for id, canonical := range canonicalByID {
@@ -1378,7 +1371,7 @@ func (s *Service) setSessionWorkspaces(sessionID string, principal identity.Prin
 		return rollback(err)
 	}
 	key := manageWorkspaceMutationKey("manage-workspace", sessionID, payload)
-	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.workspace.updated", EventPayload: payload, Session: &next, NowUnixMs: next.UpdatedAt})
+	result, err := applySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, ExpectedLastEventSeq: &expectedSeq, Kind: sessionruntime.SessionMutationUpdateSettings, EventType: "session.workspace.updated", EventPayload: payload, WorktreeAdmission: sessionLaneAdmission(next, allocation != nil), Session: &next, NowUnixMs: next.UpdatedAt})
 	if err != nil {
 		return rollback(err)
 	}

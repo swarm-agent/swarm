@@ -1298,7 +1298,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree"}},
+					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees"}},
 					"workspace_id":           map[string]any{"type": "string", "description": "Stable target workspace identity. Required with workspace_generation for update/delete; also used by selection actions."},
 					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1, "description": "Expected target generation. Required for update/delete; stale generations fail before mutation."},
 					"workspace_path":         map[string]any{"type": "string", "description": "create: existing directory to save. update: optional existing replacement directory; no files are moved or created."},
