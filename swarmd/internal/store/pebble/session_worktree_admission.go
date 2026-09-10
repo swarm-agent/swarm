@@ -145,3 +145,43 @@ func worktreeAdmissionSourceMatches(e *WorktreeAdmissionEvidence, snapshot Sessi
 		v3LibraryMetadataString(snapshot.Metadata, "swarm_v3_runtime_workspace_path") == e.Path &&
 		v3LibraryMetadataString(snapshot.Metadata, "swarm_v3_worktree_owner_session_id") == e.OwnerSessionID
 }
+
+// InspectRecoveryOwnership authorizes legacy content inspection from complete
+// canonical history. This does not persist ownership: reservation revalidates the
+// same evidence under the V3 mutation lock and publishes the claim atomically.
+func (s *SessionStore) InspectRecoveryOwnership(account, user, source, path string) ([]WorktreeOwnership, error) {
+	if account == "" || user == "" || !validWorktreePath(source) || !validWorktreePath(path) {
+		return nil, ErrWorktreeRecoveryConflict
+	}
+	var record WorktreeOwnership
+	found, err := s.store.GetJSON(worktreeOwnershipKey(path), &record)
+	if err != nil { return nil, err }
+	if found { return s.InspectWorktreeOwnership(account, user, []string{path}) }
+	var meta repositoryHistoryMeta
+	ready, err := s.store.GetJSON(repositoryHistoryMetaKey, &meta)
+	if err != nil { return nil, err }
+	if !ready || !meta.Ready { return nil, ErrRepositoryHistoryNotReady }
+	prefix := "v3/repository_history/rows/"
+	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil { return nil, err }
+	defer iter.Close()
+	count := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		count++
+		if count > 10000 { return nil, ErrWorktreeRecoveryConflict }
+		var row SessionRepositoryHistory
+		if err := json.Unmarshal(iter.Value(), &row); err != nil { return nil, err }
+		owner := row.Session
+		if owner.WorktreeRootPath != path { continue }
+		if owner.ID == "" || owner.AccountScopeID != account || owner.UserID != user || !owner.WorktreeEnabled || owner.WorkspacePath != source || owner.WorktreeBranch == "" || (record.OwnerSessionID != "" && record.OwnerSessionID != owner.ID) {
+			return nil, ErrWorktreeRecoveryConflict
+		}
+		for key, expected := range map[string]string{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": path, "swarm_v3_worktree_owner_session_id": owner.ID} {
+			if value := v3LibraryMetadataString(owner.Metadata, key); value != "" && value != expected { return nil, ErrWorktreeRecoveryConflict }
+		}
+		record = WorktreeOwnership{Path: path, AccountScopeID: account, UserID: user, OwnerSessionID: owner.ID, Revision: 1}
+	}
+	if err := iter.Error(); err != nil { return nil, err }
+	if record.OwnerSessionID == "" { return nil, ErrWorktreeRecoveryConflict }
+	return []WorktreeOwnership{record}, nil
+}

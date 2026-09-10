@@ -69,7 +69,7 @@ func (s *Service) discoverSessionRecoveryWorktrees(principal identity.Principal,
 		return "", err
 	}
 	candidates, err := authorizedRecoveryCandidates(paths, func(path string) ([]pebblestore.WorktreeOwnership, error) {
-		return s.sessions.Store().InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{path})
+		return s.sessions.Store().InspectRecoveryOwnership(principal.AccountScopeID, principal.UserID, canonical.SourceWorkspacePath, path)
 	}, func(path string) (worktreeruntime.RecoveryIdentity, error) {
 		return worktreeruntime.InspectRecoveryWorktree(canonical.SourceWorkspacePath, path)
 	})

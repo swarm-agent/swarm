@@ -69,7 +69,7 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
  if args.Action == "reclaim_worktree" && args.WorktreeName != "" { return "", errors.New("reclaim_worktree does not allocate a named destination") }
  if args.ExpectedWorktreePath != "" && args.ExpectedWorktreePath != session.WorktreeRootPath { return "", errors.New("stale current worktree") }
  if len(sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"])) >= 63 { return "", errors.New("recovery history limit reached") }
- claims, err := s.sessions.Store().InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{args.WorktreePath})
+ claims, err := s.sessions.Store().InspectRecoveryOwnership(principal.AccountScopeID, principal.UserID, canonical.SourceWorkspacePath, args.WorktreePath)
  if err != nil { return "", err }
  r := args.Recovery
  if len(claims) != 1 || claims[0].OwnerSessionID != r.Owner || claims[0].Revision != r.Revision { return "", pebblestore.ErrWorktreeRecoveryConflict }
@@ -79,7 +79,7 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
  projection, _, err := s.sessions.GetSessionProjection(sessionID)
  if err != nil { return "", err }
  seq := projection.LastEventSeq
- mutation := pebblestore.WorktreeRecoveryMutation{Path: source.Path, OwnerSessionID: r.Owner, ExpectedRevision: r.Revision, OperationID: r.Operation, Evidence: r.Fingerprint}
+ mutation := pebblestore.WorktreeRecoveryMutation{SourcePath: canonical.SourceWorkspacePath, Path: source.Path, OwnerSessionID: r.Owner, ExpectedRevision: r.Revision, OperationID: r.Operation, Evidence: r.Fingerprint}
  publish := func(action string, next *pebblestore.SessionSnapshot, admission *pebblestore.WorktreeAdmissionEvidence) (sessionruntime.SessionMutationResult, error) {
   mutation.Action = action
   payload, err := json.Marshal(map[string]any{"operation": mutation, "session": next})
@@ -96,14 +96,18 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
  if _, err := publish(reserve, nil, nil); err != nil { return "", err }
  allocation := worktreeruntime.Allocation{WorkspacePath: source.Path, BaseCommit: source.HEAD}
  retainedError := func(err error) (string, error) { return "", fmt.Errorf("recovery %s reserved; destination %q retained; publication not confirmed: %w", r.Operation, allocation.WorkspacePath, err) }
+ releaseError := func(cause error) (string, error) {
+  if _, err := publish("release", nil, nil); err != nil { return retainedError(errors.Join(cause, err)) }
+  return "", cause
+ }
  var destination worktreeruntime.RecoveryIdentity
  if args.Action == "copy_worktree" {
   snapshot, err := worktreeruntime.SnapshotRecovery(canonical.SourceWorkspacePath, source, worktreeruntime.RecoverySelection{Files: r.Files})
-  if err != nil { return retainedError(err) }
+  if err != nil { return releaseError(err) }
   branch, err := worktreeruntime.CanonicalizeRequestedWorktreeName(firstNonEmptyString(args.WorktreeName, "recovery-"+compactManageWorkspaceSessionID(sessionID)), "")
-  if err != nil { return retainedError(err) }
+  if err != nil { return releaseError(err) }
   copier, ok := s.worktrees.(interface { CopyRecovery(*worktreeruntime.RecoverySnapshot, string, string) (worktreeruntime.RecoveryResult, error) })
-  if !ok { return retainedError(errors.New("worktree recovery copy service unavailable")) }
+  if !ok { return releaseError(errors.New("worktree recovery copy service unavailable")) }
   copied, err := copier.CopyRecovery(snapshot, sessionID, branch)
   allocation, destination = copied.Allocation, copied.Destination
   if err != nil { return retainedError(err) }

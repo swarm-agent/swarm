@@ -44,6 +44,7 @@ type WorktreeCopySource struct {
 // Release only cancels a reservation; it never releases session ownership or
 // deletes Git resources. Failed cleanup therefore remains safely reserved.
 type WorktreeRecoveryMutation struct {
+	SourcePath       string `json:"source_path,omitempty"` // exact authenticated source for legacy migration
 	Action           string `json:"action"` // reserve, reserve_copy, publish, publish_copy, release
 	Path             string `json:"path"`
 	OwnerSessionID   string `json:"owner_session_id"`
@@ -161,6 +162,14 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 	found, err := s.store.GetJSON(worktreeOwnershipKey(path), &record)
 	if err != nil {
 		return nil, err
+	}
+	if !found && mutation != nil && (mutation.Action == "reserve" || mutation.Action == "reserve_copy") {
+		// Migration is part of this reservation's atomic V3 batch, never a
+		// discovery side effect or a missing-record ownership inference.
+		claims, err := s.InspectRecoveryOwnership(input.AccountScopeID, input.UserID, mutation.SourcePath, path)
+		if err != nil { return nil, err }
+		if len(claims) != 1 { return nil, ErrWorktreeRecoveryConflict }
+		record, found = claims[0], true
 	}
 	if found && (record.AccountScopeID != input.AccountScopeID || record.UserID != input.UserID) {
 		return nil, ErrWorktreeRecoveryConflict

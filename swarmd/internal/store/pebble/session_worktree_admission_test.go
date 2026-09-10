@@ -171,3 +171,42 @@ func TestWorktreeAdmissionDelegatedRuntime(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: legacy discovery may disclose a lane only with positive complete
+// principal/source history. Reservation migrates deleted provenance atomically;
+// foreign, absent, stale-source and live-owner attempts cannot publish a claim.
+func TestWorktreeRecoveryLegacyMigration(t *testing.T) {
+	for _, scenario := range []string{"deleted", "live", "foreign", "wrong-source", "unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := NewSessionStore(openV3SessionEventTestStore(t))
+			path := filepath.Join(t.TempDir(), "lane")
+			createRecoverySession(t, s, "owner", path)
+			createRecoverySession(t, s, "receiver", "")
+			if scenario != "live" { if err := s.DeleteSession("owner"); err != nil { t.Fatal(err) } }
+			if err := s.store.db.Delete([]byte(worktreeOwnershipKey(path)), nil); err != nil { t.Fatal(err) }
+			source, account, candidate := path, "account", path
+			if scenario == "foreign" { account = "foreign" }
+			if scenario == "wrong-source" { source = filepath.Join(t.TempDir(), "other") }
+			if scenario == "unknown" { candidate = filepath.Join(t.TempDir(), "unknown") }
+			claims, err := s.InspectRecoveryOwnership(account, "user", source, candidate)
+			if scenario == "deleted" || scenario == "live" {
+				if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != "owner" { t.Fatalf("history: %+v %v", claims, err) }
+			} else if err == nil || claims != nil { t.Fatalf("unauthorized history: %+v %v", claims, err) }
+			if _, err := s.InspectWorktreeOwnership("account", "user", []string{path}); err == nil { t.Fatal("discovery persisted a claim") }
+			input := recoveryInput("receiver", "reserve", candidate, 1, 1)
+			input.WorktreeRecovery.SourcePath = source
+			input.AccountScopeID = account
+			_, err = s.ApplyV3SessionMutation(input)
+			if scenario == "deleted" {
+				if err != nil { t.Fatal(err) }
+				claims, err = s.InspectWorktreeOwnership("account", "user", []string{path})
+				if err != nil || claims[0].OwnerSessionID != "owner" || claims[0].ClaimantSessionID != "receiver" || claims[0].Revision != 2 { t.Fatalf("migration: %+v %v", claims, err) }
+			} else {
+				if err == nil { t.Fatal("invalid migration accepted") }
+				if _, err := s.InspectWorktreeOwnership("account", "user", []string{path}); err == nil { t.Fatal("partial claim") }
+				events, err := s.ListV3SessionEvents("receiver", 0, 10)
+				if err != nil || len(events) != 1 { t.Fatalf("partial events: %+v %v", events, err) }
+			}
+		})
+	}
+}
