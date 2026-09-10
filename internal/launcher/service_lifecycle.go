@@ -185,7 +185,16 @@ func InstallInstalledDaemon(opts InstallServiceOptions) error {
 	if err := EnsureSystemdServiceUnit(); err != nil {
 		return err
 	}
-	return EnableStartInstalledService()
+	return activateInstalledCandidate(EnableStartInstalledService, RestartInstalledService)
+}
+
+func activateInstalledCandidate(enable, restart func() error) error {
+	if err := enable(); err != nil {
+		return err
+	}
+	// enable --now does not replace an already-running previous runtime.
+	// Installation must activate the candidate, not merely leave a service active.
+	return restart()
 }
 
 func EnableStartInstalledService() error {
