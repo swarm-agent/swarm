@@ -3,8 +3,10 @@ package automation
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -54,12 +56,19 @@ func (s *Service) authorize(ctx context.Context, p Principal, scope store.Automa
 	if p.Role != "user" && p.Role != "agent" && p.Role != "system" { return ErrDenied }
 	return s.access.Workspace(ctx, p, scope, action)
 }
-func (s *Service) plan(ctx context.Context, p Principal, scope store.AutomationScope, ref store.AutomationPlanReference) error {
+func (s *Service) plan(ctx context.Context, p Principal, scope store.AutomationScope, ref *store.AutomationPlanReference) error {
 	if ref.SessionID == "" || ref.PlanID == "" || ref.Revision == 0 || ref.Revision > uint64(^uint(0)>>1) { return ErrInvalid }
 	if err := s.access.PlanSession(ctx, p, scope, ref.SessionID); err != nil { return err }
 	plan, found, err := s.plans.GetPlanRevision(ref.SessionID, ref.PlanID, int(ref.Revision))
 	if err != nil { return err }
 	if !found || plan.AccountScopeID != scope.AccountID || plan.SessionID != ref.SessionID || plan.ID != ref.PlanID || uint64(plan.Version) != ref.Revision || plan.ApprovalState != "approved" || plan.Document == nil { return ErrDenied }
+	// Canonical plan snapshots may be rewritten at the same version by lifecycle
+	// updates. Pin document bytes, not merely the mutable revision-key locator.
+	data, err := json.Marshal(plan.Document)
+	if err != nil { return err }
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	if ref.DocumentSHA256 != "" && ref.DocumentSHA256 != digest { return ErrDenied }
+	ref.DocumentSHA256 = digest
 	return nil
 }
 func (s *Service) execution(ctx context.Context, p Principal, scope store.AutomationScope, d store.AutomationDefinition, action string) error {
@@ -77,9 +86,14 @@ func (s *Service) SaveDefinition(ctx context.Context, p Principal, scope store.A
 	if d.Authorization.Mode != "approval_required" && d.Authorization.Mode != "approved_policy" { return store.AutomationRecord{}, false, ErrInvalid }
 	old, found, err := s.repo.GetAutomationRecord(scope, id, "definition", id, expected)
 	if err != nil { return store.AutomationRecord{}, false, err }
+	// Omitting a digest on an update must not silently repin the same locator.
+	if found && old.Definition != nil && d.Plan.DocumentSHA256 == "" {
+		prior := old.Definition.Plan
+		if prior.SessionID == d.Plan.SessionID && prior.PlanID == d.Plan.PlanID && prior.Revision == d.Plan.Revision { d.Plan.DocumentSHA256 = prior.DocumentSHA256 }
+	}
 	// Only an unchanged binding may be disabled without revalidating that plan.
 	if expected == 0 || !found || old.Definition == nil || d.Enabled || old.Definition.Plan != d.Plan {
-		if err := s.plan(ctx, p, scope, d.Plan); err != nil { return store.AutomationRecord{}, false, err }
+		if err := s.plan(ctx, p, scope, &d.Plan); err != nil { return store.AutomationRecord{}, false, err }
 	}
 	if d.Enabled { if err := s.execution(ctx, p, scope, d, "enable"); err != nil { return store.AutomationRecord{}, false, err } }
 	return s.repo.ApplyAutomationMutation(store.AutomationMutation{Actor: p.Role, MutationID: mutation, ExpectedRevision: expected, Record: store.AutomationRecord{Scope: scope, AutomationID: id, ID: id, Kind: "definition", Definition: &d}})
@@ -91,7 +105,8 @@ func (s *Service) CheckRun(ctx context.Context, p Principal, scope store.Automat
 	if !found { return r, ErrNotFound }
 	if revision == 0 || r.Revision != revision { return store.AutomationRecord{}, store.ErrAutomationConflict }
 	if r.Definition == nil || !r.Definition.Enabled { return store.AutomationRecord{}, ErrDenied }
-	if err := s.plan(ctx, p, scope, r.Definition.Plan); err != nil { return store.AutomationRecord{}, err }
+	if r.Definition.Plan.DocumentSHA256 == "" { return store.AutomationRecord{}, ErrDenied }
+	if err := s.plan(ctx, p, scope, &r.Definition.Plan); err != nil { return store.AutomationRecord{}, err }
 	if err := s.execution(ctx, p, scope, *r.Definition, "run"); err != nil { return store.AutomationRecord{}, err }
 	return r, nil
 }

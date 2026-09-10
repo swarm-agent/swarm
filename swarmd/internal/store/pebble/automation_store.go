@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -28,6 +29,7 @@ type AutomationPlanReference struct {
 	SessionID string `json:"session_id"`
 	PlanID string `json:"plan_id"`
 	Revision uint64 `json:"revision"`
+	DocumentSHA256 string `json:"document_sha256,omitempty"`
 }
 
 type AutomationSchedulePolicy struct {
@@ -104,7 +106,7 @@ type automationReceipt struct {
 }
 
 func automationPart(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
-func automationValidID(s string) bool { return s != "" && len(s) <= 256 && strings.TrimSpace(s) == s }
+func automationValidID(s string) bool { return s != "" && len(s) <= 256 && utf8.ValidString(s) && strings.TrimSpace(s) == s }
 func automationPrefix(scope AutomationScope) (string, error) {
 	if !automationValidID(scope.AccountID) || !automationValidID(scope.WorkspaceID) { return "", ErrAutomationInvalid }
 	return "automation:v1:" + automationPart(scope.AccountID) + ":" + automationPart(scope.WorkspaceID) + ":", nil
