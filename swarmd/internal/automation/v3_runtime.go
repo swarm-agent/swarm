@@ -32,12 +32,12 @@ type V3ExecutionHost interface {
 }
 
 type V3Runtime struct {
-	domain *Service
-	sessions *sessions.Service
+	domain    *Service
+	sessions  *sessions.Service
 	worktrees *worktree.Service
-	approval ExecutionApproval
-	host V3ExecutionHost
-	apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error)
+	approval  ExecutionApproval
+	host      V3ExecutionHost
+	apply     func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error)
 }
 
 func NewV3Runtime(domain *Service, service *sessions.Service, trees *worktree.Service, approval ExecutionApproval, host V3ExecutionHost, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error)) (*V3Runtime, error) {
@@ -53,34 +53,54 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 	if def.Definition == nil || occurrence.Occurrence == nil || def.Scope != occurrence.Scope || def.AutomationID != occurrence.AutomationID || def.Revision != occurrence.Occurrence.DefinitionRevision || p.AccountID != def.Scope.AccountID {
 		return "", ErrInvalid
 	}
-	if err := ValidateExecutionPolicy(def.Definition.Authorization); err != nil { return "", err }
-	if err := v.approval.Verify(ctx, p, def); err != nil { return "", err }
+	if err := ValidateExecutionPolicy(def.Definition.Authorization); err != nil {
+		return "", err
+	}
+	if err := v.approval.Verify(ctx, p, def); err != nil {
+		return "", err
+	}
 	key := executionKey(def.Scope, def.AutomationID, occurrence.ID)
 	id := "automation-" + key
 	snapshot, found, err := v.sessions.GetSession(id)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	if found {
 		if snapshot.AccountScopeID != p.AccountID || snapshot.Metadata["automation_execution_key"] != key || !snapshot.WorktreeEnabled {
 			return "", ErrDenied
 		}
 		policyBytes, err := json.Marshal(def.Definition.Authorization)
-		if err != nil || snapshot.Metadata["automation_execution_policy"] != string(policyBytes) { return "", ErrDenied }
-		if err := v.worktrees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, id, snapshot.WorktreeBranch); err != nil { return "", err }
+		if err != nil || snapshot.Metadata["automation_execution_policy"] != string(policyBytes) {
+			return "", ErrDenied
+		}
+		if err := v.worktrees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, id, snapshot.WorktreeBranch); err != nil {
+			return "", err
+		}
 	} else {
-		if _, err := v.pinnedDocument(ctx, p, def, id); err != nil { return "", err }
+		if _, err := v.pinnedDocument(ctx, p, def, id); err != nil {
+			return "", err
+		}
 		snapshot, err = v.host.Prepare(ctx, p, def)
-		if err != nil { return "", err }
-		if snapshot.AccountScopeID != p.AccountID || snapshot.UserID == "" || snapshot.WorkspacePath == "" || snapshot.Metadata == nil { return "", ErrDenied }
+		if err != nil {
+			return "", err
+		}
+		if snapshot.AccountScopeID != p.AccountID || snapshot.UserID == "" || snapshot.WorkspacePath == "" || snapshot.Metadata == nil {
+			return "", ErrDenied
+		}
 		principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID}
 		allocation, err := v.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(principal, snapshot.WorkspacePath, id, "", "agent/automation-"+key[:16])
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		snapshot.ID, snapshot.Mode = id, sessions.ModePlan
 		snapshot.CreatedAt, snapshot.UpdatedAt = occurrence.WrittenAt, occurrence.WrittenAt
 		snapshot.WorktreeEnabled = true
 		snapshot.WorktreeRootPath, snapshot.WorktreeBaseBranch, snapshot.WorktreeBranch = allocation.WorkspacePath, allocation.BaseBranch, allocation.BranchName
 		snapshot.Metadata["automation_execution_key"] = key
 		policyBytes, err := json.Marshal(def.Definition.Authorization)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		snapshot.Metadata["automation_execution_policy"] = string(policyBytes)
 		snapshot.Metadata["automation_definition_revision"] = def.Revision
 		snapshot.Metadata["automation_occurrence_id"] = occurrence.ID
@@ -91,25 +111,41 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 		available := true
 		snapshot.WorkspaceGrants = append(snapshot.WorkspaceGrants, store.WorkspaceGrant{Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available})
 		snapshot.WorkspaceUsage = store.WorkspaceUsageFromGrants(snapshot.WorkspaceGrants)
-		mutationKey := "automation-create-"+key
+		mutationKey := "automation-create-" + key
 		_, err = v.apply(sessions.SessionMutationInput{SessionID: id, UserID: snapshot.UserID, AccountScopeID: p.AccountID, ClientRequestID: mutationKey, IdempotencyKey: mutationKey, PayloadHash: key, RequestHash: key, Kind: sessions.SessionMutationCreateSession, Session: &snapshot, NowUnixMs: occurrence.WrittenAt})
 		// An ambiguous create error must retain the lane for recovery, never delete it.
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 	}
 	if snapshot.Mode == sessions.ModePlan {
 		doc, err := v.pinnedDocument(ctx, p, def, id)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		accepted, err := v.sessions.CommitV3PlanAcceptance(sessions.PlanAcceptanceCommitInput{Session: snapshot, PlanID: id, Title: doc.Title, Document: doc, ApplySessionMutation: v.apply})
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		snapshot = accepted.Session
 	}
-	if err := v.approval.Verify(ctx, p, def); err != nil { return "", err }
+	if err := v.approval.Verify(ctx, p, def); err != nil {
+		return "", err
+	}
 	// Recheck the durable occurrence fence after preparation. The host's own
 	// Start/Cancel fence still owns the race after this check.
-	claims, ok := v.domain.repo.(interface { ClaimAutomationDispatch(store.AutomationScope, string, string) error })
-	if !ok { return "", ErrInvalid }
-	if err := claims.ClaimAutomationDispatch(occurrence.Scope, occurrence.AutomationID, occurrence.ID); err != nil { return "", err }
-	if err := v.host.Start(ctx, snapshot, key); err != nil { return "", err }
+	claims, ok := v.domain.repo.(interface {
+		ClaimAutomationDispatch(store.AutomationScope, string, string) error
+	})
+	if !ok {
+		return "", ErrInvalid
+	}
+	if err := claims.ClaimAutomationDispatch(occurrence.Scope, occurrence.AutomationID, occurrence.ID); err != nil {
+		return "", err
+	}
+	if err := v.host.Start(ctx, snapshot, key); err != nil {
+		return "", err
+	}
 	return id, nil
 }
 
@@ -119,22 +155,42 @@ func (v *V3Runtime) pinnedDocument(ctx context.Context, p Principal, def store.A
 	doc := &store.SessionPlanDocument{ID: id, Title: def.Definition.Name, Info: store.SessionPlanInfo{Goal: def.Definition.Name}}
 	for i, binding := range def.Definition.Plans {
 		ref := binding.Plan
-		if ref.DocumentSHA256 == "" { return nil, ErrDenied }
-		if err := v.domain.plan(ctx, p, def.Scope, &ref); err != nil { return nil, err }
+		if ref.DocumentSHA256 == "" {
+			return nil, ErrDenied
+		}
+		if err := v.domain.plan(ctx, p, def.Scope, &ref); err != nil {
+			return nil, err
+		}
 		source, found, err := v.domain.plans.GetPlanRevision(ref.SessionID, ref.PlanID, int(ref.Revision))
-		if err != nil { return nil, err }
-		if !found || source.Document == nil { return nil, ErrDenied }
+		if err != nil {
+			return nil, err
+		}
+		if !found || source.Document == nil {
+			return nil, ErrDenied
+		}
 		data, err := json.Marshal(source.Document)
-		if err != nil { return nil, err }
-		if executionDocumentDigest(data) != ref.DocumentSHA256 { return nil, ErrDenied }
+		if err != nil {
+			return nil, err
+		}
+		if executionDocumentDigest(data) != ref.DocumentSHA256 {
+			return nil, ErrDenied
+		}
 		var copy store.SessionPlanDocument
-		if err := json.Unmarshal(data, &copy); err != nil { return nil, err }
+		if err := json.Unmarshal(data, &copy); err != nil {
+			return nil, err
+		}
 		info, err := json.Marshal(copy.Info)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		for _, cp := range copy.Checkpoints {
-			if cp.TaskProgram != nil && (len(def.Definition.Authorization.AllowedTools) != 0 || len(def.Definition.Authorization.TargetIDs) != 0) { return nil, ErrDenied }
-			fresh := store.SessionPlanCheckpoint{ID: fmt.Sprintf("binding-%d-%s", i+1, cp.ID), Title: cp.Title, Status: "pending", Objective: cp.Objective, Tasks: cp.Tasks, AcceptanceCriteria: cp.AcceptanceCriteria, TaskProgram: cp.TaskProgram, Artifacts: cp.Artifacts, Notes: "Pinned plan context: "+string(info)+"\n"+cp.Notes, Order: len(doc.Checkpoints)+1}
-			for _, sub := range cp.Subtasks { fresh.Subtasks = append(fresh.Subtasks, store.SessionPlanSubtask{ID: sub.ID, Title: sub.Title, Status: "pending", Notes: sub.Notes, Order: sub.Order}) }
+			if cp.TaskProgram != nil && (len(def.Definition.Authorization.AllowedTools) != 0 || len(def.Definition.Authorization.TargetIDs) != 0) {
+				return nil, ErrDenied
+			}
+			fresh := store.SessionPlanCheckpoint{ID: fmt.Sprintf("binding-%d-%s", i+1, cp.ID), Title: cp.Title, Status: "pending", Objective: cp.Objective, Tasks: cp.Tasks, AcceptanceCriteria: cp.AcceptanceCriteria, TaskProgram: cp.TaskProgram, Artifacts: cp.Artifacts, Notes: "Pinned plan context: " + string(info) + "\n" + cp.Notes, Order: len(doc.Checkpoints) + 1}
+			for _, sub := range cp.Subtasks {
+				fresh.Subtasks = append(fresh.Subtasks, store.SessionPlanSubtask{ID: sub.ID, Title: sub.Title, Status: "pending", Notes: sub.Notes, Order: sub.Order})
+			}
 			doc.Checkpoints = append(doc.Checkpoints, fresh)
 		}
 		doc.Artifacts = append(doc.Artifacts, copy.Artifacts...)
@@ -143,13 +199,21 @@ func (v *V3Runtime) pinnedDocument(ctx context.Context, p Principal, def store.A
 }
 
 func (v *V3Runtime) Cancel(ctx context.Context, p Principal, r store.AutomationRecord) error {
-	if r.Occurrence == nil || r.Occurrence.State != "cancelling" || p.AccountID != r.Scope.AccountID { return ErrDenied }
+	if r.Occurrence == nil || r.Occurrence.State != "cancelling" || p.AccountID != r.Scope.AccountID {
+		return ErrDenied
+	}
 	key := executionKey(r.Scope, r.AutomationID, r.ID)
-	id := "automation-"+key
+	id := "automation-" + key
 	snapshot, found, err := v.sessions.GetSession(id)
-	if err != nil { return err }
-	if found && (snapshot.AccountScopeID != p.AccountID || snapshot.Metadata["automation_execution_key"] != key) { return ErrDenied }
-	if !found { snapshot = store.SessionSnapshot{ID: id, AccountScopeID: p.AccountID} }
+	if err != nil {
+		return err
+	}
+	if found && (snapshot.AccountScopeID != p.AccountID || snapshot.Metadata["automation_execution_key"] != key) {
+		return ErrDenied
+	}
+	if !found {
+		snapshot = store.SessionSnapshot{ID: id, AccountScopeID: p.AccountID}
+	}
 	return v.host.Cancel(ctx, snapshot, key)
 }
 
@@ -159,7 +223,8 @@ func (v *V3Runtime) Cancel(ctx context.Context, p Principal, r store.AutomationR
 func ValidateExecutionPolicy(policy store.AutomationAuthorizationPolicy) error {
 	for _, name := range policy.AllowedTools {
 		switch name {
-		case "task", "manage_sessions": return ErrDenied
+		case "task", "manage_sessions":
+			return ErrDenied
 		}
 	}
 	return nil

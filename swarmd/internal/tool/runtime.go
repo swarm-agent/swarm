@@ -30,6 +30,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
@@ -42,7 +43,6 @@ import (
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
 	"swarm/packages/swarmd/internal/videosource"
-	"swarm/packages/swarmd/internal/automation"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -164,8 +164,8 @@ type Runtime struct {
 	orchestration         manageOrchestrationPolicyService
 	todos                 manageTodoService
 	automations           *automation.Service
-	automationExecution *automation.ExecutionService
-	automationPolicy *automation.PolicyApproval
+	automationExecution   *automation.ExecutionService
+	automationPolicy      *automation.PolicyApproval
 	actions               manageActionService
 	uiSettings            manageThemeUISettingsService
 	themeWorkspace        manageThemeWorkspaceService

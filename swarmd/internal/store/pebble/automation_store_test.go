@@ -247,26 +247,50 @@ func TestAutomationStoreCommitFailure(t *testing.T) {
 func TestAutomationDispatchClaimAndCursorRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	s, err := Open(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := automationFixture()
 	m.Record.Definition.Schedule.OverlapPolicy = "serialize"
-	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
+	if _, _, err := s.ApplyAutomationMutation(m); err != nil {
+		t.Fatal(err)
+	}
 	scope := m.Record.Scope
 	for _, id := range []string{"first", "second"} {
 		_, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: AutomationRecord{Scope: scope, AutomationID: "check", Kind: "occurrence", ID: id, Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: id, State: "pending", ScheduledAt: 100000}}, MutationID: id, Actor: "system", SubjectID: "scheduler", WrittenAt: 100000})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := s.ClaimAutomationDispatch(scope, "check", "first"); err != nil { t.Fatal(err) }
-	if err := s.AdvanceAutomationCursor(scope, "check", 1, 0, 100000); err != nil { t.Fatal(err) }
-	if err := s.Close(); err != nil { t.Fatal(err) }
+	if err := s.ClaimAutomationDispatch(scope, "check", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AdvanceAutomationCursor(scope, "check", 1, 0, 100000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	s, err = Open(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer s.Close()
-	if err := s.ClaimAutomationDispatch(scope, "check", "second"); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("competing claim: %v", err) }
-	if err := s.ClaimAutomationDispatch(scope, "check", "first"); err != nil { t.Fatalf("owner recovery: %v", err) }
-	if err := s.AdvanceAutomationCursor(scope, "check", 1, 0, 200000); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("stale cursor: %v", err) }
-	if current, err := s.GetAutomationCursor(scope, "check", 1); err != nil || current != 100000 { t.Fatalf("cursor changed: %d %v", current, err) }
-	if _, found, err := s.GetAutomationRecord(scope, "check", "occurrence", "second", 0); err != nil || !found { t.Fatal("competing admission lost") }
+	if err := s.ClaimAutomationDispatch(scope, "check", "second"); !errors.Is(err, ErrAutomationConflict) {
+		t.Fatalf("competing claim: %v", err)
+	}
+	if err := s.ClaimAutomationDispatch(scope, "check", "first"); err != nil {
+		t.Fatalf("owner recovery: %v", err)
+	}
+	if err := s.AdvanceAutomationCursor(scope, "check", 1, 0, 200000); !errors.Is(err, ErrAutomationConflict) {
+		t.Fatalf("stale cursor: %v", err)
+	}
+	if current, err := s.GetAutomationCursor(scope, "check", 1); err != nil || current != 100000 {
+		t.Fatalf("cursor changed: %d %v", current, err)
+	}
+	if _, found, err := s.GetAutomationRecord(scope, "check", "occurrence", "second", 0); err != nil || !found {
+		t.Fatal("competing admission lost")
+	}
 }
 
 // Purpose: ClaimAutomationDispatch must serialize shared targets across definitions
@@ -275,32 +299,54 @@ func TestAutomationDispatchClaimAndCursorRestart(t *testing.T) {
 func TestAutomationSharedTargetClaims(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
 	s, err := Open(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { s.Close() }()
 	create := func(id, workspace, account string, targets ...string) AutomationScope {
 		m := automationFixture()
 		m.Record.AutomationID, m.Record.ID = id, id
 		m.Record.Scope = AutomationScope{AccountID: account, WorkspaceID: workspace}
 		m.Record.Definition.Authorization.TargetIDs = targets
-		if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
+		if _, _, err := s.ApplyAutomationMutation(m); err != nil {
+			t.Fatal(err)
+		}
 		_, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: AutomationRecord{Scope: m.Record.Scope, AutomationID: id, Kind: "occurrence", ID: "run", Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "trigger", State: "pending", ScheduledAt: 100000}}, MutationID: "admit", Actor: "system", SubjectID: "scheduler", WrittenAt: 100000})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		return m.Record.Scope
 	}
 	a := create("a", "one", "account", "shared")
 	b := create("b", "two", "account", "free", "shared")
 	c := create("c", "two", "account", "free")
 	other := create("a", "one", "other-account", "shared")
-	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil { t.Fatal(err) }
-	if err := s.Close(); err != nil { t.Fatal(err) }
+	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 	s, err = Open(path)
-	if err != nil { t.Fatal(err) }
-	if err := s.ClaimAutomationDispatch(b, "b", "run"); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("shared target accepted: %v", err) }
-	if err := s.ClaimAutomationDispatch(c, "c", "run"); err != nil { t.Fatalf("failed claim partially reserved free target: %v", err) }
-	if err := s.ClaimAutomationDispatch(other, "a", "run"); err != nil { t.Fatalf("cross-account reservation: %v", err) }
-	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil { t.Fatalf("owner recovery: %v", err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimAutomationDispatch(b, "b", "run"); !errors.Is(err, ErrAutomationConflict) {
+		t.Fatalf("shared target accepted: %v", err)
+	}
+	if err := s.ClaimAutomationDispatch(c, "c", "run"); err != nil {
+		t.Fatalf("failed claim partially reserved free target: %v", err)
+	}
+	if err := s.ClaimAutomationDispatch(other, "a", "run"); err != nil {
+		t.Fatalf("cross-account reservation: %v", err)
+	}
+	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil {
+		t.Fatalf("owner recovery: %v", err)
+	}
 	row, found, err := s.GetAutomationRecord(b, "b", "occurrence", "run", 0)
-	if err != nil || !found || row.Revision != 1 || row.Occurrence.State != "pending" { t.Fatalf("loser mutated: %+v %v", row, err) }
+	if err != nil || !found || row.Revision != 1 || row.Occurrence.State != "pending" {
+		t.Fatalf("loser mutated: %+v %v", row, err)
+	}
 }
 
 // Purpose: the persistence CAS, not an HTTP read, must choose exactly one
@@ -308,13 +354,22 @@ func TestAutomationSharedTargetClaims(t *testing.T) {
 // losing request writes neither a revision nor a usable cancellation receipt.
 func TestAutomationCancellationConcurrentCAS(t *testing.T) {
 	s, err := Open(t.TempDir())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer s.Close()
 	m := automationFixture()
-	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
+	if _, _, err := s.ApplyAutomationMutation(m); err != nil {
+		t.Fatal(err)
+	}
 	r := AutomationRecord{Scope: m.Record.Scope, AutomationID: "check", Kind: "occurrence", ID: "occurrence", Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "trigger", ScheduledAt: 100000, State: "pending"}}
-	if _, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: r, MutationID: "admit", Actor: "user", SubjectID: "writer", WrittenAt: 100000}); err != nil { t.Fatal(err) }
-	type result struct { id string; err error }
+	if _, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: r, MutationID: "admit", Actor: "user", SubjectID: "writer", WrittenAt: 100000}); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		id  string
+		err error
+	}
 	results := make(chan result, 2)
 	start := make(chan struct{})
 	for _, id := range []string{"cancel-a", "cancel-b"} {
@@ -334,11 +389,25 @@ func TestAutomationCancellationConcurrentCAS(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("cancellation admission deadlocked")
 		}
-		if got.err == nil { wins++ } else if errors.Is(got.err, ErrAutomationConflict) { loser = got.id } else { t.Fatal(got.err) }
+		if got.err == nil {
+			wins++
+		} else if errors.Is(got.err, ErrAutomationConflict) {
+			loser = got.id
+		} else {
+			t.Fatal(got.err)
+		}
 	}
-	if wins != 1 { t.Fatalf("admissions: %d", wins) }
+	if wins != 1 {
+		t.Fatalf("admissions: %d", wins)
+	}
 	head, found, err := s.GetAutomationRecord(r.Scope, "check", "occurrence", r.ID, 0)
-	if err != nil || !found || head.Revision != 2 || head.Occurrence.State != "cancelling" { t.Fatalf("head: %+v %v", head, err) }
-	if _, err := s.AdmitAutomationCancellation(r.Scope, "check", r.ID, 1, loser, "writer", 100002); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("loser receipt: %v", err) }
-	if _, found, err := s.GetAutomationRecord(r.Scope, "check", "occurrence", r.ID, 3); err != nil || found { t.Fatalf("partial revision: %v %v", found, err) }
+	if err != nil || !found || head.Revision != 2 || head.Occurrence.State != "cancelling" {
+		t.Fatalf("head: %+v %v", head, err)
+	}
+	if _, err := s.AdmitAutomationCancellation(r.Scope, "check", r.ID, 1, loser, "writer", 100002); !errors.Is(err, ErrAutomationConflict) {
+		t.Fatalf("loser receipt: %v", err)
+	}
+	if _, found, err := s.GetAutomationRecord(r.Scope, "check", "occurrence", r.ID, 3); err != nil || found {
+		t.Fatalf("partial revision: %v %v", found, err)
+	}
 }

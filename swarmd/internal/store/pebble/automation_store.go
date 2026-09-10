@@ -206,11 +206,15 @@ func validateAutomationRecord(r AutomationRecord) error {
 			return ErrAutomationInvalid
 		}
 		a := d.Authorization
-		if len(a.TargetIDs) > 64 || len(a.AllowedTools) > 128 { return ErrAutomationInvalid }
+		if len(a.TargetIDs) > 64 || len(a.AllowedTools) > 128 {
+			return ErrAutomationInvalid
+		}
 		for _, values := range [][]string{a.TargetIDs, a.AllowedTools} {
 			seen := map[string]bool{}
 			for _, value := range values {
-				if !automationValidID(value) || seen[value] { return ErrAutomationInvalid }
+				if !automationValidID(value) || seen[value] {
+					return ErrAutomationInvalid
+				}
 				seen[value] = true
 			}
 		}
@@ -534,62 +538,104 @@ func (s *Store) SearchAutomationRecords(q AutomationSearch) ([]AutomationRecord,
 // timeout must never permit a second execution while the first may still run.
 func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID string) error {
 	prefix, err := automationPrefix(scope)
-	if err != nil || !automationValidID(id) || !automationValidID(occurrenceID) { return ErrAutomationInvalid }
+	if err != nil || !automationValidID(id) || !automationValidID(occurrenceID) {
+		return ErrAutomationInvalid
+	}
 	s.automationsMu.Lock()
 	defer s.automationsMu.Unlock()
 	r, found, err := s.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
-	if err != nil { return err }
-	if !found || r.Occurrence == nil || r.Occurrence.State != "pending" { return ErrAutomationConflict }
+	if err != nil {
+		return err
+	}
+	if !found || r.Occurrence == nil || r.Occurrence.State != "pending" {
+		return ErrAutomationConflict
+	}
 	def, found, err := s.GetAutomationRecord(scope, id, "definition", id, r.Occurrence.DefinitionRevision)
-	if err != nil { return err }
-	if !found || def.Definition == nil { return ErrAutomationInvalid }
+	if err != nil {
+		return err
+	}
+	if !found || def.Definition == nil {
+		return ErrAutomationInvalid
+	}
 	// Target reservations apply even to independent occurrences: independence
 	// describes session progress, not permission to race shared external targets.
 	type targetOwner struct {
-		Scope AutomationScope `json:"scope"`
-		AutomationID string `json:"automation_id"`
-		OccurrenceID string `json:"occurrence_id"`
+		Scope        AutomationScope `json:"scope"`
+		AutomationID string          `json:"automation_id"`
+		OccurrenceID string          `json:"occurrence_id"`
 	}
 	reservation := targetOwner{scope, id, occurrenceID}
 	targetKeys := make([]string, 0, len(def.Definition.Authorization.TargetIDs))
 	for _, target := range def.Definition.Authorization.TargetIDs {
-		if !automationValidID(target) { return ErrAutomationInvalid }
+		if !automationValidID(target) {
+			return ErrAutomationInvalid
+		}
 		// A target ID is account scoped, not workspace scoped. Two workspaces
 		// can deploy to the same target and must share this reservation.
 		targetKey := "automation-target:v1:" + automationPart(scope.AccountID) + ":" + automationPart(target)
 		var priorOwner targetOwner
 		exists, err := s.GetJSON(targetKey, &priorOwner)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		if exists && priorOwner != reservation {
-			if priorOwner.Scope.AccountID != scope.AccountID { return ErrAutomationConflict }
+			if priorOwner.Scope.AccountID != scope.AccountID {
+				return ErrAutomationConflict
+			}
 			prior, found, err := s.GetAutomationRecord(priorOwner.Scope, priorOwner.AutomationID, "occurrence", priorOwner.OccurrenceID, 0)
-			if err != nil { return err }
-			if !found || prior.Occurrence == nil { return ErrAutomationConflict }
-			switch prior.Occurrence.State { case "completed", "failed", "cancelled", "skipped": default: return ErrAutomationConflict }
+			if err != nil {
+				return err
+			}
+			if !found || prior.Occurrence == nil {
+				return ErrAutomationConflict
+			}
+			switch prior.Occurrence.State {
+			case "completed", "failed", "cancelled", "skipped":
+			default:
+				return ErrAutomationConflict
+			}
 		}
 		targetKeys = append(targetKeys, targetKey)
 	}
 	key := prefix + automationPart(id) + ":dispatch-owner"
 	var owner string
 	found, err = s.GetJSON(key, &owner)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if def.Definition.Schedule.OverlapPolicy == "serialize" && found && owner != occurrenceID {
 		prior, exists, err := s.GetAutomationRecord(scope, id, "occurrence", owner, 0)
-		if err != nil { return err }
-		if !exists || prior.Occurrence == nil { return ErrAutomationConflict }
-		switch prior.Occurrence.State { case "completed", "failed", "cancelled", "skipped": default: return ErrAutomationConflict }
+		if err != nil {
+			return err
+		}
+		if !exists || prior.Occurrence == nil {
+			return ErrAutomationConflict
+		}
+		switch prior.Occurrence.State {
+		case "completed", "failed", "cancelled", "skipped":
+		default:
+			return ErrAutomationConflict
+		}
 	}
 	data, err := json.Marshal(occurrenceID)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	batch := s.NewBatch()
 	defer batch.Close()
 	if def.Definition.Schedule.OverlapPolicy == "serialize" {
-		if err := batch.Set([]byte(key), data, nil); err != nil { return err }
+		if err := batch.Set([]byte(key), data, nil); err != nil {
+			return err
+		}
 	}
 	targetData, err := json.Marshal(reservation)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, targetKey := range targetKeys {
-		if err := batch.Set([]byte(targetKey), targetData, nil); err != nil { return err }
+		if err := batch.Set([]byte(targetKey), targetData, nil); err != nil {
+			return err
+		}
 	}
 	return batch.Commit(pebble.Sync)
 }
@@ -598,25 +644,37 @@ func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID 
 // interval have durable receipts. A crash before this write replays admissions.
 func (s *Store) AdvanceAutomationCursor(scope AutomationScope, id string, revision uint64, expected, next int64) error {
 	prefix, err := automationPrefix(scope)
-	if err != nil || !automationValidID(id) || revision == 0 || expected < 0 || next <= expected { return ErrAutomationInvalid }
+	if err != nil || !automationValidID(id) || revision == 0 || expected < 0 || next <= expected {
+		return ErrAutomationInvalid
+	}
 	s.automationsMu.Lock()
 	defer s.automationsMu.Unlock()
 	key := fmt.Sprintf("%s%s:schedule:%d", prefix, automationPart(id), revision)
 	var current int64
 	_, err = s.GetJSON(key, &current)
-	if err != nil { return err }
-	if current != expected { return ErrAutomationConflict }
+	if err != nil {
+		return err
+	}
+	if current != expected {
+		return ErrAutomationConflict
+	}
 	data, err := json.Marshal(next)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	batch := s.NewBatch()
 	defer batch.Close()
-	if err := batch.Set([]byte(key), data, nil); err != nil { return err }
+	if err := batch.Set([]byte(key), data, nil); err != nil {
+		return err
+	}
 	return batch.Commit(pebble.Sync)
 }
 
 func (s *Store) GetAutomationCursor(scope AutomationScope, id string, revision uint64) (int64, error) {
 	prefix, err := automationPrefix(scope)
-	if err != nil || !automationValidID(id) || revision == 0 { return 0, ErrAutomationInvalid }
+	if err != nil || !automationValidID(id) || revision == 0 {
+		return 0, ErrAutomationInvalid
+	}
 	var current int64
 	_, err = s.GetJSON(fmt.Sprintf("%s%s:schedule:%d", prefix, automationPart(id), revision), &current)
 	return current, err
@@ -626,26 +684,44 @@ func (s *Store) GetAutomationCursor(scope AutomationScope, id string, revision u
 // effect. Replays use the immutable source to reproduce the receipt after restart.
 // No store lock is held while a caller invokes the runtime (which may use this store).
 func (s *Store) AdmitAutomationCancellation(scope AutomationScope, id, occurrenceID string, expected uint64, mutationID, subject string, now int64) (AutomationRecord, error) {
-	if expected == 0 || !automationValidID(mutationID) { return AutomationRecord{}, ErrAutomationInvalid }
+	if expected == 0 || !automationValidID(mutationID) {
+		return AutomationRecord{}, ErrAutomationInvalid
+	}
 	source, found, err := s.GetAutomationRecord(scope, id, "occurrence", occurrenceID, expected)
-	if err != nil { return source, err }
-	if !found || source.Occurrence == nil { return source, ErrAutomationConflict }
-	switch source.Occurrence.State { case "pending", "running", "blocked": default: return source, ErrAutomationConflict }
+	if err != nil {
+		return source, err
+	}
+	if !found || source.Occurrence == nil {
+		return source, ErrAutomationConflict
+	}
+	switch source.Occurrence.State {
+	case "pending", "running", "blocked":
+	default:
+		return source, ErrAutomationConflict
+	}
 	o := *source.Occurrence
 	o.State = "cancelling"
 	r := AutomationRecord{Scope: scope, AutomationID: id, Kind: "occurrence", ID: occurrenceID, Occurrence: &o}
 	admitted, _, err := s.applyAutomationMutation(AutomationMutation{Record: r, ExpectedRevision: expected, MutationID: mutationID, Actor: "user", SubjectID: subject, WrittenAt: now}, true)
-	if err != nil { return admitted, err }
+	if err != nil {
+		return admitted, err
+	}
 	head, found, err := s.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 0)
-	if err != nil { return head, err }
-	if !found || head.Occurrence == nil || (head.Revision != admitted.Revision && !(head.Revision == admitted.Revision+1 && head.Occurrence.State == "cancelled")) { return head, ErrAutomationConflict }
+	if err != nil {
+		return head, err
+	}
+	if !found || head.Occurrence == nil || (head.Revision != admitted.Revision && !(head.Revision == admitted.Revision+1 && head.Occurrence.State == "cancelled")) {
+		return head, ErrAutomationConflict
+	}
 	return head, nil
 }
 
 // FinishAutomationCancellation is called only after the canonical host has
 // confirmed its durable start fence and stop. An ambiguous failure retains the fence.
 func (s *Store) FinishAutomationCancellation(r AutomationRecord, subject string, now int64) (AutomationRecord, error) {
-	if r.Occurrence == nil || r.Occurrence.State != "cancelling" || r.Actor != "user" || r.SubjectID != subject { return AutomationRecord{}, ErrAutomationConflict }
+	if r.Occurrence == nil || r.Occurrence.State != "cancelling" || r.Actor != "user" || r.SubjectID != subject {
+		return AutomationRecord{}, ErrAutomationConflict
+	}
 	o := *r.Occurrence
 	o.State = "cancelled"
 	next := AutomationRecord{Scope: r.Scope, AutomationID: r.AutomationID, Kind: "occurrence", ID: r.ID, Occurrence: &o}

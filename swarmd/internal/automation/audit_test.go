@@ -79,16 +79,26 @@ func TestCanonicalContextStableRecency(t *testing.T) {
 	summaries := map[string]string{"agent": "untrusted evidence"}
 	r := store.AutomationRecord{ID: "new", Revision: 3, Occurrence: &store.AutomationOccurrence{ScheduledAt: 200}}
 	next, _, changed := canonicalContext(locked, summaries, r, "completed")
-	if !changed || next["agent"] != summaries["agent"] || len(summaries) != 1 || locked["keep"] != "user instruction" { t.Fatal("cache mutated evidence") }
+	if !changed || next["agent"] != summaries["agent"] || len(summaries) != 1 || locked["keep"] != "user instruction" {
+		t.Fatal("cache mutated evidence")
+	}
 	for i := 0; i < 100; i++ {
 		old := store.AutomationRecord{ID: "old", Revision: 100, Occurrence: &store.AutomationOccurrence{ScheduledAt: 100}}
-		if _, _, changed := canonicalContext(locked, next, old, "old"); changed { t.Fatal("historical sweep replaced newest") }
-		if _, _, changed := canonicalContext(locked, next, r, "completed"); changed { t.Fatal("replay changed cache") }
+		if _, _, changed := canonicalContext(locked, next, old, "old"); changed {
+			t.Fatal("historical sweep replaced newest")
+		}
+		if _, _, changed := canonicalContext(locked, next, r, "completed"); changed {
+			t.Fatal("replay changed cache")
+		}
 	}
 	r.Revision++
-	if _, _, changed := canonicalContext(locked, next, r, "updated"); !changed { t.Fatal("new revision ignored") }
+	if _, _, changed := canonicalContext(locked, next, r, "updated"); !changed {
+		t.Fatal("new revision ignored")
+	}
 	next["canonical-latest"] = "agent-owned malformed evidence"
-	if _, _, changed := canonicalContext(locked, next, r, "updated"); changed { t.Fatal("malformed evidence overwritten") }
+	if _, _, changed := canonicalContext(locked, next, r, "updated"); changed {
+		t.Fatal("malformed evidence overwritten")
+	}
 }
 
 // Purpose: V3Runtime.Ensure must reject unsupported delegation restrictions
@@ -100,6 +110,8 @@ func TestExecutionRejectsUnenforceablePolicyBeforeEffects(t *testing.T) {
 	} {
 		def := store.AutomationRecord{Scope: store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}, AutomationID: "automation", Revision: 1, Definition: &store.AutomationDefinition{Authorization: policy}}
 		occ := store.AutomationRecord{Scope: def.Scope, AutomationID: def.AutomationID, Occurrence: &store.AutomationOccurrence{DefinitionRevision: 1}}
-		if id, err := (&V3Runtime{}).Ensure(context.Background(), Principal{AccountID: "account"}, def, occ); id != "" || !errors.Is(err, ErrDenied) { t.Fatalf("restriction admitted: %q %v", id, err) }
+		if id, err := (&V3Runtime{}).Ensure(context.Background(), Principal{AccountID: "account"}, def, occ); id != "" || !errors.Is(err, ErrDenied) {
+			t.Fatalf("restriction admitted: %q %v", id, err)
+		}
 	}
 }

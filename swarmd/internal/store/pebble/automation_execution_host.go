@@ -17,14 +17,26 @@ func (s *SessionStore) WithAutomationExecutionFence(account, key string, cancel 
 	if s == nil || s.store == nil || strings.TrimSpace(account) == "" || len(key) != 64 || strings.ContainsAny(key, "/\\\x00") || apply == nil {
 		return errors.New("invalid automation execution fence")
 	}
-	for _, c := range key { if !strings.ContainsRune("0123456789abcdef", c) { return errors.New("invalid automation execution key") } }
+	for _, c := range key {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return errors.New("invalid automation execution key")
+		}
+	}
 	s.store.automationsMu.Lock()
 	defer s.store.automationsMu.Unlock()
 	path := fmt.Sprintf("automation/execution_cancel/%s/%s", keyPart(account), key)
 	_, cancelled, err := s.store.GetBytes(path)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if cancel {
-		if !cancelled { if err := s.store.PutBytes(path, []byte("cancelled")); err != nil { return err } }
-	} else if cancelled { return ErrAutomationExecutionCancelled }
+		if !cancelled {
+			if err := s.store.PutBytes(path, []byte("cancelled")); err != nil {
+				return err
+			}
+		}
+	} else if cancelled {
+		return ErrAutomationExecutionCancelled
+	}
 	return apply()
 }

@@ -7,5 +7,7 @@ import "testing"
 // the narrowest layer proving the default grant (not runtime approval).
 func TestAutomationPrimaryCapability(t *testing.T) {
 	grant, ok := SwarmAgentToolContract().Tools["manage_automation"]
-	if !ok || grant.Enabled == nil || !*grant.Enabled { t.Fatal("missing compiled primary automation capability") }
+	if !ok || grant.Enabled == nil || !*grant.Enabled {
+		t.Fatal("missing compiled primary automation capability")
+	}
 }
