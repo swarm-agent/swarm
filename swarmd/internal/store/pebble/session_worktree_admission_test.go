@@ -247,3 +247,79 @@ func TestWorktreeRecoveryLegacyMigration(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: ApplyV3SessionMutation must admit an exact same-owner historical
+// target across source workspaces using repositoryHistoricalWorktrees provenance,
+// not the outgoing WorkspacePath. Foreign or stale target history must reject
+// atomically. The real store boundary is the narrowest layer proving both the
+// transformed history representation and absence of partial claims/events.
+func TestWorktreeAdmissionHistoricalReselection(t *testing.T) {
+	for _, scenario := range []string{"same-owner", "foreign", "stale-source", "stale-branch"} {
+		t.Run(scenario, func(t *testing.T) {
+			s := NewSessionStore(openV3SessionEventTestStore(t))
+			root := t.TempDir()
+			source, lane := filepath.Join(root, "source"), filepath.Join(root, "lane")
+			outgoing := filepath.Join(root, "outgoing")
+			createRecoverySession(t, s, "owner", outgoing)
+			current, _, err := s.GetSession("owner")
+			if err != nil {
+				t.Fatal(err)
+			}
+			historyOwner := current
+			item := map[string]any{"owner_session_id": "owner", "path": lane, "source_workspace_path": source, "workspace_id": "target", "workspace_generation": 1, "branch": "agent/target", "base_commit": "base"}
+			if scenario == "foreign" {
+				historyOwner.ID, historyOwner.AccountScopeID, historyOwner.UserID = "foreign", "foreign-account", "foreign-user"
+				item["owner_session_id"] = "foreign"
+			}
+			if scenario == "stale-source" {
+				item["source_workspace_path"] = outgoing
+			}
+			if scenario == "stale-branch" {
+				item["branch"] = "agent/stale"
+			}
+			historyOwner.Metadata = map[string]any{"swarm_v3_worktree_history": []any{item}}
+			batch := s.store.NewBatch()
+			defer batch.Close()
+			if err := s.retainRepositoryHistoryInBatch(batch, historyOwner, false, false); err != nil {
+				t.Fatal(err)
+			}
+			if err := batch.Commit(nil); err != nil {
+				t.Fatal(err)
+			}
+			next := current
+			next.WorkspacePath, next.WorktreeRootPath, next.WorktreeBranch = source, lane, "agent/target"
+			next.Metadata = map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": lane, "swarm_v3_worktree_owner_session_id": "owner"}
+			input := V3SessionMutationInput{SessionID: "owner", UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationUpdateSettings, IdempotencyKey: "return", PayloadHash: "return", Session: &next, WorktreeAdmission: &WorktreeAdmissionEvidence{Kind: "legacy", Path: lane, SourcePath: source, OwnerSessionID: "owner", Branch: next.WorktreeBranch}}
+			_, err = s.ApplyV3SessionMutation(input)
+			if scenario == "same-owner" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				claims, err := s.InspectWorktreeOwnership("account", "user", []string{lane, outgoing})
+				if err != nil || len(claims) != 2 || claims[0].OwnerSessionID != "owner" || claims[1].OwnerSessionID != "owner" {
+					t.Fatalf("target and retained ownership: %+v %v", claims, err)
+				}
+			} else {
+				if !errors.Is(err, ErrWorktreeRecoveryConflict) {
+					t.Fatalf("invalid target admitted: %v", err)
+				}
+				if _, err := s.InspectWorktreeOwnership("account", "user", []string{lane}); err == nil {
+					t.Fatal("partial target claim")
+				}
+			}
+			got, _, err := s.GetSession("owner")
+			want := current
+			wantEvents := 1
+			if scenario == "same-owner" {
+				want, wantEvents = next, 2
+			}
+			if err != nil || got.WorkspacePath != want.WorkspacePath || got.WorktreeRootPath != want.WorktreeRootPath {
+				t.Fatalf("session postcondition: %+v %v", got, err)
+			}
+			events, err := s.ListV3SessionEvents("owner", 0, 10)
+			if err != nil || len(events) != wantEvents {
+				t.Fatalf("event postcondition: %d %v", len(events), err)
+			}
+		})
+	}
+}

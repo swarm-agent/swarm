@@ -92,7 +92,7 @@ func (s *SessionStore) validateWorktreeHistoryClaims(input V3SessionMutationInpu
 			continue
 		}
 		if owner.ID != input.SessionID || owner.AccountScopeID != input.AccountScopeID || owner.UserID != input.UserID ||
-			!worktreeAdmissionSourceMatches(input.WorktreeAdmission, owner) || owner.WorktreeBranch != input.WorktreeAdmission.Branch || !owner.WorktreeEnabled || row.Deleted {
+			!worktreeAdmissionHistorySourceMatches(input.WorktreeAdmission, row) || owner.WorktreeBranch != input.WorktreeAdmission.Branch || !owner.WorktreeEnabled || row.Deleted {
 			return ErrWorktreeRecoveryConflict
 		}
 		matched = true
@@ -134,6 +134,27 @@ func (s *SessionStore) validateRetainedWorktreeProgramClaims(path, owner string)
 		}
 	}
 	return iter.Error()
+}
+
+// Historical rows are canonical projections, not live session snapshots:
+// repositoryHistoricalWorktrees places the runtime lane in WorkspacePath and
+// retains the original source in metadata and an additional workspace grant.
+// Only the store-owned row discriminator permits this representation.
+func worktreeAdmissionHistorySourceMatches(e *WorktreeAdmissionEvidence, row SessionRepositoryHistory) bool {
+	if !row.HistoricalWorktree {
+		return worktreeAdmissionSourceMatches(e, row.Session)
+	}
+	owner := row.Session
+	if owner.WorkspacePath != e.Path || owner.WorktreeRootPath != e.Path ||
+		v3LibraryMetadataString(owner.Metadata, "swarm_v3_source_workspace_path") != e.SourcePath {
+		return false
+	}
+	for _, grant := range owner.WorkspaceGrants {
+		if grant.Kind == WorkspaceGrantAdditional && grant.Path == e.SourcePath && grant.WorkspaceID != "" && grant.WorkspaceGeneration > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func worktreeAdmissionSourceMatches(e *WorktreeAdmissionEvidence, snapshot SessionSnapshot) bool {
