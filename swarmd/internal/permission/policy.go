@@ -550,6 +550,9 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
 	}
+	if toolName == "manage_automation" {
+		toolName = automationPolicyIdentity(toolArguments)
+	}
 	if toolName == "manage_actions" && shouldApproveManageActionsMutation(toolArguments) {
 		toolName = "action_change"
 	}
@@ -1391,6 +1394,10 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAllow
 	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
+	case "automation_read":
+		return PolicyDecisionAllow
+	case "automation_change", "automation_run", "automation_cancel":
+		return PolicyDecisionAsk
 	case "action_change":
 		if bypass {
 			return PolicyDecisionAllow

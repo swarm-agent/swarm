@@ -17,6 +17,7 @@ export type SwarmToolSidebarAction = {
 }
 
 type SwarmToolSidebarProps = {
+  workspaceSlug?: string
   backLabel: string
   onBack: () => void
   topSecondaryLabel?: string
@@ -56,6 +57,7 @@ type SwarmToolSidebarProps = {
 }
 
 export function SwarmToolSidebar({
+  workspaceSlug,
   backLabel,
   onBack,
   topSecondaryLabel,
@@ -118,6 +120,7 @@ export function SwarmToolSidebar({
         </button>
       </div>
 
+      {workspaceSlug && <a className="mb-3 block px-2 py-2 hover:bg-[var(--app-surface-hover)] focus-visible:outline-2" href={`/${encodeURIComponent(workspaceSlug)}/automations`}>Automations · daily updates</a>}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain" data-tool-sidebar-scroll>
       {!compactSelectedSession ? (
         <>
