@@ -4976,6 +4976,7 @@ export function DesktopAppPage() {
   const sidebarContent = (
     <>
       <div className="flex h-full flex-col min-h-0">
+        {topWorkspaceSlug && <a className="shrink-0 border-b border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" href={`/${encodeURIComponent(topWorkspaceSlug)}/automations`}>Automations</a>}
           <div className="font-mono">
             <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>

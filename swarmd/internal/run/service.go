@@ -1340,6 +1340,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	ctx = runnerCtx
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
+	automationOverlay, err := s.automationPolicy(sessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	for _, definition := range s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID) {
+		if !automationToolPermitted(automationOverlay, definition.Name) {
+			effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{definition.Name: true})
+		}
+	}
 	if targetKind == RunTargetKindSubagent || strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModeSubagent) {
 		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{"task": true})
 	}
@@ -2460,6 +2469,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				CallID:    callID,
 				Arguments: arguments,
 			})
+		}
+		for _, call := range toolCalls {
+			if err := s.enforceAutomationTool(sessionID, call.Name); err != nil {
+				return RunResult{}, err
+			}
 		}
 		guardDecisionCalls := 0
 		for i := range toolCalls {

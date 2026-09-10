@@ -162,3 +162,12 @@ func sessionV3DeployExecutorJob(principal identity.Principal, sessionID, runID, 
 		ParentSessionID: strings.TrimSpace(parentSessionID),
 	}
 }
+
+// EnqueueAutomationRun preserves the committed checkpoint identity when waking
+// the canonical executor; no synthetic message or alternate run is created.
+func (s *Server) EnqueueAutomationRun(principal identity.Principal, intent pebblestore.V3SessionRunIntent) bool {
+	if s == nil || s.v3SessionExecutor == nil || !principal.Valid() || intent.AccountScopeID != principal.AccountScopeID || intent.UserID != principal.UserID {
+		return false
+	}
+	return s.v3SessionExecutor.EnqueueRun(sessionV3ExecutorJob{Principal: principal, SessionID: intent.SessionID, RunID: intent.RunID, SourceMessageID: intent.SourceMessageID, EpochID: intent.EpochID, PlanID: intent.PlanID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunSessionID: intent.RunSessionID, ParentSessionID: intent.ParentSessionID, ResumeContext: intent.ResumeContext})
+}

@@ -1,3 +1,4 @@
+import { reduceAutomationPages } from './desktop-automation-state'
 import type {
   CacheEvent,
   DesktopNotificationSummaryWire,
@@ -59,6 +60,7 @@ const utf8Encoder = new TextEncoder()
 export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3CacheState {
   return {
     version: 1,
+    automationPages: {},
     syncScopesById: {},
     realtime: {
       status: 'closed',
@@ -111,6 +113,11 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
 
 export function desktopV3CacheReducer(state: DesktopV3CacheState, action: DesktopV3CacheAction): DesktopV3CacheState {
   switch (action.type) {
+    case 'automation.begin':
+    case 'automation.finish':
+    case 'automation.invalidate':
+    case 'automation.evict':
+      return { ...state, automationPages: reduceAutomationPages(state.automationPages, action) }
     case 'desktopSidebarBootstrap.update':
       state.desktopSidebarBootstrap = {
         ...state.desktopSidebarBootstrap,

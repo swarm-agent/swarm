@@ -1067,6 +1067,7 @@ export function ImageToolPage() {
         <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden overflow-x-hidden py-0 lg:py-5">
           <div className={showMobileSessionLauncher ? 'flex min-h-dvh w-full flex-col overflow-hidden px-4 pb-[calc(var(--app-safe-area-bottom)+1rem)] pt-[calc(var(--app-safe-area-top)+0.75rem)] lg:contents lg:p-0' : 'hidden lg:contents'}>
           <SwarmToolSidebar
+          workspaceSlug={routeWorkspaceSlug}
             backLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}
             onBack={handleBackToTools}
             topSecondaryLabel={routeWorkspaceSlug ? 'Workspace' : 'Launcher'}

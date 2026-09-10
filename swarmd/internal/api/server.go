@@ -90,6 +90,7 @@ const (
 )
 
 type Server struct {
+	automations                 *automationHTTPServices
 	auth                        *auth.Service
 	agents                      *agentruntime.Service
 	model                       *model.Service

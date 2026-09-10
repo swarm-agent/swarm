@@ -27,6 +27,7 @@ import (
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -125,6 +126,11 @@ func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapS
 }
 
 type Daemon struct {
+	automationMu              sync.Mutex
+	automationClosed          bool
+	automationLoop            *automationLoop
+	automationExecution       *automation.ExecutionService
+	automationApproval        *automation.PolicyApproval
 	cfg                       config.Config
 	lock                      *lock.FileLock
 	store                     *pebblestore.Store
@@ -465,6 +471,21 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
+	automationApproval, err := automation.NewPolicyApproval(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc, sessions: sessionSvc, members: pebblestore.NewIdentityStore(store)}, automation.RuntimeApprovalIdentity(), time.Now)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automation approval: %w", err)
+	}
+	automationSvc, err := automation.New(store, sessionSvc.Store(), automationApproval, time.Now)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automations: %w", err)
+	}
+	toolRuntime.SetManageAutomationService(automationSvc)
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
@@ -602,6 +623,53 @@ func New(cfg config.Config) (*Daemon, error) {
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	// Automation mutations always commit through canonical V3 authority before
+	// waking realtime. Wake failures cannot turn a committed execution into retry.
+	automationApply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		result, err := sessionSvc.ApplySessionMutation(input)
+		if err != nil {
+			return result, err
+		}
+		outboxes := result.RealtimeOutboxes
+		if len(outboxes) == 0 && result.RealtimeOutbox != nil {
+			outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox}
+		}
+		for _, outbox := range outboxes {
+			if err := apiServer.PublishCommittedV3RealtimeOutbox(outbox); err != nil {
+				log.Print("automation realtime wake failed after durable commit")
+			}
+		}
+		return result, nil
+	}
+	automationHost, err := run.NewAutomationExecutionHost(runSvc, sessionSvc.Store(), automationApply, apiServer.EnqueueAutomationRun)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
+	automationRuntime, err := automation.NewV3Runtime(automationSvc, sessionSvc, worktreeSvc, automationApproval, automationHost, automationApply)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
+	automationEvents := automation.NewApprovedEventAuthority(automationApproval)
+	automationExecution, err := automation.NewExecutionService(automationSvc, automationRuntime, automationEvents)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
+	apiServer.ConfigureAutomationRealtime(store)
+	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, automationEvents)
+	apiServer.ConfigureAutomationApproval(automationApproval)
+	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -702,6 +770,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		notificationService:       notificationSvc,
 		bgCtx:                     bgCtx,
 		bgCancel:                  bgCancel,
+		automationExecution:       automationExecution,
+		automationApproval:        automationApproval,
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
@@ -838,6 +908,13 @@ func (d *Daemon) cleanup() error {
 
 	d.cleanupOnce.Do(func() {
 		var errs []error
+		d.automationMu.Lock()
+		d.automationClosed = true
+		if d.automationLoop != nil {
+			d.automationLoop.Close()
+			d.automationLoop = nil
+		}
+		d.automationMu.Unlock()
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
@@ -1014,6 +1091,11 @@ func (d *Daemon) Run() error {
 				d.requestStop("peer-transport-serve-error")
 			}
 		}()
+	}
+	// New composes authorities without executing schedules. Run activates them
+	// only after listener setup succeeds; cleanup joins the worker before DB close.
+	if err := d.StartAutomationScheduling(context.Background()); err != nil {
+		return fmt.Errorf("start automation scheduler: %w", err)
 	}
 	return d.waitForShutdown()
 }

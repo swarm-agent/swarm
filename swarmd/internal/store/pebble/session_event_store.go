@@ -80,6 +80,7 @@ type V3SessionMutationInput struct {
 	WorktreeAdmission    *WorktreeAdmissionEvidence `json:"-"`
 	WorktreeRecovery     *WorktreeRecoveryMutation  `json:"worktree_recovery,omitempty"`
 	workspaceCatalog     *workspaceCatalogMutation
+	automationRealtime   *automationRealtimeMutation
 	SessionID            string                        `json:"session_id"`
 	UserID               string                        `json:"user_id,omitempty"`
 	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
@@ -1041,6 +1042,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	defer batch.Close()
 	if err := setWorktreeOwnershipInBatch(batch, worktreeOwnership); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if input.automationRealtime != nil {
+		if err := setAutomationRealtimeMutationInBatch(batch, input.AccountScopeID, input.automationRealtime); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if input.workspaceCatalog != nil {
 		if err := setWorkspaceCatalogMutationInBatch(batch, input.AccountScopeID, input.workspaceCatalog); err != nil {

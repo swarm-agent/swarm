@@ -3229,6 +3229,7 @@ export function VideoToolPage() {
         {renderCenterOpen && selectedThread && videoProject ? <VideoRenderCenter jobs={renderJobs} loading={renderJobsLoading} error={renderJobsError} cancellingJobId={cancellingRenderJobId} onRefresh={() => void refreshRenderJobs()} onCancel={(job) => void handleCancelRender(job)} onOpenOutput={(job) => { selectedRenderJobIdRef.current = job.id; setRenderJob(job); setRenderProgress(job.progress); setRenderCenterOpen(false); setExportPath((current) => current.trim() || defaultRenderedVideoExportPath(selectedWorkspacePath, videoProject.title || selectedThread.title, job.revision_number)); setExportedPath('') }} /> : <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
           <div className="contents">
             <SwarmToolSidebar
+            workspaceSlug={routeWorkspaceSlug}
               layoutClassName="flex max-h-[42dvh] min-h-0 w-full shrink-0 flex-col overflow-hidden border-b border-[var(--app-border)] px-3 py-2 font-sans text-sm text-[var(--app-text-muted)] lg:max-h-none lg:w-[272px] lg:flex-none lg:border-b-0 lg:border-r lg:px-0 lg:py-4 lg:pl-3 lg:pr-3"
               childrenClassName="mt-3 min-h-0 flex-1 overflow-y-auto"
               compactSelectedSession={Boolean(selectedThread && !selectedLibraryVideo)}
