@@ -17,16 +17,22 @@ func TestRecoveryPrimitives(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	repo := filepath.Join(root, "source")
-	if err := os.Mkdir(repo, 0700); err != nil { t.Fatal(err) }
+	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
 	git := func(path string, args ...string) []byte {
 		t.Helper()
 		out, err := recoveryGit(path, nil, args...)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		return out
 	}
 	put := func(path string, data []byte, mode os.FileMode) {
 		t.Helper()
-		if err := os.WriteFile(path, data, mode); err != nil { t.Fatal(err) }
+		if err := os.WriteFile(path, data, mode); err != nil {
+			t.Fatal(err)
+		}
 	}
 	git(repo, "init", "-b", "dev")
 	git(repo, "config", "user.name", "Fixture")
@@ -43,9 +49,13 @@ func TestRecoveryPrimitives(t *testing.T) {
 	put(filepath.Join(repo, "new\n file"), []byte{0, 4}, 0755)
 	put(filepath.Join(repo, "ignored"), []byte("private"), 0644)
 	before, err := inspectRecovery(repo, repo)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	indexBefore, err := os.ReadFile(filepath.Join(repo, ".git", "index"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	refsBefore := git(repo, "show-ref")
 	inventoryBefore := git(repo, "worktree", "list", "--porcelain", "-z")
 	for _, selection := range []RecoverySelection{
@@ -53,38 +63,78 @@ func TestRecoveryPrimitives(t *testing.T) {
 		{Files: []string{"binary"}, Commits: []string{before.HEAD}},
 		{Files: []string{"binary"}, Patch: []byte("patch")},
 	} {
-		if _, err := SnapshotRecovery(repo, before, selection); err == nil { t.Fatalf("accepted invalid selection %+v", selection) }
+		if _, err := SnapshotRecovery(repo, before, selection); err == nil {
+			t.Fatalf("accepted invalid selection %+v", selection)
+		}
 	}
-	if !bytes.Equal(inventoryBefore, git(repo, "worktree", "list", "--porcelain", "-z")) { t.Fatal("rejection allocated resources") }
+	if !bytes.Equal(inventoryBefore, git(repo, "worktree", "list", "--porcelain", "-z")) {
+		t.Fatal("rejection allocated resources")
+	}
 	snapshot, err := SnapshotRecovery(repo, before, RecoverySelection{Files: []string{"binary", "new\n file"}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	result, err := (&Service{}).CopyRecovery(snapshot, "recovery-proof", "agent/recovery-proof")
-	if err != nil { t.Fatalf("copy: %v; %+v", err, result) }
+	if err != nil {
+		t.Fatalf("copy: %v; %+v", err, result)
+	}
 	dest := result.Allocation.WorkspacePath
-	if !bytes.Equal(git(dest, "show", ":binary"), []byte{0, 2}) { t.Fatal("staged layer lost") }
+	if !bytes.Equal(git(dest, "show", ":binary"), []byte{0, 2}) {
+		t.Fatal("staged layer lost")
+	}
 	data, err := os.ReadFile(filepath.Join(dest, "binary"))
-	if err != nil || !bytes.Equal(data, []byte{0, 3}) { t.Fatal("unstaged binary lost") }
+	if err != nil || !bytes.Equal(data, []byte{0, 3}) {
+		t.Fatal("unstaged binary lost")
+	}
 	data, err = os.ReadFile(filepath.Join(dest, "new\n file"))
-	if err != nil || !bytes.Equal(data, []byte{0, 4}) { t.Fatal("untracked bytes lost") }
+	if err != nil || !bytes.Equal(data, []byte{0, 4}) {
+		t.Fatal("untracked bytes lost")
+	}
 	st, err := os.Stat(filepath.Join(dest, "new\n file"))
-	if err != nil || st.Mode().Perm() != 0755 { t.Fatal("untracked mode lost") }
-	if _, err := os.Stat(filepath.Join(dest, "ignored")); !os.IsNotExist(err) { t.Fatal("ignored file imported") }
+	if err != nil || st.Mode().Perm() != 0755 {
+		t.Fatal("untracked mode lost")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "ignored")); !os.IsNotExist(err) {
+		t.Fatal("ignored file imported")
+	}
 	data, err = os.ReadFile(filepath.Join(dest, "unselected"))
-	if err != nil || string(data) != "base" { t.Fatal("unselected edit imported") }
+	if err != nil || string(data) != "base" {
+		t.Fatal("unselected edit imported")
+	}
 	after, err := inspectRecovery(repo, repo)
-	if err != nil || after != before { t.Fatalf("source changed: %v", err) }
+	if err != nil || after != before {
+		t.Fatalf("source changed: %v", err)
+	}
 	indexAfter, err := os.ReadFile(filepath.Join(repo, ".git", "index"))
-	if err != nil || !bytes.Equal(indexBefore, indexAfter) { t.Fatal("source index bytes changed") }
-	if !bytes.Contains(git(repo, "show-ref"), refsBefore) { t.Fatal("source ref changed") }
+	if err != nil || !bytes.Equal(indexBefore, indexAfter) {
+		t.Fatal("source index bytes changed")
+	}
+	if !bytes.Contains(git(repo, "show-ref"), refsBefore) {
+		t.Fatal("source ref changed")
+	}
 	put(filepath.Join(repo, "binary"), []byte("drift"), 0644)
 	inventory := git(repo, "worktree", "list", "--porcelain", "-z")
 	failed, err := (&Service{}).CopyRecovery(snapshot, "stale", "agent/stale")
-	if err == nil || failed.Allocation.WorkspacePath != "" || failed.Diagnostic == "" { t.Fatal("stale snapshot not rejected before allocation") }
-	if !bytes.Equal(inventory, git(repo, "worktree", "list", "--porcelain", "-z")) { t.Fatal("stale rejection changed inventory") }
-	if err := os.Symlink(root, filepath.Join(repo, "link")); err != nil { t.Fatal(err) }
-	if _, err := inspectRecovery(repo, repo); err == nil { t.Fatal("untracked symlink accepted") }
+	if err == nil || failed.Allocation.WorkspacePath != "" || failed.Diagnostic == "" {
+		t.Fatal("stale snapshot not rejected before allocation")
+	}
+	if !bytes.Equal(inventory, git(repo, "worktree", "list", "--porcelain", "-z")) {
+		t.Fatal("stale rejection changed inventory")
+	}
+	if err := os.Symlink(root, filepath.Join(repo, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectRecovery(repo, repo); err == nil {
+		t.Fatal("untracked symlink accepted")
+	}
 	alias := filepath.Join(root, "alias")
-	if err := os.Symlink(repo, alias); err != nil { t.Fatal(err) }
-	if _, err := recoveryIdentity(repo, alias); err == nil { t.Fatal("symlink checkout accepted") }
-	if _, err := recoveryIdentity(repo, root); err == nil { t.Fatal("unregistered directory accepted") }
+	if err := os.Symlink(repo, alias); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := recoveryIdentity(repo, alias); err == nil {
+		t.Fatal("symlink checkout accepted")
+	}
+	if _, err := recoveryIdentity(repo, root); err == nil {
+		t.Fatal("unregistered directory accepted")
+	}
 }

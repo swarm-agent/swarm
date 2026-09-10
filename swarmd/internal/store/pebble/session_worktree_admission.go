@@ -29,8 +29,8 @@ func (s *SessionStore) validateWorktreeAdmission(input V3SessionMutationInput, n
 	}
 	for key, expected := range map[string]string{
 		"swarm_v3_worktree_owner_session_id": e.OwnerSessionID,
-		"swarm_v3_source_workspace_path": e.SourcePath,
-		"swarm_v3_runtime_workspace_path": e.Path,
+		"swarm_v3_source_workspace_path":     e.SourcePath,
+		"swarm_v3_runtime_workspace_path":    e.Path,
 	} {
 		if value := v3LibraryMetadataString(next.Metadata, key); value != "" && value != expected {
 			return ErrWorktreeRecoveryConflict
@@ -103,14 +103,20 @@ func (s *SessionStore) validateWorktreeHistoryClaims(input V3SessionMutationInpu
 func (s *SessionStore) validateRetainedWorktreeProgramClaims(path, owner string) error {
 	prefix := "task_program/"
 	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer iter.Close()
 	count := 0
 	for iter.First(); iter.Valid(); iter.Next() {
 		count++
-		if count > 10000 { return ErrWorktreeRecoveryConflict }
+		if count > 10000 {
+			return ErrWorktreeRecoveryConflict
+		}
 		var program TaskProgramRecord
-		if err := json.Unmarshal(iter.Value(), &program); err != nil { return err }
+		if err := json.Unmarshal(iter.Value(), &program); err != nil {
+			return err
+		}
 		if program.RepositoryLane != nil && program.RepositoryLane.WorkspacePath == path && program.ParentSessionID != owner {
 			return ErrWorktreeRecoveryConflict
 		}
