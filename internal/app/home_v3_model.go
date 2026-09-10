@@ -49,6 +49,13 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		}
 	}
 
+	status, err := a.api.GetOnboardingStatus(ctx)
+	if err != nil {
+		return next, fmt.Errorf("onboarding status: %w", err)
+	}
+	next.OnboardingRequired = status.NeedsOnboarding
+	next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
+	next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
 	if vault, err := a.api.GetVaultStatus(ctx); err == nil {
 		a.vault = vault
 		if vault.Enabled && !vault.Unlocked {

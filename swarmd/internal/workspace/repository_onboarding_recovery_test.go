@@ -105,3 +105,20 @@ func TestOnboardingUnbornSetupPreservesIndexAndFiles(t *testing.T) {
 		t.Fatal("user file changed")
 	}
 }
+
+// Requirement: repository setup must reject even an empty HOME before writing
+// metadata. The service boundary owns this guard independently of TUI advice.
+func TestOnboardingSetupRejectsHome(t *testing.T) {
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), home, home); err == nil {
+		t.Fatal("initialized home")
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("home changed: %v %v", entries, err)
+	}
+}

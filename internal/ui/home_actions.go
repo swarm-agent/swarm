@@ -27,6 +27,7 @@ const (
 	HomeActionSaveOnboarding            HomeActionKind = "save-onboarding"
 	HomeActionCreateOnboardingWorkspace HomeActionKind = "create-onboarding-workspace"
 	HomeActionSetupOnboardingRepository HomeActionKind = "setup-onboarding-repository"
+	HomeActionCreateOnboardingFolder    HomeActionKind = "create-onboarding-folder"
 )
 
 type HomeAction struct {

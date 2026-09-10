@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/provider/registry"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -32,7 +33,7 @@ func TestOnboardingTerminalRepositoryRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"empty", "existing", "unborn", "cancel", "identity-exit", "provider-exit", "missing-git", "pending-exit"} {
+	for _, scenario := range []string{"empty", "existing", "unborn", "home", "root", "new-folder", "committed", "permission", "cancel-recover", "cancel", "identity-exit", "provider-exit", "missing-git", "pending-exit"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			t.Setenv("HOME", root)
@@ -83,9 +84,25 @@ func TestOnboardingTerminalRepositoryRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := scenario == "empty" || scenario == "unborn" || scenario == "missing-git"
+			want := scenario != "cancel" && scenario != "identity-exit" && scenario != "provider-exit" && scenario != "pending-exit"
 			if cfg.DesktopOnboardingComplete != want {
 				t.Fatalf("persisted completion=%v want %v", cfg.DesktopOnboardingComplete, want)
+			}
+			if want {
+				folder := "launch"
+				switch scenario {
+				case "home", "root", "new-folder":
+					folder = "new-project"
+				case "existing", "cancel-recover":
+					folder = "safe-project"
+				case "permission":
+					folder = "recovered"
+				}
+				principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user_onboarding_test", AccountScopeID: "acct_onboarding_test", AccountScopeSource: identity.AccountScopeSourceServerState}
+				entries, err := server.workspace.ListKnownForPrincipal(principal, 10)
+				if err != nil || len(entries) != 1 || entries[0].Path != filepath.Join(root, folder) {
+					t.Fatalf("persisted workspace=%+v err=%v want selected folder %q", entries, err, folder)
+				}
 			}
 		})
 	}

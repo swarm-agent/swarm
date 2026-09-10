@@ -270,6 +270,11 @@ func (s *Service) SetupRepositoryForPrincipal(principal identity.Principal, path
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
 		return RepositoryState{}, err
 	}
+	home, _ := os.UserHomeDir()
+	canonicalHome, _ := filepath.EvalSymlinks(home)
+	if filepath.Dir(resolved) == resolved || resolved == canonicalHome {
+		return RepositoryState{}, errors.New("choose a project directory instead of home or the filesystem root; change workspace location and retry")
+	}
 	state := inspectRepository(resolved)
 	if state.State == RepositoryStateGitUnavailable {
 		return state, &RepositoryPrerequisiteError{Repository: state}
