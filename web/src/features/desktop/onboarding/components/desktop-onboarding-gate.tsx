@@ -29,6 +29,8 @@ import {
   type WorkspaceRepositoryState,
 } from '../../../workspaces/launcher/services/workspace-repository'
 import { applyDesktopV3RoutedStartResponse } from '../../session-v3/new-session-flow'
+import { inspectRepository } from '../../../workspaces/launcher/services/repository-review'
+import { RepositoryReviewPanel } from './repository-review-panel'
 import { WorkspaceOnboardingAssistant } from './workspace-onboarding-assistant'
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
@@ -300,6 +302,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [workspaceSearch, setWorkspaceSearch] = useState('')
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
+  const [reviewPath, setReviewPath] = useState<string | null>(null)
   const [workspaceRepositoryState, setWorkspaceRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
   const [pendingFolder, setPendingFolder] = useState<Pick<WorkspaceDiscoverEntry, 'path' | 'name'> | null>(null)
   const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
@@ -563,8 +566,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (!normalizedName) {
       throw new Error('Swarm name is required.')
     }
+    // A previous request can succeed even if its response was lost.
+    const current = await onReload()
+    setStatus(current)
     await patchDesktopOnboarding({
-      username: status.identity.bootstrapped ? undefined : normalizedUsername,
+      username: current.identity.bootstrapped ? undefined : normalizedUsername,
       swarmName: normalizedName,
       desktopOnboardingComplete: false,
     })
@@ -575,9 +581,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return refreshed
   }
 
-  const finalizeOnboarding = async () => {
-    setPendingAction('finalize')
-    transitionToSetup()
+  const finalizeOnboarding = async (preserveReview = false) => {
+    if (!preserveReview) { setPendingAction('finalize'); transitionToSetup() }
     const [, next] = await Promise.all([
       waitForOnboardingReadyHold(),
       patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
@@ -586,12 +591,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return next
   }
 
-  const saveAndOpenReadyWorkspace = async (path: string, name: string): Promise<WorkspaceResolution> => {
+  const saveAndOpenReadyWorkspace = async (path: string, name: string, confirmCommittedOnly = false): Promise<WorkspaceResolution> => {
     await saveWorkspace({
       path,
       name: name || fallbackWorkspaceNameFromPath(path),
       themeId: 'inherit',
       makeCurrent: true,
+      confirmCommittedOnly,
     })
     await refreshWorkspaces()
     return openWorkspace(path)
@@ -613,8 +619,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
-  const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string) => {
-    const next = await finalizeOnboarding()
+  const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string, preserveReview = false) => {
+    const next = await finalizeOnboarding(preserveReview)
     await refreshAuthDependentQueries()
     if (next.needsOnboarding) {
       throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
@@ -1334,6 +1340,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
               {view === 'workspace' ? (
                 <div className="grid h-full min-h-0 content-start gap-5">
                   <div className="grid min-h-0 content-start gap-5">
+                    {status.workspaceGuidance ? <section className="grid gap-2 text-sm" aria-label="Runtime identity">
+                      <p>Work runs as Linux account {status.workspaceGuidance.runtime_username || status.workspaceGuidance.runtime_uid}. This account already exists; Swarm sign-in and project access are separate prerequisites.</p>
+                      <p>Administrative changes use the installation terminal and OS authentication, never passwords in this form. Access or trust failures do not authorize permission or Git-trust changes.</p>
+                      {status.workspaceGuidance.suggested_workspace_path ? <Button type="button" disabled={submitting} onClick={() => handleSaveAndOpenFolder({path: status.workspaceGuidance!.suggested_workspace_path, name: 'New workspace'})}>Select suggested project location</Button> : null}
+                    </section> : null}
                     {workspaceStatusError ? (
                       <WorkspaceStatus
                         kind="error"
@@ -1348,7 +1359,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       <p className="break-all text-sm">Selected folder: {pendingFolder.path}</p>
                       <Button type="button" disabled={submitting} onClick={() => handleSaveAndOpenFolder(pendingFolder)}>Retry adding this folder</Button>
                     </div> : null}
-                    {workspaceRepositoryState && workspaceRepositoryState.state !== 'ready' ? (
+                    {workspaceRepositoryState ? (
                       <section className="grid gap-3 rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4" role="alert" aria-live="polite">
                         <div className="flex items-start gap-3">
                           <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
@@ -1358,6 +1369,16 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             <p className="text-sm leading-6 text-[var(--app-text-muted)]">Swarm isolates agent work in managed worktrees. {workspaceRepositoryState.message}</p>
                           </div>
                         </div>
+                        {['not_repository', 'needs_initial_commit', 'needs_assisted_setup', 'ready'].includes(workspaceRepositoryState.state) ? <Button type="button" disabled={submitting} onClick={() => setReviewPath(workspaceRepositoryState.path)}>Review and select content — no provider required</Button> : null}
+                        {workspaceRepositoryState.state === 'directory_missing' ? <Button type="button" disabled={submitting} onClick={() => void (async () => {
+                          const path = workspaceRepositoryState.path.replace(/\/$/, '')
+                          const slash = path.lastIndexOf('/')
+                          if (slash < 0) return
+                          setPendingAction('workspace')
+                          try { await createFolder(path.slice(0, slash) || '/', path.slice(slash + 1)); setWorkspaceRepositoryState(await inspectRepository(path)) }
+                          catch (e) { setWorkspaceError(e instanceof Error ? e.message : 'Folder creation failed') }
+                          finally { setPendingAction(null) }
+                        })()}>Create selected project folder</Button> : null}
                         {workspaceRepositoryState.canSetup ? (
                           <Button type="button" onClick={() => void initializeOnboardingRepository()} disabled={submitting || repositoryHelpBusy}>
                             <GitBranch size={15} />
@@ -1365,7 +1386,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                           </Button>
                         ) : workspaceRepositoryState.state === 'git_unavailable' ? (
                           <div className="grid gap-2 text-sm text-[var(--app-warning)]">
-                            <p className="font-medium">Git is a mandatory Swarm runtime prerequisite. Repair or reinstall Swarm, then retry this folder.</p>
+                            <p className="font-medium">Git is unavailable to the daemon. Ask the installation administrator to repair the runtime prerequisite, then use Recheck below. Your identity and workspace setup are preserved.</p>
                           </div>
                         ) : (
                           <div className="grid gap-3">
@@ -1379,7 +1400,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                               </Button> : null}
                             </div>
                             {!canUseOnboardingAssistant && workspaceRepositoryState.state === 'needs_assisted_setup' ? (
-                              <p className="text-sm font-medium text-[var(--app-warning)]">Connect a provider in the previous step to use Onboarding Swarm. You can still run git init, review .gitignore, stage only intended files, create the first commit, and retry.</p>
+                              <p className="text-sm font-medium text-[var(--app-warning)]">AI assistance is optional. Use Review and select content above to prepare this folder without a provider.</p>
                             ) : (
                               <p className="text-xs leading-5 text-[var(--app-text-muted)]">Manual requirements: this selected folder must be the repository root and HEAD must resolve to an initial commit.</p>
                             )}
@@ -1390,6 +1411,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       </section>
                     ) : null}
 
+                    {reviewPath ? <RepositoryReviewPanel key={reviewPath} path={reviewPath} onCancel={() => setReviewPath(null)} onReady={async (path, committedOnly) => {
+                      const resolution = await saveAndOpenReadyWorkspace(path, fallbackWorkspaceNameFromPath(path), committedOnly)
+                      await finishWithWorkspace(resolution, path, true)
+                    }} /> : null}
                     <section className="grid gap-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                         <div>

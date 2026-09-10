@@ -59,23 +59,20 @@ func TestOnboardingProviderSkipRequiresWorkspaceConfirmation(t *testing.T) {
 }
 
 // Requirement: TUI onboarding must not admit an unborn repository before explicit
-// setup consent creates HEAD. The UI action gate proves Enter only requests
-// consent and does not bypass canonical managed-worktree admission.
+// setup consent creates HEAD. The UI action gate proves Enter requests only
+// daemon inspection and does not bypass canonical managed-worktree admission.
 func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) {
 	page := readyOnboardingPage()
 	page.model.WorkspaceSetupGitReadiness = model.GitReadinessNeedsCommit
 	page.ShowOnboardingWorkspace("Confirm workspace")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if _, ok := page.PopHomeAction(); ok {
-		t.Fatal("unborn repository queued workspace creation")
-	}
-	if !strings.Contains(page.onboarding.Status, "Press y") {
-		t.Fatalf("unborn repository guidance = %q", page.onboarding.Error)
+	if action, ok := page.PopHomeAction(); !ok || action.Kind != HomeActionInspectOnboardingRepository {
+		t.Fatalf("must inspect before mutation: %+v", action)
 	}
 }
 
 // Requirement: an inconclusive TUI-local Git check must reach the authenticated
-// workspace-add admission gate, which revalidates the exact path before mutation.
+// repository inspection gate before any workspace-add mutation.
 // Threat: namespace or ownership constraints can make client-side Git return an
 // indeterminate status for a repository the daemon can validate, permanently
 // blocking first-run onboarding before the canonical authority is consulted.
@@ -86,7 +83,7 @@ func TestOnboardingWorkspaceIndeterminateReadinessQueuesCanonicalAdmission(t *te
 		page.ShowOnboardingWorkspace("Confirm workspace")
 		page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 		action, ok := page.PopHomeAction()
-		if !ok || action.Kind != HomeActionCreateOnboardingWorkspace || action.WorkspacePath != "/repo/project" {
+		if !ok || action.Kind != HomeActionInspectOnboardingRepository || action.WorkspacePath != "/repo/project" {
 			t.Fatalf("readiness %q action = %+v, ok=%v", readiness, action, ok)
 		}
 	}
@@ -98,7 +95,7 @@ func TestOnboardingWorkspaceEnterQueuesLaunchCWDAndLocksPending(t *testing.T) {
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	action, ok := page.PopHomeAction()
-	if !ok || action.Kind != HomeActionCreateOnboardingWorkspace {
+	if !ok || action.Kind != HomeActionInspectOnboardingRepository {
 		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
 	}
 	if action.WorkspacePath != "/repo/project" {
@@ -160,7 +157,7 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 	page.ShowOnboardingWorkspace("Confirm workspace")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Workspace location (Ctrl+L to edit)", "/repo/project", "Git repository ready"} {
+	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Select another location", "/repo/project", "Verify / Retry selected folder"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}

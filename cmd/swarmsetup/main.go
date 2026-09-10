@@ -23,6 +23,8 @@ func run(args []string) error {
 	applyRelease := false
 	installService := false
 	createServiceAccount := false
+	installUser, createUser := "", ""
+	chooseAccount := false
 	lane := "main"
 	plan := client.UpdateApplyPlan{}
 	parentPID := 0
@@ -38,6 +40,22 @@ func run(args []string) error {
 			}
 			i++
 			artifactRoot = strings.TrimSpace(args[i])
+		case "--install-user", "--create-user":
+			option := args[i]
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") || args[i+1] == "" {
+				return fmt.Errorf("missing value for %s", option)
+			}
+			i++
+			if installUser != "" || createUser != "" {
+				return fmt.Errorf("choose only one installation account")
+			}
+			if option == "--install-user" {
+				installUser = args[i]
+			} else {
+				createUser = args[i]
+			}
+		case "--choose-account":
+			chooseAccount = true
 		case "--create-service-account":
 			createServiceAccount = true
 		case "--apply-release":
@@ -97,6 +115,12 @@ func run(args []string) error {
 		}
 	}
 
+	if ((installUser != "" || createUser != "") && (createServiceAccount || chooseAccount)) || (createServiceAccount && chooseAccount) {
+		return fmt.Errorf("choose only one account mode")
+	}
+	if applyRelease && (installUser != "" || createUser != "" || chooseAccount || createServiceAccount) {
+		return fmt.Errorf("release updates cannot change installation identity")
+	}
 	if applyRelease {
 		profile, err := launcher.LoadRuntimeProfile(lane, nil)
 		if err != nil {
@@ -107,6 +131,25 @@ func run(args []string) error {
 
 	if err := launcher.PreflightInstallation(installService); err != nil {
 		return err
+	}
+	if chooseAccount {
+		var err error
+		installUser, createUser, createServiceAccount, err = chooseInstallationAccount()
+		if err != nil {
+			return err
+		}
+	}
+	if installUser != "" || createUser != "" {
+		name := installUser
+		if createUser != "" {
+			name = createUser
+		}
+		fmt.Fprintf(os.Stderr, "Installation account: %s. No sudo or SSH policy changes; OS password prompts stay on the terminal.\n", name)
+		restore, err := launcher.SelectInstallationAccount(name, createUser != "")
+		if err != nil {
+			return err
+		}
+		defer restore()
 	}
 	if createServiceAccount {
 		fmt.Fprintln(os.Stderr, "Account consent: create locked non-root swarm with home /var/lib/swarm if needed. No sudo, password, interactive login, or SSH changes.")
@@ -154,6 +197,7 @@ func run(args []string) error {
 		target := report.Links[name]
 		fmt.Printf("  %s -> %s\n", filepath.Join(report.BinHome, name), target)
 	}
+	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")
 	if pathOnPATH(report.BinHome) {
 		return nil
 	}
@@ -163,20 +207,21 @@ func run(args []string) error {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
-  swarmsetup [--no-service] [--create-service-account]
+  swarmsetup [--no-service] [--choose-account | --install-user NAME | --create-user NAME | --create-service-account]
   swarmsetup --service [--create-service-account]
   swarmsetup --artifact-root /path/to/dist [--no-service]
   swarmsetup --artifact-root /path/to/dist --service
   swarmsetup --apply-release --lane main --target-version <tag> --asset-name <name> --asset-url <url> --sha256 <digest> [--parent-pid <pid>] [--relaunch-arg <arg>...]
 
-Root-only first install requires --create-service-account consent: Swarm creates
-locked non-root swarm with home /var/lib/swarm; no password, sudo, login, or SSH
-changes. Reinstall preserves consistent existing install directory ownership.
-For a human login/password, an administrator can separately use the distribution's
-interactive account tools (Ubuntu/Debian: adduser NAME, then passwd NAME if needed).
-Optional sudo access is a separate administrator decision using the distribution's
-sudo policy; never unlock or grant sudo to the swarm service account. Swarm does
-not collect passwords or alter SSH access.
+Use --choose-account for an OS-terminal choice before provisioning: preserve the
+existing/invoking identity, select --install-user NAME, or explicitly create a
+human --create-user NAME as root using useradd and the OS passwd terminal prompt.
+A cancelled password step retains the account; finish passwd and retry with
+--install-user NAME. No sudo/SSH policy is modified and no password is collected
+by Swarm. --create-service-account explicitly selects the locked non-login swarm
+account for a fresh direct-root install. Existing installation ownership is never
+silently reassigned. OS identity is not a Swarm login: complete authenticated
+Swarm onboarding or sign in after installation.
 `)
 }
 

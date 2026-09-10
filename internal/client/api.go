@@ -2625,11 +2625,16 @@ func (c *API) SetupOnboardingRepository(ctx context.Context, path string) error 
 }
 
 func (c *API) AddWorkspace(ctx context.Context, path, name, themeID string, makeCurrent bool) (WorkspaceResolution, error) {
+	return c.AddWorkspaceWithContentConsent(ctx, path, name, themeID, makeCurrent, false)
+}
+
+func (c *API) AddWorkspaceWithContentConsent(ctx context.Context, path, name, themeID string, makeCurrent, committedOnly bool) (WorkspaceResolution, error) {
 	req := map[string]any{
-		"path":         strings.TrimSpace(path),
-		"name":         strings.TrimSpace(name),
-		"theme_id":     strings.TrimSpace(themeID),
-		"make_current": makeCurrent,
+		"path":                   strings.TrimSpace(path),
+		"name":                   strings.TrimSpace(name),
+		"theme_id":               strings.TrimSpace(themeID),
+		"make_current":           makeCurrent,
+		"confirm_committed_only": committedOnly,
 	}
 	var resp struct {
 		OK        bool                `json:"ok"`

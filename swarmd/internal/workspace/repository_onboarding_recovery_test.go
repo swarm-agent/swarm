@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -65,9 +67,9 @@ func TestOnboardingSetupCommandFailureRollsBackForRetry(t *testing.T) {
 	}
 }
 
-// Requirement: explicit unborn-repository recovery must create only an empty
-// commit, preserving staged and untracked content. Service-level Git inspection
-// proves the actual index/tree postconditions rather than response status alone.
+// Requirement: legacy setup must refuse to omit existing content silently.
+// Explicit reviewed omission may create an empty baseline while preserving the
+// index and files. Service-level Git inspection proves the tree postconditions.
 func TestOnboardingUnbornSetupPreservesIndexAndFiles(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
@@ -89,8 +91,16 @@ func TestOnboardingUnbornSetupPreservesIndexAndFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path)
+	if err == nil || state.State != RepositoryStateNeedsInitialCommit {
+		t.Fatalf("unreviewed setup: %+v %v", state, err)
+	}
+	review, err := svc.ReviewRepositoryForPrincipal(testPrincipal(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = svc.PrepareRepositoryBaselineForPrincipal(testPrincipal(), RepositoryBaselineRequest{Path: path, ExpectedResolvedPath: path, ReviewDigest: review.Digest, ConfirmBaseline: true, ConfirmOmissions: true})
 	if err != nil || state.State != RepositoryStateReady {
-		t.Fatalf("setup: %+v %v", state, err)
+		t.Fatalf("reviewed setup: %+v %v", state, err)
 	}
 	after, err := os.ReadFile(filepath.Join(path, ".git", "index"))
 	if err != nil || string(before) != string(after) {
@@ -113,8 +123,8 @@ func TestOnboardingSetupRejectsHome(t *testing.T) {
 	defer cleanup()
 	svc := NewService(store)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), home, home); err == nil {
+	account := &user.User{Uid: strconv.Itoa(os.Geteuid()), HomeDir: home}
+	if _, err := svc.setupRepositoryForPrincipal(testPrincipal(), home, home, account); err == nil {
 		t.Fatal("initialized home")
 	}
 	entries, err := os.ReadDir(home)

@@ -2,7 +2,7 @@ package ui
 
 import (
 	"github.com/gdamore/tcell/v2"
-	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/client"
 	"testing"
 )
 
@@ -10,10 +10,11 @@ import (
 // repository setup, never queue admission instead, and permit cancellation/retry.
 // The UI action boundary is the narrowest proof of user intent routing.
 func TestOnboardingRepositorySetupConsent(t *testing.T) {
-	for _, readiness := range []model.GitReadiness{model.GitReadinessNotRepository, model.GitReadinessNeedsCommit} {
+	for _, readiness := range []string{"not_repository", "needs_initial_commit"} {
 		p := readyOnboardingPage()
-		p.model.WorkspaceSetupGitReadiness = readiness
 		p.ShowOnboardingWorkspace("")
+		p.SetOnboardingRepository(client.OnboardingRepository{Path: "/repo/project", State: readiness, CanSetup: true})
+		focusRepositoryControl(p, "consent")
 		p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 		if _, ok := p.PopHomeAction(); ok {
 			t.Fatal("Enter mutated before consent")
@@ -41,8 +42,7 @@ func TestOnboardingRepositorySetupConsent(t *testing.T) {
 func TestOnboardingLocationRevokesConsent(t *testing.T) {
 	p := readyOnboardingPage()
 	p.ShowOnboardingWorkspace("")
-	p.model.WorkspaceSetupGitReadiness = model.GitReadinessNotRepository
-	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	p.onboarding.SetupConsent = true
 	original := p.OnboardingWorkspacePath()
 	p.HandleKey(tcell.NewEventKey(tcell.KeyCtrlL, 0, 0))
 	p.HandleKey(tcell.NewEventKey(tcell.KeyCtrlU, 0, 0))

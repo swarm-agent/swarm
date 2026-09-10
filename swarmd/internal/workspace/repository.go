@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -96,6 +97,10 @@ const repositoryCommandTimeout = 12 * time.Second
 const (
 	RepositoryStateReady              = "ready"
 	RepositoryStateGitUnavailable     = "git_unavailable"
+	RepositoryStateAccessDenied       = "access_denied"
+	RepositoryStateTrustRequired      = "trust_required"
+	RepositoryStateError              = "repository_error"
+	RepositoryStateMissing            = "directory_missing"
 	RepositoryStateNotRepository      = "not_repository"
 	RepositoryStateNeedsInitialCommit = "needs_initial_commit"
 	RepositoryStateNeedsAssistedSetup = "needs_assisted_setup"
@@ -105,13 +110,16 @@ const (
 // RepositoryState describes whether a directory can back Swarm's mandatory
 // managed worktree lifecycle. It is safe to return to authenticated clients.
 type RepositoryState struct {
-	State       string `json:"state"`
-	Path        string `json:"path"`
-	Repository  string `json:"repository_root,omitempty"`
-	HeadCommit  string `json:"head_commit,omitempty"`
-	CanSetup    bool   `json:"can_setup"`
-	NeedsReview bool   `json:"needs_review,omitempty"`
-	Message     string `json:"message"`
+	State             string   `json:"state"`
+	Path              string   `json:"path"`
+	Repository        string   `json:"repository_root,omitempty"`
+	HeadCommit        string   `json:"head_commit,omitempty"`
+	CanSetup          bool     `json:"can_setup"`
+	NeedsReview       bool     `json:"needs_review,omitempty"`
+	Message           string   `json:"message"`
+	ContentReady      bool     `json:"content_ready"`
+	RuntimeAccessible bool     `json:"runtime_accessible"`
+	Actions           []string `json:"actions,omitempty"`
 }
 
 // RepositoryPrerequisiteError lets API callers return an actionable typed
@@ -150,13 +158,15 @@ func (s *Service) InspectRepositoryForPrincipal(principal identity.Principal, pa
 	}
 	resolved, err := resolvePath(path)
 	if err != nil {
-		return RepositoryState{}, err
+		state := repositoryFailure(requested, err)
+		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	if requested != resolved {
 		return RepositoryState{}, fmt.Errorf("workspace paths must use their canonical directory; select %q instead of a symlink", resolved)
 	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
-		return RepositoryState{}, err
+		state := repositoryFailure(resolved, err)
+		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	return inspectRepository(resolved), nil
 }
@@ -178,7 +188,8 @@ func (s *Service) InspectOnboardingRepositoryForPrincipal(principal identity.Pri
 	}
 	resolved, err := resolvePath(path)
 	if err != nil {
-		return RepositoryState{}, err
+		state := repositoryFailure(requested, err)
+		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	if requested != resolved {
 		return RepositoryState{}, fmt.Errorf("workspace onboarding rejects symlinked paths; select the canonical directory %q", resolved)
@@ -200,11 +211,12 @@ func (s *Service) InspectOnboardingRepositoryForPrincipal(principal identity.Pri
 		return RepositoryState{}, fmt.Errorf("workspace %q is already saved with id %q", resolved, existing.WorkspaceID)
 	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
-		return RepositoryState{}, err
+		state := repositoryFailure(resolved, err)
+		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	state := inspectRepository(resolved)
 	switch state.State {
-	case RepositoryStateGitUnavailable:
+	case RepositoryStateGitUnavailable, RepositoryStateAccessDenied, RepositoryStateTrustRequired, RepositoryStateError, RepositoryStateMissing:
 		return state, &RepositoryPrerequisiteError{Repository: state}
 	case RepositoryStateNeedsAssistedSetup, RepositoryStateNeedsInitialCommit, RepositoryStateReady:
 		return state, nil
@@ -243,13 +255,21 @@ func (s *Service) requireRepositoryForPrincipal(principal identity.Principal, pa
 
 func inspectRepository(path string) RepositoryState {
 	state := RepositoryState{Path: path}
+	if err := runtimeRepositoryAccess(path); err != nil {
+		return repositoryFailure(path, err)
+	}
+	state.RuntimeAccessible = true
 	if _, err := exec.LookPath("git"); err != nil {
 		state.State = RepositoryStateGitUnavailable
-		state.Message = "Git is required to add a Swarm workspace; install Git and retry"
+		state.Message = "Git is unavailable to the daemon; repair the installation prerequisites or select another configured runtime"
+		state.Actions = []string{"repair_installation", "retry"}
 		return state
 	}
 
 	insideWorkTree, insideWorkTreeErr := runRepositoryGit(path, "rev-parse", "--is-inside-work-tree")
+	if insideWorkTreeErr != nil && !isAbsentRepository(path, insideWorkTreeErr) {
+		return repositoryFailure(path, insideWorkTreeErr)
+	}
 	if insideWorkTreeErr == nil && !strings.EqualFold(strings.TrimSpace(insideWorkTree), "true") {
 		state.State = RepositoryStateNotRepository
 		state.Message = repositoryMessageNonWorkTree
@@ -258,6 +278,9 @@ func inspectRepository(path string) RepositoryState {
 
 	root, err := runRepositoryGit(path, "rev-parse", "--show-toplevel")
 	if err != nil || strings.TrimSpace(root) == "" {
+		if err == nil || !isAbsentRepository(path, err) {
+			return repositoryFailure(path, err)
+		}
 		state.State = RepositoryStateNotRepository
 		state.CanSetup = directoryIsEmpty(path)
 		state.NeedsReview = !state.CanSetup
@@ -267,6 +290,7 @@ func inspectRepository(path string) RepositoryState {
 			state.State = RepositoryStateNeedsAssistedSetup
 			state.Message = "Swarm workspaces require a Git repository with an initial commit; review and commit this directory's existing files before adding it"
 		}
+		state.Actions = []string{"review_content", "setup", "choose_directory"}
 		return state
 	}
 	root = strings.TrimSpace(root)
@@ -286,6 +310,21 @@ func inspectRepository(path string) RepositoryState {
 		return state
 	}
 	state.Repository = filepath.Clean(root)
+	for _, option := range []string{"--git-dir", "--git-common-dir"} {
+		metadata, err := runRepositoryGit(path, "rev-parse", option)
+		if err != nil {
+			return repositoryFailure(path, err)
+		}
+		if !filepath.IsAbs(metadata) {
+			metadata = filepath.Join(path, metadata)
+		}
+		if err := runtimeRepositoryAccess(metadata); err != nil {
+			return repositoryFailure(path, err)
+		}
+	}
+	if _, err := runRepositoryGit(path, "worktree", "list", "--porcelain"); err != nil {
+		return repositoryFailure(path, err)
+	}
 	if state.Repository != path {
 		state.State = RepositoryStateNotRepository
 		state.HeadCommit = ""
@@ -296,14 +335,30 @@ func inspectRepository(path string) RepositoryState {
 	}
 	head, err := runRepositoryGit(path, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil || strings.TrimSpace(head) == "" {
+		ref, refErr := runRepositoryGit(path, "symbolic-ref", "-q", "HEAD")
+		if refErr != nil || !strings.HasPrefix(ref, "refs/heads/") {
+			return repositoryFailure(path, err)
+		}
+		if _, refErr = runRepositoryGit(path, "show-ref", "--verify", "--quiet", ref); repositoryGitExitCode(refErr) != 1 {
+			return repositoryFailure(path, err)
+		}
 		state.State = RepositoryStateNeedsInitialCommit
 		state.NeedsReview = true
-		state.Message = "Swarm workspaces require an initial Git commit; create the first commit and retry"
+		state.CanSetup = true
+		state.Actions = []string{"review_content", "setup", "choose_directory"}
+		state.Message = "Review existing content and explicitly choose the initial baseline before creating a managed workspace"
 		return state
 	}
 	state.State = RepositoryStateReady
 	state.HeadCommit = strings.TrimSpace(head)
-	state.Message = "Git repository is ready for managed worktrees"
+	if status, err := runRepositoryGit(path, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"); err != nil {
+		return repositoryFailure(path, err)
+	} else {
+		state.ContentReady = status == ""
+		state.NeedsReview = !state.ContentReady
+	}
+	state.Actions = []string{"save_workspace", "review_content"}
+	state.Message = "Git HEAD is ready for managed worktrees; only committed content is included"
 	return state
 }
 
@@ -327,6 +382,8 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if err != nil {
 		return RepositoryState{}, err
 	}
+	unlock := lockRepositoryPreparation(requested)
+	defer unlock()
 	resolved, err := resolvePath(path)
 	if err != nil {
 		return RepositoryState{}, err
@@ -334,7 +391,13 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if existing, ok, err := s.store.GetForAccount(principal.AccountScopeID, resolved); err != nil {
 		return RepositoryState{}, err
 	} else if ok {
-		return RepositoryState{}, fmt.Errorf("workspace %q is already saved with id %q", resolved, existing.WorkspaceID)
+		if requested == resolved && expectedResolvedPath == resolved {
+			state := inspectRepository(resolved)
+			if state.State == RepositoryStateReady {
+				return state, nil
+			}
+		}
+		return RepositoryState{}, fmt.Errorf("workspace %q is already saved with id %q; repository repair cannot rewrite its history", resolved, existing.WorkspaceID)
 	}
 	if requested != resolved {
 		return RepositoryState{}, fmt.Errorf("repository setup rejects symlinked paths; select the canonical directory %q", resolved)
@@ -351,20 +414,27 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 		return RepositoryState{}, fmt.Errorf("selected directory is stale: expected %q, current canonical path is %q", filepath.Clean(expected), resolved)
 	}
 	if _, err := os.Lstat(resolved); errors.Is(err, os.ErrNotExist) {
-		uid := strconv.Itoa(os.Geteuid())
-		home, homeErr := writableDaemonHome(account, uid)
-		if homeErr != nil || filepath.Dir(resolved) != home {
-			return RepositoryState{}, errors.New("new workspace must be a direct child of the writable daemon account home; terminal root access is not daemon access")
+		if err := runtimeRepositoryAccess(filepath.Dir(resolved)); err != nil {
+			state := repositoryFailure(resolved, err)
+			return state, &RepositoryPrerequisiteError{Repository: state}
 		}
 		if _, err := exec.LookPath("git"); err != nil {
-			return RepositoryState{}, errors.New("Git is required before creating a workspace directory")
+			state := RepositoryState{Path: resolved, State: RepositoryStateGitUnavailable, Message: "Git is required before creating a workspace directory; repair installation prerequisites and retry", Actions: []string{"repair_installation", "retry"}}
+			return state, &RepositoryPrerequisiteError{Repository: state}
 		}
-		if err := os.Mkdir(resolved, 0o700); err != nil {
+		parent, err := os.OpenRoot(filepath.Dir(resolved))
+		if err != nil {
+			return RepositoryState{}, err
+		}
+		err = parent.Mkdir(filepath.Base(resolved), 0o700)
+		parent.Close()
+		if err != nil {
 			return RepositoryState{}, fmt.Errorf("create new workspace directory: %w", err)
 		}
 	}
 	if err := ensureWorkspaceDirectory(resolved); err != nil {
-		return RepositoryState{}, err
+		state := repositoryFailure(resolved, err)
+		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	canonicalHome := ""
 	if account != nil {
@@ -374,10 +444,22 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 		return RepositoryState{}, errors.New("choose a project directory instead of home or the filesystem root; change workspace location and retry")
 	}
 	state := inspectRepository(resolved)
-	if state.State == RepositoryStateGitUnavailable {
+	if state.State == RepositoryStateGitUnavailable || state.State == RepositoryStateAccessDenied || state.State == RepositoryStateTrustRequired || state.State == RepositoryStateError {
 		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	if state.State == RepositoryStateNeedsInitialCommit && state.Repository == resolved {
+		review, err := s.ReviewRepositoryForPrincipal(principal, resolved)
+		if err != nil {
+			return state, err
+		}
+		indexed, err := runRepositoryGit(resolved, "ls-files", "-z")
+		if err != nil {
+			return state, err
+		}
+		if len(review.Files) != 0 || indexed != "" {
+			state.Message = "Existing content requires explicit baseline review; no files or index were changed"
+			return state, &RepositoryPrerequisiteError{Repository: state}
+		}
 		// Build an explicitly empty tree, never the user's index. Compare-and-swap
 		// the unborn HEAD so a concurrent first commit cannot be overwritten.
 		tree, err := runRepositoryGit(resolved, "hash-object", "-w", "-t", "tree", "--stdin")
@@ -388,7 +470,7 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 		if err != nil {
 			return state, err
 		}
-		if _, err := runRepositoryGit(resolved, "update-ref", "HEAD", commit, ""); err != nil {
+		if _, err := runRepositoryGit(resolved, "-c", "core.hooksPath="+os.DevNull, "update-ref", "HEAD", commit, strings.Repeat("0", len(commit))); err != nil {
 			return state, err
 		}
 		ready := inspectRepository(resolved)
@@ -397,14 +479,17 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 		}
 		return ready, nil
 	}
-	if state.State == RepositoryStateReady || state.State == RepositoryStateNeedsInitialCommit || state.Repository != "" || state.Message == repositoryMessageNonWorkTree {
+	if state.State == RepositoryStateReady && state.Repository == resolved {
+		return state, nil // Response loss must not create another initial commit.
+	}
+	if state.State == RepositoryStateNeedsInitialCommit || state.Repository != "" || state.Message == repositoryMessageNonWorkTree {
 		return state, errors.New("repository setup rejects directories that are already inside Git repositories")
 	}
 	if !directoryIsEmpty(resolved) {
 		state.State = RepositoryStateNeedsAssistedSetup
 		state.CanSetup = false
 		state.NeedsReview = true
-		state.Message = "Existing files were not staged or committed; initialize and review the repository manually, then create the first commit"
+		state.Message = "Existing files were not staged or committed; use content review to select an explicit baseline"
 		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 
@@ -450,13 +535,22 @@ func runRepositoryGit(path string, args ...string) (string, error) {
 }
 
 func runRepositoryGitWithEnv(path string, env []string, args ...string) (string, error) {
+	return runRepositoryGitInput(path, env, nil, args...)
+}
+
+func runRepositoryGitInput(path string, env []string, input io.Reader, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), repositoryCommandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
-	if env != nil {
-		cmd.Env = env
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path, "-c", "core.fsmonitor=false"}, args...)...)
+	cmd.Env = repositoryEnvironment(env)
+	cmd.Stdin = input
+	cmd.WaitDelay = time.Second
+	var output repositoryOutput
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	if output.exceeded {
+		return "", errors.New("Git output exceeds repository inspection limit")
 	}
-	output, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", errors.New("Git command timed out")
 	}
@@ -464,7 +558,7 @@ func runRepositoryGitWithEnv(path string, env []string, args ...string) (string,
 		return "", errors.New("Git is not installed")
 	}
 	if err != nil {
-		return "", fmt.Errorf("git command failed: %s", strings.TrimSpace(string(output)))
+		return "", repositoryCommandError(err, output.String())
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSuffix(output.String(), "\n"), nil
 }

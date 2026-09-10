@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,7 +54,12 @@ func TestOnboardingTerminalRepositoryRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			var missingGitChecks atomic.Int32
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if scenario == "missing-git" && r.URL.Path == "/v1/workspace/repository" && missingGitChecks.Add(1) == 1 {
+					writeJSON(w, 200, map[string]any{"ok": true, "repository": map[string]any{"path": r.URL.Query().Get("path"), "state": "git_unavailable", "message": "Git unavailable to daemon. Administrator repair required; retry after repair."}})
+					return
+				}
 				if scenario == "pending-exit" && r.URL.Path == "/v1/workspace/repository/setup" {
 					io.Copy(io.Discard, io.LimitReader(r.Body, 65536))
 					if err := os.WriteFile(filepath.Join(root, "pending-request"), []byte("pending"), 0600); err != nil {
@@ -93,7 +99,7 @@ func TestOnboardingTerminalRepositoryRecovery(t *testing.T) {
 				switch scenario {
 				case "home", "root", "new-folder":
 					folder = "new-project"
-				case "existing", "cancel-recover":
+				case "cancel-recover":
 					folder = "safe-project"
 				case "permission":
 					folder = "recovered"

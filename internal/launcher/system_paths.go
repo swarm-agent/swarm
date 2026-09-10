@@ -387,13 +387,17 @@ func validateInstallOwner() error {
 	if err != nil {
 		return fmt.Errorf("resolve install owner uid %q: %w", uid, err)
 	}
-	if owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\n\r\"%") {
+	if owner.Gid != gid || !safeInstallOwnerHome(owner.HomeDir) {
 		return errors.New("install owner requires its primary group and a safe non-root home")
 	}
 	if _, err := user.LookupGroupId(gid); err != nil {
 		return fmt.Errorf("resolve install group gid %q: %w", gid, err)
 	}
 	return nil
+}
+
+func safeInstallOwnerHome(home string) bool {
+	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")
 }
 
 func installOwnerIDs() (string, string) {
@@ -403,6 +407,9 @@ func installOwnerIDs() (string, string) {
 	}
 	if found {
 		return uid, gid
+	}
+	if selectedInstallAccount != nil {
+		return selectedInstallAccount.Uid, selectedInstallAccount.Gid
 	}
 	return resolveInstallOwnerIDs(os.Geteuid(), os.Getuid(), os.Getgid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"), user.Lookup)
 }

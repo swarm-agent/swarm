@@ -1929,10 +1929,11 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Path        string `json:"path"`
-		Name        string `json:"name"`
-		ThemeID     string `json:"theme_id"`
-		MakeCurrent *bool  `json:"make_current"`
+		Path                 string `json:"path"`
+		Name                 string `json:"name"`
+		ThemeID              string `json:"theme_id"`
+		MakeCurrent          *bool  `json:"make_current"`
+		ConfirmCommittedOnly bool   `json:"confirm_committed_only"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1957,6 +1958,9 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if repository.State != workspace.RepositoryStateReady {
 		writeWorkspaceRepositoryError(w, &workspace.RepositoryPrerequisiteError{Repository: repository})
+		return
+	} else if !repository.ContentReady && !req.ConfirmCommittedOnly {
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "workspace_content_review_required", "error": "Uncommitted content will not enter managed worktrees; review it and explicitly confirm using committed HEAD only", "repository": repository})
 		return
 	}
 	if _, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {

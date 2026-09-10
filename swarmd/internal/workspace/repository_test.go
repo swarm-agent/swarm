@@ -190,7 +190,9 @@ func TestSetupRepositoryForPrincipalLeavesNonEmptyDirectoryUnchanged(t *testing.
 	}
 }
 
-func TestSetupRepositoryForPrincipalRejectsSavedDirectory(t *testing.T) {
+// Requirement: retrying setup after save must acknowledge the existing HEAD,
+// never duplicate a commit or catalog entry; invalid consent must still reject.
+func TestSetupRepositoryForPrincipalResumesSavedDirectory(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
 	svc := NewService(store)
@@ -204,8 +206,20 @@ func TestSetupRepositoryForPrincipalRejectsSavedDirectory(t *testing.T) {
 	if _, err := svc.AddForPrincipal(testPrincipal(), path, "saved", "", false); err != nil {
 		t.Fatalf("seed saved workspace: %v", err)
 	}
-	if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path); err == nil || !strings.Contains(err.Error(), "already saved") {
-		t.Fatalf("saved setup error=%v, want rejection", err)
+	before, err := runRepositoryGit(path, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path)
+	if err != nil || state.HeadCommit != before {
+		t.Fatalf("saved setup=%+v %v", state, err)
+	}
+	if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path+"-stale"); err == nil {
+		t.Fatal("stale saved consent accepted")
+	}
+	entries, err := svc.ListKnownForPrincipal(testPrincipal(), 10)
+	if err != nil || len(entries) != 1 {
+		t.Fatal("saved retry changed catalog")
 	}
 }
 
@@ -283,8 +297,8 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 }
 
 // Requirement: missing folders are created only through explicit setup, not
-// inspection, and only in daemon home. Threat: caller-controlled HOME or stale
-// consent could create arbitrary paths. Service assertions prove rejection
+// inspection, in an accessible canonical parent (not restricted to daemon home).
+// Threat: stale consent could create arbitrary paths. Service assertions prove rejection
 // leaves filesystem and workspace catalog unchanged.
 func TestSetupRepositoryMissingPathRejectsCallerHomeAndStaleConsent(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
@@ -296,7 +310,7 @@ func TestSetupRepositoryMissingPathRejectsCallerHomeAndStaleConsent(t *testing.T
 	if _, err := svc.InspectRepositoryForPrincipal(testPrincipal(), path); err == nil {
 		t.Fatal("inspection accepted absent directory")
 	}
-	for _, expected := range []string{"", path + "-stale", path} {
+	for _, expected := range []string{"", path + "-stale"} {
 		if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, expected); err == nil {
 			t.Fatalf("setup accepted caller home with expected=%q", expected)
 		}
