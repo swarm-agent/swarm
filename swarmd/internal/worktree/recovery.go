@@ -454,7 +454,14 @@ func SnapshotRecovery(repository string, expected RecoveryIdentity, selection Re
 // The caller must hold exclusive admission until publication and must revalidate
 // source/destination evidence at its durable publication boundary. This function
 // never publishes authority and never automatically removes a failed allocation.
-func (s *Service) CopyRecovery(snapshot *RecoverySnapshot, nameSeed, branch string) (result RecoveryResult, err error) {
+func (s *Service) CopyRecovery(snapshot *RecoverySnapshot, nameSeed, branch string) (RecoveryResult, error) {
+	return s.CopyRecoveryJournaled(snapshot, nameSeed, branch, nil)
+}
+
+// CopyRecoveryJournaled records the exact destination before Git can create it.
+// Allocation failures retain every resource: the ordinary allocator's destructive
+// rollback is not appropriate for recovery, where another writer may have arrived.
+func (s *Service) CopyRecoveryJournaled(snapshot *RecoverySnapshot, nameSeed, branch string, journal func(Allocation) error) (result RecoveryResult, err error) {
 	if snapshot == nil {
 		return result, errors.New("recovery snapshot required")
 	}
@@ -471,7 +478,7 @@ func (s *Service) CopyRecovery(snapshot *RecoverySnapshot, nameSeed, branch stri
 	if current != snapshot.Identity {
 		return result, errors.New("recovery source changed before allocation")
 	}
-	result.Allocation, err = s.allocateSessionWorkspaceWithBranchMode(snapshot.repository, false, snapshot.Identity.HEAD, branch, nameSeed, true)
+	result.Allocation, err = s.allocateRecovery(snapshot, branch, journal)
 	if err != nil {
 		return result, err
 	}
@@ -538,4 +545,51 @@ func ValidateRecoveryIdentity(repository string, expected RecoveryIdentity) erro
 		return errors.New("stale recovery identity")
 	}
 	return nil
+}
+
+// allocateRecovery intentionally has no cleanup branch. Its journal callback is
+// durable before creation; even a partially failed Git command remains attributable.
+func (s *Service) allocateRecovery(snapshot *RecoverySnapshot, branch string, journal func(Allocation) error) (Allocation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	repo, err := resolveRepositoryRoot(snapshot.repository)
+	if err != nil {
+		return Allocation{}, err
+	}
+	workspaceID, err := workspaceIdentityForRequestedBranch(branch)
+	if err != nil {
+		return Allocation{}, err
+	}
+	path, err := deterministicSessionWorktreePath(repo, workspaceID)
+	if err != nil {
+		return Allocation{}, err
+	}
+	a := Allocation{WorkspacePath: path, RepoRoot: repo, BaseBranch: snapshot.Identity.HEAD, BaseCommit: snapshot.Identity.HEAD, BranchName: branch, WorkspaceID: workspaceID}
+	if _, err := os.Lstat(path); err == nil {
+		return Allocation{}, errors.New("recovery destination already exists")
+	} else if !os.IsNotExist(err) {
+		return Allocation{}, err
+	}
+	exists, err := localBranchExists(repo, branch)
+	if err != nil {
+		return Allocation{}, err
+	}
+	if exists {
+		return Allocation{}, errors.New("recovery branch already exists")
+	}
+	if journal != nil {
+		if err := journal(a); err != nil {
+			return a, err
+		}
+	}
+	if err := ensureWorktreeParent(repo); err != nil {
+		return a, err
+	}
+	if _, err := recoveryGit(repo, nil, "worktree", "add", "-b", branch, path, snapshot.Identity.HEAD); err != nil {
+		return a, err
+	}
+	if err := os.Chmod(path, 0700); err != nil {
+		return a, err
+	}
+	return a, nil
 }

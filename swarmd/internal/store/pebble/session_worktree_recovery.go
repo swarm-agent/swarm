@@ -27,6 +27,9 @@ type WorktreeOwnership struct {
 	OperationState    string              `json:"operation_state,omitempty"`
 	Evidence          string              `json:"evidence,omitempty"`
 	CopySource        *WorktreeCopySource `json:"copy_source,omitempty"`
+	DestinationPath   string              `json:"destination_path,omitempty"`
+	DestinationBranch string              `json:"destination_branch,omitempty"`
+	DestinationBase   string              `json:"destination_base,omitempty"`
 }
 
 // WorktreeCopySource is immutable attribution captured at copy publication.
@@ -44,13 +47,16 @@ type WorktreeCopySource struct {
 // Release only cancels a reservation; it never releases session ownership or
 // deletes Git resources. Failed cleanup therefore remains safely reserved.
 type WorktreeRecoveryMutation struct {
-	SourcePath       string `json:"source_path,omitempty"` // exact authenticated source for legacy migration
-	Action           string `json:"action"`                // reserve, reserve_copy, publish, publish_copy, release
-	Path             string `json:"path"`
-	OwnerSessionID   string `json:"owner_session_id"`
-	ExpectedRevision uint64 `json:"expected_revision"`
-	OperationID      string `json:"operation_id"`
-	Evidence         string `json:"evidence"`
+	SourcePath        string `json:"source_path,omitempty"` // exact authenticated source for legacy migration
+	Action            string `json:"action"`                // reserve, reserve_copy, publish, publish_copy, release
+	Path              string `json:"path"`
+	OwnerSessionID    string `json:"owner_session_id"`
+	ExpectedRevision  uint64 `json:"expected_revision"`
+	OperationID       string `json:"operation_id"`
+	Evidence          string `json:"evidence"`
+	DestinationPath   string `json:"destination_path,omitempty"`
+	DestinationBranch string `json:"destination_branch,omitempty"`
+	DestinationBase   string `json:"destination_base,omitempty"`
 }
 
 var ErrWorktreeRecoveryConflict = errors.New("worktree recovery evidence missing, unauthorized, stale or busy")
@@ -166,7 +172,7 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 		return nil, ErrWorktreeRecoveryConflict
 	}
 	claimOwner := input.SessionID
-	if mutation != nil && (mutation.Action == "reserve_copy" || mutation.Action == "publish_copy" || mutation.Action == "release") {
+	if mutation != nil && (mutation.Action == "reserve_copy" || mutation.Action == "publish_copy" || mutation.Action == "journal_copy" || mutation.Action == "release") {
 		claimOwner = mutation.OwnerSessionID
 	}
 	if err := s.validateRetainedWorktreeProgramClaims(path, claimOwner); err != nil {
@@ -266,15 +272,36 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 				return nil, err
 			}
 		}
+		record.DestinationPath, record.DestinationBranch, record.DestinationBase = "", "", ""
 		record.OperationID, record.ClaimantSessionID, record.OperationState, record.Evidence = mutation.OperationID, input.SessionID, "reserved", mutation.Evidence
 		if mutation.Action == "reserve_copy" {
 			record.OperationState = "reserved_copy"
 		}
+	case "journal_copy":
+		if record.OperationState != "reserved_copy" || record.ClaimantSessionID != input.SessionID || record.OperationID != mutation.OperationID || record.Evidence != mutation.Evidence || record.DestinationPath != "" || !validWorktreePath(mutation.DestinationPath) || mutation.DestinationPath == path || mutation.DestinationBranch == "" || !artifactV3OIDPattern.MatchString(mutation.DestinationBase) || input.Session != nil {
+			return nil, ErrWorktreeRecoveryConflict
+		}
+		var existing WorktreeOwnership
+		if exists, err := s.store.GetJSON(worktreeOwnershipKey(mutation.DestinationPath), &existing); err != nil {
+			return nil, err
+		} else if exists {
+			return nil, ErrWorktreeRecoveryConflict
+		}
+		if err := s.validateRetainedWorktreeProgramClaims(mutation.DestinationPath, input.SessionID); err != nil {
+			return nil, err
+		}
+		record.DestinationPath, record.DestinationBranch, record.DestinationBase = mutation.DestinationPath, mutation.DestinationBranch, mutation.DestinationBase
+		record.Revision++
+		destination := WorktreeOwnership{Path: mutation.DestinationPath, AccountScopeID: input.AccountScopeID, UserID: input.UserID, OwnerSessionID: input.SessionID, Revision: 1, OperationID: mutation.OperationID, ClaimantSessionID: input.SessionID, OperationState: "allocating_copy", Evidence: mutation.Evidence}
+		return []WorktreeOwnership{record, destination}, nil
 	case "publish", "publish_copy", "release":
 		if (record.OperationState != "reserved" && record.OperationState != "reserved_copy") || record.ClaimantSessionID != input.SessionID || record.OperationID != mutation.OperationID || record.Evidence != mutation.Evidence {
 			return nil, ErrWorktreeRecoveryConflict
 		}
 		if mutation.Action == "publish_copy" {
+			if record.DestinationPath == "" || next.WorktreeRootPath != record.DestinationPath || next.WorktreeBranch != record.DestinationBranch || input.WorktreeAdmission == nil || v3LibraryMetadataString(next.Metadata, "swarm_v3_worktree_base_commit") != record.DestinationBase {
+				return nil, ErrWorktreeRecoveryConflict
+			}
 			if record.OperationState != "reserved_copy" || input.Session == nil || next.WorkspacePath != current.WorkspacePath || !next.WorktreeEnabled || next.WorktreeRootPath == path || input.WorktreeAdmission == nil || input.WorktreeAdmission.Kind != "allocated" {
 				return nil, ErrWorktreeRecoveryConflict
 			}
@@ -293,10 +320,10 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 			var existing WorktreeOwnership
 			if exists, err := s.store.GetJSON(worktreeOwnershipKey(next.WorktreeRootPath), &existing); err != nil {
 				return nil, err
-			} else if exists {
+			} else if !exists || existing.AccountScopeID != input.AccountScopeID || existing.UserID != input.UserID || existing.OwnerSessionID != input.SessionID || existing.ClaimantSessionID != input.SessionID || existing.OperationID != mutation.OperationID || existing.OperationState != "allocating_copy" {
 				return nil, ErrWorktreeRecoveryConflict
 			}
-			destination := []WorktreeOwnership{{Path: next.WorktreeRootPath, AccountScopeID: input.AccountScopeID, UserID: input.UserID, OwnerSessionID: input.SessionID, Revision: 1}}
+			destination := []WorktreeOwnership{{Path: next.WorktreeRootPath, AccountScopeID: input.AccountScopeID, UserID: input.UserID, OwnerSessionID: input.SessionID, Revision: existing.Revision + 1}}
 			destination[0].CopySource = &WorktreeCopySource{Path: path, OwnerSessionID: record.OwnerSessionID, Revision: record.Revision, Evidence: record.Evidence}
 			record.OperationState, record.ClaimantSessionID = "copied", ""
 			record.Revision++
@@ -329,6 +356,21 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 				return nil, ErrWorktreeRecoveryConflict
 			}
 			record.OperationState = "released"
+			if record.DestinationPath != "" {
+				var destination WorktreeOwnership
+				found, err := s.store.GetJSON(worktreeOwnershipKey(record.DestinationPath), &destination)
+				if err != nil {
+					return nil, err
+				}
+				if !found || destination.ClaimantSessionID != input.SessionID || destination.OperationID != mutation.OperationID || destination.OperationState != "allocating_copy" {
+					return nil, ErrWorktreeRecoveryConflict
+				}
+				destination.OperationState, destination.ClaimantSessionID = "retained_copy", ""
+				destination.Revision++
+				record.ClaimantSessionID = ""
+				record.Revision++
+				return []WorktreeOwnership{record, destination}, nil
+			}
 		}
 		record.ClaimantSessionID = ""
 	default:
@@ -375,4 +417,43 @@ func (s *SessionStore) worktreeSourceIdle(owner, claimant string) error {
 		}
 	}
 	return s.worktreeTransitionIdle(owner)
+}
+
+// Called under the session and ownership locks, matching V3 reservation order.
+// Managed-only designs do not write repository lanes.
+func (s *SessionStore) checkProgramRecoveryFence(record TaskProgramRecord) error {
+	paths := []string{}
+	for _, job := range record.Definition.Jobs {
+		if job.AgentType == "designer" && (job.OutputMode == "" || job.OutputMode == "managed") {
+			continue
+		}
+		paths = append(paths, job.WorkspacePath)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	current, exists, err := s.GetSession(record.ParentSessionID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		paths = append(paths, current.WorktreeRootPath)
+	}
+	if record.RepositoryLane != nil {
+		paths = append(paths, record.RepositoryLane.WorkspacePath)
+	}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		var claim WorktreeOwnership
+		found, err := s.store.GetJSON(worktreeOwnershipKey(path), &claim)
+		if err != nil {
+			return err
+		}
+		if found && claim.ClaimantSessionID != "" {
+			return ErrWorktreeRecoveryConflict
+		}
+	}
+	return nil
 }

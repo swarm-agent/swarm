@@ -1298,7 +1298,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree"}},
+					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"}},
 					"workspace_id":           map[string]any{"type": "string", "description": "Stable target workspace identity. Required with workspace_generation for update/delete; also used by selection actions."},
 					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1, "description": "Expected target generation. Required for update/delete; stale generations fail before mutation."},
 					"workspace_path":         map[string]any{"type": "string", "description": "create: existing directory to save. update: optional existing replacement directory; no files are moved or created."},
@@ -1316,7 +1316,7 @@ func (r *Runtime) Definitions() []Definition {
 					"operation_id":           map[string]any{"type": "string", "description": "Recovery: unique operation ID, at most 128 characters."},
 					"files":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "copy_worktree requires explicit exact relative files; commits and patches are unsupported."},
 					"worktree_name":          map[string]any{"type": "string", "description": "adopt_worktree only: short requested name used to allocate a new managed worktree for this same session."},
-					"worktree_path":          map[string]any{"type": "string", "description": "Exact prior managed path for adoption, or exact authorized discovery path for reclaim_worktree/copy_worktree. Recovery requires workspace_id/generation, owner_session_id, ownership_revision, head, fingerprint and operation_id; copy additionally requires files. Sources are preserved; failed publication retains reservation and destination."},
+					"worktree_path":          map[string]any{"type": "string", "description": "Exact prior managed path for adoption, or exact authorized discovery path for reclaim_worktree/copy_worktree. Recovery requires workspace_id/generation, owner_session_id, ownership_revision, head, fingerprint and operation_id; copy additionally requires files. Sources are preserved; failed publication retains reservation and a durably journaled destination. cancel_worktree_recovery releases only the exact claimant reservation using discovery revision, operation_id and reservation fingerprint; it never deletes resources or switches the session. Host processes are not fenced by Git fingerprints."},
 					"expected_worktree_path": map[string]any{"type": "string", "description": "adopt_worktree only: optional stale-reference guard for the session's current worktree path; use an empty omission for the first adoption."},
 				},
 				"required":             []string{"action"},

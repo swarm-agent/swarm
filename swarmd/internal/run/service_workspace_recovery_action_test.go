@@ -174,6 +174,57 @@ func TestRecoveryCopyActionIntegration(t *testing.T) {
 			if claims[0].OperationState != state {
 				t.Fatalf("lost recovery state: %+v", claims)
 			}
+			// R22: journal survives a failed publication; exact cancellation
+			// releases metadata only, retaining both source and copied bytes.
+			if claims[0].DestinationPath != destination || claims[0].DestinationBase != before.HEAD {
+				t.Fatalf("missing durable destination: %+v", claims[0])
+			}
+			if fail {
+				cancel := args
+				cancel.Action, cancel.WorktreeName, cancel.Recovery.Files = "cancel_worktree_recovery", "", nil
+				cancel.Recovery.Revision = claims[0].Revision
+				bad := cancel
+				bad.Recovery.Operation = "wrong-operation"
+				if _, err := svc.recoverSessionWorktree(owner.ID, principal, bad, apply); err == nil {
+					t.Fatal("cancel accepted wrong operation")
+				}
+				if _, err := svc.recoverSessionWorktree(owner.ID, principal, cancel, apply); err != nil {
+					t.Fatal(err)
+				}
+				if got := runTestGit(t, repo, "worktree", "list", "--porcelain"); got != inventory {
+					t.Fatal("cancel removed resources")
+				}
+				data, err := os.ReadFile(filepath.Join(destination, "layers"))
+				if err != nil || string(data) != "B" {
+					t.Fatal("cancel changed retained work")
+				}
+				claims, err := store.InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{lane})
+				if err != nil || claims[0].ClaimantSessionID != "" || claims[0].DestinationPath != destination {
+					t.Fatalf("cancel state: %+v %v", claims, err)
+				}
+			}
 		})
+	}
+}
+
+// Purpose R22: a retained reservation must be discoverable without reading a
+// broken or replaced checkout; cancellation must not race a live producer.
+// The run-layer helpers are the narrowest boundary for these two contracts.
+func TestRecoveryInterruptedDiscoveryAndProducerFence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lane")
+	claim := pebblestore.WorktreeOwnership{Path: path, OwnerSessionID: "owner", Revision: 3, ClaimantSessionID: "claimant", OperationID: "operation", OperationState: "reserved_copy", Evidence: strings.Repeat("a", 64), DestinationPath: filepath.Join(t.TempDir(), "retained")}
+	rows, err := authorizedRecoveryCandidates([]string{path}, func(string) ([]pebblestore.WorktreeOwnership, error) {
+		return []pebblestore.WorktreeOwnership{claim}, nil
+	}, func(string) (worktreeruntime.RecoveryIdentity, error) {
+		t.Fatal("reserved discovery read content")
+		return worktreeruntime.RecoveryIdentity{}, nil
+	})
+	if err != nil || len(rows) != 1 || rows[0].RetainedDestination != claim.DestinationPath || rows[0].ReservationFingerprint != claim.Evidence || rows[0].Fingerprint != "" {
+		t.Fatalf("repair inventory: %+v %v", rows, err)
+	}
+	recoveryProducerMu.Lock()
+	defer recoveryProducerMu.Unlock()
+	if _, err := (&Service{}).recoverSessionWorktree("claimant", testRunPrincipal(), manageWorkspaceArguments{}, nil); err == nil || !strings.Contains(err.Error(), "producer is active") {
+		t.Fatalf("producer fence: %v", err)
 	}
 }

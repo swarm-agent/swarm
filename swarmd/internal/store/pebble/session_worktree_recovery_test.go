@@ -253,7 +253,14 @@ func TestWorktreeRecoveryCopyPublication(t *testing.T) {
 	if _, err := s.ApplyV3SessionMutation(reserve); err != nil {
 		t.Fatal(err)
 	}
-	input = recoveryInput("receiver", "publish_copy", path, 4, 5)
+	journal := recoveryInput("receiver", "journal_copy", path, 4, 5)
+	journal.WorktreeRecovery.OperationID = "copy-again"
+	journal.WorktreeRecovery.DestinationPath, journal.WorktreeRecovery.DestinationBranch, journal.WorktreeRecovery.DestinationBase = destination, "agent/copy", strings.Repeat("a", 40)
+	if _, err := s.ApplyV3SessionMutation(journal); err != nil {
+		t.Fatal(err)
+	}
+	current.Metadata = map[string]any{"swarm_v3_worktree_base_commit": strings.Repeat("a", 40)}
+	input = recoveryInput("receiver", "publish_copy", path, 5, 6)
 	input.WorktreeRecovery.OperationID = "copy-again"
 	current.WorktreeEnabled, current.WorktreeRootPath, current.WorktreeBranch = true, destination, "agent/copy"
 	input.Session = &current
@@ -262,8 +269,8 @@ func TestWorktreeRecoveryCopyPublication(t *testing.T) {
 	if _, err := s.ApplyV3SessionMutation(input); !errors.Is(err, ErrWorktreeRecoveryConflict) {
 		t.Fatalf("wrong evidence: %v", err)
 	}
-	if _, err := s.InspectWorktreeOwnership("account", "user", []string{destination}); err == nil {
-		t.Fatal("partial destination")
+	if claims, err := s.InspectWorktreeOwnership("account", "user", []string{destination}); err != nil || claims[0].OperationState != "allocating_copy" || claims[0].ClaimantSessionID != "receiver" {
+		t.Fatalf("failed publication changed destination fence: %+v %v", claims, err)
 	}
 	input.WorktreeRecovery.Evidence = strings.Repeat("a", 64)
 	if _, err := s.ApplyV3SessionMutation(input); err != nil {
@@ -273,7 +280,7 @@ func TestWorktreeRecoveryCopyPublication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if records[0].OwnerSessionID != "owner" || records[0].ClaimantSessionID != "" || records[0].Revision != 5 || records[1].OwnerSessionID != "receiver" || records[1].CopySource == nil || records[1].CopySource.Path != path || records[1].CopySource.Revision != 4 {
+	if records[0].OwnerSessionID != "owner" || records[0].ClaimantSessionID != "" || records[0].Revision != 6 || records[1].OwnerSessionID != "receiver" || records[1].CopySource == nil || records[1].CopySource.Path != path || records[1].CopySource.Revision != 5 {
 		t.Fatalf("copy claims: %+v", records)
 	}
 	if result, err := s.ApplyV3SessionMutation(input); err != nil || !result.Replayed {
@@ -297,6 +304,13 @@ func TestWorktreeRecoveryCopyRestartWriterGuard(t *testing.T) {
 	if _, err := s.ApplyV3SessionMutation(recoveryInput("receiver", "reserve_copy", path, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
+	journal := recoveryInput("receiver", "journal_copy", path, 2, 2)
+	journal.WorktreeRecovery.DestinationPath = filepath.Join(root, "retained")
+	journal.WorktreeRecovery.DestinationBranch = "agent/retained"
+	journal.WorktreeRecovery.DestinationBase = strings.Repeat("a", 40)
+	if _, err := s.ApplyV3SessionMutation(journal); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -306,6 +320,15 @@ func TestWorktreeRecoveryCopyRestartWriterGuard(t *testing.T) {
 	}
 	defer db.Close()
 	s = NewSessionStore(db)
+	// R16/R22: program admission after restart must share the reservation
+	// fence, not merely the ordinary session adoption lock.
+	program := taskProgramStoreFixture("owner", "fenced", "fenced-hash")
+	if _, _, err := s.CreateTaskProgram(program); !errors.Is(err, ErrWorktreeRecoveryConflict) {
+		t.Fatalf("program bypassed fence: %v", err)
+	}
+	if _, found, err := s.GetTaskProgram("owner", "fenced"); err != nil || found {
+		t.Fatal("rejected program persisted")
+	}
 	for _, status := range []string{V3RunIntentPendingExecutor, V3RunIntentRunning, V3RunIntentCompleted} {
 		_, err := s.prepareWorktreeOwnership(V3SessionMutationInput{SessionID: "owner", RunIntent: &V3SessionRunIntent{Status: status}}, SessionSnapshot{})
 		if status == V3RunIntentCompleted {
@@ -317,7 +340,7 @@ func TestWorktreeRecoveryCopyRestartWriterGuard(t *testing.T) {
 		}
 	}
 	records, err := s.InspectWorktreeOwnership("account", "user", []string{path})
-	if err != nil || records[0].Revision != 2 || records[0].OperationState != "reserved_copy" || records[0].OwnerSessionID != "owner" {
+	if err != nil || records[0].Revision != 3 || records[0].DestinationPath != filepath.Join(root, "retained") || records[0].OperationState != "reserved_copy" || records[0].OwnerSessionID != "owner" {
 		t.Fatalf("reservation changed: %+v %v", records, err)
 	}
 }

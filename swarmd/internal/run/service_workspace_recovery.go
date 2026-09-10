@@ -9,11 +9,16 @@ import (
 )
 
 type sessionRecoveryCandidate struct {
-	Path              string `json:"path"`
-	OwnerSessionID    string `json:"owner_session_id"`
-	OwnershipRevision uint64 `json:"ownership_revision"`
-	HEAD              string `json:"head"`
-	Fingerprint       string `json:"fingerprint"`
+	Path                   string `json:"path"`
+	OwnerSessionID         string `json:"owner_session_id"`
+	OwnershipRevision      uint64 `json:"ownership_revision"`
+	HEAD                   string `json:"head"`
+	Fingerprint            string `json:"fingerprint"`
+	OperationID            string `json:"operation_id,omitempty"`
+	OperationState         string `json:"operation_state,omitempty"`
+	ClaimantSessionID      string `json:"claimant_session_id,omitempty"`
+	ReservationFingerprint string `json:"reservation_fingerprint,omitempty"`
+	RetainedDestination    string `json:"retained_destination,omitempty"`
 }
 
 // authorizedRecoveryCandidates deliberately separates registration from content
@@ -33,6 +38,13 @@ func authorizedRecoveryCandidates(paths []string, authorize func(string) ([]pebb
 		}
 		if len(claims) != 1 || claims[0].Path != path {
 			return nil, pebblestore.ErrWorktreeRecoveryConflict
+		}
+		claim := claims[0]
+		if claim.ClaimantSessionID != "" || claim.OperationState == "retained_copy" {
+			// Repair must remain discoverable even if a crashed source no longer
+			// has a readable index. This is ownership metadata, not fresh Git evidence.
+			out = append(out, sessionRecoveryCandidate{Path: path, OwnerSessionID: claim.OwnerSessionID, OwnershipRevision: claim.Revision, OperationID: claim.OperationID, OperationState: claim.OperationState, ClaimantSessionID: claim.ClaimantSessionID, ReservationFingerprint: claim.Evidence, RetainedDestination: claim.DestinationPath})
+			continue
 		}
 		id, err := inspect(path)
 		if err != nil {

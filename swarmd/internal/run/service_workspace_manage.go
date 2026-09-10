@@ -79,7 +79,7 @@ func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, princi
 	if s.workspace == nil {
 		return "", errors.New("manage_workspace catalog is not configured")
 	}
-	if args.Action == "reclaim_worktree" || args.Action == "copy_worktree" {
+	if args.Action == "reclaim_worktree" || args.Action == "copy_worktree" || args.Action == "cancel_worktree_recovery" {
 		return s.recoverSessionWorktree(sessionID, principal, args, applySessionMutation)
 	}
 	if args.Action == "discover_worktrees" {
@@ -317,7 +317,7 @@ func (s *Service) inspectManageWorkspace(principal identity.Principal, action st
 	}
 	return marshalManageWorkspace(map[string]any{
 		"action": action, "status": "ok", "workspaces": workspaces,
-		"actions": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree"},
+		"actions": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"},
 	})
 }
 

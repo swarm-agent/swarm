@@ -74,6 +74,27 @@ func TestRecoveryPrimitives(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// R22: journal failure precedes allocation, and a destination created by
+	// another writer after the journal is never removed by allocator rollback.
+	failed, err := (&Service{}).CopyRecoveryJournaled(snapshot, "journal-fail", "agent/journal-fail", func(a Allocation) error { return os.ErrPermission })
+	if err == nil {
+		t.Fatal("journal failure ignored")
+	}
+	if _, err := os.Lstat(failed.Allocation.WorkspacePath); !os.IsNotExist(err) {
+		t.Fatal("allocated before durable journal")
+	}
+	raced, err := (&Service{}).CopyRecoveryJournaled(snapshot, "journal-race", "agent/journal-race", func(a Allocation) error {
+		if err := os.MkdirAll(a.WorkspacePath, 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(a.WorkspacePath, "external"), []byte("keep"), 0600)
+	})
+	if err == nil {
+		t.Fatal("accepted occupied allocation")
+	}
+	if data, err := os.ReadFile(filepath.Join(raced.Allocation.WorkspacePath, "external")); err != nil || string(data) != "keep" {
+		t.Fatal("deleted external writer bytes")
+	}
 	result, err := (&Service{}).CopyRecovery(snapshot, "recovery-proof", "agent/recovery-proof")
 	if err != nil {
 		t.Fatalf("copy: %v; %+v", err, result)
@@ -114,7 +135,7 @@ func TestRecoveryPrimitives(t *testing.T) {
 	}
 	put(filepath.Join(repo, "binary"), []byte("drift"), 0644)
 	inventory := git(repo, "worktree", "list", "--porcelain", "-z")
-	failed, err := (&Service{}).CopyRecovery(snapshot, "stale", "agent/stale")
+	failed, err = (&Service{}).CopyRecovery(snapshot, "stale", "agent/stale")
 	if err == nil || failed.Allocation.WorkspacePath != "" || failed.Diagnostic == "" {
 		t.Fatal("stale snapshot not rejected before allocation")
 	}

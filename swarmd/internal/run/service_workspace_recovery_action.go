@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -14,6 +15,10 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
+
+// Serializes recovery filesystem producers in this daemon. Durable reservations
+// survive restarts; cancellation cannot release a reservation under a live producer.
+var recoveryProducerMu sync.Mutex
 
 type recoveryArguments struct {
 	Owner                        string
@@ -25,14 +30,17 @@ type recoveryArguments struct {
 func parseRecoveryArguments(raw map[string]any) (r recoveryArguments, err error) {
 	action := strings.ToLower(strings.TrimSpace(mapString(raw, "action")))
 	for _, key := range []string{"owner_session_id", "ownership_revision", "head", "fingerprint", "operation_id", "files"} {
-		if _, ok := raw[key]; ok && action != "reclaim_worktree" && action != "copy_worktree" {
+		if _, ok := raw[key]; ok && action != "reclaim_worktree" && action != "copy_worktree" && action != "cancel_worktree_recovery" {
 			return r, errors.New("recovery evidence is only accepted by recovery actions")
 		}
 	}
-	if action != "reclaim_worktree" && action != "copy_worktree" {
+	if action != "reclaim_worktree" && action != "copy_worktree" && action != "cancel_worktree_recovery" {
 		return r, nil
 	}
 	for key, dest := range map[string]*string{"owner_session_id": &r.Owner, "head": &r.HEAD, "fingerprint": &r.Fingerprint, "operation_id": &r.Operation} {
+		if key == "head" && action == "cancel_worktree_recovery" {
+			continue
+		}
 		value, ok := raw[key].(string)
 		if !ok || value == "" || strings.TrimSpace(value) != value {
 			return r, fmt.Errorf("recovery requires exact %s", key)
@@ -75,6 +83,10 @@ func parseRecoveryArguments(raw map[string]any) (r recoveryArguments, err error)
 // snapshot/allocation; a failed publication retains its reservation and destination
 // for explicit repair rather than reporting success or deleting recovered work.
 func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Principal, args manageWorkspaceArguments, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	if !recoveryProducerMu.TryLock() {
+		return "", errors.New("recovery producer is active; retry after it finishes")
+	}
+	defer recoveryProducerMu.Unlock()
 	if apply == nil || s.worktrees == nil || s.sessionWorkspaceCanonicalize == nil {
 		return "", errors.New("recovery requires canonical publisher and worktree service")
 	}
@@ -98,7 +110,7 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 	if session.WorkspacePath != canonical.SourceWorkspacePath || mapString(session.Metadata, "swarm_v3_source_workspace_id") != canonical.WorkspaceID || manageWorkspaceInt64(session.Metadata["swarm_v3_source_workspace_generation"]) != canonical.WorkspaceGeneration {
 		return "", errors.New("recovery cannot change saved source identity")
 	}
-	if args.Action == "reclaim_worktree" && args.WorktreeName != "" {
+	if (args.Action == "reclaim_worktree" || args.Action == "cancel_worktree_recovery") && args.WorktreeName != "" {
 		return "", errors.New("reclaim_worktree does not allocate a named destination")
 	}
 	if args.ExpectedWorktreePath != "" && args.ExpectedWorktreePath != session.WorktreeRootPath {
@@ -114,6 +126,9 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 	r := args.Recovery
 	if len(claims) != 1 || claims[0].OwnerSessionID != r.Owner || claims[0].Revision != r.Revision {
 		return "", pebblestore.ErrWorktreeRecoveryConflict
+	}
+	if args.Action == "cancel_worktree_recovery" {
+		return s.cancelWorktreeRecovery(sessionID, principal, args, claims[0], apply)
 	}
 	source, err := worktreeruntime.InspectRecoveryWorktree(canonical.SourceWorkspacePath, args.WorktreePath)
 	if err != nil {
@@ -176,12 +191,16 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 			return releaseError(err)
 		}
 		copier, ok := s.worktrees.(interface {
-			CopyRecovery(*worktreeruntime.RecoverySnapshot, string, string) (worktreeruntime.RecoveryResult, error)
+			CopyRecoveryJournaled(*worktreeruntime.RecoverySnapshot, string, string, func(worktreeruntime.Allocation) error) (worktreeruntime.RecoveryResult, error)
 		})
 		if !ok {
 			return releaseError(errors.New("worktree recovery copy service unavailable"))
 		}
-		copied, err := copier.CopyRecovery(snapshot, sessionID, branch)
+		copied, err := copier.CopyRecoveryJournaled(snapshot, sessionID, branch, func(planned worktreeruntime.Allocation) error {
+			mutation.DestinationPath, mutation.DestinationBranch, mutation.DestinationBase = planned.WorkspacePath, planned.BranchName, planned.BaseCommit
+			_, err := publish("journal_copy", nil, nil)
+			return err
+		})
 		allocation, destination = copied.Allocation, copied.Destination
 		if err != nil {
 			return retainedError(err)
@@ -252,4 +271,33 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 		return retainedError(err)
 	}
 	return marshalManageWorkspace(map[string]any{"action": args.Action, "status": "ok", "runtime_worktree_path": next.WorktreeRootPath, "operation_id": r.Operation, "last_event_seq": result.LastSeq, "restart_turn": true})
+}
+
+// Cancellation is metadata-only: it neither publishes partial work nor deletes
+// retained resources. The exact claimant/revision/operation must still match.
+func (s *Service) cancelWorktreeRecovery(sessionID string, principal identity.Principal, args manageWorkspaceArguments, claim pebblestore.WorktreeOwnership, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	if claim.ClaimantSessionID != sessionID || claim.OperationID != args.Recovery.Operation || claim.Evidence != args.Recovery.Fingerprint {
+		return "", pebblestore.ErrWorktreeRecoveryConflict
+	}
+	projection, _, err := s.sessions.GetSessionProjection(sessionID)
+	if err != nil {
+		return "", err
+	}
+	mutation := pebblestore.WorktreeRecoveryMutation{Action: "release", Path: claim.Path, OwnerSessionID: claim.OwnerSessionID, ExpectedRevision: claim.Revision, OperationID: claim.OperationID, Evidence: claim.Evidence}
+	payload, err := json.Marshal(mutation)
+	if err != nil {
+		return "", err
+	}
+	key := manageWorkspaceMutationKey("cancel-worktree-recovery", sessionID, payload)
+	result, err := apply(sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: sessionruntime.SessionMutationUpdateSettings, ExpectedLastEventSeq: &projection.LastEventSeq, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.worktree.recovery.release", EventPayload: payload, WorktreeRecovery: &mutation, NowUnixMs: time.Now().UnixMilli()})
+	if err != nil {
+		return "", err
+	}
+	if result.Conflict != nil {
+		return "", errors.New(result.Conflict.Message)
+	}
+	if result.Error != nil {
+		return "", errors.New(result.Error.Message)
+	}
+	return marshalManageWorkspace(map[string]any{"action": args.Action, "status": "cancelled", "operation_id": claim.OperationID, "retained_destination": claim.DestinationPath, "resources_removed": false, "session_switched": false})
 }
