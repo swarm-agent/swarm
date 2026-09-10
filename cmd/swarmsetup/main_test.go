@@ -67,6 +67,8 @@ func writeSetupArtifact(t *testing.T, root, version string) {
 		filepath.Join(platformRoot, "swarmd", "libfff_c.so"): "library",
 		filepath.Join(root, "web", "index.html"):             "<html></html>",
 		filepath.Join(root, "build-info.txt"):                "version=" + version + "\n",
+		filepath.Join(root, "LICENSE"):                       "Apache License 2.0\n",
+		filepath.Join(root, "THIRD_PARTY_NOTICES.md"):        "# Third-Party Notices\n",
 	} {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatalf("write artifact file: %v", err)
