@@ -2,6 +2,8 @@ package run
 
 import (
 	"errors"
+	"path/filepath"
+	"sort"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -9,6 +11,7 @@ import (
 )
 
 type sessionRecoveryCandidate struct {
+	Diagnostic             string `json:"diagnostic,omitempty"`
 	Path                   string `json:"path"`
 	OwnerSessionID         string `json:"owner_session_id"`
 	OwnershipRevision      uint64 `json:"ownership_revision"`
@@ -48,7 +51,8 @@ func authorizedRecoveryCandidates(paths []string, authorize func(string) ([]pebb
 		}
 		id, err := inspect(path)
 		if err != nil {
-			return nil, err
+			out = append(out, sessionRecoveryCandidate{Path: path, OwnerSessionID: claim.OwnerSessionID, OwnershipRevision: claim.Revision, Diagnostic: "inspection failed; no fresh recovery identity; retry exact worktree_path after repairing the source"})
+			continue
 		}
 		out = append(out, sessionRecoveryCandidate{Path: path, OwnerSessionID: claims[0].OwnerSessionID, OwnershipRevision: claims[0].Revision, HEAD: id.HEAD, Fingerprint: id.Fingerprint})
 	}
@@ -62,8 +66,8 @@ func (s *Service) discoverSessionRecoveryWorktrees(principal identity.Principal,
 	if args.WorkspaceGeneration <= 0 || args.WorkspaceID == "" {
 		return "", errors.New("discover_worktrees requires exact workspace_id and workspace_generation")
 	}
-	if args.WorkspaceIDs != nil || args.PrimaryWorkspaceID != "" || args.WorktreePath != "" || args.WorktreeName != "" || args.ExpectedWorktreePath != "" || args.WorkspacePathSet || args.WorkspaceNameSet || args.ThemeIDSet || args.ContentSet || args.ExpectedRevision != 0 || args.Intent != "" || args.PermissionScope != "" {
-		return "", errors.New("discover_worktrees accepts only workspace_id and workspace_generation")
+	if args.WorkspaceIDs != nil || args.PrimaryWorkspaceID != "" || args.WorktreeName != "" || args.ExpectedWorktreePath != "" || args.WorkspacePathSet || args.WorkspaceNameSet || args.ThemeIDSet || args.ContentSet || args.ExpectedRevision != 0 || args.Intent != "" || args.PermissionScope != "" {
+		return "", errors.New("discover_worktrees accepts only workspace_id, workspace_generation and optional exact worktree_path")
 	}
 	canonical, err := s.canonicalSessionWorkspace(principal, args.WorkspaceID, args.WorkspaceGeneration)
 	if err != nil {
@@ -80,6 +84,10 @@ func (s *Service) discoverSessionRecoveryWorktrees(principal identity.Principal,
 	if err != nil {
 		return "", err
 	}
+	paths, truncated, err := selectRecoveryPaths(paths, args.WorktreePath)
+	if err != nil {
+		return "", err
+	}
 	candidates, err := authorizedRecoveryCandidates(paths, func(path string) ([]pebblestore.WorktreeOwnership, error) {
 		return s.sessions.Store().InspectRecoveryOwnership(principal.AccountScopeID, principal.UserID, canonical.SourceWorkspacePath, path)
 	}, func(path string) (worktreeruntime.RecoveryIdentity, error) {
@@ -88,5 +96,28 @@ func (s *Service) discoverSessionRecoveryWorktrees(principal identity.Principal,
 	if err != nil {
 		return "", err
 	}
-	return marshalManageWorkspace(map[string]any{"action": "discover_worktrees", "workspace_id": canonical.WorkspaceID, "workspace_generation": canonical.WorkspaceGeneration, "candidates": candidates, "unknown_provenance": "excluded; not authorized for recovery"})
+	return marshalManageWorkspace(map[string]any{"action": "discover_worktrees", "workspace_id": canonical.WorkspaceID, "workspace_generation": canonical.WorkspaceGeneration, "candidates": candidates, "truncated": truncated, "continuation": "For a known source, repeat discover_worktrees with the same workspace identity and exact worktree_path; truncated inventories are not exhaustive. Candidates with diagnostic have no fresh HEAD/fingerprint and cannot authorize recovery.", "unknown_provenance": "excluded; not authorized for recovery"})
+}
+
+// selectRecoveryPaths bounds ownership/content inspection independently of the
+// byte-bounded Git registration list. Exact selection is not authorization.
+func selectRecoveryPaths(paths []string, exact string) ([]string, bool, error) {
+	if exact != "" {
+		if !filepath.IsAbs(exact) || filepath.Clean(exact) != exact {
+			return nil, false, errors.New("discovery requires a clean absolute worktree_path")
+		}
+		for _, path := range paths {
+			if path == exact {
+				return []string{path}, false, nil
+			}
+		}
+		return []string{}, false, nil
+	}
+	paths = append([]string(nil), paths...)
+	sort.Strings(paths)
+	truncated := len(paths) > 100
+	if truncated {
+		paths = paths[:100]
+	}
+	return paths, truncated, nil
 }

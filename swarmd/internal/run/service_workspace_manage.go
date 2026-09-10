@@ -180,6 +180,14 @@ func parseManageWorkspaceArguments(arguments string) (manageWorkspaceArguments, 
 		}
 		args.Action = "inspect"
 	}
+	if args.Action == "discover_worktrees" {
+		if value, provided := raw["worktree_path"]; provided {
+			path, ok := value.(string)
+			if !ok || path == "" || path != args.WorktreePath {
+				return manageWorkspaceArguments{}, errors.New("discover_worktrees worktree_path must be an exact non-empty string")
+			}
+		}
+	}
 	if _, provided := raw["workspace_generation"]; provided && args.WorkspaceGeneration <= 0 {
 		return manageWorkspaceArguments{}, errors.New("manage_workspace workspace_generation must be a positive integer")
 	}

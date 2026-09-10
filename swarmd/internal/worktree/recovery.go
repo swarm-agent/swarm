@@ -194,9 +194,6 @@ func DiscoverRecoveryPaths(repository string) ([]string, error) {
 		if !bytes.HasPrefix(field, []byte("worktree ")) {
 			continue
 		}
-		if len(paths) >= 100 {
-			return nil, errors.New("recovery inventory exceeds 100 worktrees")
-		}
 		path := string(field[len("worktree "):])
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 			return nil, errors.New("invalid registered worktree path")
