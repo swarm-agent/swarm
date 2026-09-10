@@ -60,6 +60,7 @@ cmp package.json /cache-manifests/web/package.json
 cmp pnpm-workspace.yaml /cache-manifests/web/pnpm-workspace.yaml
 cp -a /cache-manifests/web/node_modules ./node_modules
 phase web-build
+export RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=3072
 pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
 phase daemon-start
@@ -67,7 +68,7 @@ socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
 socat UNIX-LISTEN:/exchange/desktop.sock,fork,mode=0600 TCP:127.0.0.1:5655 &
 id swarm >/dev/null
 chown -R swarm:swarm /candidate /out /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd
-exec runuser -u swarm -- env HOME=/var/lib/swarmd LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source
+runuser -u swarm -- env HOME=/var/lib/swarmd LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source
 '''
 
 
@@ -520,7 +521,14 @@ class NspawnRuntime:
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
             if values.get('Description') != self.description(record) or values.get('ActiveState') != 'active':
-                raise PoolError('candidate unit failed or identity changed: load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
+                try:
+                    with open(Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'phase', 'rb') as stream:
+                        last = stream.read(64).decode('ascii', errors='ignore').strip()
+                    if re.fullmatch(r'(failed-)?(source|go-build|web-install|web-build|daemon-start)', last):
+                        phase = last
+                except OSError:
+                    pass
+                raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
             for endpoint in ('api', 'desktop'):
                 address = str(Path(self.pool.config.root) / (self.name(record) + '.exchange') / (endpoint + '.sock'))
