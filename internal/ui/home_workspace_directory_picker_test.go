@@ -173,10 +173,10 @@ func TestWorkspaceDirectoryPickerEnterSelectsHighlightedFolderAndCtrlSDoesNothin
 	}
 }
 
-// Requirement: the TUI workspace editor must reject a plain directory before it
-// queues a catalog mutation. The threat is saving a workspace that cannot back a
-// managed worktree; this editor submission test is the narrowest UI boundary.
-func TestWorkspaceSetupRejectsNonRepositoryBeforeSave(t *testing.T) {
+// Requirement: even plain directories are validated by the daemon rather than
+// by client-identity Git. Queuing a request is not successful catalog persistence;
+// the daemon must reject invalid repositories before changing workspace state.
+func TestWorkspaceSetupDefersNonRepositoryValidation(t *testing.T) {
 	path := t.TempDir()
 	p := NewHomePage(model.EmptyHome())
 	p.ShowWorkspaceModal()
@@ -192,11 +192,11 @@ func TestWorkspaceSetupRejectsNonRepositoryBeforeSave(t *testing.T) {
 		}
 	}
 	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if _, ok := p.PopWorkspaceModalAction(); ok {
-		t.Fatal("plain directory queued workspace save")
+	if action, ok := p.PopWorkspaceModalAction(); !ok || action.Kind != WorkspaceModalActionSave || action.Path != path {
+		t.Fatalf("missing daemon validation request: %+v, ok=%v", action, ok)
 	}
-	if !strings.Contains(p.workspaceModal.Error, "not a committed Git repository") || !strings.Contains(p.workspaceModal.Error, "Empty folders can be initialized from Desktop") || !strings.Contains(p.workspaceModal.Error, "review ignore rules") || !strings.Contains(p.workspaceModal.Error, "request permission") {
-		t.Fatalf("plain directory guidance = %q", p.workspaceModal.Error)
+	if p.workspaceModal.Error != "" {
+		t.Fatalf("client imposed repository validation: %q", p.workspaceModal.Error)
 	}
 }
 
