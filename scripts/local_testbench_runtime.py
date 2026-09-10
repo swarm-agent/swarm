@@ -67,8 +67,11 @@ phase daemon-start
 socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
 socat UNIX-LISTEN:/exchange/desktop.sock,fork,mode=0600 TCP:127.0.0.1:5655 &
 id swarm >/dev/null
+mkdir -p /var/lib/swarm
+usermod -d /var/lib/swarm swarm
+chown swarm:swarm /var/lib/swarm
 chown -R swarm:swarm /candidate /out /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd
-runuser -u swarm -- env HOME=/var/lib/swarmd LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source 2>/exchange/startup-error
+runuser -u swarm -- env HOME=/var/lib/swarm LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source 2>/exchange/startup-error
 '''
 
 
