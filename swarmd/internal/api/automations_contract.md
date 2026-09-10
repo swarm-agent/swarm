@@ -29,3 +29,31 @@ Save/context return `{record,fresh}` with immutable attribution; admission retur
 The integrated foundation has no delete/tombstone, cancellation implementation, scheduler loop, V3 runtime adapter, or durable automation outbox. This transport deliberately does not fabricate these authorities or publish ephemeral notifications. Daemon integration must supply live Access/TriggerAuthority, payload-bound event verification, cancellation, recovery and durable V3 publication/hydration. HTTP admission does not dispatch inline. Consumers must not add polling to hide the missing outbox integration. Automation history is hydrated through the bounded reads above; execution sessions remain canonical V3 resources.
 
 Parent must reconcile docs/swarm-atlas.md and docs/testing/test-audit-ledger.tsv (outside this job's ownership). New request tests verify ownership/attribution rejection, stale no-write, forged-event no-occurrence, verified replay uniqueness and strict body bounds using real Pebble with fake external authority. They do not establish real authentication middleware, approval adapters, cancellation, outbox or V3 worktree safety. Tests/build/formatter not run; parent validation required.
+
+## Consumer wiring update (partial; cancellation dependency blocked)
+
+HTTP now binds the verified request principal using BindRuntimeIdentity and rejects
+pre-bound non-user origins. ConfigureAutomationApproval(policy) is startup-only
+and independent of ConfigureAutomations order. Daemon must call that setter with
+its concrete PolicyApproval. GET action=policy returns the current definition
+record and computed policy_sha256 for review. POST /v3/automations/approve uses
+expected_revision (definition) and that digest; POST /v3/automations/revoke uses
+approval_reference and expected_revision (grant). Both require the common envelope
+fields and explicit authenticated user origin. Approval returns a grant, not an
+enabled definition; save its reference and approved_policy mode via a subsequent
+CAS. enable/pause read the current definition then perform SaveDefinition CAS;
+enable retains live execution approval checks. Manual admission remains HTTP 202.
+
+Exact cancellation cannot safely be wired to current ExecutionService.Cancel:
+that method accepts no expected revision and re-reads the head before external
+stop side effects. A transport pre-read would be a TOCTOU check, not exact CAS.
+The existing injected cancellation interface remains fail-closed (503 when nil).
+Parent must add an exact-revision execution cancellation boundary in
+internal/automation/execution.go and its runtime fence, then wire the API. Those
+files are outside this job's mutation scope. No implementation of that missing
+contract is claimed here. CI event verification also remains a separate adapter.
+
+Tests/formatter not run; parent validation required. Proposed focused command
+from swarmd/ with Go and repository FFF prerequisites:
+`go test ./internal/api -run '^TestAutomationHTTP' -count=1 -timeout=60s`.
+Parent must update atlas route/boundary evidence and test inventory outside scope.

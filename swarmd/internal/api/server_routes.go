@@ -184,6 +184,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(V3SyncHydratePath, s.handleSessionsV3SyncHydrate)
 	mux.HandleFunc(V3SyncStreamPath, s.handleSessionsV3SyncStream)
 	mux.HandleFunc(AutomationsPath, s.handleAutomations)
+	mux.HandleFunc(AutomationsPath+"/approve", s.handleAutomations)
+	mux.HandleFunc(AutomationsPath+"/revoke", s.handleAutomations)
 	mux.HandleFunc("/v3/sessions:reconnect", s.handleSessionsV3Reconnect)
 	mux.HandleFunc("/v3/sessions:discover", s.handleSessionsV3Discovery)
 	mux.HandleFunc("/v3/sessions:search", s.handleSessionsV3Search)

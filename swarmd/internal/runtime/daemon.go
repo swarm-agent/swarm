@@ -20,7 +20,6 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 	actionruntime "swarm/packages/swarmd/internal/action"
-	"swarm/packages/swarmd/internal/automation"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/api"
@@ -28,6 +27,7 @@ import (
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -126,11 +126,11 @@ func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapS
 }
 
 type Daemon struct {
-	automationMu sync.Mutex
-	automationClosed bool
-	automationLoop *automationLoop
-	automationExecution *automation.ExecutionService
-	automationApproval *automation.PolicyApproval
+	automationMu              sync.Mutex
+	automationClosed          bool
+	automationLoop            *automationLoop
+	automationExecution       *automation.ExecutionService
+	automationApproval        *automation.PolicyApproval
 	cfg                       config.Config
 	lock                      *lock.FileLock
 	store                     *pebblestore.Store
@@ -627,21 +627,47 @@ func New(cfg config.Config) (*Daemon, error) {
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	automationApply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
 		result, err := sessionSvc.ApplySessionMutation(input)
-		if err != nil { return result, err }
+		if err != nil {
+			return result, err
+		}
 		outboxes := result.RealtimeOutboxes
-		if len(outboxes) == 0 && result.RealtimeOutbox != nil { outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox} }
+		if len(outboxes) == 0 && result.RealtimeOutbox != nil {
+			outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox}
+		}
 		for _, outbox := range outboxes {
-			if err := apiServer.PublishCommittedV3RealtimeOutbox(outbox); err != nil { log.Print("automation realtime wake failed after durable commit") }
+			if err := apiServer.PublishCommittedV3RealtimeOutbox(outbox); err != nil {
+				log.Print("automation realtime wake failed after durable commit")
+			}
 		}
 		return result, nil
 	}
 	automationHost, err := run.NewAutomationExecutionHost(runSvc, sessionSvc.Store(), automationApply)
-	if err != nil { bgCancel(); _ = secretStore.Close(); _ = store.Close(); _ = lk.Release(); return nil, err }
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
 	automationRuntime, err := automation.NewV3Runtime(automationSvc, sessionSvc, worktreeSvc, automationApproval, automationHost, automationApply)
-	if err != nil { bgCancel(); _ = secretStore.Close(); _ = store.Close(); _ = lk.Release(); return nil, err }
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
 	automationExecution, err := automation.NewExecutionService(automationSvc, automationRuntime, automation.RuntimeTriggers{})
-	if err != nil { bgCancel(); _ = secretStore.Close(); _ = store.Close(); _ = lk.Release(); return nil, err }
-	apiServer.ConfigureAutomations(automationSvc, automationExecution, nil, nil)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, err
+	}
+	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, nil)
+	apiServer.ConfigureAutomationApproval(automationApproval)
+	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -742,8 +768,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		notificationService:       notificationSvc,
 		bgCtx:                     bgCtx,
 		bgCancel:                  bgCancel,
-		automationExecution: automationExecution,
-		automationApproval: automationApproval,
+		automationExecution:       automationExecution,
+		automationApproval:        automationApproval,
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
@@ -882,7 +908,10 @@ func (d *Daemon) cleanup() error {
 		var errs []error
 		d.automationMu.Lock()
 		d.automationClosed = true
-		if d.automationLoop != nil { d.automationLoop.Close(); d.automationLoop = nil }
+		if d.automationLoop != nil {
+			d.automationLoop.Close()
+			d.automationLoop = nil
+		}
 		d.automationMu.Unlock()
 		if d.bgCancel != nil {
 			d.bgCancel()
