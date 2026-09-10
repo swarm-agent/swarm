@@ -164,6 +164,8 @@ type Runtime struct {
 	orchestration         manageOrchestrationPolicyService
 	todos                 manageTodoService
 	automations           *automation.Service
+	automationExecution *automation.ExecutionService
+	automationPolicy *automation.PolicyApproval
 	actions               manageActionService
 	uiSettings            manageThemeUISettingsService
 	themeWorkspace        manageThemeWorkspaceService
