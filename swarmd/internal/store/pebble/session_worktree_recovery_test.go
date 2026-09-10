@@ -84,7 +84,13 @@ func TestWorktreeRecoveryRejectsUnprovenAdmission(t *testing.T) {
 
 func createRecoverySession(t *testing.T, s *SessionStore, id, path string) {
 	t.Helper()
-	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID:id, UserID:"user", AccountScopeID:"account", PayloadHash:"test-payload", IdempotencyKey:"create", Kind:V3SessionMutationCreateSession, Session:&SessionSnapshot{ID:id, WorktreeEnabled:path != "", WorktreeRootPath:path, WorktreeBranch:"agent/"+id, WorkspacePath:path}})
+	for i := 0; i < 10; i++ {
+		done, err := s.BackfillRepositoryHistory(100)
+		if err != nil { t.Fatal(err) }
+		if done { break }
+		if i == 9 { t.Fatal("history backfill exceeded fixture bound") }
+	}
+	_, err := s.ApplyV3SessionMutation(V3SessionMutationInput{WorktreeAdmission:&WorktreeAdmissionEvidence{Kind:"allocated", Path:path, SourcePath:path, OwnerSessionID:id, Branch:"agent/"+id}, SessionID:id, UserID:"user", AccountScopeID:"account", PayloadHash:"test-payload", IdempotencyKey:"create", Kind:V3SessionMutationCreateSession, Session:&SessionSnapshot{ID:id, WorktreeEnabled:path != "", WorktreeRootPath:path, WorktreeBranch:"agent/"+id, WorkspacePath:path}})
 	if err != nil { t.Fatal(err) }
 }
 

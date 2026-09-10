@@ -97,25 +97,21 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 	if mutation != nil { path = mutation.Path }
 	if path == "" { return nil, nil }
 	if !validWorktreePath(path) { return nil, ErrWorktreeRecoveryConflict }
+	if err := s.validateRetainedWorktreeProgramClaims(path, input.SessionID); err != nil { return nil, err }
 	var record WorktreeOwnership
 	found, err := s.store.GetJSON(worktreeOwnershipKey(path), &record)
 	if err != nil { return nil, err }
 	if found && (record.AccountScopeID != input.AccountScopeID || record.UserID != input.UserID) { return nil, ErrWorktreeRecoveryConflict }
 	if mutation == nil {
 		if !next.WorktreeEnabled { return nil, nil }
-		if current, ok, err := s.GetSession(input.SessionID); err != nil { return nil, err } else if ok && (current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID) { return nil, ErrWorktreeRecoveryConflict }
+		if current, ok, err := s.GetSession(input.SessionID); err != nil { return nil, err } else if ok && (current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID || current.WorkspacePath != next.WorkspacePath) { return nil, ErrWorktreeRecoveryConflict }
 		if found {
 			if record.OwnerSessionID != input.SessionID || record.ClaimantSessionID != "" { return nil, ErrWorktreeRecoveryConflict }
 			return nil, nil
 		}
-		// Legacy lanes require an explicit provenance migration; an adoption
-		// request itself is not evidence of ownership.
-		if input.Kind != V3SessionMutationCreateSession {
-			current, ok, err := s.GetSession(input.SessionID)
-			if err != nil { return nil, err }
-			if ok && current.WorktreeRootPath == path { return nil, nil }
-			return nil, ErrWorktreeRecoveryConflict
-		}
+		// A create event is not allocation evidence. Every first claim,
+		// including legacy same-owner updates, crosses this admission check.
+		if err := s.validateWorktreeAdmission(input, next); err != nil { return nil, err }
 		return &WorktreeOwnership{Path:path, AccountScopeID:input.AccountScopeID, UserID:input.UserID, OwnerSessionID:input.SessionID, Revision:1}, nil
 	}
 	if input.Kind != V3SessionMutationUpdateSettings || input.ExpectedLastEventSeq == nil || !found || mutation.ExpectedRevision != record.Revision || mutation.OwnerSessionID != record.OwnerSessionID || mutation.OperationID == "" || len(mutation.OperationID) > 128 || len(mutation.Evidence) != 64 {
@@ -136,6 +132,7 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 			if err != nil { return nil, err }
 			// Absence alone is never proof that a writer has stopped.
 			if !exists || !tombstone.Deleted || tombstone.AccountScopeID != input.AccountScopeID || tombstone.UserID != input.UserID { return nil, ErrWorktreeRecoveryConflict }
+			if state, exists, err := s.GetV3SessionRunState(record.OwnerSessionID); err != nil { return nil, err } else if record.OwnerSessionID != input.SessionID && exists && state.Active { return nil, ErrWorktreeRecoveryConflict }
 			if err := s.worktreeTransitionIdle(record.OwnerSessionID); err != nil { return nil, err }
 		}
 		record.OperationID, record.ClaimantSessionID, record.OperationState, record.Evidence = mutation.OperationID, input.SessionID, "reserved", mutation.Evidence
@@ -143,6 +140,7 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 		if record.OperationState != "reserved" || record.ClaimantSessionID != input.SessionID || record.OperationID != mutation.OperationID || record.Evidence != mutation.Evidence { return nil, ErrWorktreeRecoveryConflict }
 		if mutation.Action == "publish" {
 			if input.Session == nil || !next.WorktreeEnabled || next.WorktreeRootPath != path || next.WorkspacePath != current.WorkspacePath { return nil, ErrWorktreeRecoveryConflict }
+			if state, exists, err := s.GetV3SessionRunState(record.OwnerSessionID); err != nil { return nil, err } else if record.OwnerSessionID != input.SessionID && exists && state.Active { return nil, ErrWorktreeRecoveryConflict }
 			if err := s.worktreeTransitionIdle(record.OwnerSessionID); err != nil { return nil, err }
 			if record.OwnerSessionID != input.SessionID { record.PreviousOwners = append(record.PreviousOwners, record.OwnerSessionID) }
 			record.OwnerSessionID, record.OperationState = input.SessionID, "published"
