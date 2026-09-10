@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,11 +138,6 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 	if source.HEAD != r.HEAD || source.Fingerprint != r.Fingerprint || source.Path == canonical.SourceWorkspacePath {
 		return "", errors.New("stale or nonisolated recovery source")
 	}
-	projection, _, err := s.sessions.GetSessionProjection(sessionID)
-	if err != nil {
-		return "", err
-	}
-	seq := projection.LastEventSeq
 	mutation := pebblestore.WorktreeRecoveryMutation{SourcePath: canonical.SourceWorkspacePath, Path: source.Path, OwnerSessionID: r.Owner, ExpectedRevision: r.Revision, OperationID: r.Operation, Evidence: r.Fingerprint}
 	publish := func(action string, next *pebblestore.SessionSnapshot, admission *pebblestore.WorktreeAdmissionEvidence) (sessionruntime.SessionMutationResult, error) {
 		mutation.Action = action
@@ -150,7 +146,7 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 			return sessionruntime.SessionMutationResult{}, err
 		}
 		key := manageWorkspaceMutationKey("manage-workspace-recovery-"+action, sessionID, payload)
-		result, err := apply(sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: sessionruntime.SessionMutationUpdateSettings, ExpectedLastEventSeq: &seq, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.worktree.recovery." + action, EventPayload: payload, WorktreeRecovery: &mutation, WorktreeAdmission: admission, Session: next, NowUnixMs: time.Now().UnixMilli()})
+		result, err := s.applyRecoveryPublication(session, apply, sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: sessionruntime.SessionMutationUpdateSettings, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.worktree.recovery." + action, EventPayload: payload, WorktreeRecovery: &mutation, WorktreeAdmission: admission, Session: next, NowUnixMs: time.Now().UnixMilli()})
 		if err == nil && result.Conflict != nil {
 			err = errors.New(result.Conflict.Message)
 		}
@@ -158,7 +154,6 @@ func (s *Service) recoverSessionWorktree(sessionID string, principal identity.Pr
 			err = errors.New(result.Error.Message)
 		}
 		if err == nil {
-			seq = result.LastSeq
 			mutation.ExpectedRevision++
 		}
 		return result, err
@@ -279,17 +274,13 @@ func (s *Service) cancelWorktreeRecovery(sessionID string, principal identity.Pr
 	if claim.ClaimantSessionID != sessionID || claim.OperationID != args.Recovery.Operation || claim.Evidence != args.Recovery.Fingerprint {
 		return "", pebblestore.ErrWorktreeRecoveryConflict
 	}
-	projection, _, err := s.sessions.GetSessionProjection(sessionID)
-	if err != nil {
-		return "", err
-	}
 	mutation := pebblestore.WorktreeRecoveryMutation{Action: "release", Path: claim.Path, OwnerSessionID: claim.OwnerSessionID, ExpectedRevision: claim.Revision, OperationID: claim.OperationID, Evidence: claim.Evidence}
 	payload, err := json.Marshal(mutation)
 	if err != nil {
 		return "", err
 	}
 	key := manageWorkspaceMutationKey("cancel-worktree-recovery", sessionID, payload)
-	result, err := apply(sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: sessionruntime.SessionMutationUpdateSettings, ExpectedLastEventSeq: &projection.LastEventSeq, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.worktree.recovery.release", EventPayload: payload, WorktreeRecovery: &mutation, NowUnixMs: time.Now().UnixMilli()})
+	result, err := s.applyRecoveryPublication(pebblestore.SessionSnapshot{}, apply, sessionruntime.SessionMutationInput{SessionID: sessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: sessionruntime.SessionMutationUpdateSettings, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.worktree.recovery.release", EventPayload: payload, WorktreeRecovery: &mutation, NowUnixMs: time.Now().UnixMilli()})
 	if err != nil {
 		return "", err
 	}
@@ -300,4 +291,55 @@ func (s *Service) cancelWorktreeRecovery(sessionID string, principal identity.Pr
 		return "", errors.New(result.Error.Message)
 	}
 	return marshalManageWorkspace(map[string]any{"action": args.Action, "status": "cancelled", "operation_id": claim.OperationID, "retained_destination": claim.DestinationPath, "resources_removed": false, "session_switched": false})
+}
+
+// applyRecoveryPublication refreshes the event CAS for each metadata step and
+// retries only typed projection conflicts. Ownership revision/operation/evidence
+// are never refreshed: a competing recovery must still fail at the store fence.
+// Whole-session publication additionally refuses changed settings and carries
+// forward concurrent message/lifecycle bookkeeping instead of overwriting it.
+func (s *Service) applyRecoveryPublication(base pebblestore.SessionSnapshot, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+	var result sessionruntime.SessionMutationResult
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		projection, found, readErr := s.sessions.GetSessionProjection(input.SessionID)
+		if readErr != nil {
+			return result, readErr
+		}
+		if !found {
+			return result, errors.New("recovery session projection missing")
+		}
+		input.ExpectedLastEventSeq = &projection.LastEventSeq
+		if input.Session != nil {
+			current, found, readErr := s.sessions.GetSession(input.SessionID)
+			if readErr != nil {
+				return result, readErr
+			}
+			if !found || !reflect.DeepEqual(recoverySessionSettings(base), recoverySessionSettings(current)) {
+				return result, errors.New("recovery session settings changed before publication")
+			}
+			next := *input.Session
+			next.MessageCount, next.LastMessageAt, next.Lifecycle = current.MessageCount, current.LastMessageAt, current.Lifecycle
+			input.Session = &next
+			payload, marshalErr := json.Marshal(map[string]any{"operation": input.WorktreeRecovery, "session": &next})
+			if marshalErr != nil {
+				return result, marshalErr
+			}
+			key := manageWorkspaceMutationKey("manage-workspace-recovery-"+input.WorktreeRecovery.Action, input.SessionID, payload)
+			input.EventPayload = payload
+			input.ClientRequestID, input.IdempotencyKey, input.PayloadHash, input.RequestHash = key, key, key, key
+		}
+		result, err = apply(input)
+		var conflict *pebblestore.V3ProjectionConflictError
+		if !errors.As(err, &conflict) {
+			return result, err
+		}
+	}
+	return result, err
+}
+
+func recoverySessionSettings(snapshot pebblestore.SessionSnapshot) pebblestore.SessionSnapshot {
+	snapshot.UpdatedAt, snapshot.LastMessageAt, snapshot.MessageCount = 0, 0, 0
+	snapshot.Lifecycle = nil
+	return snapshot
 }

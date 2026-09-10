@@ -105,7 +105,27 @@ func TestRecoveryCopyActionIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := manageWorkspaceArguments{Action: "copy_worktree", WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, WorktreePath: lane, WorktreeName: "copy-proof", Recovery: recoveryArguments{Owner: owner.ID, Revision: 1, HEAD: before.HEAD, Fingerprint: before.Fingerprint, Operation: "copy-proof", Files: []string{"layers", "binary"}}}
+			// A typed conflict may be retried only three times; ownership
+			// failures must not be retried or silently refreshed.
+			for _, projectionConflict := range []bool{true, false} {
+				calls := 0
+				_, err := svc.applyRecoveryPublication(owner, func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+					calls++
+					if projectionConflict {
+						return sessionruntime.SessionMutationResult{}, &pebblestore.V3ProjectionConflictError{SessionID: owner.ID}
+					}
+					return sessionruntime.SessionMutationResult{}, pebblestore.ErrWorktreeRecoveryConflict
+				}, sessionruntime.SessionMutationInput{SessionID: owner.ID})
+				want := 1
+				if projectionConflict {
+					want = 3
+				}
+				if err == nil || calls != want {
+					t.Fatalf("retry bound: calls=%d err=%v", calls, err)
+				}
+			}
 			destination := ""
+			interleaved := map[string]bool{}
 			apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
 				if input.WorktreeRecovery.Action == "publish_copy" {
 					destination = input.Session.WorktreeRootPath
@@ -113,8 +133,32 @@ func TestRecoveryCopyActionIntegration(t *testing.T) {
 						return sessionruntime.SessionMutationResult{}, errors.New("injected store failure")
 					}
 				}
+				// Interleave a durable event after every CAS read, once per phase.
+				if !interleaved[input.WorktreeRecovery.Action] {
+					interleaved[input.WorktreeRecovery.Action] = true
+					_, eventErr := sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: owner.ID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Kind: sessionruntime.SessionMutationUpdateSettings, ClientRequestID: "noise-" + input.WorktreeRecovery.Action, PayloadHash: "noise", EventType: "session.test.concurrent"})
+					if eventErr != nil {
+						t.Fatal(eventErr)
+					}
+				}
 				return sessions.ApplySessionMutation(input)
 			}
+			// Traversal must release its reservation even when an event races
+			// release, leaving source bytes and session placement untouched.
+			invalid := args
+			invalid.Recovery.Operation = "traversal-proof"
+			invalid.Recovery.Files = []string{"../escape.txt"}
+			if _, err := svc.recoverSessionWorktree(owner.ID, principal, invalid, apply); err == nil || !strings.Contains(err.Error(), "exact relative file") || strings.Contains(err.Error(), "publication not confirmed") {
+				t.Fatalf("traversal release: %v", err)
+			}
+			released, err := store.InspectWorktreeOwnership(principal.AccountScopeID, principal.UserID, []string{lane})
+			if err != nil || len(released) != 1 || released[0].ClaimantSessionID != "" || released[0].OperationState != "released" {
+				t.Fatalf("retained reservation: %+v %v", released, err)
+			}
+			if unchanged, err := worktreeruntime.InspectRecoveryWorktree(repo, lane); err != nil || unchanged != before {
+				t.Fatalf("traversal changed source: %+v %v", unchanged, err)
+			}
+			args.Recovery.Revision = released[0].Revision
 			_, err = svc.recoverSessionWorktree(owner.ID, principal, args, apply)
 			if (err != nil) != fail {
 				t.Fatalf("copy result: %v", err)
@@ -173,6 +217,21 @@ func TestRecoveryCopyActionIntegration(t *testing.T) {
 			}
 			if claims[0].OperationState != state {
 				t.Fatalf("lost recovery state: %+v", claims)
+			}
+			if !fail {
+				reclaim := args
+				reclaim.Action, reclaim.WorktreeName, reclaim.Recovery.Files = "reclaim_worktree", "", nil
+				reclaim.Recovery.Operation, reclaim.Recovery.Revision = "reclaim-proof", claims[0].Revision
+				if _, err := svc.recoverSessionWorktree(owner.ID, principal, reclaim, apply); err != nil {
+					t.Fatalf("reclaim with concurrent event: %v", err)
+				}
+				current, _, err := sessions.GetSession(owner.ID)
+				if err != nil || current.WorktreeRootPath != lane {
+					t.Fatalf("reclaim placement: %+v %v", current, err)
+				}
+				if unchanged, err := worktreeruntime.InspectRecoveryWorktree(repo, lane); err != nil || unchanged != before {
+					t.Fatalf("reclaim changed source: %+v %v", unchanged, err)
+				}
 			}
 			// R22: journal survives a failed publication; exact cancellation
 			// releases metadata only, retaining both source and copied bytes.
