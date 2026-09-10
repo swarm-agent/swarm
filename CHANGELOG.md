@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix workspace Save in root-launched TUI clients by deferring repository validation to the authenticated daemon, preserving repository-root, initial-commit, and Git ownership checks. Docs impact: clarified workspace validation authority in the Swarm Atlas.
+
 - Fix TUI onboarding exit and recovery: Ctrl+C exits during setup, Enter retries workspace checks, Esc goes back, and explicit confirmation initializes empty folders or creates an empty first commit without staging existing files. Docs impact: documented setup controls and safety boundaries in the Swarm Atlas.
 
 - Fix fresh Linux system installs by provisioning the Swarm-owned runtime root before its children, remove the caller `TMPDIR` requirement from systemd installation, install missing Git/Bash runtime prerequisites before Swarm mutation, and bind Ubuntu/Arch/Omarchy plus Fireworks reconciliation validation to one checksum-verified candidate that starts Git-absent.
