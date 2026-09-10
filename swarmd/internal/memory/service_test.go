@@ -28,7 +28,6 @@ func serviceFixture(t *testing.T) (*Service, context.Context) {
 	settings := d.Settings
 	settings.AutomationEnabled = true
 	settings.IncludedWorkspaces = []string{"w"}
-	settings.ReviewBeforeApply = false
 	if _, err = s.Configure(ctx, d.Revision, settings); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +90,7 @@ func TestMemoryServiceRevocationAndProviderFailure(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			s, ctx := serviceFixture(t)
 			p := &fakeProvider{generate: func(callCtx context.Context, r Request) (Result, error) {
-				if r.Model.Model != "configured-default" || r.OutputTokens != 2000 || r.SpendLimit != 10 || len(r.Input) == 0 {
+				if r.Model.Model != "configured-default" || r.OutputTokens != 2000 || len(r.Input) == 0 {
 					t.Fatal("wrong capability snapshot")
 				}
 				if mode == "failure" {
@@ -110,7 +109,7 @@ func TestMemoryServiceRevocationAndProviderFailure(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				return Result{OutputTokens: 1, SpendMicrounits: 10}, nil
+				return Result{OutputTokens: 1}, nil
 			}}
 			s.Provider = p
 			j, err := s.RunNow(ctx, "job")
@@ -143,7 +142,7 @@ func TestMemoryServiceRevocationAndProviderFailure(t *testing.T) {
 func TestMemoryServiceScheduleAndRemember(t *testing.T) {
 	s, ctx := serviceFixture(t)
 	p := &fakeProvider{generate: func(context.Context, Request) (Result, error) {
-		return Result{OutputTokens: 1, SpendMicrounits: 10}, nil
+		return Result{OutputTokens: 1}, nil
 	}}
 	s.Provider = p
 	d, _ := s.Store.GetForAccount("a")

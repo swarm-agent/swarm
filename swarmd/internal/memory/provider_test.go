@@ -11,7 +11,7 @@ import (
 )
 
 // Purpose: verify RuntimeProvider's actual request has no execution authority,
-// uses hard caps and rejects absent/stale pricing and tool output. Fake transport
+// rejects tool output but accepts missing pricing/output ceilings. Fake transport
 // is the narrowest layer that observes the complete provider-neutral request.
 type testRunner struct {
 	request  iface.Request
@@ -46,32 +46,34 @@ func TestMemoryProviderAuthorityAndPricing(t *testing.T) {
 	r := &testRunner{response: iface.Response{Text: "null", Usage: iface.TokenUsage{OutputTokens: 1}}}
 	p := RuntimeProvider{Catalog: catalog, Runners: testRunners{r}}
 	m := store.AgentModelAssignment{Provider: "codex", Model: "model", Thinking: "medium"}
-	q, err := p.Quote(context.Background(), m, 100, 100)
-	if err != nil || q != 400 {
-		t.Fatal(q, err)
-	}
-	_, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]"), Instructions: "bounded", OutputTokens: 100, SpendLimit: q})
+	_, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]"), Instructions: "bounded", OutputTokens: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := r.request
-	if len(got.Tools) != 0 || got.ToolInvoker != nil || got.WorkspacePath != "" || got.AllowContinuation || !got.StartNewChain || got.MaxOutputTokens != 100 || got.Model != "model" {
+	if len(got.Tools) != 0 || got.ToolInvoker != nil || got.WorkspacePath != "" || got.AllowContinuation || !got.StartNewChain || got.MaxOutputTokens != 0 || got.Model != "model" {
 		t.Fatal("provider authority leaked")
 	}
 	r.response.FunctionCalls = []iface.FunctionCall{{Name: "bash"}}
-	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]"), OutputTokens: 100, SpendLimit: q}); err == nil {
+	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]"), OutputTokens: 100}); err == nil {
 		t.Fatal("tool response accepted")
 	}
+	r.response.FunctionCalls = nil
 	m.ServiceTier = "priority"
-	if _, err = p.Quote(context.Background(), m, 100, 100); err == nil {
-		t.Fatal("unknown tier price")
-	}
-	m.ServiceTier = ""
 	c.ExpiresAt = 1
 	if err = catalog.SetRecord(c); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = p.Quote(context.Background(), m, 100, 100); err == nil {
-		t.Fatal("stale pricing")
+	c.Pricing = nil
+	c.MaxOutputTokens = 0
+	if err = catalog.SetRecord(c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]")}); err != nil {
+		t.Fatal("pricing or output ceiling blocked generation", err)
+	}
+	p.Catalog = nil
+	if _, err = p.Generate(context.Background(), Request{Model: m, Input: []byte("[]")}); err != nil {
+		t.Fatal("missing catalog blocked generation", err)
 	}
 }

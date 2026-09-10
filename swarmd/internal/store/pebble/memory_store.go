@@ -44,15 +44,13 @@ type MemorySettings struct {
 	LookbackDays       int      `json:"lookback_days"`
 	InputTokens        int      `json:"input_tokens"`
 	OutputTokens       int      `json:"output_tokens"`
-	SpendMicrounits    int64    `json:"spend_microunits"`
 	StorageTokens      int      `json:"storage_tokens"`
 	InjectionTokens    int      `json:"injection_tokens"`
 	RetentionDays      int      `json:"retention_days"`
-	ReviewBeforeApply  bool     `json:"review_before_apply"`
 }
 
 func DefaultMemorySettings() MemorySettings {
-	return MemorySettings{ReadEnabled: true, RememberEnabled: true, Mode: "manual", IntervalMinutes: 1440, LookbackDays: 30, InputTokens: 16000, OutputTokens: 2000, SpendMicrounits: 100000, StorageTokens: 131072, InjectionTokens: 8192, RetentionDays: 90, ReviewBeforeApply: true}
+	return MemorySettings{ReadEnabled: true, RememberEnabled: true, Mode: "manual", IntervalMinutes: 1440, LookbackDays: 30, InputTokens: 16000, OutputTokens: 2000, StorageTokens: 131072, InjectionTokens: 8192, RetentionDays: 90}
 }
 
 // Token accounting is a deterministic UTF-8 byte upper-bound, not a provider
@@ -109,6 +107,8 @@ type MemoryDocument struct {
 	StoredTokens         int               `json:"stored_tokens"`
 	Jobs                 []MemoryJob       `json:"jobs,omitempty"`
 	JobCursors           map[string]uint64 `json:"job_cursors,omitempty"`
+	JobOffsets           map[string]int    `json:"job_offsets,omitempty"`
+	ScanAfter            string            `json:"scan_after,omitempty"`
 	NextJobAt            int64             `json:"next_job_at,omitempty"`
 }
 type MemoryMutation struct {
@@ -121,8 +121,8 @@ type MemoryMutation struct {
 	Source           MemorySource
 	Settings         *MemorySettings
 	RestoreRevision  int64
-	// Learned commits must be bound to the settings revision they read and receive
-	// explicit approval when review-before-apply is set. These are trusted inputs.
+	// Legacy approval input is retained only for decoding historical callers;
+	// automatic learning is revision-bound and does not require approval.
 	Approved bool
 }
 type MemoryStore struct {
@@ -191,6 +191,16 @@ func (s *MemoryStore) load(account string) (MemoryDocument, bool, error) {
 		return d, false, errors.New("invalid memory authority")
 	}
 	now := s.now().UnixMilli()
+	// Legacy review jobs cannot block automatic processing. Preserve cursors and
+	// notes; discard uncommitted proposals so their sources are processed anew.
+	for i := range d.Jobs {
+		if d.Jobs[i].Status == "review" {
+			d.Jobs[i].Status = "interrupted"
+			d.Jobs[i].Proposal = nil
+			d.Jobs[i].Error = "automatic processing will retry uncommitted sources"
+			changed = true
+		}
+	}
 	for i := range d.Jobs {
 		j := &d.Jobs[i]
 		if j.Proposal != nil && (j.CreatedAt+int64(d.Settings.RetentionDays)*86400000 <= now || j.Revision != d.Revision) {
@@ -420,6 +430,18 @@ func (s *MemoryStore) MutateForAccount(account string, m MemoryMutation) (Memory
 }
 
 func (s *MemoryStore) mutateLoaded(d MemoryDocument, m MemoryMutation) (MemoryDocument, error) {
+	d, err := s.prepareMutation(d, m)
+	if err != nil {
+		return MemoryDocument{}, err
+	}
+	if err = s.persist(d); err != nil {
+		return MemoryDocument{}, err
+	}
+	return d, nil
+}
+
+// prepareMutation changes only the private document; batch learning publishes once.
+func (s *MemoryStore) prepareMutation(d MemoryDocument, m MemoryMutation) (MemoryDocument, error) {
 	if d.Revision != m.ExpectedRevision {
 		return MemoryDocument{}, ErrMemoryConflict
 	}
@@ -430,7 +452,7 @@ func (s *MemoryStore) mutateLoaded(d MemoryDocument, m MemoryMutation) (MemoryDo
 		return MemoryDocument{}, ErrMemoryPolicy
 	}
 	if m.Actor.Kind == "learned" {
-		if !d.Settings.AutomationEnabled || m.Actor.JobID == "" || ValidateAgentModelAssignment(m.Actor.Model) != nil || (d.Settings.ReviewBeforeApply && !m.Approved) || m.Operation != "put" {
+		if !d.Settings.AutomationEnabled || m.Actor.JobID == "" || ValidateAgentModelAssignment(m.Actor.Model) != nil || m.Operation != "put" {
 			return MemoryDocument{}, ErrMemoryPolicy
 		}
 	}
@@ -444,6 +466,9 @@ func (s *MemoryStore) mutateLoaded(d MemoryDocument, m MemoryMutation) (MemoryDo
 		old := d.Settings
 		d.Settings = *m.Settings
 		d.Settings.AutomationUserID = m.Actor.ID
+		if d.Settings.AutomationEnabled && (!old.AutomationEnabled || old.Mode != d.Settings.Mode || old.IntervalMinutes != d.Settings.IntervalMinutes) {
+			d.NextJobAt = now
+		}
 		if err := validateMemorySettings(d.Settings); err != nil {
 			return MemoryDocument{}, err
 		}
@@ -627,15 +652,13 @@ func (s *MemoryStore) mutateLoaded(d MemoryDocument, m MemoryMutation) (MemoryDo
 		}
 	}
 	appendMemoryChange(&d, c)
-	if err := s.persist(d); err != nil {
+	if err := validateMemoryDocument(&d); err != nil {
 		return MemoryDocument{}, err
 	}
-	// Persist validates a copy; keep the returned accounting in sync as well.
-	_ = validateMemoryDocument(&d)
 	return d, nil
 }
 func validateMemorySettings(s MemorySettings) error {
-	if (s.Mode != "manual" && s.Mode != "recurring") || s.IntervalMinutes < 15 || s.IntervalMinutes > 43200 || s.LookbackDays < 1 || s.LookbackDays > 365 || s.RetentionDays < 1 || s.RetentionDays > 3650 || s.InputTokens < 1 || s.InputTokens > 1000000 || s.OutputTokens < 1 || s.OutputTokens > 32768 || s.SpendMicrounits < 1 || s.SpendMicrounits > 100000000 || s.StorageTokens < 1 || s.StorageTokens > 1048576 || s.InjectionTokens < 1 || s.InjectionTokens > s.StorageTokens {
+	if (s.Mode != "manual" && s.Mode != "recurring") || s.IntervalMinutes < 15 || s.IntervalMinutes > 43200 || s.LookbackDays < 1 || s.LookbackDays > 365 || s.RetentionDays < 1 || s.RetentionDays > 3650 || s.InputTokens < 1 || s.InputTokens > 1000000 || s.OutputTokens < 1 || s.OutputTokens > 32768 || s.StorageTokens < 1 || s.StorageTokens > 1048576 || s.InjectionTokens < 1 || s.InjectionTokens > s.StorageTokens {
 		return ErrMemoryBudget
 	}
 	for _, xs := range [][]string{s.IncludedWorkspaces, s.IncludedSessions, s.ExcludedWorkspaces, s.ExcludedSessions} {
@@ -654,7 +677,7 @@ func validateMemoryDocument(d *MemoryDocument) error {
 	if err := validateMemorySettings(d.Settings); err != nil {
 		return err
 	}
-	if len(d.Jobs) > MemoryMaxJobs || len(d.JobCursors) > 256 {
+	if len(d.Jobs) > MemoryMaxJobs {
 		return ErrMemoryBudget
 	}
 	if len(d.Entries) > MemoryMaxEntries || len(d.History) > MemoryMaxHistory || len(d.Forgotten) > MemoryMaxTombstones {

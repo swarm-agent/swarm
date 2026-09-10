@@ -22,7 +22,6 @@ func memoryJobFixture(t *testing.T) (*Store, *MemoryStore, MemoryJob) {
 	settings := d.Settings
 	settings.AutomationEnabled = true
 	settings.IncludedWorkspaces = []string{"w"}
-	settings.ReviewBeforeApply = false
 	memoryApply(t, s, MemoryMutation{ExpectedRevision: d.Revision, Actor: MemoryActor{Kind: "user", ID: "user"}, Reason: "opt in", Operation: "settings", Settings: &settings})
 	for _, w := range []string{"w", "other"} {
 		if err := db.PutJSON(KeyWorkspaceEntryByIDForAccount("a", w), WorkspaceEntry{AccountScopeID: "a", WorkspaceID: w, State: "active", Path: "/workspace"}); err != nil {
@@ -54,9 +53,6 @@ func claimMemory(t *testing.T, s *MemoryStore) MemoryJob {
 	}
 	if len(in) != 1 || in[0].Source.SessionID != "allowed" || j.Model.Model != "test-model" {
 		t.Fatalf("source/model authority: %+v %+v", j, in)
-	}
-	if err = s.ReserveMemorySpend("a", "user", "job", 10); err != nil {
-		t.Fatal(err)
 	}
 	return j
 }
@@ -137,17 +133,16 @@ func TestMemoryJobsReviewAndFailureAtomicity(t *testing.T) {
 	db, s, _ := memoryJobFixture(t)
 	j := claimMemory(t, s)
 	d, _ := s.GetForAccount("a")
-	d.Jobs[0].Settings.ReviewBeforeApply = true
 	if err := s.persist(d); err != nil {
 		t.Fatal(err)
 	}
 	review, err := s.FinishMemoryJob(context.Background(), "a", "user", "job", learnedProposal(j), 10, 10, false)
-	if err != nil || review.Status != "review" {
+	if err != nil || review.Status != "completed" {
 		t.Fatal(review, err)
 	}
 	d, _ = s.GetForAccount("a")
-	if len(d.Entries) != 0 {
-		t.Fatal("unapproved apply")
+	if len(d.Entries) != 1 {
+		t.Fatal("automatic apply missing")
 	}
 	// Inject an invalid oversized document into the private loaded transaction;
 	// the synchronous publication must reject without changing persisted bytes.
@@ -160,8 +155,8 @@ func TestMemoryJobsReviewAndFailureAtomicity(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("partial failure")
 	}
-	if _, err = s.FinishMemoryJob(context.Background(), "a", "user", "job", nil, 0, 0, true); err != nil {
-		t.Fatal(err)
+	if _, err = s.FinishMemoryJob(context.Background(), "a", "user", "job", nil, 0, 0, true); err == nil {
+		t.Fatal("retired approval accepted")
 	}
 	d, _ = s.GetForAccount("a")
 	if len(d.Entries) != 1 {
@@ -200,13 +195,10 @@ func TestMemoryJobsConflictProtectionAndIncrementalRead(t *testing.T) {
 	if err != nil || len(in) != 1 || in[0].Content != "Project now uses Rust" {
 		t.Fatal(in, err)
 	}
-	if err = s.ReserveMemorySpend("a", "user", "conflict", 10); err != nil {
-		t.Fatal(err)
-	}
 	proposal := learnedProposal(next)
 	proposal.Content = "Project uses Rust"
 	review, err := s.FinishMemoryJob(context.Background(), "a", "user", "conflict", proposal, 10, 10, false)
-	if err != nil || review.Status != "review" || !review.Conflict {
+	if err != nil || review.Status != "completed" {
 		t.Fatal(review, err)
 	}
 	d, _ := s.GetForAccount("a")

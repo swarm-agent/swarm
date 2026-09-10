@@ -59,7 +59,7 @@ func memoryUnchanged(t *testing.T, s *MemoryStore, want MemoryDocument, m Memory
 }
 func TestMemoryIsolationCASBudgets(t *testing.T) {
 	_, s, d := memoryTest(t)
-	if !d.Settings.ReadEnabled || !d.Settings.RememberEnabled || d.Settings.AutomationEnabled || d.Settings.Mode != "manual" || !d.Settings.ReviewBeforeApply {
+	if !d.Settings.ReadEnabled || !d.Settings.RememberEnabled || d.Settings.AutomationEnabled || d.Settings.Mode != "manual" {
 		t.Fatal("unsafe defaults")
 	}
 	b, err := s.GetForAccount("b")
@@ -117,8 +117,7 @@ func TestMemoryLearnedOwnershipScopeAndRestore(t *testing.T) {
 	learned := memoryPut(d, "context", "learned", "project context")
 	learned.Actor = MemoryActor{Kind: "learned", ID: "memory", JobID: "job", Model: AgentModelAssignment{Provider: "test", Model: "test", Thinking: "low"}}
 	learned.Entry.Sources = []MemorySource{{WorkspaceID: "workspace", SessionID: "session", EventSeq: 1}}
-	memoryUnchanged(t, s, d, learned)
-	learned.Approved = true
+	// Automatic learning no longer requires a review approval.
 	attack := learned
 	attack.Entry.ID = "rule"
 	memoryUnchanged(t, s, d, attack)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const MemoryMaxJobs = 64
@@ -22,6 +23,8 @@ type MemoryJob struct {
 	Model               AgentModelAssignment `json:"model"`
 	Sources             []MemorySource       `json:"sources"`
 	Cursors             map[string]uint64    `json:"cursors"`
+	Offsets             map[string]int       `json:"offsets,omitempty"`
+	ScanAfter           string               `json:"scan_after,omitempty"`
 	Proposal            *MemoryEntry         `json:"proposal,omitempty"`
 	Conflict            bool                 `json:"conflict"`
 	InputTokens         int                  `json:"input_tokens"`
@@ -83,7 +86,7 @@ func (s *MemoryStore) QueueMemoryJob(account, user, id string, scheduled bool) (
 		}
 	}
 	if len(d.Jobs) >= MemoryMaxJobs {
-		return MemoryJob{}, ErrMemoryBudget
+		d.Jobs = append([]MemoryJob(nil), d.Jobs[len(d.Jobs)-MemoryMaxJobs+1:]...)
 	}
 	models, ok, err := NewAgentModelSettingsStore(s.store).GetForAccount(account)
 	if err != nil {
@@ -166,18 +169,25 @@ func (s *MemoryStore) ClaimMemoryJob(ctx context.Context, account, user, id stri
 		return MemoryJob{}, nil, ErrMemoryPolicy
 	}
 	j := &d.Jobs[i]
+	if j.Cursors == nil {
+		j.Cursors = map[string]uint64{}
+	}
+	if j.Offsets == nil {
+		j.Offsets = map[string]int{}
+	}
 	if j.UserID != user || j.Status != "queued" || j.Revision != d.Revision || !d.Settings.AutomationEnabled {
 		return MemoryJob{}, nil, ErrMemoryConflict
 	}
 	sessions := NewSessionStore(s.store)
-	candidates, err := sessions.ListSessionsForAccountUser(account, user, 256)
+	candidates, next, err := s.memorySessionPage(account, user, d.ScanAfter)
 	if err != nil {
 		return MemoryJob{}, nil, err
 	}
-	j.ScanLimited = len(candidates) == 256
+	j.ScanLimited = next != ""
+	j.ScanAfter = next
 	inputs := []MemoryJobInput{}
-	budget := d.Settings.InputTokens
-	cutoff := s.now().UnixMilli() - int64(d.Settings.LookbackDays)*86400000
+	budget := 12000 // raw UTF-8 bytes per resumable batch, independent of pricing
+scan:
 	for _, candidate := range candidates {
 		if err := ctx.Err(); err != nil {
 			return MemoryJob{}, nil, err
@@ -218,28 +228,52 @@ func (s *MemoryStore) ClaimMemoryJob(ctx context.Context, account, user, id stri
 			if m.SessionID != sess.ID || m.AccountScopeID != account || m.UserID != user {
 				return MemoryJob{}, nil, ErrMemoryPolicy
 			}
-			if m.CreatedAt < cutoff || (m.Role != "user" && m.Role != "assistant") {
+			if m.Role != "user" && m.Role != "assistant" {
 				j.Cursors[sess.ID] = m.GlobalSeq
 				continue
 			}
-			cost := MemoryTokenCount(m.Content) + 256
-			if cost > budget {
-				// Never advance a cursor past an unread oversized message.
-				return MemoryJob{}, nil, ErrMemoryBudget
+			offset := 0
+			if _, processed := j.Offsets[sess.ID]; !processed {
+				offset = d.JobOffsets[sess.ID]
 			}
-			budget -= cost
-			j.InputTokens += cost
+			if offset < 0 || offset > len(m.Content) {
+				return MemoryJob{}, nil, ErrMemoryConflict
+			}
+			end := len(m.Content)
+			if end-offset > budget {
+				end = offset + budget
+				for end > offset && !utf8.RuneStart(m.Content[end]) {
+					end--
+				}
+			}
+			if end == offset && len(m.Content) > offset {
+				j.ScanLimited = true
+				j.ScanAfter = beforeMemorySession(account, candidate.ID)
+				break scan
+			}
+			content := m.Content[offset:end]
+			budget -= len(content)
+			j.InputTokens += len(content)
 			source := src
 			source.EventSeq = int64(m.GlobalSeq)
-			inputs = append(inputs, MemoryJobInput{Source: source, Role: m.Role, Content: m.Content})
+			inputs = append(inputs, MemoryJobInput{Source: source, Role: m.Role, Content: content})
 			j.Sources = append(j.Sources, source)
-			j.Cursors[sess.ID] = m.GlobalSeq
-			if len(j.Sources) >= 32 {
+			if end < len(m.Content) {
+				j.Offsets[sess.ID] = end
 				j.ScanLimited = true
-				break
+				j.ScanAfter = beforeMemorySession(account, candidate.ID)
+				break scan
+			}
+			j.Cursors[sess.ID] = m.GlobalSeq
+			j.Offsets[sess.ID] = 0
+			if len(j.Sources) >= 32 || budget < 4 {
+				j.ScanLimited = true
+				j.ScanAfter = beforeMemorySession(account, candidate.ID)
+				break scan
 			}
 		}
-		if len(j.Sources) >= 32 {
+		if len(messages) == 128 {
+			j.ScanAfter = beforeMemorySession(account, candidate.ID)
 			break
 		}
 	}
@@ -293,36 +327,22 @@ func (s *MemoryStore) UpdateMemoryJob(account, user, id, status string, output i
 	return *j, nil
 }
 
-func (s *MemoryStore) ReserveMemorySpend(account, user, id string, amount int64) error {
-	return s.ReserveMemoryRequest(account, user, id, amount, 0)
-}
-func (s *MemoryStore) ReserveMemoryRequest(account, user, id string, amount int64, inputTokens int) error {
-	workspaceMapMutationMu.Lock()
-	defer workspaceMapMutationMu.Unlock()
-	d, _, err := s.load(account)
-	if err != nil {
-		return err
-	}
-	i := memoryJobIndex(d, id)
-	if i < 0 {
-		return ErrMemoryPolicy
-	}
-	j := &d.Jobs[i]
-	if j.UserID != user || j.Status != "running" || j.Revision != d.Revision || amount <= 0 || amount > j.Settings.SpendMicrounits || j.ReservedSpend != 0 {
-		return ErrMemoryBudget
-	}
-	if inputTokens < 0 || inputTokens > j.Settings.InputTokens {
-		return ErrMemoryBudget
-	}
-	j.ProviderInputTokens = inputTokens
-	j.ReservedSpend = amount
-	return s.persist(d)
-}
-
 // FinishMemoryJob validates live source ownership under the same session locks
 // as deletion, then publishes job status, cursors and one learned change in one
 // synchronous memory document commit. No partial multi-entry apply is possible.
 func (s *MemoryStore) FinishMemoryJob(ctx context.Context, account, user, id string, proposal *MemoryEntry, output int, spend int64, approved bool) (MemoryJob, error) {
+	var entries []MemoryEntry
+	if proposal != nil {
+		entries = append(entries, *proposal)
+	}
+	if approved {
+		return MemoryJob{}, ErrMemoryPolicy
+	}
+	return s.FinishMemoryBatch(ctx, account, user, id, entries, output)
+}
+
+// FinishMemoryBatch commits all learned entries and processed positions atomically.
+func (s *MemoryStore) FinishMemoryBatch(ctx context.Context, account, user, id string, entries []MemoryEntry, output int) (MemoryJob, error) {
 	workspaceMapMutationMu.Lock()
 	defer workspaceMapMutationMu.Unlock()
 	d, _, err := s.load(account)
@@ -334,10 +354,10 @@ func (s *MemoryStore) FinishMemoryJob(ctx context.Context, account, user, id str
 		return MemoryJob{}, ErrMemoryPolicy
 	}
 	j := &d.Jobs[i]
-	if j.UserID != user || (j.Status != "running" && !(approved && j.Status == "review")) || j.Revision != d.Revision || !d.Settings.AutomationEnabled {
+	if j.UserID != user || j.Status != "running" || j.Revision != d.Revision || !d.Settings.AutomationEnabled {
 		return MemoryJob{}, ErrMemoryConflict
 	}
-	if output < 0 || output > j.Settings.OutputTokens || spend < 0 || spend > j.ReservedSpend {
+	if output < 0 || len(entries) > 32 {
 		return MemoryJob{}, ErrMemoryBudget
 	}
 	ids := []string{}
@@ -363,13 +383,8 @@ func (s *MemoryStore) FinishMemoryJob(ctx context.Context, account, user, id str
 	if err := ctx.Err(); err != nil {
 		return MemoryJob{}, err
 	}
-	if approved {
-		proposal = j.Proposal
-		output = j.OutputTokens
-		spend = j.Spend
-	}
-	if proposal != nil {
-		e := *proposal
+	validated := []MemoryEntry{}
+	for _, e := range entries {
 		if e.Kind != "learned" || e.Pinned || e.WorkspaceID == "" || e.SessionID != "" || len(e.Sources) == 0 || len(e.Sources) > 32 || len(e.Content) > j.Settings.OutputTokens {
 			return MemoryJob{}, ErrMemoryPolicy
 		}
@@ -387,7 +402,7 @@ func (s *MemoryStore) FinishMemoryJob(ctx context.Context, account, user, id str
 		// Only learned identities may be reconciled. Rule/orientation IDs are not writable.
 		// Stable source identity reconciles repeated extraction without allowing
 		// the model to select an unrelated record as its write target.
-		targetID := "learned-" + workspaceMapDigest(e.WorkspaceID + "\x00" + e.Sources[0].SessionID)[:24]
+		targetID := "learned-" + workspaceMapDigest(e.WorkspaceID + "\x00" + strings.TrimSpace(e.Content))[:24]
 		if e.ID != "" && e.ID != targetID {
 			return MemoryJob{}, ErrMemoryPolicy
 		}
@@ -399,26 +414,13 @@ func (s *MemoryStore) FinishMemoryJob(ctx context.Context, account, user, id str
 				return MemoryJob{}, ErrMemoryPolicy
 			}
 			if old.Content == e.Content {
-				proposal = nil
-			} else {
-				j.Conflict = true
+				continue
 			}
 		}
-		if proposal != nil {
-			proposal = &e
-		}
+		validated = append(validated, e)
 	}
 	j.OutputTokens = output
-	j.Spend = spend
 	j.UpdatedAt = s.now().UnixMilli()
-	if proposal != nil && !approved && (j.Settings.ReviewBeforeApply || j.Conflict) {
-		j.Status = "review"
-		j.Proposal = proposal
-		if err = s.persist(d); err != nil {
-			return MemoryJob{}, err
-		}
-		return *j, nil
-	}
 	j.Status = "completed"
 	j.Proposal = nil
 	if d.JobCursors == nil {
@@ -429,15 +431,29 @@ func (s *MemoryStore) FinishMemoryJob(ctx context.Context, account, user, id str
 			d.JobCursors[session] = seq
 		}
 	}
-	if len(d.JobCursors) > 256 {
-		return MemoryJob{}, ErrMemoryBudget
+	if d.JobOffsets == nil {
+		d.JobOffsets = map[string]int{}
 	}
-	if proposal != nil {
-		j.ResultRevision = d.Revision + 1
-		d, err = s.mutateLoaded(d, MemoryMutation{ExpectedRevision: d.Revision, Actor: MemoryActor{Kind: "learned", ID: user, JobID: id, Model: j.Model}, Reason: "Source-bound memory reconciliation", Operation: "put", Entry: *proposal, Approved: approved})
-	} else {
-		err = s.persist(d)
+	for session, offset := range j.Offsets {
+		if offset == 0 {
+			delete(d.JobOffsets, session)
+		} else {
+			d.JobOffsets[session] = offset
+		}
 	}
+	d.ScanAfter = j.ScanAfter
+	if j.ScanLimited {
+		d.NextJobAt = s.now().UnixMilli()
+	}
+	model := j.Model
+	for _, entry := range validated {
+		d, err = s.prepareMutation(d, MemoryMutation{ExpectedRevision: d.Revision, Actor: MemoryActor{Kind: "learned", ID: user, JobID: id, Model: model}, Reason: "Automatic source-bound memory update", Operation: "put", Entry: entry})
+		if err != nil {
+			return MemoryJob{}, err
+		}
+	}
+	d.Jobs[i].ResultRevision = d.Revision
+	err = s.persist(d)
 	if err != nil {
 		return MemoryJob{}, err
 	}

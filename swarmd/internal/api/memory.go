@@ -69,8 +69,6 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		case "cancel":
 			err = s.memory.Cancel(r.Context(), req.JobID)
 			result = map[string]bool{"cancelled": err == nil}
-		case "approve":
-			result, err = s.memory.Approve(r.Context(), req.JobID)
 		default:
 			http.Error(w, "unknown memory action", 400)
 			return
