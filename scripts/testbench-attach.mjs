@@ -54,7 +54,7 @@ export class AttachClient {
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     const response = await fetch(`${this.origin}${route}`, {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-      redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(Math.min(this.requestMs, remaining)), ...(this.signal ? [this.signal] : [])]),
+      redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(Math.min(memoryOperation && method === 'POST' && body?.action === 'run_now' ? 150000 : this.requestMs, remaining)), ...(this.signal ? [this.signal] : [])]),
     })
     if (!response.ok) {
       // Only fixed memory diagnostics are safe to expose; never print provider bodies.
@@ -63,7 +63,7 @@ export class AttachClient {
         const chunk = await reader?.read()
         await reader?.cancel()
         const text = chunk?.value?.length <= 2048 ? new TextDecoder().decode(chunk.value).trim() : ''
-        const safe = ['memory provider cannot guarantee configured output and spend limits', 'memory budget exceeded', 'memory provider output rejected', 'memory provider returned invalid JSON', 'memory provider returned trailing output']
+        const safe = ['memory provider unavailable', 'memory budget exceeded', 'memory provider output rejected', 'memory provider returned invalid JSON', 'memory provider returned trailing output']
         if (safe.includes(text)) throw new Error(text)
       } else await response.body?.cancel()
       throw new Error(`attach read returned HTTP ${response.status}`)

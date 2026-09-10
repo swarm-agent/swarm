@@ -68,7 +68,7 @@ try {
  } else if(stage==='cleanup'){
   restoreClient();const before=await mem();
   await post({action:'settings',settings:state.originalSettings})
-  for(const entry of (await mem()).entries||[]){if(entry.id===state.id||(state.learnedIDs||[]).includes(entry.id))await post({action:'forget',entry_id:entry.id})}
+  for(const entry of (await mem()).entries||[]){if((entry.id===state.id||(state.learnedIDs||[]).includes(entry.id))&&(await mem()).entries?.some(e=>e.id===entry.id))await post({action:'forget',entry_id:entry.id})}
   const d=await mem();assert(!d.settings.automation_enabled);assert(!(d.entries||[]).some(e=>e.id===state.id||(state.learnedIDs||[]).includes(e.id)));assert(!JSON.stringify(d.history).includes(state.entry.content));check('pause and permanent forget redact fixture history')
   await save()
  } else throw new Error('unknown stage')
