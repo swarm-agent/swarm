@@ -166,3 +166,35 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: daemon guidance must not replace a chosen project or authorize
+// filesystem mutation. HomePage's real key handler is the narrow consent boundary;
+// cancellation and repeated Enter must emit no setup action before explicit y.
+func TestOnboardingDaemonSuggestionRequiresSelectionAndConsent(t *testing.T) {
+	page := readyOnboardingPage()
+	page.ShowOnboardingWorkspace("")
+	original := page.OnboardingWorkspacePath()
+	page.SetOnboardingWorkspaceGuidance("worker", "/projects/new-workspace")
+	if page.OnboardingWorkspacePath() != original {
+		t.Fatal("guidance replaced the selected project")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, tcell.ModNone))
+	if page.OnboardingWorkspacePath() != "/projects/new-workspace" {
+		t.Fatal("explicit suggestion selection failed")
+	}
+	if _, ok := page.PopHomeAction(); ok {
+		t.Fatal("selection authorized mutation")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'y', tcell.ModNone))
+	if _, ok := page.PopHomeAction(); ok {
+		t.Fatal("cancelled consent remained usable")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'y', tcell.ModNone))
+	action, ok := page.PopHomeAction()
+	if !ok || action.Kind != HomeActionSetupOnboardingRepository || action.WorkspacePath != "/projects/new-workspace" {
+		t.Fatalf("consented setup = %+v, %v", action, ok)
+	}
+}

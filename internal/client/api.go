@@ -67,12 +67,22 @@ type OnboardingHeuristics struct {
 	AgentCount      int `json:"agent_count"`
 }
 
+type RuntimeWorkspaceGuidance struct {
+	RuntimeUsername        string `json:"runtime_username,omitempty"`
+	RuntimeUID             string `json:"runtime_uid"`
+	RuntimeNonRoot         bool   `json:"runtime_non_root"`
+	SuggestedWorkspacePath string `json:"suggested_workspace_path,omitempty"`
+	SetupRequired          bool   `json:"setup_required"`
+	Message                string `json:"message"`
+}
+
 type OnboardingStatus struct {
-	OK              bool                 `json:"ok"`
-	NeedsOnboarding bool                 `json:"needs_onboarding"`
-	Identity        OnboardingIdentity   `json:"identity"`
-	Config          OnboardingConfig     `json:"config"`
-	Heuristics      OnboardingHeuristics `json:"heuristics"`
+	WorkspaceGuidance *RuntimeWorkspaceGuidance `json:"workspace_guidance,omitempty"`
+	OK                bool                      `json:"ok"`
+	NeedsOnboarding   bool                      `json:"needs_onboarding"`
+	Identity          OnboardingIdentity        `json:"identity"`
+	Config            OnboardingConfig          `json:"config"`
+	Heuristics        OnboardingHeuristics      `json:"heuristics"`
 }
 
 type SaveOnboardingInput struct {
@@ -1665,7 +1675,7 @@ func (c *API) EnsureLocalAuth(ctx context.Context) error {
 
 func (c *API) GetOnboardingStatus(ctx context.Context) (OnboardingStatus, error) {
 	var status OnboardingStatus
-	if err := c.getJSON(ctx, "/v1/onboarding", &status, false); err != nil {
+	if err := c.getJSON(ctx, "/v1/onboarding", &status, strings.TrimSpace(c.Token()) != ""); err != nil {
 		return OnboardingStatus{}, err
 	}
 	return status, nil

@@ -38,6 +38,8 @@ type onboardingState struct {
 	WorkspaceReady bool
 	SetupConsent   bool
 	EditingPath    bool
+	RuntimeAccount string
+	SuggestedPath  string
 	PreviousPath   string
 }
 
@@ -85,6 +87,12 @@ func (p *HomePage) OnboardingProviderActive() bool {
 
 func (p *HomePage) OnboardingWorkspaceActive() bool {
 	return p != nil && p.onboarding.Visible && p.onboarding.Phase == onboardingPhaseWorkspace
+}
+
+// Guidance is an offer, never authority to replace a selected workspace or create files.
+func (p *HomePage) SetOnboardingWorkspaceGuidance(account, suggestion string) {
+	p.onboarding.RuntimeAccount = strings.TrimSpace(account)
+	p.onboarding.SuggestedPath = strings.TrimSpace(suggestion)
 }
 
 func (p *HomePage) OnboardingWorkspacePath() string {
@@ -281,6 +289,14 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.model.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
 		return
 	}
+	if ev.Key() == tcell.KeyCtrlS && p.onboarding.SuggestedPath != "" {
+		p.onboarding.WorkspacePath = p.onboarding.SuggestedPath
+		p.model.WorkspaceSetupGitReadiness = model.GitReadinessNotRepository
+		p.onboarding.SetupConsent = true
+		p.onboarding.Error = ""
+		p.onboarding.Status = "Press y to create this folder and initialize Git with an empty commit. No existing files will be staged. Esc goes back."
+		return
+	}
 	if ev.Key() == tcell.KeyCtrlL {
 		p.onboarding.PreviousPath = p.onboarding.WorkspacePath
 		p.onboarding.EditingPath = true
@@ -307,8 +323,8 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.onboarding.Status = "Setting up Git; existing files will not be staged..."
 		return
 	}
-	if !p.keybinds.Match(ev, KeybindEditorSubmit) {
-		return
+	if !p.keybinds.Match(ev, KeybindEditorSubmit) || p.onboarding.SetupConsent {
+		return // Enter is never setup consent, even after a readiness refresh.
 	}
 	path := strings.TrimSpace(p.onboarding.WorkspacePath)
 	if path == "" {
@@ -591,6 +607,13 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	path := strings.TrimSpace(p.onboarding.WorkspacePath)
 	if path == "" {
 		path = "launch directory unavailable"
+	}
+	if p.onboarding.RuntimeAccount != "" {
+		DrawText(s, content.X, content.Y, content.W, p.theme.Text, clampEllipsis("Work runs as daemon account: "+p.onboarding.RuntimeAccount+"; terminal access is not daemon access", content.W))
+	}
+	if p.onboarding.SuggestedPath != "" {
+		DrawText(s, content.X, content.Y+8, content.W, p.theme.TextMuted, "Ctrl+S selects a new daemon-accessible workspace:")
+		DrawText(s, content.X, content.Y+9, content.W, p.theme.Primary, clampTail(p.onboarding.SuggestedPath, content.W))
 	}
 	card := Rect{X: content.X, Y: content.Y + 2, W: content.W, H: 5}
 	DrawBox(s, card, p.theme.BorderActive)
