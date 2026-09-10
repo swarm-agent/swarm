@@ -168,7 +168,10 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	}
 
 	activePath := normalizePath(next.CWD)
-	gitStatus, _ := gitStatusForPath(activePath)
+	gitStatus, gitErr := a.workspaceGitStatus(ctx, activePath)
+	if gitErr != nil {
+		warnings = append(warnings, "workspace Git status unavailable")
+	}
 	for i := range next.Directories {
 		if pathsEqual(next.Directories[i].ResolvedPath, activePath) {
 			applyGitStatusToDirectory(&next.Directories[i], gitStatus)

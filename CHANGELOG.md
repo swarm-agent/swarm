@@ -46,6 +46,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Fixed
 
+- Fixed TUI workspace Git refresh to use authenticated daemon status, allowing root-launched terminals to read service-owned repositories without weakening Git ownership checks. Unborn repositories, mismatched roots, and failed status reads remain non-ready.
 - Fixed fresh and interrupted TUI onboarding so identity setup continues to provider and workspace setup, incomplete setup resumes on relaunch, completion uses the authenticated session, and the setup overlay stays dismissed after successful completion.
 - Added editable workspace locations (`Ctrl+L`) and explicit folder creation (`Ctrl+N`) during TUI onboarding, allowing recovery from home/root launches, populated non-repositories, missing Git, and permission failures by retrying or choosing a safe project. Git initialization rejects home and filesystem roots, requires explicit consent, and preserves existing files and staged changes.
 - Made root-only Linux installation automatically provision a non-root Swarm service identity with a usable home and workspace, while continuing to reject workspaces under the root home.
