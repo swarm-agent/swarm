@@ -73,20 +73,55 @@ type automationScheduleExecution interface {
 	RecoverPage(context.Context, automation.Principal, store.AutomationScope, string, string) (string, error)
 }
 
+var errAutomationContinue = errors.New("automation catalog continuation")
+
+type automationSweepPosition struct {
+	store.AutomationSchedulerPosition
+	At int64 `json:"sweep_at,omitempty"`
+}
+
+type automationWindowExecution struct {
+	automationScheduleExecution
+	at time.Time
+}
+
+func (e automationWindowExecution) Tick(ctx context.Context, p automation.Principal, scope store.AutomationScope, id string, revision uint64) error {
+	timed, ok := e.automationScheduleExecution.(interface {
+		TickAt(context.Context, automation.Principal, store.AutomationScope, string, uint64, time.Time) error
+	})
+	if !ok { return automation.ErrInvalid }
+	return timed.TickAt(ctx, p, scope, id, revision, e.at)
+}
+
 // automationSweep performs one bounded definition page per turn. Position writes
 // follow effects; crashes replay stable trigger receipts, never skip unfinished pages.
 func automationSweep(ctx context.Context, db *store.Store, execution automationScheduleExecution, outcomes ...func(context.Context, automation.Principal, store.AutomationRecord) error) error {
+	return automationSweepAt(ctx, db, execution, time.Now(), outcomes...)
+}
+
+func automationSweepAt(ctx context.Context, db *store.Store, execution automationScheduleExecution, now time.Time, outcomes ...func(context.Context, automation.Principal, store.AutomationRecord) error) error {
 	if err := ctx.Err(); err != nil { return err }
-	var pos store.AutomationSchedulerPosition
+	var pos automationSweepPosition
 	if err := db.GetAutomationSchedulerPosition("catalog", &pos); err != nil { return err }
 	old := pos
-	save := func() error { return db.SaveAutomationSchedulerPosition("catalog", old, pos) }
+	// Commit the window before effects so interrupted pages retain their due time.
+	if pos.At == 0 {
+		pos.At = now.UnixMilli()
+		if err := db.SaveAutomationSchedulerPosition("catalog", old, pos); err != nil { return err }
+		old = pos
+	}
+	execution = automationWindowExecution{execution, time.UnixMilli(pos.At)}
+	save := func() error {
+		if err := db.SaveAutomationSchedulerPosition("catalog", old, pos); err != nil { return err }
+		if pos.At != 0 { return errAutomationContinue }
+		return nil
+	}
 	if pos.AccountID == "" {
 		key, account, _, err := db.SchedulerCatalogNext("", pos.AccountKey)
-		if errors.Is(err, store.ErrAutomationInvalid) { pos = store.AutomationSchedulerPosition{}; return errors.Join(err, save()) }
+		if errors.Is(err, store.ErrAutomationInvalid) { pos = automationSweepPosition{}; return errors.Join(err, save()) }
 		if err != nil { return err }
 		pos.AccountKey, pos.AccountID = key, account.ID
-		if key == "" { return save() }
+		if key == "" { pos.At = 0; return save() }
 	}
 	if pos.WorkspaceID == "" {
 		key, _, entry, err := db.SchedulerCatalogNext(pos.AccountID, pos.WorkspaceKey)
@@ -140,20 +175,47 @@ func automationRunDefinition(ctx context.Context, db automationPositionStore, ex
 	return errors.Join(tickErr, err, db.SaveAutomationSchedulerPosition(key, cursor, next))
 }
 
+// Strip only the progress signal; joined execution failures must remain visible.
+func automationSweepFailure(err error) error {
+	if err == errAutomationContinue { return nil }
+	if joined, ok := err.(interface { Unwrap() []error }); ok {
+		var failures []error
+		for _, child := range joined.Unwrap() { failures = append(failures, automationSweepFailure(child)) }
+		return errors.Join(failures...)
+	}
+	return err
+}
+
+type automationWindowKey struct{}
+
 type automationLoop struct { cancel context.CancelFunc; done chan struct{} }
 func startAutomationLoop(parent context.Context, interval time.Duration, sweep func(context.Context) error, report func(error)) *automationLoop {
 	ctx, cancel := context.WithCancel(parent)
 	l := &automationLoop{cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(l.done)
-		timer := time.NewTicker(interval)
+		timer := time.NewTimer(interval)
+		timer.Stop()
+		window := time.Now()
 		defer timer.Stop()
 		for {
 			if ctx.Err() != nil { return }
 			bounded, stop := context.WithTimeout(ctx, 30*time.Second)
-			err := sweep(bounded)
+			err := sweep(context.WithValue(bounded, automationWindowKey{}, window))
 			stop()
-			if err != nil && ctx.Err() == nil { report(err) }
+			delay := interval
+			if errors.Is(err, errAutomationContinue) {
+				// Yield between bounded pages; never wait a minute per page.
+				delay = 10*time.Millisecond
+			} else if err == nil {
+				window = window.Add(interval)
+				delay = time.Until(window)
+				if delay < 10*time.Millisecond { delay = 10*time.Millisecond }
+			} else {
+				window = time.Now().Add(interval)
+			}
+			if failure := automationSweepFailure(err); failure != nil && ctx.Err() == nil { report(failure) }
+			timer.Reset(delay)
 			select { case <-ctx.Done(): return; case <-timer.C: }
 		}
 	}()
@@ -168,7 +230,7 @@ func (d *Daemon) StartAutomationScheduling(ctx context.Context) error {
 	defer d.automationMu.Unlock()
 	if d.automationClosed || d.automationLoop != nil || d.automationExecution == nil { return automation.ErrInvalid }
 	d.automationLoop = startAutomationLoop(ctx, time.Minute, func(ctx context.Context) error {
-		return automationSweep(ctx, d.store, d.automationExecution, d.automationOutcomes)
+		return automationSweepAt(ctx, d.store, d.automationExecution, ctx.Value(automationWindowKey{}).(time.Time), d.automationOutcomes)
 	}, func(error) { log.Print("automation scheduler sweep failed; durable pending work retained") })
 	return nil
 }

@@ -111,3 +111,31 @@ func TestAutomationOutcomeEmptyRecovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background()); cancel()
 	if err := d.automationOutcomes(ctx, automation.Principal{}, row); !errors.Is(err, context.Canceled) { t.Fatalf("cancel: %v", err) }
 }
+
+// Purpose: catalog turns must retain one admission window across more than a
+// minute of pagination and a store restart, then stop continuation on wrap.
+// Real durable positions and fake timestamps isolate pagination from providers.
+func TestAutomationCatalogWindowRestart(t *testing.T) {
+	path := t.TempDir()
+	db, err := store.Open(path)
+	if err != nil { t.Fatal(err) }
+	for _, id := range []string{"a", "b", "c"} {
+		if err := db.PutJSON(store.AccountScopePrefix()+id, store.AccountScopeRecord{ID: id}); err != nil { t.Fatal(err) }
+	}
+	start := time.UnixMilli(240000)
+	if err := automationSweepAt(context.Background(), db, &automationExecutionFake{}, start); !errors.Is(err, errAutomationContinue) { t.Fatal(err) }
+	if err := db.Close(); err != nil { t.Fatal(err) }
+	db, err = store.Open(path)
+	if err != nil { t.Fatal(err) }
+	defer db.Close()
+	for page := 1; page <= 3; page++ {
+		var before automationSweepPosition
+		if err := db.GetAutomationSchedulerPosition("catalog", &before); err != nil { t.Fatal(err) }
+		if before.At != start.UnixMilli() { t.Fatal("window drifted", before) }
+		err := automationSweepAt(context.Background(), db, &automationExecutionFake{}, start.Add(time.Duration(page)*time.Minute))
+		if page < 3 && !errors.Is(err, errAutomationContinue) { t.Fatal("pagination stopped early", err) }
+		if page == 3 && err != nil { t.Fatal("empty catalog spun after wrap", err) }
+	}
+	var after automationSweepPosition
+	if err := db.GetAutomationSchedulerPosition("catalog", &after); err != nil || after.At != 0 { t.Fatal(after, err) }
+}

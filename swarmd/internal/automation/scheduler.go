@@ -19,7 +19,15 @@ type ScheduleRepository interface {
 // Tick processes one definition and at most one occurrence. Daemon composition
 // owns bounded workspace enumeration and wakeups; receipts, not timers, dedupe.
 func (e *ExecutionService) Tick(ctx context.Context, p Principal, scope store.AutomationScope, id string, revision uint64) error {
+	return e.TickAt(ctx, p, scope, id, revision, e.domain.now())
+}
+
+// TickAt evaluates a durable catalog sweep window, not the page's arrival time.
+// Authorization and admission still use the live clock. Only trusted daemon
+// scheduling supplies this timestamp; it is not a user trigger override.
+func (e *ExecutionService) TickAt(ctx context.Context, p Principal, scope store.AutomationScope, id string, revision uint64, at time.Time) error {
 	if p.Role != "system" { return ErrDenied }
+	if at.After(e.domain.now()) { return ErrInvalid }
 	def, err := e.domain.CheckRun(ctx, p, scope, id, revision)
 	if err != nil { return err }
 	s, err := NormalizeSchedule(def.Definition.Schedule)
@@ -29,7 +37,7 @@ func (e *ExecutionService) Tick(ctx context.Context, p Principal, scope store.Au
 	if !ok { return ErrInvalid }
 	previous, err := cursor.GetAutomationCursor(scope, id, revision)
 	if err != nil { return err }
-	now := e.domain.now().UnixMilli()
+	now := at.UnixMilli()
 	if now <= previous || now < def.WrittenAt { return nil }
 	var candidate int64
 	if s.Kind == "interval" {
