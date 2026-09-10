@@ -17,7 +17,7 @@ func TestAutomationPlanContentPin(t *testing.T) {
 	d.Authorization = store.AutomationAuthorizationPolicy{Mode: "approved_policy", ApprovalReference: "approval", ExpiresAt: 100001}
 	created, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "create", 0, d)
 	if err != nil { t.Fatal(err) }
-	if len(created.Definition.Plan.DocumentSHA256) != 64 { t.Fatal("missing content pin") }
+	if len(created.Definition.Plans[0].Plan.DocumentSHA256) != 64 { t.Fatal("missing content pin") }
 	plans.plan.Document.Title = "Replaced instructions"
 	if _, err := s.CheckRun(context.Background(), p, scope, "check", 1); !errors.Is(err, ErrDenied) { t.Fatal("mutable plan accepted", err) }
 	if _, _, err := s.SaveDefinition(context.Background(), p, scope, "check", "repin", 1, d); !errors.Is(err, ErrDenied) { t.Fatal("omitted digest repinned plan", err) }

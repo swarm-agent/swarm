@@ -8,9 +8,9 @@ import (
 )
 
 func automationFixture() AutomationMutation {
-	return AutomationMutation{Actor: "user", MutationID: "create", Record: AutomationRecord{
+	return AutomationMutation{SubjectID: "writer", WrittenAt: 100000, Actor: "user", MutationID: "create", Record: AutomationRecord{
 		Scope: AutomationScope{AccountID: "account-a", WorkspaceID: "workspace-a"}, AutomationID: "check", Kind: "definition", ID: "check",
-		Definition: &AutomationDefinition{Name: "Check", Plan: AutomationPlanReference{SessionID: "session", PlanID: "plan", Revision: 1}, Schedule: AutomationSchedulePolicy{Kind: "manual", MissedPolicy: "skip", OverlapPolicy: "independent"}, Authorization: AutomationAuthorizationPolicy{Mode: "approval_required"}},
+		Definition: &AutomationDefinition{Name: "Check", Plans: []AutomationPlanBinding{{ID: "primary", Plan: AutomationPlanReference{SessionID: "session", PlanID: "plan", Revision: 1}}}, Schedule: AutomationSchedulePolicy{Kind: "manual", MissedPolicy: "skip", OverlapPolicy: "independent"}, Authorization: AutomationAuthorizationPolicy{Mode: "approval_required"}},
 	}}
 }
 
@@ -41,7 +41,7 @@ func TestAutomationStoreScopeRevisionRestart(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer s.Close()
 	got, fresh, err := s.ApplyAutomationMutation(m)
-	if err != nil || fresh || got.Revision != 1 { t.Fatalf("restart replay: %+v %v %v", got, fresh, err) }
+	if err != nil || fresh || got.Revision != 1 || got.SubjectID != "writer" || got.Actor != "user" || got.WrittenAt != 100000 { t.Fatalf("restart replay: %+v %v %v", got, fresh, err) }
 	m.Record.Definition.Name = "Collision"
 	if _, _, err := s.ApplyAutomationMutation(m); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("collision: %v", err) }
 	head, _, err := s.GetAutomationRecord(m.Record.Scope, "check", "definition", "check", 0)
@@ -57,7 +57,7 @@ func TestAutomationStoreAtomicOccurrence(t *testing.T) {
 	s := openTaskProgramTestStore(t)
 	def := automationFixture()
 	if _, _, err := s.ApplyAutomationMutation(def); err != nil { t.Fatal(err) }
-	m := AutomationMutation{Actor: "system", MutationID: "create", Record: AutomationRecord{Scope: def.Record.Scope, AutomationID: "check", Kind: "occurrence", ID: "first", Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "tick-1", State: "pending"}}}
+	m := AutomationMutation{SubjectID: "writer", WrittenAt: 100000, Actor: "system", MutationID: "create", Record: AutomationRecord{Scope: def.Record.Scope, AutomationID: "check", Kind: "occurrence", ID: "first", Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "tick-1", State: "pending"}}}
 	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
 	duplicate := m
 	duplicate.Record.ID = "second"
@@ -90,7 +90,7 @@ func TestAutomationStoreContextAuditPagination(t *testing.T) {
 	s := openTaskProgramTestStore(t)
 	def := automationFixture()
 	if _, _, err := s.ApplyAutomationMutation(def); err != nil { t.Fatal(err) }
-	m := AutomationMutation{Actor: "user", MutationID: "context", Record: AutomationRecord{Scope: def.Record.Scope, AutomationID: "check", Kind: "context", ID: "check", Context: &AutomationContext{UserLocked: map[string]string{"target": "approved"}}}}
+	m := AutomationMutation{SubjectID: "writer", WrittenAt: 100000, Actor: "user", MutationID: "context", Record: AutomationRecord{Scope: def.Record.Scope, AutomationID: "check", Kind: "context", ID: "check", Context: &AutomationContext{UserLocked: map[string]string{"target": "approved"}}}}
 	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
 	m.Actor, m.ExpectedRevision, m.MutationID = "agent", 1, "bad"
 	m.Record.Context.UserLocked = map[string]string{"target": "different"}
@@ -99,7 +99,7 @@ func TestAutomationStoreContextAuditPagination(t *testing.T) {
 	m.Record.Context.AgentOwned = map[string]string{"summary": "healthy"}
 	m.MutationID = "good"
 	if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
-	audit := AutomationMutation{Actor: "system", MutationID: "audit", Record: AutomationRecord{Scope: def.Record.Scope, AutomationID: "check", Kind: "audit", ID: "outcome", Outcome: &AutomationOutcome{Kind: "summary", Summary: "Healthy"}}}
+	audit := AutomationMutation{SubjectID: "writer", WrittenAt: 100000, Actor: "system", MutationID: "audit", Record: AutomationRecord{Scope: def.Record.Scope, AutomationID: "check", Kind: "audit", ID: "outcome", Outcome: &AutomationOutcome{Kind: "summary", Summary: "Healthy"}}}
 	if _, _, err := s.ApplyAutomationMutation(audit); err != nil { t.Fatal(err) }
 	audit.ExpectedRevision, audit.MutationID = 1, "rewrite"
 	if _, _, err := s.ApplyAutomationMutation(audit); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("audit rewrite: %v", err) }

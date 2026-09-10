@@ -51,10 +51,33 @@ type AutomationAuthorizationPolicy struct {
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
+// Bindings are ordered references to canonical plans, not an execution engine.
+type AutomationPlanBinding struct {
+	ID string `json:"id"`
+	Plan AutomationPlanReference `json:"plan"`
+	DependsOn []string `json:"depends_on,omitempty"`
+}
+
+// ValidateAutomationBindings rejects forward edges, cycles and ambiguous identities.
+func ValidateAutomationBindings(bindings []AutomationPlanBinding) error {
+	if len(bindings) < 1 || len(bindings) > 16 { return ErrAutomationInvalid }
+	seen := map[string]bool{}
+	for _, b := range bindings {
+		if !automationValidID(b.ID) || seen[b.ID] || !automationValidID(b.Plan.SessionID) || !automationValidID(b.Plan.PlanID) || b.Plan.Revision == 0 || len(b.DependsOn) > 15 { return ErrAutomationInvalid }
+		deps := map[string]bool{}
+		for _, dep := range b.DependsOn {
+			if !seen[dep] || deps[dep] { return ErrAutomationInvalid }
+			deps[dep] = true
+		}
+		seen[b.ID] = true
+	}
+	return nil
+}
+
 type AutomationDefinition struct {
 	Name string `json:"name"`
 	Enabled bool `json:"enabled"`
-	Plan AutomationPlanReference `json:"plan"`
+	Plans []AutomationPlanBinding `json:"plans"`
 	Schedule AutomationSchedulePolicy `json:"schedule"`
 	Authorization AutomationAuthorizationPolicy `json:"authorization"`
 }
@@ -87,6 +110,9 @@ type AutomationRecord struct {
 	Kind string `json:"kind"` // definition, occurrence, context, audit
 	ID string `json:"id"`
 	Revision uint64 `json:"revision"`
+	SubjectID string `json:"subject_id"`
+	Actor string `json:"actor"`
+	WrittenAt int64 `json:"written_at"`
 	Definition *AutomationDefinition `json:"definition,omitempty"`
 	Occurrence *AutomationOccurrence `json:"occurrence,omitempty"`
 	Context *AutomationContext `json:"context,omitempty"`
@@ -98,6 +124,8 @@ type AutomationMutation struct {
 	ExpectedRevision uint64 `json:"expected_revision"`
 	MutationID string `json:"mutation_id"`
 	Actor string `json:"actor"` // user, agent, system; authenticated by caller
+	SubjectID string `json:"subject_id"` // authenticated subject, never request data
+	WrittenAt int64 `json:"written_at"` // domain clock, milliseconds
 }
 
 type automationReceipt struct {
@@ -126,7 +154,7 @@ func validateAutomationRecord(r AutomationRecord) error {
 	switch r.Kind {
 	case "definition":
 		d := r.Definition
-		if d == nil || r.ID != r.AutomationID || !automationValidID(d.Name) || !automationValidID(d.Plan.SessionID) || !automationValidID(d.Plan.PlanID) || d.Plan.Revision == 0 { return ErrAutomationInvalid }
+		if d == nil || r.ID != r.AutomationID || !automationValidID(d.Name) || ValidateAutomationBindings(d.Plans) != nil { return ErrAutomationInvalid }
 		s := d.Schedule
 		if s.MissedPolicy != "skip" && s.MissedPolicy != "coalesce" { return ErrAutomationInvalid }
 		if s.OverlapPolicy != "independent" && s.OverlapPolicy != "serialize" { return ErrAutomationInvalid }
@@ -161,8 +189,12 @@ func (s *Store) ApplyAutomationMutation(m AutomationMutation) (AutomationRecord,
 	var zero AutomationRecord
 	key, err := automationKey(m.Record)
 	if err != nil || !automationValidID(m.MutationID) || m.Record.Revision != 0 || (m.Actor != "user" && m.Actor != "agent" && m.Actor != "system") { return zero, false, ErrAutomationInvalid }
+	if !automationValidID(m.SubjectID) || m.WrittenAt <= 0 || m.Record.SubjectID != "" || m.Record.Actor != "" || m.Record.WrittenAt != 0 { return zero, false, ErrAutomationInvalid }
 	if err := validateAutomationRecord(m.Record); err != nil { return zero, false, err }
-	data, err := json.Marshal(m)
+	// A retry uses a fresh domain clock but must return the original attribution.
+	hashInput := m
+	hashInput.WrittenAt = 0
+	data, err := json.Marshal(hashInput)
 	if err != nil { return zero, false, err }
 	hash := fmt.Sprintf("%x", sha256.Sum256(data))
 	receiptKey := key + ":mutation:" + automationPart(m.MutationID)
@@ -222,6 +254,7 @@ func (s *Store) ApplyAutomationMutation(m AutomationMutation) (AutomationRecord,
 		if ok && owner != r.ID { return zero, false, ErrAutomationConflict }
 	}
 	r.Revision = m.ExpectedRevision + 1
+	r.SubjectID, r.Actor, r.WrittenAt = m.SubjectID, m.Actor, m.WrittenAt
 	batch := s.NewBatch()
 	defer batch.Close()
 	put := func(k string, v any) error { b, err := json.Marshal(v); if err != nil { return err }; return batch.Set([]byte(k), b, nil) }

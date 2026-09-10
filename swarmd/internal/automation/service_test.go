@@ -23,12 +23,13 @@ func (f *fakeRepo) ApplyAutomationMutation(m store.AutomationMutation) (store.Au
 	f.writes++
 	r := m.Record
 	r.Revision = m.ExpectedRevision+1
+	r.SubjectID, r.Actor, r.WrittenAt = m.SubjectID, m.Actor, m.WrittenAt
 	f.rows[key] = r
 	return r, true, nil
 }
-type fakeAccess struct { denied bool; executions int }
+type fakeAccess struct { denied bool; executions int; deniedSession string }
 func (f *fakeAccess) Workspace(context.Context, Principal, store.AutomationScope, string) error { if f.denied { return ErrDenied }; return nil }
-func (f *fakeAccess) PlanSession(context.Context, Principal, store.AutomationScope, string) error { if f.denied { return ErrDenied }; return nil }
+func (f *fakeAccess) PlanSession(_ context.Context, _ Principal, _ store.AutomationScope, session string) error { if f.denied || session == f.deniedSession { return ErrDenied }; return nil }
 func (f *fakeAccess) OccurrenceSession(context.Context, Principal, store.AutomationScope, string) error { if f.denied { return ErrDenied }; return nil }
 func (f *fakeAccess) Execution(context.Context, Principal, store.AutomationScope, store.AutomationDefinition, string) error { f.executions++; if f.denied { return ErrDenied }; return nil }
 type fakePlans struct { plan store.SessionPlanSnapshot }
@@ -40,7 +41,7 @@ func fixture(t *testing.T) (*Service, *fakeRepo, *fakeAccess, *fakePlans, Princi
 	plans := &fakePlans{plan: store.SessionPlanSnapshot{ID:"plan", SessionID:"session", AccountScopeID:"account", Version:1, ApprovalState:"approved", Document:&store.SessionPlanDocument{}}}
 	s, err := New(r, plans, a, func() time.Time { return time.Unix(100,0) })
 	if err != nil { t.Fatal(err) }
-	d := store.AutomationDefinition{Name:"Check", Plan:store.AutomationPlanReference{SessionID:"session", PlanID:"plan", Revision:1}, Schedule:store.AutomationSchedulePolicy{Kind:"manual"}, Authorization:store.AutomationAuthorizationPolicy{Mode:"approval_required"}}
+	d := store.AutomationDefinition{Name:"Check", Plans:[]store.AutomationPlanBinding{{ID:"primary", Plan:store.AutomationPlanReference{SessionID:"session", PlanID:"plan", Revision:1}}}, Schedule:store.AutomationSchedulePolicy{Kind:"manual"}, Authorization:store.AutomationAuthorizationPolicy{Mode:"approval_required"}}
 	return s,r,a,plans,Principal{AccountID:"account",SubjectID:"human",Role:"user"},store.AutomationScope{AccountID:"account",WorkspaceID:"workspace"},d
 }
 

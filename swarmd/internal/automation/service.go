@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -86,17 +87,27 @@ func (s *Service) SaveDefinition(ctx context.Context, p Principal, scope store.A
 	if d.Authorization.Mode != "approval_required" && d.Authorization.Mode != "approved_policy" { return store.AutomationRecord{}, false, ErrInvalid }
 	old, found, err := s.repo.GetAutomationRecord(scope, id, "definition", id, expected)
 	if err != nil { return store.AutomationRecord{}, false, err }
-	// Omitting a digest on an update must not silently repin the same locator.
-	if found && old.Definition != nil && d.Plan.DocumentSHA256 == "" {
-		prior := old.Definition.Plan
-		if prior.SessionID == d.Plan.SessionID && prior.PlanID == d.Plan.PlanID && prior.Revision == d.Plan.Revision { d.Plan.DocumentSHA256 = prior.DocumentSHA256 }
+	if err := store.ValidateAutomationBindings(d.Plans); err != nil { return store.AutomationRecord{}, false, err }
+	// Copy before pinning so caller-owned slices and stored revisions stay immutable.
+	d.Plans = append([]store.AutomationPlanBinding(nil), d.Plans...)
+	for i := range d.Plans {
+		ref := &d.Plans[i].Plan
+		// Match the locator even after a binding rename: omission cannot repin it.
+		if found && old.Definition != nil && ref.DocumentSHA256 == "" {
+			for _, binding := range old.Definition.Plans {
+				prior := binding.Plan
+				if prior.SessionID == ref.SessionID && prior.PlanID == ref.PlanID && prior.Revision == ref.Revision { ref.DocumentSHA256 = prior.DocumentSHA256 }
+			}
+		}
 	}
-	// Only an unchanged binding may be disabled without revalidating that plan.
-	if expected == 0 || !found || old.Definition == nil || d.Enabled || old.Definition.Plan != d.Plan {
-		if err := s.plan(ctx, p, scope, &d.Plan); err != nil { return store.AutomationRecord{}, false, err }
+	// Only unchanged bindings can be disabled after revocation.
+	if expected == 0 || !found || old.Definition == nil || d.Enabled || !reflect.DeepEqual(old.Definition.Plans, d.Plans) {
+		for i := range d.Plans {
+			if err := s.plan(ctx, p, scope, &d.Plans[i].Plan); err != nil { return store.AutomationRecord{}, false, err }
+		}
 	}
 	if d.Enabled { if err := s.execution(ctx, p, scope, d, "enable"); err != nil { return store.AutomationRecord{}, false, err } }
-	return s.repo.ApplyAutomationMutation(store.AutomationMutation{Actor: p.Role, MutationID: mutation, ExpectedRevision: expected, Record: store.AutomationRecord{Scope: scope, AutomationID: id, ID: id, Kind: "definition", Definition: &d}})
+	return s.repo.ApplyAutomationMutation(store.AutomationMutation{Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli(), MutationID: mutation, ExpectedRevision: expected, Record: store.AutomationRecord{Scope: scope, AutomationID: id, ID: id, Kind: "definition", Definition: &d}})
 }
 func (s *Service) CheckRun(ctx context.Context, p Principal, scope store.AutomationScope, id string, revision uint64) (store.AutomationRecord, error) {
 	if err := s.authorize(ctx, p, scope, "run"); err != nil { return store.AutomationRecord{}, err }
@@ -105,8 +116,11 @@ func (s *Service) CheckRun(ctx context.Context, p Principal, scope store.Automat
 	if !found { return r, ErrNotFound }
 	if revision == 0 || r.Revision != revision { return store.AutomationRecord{}, store.ErrAutomationConflict }
 	if r.Definition == nil || !r.Definition.Enabled { return store.AutomationRecord{}, ErrDenied }
-	if r.Definition.Plan.DocumentSHA256 == "" { return store.AutomationRecord{}, ErrDenied }
-	if err := s.plan(ctx, p, scope, &r.Definition.Plan); err != nil { return store.AutomationRecord{}, err }
+	if err := store.ValidateAutomationBindings(r.Definition.Plans); err != nil { return store.AutomationRecord{}, err }
+	for _, binding := range r.Definition.Plans {
+		if binding.Plan.DocumentSHA256 == "" { return store.AutomationRecord{}, ErrDenied }
+		if err := s.plan(ctx, p, scope, &binding.Plan); err != nil { return store.AutomationRecord{}, err }
+	}
 	if err := s.execution(ctx, p, scope, *r.Definition, "run"); err != nil { return store.AutomationRecord{}, err }
 	return r, nil
 }
@@ -158,7 +172,7 @@ func (s *Service) UpdateContext(ctx context.Context, p Principal, scope store.Au
 	}
 	data, err := json.Marshal(b)
 	if err != nil || len(data) > 24000 || len(b.UserInstructions) > 64 || len(b.Summaries) > 64 { return store.AutomationRecord{}, false, ErrInvalid }
-	return s.repo.ApplyAutomationMutation(store.AutomationMutation{Actor: p.Role, MutationID: mutation, ExpectedRevision: expected, Record: store.AutomationRecord{Scope: scope, AutomationID: id, ID: id, Kind: "context", Context: &store.AutomationContext{UserLocked: b.UserInstructions, AgentOwned: b.Summaries}}})
+	return s.repo.ApplyAutomationMutation(store.AutomationMutation{Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli(), MutationID: mutation, ExpectedRevision: expected, Record: store.AutomationRecord{Scope: scope, AutomationID: id, ID: id, Kind: "context", Context: &store.AutomationContext{UserLocked: b.UserInstructions, AgentOwned: b.Summaries}}})
 }
 
 func cloneMap(source map[string]string) map[string]string {
@@ -173,4 +187,29 @@ func cloneMap(source map[string]string) map[string]string {
 func RetryDelay(attempt int, transient, sideEffectsPossible bool) (time.Duration, bool) {
 	if !transient || sideEffectsPossible || attempt < 1 || attempt > 3 { return 0, false }
 	return time.Second * time.Duration(1<<uint(attempt-1)), true
+}
+
+// History returns a bounded newest-first page. before is exclusive; zero starts
+// at the current head. Returned revision numbers are the continuation, not guesses.
+func (s *Service) History(ctx context.Context, p Principal, scope store.AutomationScope, automationID, kind, id string, before uint64, limit int) ([]store.AutomationRecord, uint64, error) {
+	if err := s.authorize(ctx, p, scope, "read"); err != nil { return nil, 0, err }
+	if limit < 1 || limit > 50 { return nil, 0, ErrInvalid }
+	head, found, err := s.repo.GetAutomationRecord(scope, automationID, kind, id, 0)
+	if err != nil { return nil, 0, err }
+	if !found { return nil, 0, nil }
+	revision := head.Revision
+	if before != 0 {
+		if before > head.Revision { return nil, 0, ErrInvalid }
+		revision = before - 1
+	}
+	rows := []store.AutomationRecord{}
+	for revision > 0 && len(rows) < limit {
+		r, found, err := s.repo.GetAutomationRecord(scope, automationID, kind, id, revision)
+		if err != nil { return nil, 0, err }
+		if !found { return nil, 0, ErrNotFound }
+		rows = append(rows, r)
+		revision--
+	}
+	if revision == 0 { return rows, 0, nil }
+	return rows, revision + 1, nil
 }
