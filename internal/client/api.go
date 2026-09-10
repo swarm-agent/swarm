@@ -76,9 +76,10 @@ type OnboardingStatus struct {
 }
 
 type SaveOnboardingInput struct {
-	Username  string `json:"username,omitempty"`
-	SwarmName string `json:"swarm_name,omitempty"`
-	Child     *bool  `json:"child,omitempty"`
+	Username                  string `json:"username,omitempty"`
+	SwarmName                 string `json:"swarm_name,omitempty"`
+	Child                     *bool  `json:"child,omitempty"`
+	DesktopOnboardingComplete *bool  `json:"desktop_onboarding_complete,omitempty"`
 }
 
 type UpdateStatus struct {
@@ -2601,6 +2602,11 @@ func (c *API) SelectWorkspace(ctx context.Context, path string) (WorkspaceResolu
 		return WorkspaceResolution{}, err
 	}
 	return resp.Workspace, nil
+}
+
+// SetupOnboardingRepository uses the canonical consent-aware setup endpoint.
+func (c *API) SetupOnboardingRepository(ctx context.Context, path string) error {
+	return c.postJSON(ctx, "/v1/workspace/repository/setup", map[string]string{"path": path, "expected_resolved_path": path}, nil, true)
 }
 
 func (c *API) AddWorkspace(ctx context.Context, path, name, themeID string, makeCurrent bool) (WorkspaceResolution, error) {

@@ -36,6 +36,7 @@ type onboardingState struct {
 	Pending        bool
 	WorkspacePath  string
 	WorkspaceReady bool
+	SetupConsent   bool
 }
 
 func (p *HomePage) SetOnboardingRequired(required bool, username, swarmName string) {
@@ -160,6 +161,7 @@ func (p *HomePage) SetOnboardingError(message string) {
 		return
 	}
 	p.onboarding.Pending = false
+	p.onboarding.SetupConsent = false
 	p.onboarding.Error = strings.TrimSpace(message)
 }
 
@@ -246,7 +248,15 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 
 func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	if p.keybinds.Match(ev, KeybindEditorClose) {
-		p.onboarding.Error = "A workspace is required before entering Swarm. Press Enter to create it."
+		p.onboarding.SetupConsent = false
+		p.ShowOnboardingProvider("Choose a provider or press s to return to workspace setup.")
+		return
+	}
+	if p.onboarding.SetupConsent && ev.Key() == tcell.KeyRune && ev.Rune() == 'y' {
+		p.onboarding.SetupConsent = false
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionSetupOnboardingRepository, WorkspacePath: p.onboarding.WorkspacePath}
+		p.onboarding.Pending = true
+		p.onboarding.Status = "Setting up Git; existing files will not be staged..."
 		return
 	}
 	if !p.keybinds.Match(ev, KeybindEditorSubmit) {
@@ -263,6 +273,11 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		// workspace-add API revalidates the exact repository before any catalog,
 		// topology, selection, or session state can be mutated. Let an
 		// indeterminate client-side check reach that canonical admission gate.
+	case model.GitReadinessNotRepository, model.GitReadinessNeedsCommit:
+		p.onboarding.SetupConsent = true
+		p.onboarding.Error = ""
+		p.onboarding.Status = "Press y to initialize Git/create an empty first commit. No files will be staged. Esc goes back."
+		return
 	default:
 		p.onboarding.Error = onboardingGitPrerequisiteMessage(p.model.WorkspaceSetupGitReadiness, path)
 		return
@@ -276,7 +291,7 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 func onboardingGitPrerequisiteMessage(readiness model.GitReadiness, path string) string {
 	switch readiness {
 	case model.GitReadinessUnavailable:
-		return "Git is required for Swarm managed worktrees. Install Git, then restart workspace setup."
+		return "Git is required for Swarm managed worktrees. Install Git, then press Enter to retry. Esc goes back; Ctrl+C exits."
 	case model.GitReadinessNotRepository:
 		return fmt.Sprintf("%s is not a Git repository. Desktop can initialize an empty folder with an initial commit; existing files require review of ignore rules and explicit permission before git init, staging, or the first commit.", path)
 	case model.GitReadinessNeedsCommit:
@@ -399,11 +414,11 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 			DrawText(s, rect.X+3, rect.Y+rect.H-4+i, rect.W-6, statusStyle, line)
 		}
 	}
-	help := "Tab/↑/↓ move • Enter continue"
+	help := "Ctrl+C exit • Tab/↑/↓ move • Enter continue"
 	if p.onboarding.Phase == onboardingPhaseProvider {
-		help = "←/→ select provider • Enter connect • s/Esc skip to workspace"
+		help = "Ctrl+C exit • ←/→ select • Enter connect • s/Esc skip"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		help = "Enter verify workspace • Git repository + initial commit required"
+		help = "Ctrl+C exit • Enter verify/retry • Esc back • y confirm Git setup"
 	}
 	DrawText(s, rect.X+3, rect.Y+rect.H-2, rect.W-6, p.theme.TextMuted, clampEllipsis(help, rect.W-6))
 }

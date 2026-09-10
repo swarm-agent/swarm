@@ -26,6 +26,7 @@ const (
 	HomeActionOpenAuthModal             HomeActionKind = "open-auth-modal"
 	HomeActionSaveOnboarding            HomeActionKind = "save-onboarding"
 	HomeActionCreateOnboardingWorkspace HomeActionKind = "create-onboarding-workspace"
+	HomeActionSetupOnboardingRepository HomeActionKind = "setup-onboarding-repository"
 )
 
 type HomeAction struct {
