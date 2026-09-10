@@ -49,6 +49,12 @@ func (h *AutomationExecutionHost) Prepare(ctx context.Context, p automation.Prin
 	canonical, err := s.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: principal, WorkspacePath: entry.Path, AgentProfile: profile, ModelProfile: model, RuntimeMode: store.AgentRuntimeModePlanAuto, Metadata: map[string]any{}})
 	if err != nil { return empty, err }
 	if canonical.SourceWorkspaceID != def.Scope.WorkspaceID || canonical.Metadata == nil { return empty, automation.ErrDenied }
+	if err := automationTargetPolicy(def.Definition.Authorization, canonical.Metadata); err != nil { return empty, err }
+	known := map[string]bool{}
+	for _, definition := range s.ListAgentToolDefinitionsForAccount(p.AccountID) { known[definition.Name] = true }
+	for _, name := range def.Definition.Authorization.AllowedTools {
+		if !known[name] || !automationToolPermitted(&def.Definition.Authorization, name) { return empty, automation.ErrDenied }
+	}
 	available := true
 	grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}}
 	pref, err := manageSessionsDeployModelProfilePreference(model, sessions.ModePlan)
@@ -69,6 +75,7 @@ func (h *AutomationExecutionHost) Start(ctx context.Context, snapshot store.Sess
 		if err := ctx.Err(); err != nil { return err }
 		current, found, err := h.current(snapshot, key)
 		if err != nil { return err }; if !found { return automation.ErrNotFound }
+		if _, err := h.runs.automationPolicy(current.ID); err != nil { return err }
 		runID := "automation-run:"+key
 		_, exists, err := h.runs.sessions.GetSessionRunIntent(current.ID, runID)
 		if err != nil || exists { return err }

@@ -91,12 +91,12 @@ func TestCanonicalContextStableRecency(t *testing.T) {
 	if _, _, changed := canonicalContext(locked, next, r, "updated"); changed { t.Fatal("malformed evidence overwritten") }
 }
 
-// Purpose: V3Runtime.Ensure must reject unsupported tool/target restrictions
+// Purpose: V3Runtime.Ensure must reject unsupported delegation restrictions
 // before approval, session reads or worktree allocation, also on recovery. Nil
 // downstream authorities deliberately make any accidental effect fail the test.
 func TestExecutionRejectsUnenforceablePolicyBeforeEffects(t *testing.T) {
 	for _, policy := range []store.AutomationAuthorizationPolicy{
-		{AllowedTools: []string{"read"}}, {TargetIDs: []string{"target"}},
+		{AllowedTools: []string{"task"}}, {AllowedTools: []string{"manage_sessions"}},
 	} {
 		def := store.AutomationRecord{Scope: store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}, AutomationID: "automation", Revision: 1, Definition: &store.AutomationDefinition{Authorization: policy}}
 		occ := store.AutomationRecord{Scope: def.Scope, AutomationID: def.AutomationID, Occurrence: &store.AutomationOccurrence{DefinitionRevision: 1}}

@@ -19,7 +19,7 @@ func TestAutomationHostRecoveredStartAndCancellation(t *testing.T) {
 	repository := store.NewSessionStore(db)
 	svc := sessions.NewService(repository, nil)
 	key := strings.Repeat("a", 64)
-	snapshot := store.SessionSnapshot{ID: "automation-"+key, AccountScopeID: "account", UserID: "user", Mode: sessions.ModeAuto, WorktreeEnabled: true, Metadata: map[string]any{"automation_execution_key": key}}
+	snapshot := store.SessionSnapshot{ID: "automation-"+key, AccountScopeID: "account", UserID: "user", Mode: sessions.ModeAuto, WorktreeEnabled: true, Metadata: map[string]any{"automation_execution_key": key, "automation_execution_policy": "{}"}}
 	if _, err := svc.ApplySessionMutation(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationCreateSession, Session: &snapshot, ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create"}); err != nil { t.Fatal(err) }
 	request := "existing-start"
 	if _, err := svc.ApplySessionMutation(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationRecordRunIntent, RunIntent: &store.V3SessionRunIntent{RunID: "automation-run:"+key, Status: sessions.RunIntentPendingExecutor}, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request}); err != nil { t.Fatal(err) }
