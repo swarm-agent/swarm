@@ -48,7 +48,7 @@ try {
  } else if(stage==='learn'){
   restoreClient();const s=state.sessions[0]
   await c.run(s.id,'This disposable project uses the protocol name Copper Finch and stores its generated reports as UTF-8 JSON. This is a factual project convention for future work. Reply ACK only, without tools.')
-  await post({action:'settings',settings:{...state.originalSettings,automation_enabled:true,included_sessions:[s.id],included_workspaces:[state.fixture.workspace.workspace_id],mode:'recurring'}})
+  await post({action:'settings',settings:{...state.originalSettings,automation_enabled:true,included_sessions:[s.id],included_workspaces:[],mode:'recurring'}})
   state.jobID=`${state.id}-${randomUUID()}`;await save()
   let job
   try{job=await post({action:'run_now',job_id:state.jobID})}catch(e){const j=(await mem()).jobs?.find(j=>j.id===state.jobID);console.log(JSON.stringify({job_status:j?.status,job_error:j?.error}));throw e}
@@ -61,7 +61,7 @@ try {
   await post({action:'settings',settings:{...before.settings,automation_enabled:false}})
   state.incrementalFact=`The project's durable release codename is Amber Heron ${randomUUID()}.`;await save()
   await c.run(s.id,state.incrementalFact+' Reply ACK only. Do not use tools or write memory yourself.')
-  const current=await mem();await post({action:'settings',settings:{...current.settings,automation_enabled:true,mode:'recurring',included_sessions:[s.id],included_workspaces:[state.fixture.workspace.workspace_id]}})
+  const current=await mem();await post({action:'settings',settings:{...current.settings,automation_enabled:true,mode:'recurring',included_sessions:[s.id],included_workspaces:[]}})
   const deadline=Date.now()+240000;let done
   while(Date.now()<deadline){const d=await mem();const jobs=(d.jobs||[]).filter(j=>!oldJobs.has(j.id)&&j.trigger==='scheduled');console.log(JSON.stringify({stage:'scheduled',jobs:jobs.map(j=>({status:j.status,error:j.error})),cursor:d.job_cursors?.[s.id]||0}));assert(!jobs.some(j=>['failed','cancelled','interrupted'].includes(j.status)),'scheduled batch failed');done=jobs.find(j=>j.status==='completed'&&(d.job_cursors?.[s.id]||0)>cursor);if(done){assert(done.sources.every(src=>src.session_id===s.id&&src.event_seq>cursor),'reread committed source');assert(d.entries.some(e=>e.kind==='learned'&&e.content.includes('Amber Heron')),'new fact not automatically learned');assert.equal(d.entries.find(e=>e.id===state.id).content,state.entry.content);state.learnedIDs=d.entries.filter(e=>e.kind==='learned').map(e=>e.id);break}await new Promise(r=>setTimeout(r,15000))}
   assert(done,'scheduler deadline');check('real scheduled incremental update without run-now or approval');await save()

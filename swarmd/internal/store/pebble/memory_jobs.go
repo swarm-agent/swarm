@@ -386,7 +386,7 @@ func (s *MemoryStore) FinishMemoryBatch(ctx context.Context, account, user, id s
 	validated := []MemoryEntry{}
 	for _, e := range entries {
 		if e.Kind != "learned" || e.Pinned || e.WorkspaceID == "" || e.SessionID != "" || len(e.Sources) == 0 || len(e.Sources) > 32 || len(e.Content) > j.Settings.OutputTokens {
-			return MemoryJob{}, ErrMemoryPolicy
+			return MemoryJob{}, fmt.Errorf("%w: invalid learned entry shape", ErrMemoryPolicy)
 		}
 		for _, src := range e.Sources {
 			found := false
@@ -396,16 +396,15 @@ func (s *MemoryStore) FinishMemoryBatch(ctx context.Context, account, user, id s
 				}
 			}
 			if !found {
-				return MemoryJob{}, ErrMemoryPolicy
+				return MemoryJob{}, fmt.Errorf("%w: source reference not in claimed batch", ErrMemoryPolicy)
 			}
 		}
 		// Only learned identities may be reconciled. Rule/orientation IDs are not writable.
 		// Stable source identity reconciles repeated extraction without allowing
 		// the model to select an unrelated record as its write target.
 		targetID := "learned-" + workspaceMapDigest(e.WorkspaceID + "\x00" + strings.TrimSpace(e.Content))[:24]
-		if e.ID != "" && e.ID != targetID {
-			return MemoryJob{}, ErrMemoryPolicy
-		}
+		// Model IDs are not write authority; always assign the source-validated,
+		// content-derived learned identity rather than accepting a chosen target.
 		e.ID = targetID
 		e.Content = strings.TrimSpace(e.Content)
 		if n := memoryEntryIndex(d, e.ID); n >= 0 {
