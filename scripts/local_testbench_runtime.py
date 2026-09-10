@@ -497,7 +497,7 @@ class NspawnRuntime:
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
             if values.get('Description') != self.description(record) or values.get('ActiveState') != 'active':
-                raise PoolError('candidate unit failed or identity changed')
+                raise PoolError('candidate unit failed or identity changed: load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
             for endpoint in ('api', 'desktop'):
                 address = str(Path(self.pool.config.root) / (self.name(record) + '.exchange') / (endpoint + '.sock'))
@@ -533,11 +533,11 @@ class NspawnRuntime:
                 name = self.name(r)
                 root = self.pool.config.root
                 argv = self.start_args(r, self.units(r)[0]) + [
-                    'systemd-nspawn', '--quiet', '--settings=no', '--register=no',
+                    'systemd-nspawn', '--quiet', '--settings=no', '--register=no', '--keep-unit',
                     '--machine=' + name, '--image=' + root + '/' + name + '.raw',
                     '--private-network', '--private-users=pick', '--private-users-ownership=map',
                     '--link-journal=no', '--as-pid2', '--console=pipe',
-                    '--bind-ro=' + root + '/' + name + '.bundle:/input/source.bundle',
+                    '--bind-ro=' + root + '/' + name + '.bundle:/input/source.bundle:idmap',
                     '--setenv=CANDIDATE_HEAD=' + head,
                     '--bind=' + root + '/' + name + '.exchange:/exchange:idmap',
                     '/bin/bash', '-c', GUEST]
