@@ -22,8 +22,10 @@ is installed by this package.
   not evidence of cancellation race safety or successful provider execution.
 - `ExecutionApproval.Request/Verify` require the user approval service adapter;
   reference strings must not become permission grants. No adapter is installed.
-- Dispatch reservations currently serialize one automation, not shared target IDs
-  across distinct automations. Cross-automation target locking is still required.
+- Dispatch reservations now claim account-scoped target IDs atomically across
+  definitions and workspaces, including independent occurrences. Claims survive
+  restart and are reclaimed only after terminal occurrence state. Safe cancellation
+  and truthful terminal reconciliation remain prerequisites for releasing targets.
 - Recovery after worktree allocation but before session creation relies on the
   existing deterministic allocator's recovery behavior and requires an injected
   failure integration test. Concurrent Ensure calls likewise require review.

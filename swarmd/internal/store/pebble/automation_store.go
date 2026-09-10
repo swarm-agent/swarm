@@ -206,6 +206,14 @@ func validateAutomationRecord(r AutomationRecord) error {
 			return ErrAutomationInvalid
 		}
 		a := d.Authorization
+		if len(a.TargetIDs) > 64 || len(a.AllowedTools) > 128 { return ErrAutomationInvalid }
+		for _, values := range [][]string{a.TargetIDs, a.AllowedTools} {
+			seen := map[string]bool{}
+			for _, value := range values {
+				if !automationValidID(value) || seen[value] { return ErrAutomationInvalid }
+				seen[value] = true
+			}
+		}
 		if a.Mode != "approval_required" && a.Mode != "approved_policy" {
 			return ErrAutomationInvalid
 		}
@@ -519,12 +527,37 @@ func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID 
 	def, found, err := s.GetAutomationRecord(scope, id, "definition", id, r.Occurrence.DefinitionRevision)
 	if err != nil { return err }
 	if !found || def.Definition == nil { return ErrAutomationInvalid }
-	if def.Definition.Schedule.OverlapPolicy != "serialize" { return nil }
+	// Target reservations apply even to independent occurrences: independence
+	// describes session progress, not permission to race shared external targets.
+	type targetOwner struct {
+		Scope AutomationScope `json:"scope"`
+		AutomationID string `json:"automation_id"`
+		OccurrenceID string `json:"occurrence_id"`
+	}
+	reservation := targetOwner{scope, id, occurrenceID}
+	targetKeys := make([]string, 0, len(def.Definition.Authorization.TargetIDs))
+	for _, target := range def.Definition.Authorization.TargetIDs {
+		if !automationValidID(target) { return ErrAutomationInvalid }
+		// A target ID is account scoped, not workspace scoped. Two workspaces
+		// can deploy to the same target and must share this reservation.
+		targetKey := "automation-target:v1:" + automationPart(scope.AccountID) + ":" + automationPart(target)
+		var priorOwner targetOwner
+		exists, err := s.GetJSON(targetKey, &priorOwner)
+		if err != nil { return err }
+		if exists && priorOwner != reservation {
+			if priorOwner.Scope.AccountID != scope.AccountID { return ErrAutomationConflict }
+			prior, found, err := s.GetAutomationRecord(priorOwner.Scope, priorOwner.AutomationID, "occurrence", priorOwner.OccurrenceID, 0)
+			if err != nil { return err }
+			if !found || prior.Occurrence == nil { return ErrAutomationConflict }
+			switch prior.Occurrence.State { case "completed", "failed", "cancelled", "skipped": default: return ErrAutomationConflict }
+		}
+		targetKeys = append(targetKeys, targetKey)
+	}
 	key := prefix + automationPart(id) + ":dispatch-owner"
 	var owner string
 	found, err = s.GetJSON(key, &owner)
 	if err != nil { return err }
-	if found && owner != occurrenceID {
+	if def.Definition.Schedule.OverlapPolicy == "serialize" && found && owner != occurrenceID {
 		prior, exists, err := s.GetAutomationRecord(scope, id, "occurrence", owner, 0)
 		if err != nil { return err }
 		if !exists || prior.Occurrence == nil { return ErrAutomationConflict }
@@ -534,7 +567,14 @@ func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID 
 	if err != nil { return err }
 	batch := s.NewBatch()
 	defer batch.Close()
-	if err := batch.Set([]byte(key), data, nil); err != nil { return err }
+	if def.Definition.Schedule.OverlapPolicy == "serialize" {
+		if err := batch.Set([]byte(key), data, nil); err != nil { return err }
+	}
+	targetData, err := json.Marshal(reservation)
+	if err != nil { return err }
+	for _, targetKey := range targetKeys {
+		if err := batch.Set([]byte(targetKey), targetData, nil); err != nil { return err }
+	}
 	return batch.Commit(pebble.Sync)
 }
 

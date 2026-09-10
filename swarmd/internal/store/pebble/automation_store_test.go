@@ -267,3 +267,37 @@ func TestAutomationDispatchClaimAndCursorRestart(t *testing.T) {
 	if current, err := s.GetAutomationCursor(scope, "check", 1); err != nil || current != 100000 { t.Fatalf("cursor changed: %d %v", current, err) }
 	if _, found, err := s.GetAutomationRecord(scope, "check", "occurrence", "second", 0); err != nil || !found { t.Fatal("competing admission lost") }
 }
+
+// Purpose: ClaimAutomationDispatch must serialize shared targets across definitions
+// and workspaces without leaking reservations across accounts. Real Pebble is the
+// narrowest layer proving restart durability and all-or-nothing multi-target claims.
+func TestAutomationSharedTargetClaims(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	s, err := Open(path)
+	if err != nil { t.Fatal(err) }
+	defer func() { s.Close() }()
+	create := func(id, workspace, account string, targets ...string) AutomationScope {
+		m := automationFixture()
+		m.Record.AutomationID, m.Record.ID = id, id
+		m.Record.Scope = AutomationScope{AccountID: account, WorkspaceID: workspace}
+		m.Record.Definition.Authorization.TargetIDs = targets
+		if _, _, err := s.ApplyAutomationMutation(m); err != nil { t.Fatal(err) }
+		_, _, err := s.ApplyAutomationMutation(AutomationMutation{Record: AutomationRecord{Scope: m.Record.Scope, AutomationID: id, Kind: "occurrence", ID: "run", Occurrence: &AutomationOccurrence{DefinitionRevision: 1, TriggerIdentity: "trigger", State: "pending", ScheduledAt: 100000}}, MutationID: "admit", Actor: "system", SubjectID: "scheduler", WrittenAt: 100000})
+		if err != nil { t.Fatal(err) }
+		return m.Record.Scope
+	}
+	a := create("a", "one", "account", "shared")
+	b := create("b", "two", "account", "free", "shared")
+	c := create("c", "two", "account", "free")
+	other := create("a", "one", "other-account", "shared")
+	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil { t.Fatal(err) }
+	if err := s.Close(); err != nil { t.Fatal(err) }
+	s, err = Open(path)
+	if err != nil { t.Fatal(err) }
+	if err := s.ClaimAutomationDispatch(b, "b", "run"); !errors.Is(err, ErrAutomationConflict) { t.Fatalf("shared target accepted: %v", err) }
+	if err := s.ClaimAutomationDispatch(c, "c", "run"); err != nil { t.Fatalf("failed claim partially reserved free target: %v", err) }
+	if err := s.ClaimAutomationDispatch(other, "a", "run"); err != nil { t.Fatalf("cross-account reservation: %v", err) }
+	if err := s.ClaimAutomationDispatch(a, "a", "run"); err != nil { t.Fatalf("owner recovery: %v", err) }
+	row, found, err := s.GetAutomationRecord(b, "b", "occurrence", "run", 0)
+	if err != nil || !found || row.Revision != 1 || row.Occurrence.State != "pending" { t.Fatalf("loser mutated: %+v %v", row, err) }
+}
