@@ -315,7 +315,13 @@ Swarm install plan
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
   Direct root installs: locked non-root swarm account with home /var/lib/swarm.
-  Sudo/non-root installs: retain the invoking user's identity and home.
+  Fresh sudo/non-root installs: use the invoking user's identity and home.
+  Reinstall: preserve consistent existing install ownership, regardless of caller.
+  Continuing consents to creating the locked swarm service account if needed.
+  No service-account password, sudo, interactive login, or SSH changes.
+  For a separate human login, use your OS administrator's interactive account tools
+  (Ubuntu/Debian: adduser NAME; passwd NAME). Optional sudo access is a separate
+  administrator decision under OS sudo policy; never grant it to swarm.
   Service: $(service_plan_label)
   Mandatory runtime prerequisites: Git and Bash; missing packages are installed with a detected supported package manager before Swarm paths are changed, and existing installations are left unchanged.
 
@@ -579,9 +585,9 @@ run_bundle_install() {
   installer="$(printf '%s/%s\n' "$platform_dir" "root/swarmsetup")"
   log_path="$2"
   if [ "$SERVICE_MODE" = "none" ]; then
-    "$installer" --artifact-root "$artifact_root" --no-service >"$log_path" 2>&1
+    "$installer" --create-service-account --artifact-root "$artifact_root" --no-service >"$log_path" 2>&1
   else
-    "$installer" --artifact-root "$artifact_root" --service >"$log_path" 2>&1
+    "$installer" --create-service-account --artifact-root "$artifact_root" --service >"$log_path" 2>&1
   fi
 }
 

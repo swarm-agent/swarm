@@ -73,3 +73,22 @@ func writeSetupArtifact(t *testing.T, root, version string) {
 		}
 	}
 }
+
+// Requirement: direct setup must reject missing prerequisites before copying
+// runtime bytes, even with account consent. The CLI boundary uses empty PATH and
+// isolated absent storage roots; no OS accounts or host services are touched.
+func TestRunPreflightLeavesInstallAbsent(t *testing.T) {
+	root := t.TempDir()
+	installRoot := filepath.Join(root, "install")
+	t.Setenv("SWARM_SYSTEM_INSTALL_ROOT", installRoot)
+	for _, name := range []string{"CONFIGURATION_DIRECTORY", "STATE_DIRECTORY", "CACHE_DIRECTORY", "RUNTIME_DIRECTORY", "LOGS_DIRECTORY"} {
+		t.Setenv(name, filepath.Join(root, name))
+	}
+	t.Setenv("PATH", root)
+	if err := run([]string{"--create-service-account", "--artifact-root", filepath.Join(root, "artifact")}); err == nil {
+		t.Fatal("accepted missing runtime prerequisites")
+	}
+	if _, err := os.Stat(installRoot); !os.IsNotExist(err) {
+		t.Fatalf("installation mutated before preflight: %v", err)
+	}
+}
