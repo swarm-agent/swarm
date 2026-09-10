@@ -55,7 +55,10 @@ CGO_ENABLED=1 go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
 cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
 cd /candidate/source/web
 phase web-install
-pnpm install --offline --frozen-lockfile --ignore-scripts --reporter=append-only
+cmp pnpm-lock.yaml /cache-manifests/web/pnpm-lock.yaml
+cmp package.json /cache-manifests/web/package.json
+cmp pnpm-workspace.yaml /cache-manifests/web/pnpm-workspace.yaml
+cp -a /cache-manifests/web/node_modules ./node_modules
 phase web-build
 pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
