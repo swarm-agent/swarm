@@ -49,9 +49,13 @@ func TestTaskProgramOwnedScopeDeliveredWithoutBroadeningWrites(t *testing.T) {
 		t.Fatalf("canonical definition/launch mismatch: definition=%v launch=%v", record.Definition.Jobs[0].OwnedScope, parsed.Launches[0].OwnedScope)
 	}
 	repository := programFixtureRepo(t)
+	// The child identity must capture the real repository, not the unrelated
+	// non-Git directory supplied by the generic session fixture.
+	parent.WorkspacePath = repository
+	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": repository}
 	childPath := filepath.Join(t.TempDir(), "child")
 	programFixtureGit(t, repository, "worktree", "add", "-b", "agent/scope", childPath, "HEAD")
-	stub := &taskLaunchWorktreeStub{allocation: worktreeruntime.Allocation{WorkspacePath: childPath, RepoRoot: repository, BaseBranch: "dev", BranchName: "agent/scope", WorkspaceID: "scope-workspace"}}
+	stub := &taskLaunchWorktreeStub{taskBase: worktreeruntime.TaskBase{BaseCommit: programFixtureGit(t, repository, "rev-parse", "HEAD"), ParentBranch: "dev"}, allocation: worktreeruntime.Allocation{WorkspacePath: childPath, RepoRoot: repository, BaseBranch: "dev", BranchName: "agent/scope", WorkspaceID: "scope-workspace"}}
 	svc.SetWorktreeService(stub)
 	profile, virtual, source, err := svc.resolveTaskLaunchProfile(parent, "coder")
 	if err != nil {

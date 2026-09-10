@@ -78,6 +78,18 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := taskProgramScheduler{service: svc, parentSession: parent, record: record}
+	// Capture the program's destination before refreshing the parent to its
+	// successor. The real integration barrier must still advance only old work.
+	if _, err := p.programWorkspacePath(); err != nil {
+		t.Fatal(err)
+	}
+	successor, err := wt.AllocateTaskWorkspace(source, base, "stage-successor", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.parentSession.WorktreeRootPath = successor.WorkspacePath
+	p.parentSession.WorktreeBranch = successor.BranchName
+	p.parentSession.Metadata = map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": successor.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}
 	if _, err := p.sourceHandoffsForJob(2); err == nil {
 		t.Fatal("unintegrated source accepted")
 	}
@@ -106,7 +118,11 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 			t.Fatalf("handoff missing %q: %s", want, evidence)
 		}
 	}
-	nextChild, err := wt.AllocateTaskWorkspace(lane.WorkspacePath, next, "next-child", []string{"first.txt"})
+	stagePath, err := p.programWorkspacePath()
+	if err != nil || stagePath != lane.WorkspacePath {
+		t.Fatalf("successor retargeted later stage: %q %v", stagePath, err)
+	}
+	nextChild, err := wt.AllocateTaskWorkspace(stagePath, next, "next-child", []string{"first.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +173,9 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	p.record.ParentHead = programFixtureGit(t, lane.WorkspacePath, "rev-parse", "HEAD")
 	if _, err := p.sourceHandoffsForJob(2); err == nil || !strings.Contains(err.Error(), "binary") {
 		t.Fatalf("binary evidence: %v", err)
+	}
+	if programFixtureGit(t, successor.WorkspacePath, "rev-parse", "HEAD") != original || programFixtureGit(t, successor.WorkspacePath, "status", "--porcelain") != "" {
+		t.Fatal("stage integration advanced successor")
 	}
 	if programFixtureGit(t, source, "rev-parse", "HEAD") != original || programFixtureGit(t, source, "status", "--porcelain") != "" || programFixtureGit(t, unrelated, "worktree", "list", "--porcelain") != unrelatedBefore {
 		t.Fatal("captured or unrelated checkout changed")

@@ -536,7 +536,15 @@ func (s *SessionStore) putTaskProgramHistory(record TaskProgramRecord) error {
 	if err != nil {
 		return err
 	}
-	if !found || previous.State != record.State || !bytes.Equal(before, after) {
+	previousJobs, err := json.Marshal(previous.Jobs)
+	if err != nil {
+		return err
+	}
+	nextJobs, err := json.Marshal(record.Jobs)
+	if err != nil {
+		return err
+	}
+	if !found || previous.State != record.State || !bytes.Equal(before, after) || !bytes.Equal(previousJobs, nextJobs) {
 		if err := s.indexRepositoryLane(batch, record); err != nil {
 			return err
 		}
@@ -624,7 +632,7 @@ func repositoryHistoricalWorktrees(owner SessionSnapshot) []SessionSnapshot {
 			"swarm_v3_source_workspace_generation": strconv.FormatInt(generation, 10),
 			"swarm_v3_source_workspace_path":       source,
 		}
-		for _, name := range []string{"integration_status", "task_status"} {
+		for _, name := range []string{"integration_status", "task_status", "task_program_id", "task_program_job_id", "parent_task_call_id"} {
 			historical.Metadata[name] = owner.Metadata[name]
 		}
 		out = append(out, historical)
@@ -713,7 +721,12 @@ func (s *SessionStore) ExactRepositoryHistory(q RepositoryHistoryQuery, path str
 		return out, ErrRepositoryHistoryNotReady
 	}
 	prefix := repositoryHistoryPrefix(q.AccountScopeID, q.UserID, q.ParentSessionID)
-	key, closer, err := reader.Get([]byte(repositoryHistoryExactKey(prefix, path)))
+	// A child can capture the parent's lane as its source. Prefer the exact
+	// parent's worktree claim so that child's source cannot shadow lane identity.
+	key, closer, err := reader.Get([]byte(repositoryHistoryClaimKey(prefix, q.ParentSessionID, WorkspaceGrant{Kind: WorkspaceGrantWorktree, Path: path})))
+	if errors.Is(err, pebble.ErrNotFound) {
+		key, closer, err = reader.Get([]byte(repositoryHistoryExactKey(prefix, path)))
+	}
 	if err == nil {
 		rowKey := string(key)
 		closer.Close()

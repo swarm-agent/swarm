@@ -688,6 +688,24 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return result, nil
 	}
 
+	if input.Kind == V3SessionMutationUpdateSettings && input.EventType == "session.worktree.adopted" {
+		programs, err := s.ListTaskPrograms(input.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		for _, program := range programs {
+			if program.State != TaskProgramStateRunning && program.State != TaskProgramStateDeclared {
+				continue
+			}
+			for _, job := range program.Definition.Jobs {
+				if job.AgentType == "designer" && (job.OutputMode == "" || job.OutputMode == "managed") {
+					continue
+				}
+				return V3SessionMutationResult{}, fmt.Errorf("workspace adoption conflicts with active Task Program %q; finish or stop repository scheduling first", program.ProgramID)
+			}
+		}
+	}
+
 	// Live metric maintenance uses disjoint per-session keys. A shared repair
 	// lock excludes only the versioned full backfill, not unrelated commits.
 	s.store.sessionMutations.libraryRepairMu.RLock()

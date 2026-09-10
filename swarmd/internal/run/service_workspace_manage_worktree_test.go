@@ -37,10 +37,12 @@ func (failingWorkspaceMapService) Update(string, int64, string) (pebblestore.Wor
 }
 
 type sameSessionWorktreeStub struct {
-	allocation  worktreeruntime.Allocation
-	allocateErr error
-	states      map[string]worktreeruntime.TaskWorkspaceState
-	rolledBack  []string
+	allocation        worktreeruntime.Allocation
+	allocateErr       error
+	states            map[string]worktreeruntime.TaskWorkspaceState
+	rolledBack        []string
+	requestedBranches []string
+	conflictOnce      bool
 }
 
 func (s *sameSessionWorktreeStub) AttachBranch(_, _, _ string) (string, error) { return "", nil }
@@ -69,7 +71,12 @@ func (s *sameSessionWorktreeStub) RemoveIntegratedTaskWorkspace(string, string, 
 func (s *sameSessionWorktreeStub) GetConfigForPrincipal(identity.Principal, string) (worktreeruntime.Config, error) {
 	return worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"}, nil
 }
-func (s *sameSessionWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(identity.Principal, string, string, string, string) (worktreeruntime.Allocation, error) {
+func (s *sameSessionWorktreeStub) AllocateDetachedWorkspaceRequestedForPrincipal(_ identity.Principal, _, _, _, branch string) (worktreeruntime.Allocation, error) {
+	s.requestedBranches = append(s.requestedBranches, branch)
+	if s.conflictOnce {
+		s.conflictOnce = false
+		return worktreeruntime.Allocation{}, &worktreeruntime.RequestedWorktreeNameConflictError{WorktreeName: branch, Cause: errors.New("occupied")}
+	}
 	return s.allocation, s.allocateErr
 }
 func (s *sameSessionWorktreeStub) RollbackAllocation(allocation worktreeruntime.Allocation) error {
@@ -235,10 +242,12 @@ func TestManageWorkspaceSetSessionPreservesGlobalWorkspaceGrantsAndRestartsTurn(
 	}
 }
 
+// Purpose: action-bound permission payloads must preserve their exact saved Git
+// target and reject unapproved/mismatched mutation scopes before catalog writes.
 func TestManageWorkspacePermissionMetadataAndActionScopes(t *testing.T) {
 	principal := testRunPrincipal()
-	currentPath := t.TempDir()
-	safePath := t.TempDir()
+	currentPath := programFixtureRepo(t)
+	safePath := programFixtureRepo(t)
 	workspaceSvc, _, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
 	defer cleanup()
 	current, err := workspaceSvc.AddForPrincipal(principal, currentPath, "current", "", true)
@@ -842,8 +851,10 @@ func testManageWorkspaceCanonicalizer(entries ...workspaceruntime.Resolution) Se
 	}
 }
 
-// Purpose: a rejected dirty adoption rolls back its allocation and preserves durable prior identity.
-func TestManageWorkspaceAdoptWorktreeRollsBackWhenCurrentWorktreeIsDirty(t *testing.T) {
+// Purpose: adoptSessionWorktree must preserve old dirty bytes and committed
+// history, publish both exact lane identities atomically, and leave no durable
+// successor on CAS failure. Real Git plus the V3 store is the narrowest boundary.
+func TestManageWorkspaceAdoptWorktreePreservesDirtySuccessor(t *testing.T) {
 	principal := testRunPrincipal()
 	workspacePath := programFixtureRepo(t)
 	currentPath := filepath.Join(t.TempDir(), "current")
@@ -861,7 +872,7 @@ func TestManageWorkspaceAdoptWorktreeRollsBackWhenCurrentWorktreeIsDirty(t *test
 	sessionID := "dirty-session"
 	if err := sessionStore.CreateSessionForAccount(pebblestore.SessionSnapshot{
 		ID: sessionID, WorkspacePath: workspacePath, WorkspaceName: "repo", Title: "dirty", WorktreeEnabled: true,
-		WorktreeRootPath: currentPath, WorktreeBranch: "agent/current", Metadata: map[string]any{"swarm_v3_source_workspace_id": entry.WorkspaceID, "swarm_v3_source_workspace_path": workspacePath, "base_commit": base},
+		WorktreeRootPath: currentPath, WorktreeBranch: "agent/current", Metadata: map[string]any{"swarm_v3_source_workspace_id": entry.WorkspaceID, "swarm_v3_source_workspace_generation": entry.WorkspaceGeneration, "swarm_v3_source_workspace_path": workspacePath, "base_commit": base},
 	}, principal.UserID, principal.AccountScopeID); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -876,15 +887,139 @@ func TestManageWorkspaceAdoptWorktreeRollsBackWhenCurrentWorktreeIsDirty(t *test
 	runSvc.SetSessionWorkspaceCanonicalizer(func(SessionWorkspaceCanonicalizeInput) (SessionWorkspaceCanonicalization, error) {
 		return SessionWorkspaceCanonicalization{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, WorkspaceState: "active", WorkspaceName: "repo", SourceWorkspacePath: workspacePath, RuntimeWorkspacePath: workspacePath, WorkspaceBindingID: "binding", RuntimeSwarmID: "swarm", PlacementGeneration: 1, BindingGeneration: 1}, nil
 	})
-	_, err = runSvc.executeManageWorkspaceTool(sessionID, `{"action":"adopt_worktree","workspace_id":"`+entry.WorkspaceID+`","worktree_name":"next"}`, principal, sessionSvc.ApplySessionMutation)
-	if err == nil || !strings.Contains(err.Error(), "dirty worktree") {
-		t.Fatalf("adopt error = %v", err)
+	marker := filepath.Join(currentPath, "retained.txt")
+	if err := os.WriteFile(marker, []byte("committed"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if len(worktrees.rolledBack) != 1 || worktrees.rolledBack[0] != allocatedPath {
-		t.Fatalf("rolled back = %v", worktrees.rolledBack)
+	runTestGit(t, currentPath, "add", "retained.txt")
+	runTestGit(t, currentPath, "commit", "-m", "retained work")
+	oldHead := runTestGit(t, currentPath, "rev-parse", "HEAD")
+	if err := os.WriteFile(marker, []byte("dirty"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(currentPath, "untracked.txt"), []byte("untracked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	child := pebblestore.SessionSnapshot{ID: "artifact-child", WorkspacePath: currentPath, Metadata: map[string]any{"parent_session_id": sessionID, "lineage_kind": "delegated_subagent", "designer_output_mode": "managed", "managed_artifact_read_only_checkout": true}}
+	if err := sessionStore.CreateSessionForAccount(child, principal.UserID, principal.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	// Join canonical adoption with an already-launched terminal program and
+	// the durable inventory. Historical destinations must survive both successors.
+	spec := &taskProgramSpec{ID: "retained-program", Stages: []taskProgramStage{{ID: "build", DependencyEvidence: "ready"}}, Jobs: []taskProgramJob{{ID: "build", StageID: "build", RequestedSubagentType: "coder", OwnedScope: []string{"source.txt"}}}}
+	program, err := taskProgramInitialRecord(sessionID, "prior-run", "prior-call", spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	program.State = pebblestore.TaskProgramStateBlocked
+	program.RepositoryLane = &pebblestore.TaskProgramRepositoryLane{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, SourcePath: workspacePath, WorkspacePath: currentPath, Branch: "agent/current", BaseCommit: base}
+	program, _, err = sessionSvc.CreateTaskProgram(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := `{"action":"adopt_worktree","workspace_id":"` + entry.WorkspaceID + `","worktree_name":"next"}`
+	before, _, _ := sessionSvc.GetSession(sessionID)
+	_, err = runSvc.executeManageWorkspaceTool(sessionID, args, principal, func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		return sessionruntime.SessionMutationResult{}, errors.New("injected CAS failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected CAS failure") || len(worktrees.rolledBack) != 1 {
+		t.Fatalf("failure/rollback: %v %+v", err, worktrees.rolledBack)
 	}
 	stored, _, _ := sessionSvc.GetSession(sessionID)
-	if stored.WorktreeRootPath != currentPath {
-		t.Fatalf("session mutated after rejection: %+v", stored)
+	if mustJSON(t, stored) != mustJSON(t, before) {
+		t.Fatal("CAS failure changed session")
+	}
+	_, err = runSvc.executeManageWorkspaceTool(sessionID, args, principal, sessionSvc.ApplySessionMutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ = sessionSvc.GetSession(sessionID)
+	if stored.WorktreeRootPath != allocatedPath || len(sessionWorktreeHistory(stored.Metadata["swarm_v3_worktree_history"])) != 2 {
+		t.Fatalf("successor history: %+v", stored)
+	}
+	for _, item := range sessionWorktreeHistory(stored.Metadata["swarm_v3_worktree_history"]) {
+		if mapString(item, "workspace_id") != entry.WorkspaceID || manageWorkspaceInt64(item["workspace_generation"]) != entry.WorkspaceGeneration || mapString(item, "source_workspace_path") != workspacePath || mapString(item, "owner_session_id") != sessionID || mapString(item, "base_commit") != base {
+			t.Fatalf("lost provenance: %+v", item)
+		}
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "dirty" {
+		t.Fatalf("old bytes: %s %v", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(currentPath, "untracked.txt")); err != nil || string(got) != "untracked" {
+		t.Fatalf("untracked bytes: %s %v", got, err)
+	}
+	if runTestGit(t, currentPath, "rev-parse", "HEAD") != oldHead {
+		t.Fatal("old history changed")
+	}
+	if strings.TrimSpace(runTestGit(t, allocatedPath, "rev-parse", "HEAD")) != base {
+		t.Fatal("successor inherited active lane commits")
+	}
+	if _, err := os.Stat(filepath.Join(allocatedPath, "retained.txt")); !os.IsNotExist(err) {
+		t.Fatal("successor inherited old bytes")
+	}
+	childAfter, _, _ := sessionSvc.GetSession(child.ID)
+	if childAfter.WorkspacePath != currentPath {
+		t.Fatal("artifact discovery target retargeted")
+	}
+	thirdPath := filepath.Join(t.TempDir(), "third")
+	runTestGit(t, workspacePath, "worktree", "add", "-b", "agent/third", thirdPath)
+	worktrees.allocation = worktreeruntime.Allocation{WorkspacePath: thirdPath, BaseBranch: "dev", BaseCommit: base, BranchName: "agent/third"}
+	_, err = runSvc.executeManageWorkspaceTool(sessionID, args, principal, sessionSvc.ApplySessionMutation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ = sessionSvc.GetSession(sessionID)
+	if stored.WorktreeRootPath != thirdPath || len(sessionWorktreeHistory(stored.Metadata["swarm_v3_worktree_history"])) != 3 {
+		t.Fatal("repeated successor lost history")
+	}
+	savedProgram, ok, err := sessionSvc.GetTaskProgram(sessionID, program.ProgramID)
+	if err != nil || !ok || mustJSON(t, savedProgram.RepositoryLane) != mustJSON(t, program.RepositoryLane) {
+		t.Fatalf("adoption retargeted prior program: %+v %v", savedProgram, err)
+	}
+	if err := sessionStore.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	query := pebblestore.RepositoryHistoryQuery{UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ParentSessionID: sessionID, Limit: 100}
+	for _, path := range []string{currentPath, allocatedPath, thirdPath} {
+		page, err := sessionStore.ExactRepositoryHistory(query, path)
+		if err != nil || len(page.Sessions) == 0 || page.Sessions[0].Session.WorktreeRootPath != path {
+			t.Fatalf("adopted lane missing from exact durable inventory: %s %+v %v", path, page, err)
+		}
+	}
+	before = stored
+	for _, bad := range []string{
+		`{"action":"adopt_worktree","expected_worktree_path":"` + currentPath + `"}`,
+		`{"action":"adopt_worktree","worktree_path":"` + workspacePath + `"}`,
+		`{"action":"adopt_worktree","workspace_generation":999}`,
+	} {
+		if _, err := runSvc.executeManageWorkspaceTool(sessionID, bad, principal, sessionSvc.ApplySessionMutation); err == nil {
+			t.Fatalf("accepted stale/foreign selector: %s", bad)
+		}
+		stored, _, _ = sessionSvc.GetSession(sessionID)
+		if mustJSON(t, stored) != mustJSON(t, before) {
+			t.Fatal("rejection changed identity/history")
+		}
+	}
+	worker := pebblestore.SessionSnapshot{ID: "repository-child", WorkspacePath: currentPath, Metadata: map[string]any{"parent_session_id": sessionID, "lineage_kind": "delegated_subagent", "target_workspace_path": currentPath, "parent_branch": "agent/current", "base_commit": base}}
+	if err := sessionStore.CreateSessionForAccount(worker, principal.UserID, principal.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	worktrees.states[thirdPath] = worktreeruntime.TaskWorkspaceState{Clean: true, BranchName: "agent/third", HeadCommit: base}
+	worktrees.states[allocatedPath] = worktreeruntime.TaskWorkspaceState{Clean: true, BranchName: "agent/next", HeadCommit: base}
+	// Same-source adoption preserves retained worker assignments rather than
+	// pinning the parent forever. Re-adopt the owned lane without copying bytes.
+	if _, err := runSvc.executeManageWorkspaceTool(sessionID, `{"action":"adopt_worktree","worktree_path":"`+allocatedPath+`"}`, principal, sessionSvc.ApplySessionMutation); err != nil {
+		t.Fatalf("retained worker adoption: %v", err)
+	}
+	stored, _, _ = sessionSvc.GetSession(sessionID)
+	if stored.WorktreeRootPath != allocatedPath {
+		t.Fatal("parent did not adopt selected retained lane")
+	}
+	retained, _, _ := sessionSvc.GetSession(worker.ID)
+	if mapString(retained.Metadata, "target_workspace_path") != currentPath || mapString(retained.Metadata, "parent_branch") != "agent/current" {
+		t.Fatal("retained worker retargeted")
+	}
+	if err := runSvc.ensureWorkspaceTransitionIdle(retained, principal); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("worker move: %v", err)
 	}
 }

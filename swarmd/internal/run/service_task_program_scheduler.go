@@ -777,6 +777,14 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	if !hasCoder {
 		return strings.TrimSpace(parent.WorkspacePath), nil
 	}
+	// Once admitted, the program's lane is immutable. A refreshed parent may
+	// have adopted a successor; never reinterpret its default as this program's
+	// stage destination. The normal launch authority still authenticates source,
+	// Git ownership, captured ancestry and cleanliness before reuse.
+	if p.record.RepositoryLane != nil {
+		path, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: p.record.RepositoryLane})
+		return path, err
+	}
 	lanePath := strings.TrimSpace(parent.WorktreeRootPath)
 	sourcePath := strings.TrimSpace(mapString(parent.Metadata, "swarm_v3_source_workspace_path"))
 	worktreeBranch := strings.TrimSpace(parent.WorktreeBranch)
@@ -822,11 +830,18 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	}
 	if p.record.Revision > 0 && p.record.RepositoryLane == nil {
 		lane := &pebblestore.TaskProgramRepositoryLane{SourcePath: sourcePath, WorkspacePath: lanePath, Branch: worktreeBranch, BaseCommit: firstNonEmptyString(mapString(parent.Metadata, "swarm_v3_worktree_base_commit"), mapString(parent.Metadata, "base_commit"))}
+		for _, grant := range parent.WorkspaceGrants {
+			if grant.Path == sourcePath && grant.WorkspaceID != "" {
+				lane.WorkspaceID, lane.WorkspaceGeneration = grant.WorkspaceID, grant.WorkspaceGeneration
+				break
+			}
+		}
 		record, _, err := p.transition(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: fmt.Sprintf("lane:%d", p.record.Revision), RepositoryLane: lane})
 		if err != nil {
 			return "", err
 		}
 		p.record = record
+		p.emitProgramProgress("repository.allocated", "Task Program repository inventory changed")
 	}
 	return lanePath, nil
 }

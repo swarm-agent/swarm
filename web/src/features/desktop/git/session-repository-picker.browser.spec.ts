@@ -13,10 +13,12 @@ test('browser repository selection remains explicit across default changes', { t
     import { SessionRepositoryPicker } from './src/features/desktop/git/session-repository-picker';
     import { repositoryKey } from './src/features/desktop/state/session-repositories';
     const base = {workspace_id:'project',workspace_name:'Project',source_path:'/project',attached:true,branch:'branch',base_commit:'',retained:true,availability:'available',files_truncated:false};
-    const source = {...base,id:'source',session_id:'parent',workspace_path:'/project',kind:'source',default:true,lifecycle:'active'};
+    const source = {...base,id:'source',session_id:'parent',workspace_path:'/project',kind:'parent',default:true,active:true,lifecycle:'active'};
+    const retained = {...source,id:'retained',workspace_path:'/project/old',default:false,active:false};
+    const program = {...base,id:'program',session_id:'parent',workspace_id:'extra',workspace_name:'Project',source_path:'/extra',workspace_path:'/extra/program',kind:'lane',program_id:'program-one',job_id:'job-one',default:false,active:false};
     const worker = {...base,id:'worker',session_id:'worker',workspace_path:'/worker',kind:'worker',default:false,lifecycle:'failed'};
     function Fixture() {
-      const [state,setState] = React.useState({items:[source,worker],selectedKey:repositoryKey(source),loading:false,stale:false,error:'',nextCursor:'cursor',historyCoverage:'retained'});
+      const [state,setState] = React.useState({items:[source,retained,program,worker],selectedKey:repositoryKey(source),loading:false,stale:false,error:'',nextCursor:'cursor',historyCoverage:'retained'});
       return <><SessionRepositoryPicker inventory={state} onSelect={key=>setState(s=>({...s,selectedKey:key}))} onRefresh={()=>setState(s=>({...s,items:s.items.map(r=>({...r,default:!r.default}))}))} onLoadMore={()=>setState(s=>({...s,stale:true,error:'Authorization expired'}))}/><output>{state.selectedKey}</output></>;
     }
     createRoot(document.getElementById('root')).render(<Fixture/>);
@@ -26,6 +28,10 @@ test('browser repository selection remains explicit across default changes', { t
     const page = await browser.newPage({ viewport: { width: 360, height: 640 } })
     await page.setContent('<div id="root"></div>')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
+    assert.equal(await page.locator('fieldset').count(), 2)
+    assert.equal(await page.getByText('Active execution lane', { exact: false }).count(), 1)
+    assert.equal(await page.getByText('Program program-one · Job job-one').count(), 1)
+    assert.equal(await page.getByRole('button', { name: /^parent · branch/ }).count(), 2)
     await page.getByRole('button', { name: /worker · branch/ }).click()
     const selected = await page.locator('output').textContent()
     assert.ok(selected?.includes('worker'))
@@ -84,6 +90,10 @@ test('styled repository windows reach late workers without implicit retargeting'
     for (const width of [375, 1440]) {
       await page.setViewportSize({ width, height: 800 })
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+      const region = page.getByTestId('repository-scroll-region')
+      assert.ok((await region.boundingBox())!.height <= 321)
+      assert.equal(await region.evaluate(el => el.scrollHeight > el.clientHeight), true)
+      await region.evaluate(el => { el.scrollTop = 0 })
       if (process.env.SWARM_TEST_SCREENSHOT_DIR) await page.screenshot({ path: `${process.env.SWARM_TEST_SCREENSHOT_DIR}/repositories-${width}.png` })
     }
     await page.getByRole('button', { name: 'Refresh', exact: true }).click()

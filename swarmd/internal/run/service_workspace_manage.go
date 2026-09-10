@@ -955,13 +955,26 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 	if session.UserID != principal.UserID || session.AccountScopeID != principal.AccountScopeID {
 		return "", errors.New("manage_workspace session ownership does not match the authenticated principal")
 	}
-	if err := s.ensureWorkspaceTransitionIdle(session, principal); err != nil {
+	// Same-source adoption retains every historical child and integration lane.
+	// Unlike attachment changes it does not require integrating retained work.
+	if mapString(session.Metadata, "lineage_kind") == "delegated_subagent" {
+		return "", errors.New("delegated worker workspace assignment is immutable")
+	}
+	if err := s.sessions.EnsureWorkspaceTransitionIdle(session.ID); err != nil {
 		return "", err
 	}
 	if err := validateSessionRepositoryIdentity(session); err != nil {
 		return "", err
 	}
-	if len(sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"])) >= 64 && args.WorktreePath == "" {
+	historyCount := len(sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"]))
+	currentRecorded := false
+	for _, item := range sessionWorktreeHistory(session.Metadata["swarm_v3_worktree_history"]) {
+		currentRecorded = currentRecorded || sameTaskProgramPath(mapString(item, "path"), session.WorktreeRootPath)
+	}
+	if session.WorktreeEnabled && !currentRecorded {
+		historyCount++
+	}
+	if historyCount >= 64 && args.WorktreePath == "" {
 		return "", errors.New("session worktree history limit reached; existing provenance is retained")
 	}
 	currentPath := strings.TrimSpace(session.WorktreeRootPath)
@@ -972,6 +985,13 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 	canonical, err := s.canonicalSessionWorkspace(principal, workspaceID, args.WorkspaceGeneration)
 	if err != nil {
 		return "", err
+	}
+	// Successors preserve the old lane, including dirty/untracked bytes. They
+	// start from the saved source checkout's configured committed base, not the
+	// active lane's HEAD or working files. Cross-repository moves retain the
+	// stricter set_session contract rather than silently changing provenance.
+	if session.WorktreeEnabled && (canonical.WorkspaceID != mapString(session.Metadata, "swarm_v3_source_workspace_id") || canonical.WorkspaceGeneration != manageWorkspaceInt64(session.Metadata["swarm_v3_source_workspace_generation"]) || !sameTaskProgramPath(canonical.SourceWorkspacePath, mapString(session.Metadata, "swarm_v3_source_workspace_path"))) {
+		return "", errors.New("manage_workspace successor requires the current saved source identity; use set_session for a different workspace")
 	}
 	var allocation worktreeruntime.Allocation
 	allocated := false
@@ -991,7 +1011,7 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 		}
 		return "", err
 	}
-	if currentPath != "" && filepath.Clean(currentPath) != filepath.Clean(allocation.WorkspacePath) {
+	if !allocated && currentPath != "" && filepath.Clean(currentPath) != filepath.Clean(allocation.WorkspacePath) {
 		state, inspectErr := s.worktrees.InspectTaskWorkspace(currentPath)
 		if inspectErr != nil || !state.Clean {
 			if allocated {
@@ -1005,7 +1025,7 @@ func (s *Service) adoptSessionWorktree(sessionID string, principal identity.Prin
 	}
 	if err := s.rejectSessionWorktreeOwnershipConflict(principal, sessionID, allocation.WorkspacePath); err != nil {
 		if allocated {
-			_ = s.worktrees.RollbackAllocation(allocation)
+			err = errors.Join(err, s.worktrees.RollbackAllocation(allocation))
 		}
 		return "", err
 	}
@@ -1125,10 +1145,21 @@ func (s *Service) rejectSessionWorktreeOwnershipConflict(principal identity.Prin
 	if err != nil {
 		return err
 	}
+	if len(sessions) >= 10000 {
+		return errors.New("worktree ownership inventory exceeds bound")
+	}
 	path = filepath.Clean(path)
 	for _, candidate := range sessions {
-		if candidate.ID != sessionID && candidate.WorktreeEnabled && filepath.Clean(candidate.WorktreeRootPath) == path {
+		if candidate.ID == sessionID {
+			continue
+		}
+		if candidate.WorktreeEnabled && filepath.Clean(candidate.WorktreeRootPath) == path {
 			return fmt.Errorf("manage_workspace worktree is owned by session %q", candidate.ID)
+		}
+		for _, item := range sessionWorktreeHistory(candidate.Metadata["swarm_v3_worktree_history"]) {
+			if mapString(item, "owner_session_id") == candidate.ID && filepath.Clean(mapString(item, "path")) == path {
+				return fmt.Errorf("manage_workspace worktree is retained by session %q", candidate.ID)
+			}
 		}
 	}
 	return nil

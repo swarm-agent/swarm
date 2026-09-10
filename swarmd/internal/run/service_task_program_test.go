@@ -546,7 +546,29 @@ func TestTaskProgramSchedulerRequiresSessionOwnedRepositoryLane(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			scheduler := taskProgramScheduler{parentSession: tc.parent, record: pebblestore.TaskProgramRecord{Definition: definition}}
+			// Route cases require real ownership evidence, not invented paths.
+			svc := &Service{worktrees: &worktreeruntime.Service{}}
+			if tc.name == "routes source repository into parent lane" || tc.name == "rejects cross workspace without lane" {
+				t.Setenv("XDG_DATA_HOME", t.TempDir())
+				source := programFixtureRepo(t)
+				base, err := svc.worktrees.ResolveTaskBase(source)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lane, err := svc.worktrees.AllocateTaskWorkspace(source, base, "route-parent", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tc.parent = pebblestore.SessionSnapshot{ID: "parent", UserID: "user", AccountScopeID: "account", WorkspacePath: source, WorktreeEnabled: true, WorktreeRootPath: lane.WorkspacePath, WorktreeBaseBranch: base.ParentBranch, WorktreeBranch: lane.BranchName, Metadata: map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": lane.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}}
+				definition = pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{ID: "coder", AgentType: "coder", WorkspacePath: source}}}
+				tc.want = lane.WorkspacePath
+				if tc.err != "" {
+					other := programFixtureRepo(t)
+					tc.parent.TemporaryWorkspaceRoots = []string{other}
+					definition.Jobs[0].WorkspacePath = other
+				}
+			}
+			scheduler := taskProgramScheduler{service: svc, parentSession: tc.parent, record: pebblestore.TaskProgramRecord{Definition: definition}}
 			got, err := scheduler.programWorkspacePath()
 			if tc.err != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.err) {
@@ -578,12 +600,23 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 			if err != nil || !ok {
 				t.Fatalf("load parent: ok=%v err=%v", ok, err)
 			}
-			parent.WorkspacePath = "/shared/repo"
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
+			source := programFixtureRepo(t)
+			wt := &worktreeruntime.Service{}
+			base, err := wt.ResolveTaskBase(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lane, err := wt.AllocateTaskWorkspace(source, base, "cleanup-parent", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parent.WorkspacePath = source
 			parent.WorktreeEnabled = true
-			parent.WorktreeRootPath = "/shared/repo"
-			parent.WorktreeBaseBranch = "dev"
-			parent.WorktreeBranch = "agent/parent-lane"
-			parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": "/captured/repo", "swarm_v3_runtime_workspace_path": "/shared/repo"}
+			parent.WorktreeRootPath = lane.WorkspacePath
+			parent.WorktreeBaseBranch = base.ParentBranch
+			parent.WorktreeBranch = lane.BranchName
+			parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": source, "swarm_v3_runtime_workspace_path": lane.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}
 			stub := &taskProgramCleanupWorktreeStub{taskLaunchWorktreeStub: taskLaunchWorktreeStub{cleanupErr: tc.cleanupErr, taskBase: worktreeruntime.TaskBase{BaseCommit: strings.Repeat("a", 40)}}}
 			svc.SetWorktreeService(stub)
 			record, _, err := svc.sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{
@@ -591,7 +624,7 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 				Definition: pebblestore.TaskProgramDefinition{
 					Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}},
 					Jobs: []pebblestore.TaskProgramJobSpec{
-						{ID: "api", StageID: "build", AgentType: "coder", WorkspacePath: "/captured/repo", DependencyEvidence: "ready"},
+						{ID: "api", StageID: "build", AgentType: "coder", WorkspacePath: source, DependencyEvidence: "ready"},
 						{ID: "recoverable", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
 						{ID: "failed", StageID: "build", AgentType: "coder", DependencyEvidence: "ready"},
 					},
@@ -614,7 +647,7 @@ func TestTaskProgramSchedulerRecordsIntegratedWorktreeCleanupOutcome(t *testing.
 			if err := scheduler.cleanupIntegratedStageWorktrees("build"); err != nil {
 				t.Fatalf("cleanup integrated stage: %v", err)
 			}
-			if len(stub.cleanupCalls) != 1 || stub.cleanupCalls[0] != "/worktrees/child-api" || len(stub.cleanupParentPaths) != 1 || stub.cleanupParentPaths[0] != "/shared/repo" {
+			if len(stub.cleanupCalls) != 1 || stub.cleanupCalls[0] != "/worktrees/child-api" || len(stub.cleanupParentPaths) != 1 || stub.cleanupParentPaths[0] != lane.WorkspacePath {
 				t.Fatalf("cleanup calls = %v parent paths = %v", stub.cleanupCalls, stub.cleanupParentPaths)
 			}
 			if scheduler.record.Jobs[0].State != pebblestore.TaskProgramJobIntegrated || scheduler.record.Jobs[0].IntegrationState != tc.wantIntegration {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { SessionRepository, SessionRepositoriesResponse } from '../git/types'
-import { mergeRepositoryRows, repositoryKey, repositoryMutationSupported, repositoryEventInvalidates, scheduleRepositoryRefresh, SessionRepositoryInventory } from './session-repositories'
+import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
+import { repositoryDialogTargetMatches, repositoryOwnerIds, mergeRepositoryRows, repositoryKey, repositoryMutationSupported, repositoryEventInvalidates, scheduleRepositoryRefresh, SessionRepositoryInventory } from './session-repositories'
 
 // Requirement: canonical inventory is owner/path scoped and retained history must
 // survive default changes. Threat: dedup or stale async results target another
@@ -169,4 +170,69 @@ test('refresh scheduler drains events without polling and defers hidden reads', 
   pending.shift()!(page([repositoryFixture({ id: 'late' })]))
   await Promise.resolve()
   assert.equal(inventory.state.items[0].id, 'row')
+})
+
+// Requirement: hydration of a previously unseen child must invalidate its parent's
+// paged inventory; unrelated children and token chatter must not trigger reads.
+// Canonical cache lineage + the event filter is the narrow discovery boundary.
+test('new child hydration discovers inventory owners outside the loaded page', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionsById.child = { kind: 'full', needsHydrate: false, session: { id: 'child', metadata: { parent_session_id: 'parent' } } as never }
+  state.sessionsById.other = { kind: 'full', needsHydrate: false, session: { id: 'other', metadata: { parent_session_id: 'elsewhere' } } as never }
+  const owners = repositoryOwnerIds('parent', [], state)
+  assert.deepEqual([...owners], ['parent', 'child'])
+  assert.equal(repositoryEventInvalidates({ type: 'hydrate.apply', source: 'hydrate', scopeId: 'scope', requestedSessionIds: ['child'], snapshot: {} as never }, owners), true)
+  assert.equal(repositoryEventInvalidates({ type: 'hydrate.apply', source: 'hydrate', scopeId: 'scope', requestedSessionIds: ['other'], snapshot: {} as never }, owners), false)
+  assert.equal(repositoryEventInvalidates({ type: 'realtime.applyEvent', event: { source: 'realtime', sessionId: 'child', eventType: 'session.message.appended', payload: {} } }, owners), false)
+})
+
+// Requirement: historical or mismatched status bytes cannot authorize an operation,
+// even when owner/path/branch labels match. Test the actual mutation predicate.
+test('inactive lane and foreign status cannot enable mutations', () => {
+  const owner = { id: 'parent', path: '/project/tree', worktree: true }
+  assert.equal(repositoryMutationSupported(repositoryFixture({ active: false }), owner, false), false)
+  const row = repositoryFixture({ active: true })
+  row.status = { ...row.status!, workspace_path: '/other' }
+  assert.equal(repositoryMutationSupported(row, owner, false), false)
+})
+
+// Requirement: persisted program lane allocation is visible while task execution
+// remains in flight, without refreshing on every progress/token delta.
+test('only scoped repository allocation progress invalidates inventory', () => {
+  const owners = new Set(['parent'])
+  const action = (sessionId: string, output: string) => ({ type: 'realtime.applyEvent' as const, event: { source: 'realtime' as const, sessionId, eventType: 'session.tool.delta', payload: { output } } })
+  const allocated = JSON.stringify({ tool: 'task', phase: 'repository.allocated' })
+  assert.equal(repositoryEventInvalidates(action('parent', allocated), owners), true)
+  assert.equal(repositoryEventInvalidates(action('other', allocated), owners), false)
+  assert.equal(repositoryEventInvalidates(action('parent', allocated), owners, true), false)
+  for (const output of ['partial{', JSON.stringify({ tool: 'task', phase: 'running' }), JSON.stringify({ tool: 'bash', phase: 'repository.allocated' })]) {
+    assert.equal(repositoryEventInvalidates(action('parent', output), owners), false)
+  }
+})
+
+// Requirement: switching sessions rejects late old responses; reload and reconnect
+// rebuild selection from the new inventory instead of carrying another owner's key.
+test('session switch and reconnect keep independent inventory identities', async () => {
+  let finish!: (value: SessionRepositoriesResponse) => void
+  const old = new SessionRepositoryInventory(() => new Promise(resolve => { finish = resolve }))
+  const pending = old.refresh(); old.dispose()
+  const current = new SessionRepositoryInventory(async () => page([repositoryFixture({ id: 'new', session_id: 'new-owner' })]))
+  await current.refresh()
+  finish(page([repositoryFixture()])); await pending
+  assert.equal(old.state.items.length, 0)
+  const selected = current.state.selectedKey
+  assert.ok(selected.includes('new-owner'))
+  assert.equal(repositoryEventInvalidates({ type: 'reconnect.applySnapshot', snapshot: {} as never }, new Set(['new-owner'])), true)
+  current.invalidate(); await current.refresh()
+  assert.equal(current.state.selectedKey, selected)
+})
+
+// Requirement: an open commit dialog cannot outlive selection/authority changes.
+// The predicate used by handleGitCommit must reject before the network mutation.
+test('commit dialog target is exact and requires current authority', () => {
+  const target = { sessionId: 'parent', workspacePath: '/old' }
+  assert.equal(repositoryDialogTargetMatches(target, target, true), true)
+  assert.equal(repositoryDialogTargetMatches(target, target, false), false)
+  assert.equal(repositoryDialogTargetMatches(target, { ...target, workspacePath: '/successor' }, true), false)
+  assert.equal(repositoryDialogTargetMatches(target, { ...target, sessionId: 'other' }, true), false)
 })

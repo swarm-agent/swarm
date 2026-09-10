@@ -205,10 +205,12 @@ type TaskProgramPreservedChild struct {
 // TaskProgramRepositoryLane is an immutable integration destination owned by
 // ParentSessionID. Captured source checkouts are never integration destinations.
 type TaskProgramRepositoryLane struct {
-	SourcePath    string `json:"source_path"`
-	WorkspacePath string `json:"workspace_path"`
-	Branch        string `json:"branch"`
-	BaseCommit    string `json:"base_commit"`
+	WorkspaceID         string `json:"workspace_id,omitempty"`
+	WorkspaceGeneration int64  `json:"workspace_generation,omitempty"`
+	SourcePath          string `json:"source_path"`
+	WorkspacePath       string `json:"workspace_path"`
+	Branch              string `json:"branch"`
+	BaseCommit          string `json:"base_commit"`
 }
 
 type TaskProgramTransition struct {
@@ -291,6 +293,10 @@ func (s *SessionStore) CreateTaskProgram(record TaskProgramRecord) (TaskProgramR
 	if err := validateTaskProgramRecord(record); err != nil {
 		return TaskProgramRecord{}, false, err
 	}
+	// Serialize admission with session identity changes. Adoption checks the
+	// program inventory under this same session lock before publishing.
+	unlockSession := s.store.sessionMutations.lockSessions(record.ParentSessionID)
+	defer unlockSession()
 	lock := taskProgramLock(record.ParentSessionID, record.ProgramID)
 	lock.Lock()
 	defer lock.Unlock()

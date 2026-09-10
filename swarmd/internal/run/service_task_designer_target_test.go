@@ -15,7 +15,7 @@ import (
 // proves both read-root reuse and rejection of caller-authored Designer targets.
 func TestTaskProgramDesignerImplicitRootSurvivesCohortAdmission(t *testing.T) {
 	root := t.TempDir()
-	parent := pebblestore.SessionSnapshot{WorkspacePath: root, WorktreeRootPath: root}
+	parent := pebblestore.SessionSnapshot{ID: "parent", UserID: "user", AccountScopeID: "account", WorkspacePath: root, WorktreeRootPath: root}
 	svc := &Service{}
 	launch := taskLaunchSpec{RequestedSubagentType: "designer"}
 	program := &taskProgramSpec{Jobs: []taskProgramJob{{RequestedSubagentType: "designer"}}}
