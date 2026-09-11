@@ -25,6 +25,8 @@ func run(args []string) error {
 	createServiceAccount := false
 	installUser, createUser := "", ""
 	chooseAccount := false
+	onboarding, desktop := false, false
+	onboardingInstall := false
 	lane := "main"
 	plan := client.UpdateApplyPlan{}
 	parentPID := 0
@@ -54,6 +56,12 @@ func run(args []string) error {
 			} else {
 				createUser = args[i]
 			}
+		case "--onboarding-install":
+			onboardingInstall = true
+		case "--onboarding":
+			onboarding = true
+		case "--desktop":
+			desktop = true
 		case "--choose-account":
 			chooseAccount = true
 		case "--create-service-account":
@@ -115,6 +123,25 @@ func run(args []string) error {
 		}
 	}
 
+	if onboardingInstall {
+		if os.Geteuid() != 0 || onboarding || desktop || applyRelease || chooseAccount || createServiceAccount || installUser != "" || createUser != "" || artifactRoot == "" || !installService {
+			return fmt.Errorf("invalid recorded onboarding installation")
+		}
+		restore, err := launcher.SelectRecordedOnboardingInstall(artifactRoot)
+		if err != nil {
+			return err
+		}
+		defer restore()
+	}
+	if desktop && !onboarding {
+		return fmt.Errorf("--desktop requires --onboarding")
+	}
+	if onboarding {
+		if applyRelease || chooseAccount || createServiceAccount || installUser != "" || createUser != "" || artifactRoot == "" || !installService {
+			return fmt.Errorf("onboarding requires one artifact root and service setup, without account overrides")
+		}
+		return runPrerequisiteOnboarding(artifactRoot, desktop)
+	}
 	if ((installUser != "" || createUser != "") && (createServiceAccount || chooseAccount)) || (createServiceAccount && chooseAccount) {
 		return fmt.Errorf("choose only one account mode")
 	}
@@ -132,13 +159,11 @@ func run(args []string) error {
 	if err := launcher.PreflightInstallation(installService); err != nil {
 		return err
 	}
-	if chooseAccount {
-		var err error
-		installUser, createUser, createServiceAccount, err = chooseInstallationAccount()
-		if err != nil {
-			return err
-		}
+	if chooseAccount && os.Geteuid() == 0 && artifactRoot != "" && installService {
+		return runPrerequisiteOnboarding(artifactRoot, false)
 	}
+	// Non-root interactive installs already have their invoking OS identity.
+	// Explicit administrative account flags remain available for automation.
 	if installUser != "" || createUser != "" {
 		name := installUser
 		if createUser != "" {

@@ -119,12 +119,14 @@ func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 type onboardingWorkspaceResult struct {
-	repository *client.OnboardingRepository
-	review     *client.OnboardingReview
-	prepared   bool
-	model      model.HomeModel
-	path       string
-	err        error
+	repositories []client.WorkspaceDiscoverEntry
+	discovered   bool
+	repository   *client.OnboardingRepository
+	review       *client.OnboardingReview
+	prepared     bool
+	model        model.HomeModel
+	path         string
+	err          error
 }
 
 type homeReloadResult struct {
@@ -5196,6 +5198,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		}
 	case ui.HomeActionKind("exit-onboarding"):
 		a.requestQuit()
+	case ui.HomeActionDiscoverOnboardingRepositories:
+		a.discoverOnboardingRepositories()
 	case ui.HomeActionInspectOnboardingRepository:
 		a.refreshOnboardingWorkspaceGitReadiness()
 	case ui.HomeActionReviewOnboardingRepository, ui.HomeActionBaselineOnboardingRepository:
@@ -5336,7 +5340,7 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 		a.refreshAuthModalData("")
 		if a.home.OnboardingProviderActive() {
 			a.refreshOnboardingWorkspaceGitReadiness()
-			a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+			a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
 		}
 		if record.Connection != nil {
 			method := strings.TrimSpace(record.Connection.Method)
@@ -5961,7 +5965,7 @@ func (a *App) consumeAuthLoginResult() {
 			a.home.HideAuthModal()
 			if a.home.OnboardingProviderActive() {
 				a.refreshOnboardingWorkspaceGitReadiness()
-				a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+				a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
 			}
 		} else {
 			a.home.SetAuthModalLoading(false)
@@ -6505,7 +6509,7 @@ func (a *App) refreshOnboardingWorkspaceGuidance() {
 	}
 	if g := status.WorkspaceGuidance; g != nil {
 		a.onboardingDifferentUser = g.RuntimeUID != fmt.Sprint(os.Geteuid())
-		a.home.SetOnboardingWorkspaceGuidance(firstNonEmpty(g.RuntimeUsername, g.RuntimeUID), g.SuggestedWorkspacePath)
+		a.home.SetOnboardingWorkspaceGuidance(firstNonEmpty(g.RuntimeUsername, g.RuntimeUID), g.HomePath)
 	}
 }
 
@@ -6539,7 +6543,8 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	a.onboardingCancel = cancel
-	committedOnly := a.home.OnboardingCommittedOnly()
+	// Setup consent explicitly excludes all existing content from the baseline.
+	committedOnly := setup || a.home.OnboardingCommittedOnly()
 	go func() {
 		defer cancel()
 		var resolution client.WorkspaceResolution
@@ -6565,11 +6570,8 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 			complete := true
 			var acknowledged client.OnboardingStatus
 			acknowledged, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
-			if err == nil && (!acknowledged.OK || acknowledged.NeedsOnboarding) {
-				err = fmt.Errorf("onboarding completion was not acknowledged")
-			}
 			if err == nil {
-				next.OnboardingRequired = false
+				next, err = acknowledgeOnboardingHomeModel(next, acknowledged)
 			}
 		}
 		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
@@ -6581,6 +6583,17 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 			_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
 		}
 	}()
+}
+
+func acknowledgeOnboardingHomeModel(next model.HomeModel, acknowledged client.OnboardingStatus) (model.HomeModel, error) {
+	if !acknowledged.OK || acknowledged.NeedsOnboarding {
+		return next, fmt.Errorf("onboarding completion was not acknowledged")
+	}
+	next.OnboardingRequired = false
+	next.WorkspaceSetupPath = ""
+	next.WorkspaceSetupHasGit = false
+	next.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
+	return next, nil
 }
 
 func homeModelHasActiveWorkspace(home model.HomeModel, path string) bool {
@@ -6614,6 +6627,10 @@ func (a *App) consumeOnboardingWorkspaceResult() {
 	case result := <-a.onboardingWorkspaceCh:
 		if result.err != nil {
 			a.home.SetOnboardingError(fmt.Sprintf("workspace setup failed: %v", result.err))
+			return
+		}
+		if result.discovered {
+			a.home.SetOnboardingRepositories(result.repositories)
 			return
 		}
 		if result.review != nil {

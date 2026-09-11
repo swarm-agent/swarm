@@ -244,9 +244,9 @@ func TestSetupRepositoryForPrincipalRejectsSymlinkAndStaleSelection(t *testing.T
 	}
 }
 
-// Requirement: daemon guidance proposes only a new child of its owned writable
-// canonical home, without mutation. Threat: unsafe homes, symlinks, collisions,
-// or caller identity could redirect setup onto existing data. Pure guidance is
+// Requirement: daemon guidance offers its verified non-root home without inventing
+// a project name or mutating it. Threat: unsafe homes, symlinks, or caller
+// identity could redirect setup onto existing data. Pure guidance is
 // the narrowest layer proving read-only selection with deterministic fixtures.
 func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) {
 	uid := strconv.Itoa(os.Geteuid())
@@ -257,7 +257,12 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 		t.Fatal(err)
 	}
 	guidance := daemonWorkspaceGuidance(account, uid)
-	if guidance.SuggestedWorkspacePath != first+"-2" || guidance.RuntimeUsername != account.Username || !guidance.SetupRequired {
+	if guidance.HomePath != func() string {
+		if uid == "0" {
+			return ""
+		}
+		return home
+	}() || guidance.RuntimeUsername != account.Username || !guidance.SetupRequired {
 		t.Fatalf("unexpected guidance: %+v", guidance)
 	}
 	if _, err := os.Lstat(first + "-2"); !os.IsNotExist(err) {
@@ -270,11 +275,11 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 	for _, unsafe := range []string{"", "relative", string(filepath.Separator), link, first, filepath.Join(home, "absent")} {
 		copy := *account
 		copy.HomeDir = unsafe
-		if got := daemonWorkspaceGuidance(&copy, uid); got.SuggestedWorkspacePath != "" {
+		if got := daemonWorkspaceGuidance(&copy, uid); got.HomePath != "" {
 			t.Fatalf("unsafe home %q suggested %+v", unsafe, got)
 		}
 	}
-	if got := daemonWorkspaceGuidance(account, uid+"1"); got.SuggestedWorkspacePath != "" || got.RuntimeUsername != "" {
+	if got := daemonWorkspaceGuidance(account, uid+"1"); got.HomePath != "" || got.RuntimeUsername != "" {
 		t.Fatalf("mismatched identity accepted: %+v", got)
 	}
 	for _, mode := range []os.FileMode{0o500, 0o777, 0o000} {
@@ -283,7 +288,7 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 		}
 		got := daemonWorkspaceGuidance(account, uid)
 		info, err := os.Stat(home)
-		if err != nil || info.Mode().Perm() != mode || got.SuggestedWorkspacePath != "" {
+		if err != nil || info.Mode().Perm() != mode || got.HomePath != "" {
 			t.Fatalf("unsafe permissions accepted or changed: guidance=%+v err=%v", got, err)
 		}
 	}

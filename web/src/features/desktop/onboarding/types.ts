@@ -67,7 +67,7 @@ export interface DesktopOnboardingIdentityWire {
 export interface OnboardingWorkspaceGuidance {
  runtime_username: string
  runtime_uid: string
- suggested_workspace_path: string
+ home_path: string
 }
 
 export interface DesktopOnboardingStatusWire {

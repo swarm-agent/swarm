@@ -22,11 +22,18 @@ func readyOnboardingPage() *HomePage {
 	return page
 }
 
+// Requirement: HomePage multi-field Enter moves focus first, then emits exactly
+// one save and waits for API completion. This event boundary prevents premature
+// provider navigation without running a daemon or provisioning identity.
 func TestOnboardingIdentityAdvancesOnlyAfterSaveCompletion(t *testing.T) {
 	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
 	// Unsaved typed names are distinct from persisted identity on resume.
 	page.model.OnboardingUsername = "alice"
 	page.model.OnboardingSwarmName = "Local Swarm"
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if _, ok := page.PopHomeAction(); ok || page.onboarding.Focus != onboardingFocusSwarmName {
+		t.Fatal("first field must focus the final field without saving")
+	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	action, ok := page.PopHomeAction()
@@ -65,6 +72,7 @@ func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) 
 	page := readyOnboardingPage()
 	page.model.WorkspaceSetupGitReadiness = model.GitReadinessNeedsCommit
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if action, ok := page.PopHomeAction(); !ok || action.Kind != HomeActionInspectOnboardingRepository {
 		t.Fatalf("must inspect before mutation: %+v", action)
@@ -81,6 +89,7 @@ func TestOnboardingWorkspaceIndeterminateReadinessQueuesCanonicalAdmission(t *te
 		page := readyOnboardingPage()
 		page.model.WorkspaceSetupGitReadiness = readiness
 		page.ShowOnboardingWorkspace("Confirm workspace")
+		page.SetOnboardingWorkspacePath("/repo/project")
 		page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 		action, ok := page.PopHomeAction()
 		if !ok || action.Kind != HomeActionInspectOnboardingRepository || action.WorkspacePath != "/repo/project" {
@@ -89,9 +98,10 @@ func TestOnboardingWorkspaceIndeterminateReadinessQueuesCanonicalAdmission(t *te
 	}
 }
 
-func TestOnboardingWorkspaceEnterQueuesLaunchCWDAndLocksPending(t *testing.T) {
+func TestOnboardingWorkspaceEnterQueuesSelectedPathAndLocksPending(t *testing.T) {
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	action, ok := page.PopHomeAction()
@@ -110,6 +120,7 @@ func TestOnboardingWorkspaceEnterQueuesLaunchCWDAndLocksPending(t *testing.T) {
 func TestOnboardingWorkspaceErrorAllowsRetryAndCompletionUnlocks(t *testing.T) {
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if _, ok := page.PopHomeAction(); !ok {
 		t.Fatal("initial workspace action was not queued")
@@ -155,9 +166,10 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Select another location", "/repo/project", "Verify / Retry selected folder"} {
+	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Select another location", "/repo/project", "Inspect selected folder"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}
@@ -176,8 +188,8 @@ func TestOnboardingDaemonSuggestionRequiresSelectionAndConsent(t *testing.T) {
 		t.Fatal("guidance replaced the selected project")
 	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, tcell.ModNone))
-	if page.OnboardingWorkspacePath() != "/projects/new-workspace" {
-		t.Fatal("explicit suggestion selection failed")
+	if !page.onboarding.NamingProject || page.onboarding.ProjectName != "" || page.onboarding.ProjectParent != "/projects/new-workspace" {
+		t.Fatal("new project must start with a blank name under runtime home")
 	}
 	if _, ok := page.PopHomeAction(); ok {
 		t.Fatal("selection authorized mutation")
@@ -188,10 +200,10 @@ func TestOnboardingDaemonSuggestionRequiresSelectionAndConsent(t *testing.T) {
 	if _, ok := page.PopHomeAction(); ok {
 		t.Fatal("cancelled consent remained usable")
 	}
-	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, tcell.ModNone))
-	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'y', tcell.ModNone))
+	focusRepositoryControl(page, "home")
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	action, ok := page.PopHomeAction()
-	if !ok || action.Kind != HomeActionSetupOnboardingRepository || action.WorkspacePath != "/projects/new-workspace" {
-		t.Fatalf("consented setup = %+v, %v", action, ok)
+	if !ok || action.Kind != HomeActionInspectOnboardingRepository || action.WorkspacePath != "/projects/new-workspace" {
+		t.Fatalf("home selection must inspect without mutation = %+v, %v", action, ok)
 	}
 }

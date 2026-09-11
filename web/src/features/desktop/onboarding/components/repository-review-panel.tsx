@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Button } from '../../../../components/ui/button'
 import { prepareBaseline, reviewRepository, type BaselineRequest, type RepositoryReview } from '../../../workspaces/launcher/services/repository-review'
 
@@ -9,16 +9,19 @@ export function RepositoryReviewPanel({ path, onReady, onCancel }: { path: strin
  const [omissions, setOmissions] = useState(false)
  const [attempt, setAttempt] = useState<BaselineRequest | null>(null)
  const [prepared, setPrepared] = useState(false)
- const [busy, setBusy] = useState(false)
+ const [busy, updateBusy] = useState(false)
+ const busyRef = useRef(false)
+ const setBusy = (value: boolean) => { busyRef.current = value; updateBusy(value) }
  const [error, setError] = useState('')
  const load = async () => {
+  if (busyRef.current) return
   setBusy(true); setError('')
   try { setReview(await reviewRepository(path)); setSelected([]); setOmissions(false); setAttempt(null); setPrepared(false) }
   catch (e) { setError(e instanceof Error ? e.message : 'Review failed') }
   finally { setBusy(false) }
  }
  const apply = async () => {
-  if (!review || !omissions || busy) return
+  if (!review || !omissions || busyRef.current) return
   setBusy(true); setError('')
   try {
    if (!review.repository.headCommit && !prepared) {
@@ -45,6 +48,6 @@ export function RepositoryReviewPanel({ path, onReady, onCancel }: { path: strin
   </> : null}
   {error ? <p role="alert">{error}</p> : null}
   <Button type="button" disabled={busy} onClick={() => void load()}>{review ? 'Refresh review and discard selection' : 'Load content review'}</Button>
-  <Button type="button" variant="outline" disabled={busy} onClick={onCancel}>Cancel review</Button>
+  <Button type="button" variant="outline" disabled={busy} onClick={() => { if (!busyRef.current) onCancel() }}>Cancel review</Button>
  </section>
 }

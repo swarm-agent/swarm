@@ -30,26 +30,32 @@ const (
 )
 
 type onboardingState struct {
-	Visible          bool
-	Locked           bool
-	Phase            onboardingPhase
-	Focus            onboardingFocus
-	Status           string
-	Error            string
-	Pending          bool
-	WorkspacePath    string
-	WorkspaceReady   bool
-	SetupConsent     bool
-	EditingPath      bool
-	RuntimeAccount   string
-	SuggestedPath    string
-	PreviousPath     string
-	ActionIndex      int
-	Repository       *client.OnboardingRepository
-	Review           *client.OnboardingReview
-	Selected         map[string]bool
-	ConfirmOmissions bool
-	BaselineAttempt  *client.OnboardingBaseline
+	Visible            bool
+	Locked             bool
+	Phase              onboardingPhase
+	Focus              onboardingFocus
+	Status             string
+	Error              string
+	Pending            bool
+	WorkspacePath      string
+	WorkspaceReady     bool
+	SetupConsent       bool
+	EditingPath        bool
+	RuntimeAccount     string
+	HomePath           string
+	ProjectName        string
+	ProjectParent      string
+	NamingProject      bool
+	ProjectField       int
+	PreviousPath       string
+	ActionIndex        int
+	ChoosingRepository bool
+	Repositories       []client.WorkspaceDiscoverEntry
+	Repository         *client.OnboardingRepository
+	Review             *client.OnboardingReview
+	Selected           map[string]bool
+	ConfirmOmissions   bool
+	BaselineAttempt    *client.OnboardingBaseline
 }
 
 func (p *HomePage) SetOnboardingRequired(required bool, username, swarmName string) {
@@ -77,9 +83,9 @@ func (p *HomePage) ShowOnboardingLocked(status string) {
 			p.onboarding.Phase = onboardingPhaseProvider
 		}
 		p.onboarding.Focus = onboardingFocusUsername
-	}
-	if p.onboarding.WorkspacePath == "" {
-		p.onboarding.WorkspacePath = strings.TrimSpace(p.model.CWD)
+		if p.model.OnboardingUsername != "" && p.model.OnboardingSwarmName == "" {
+			p.onboarding.Focus = onboardingFocusSwarmName
+		}
 	}
 	if strings.TrimSpace(status) != "" {
 		p.onboarding.Status = strings.TrimSpace(status)
@@ -99,9 +105,12 @@ func (p *HomePage) OnboardingWorkspaceActive() bool {
 }
 
 // Guidance is an offer, never authority to replace a selected workspace or create files.
-func (p *HomePage) SetOnboardingWorkspaceGuidance(account, suggestion string) {
+func (p *HomePage) SetOnboardingWorkspaceGuidance(account, home string) {
 	p.onboarding.RuntimeAccount = strings.TrimSpace(account)
-	p.onboarding.SuggestedPath = strings.TrimSpace(suggestion)
+	p.onboarding.HomePath = strings.TrimSpace(home)
+	if p.onboarding.ProjectParent == "" {
+		p.onboarding.ProjectParent = p.onboarding.HomePath
+	}
 }
 
 func (p *HomePage) OnboardingWorkspacePath() string {
@@ -147,6 +156,7 @@ func (p *HomePage) ShowOnboardingWorkspace(status string) {
 	p.authModal.Login = nil
 	p.authModal.Loading = false
 	p.onboarding.Phase = onboardingPhaseWorkspace
+	p.onboarding.ActionIndex = 0
 	p.onboarding.Pending = false
 	p.onboarding.Error = ""
 	if strings.TrimSpace(status) != "" {
@@ -224,6 +234,11 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.clearOnboardingField()
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if p.onboarding.Focus == onboardingFocusUsername && strings.TrimSpace(p.model.OnboardingUsername) != "" {
+			p.onboarding.Focus = onboardingFocusSwarmName
+			p.onboarding.Error = ""
+			return
+		}
 		p.submitOnboardingIdentity()
 		return
 	case p.keybinds.Match(ev, KeybindEditorClose):
@@ -242,6 +257,9 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 }
 
 func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
+	if p.authModal.Loading {
+		return
+	}
 	if p.authModal.Editor == nil && (ev.Key() == tcell.KeyTab || ev.Key() == tcell.KeyBacktab) {
 		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 1) % 3
 		return
@@ -260,11 +278,11 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 		return
 	}
 	if p.keybinds.Match(ev, KeybindEditorClose) {
-		p.ShowOnboardingWorkspace("Provider skipped. Confirm your launch workspace to finish setup.")
+		p.ShowOnboardingWorkspace("Provider skipped. Choose home or a new project folder to finish setup.")
 		return
 	}
 	if ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S') {
-		p.ShowOnboardingWorkspace("Provider skipped. Confirm your launch workspace to finish setup.")
+		p.ShowOnboardingWorkspace("Provider skipped. Choose home or a new project folder to finish setup.")
 		return
 	}
 	switch {
@@ -284,6 +302,10 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 			p.onboarding.Error = "No provider is available yet. Press s to continue without one."
 			return
 		}
+		if provider, ok := p.selectedAuthProvider(); ok && provider.Ready && provider.Runnable {
+			p.ShowOnboardingWorkspace("Connected provider selected. Verify your workspace to finish.")
+			return
+		}
 		p.triggerProviderLogin(providerID)
 		return
 	}
@@ -300,7 +322,14 @@ func (p *HomePage) handleOnboardingWorkspaceShortcut(ev *tcell.EventKey) {
 			p.onboarding.Repository = nil
 			p.onboarding.Review = nil
 			p.onboarding.ActionIndex = 0
-			p.onboarding.Status = "Location selected. Choose Verify to check daemon access."
+			if strings.TrimSpace(p.onboarding.WorkspacePath) == "" {
+				p.onboarding.EditingPath = true
+				p.onboarding.Error = "Enter a folder path."
+				return
+			}
+			p.onboarding.Pending = true
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionInspectOnboardingRepository, WorkspacePath: p.onboarding.WorkspacePath}
+			p.onboarding.Status = "Verifying selected folder…"
 		case tcell.KeyCtrlU:
 			p.onboarding.WorkspacePath = ""
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
@@ -318,15 +347,12 @@ func (p *HomePage) handleOnboardingWorkspaceShortcut(ev *tcell.EventKey) {
 		p.model.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
 		return
 	}
-	if ev.Key() == tcell.KeyCtrlS && p.onboarding.SuggestedPath != "" {
-		p.onboarding.WorkspacePath = p.onboarding.SuggestedPath
-		p.model.WorkspaceSetupGitReadiness = model.GitReadinessNotRepository
-		p.onboarding.SetupConsent = true
-		p.onboarding.Error = ""
-		p.onboarding.Status = "Press y to create this folder and initialize Git with an empty commit. No existing files will be staged. Esc goes back."
+	if ev.Key() == tcell.KeyCtrlS || ev.Key() == tcell.KeyCtrlN {
+		p.beginOnboardingProject()
 		return
 	}
 	if ev.Key() == tcell.KeyCtrlL {
+		p.onboarding.ChoosingRepository = false
 		p.onboarding.ConfirmOmissions = false
 		p.onboarding.Review = nil
 		p.onboarding.BaselineAttempt = nil
@@ -334,13 +360,7 @@ func (p *HomePage) handleOnboardingWorkspaceShortcut(ev *tcell.EventKey) {
 		p.onboarding.EditingPath = true
 		p.onboarding.SetupConsent = false
 		p.onboarding.Error = ""
-		p.onboarding.Status = "Edit location: Ctrl+U clear, Enter select, Esc cancel."
-		return
-	}
-	if ev.Key() == tcell.KeyCtrlN {
-		p.onboarding.SetupConsent = false
-		p.pendingHomeAction = &HomeAction{Kind: HomeActionCreateOnboardingFolder, WorkspacePath: p.onboarding.WorkspacePath}
-		p.onboarding.Pending = true
+		p.onboarding.Status = "Edit location: Ctrl+U clear, Enter select and verify, Esc cancel."
 		return
 	}
 }
@@ -488,7 +508,7 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
 		"Connect now, or skip ahead. Your workspace is still required.",
-		"Swarm uses managed worktrees, so choose a Git repository with an initial commit.",
+		"Git setup is built in. Create or choose a repo for managed worktrees.",
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))
@@ -549,6 +569,9 @@ func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
 		return
 	}
 	labels := []string{"Connect selected provider", "Skip provider", "Cancel / Exit"}
+	if provider, ok := p.selectedAuthProvider(); ok && provider.Ready && provider.Runnable {
+		labels[0] = "Use connected provider and continue"
+	}
 	for i, label := range labels {
 		prefix := "  "
 		if p.onboarding.ActionIndex == i {

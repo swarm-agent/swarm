@@ -68,12 +68,12 @@ type OnboardingHeuristics struct {
 }
 
 type RuntimeWorkspaceGuidance struct {
-	RuntimeUsername        string `json:"runtime_username,omitempty"`
-	RuntimeUID             string `json:"runtime_uid"`
-	RuntimeNonRoot         bool   `json:"runtime_non_root"`
-	SuggestedWorkspacePath string `json:"suggested_workspace_path,omitempty"`
-	SetupRequired          bool   `json:"setup_required"`
-	Message                string `json:"message"`
+	RuntimeUsername string `json:"runtime_username,omitempty"`
+	RuntimeUID      string `json:"runtime_uid"`
+	RuntimeNonRoot  bool   `json:"runtime_non_root"`
+	HomePath        string `json:"home_path,omitempty"`
+	SetupRequired   bool   `json:"setup_required"`
+	Message         string `json:"message"`
 }
 
 type OnboardingStatus struct {
@@ -1633,6 +1633,12 @@ func New(baseURL string) *API {
 		// Session runs must be controlled by per-request context deadlines.
 		http: &http.Client{},
 	}
+}
+
+// NewLocalTransport pins requests to one Unix socket. Unlike environment-based
+// discovery it never falls back to unauthenticated HTTP if the socket vanishes.
+func NewLocalTransport(socket string) *API {
+	return &API{baseURL: localTransportBaseURL, http: newLocalTransportHTTPClient(socket)}
 }
 
 func (c *API) BaseURL() string {

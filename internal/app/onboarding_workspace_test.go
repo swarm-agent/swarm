@@ -56,8 +56,8 @@ func TestRefreshOnboardingWorkspaceGitReadinessUsesCurrentLaunchRepository(t *te
 		t.Fatal("local readiness promoted")
 	}
 	action, ok := home.PopHomeAction()
-	if !ok || action.Kind != ui.HomeActionInspectOnboardingRepository || action.WorkspacePath != repo {
-		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
+	if !ok || action.Kind != ui.HomeActionCreateOnboardingWorkspace || action.WorkspacePath != repo {
+		t.Fatalf("verified repository must advance to canonical admission: %+v, ok=%v", action, ok)
 	}
 }
 

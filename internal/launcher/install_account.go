@@ -19,22 +19,31 @@ var selectedInstallAccount *user.User
 var installAccountName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 type installAccountOps struct {
-	euid     int
-	existing func() (string, string, bool, error)
-	lookup   func(string) (*user.User, error)
-	group    func(string) (*user.Group, error)
-	stat     func(string) (os.FileInfo, error)
-	lookPath func(string) (string, error)
-	create   func(string) error
-	password func(string) error
-	terminal func() error
+	euid            int
+	existing        func() (string, string, bool, error)
+	lookup          func(string) (*user.User, error)
+	group           func(string) (*user.Group, error)
+	stat            func(string) (os.FileInfo, error)
+	lookPath        func(string) (string, error)
+	create          func(string) error
+	password        func(string) error
+	terminal        func() error
+	passwordCommand string // empty keeps the explicit CLI passwd workflow
 }
 
 // SelectInstallationAccount runs before runtime provisioning. Creating a human
 // account is an explicit privileged operation, not authentication to Swarm.
 // Passwords belong exclusively to passwd on the controlling OS terminal.
 func SelectInstallationAccount(name string, create bool) (func(), error) {
-	u, err := selectInstallationAccount(name, create, installAccountOps{
+	u, err := selectInstallationAccount(name, create, defaultInstallAccountOps())
+	if err != nil {
+		return nil, err
+	}
+	return selectAccountForInstallation(u), nil
+}
+
+func defaultInstallAccountOps() installAccountOps {
+	return installAccountOps{
 		euid: os.Geteuid(), existing: existingInstallOwner, lookup: user.Lookup,
 		group: user.LookupGroup, stat: os.Lstat, lookPath: exec.LookPath,
 		terminal: func() error {
@@ -57,13 +66,13 @@ func SelectInstallationAccount(name string, create bool) (func(), error) {
 			cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 			return cmd.Run()
 		},
-	})
-	if err != nil {
-		return nil, err
 	}
+}
+
+func selectAccountForInstallation(u *user.User) func() {
 	previous := selectedInstallAccount
 	selectedInstallAccount = u
-	return func() { selectedInstallAccount = previous }, nil
+	return func() { selectedInstallAccount = previous }
 }
 
 func selectInstallationAccount(name string, create bool, ops installAccountOps) (*user.User, error) {
@@ -107,7 +116,15 @@ func selectInstallationAccount(name string, create bool, ops installAccountOps) 
 		if _, err := ops.stat(filepath.Join("/home", name)); !errors.Is(err, os.ErrNotExist) {
 			return nil, errors.New("refusing existing or inaccessible new account home; no account created")
 		}
-		for _, command := range []string{"useradd", "passwd"} {
+		commands := []string{"useradd"}
+		if ops.password != nil {
+			command := ops.passwordCommand
+			if command == "" {
+				command = "passwd"
+			}
+			commands = append(commands, command)
+		}
+		for _, command := range commands {
 			if _, err := ops.lookPath(command); err != nil {
 				return nil, fmt.Errorf("account prerequisite %s unavailable: %w", command, err)
 			}
@@ -116,8 +133,10 @@ func selectInstallationAccount(name string, create bool, ops installAccountOps) 
 			return nil, errors.New("new account requires executable /bin/bash")
 		}
 		// Check terminal availability before useradd, not after leaving an account.
-		if err := ops.terminal(); err != nil {
-			return nil, fmt.Errorf("account creation requires an OS terminal: %w", err)
+		if ops.terminal != nil {
+			if err := ops.terminal(); err != nil {
+				return nil, fmt.Errorf("account creation requires an OS terminal: %w", err)
+			}
 		}
 		if err := ops.create(name); err != nil {
 			return nil, fmt.Errorf("OS account creation failed; any partial account/home is retained, runtime not provisioned: %w", err)
@@ -132,8 +151,10 @@ func selectInstallationAccount(name string, create bool, ops installAccountOps) 
 		if err := validateSelectedAccount(u, ops.stat); err != nil {
 			return nil, err
 		}
-		if err := ops.password(name); err != nil {
-			return nil, fmt.Errorf("password setup cancelled or failed; account retained, runtime not provisioned; finish passwd for the account and retry --install-user: %w", err)
+		if ops.password != nil {
+			if err := ops.password(name); err != nil {
+				return nil, fmt.Errorf("password setup cancelled or failed; account retained, runtime not provisioned; finish passwd for the account and retry --install-user: %w", err)
+			}
 		}
 	} else if missing {
 		return nil, errors.New("intended account does not exist; use --create-user with an OS terminal or select an existing user")

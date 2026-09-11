@@ -48,10 +48,8 @@ func TestOnboardingWorkspaceGuidanceUsesDaemonIdentityAndSensitiveGate(t *testin
 	if private.WorkspaceGuidance == nil || *private.WorkspaceGuidance != want || want.RuntimeUID != strconv.Itoa(os.Geteuid()) || want.RuntimeUsername == "caller-not-daemon" {
 		t.Fatalf("incorrect runtime guidance: %+v", private.WorkspaceGuidance)
 	}
-	if want.SuggestedWorkspacePath != "" {
-		if _, err := os.Lstat(want.SuggestedWorkspacePath); !os.IsNotExist(err) {
-			t.Fatalf("read created suggested directory: %v", err)
-		}
+	if want.HomePath == fakeHome {
+		t.Fatal("guidance trusted caller HOME instead of runtime account")
 	}
 	entries, err := os.ReadDir(fakeHome)
 	if err != nil || len(entries) != 0 {

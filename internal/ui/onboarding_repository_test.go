@@ -30,14 +30,15 @@ func TestOnboardingVisibleControlsAndFrozenConsent(t *testing.T) {
 		t.Fatal("focusable skip failed")
 	}
 	p.SetOnboardingWorkspaceGuidance("worker", "/projects/new")
-	focusRepositoryControl(p, "suggest")
+	focusRepositoryControl(p, "new")
 	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	if p.OnboardingWorkspacePath() != "/projects/new" {
-		t.Fatal("suggestion requires no Ctrl+S")
+	if !p.onboarding.NamingProject || p.onboarding.ProjectName != "" {
+		t.Fatal("new project must ask for a name")
 	}
-	if _, ok := p.PopHomeAction(); ok {
-		t.Fatal("selection mutated")
+	if _, ok := p.PopHomeAction(); ok || p.onboarding.SetupConsent {
+		t.Fatal("blank project must not authorize Git setup")
 	}
+	p.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, 0))
 	p.SetOnboardingReview(client.OnboardingReview{Repository: client.OnboardingRepository{Path: "/projects/new", State: "needs_assisted_setup"}, Digest: "exact-review", Files: []client.OnboardingReviewFile{{Path: "README.md", Selectable: true}, {Path: ".env", Selectable: true}, {Path: "link", Selectable: false}}})
 	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0)) // select README only
 	focusRepositoryControl(p, "baseline")

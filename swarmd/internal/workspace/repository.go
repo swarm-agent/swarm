@@ -22,12 +22,12 @@ import (
 // RuntimeWorkspaceGuidance is advisory only: setup must revalidate the selected
 // path. Identity comes from the effective daemon UID, never HOME or the caller.
 type RuntimeWorkspaceGuidance struct {
-	RuntimeUsername        string `json:"runtime_username,omitempty"`
-	RuntimeUID             string `json:"runtime_uid"`
-	RuntimeNonRoot         bool   `json:"runtime_non_root"`
-	SuggestedWorkspacePath string `json:"suggested_workspace_path,omitempty"`
-	SetupRequired          bool   `json:"setup_required"`
-	Message                string `json:"message"`
+	RuntimeUsername string `json:"runtime_username,omitempty"`
+	RuntimeUID      string `json:"runtime_uid"`
+	RuntimeNonRoot  bool   `json:"runtime_non_root"`
+	HomePath        string `json:"home_path,omitempty"`
+	SetupRequired   bool   `json:"setup_required"`
+	Message         string `json:"message"`
 }
 
 func DaemonWorkspaceGuidance() RuntimeWorkspaceGuidance {
@@ -52,19 +52,9 @@ func daemonWorkspaceGuidance(account *user.User, uid string) RuntimeWorkspaceGui
 	if err != nil {
 		return g
 	}
-	// Bounded collision search never adopts or modifies an existing directory.
-	for i := 1; i <= 100; i++ {
-		name := "swarm-workspace"
-		if i > 1 {
-			name += "-" + strconv.Itoa(i)
-		}
-		candidate := filepath.Join(home, name)
-		if _, err := os.Lstat(candidate); errors.Is(err, os.ErrNotExist) {
-			g.SuggestedWorkspacePath = candidate
-			break
-		} else if err != nil {
-			break
-		}
+	if uid != "0" {
+		g.HomePath = home
+		g.Message = "Use your home folder or create a new project folder (recommended). Git setup creates only an empty starting commit; existing files are not staged or committed."
 	}
 	return g
 }
@@ -254,6 +244,21 @@ func (s *Service) requireRepositoryForPrincipal(principal identity.Principal, pa
 }
 
 func inspectRepository(path string) RepositoryState {
+	account, _ := user.LookupId(strconv.Itoa(os.Geteuid()))
+	return inspectRepositoryForAccount(path, account)
+}
+
+// Home is an explicit empty-baseline choice, never authority to import its files.
+func isRuntimeHome(path string, account *user.User) bool {
+	uid := strconv.Itoa(os.Geteuid())
+	if uid == "0" {
+		return false
+	}
+	home, err := writableDaemonHome(account, uid)
+	return err == nil && path == home
+}
+
+func inspectRepositoryForAccount(path string, account *user.User) RepositoryState {
 	state := RepositoryState{Path: path}
 	if err := runtimeRepositoryAccess(path); err != nil {
 		return repositoryFailure(path, err)
@@ -282,10 +287,10 @@ func inspectRepository(path string) RepositoryState {
 			return repositoryFailure(path, err)
 		}
 		state.State = RepositoryStateNotRepository
-		state.CanSetup = directoryIsEmpty(path)
+		state.CanSetup = directoryIsEmpty(path) || isRuntimeHome(path, account)
 		state.NeedsReview = !state.CanSetup
 		if state.CanSetup {
-			state.Message = "Swarm workspaces require a Git repository with an initial commit; this empty directory can be initialized safely"
+			state.Message = "Swarm workspaces require a Git repository with an initial commit; setup creates only an empty starting commit, without staging or committing existing files"
 		} else {
 			state.State = RepositoryStateNeedsAssistedSetup
 			state.Message = "Swarm workspaces require a Git repository with an initial commit; review and commit this directory's existing files before adding it"
@@ -343,15 +348,18 @@ func inspectRepository(path string) RepositoryState {
 			return repositoryFailure(path, err)
 		}
 		state.State = RepositoryStateNeedsInitialCommit
-		state.NeedsReview = true
+		state.NeedsReview = !isRuntimeHome(path, account)
 		state.CanSetup = true
 		state.Actions = []string{"review_content", "setup", "choose_directory"}
 		state.Message = "Review existing content and explicitly choose the initial baseline before creating a managed workspace"
+		if !state.NeedsReview {
+			state.Message = "Create only an empty starting commit in home; existing files and staged content will not be committed"
+		}
 		return state
 	}
 	state.State = RepositoryStateReady
 	state.HeadCommit = strings.TrimSpace(head)
-	if status, err := runRepositoryGit(path, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"); err != nil {
+	if status, err := runRepositoryGit(path, "--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"); err != nil {
 		return repositoryFailure(path, err)
 	} else {
 		state.ContentReady = status == ""
@@ -364,8 +372,9 @@ func inspectRepository(path string) RepositoryState {
 
 // SetupRepositoryForPrincipal performs the only automatic repository setup
 // Swarm can do without deciding which user files belong in source control. It
-// initializes an empty canonical directory, or completes an exact unborn
-// repository with an empty first commit while preserving its index and files.
+// initializes an empty canonical project or the verified non-root runtime home,
+// or completes an admitted unborn repository with an explicitly empty tree.
+// Existing home content and any staged index are preserved, never imported.
 func (s *Service) SetupRepositoryForPrincipal(principal identity.Principal, path, expectedResolvedPath string) (RepositoryState, error) {
 	account, _ := user.LookupId(strconv.Itoa(os.Geteuid()))
 	return s.setupRepositoryForPrincipal(principal, path, expectedResolvedPath, account)
@@ -436,29 +445,31 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 		state := repositoryFailure(resolved, err)
 		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
-	canonicalHome := ""
-	if account != nil {
-		canonicalHome, _ = filepath.EvalSymlinks(account.HomeDir)
+	if filepath.Dir(resolved) == resolved {
+		return RepositoryState{}, errors.New("choose a home or project directory instead of the filesystem root")
 	}
-	if filepath.Dir(resolved) == resolved || resolved == canonicalHome {
-		return RepositoryState{}, errors.New("choose a project directory instead of home or the filesystem root; change workspace location and retry")
+	homeSelected := isRuntimeHome(resolved, account)
+	if account != nil && filepath.Clean(account.HomeDir) == resolved && !homeSelected {
+		return RepositoryState{}, errors.New("home setup requires a verified non-root runtime account and a private writable canonical home")
 	}
-	state := inspectRepository(resolved)
+	state := inspectRepositoryForAccount(resolved, account)
 	if state.State == RepositoryStateGitUnavailable || state.State == RepositoryStateAccessDenied || state.State == RepositoryStateTrustRequired || state.State == RepositoryStateError {
 		return state, &RepositoryPrerequisiteError{Repository: state}
 	}
 	if state.State == RepositoryStateNeedsInitialCommit && state.Repository == resolved {
-		review, err := s.ReviewRepositoryForPrincipal(principal, resolved)
-		if err != nil {
-			return state, err
-		}
-		indexed, err := runRepositoryGit(resolved, "ls-files", "-z")
-		if err != nil {
-			return state, err
-		}
-		if len(review.Files) != 0 || indexed != "" {
-			state.Message = "Existing content requires explicit baseline review; no files or index were changed"
-			return state, &RepositoryPrerequisiteError{Repository: state}
+		if !homeSelected {
+			review, err := s.ReviewRepositoryForPrincipal(principal, resolved)
+			if err != nil {
+				return state, err
+			}
+			indexed, err := runRepositoryGit(resolved, "ls-files", "-z")
+			if err != nil {
+				return state, err
+			}
+			if len(review.Files) != 0 || indexed != "" {
+				state.Message = "Existing content requires explicit baseline review; no files or index were changed"
+				return state, &RepositoryPrerequisiteError{Repository: state}
+			}
 		}
 		// Build an explicitly empty tree, never the user's index. Compare-and-swap
 		// the unborn HEAD so a concurrent first commit cannot be overwritten.
@@ -485,7 +496,7 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if state.State == RepositoryStateNeedsInitialCommit || state.Repository != "" || state.Message == repositoryMessageNonWorkTree {
 		return state, errors.New("repository setup rejects directories that are already inside Git repositories")
 	}
-	if !directoryIsEmpty(resolved) {
+	if !homeSelected && !directoryIsEmpty(resolved) {
 		state.State = RepositoryStateNeedsAssistedSetup
 		state.CanSetup = false
 		state.NeedsReview = true
@@ -509,18 +520,24 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if _, err := runRepositoryGit(resolved, "--git-dir=.git", "--work-tree=.", "init", "--initial-branch=main", "--template="); err != nil {
 		return RepositoryState{}, cleanup(fmt.Errorf("initialize Git repository: %w", err))
 	}
-	if _, err := runRepositoryGit(resolved,
-		"-c", "user.name=Swarm Workspace Setup",
-		"-c", "user.email=swarm-workspace-setup@localhost",
-		"-c", "commit.gpgSign=false",
-		"-c", "core.hooksPath=/dev/null",
-		"commit", "--allow-empty", "--no-verify", "-m", "Initialize Swarm workspace",
-	); err != nil {
+	// Never commit from the index, even if another process stages home files.
+	tree, err := runRepositoryGit(resolved, "hash-object", "-w", "-t", "tree", "--stdin")
+	if err != nil {
+		return RepositoryState{}, cleanup(err)
+	}
+	commit, err := runRepositoryGit(resolved, "-c", "user.name=Swarm Workspace Setup", "-c", "user.email=swarm-workspace-setup@localhost", "commit-tree", tree, "-m", "Initialize Swarm workspace")
+	if err != nil {
 		return RepositoryState{}, cleanup(fmt.Errorf("create initial Git commit: %w", err))
+	}
+	if _, err := runRepositoryGit(resolved, "-c", "core.hooksPath="+os.DevNull, "update-ref", "HEAD", commit, strings.Repeat("0", len(commit))); err != nil {
+		// Do not remove metadata if another writer won the first-commit race.
+		return RepositoryState{}, fmt.Errorf("publish initial Git commit: %w", err)
 	}
 	ready := inspectRepository(resolved)
 	if ready.State != RepositoryStateReady {
-		return RepositoryState{}, cleanup(errors.New("repository setup did not produce a valid initial commit"))
+		// HEAD is already published; preserve it on a failed post-check so a
+		// retry can inspect the same repository instead of destroying history.
+		return ready, errors.New("repository setup post-check failed; Git metadata was preserved for retry")
 	}
 	return ready, nil
 }

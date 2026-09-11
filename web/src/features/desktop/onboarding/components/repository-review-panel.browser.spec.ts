@@ -13,6 +13,8 @@ test('repository review keyboard consent and exact response-loss retry', { timeo
  const browser = await chromium.launch({headless:true, ...(process.env.SWARM_TEST_CHROMIUM ? {executablePath:process.env.SWARM_TEST_CHROMIUM} : {})})
  try {
  const page = await browser.newPage()
+ page.setDefaultTimeout(4000)
+ page.on('pageerror', error => { throw error })
  const bodies: unknown[]=[]; let saves=0
  await page.route('http://127.0.0.1/**', async route => {
   const url=new URL(route.request().url())
@@ -33,7 +35,7 @@ test('repository review keyboard consent and exact response-loss retry', { timeo
  assert.equal(await create.isDisabled(),true)
  await page.getByRole('checkbox').first().focus(); await page.keyboard.press('Space')
  await page.keyboard.press('Tab'); await page.keyboard.press('Tab'); await page.keyboard.press('Space')
- await page.keyboard.press('Tab'); await page.keyboard.press('Enter')
+ await page.keyboard.press('Tab'); await create.evaluate(button => { button.dispatchEvent(new MouseEvent('click',{bubbles:true})); button.dispatchEvent(new MouseEvent('click',{bubbles:true})) })
  await page.getByRole('button',{name:'Retry exact baseline request'}).waitFor()
  assert.equal(saves,0); assert.equal(await page.getByRole('checkbox').first().isDisabled(),true)
  await page.getByRole('button',{name:'Retry exact baseline request'}).focus(); await page.keyboard.press('Enter')

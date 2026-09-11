@@ -371,6 +371,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 	}
 	guidance := workspace.DaemonWorkspaceGuidance()
 	response.WorkspaceGuidance = &guidance
+	prefillOnboardingUsername(&response.Identity, guidance)
 	response.Tailscale.CandidateURL = tailscaleCandidateURL(cfg, tailscale)
 	if detectServe && shouldDetectTailscaleServeForOnboarding(cfg, response.Tailscale) {
 		response.Tailscale.Serve = detectTailscaleServe(cfg, response.Tailscale)
@@ -378,6 +379,14 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		response.Tailscale.Serve = expectedTailscaleServe(cfg, response.Tailscale)
 	}
 	return response, nil
+}
+
+// Advisory only: a runtime account pre-fills the form, never bootstraps identity
+// or overwrites an existing product owner. Called only for trusted metadata.
+func prefillOnboardingUsername(identity *onboardingIdentityPayload, guidance workspace.RuntimeWorkspaceGuidance) {
+	if !identity.Bootstrapped && identity.Username == "" && guidance.RuntimeNonRoot && guidance.RuntimeUsername != "swarm" {
+		identity.Username = guidance.RuntimeUsername
+	}
 }
 
 func redactSensitiveOnboardingConfig(config onboardingConfigPayload) onboardingConfigPayload {

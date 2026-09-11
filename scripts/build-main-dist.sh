@@ -166,6 +166,10 @@ fi
   printf 'built_at=%s\n' "${built_at}"
 } > "${OUTPUT_DIR}/build-info.txt"
 
+# The unarchived artifact is also the first-run source for native rebuilds.
+cp "${ROOT_DIR}/LICENSE" "${OUTPUT_DIR}/LICENSE"
+cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${OUTPUT_DIR}/THIRD_PARTY_NOTICES.md"
+
 archive_basename="swarm-${release_version}-linux-amd64"
 archive_path="${OUTPUT_DIR}/${archive_basename}.tar.gz"
 mkdir -p "${RELEASE_STAGE_DIR}/${archive_basename}"
