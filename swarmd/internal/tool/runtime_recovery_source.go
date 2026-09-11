@@ -66,20 +66,9 @@ func (r *Runtime) recoverySourceIdentity(scope WorkspaceScope, req RecoverySourc
 	if err != nil {
 		return parent, pebblestore.SessionSnapshot{}, nil, err
 	}
-	launches, _ := parent.Metadata["task_launches"].(map[string]any)
-	entry, _ := launches[req.TaskCallID].(map[string]any)
-	var selected map[string]any
-	for _, raw := range manageWorktreeLaunchRows(entry) {
-		row, ok := raw.(map[string]any)
-		if ok && req.ChildSessionID != "" && asString(row["child_session_id"]) == req.ChildSessionID {
-			if selected != nil {
-				return parent, pebblestore.SessionSnapshot{}, nil, errors.New("ambiguous recovery child lineage")
-			}
-			selected = row
-		}
-	}
-	if selected == nil {
-		return parent, pebblestore.SessionSnapshot{}, nil, errors.New("recovery child is not in the selected parent task call")
+	selected, err := r.recoverySourceLineage(parent, req)
+	if err != nil {
+		return parent, pebblestore.SessionSnapshot{}, nil, err
 	}
 	child, err := r.manageWorktreeRecoveryChild(parent, selected)
 	if err != nil {
@@ -98,10 +87,26 @@ func (r *Runtime) recoverySourceIdentity(scope WorkspaceScope, req RecoverySourc
 	if !found {
 		return parent, child, nil, errors.New("recovery child lifecycle missing")
 	}
+	if runID := asString(selected["current_run_id"]); runID != "" && lifecycle.RunID != runID {
+		return parent, child, nil, errors.New("recovery producer run disagrees with canonical job")
+	}
+	if authority, ok := r.sessions.(interface {
+		GetSessionActiveRunIntent(string) (pebblestore.V3SessionRunIntent, bool, error)
+	}); ok {
+		_, active, err := authority.GetSessionActiveRunIntent(child.ID)
+		if err != nil {
+			return parent, child, nil, err
+		}
+		if active {
+			return parent, child, nil, errors.New("recovery producer has an active run intent")
+		}
+	} else {
+		return parent, child, nil, errors.New("recovery active producer authority unavailable")
+	}
 	child.Lifecycle = &lifecycle
 	// A recalled dirty row alone is not proof its producer stopped.
-	if child.Lifecycle == nil || child.Lifecycle.Active || child.Lifecycle.EndedAt == 0 || (child.Lifecycle.Phase != "failed" && child.Lifecycle.Phase != "stopped" && child.Lifecycle.Phase != "blocked" && child.Lifecycle.Phase != "cancelled") {
-		return parent, child, nil, errors.New("recovery source requires a terminal failed or stopped child")
+	if child.Lifecycle == nil || child.Lifecycle.Active || child.Lifecycle.EndedAt == 0 || !recoverySourceTerminalPhase(child.Lifecycle.Phase, asString(selected["job_state"])) {
+		return parent, child, nil, errors.New("recovery source requires an inactive ended producer with a recoverable terminal outcome")
 	}
 	destination, err := r.manageWorktreeRecoveryDestination(scope, parent, child, selected)
 	if err != nil {
@@ -118,6 +123,86 @@ func (r *Runtime) recoverySourceIdentity(scope WorkspaceScope, req RecoverySourc
 	selected = cloneRecoveryRow(selected)
 	selected["source_head"] = state.HeadCommit
 	return parent, child, selected, nil
+}
+
+// Job outcome and producer lifecycle are distinct: a blocked job can finish its
+// provider turn normally. Only an ended, inactive producer is admitted above.
+func recoverySourceTerminalPhase(phase, jobState string) bool {
+	switch phase {
+	case "failed", "stopped", "blocked", "cancelled", "errored", "interrupted":
+		return true
+	case "completed":
+		return jobState == pebblestore.TaskProgramJobBlocked || jobState == pebblestore.TaskProgramJobFailed || jobState == pebblestore.TaskProgramJobCancelled
+	}
+	return false
+}
+
+// Resolve an exact child first, then authenticate its program's immutable job
+// linkage. Never reconcile program state as a side effect of source inspection.
+func (r *Runtime) recoverySourceLineage(parent pebblestore.SessionSnapshot, req RecoverySourceRequest) (map[string]any, error) {
+	child, err := r.manageWorktreeRecoveryChild(parent, map[string]any{"child_session_id": req.ChildSessionID})
+	if err != nil {
+		return nil, err
+	}
+	if programID := asString(child.Metadata["task_program_id"]); programID != "" {
+		authority, ok := r.sessions.(interface {
+			InspectTaskProgram(string, string) (pebblestore.TaskProgramRecord, bool, error)
+		})
+		if !ok {
+			return nil, errors.New("recovery Task Program authority unavailable")
+		}
+		program, found, err := authority.InspectTaskProgram(parent.ID, programID)
+		if err != nil {
+			return nil, err
+		}
+		callID := program.ReservationCallID
+		if !found || program.ParentSessionID != parent.ID || program.ProgramID != programID || callID == "" || asString(child.Metadata["parent_task_call_id"]) != callID || (req.TaskCallID != "" && req.TaskCallID != callID) {
+			return nil, errors.New("recovery child is not in the selected parent Task Program")
+		}
+		var selected map[string]any
+		for _, job := range program.Jobs {
+			if job.JobID != asString(child.Metadata["task_program_job_id"]) || firstNonEmptyString(job.CurrentSessionID, job.ChildSessionID) != child.ID {
+				continue
+			}
+			if selected != nil {
+				return nil, errors.New("ambiguous recovery child lineage")
+			}
+			if (job.State != pebblestore.TaskProgramJobBlocked && job.State != pebblestore.TaskProgramJobFailed && job.State != pebblestore.TaskProgramJobCancelled) || job.CurrentRunID == "" || job.WorkspacePath == "" || job.WorktreeBranch == "" || job.ImmutableStageBase == "" {
+				return nil, errors.New("recovery requires an unfinished terminal job with complete producer lineage")
+			}
+			selected = map[string]any{"child_session_id": child.ID, "task_call_id": callID, "job_state": job.State, "current_run_id": job.CurrentRunID, "worktree_root_path": job.WorkspacePath, "worktree_branch": job.WorktreeBranch, "parent_branch": job.ParentBranch, "base_commit": job.ImmutableStageBase}
+		}
+		if selected == nil {
+			return nil, errors.New("recovery child is not the current canonical Task Program job child")
+		}
+		return selected, nil
+	}
+	launches, _ := parent.Metadata["task_launches"].(map[string]any)
+	var selected map[string]any
+	for callID, rawEntry := range launches {
+		if req.TaskCallID != "" && req.TaskCallID != callID {
+			continue
+		}
+		entry, _ := rawEntry.(map[string]any)
+		for _, raw := range manageWorktreeLaunchRows(entry) {
+			row, _ := raw.(map[string]any)
+			if asString(row["child_session_id"]) != child.ID {
+				continue
+			}
+			if selected != nil {
+				return nil, errors.New("ambiguous recovery child lineage")
+			}
+			if recorded := asString(child.Metadata["parent_task_call_id"]); recorded != "" && recorded != callID {
+				return nil, errors.New("recovery child task call disagrees with durable session")
+			}
+			selected = cloneRecoveryRow(row)
+			selected["task_call_id"] = callID
+		}
+	}
+	if selected == nil {
+		return nil, errors.New("recovery child is not in the selected parent task call")
+	}
+	return selected, nil
 }
 
 func cloneRecoveryRow(row map[string]any) map[string]any {
@@ -144,7 +229,7 @@ func (r *Runtime) InspectRecoverySource(scope WorkspaceScope, req RecoverySource
 		return RecoverySource{}, err
 	}
 	defer root.Close()
-	result := RecoverySource{ParentSessionID: parent.ID, ChildSessionID: child.ID, TaskCallID: req.TaskCallID, BaseCommit: asString(row["base_commit"]), HeadCommit: asString(row["source_head"]), Branch: child.WorktreeBranch, ChildGeneration: child.Lifecycle.Generation}
+	result := RecoverySource{ParentSessionID: parent.ID, ChildSessionID: child.ID, TaskCallID: asString(row["task_call_id"]), BaseCommit: asString(row["base_commit"]), HeadCommit: asString(row["source_head"]), Branch: child.WorktreeBranch, ChildGeneration: child.Lifecycle.Generation}
 	paths := append([]string(nil), req.Paths...)
 	sort.Strings(paths)
 	total := 0
