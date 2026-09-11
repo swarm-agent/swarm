@@ -57,7 +57,19 @@ func CloneModelProfileSelection(selection *ModelProfileSelection) *ModelProfileS
 	return &cloned
 }
 
+// SessionAutomationBinding is written only by the canonical automation mutation.
+// Each occurrence has its own plan; prior plans and messages remain immutable history.
+type SessionAutomationBinding struct {
+	AutomationID string                        `json:"automation_id"`
+	WorkspaceID  string                        `json:"workspace_id"`
+	Policy       AutomationAuthorizationPolicy `json:"policy"`
+	OccurrenceID string                        `json:"occurrence_id,omitempty"`
+	ExecutionKey string                        `json:"execution_key,omitempty"`
+	PlanID       string                        `json:"plan_id,omitempty"`
+}
+
 type SessionSnapshot struct {
+	Automation              *SessionAutomationBinding    `json:"automation,omitempty"`
 	ID                      string                       `json:"id"`
 	UserID                  string                       `json:"user_id,omitempty"`
 	AccountScopeID          string                       `json:"account_scope_id,omitempty"`

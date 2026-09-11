@@ -107,6 +107,7 @@ var (
 )
 
 type Service struct {
+	automationContext            func(string) (string, error)
 	sessions                     *sessionruntime.Service
 	model                        *model.Service
 	modelProfiles                *modelprofile.Service

@@ -4,6 +4,7 @@ import { STARTUP_REQUEST_TIMEOUT_MS, withRequestDeadline } from '../../../app/re
 export type AutomationKind = 'definition' | 'occurrence' | 'context' | 'audit'
 export interface AutomationDefinition {
   name: string
+  session_id?: string
   enabled: boolean
   plans: { id: string; plan: { session_id: string; plan_id: string; revision: number; document_sha256?: string }; depends_on?: string[] }[]
   schedule: { kind: 'manual' | 'interval' | 'cron' | 'event'; expression?: string; timezone?: string; interval_seconds?: number; trigger_source?: string; missed_policy: 'skip' | 'coalesce'; overlap_policy: 'independent' | 'serialize' }
@@ -53,6 +54,7 @@ export interface AutomationResponse {
   record?: AutomationRecord
   policy_sha256?: string
   approval?: AutomationApproval | null
+  enable_proposal?: { method: string; path: string; body: unknown }
   fresh?: boolean
 }
 type MutationBase = { workspace_id: string; id: string; mutation_id: string; expected_revision: number }

@@ -668,8 +668,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	apiServer.ConfigureAutomationRealtime(store)
 	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, automationEvents)
+	automationApproval.ConfigureSessionAcceptance(automationRuntime)
 	apiServer.ConfigureAutomationApproval(automationApproval)
 	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)
+	runSvc.ConfigureAutomationContext(automationSvc)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)

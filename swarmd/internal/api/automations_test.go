@@ -208,3 +208,67 @@ func TestAutomationHTTPRuntimeOrigin(t *testing.T) {
 		t.Fatal("unexpected write", rows, err)
 	}
 }
+
+// Purpose: explicit approval returns an exact enable proposal, not enabled work.
+// The real policy/store boundary rejects a stale digest and preserves definition
+// state; fake ownership isolates HTTP integration, not daemon session acceptance.
+func TestAutomationHTTPApprovalEnableProposal(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	clock := func() time.Time { return time.UnixMilli(100000) }
+	policy, err := automation.NewPolicyApproval(db, automationAPIPlans{}, automationAPIAccess{}, automation.RuntimeApprovalIdentity(), clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domain, err := automation.New(db, automationAPIPlans{}, policy, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := identity.Principal{Type: "user", UserID: "human", AccountScopeID: "account"}
+	ctx, _ := automation.BindRuntimeIdentity(context.Background(), principal, "user", "")
+	p, _ := automation.RuntimePrincipal(ctx)
+	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
+	d := store.AutomationDefinition{Name: "check", Plans: []store.AutomationPlanBinding{{ID: "primary", Plan: store.AutomationPlanReference{SessionID: "session", PlanID: "plan", Revision: 1}}}, Schedule: store.AutomationSchedulePolicy{Kind: "manual"}, Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required", ExpiresAt: 200000}}
+	record, _, err := domain.SaveDefinition(ctx, p, scope, "auto", "create", 0, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := automation.ApprovalPolicyDigest(*record.Definition)
+	s := &Server{}
+	s.ConfigureAutomations(domain, nil, nil, nil)
+	s.ConfigureAutomationApproval(policy)
+	call := func(hash string) *httptest.ResponseRecorder {
+		data, _ := json.Marshal(automationHTTPRequest{WorkspaceID: "workspace", ID: "auto", MutationID: "accept", ExpectedRevision: record.Revision, PolicySHA256: hash})
+		req := httptest.NewRequest(http.MethodPost, AutomationsPath+"/approve", strings.NewReader(string(data)))
+		req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, principal))
+		w := httptest.NewRecorder()
+		s.handleAutomations(w, req)
+		return w
+	}
+	if w := call("stale"); w.Code != http.StatusForbidden {
+		t.Fatalf("stale policy: %d", w.Code)
+	}
+	w := call(digest)
+	if w.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Enable struct {
+			Body automationHTTPRequest `json:"body"`
+		} `json:"enable_proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	body := out.Enable.Body
+	if body.ExpectedRevision != record.Revision || body.Definition == nil || !body.Definition.Enabled || body.Definition.Authorization.ApprovalReference == "" {
+		t.Fatalf("missing exact enable: %+v", body)
+	}
+	head, _, _ := db.GetAutomationRecord(scope, "auto", "definition", "auto", 0)
+	if head.Revision != record.Revision || head.Definition.Enabled {
+		t.Fatal("approval enabled definition")
+	}
+}

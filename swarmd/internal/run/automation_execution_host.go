@@ -99,14 +99,14 @@ func (h *AutomationExecutionHost) Prepare(ctx context.Context, p automation.Prin
 }
 
 func (h *AutomationExecutionHost) current(snapshot store.SessionSnapshot, key string) (store.SessionSnapshot, bool, error) {
-	if snapshot.ID != "automation-"+key || strings.TrimSpace(snapshot.AccountScopeID) == "" {
+	if (snapshot.ID != "automation-"+key && snapshot.Automation == nil) || strings.TrimSpace(snapshot.AccountScopeID) == "" {
 		return store.SessionSnapshot{}, false, automation.ErrDenied
 	}
 	current, found, err := h.runs.sessions.GetSession(snapshot.ID)
 	if err != nil {
 		return current, found, err
 	}
-	if found && (current.AccountScopeID != snapshot.AccountScopeID || current.Metadata["automation_execution_key"] != key || !current.WorktreeEnabled) {
+	if found && (current.AccountScopeID != snapshot.AccountScopeID || (current.Metadata["automation_execution_key"] != key && current.Automation == nil) || !current.WorktreeEnabled) {
 		return current, false, automation.ErrDenied
 	}
 	return current, found, nil
@@ -124,6 +124,9 @@ func (h *AutomationExecutionHost) Start(ctx context.Context, snapshot store.Sess
 		if !found {
 			return automation.ErrNotFound
 		}
+		if current.Automation != nil && current.Automation.ExecutionKey != key {
+			return automation.ErrDenied
+		}
 		if _, err := h.runs.automationPolicy(current.ID); err != nil {
 			return err
 		}
@@ -138,6 +141,9 @@ func (h *AutomationExecutionHost) Start(ctx context.Context, snapshot store.Sess
 		plan, ok, err := h.runs.sessions.GetActivePlan(current.ID)
 		if err != nil {
 			return err
+		}
+		if current.Automation != nil && plan.ID != current.Automation.PlanID {
+			return automation.ErrDenied
 		}
 		if !ok || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
 			return automation.ErrInvalid
@@ -198,7 +204,14 @@ func (h *AutomationExecutionHost) Cancel(ctx context.Context, snapshot store.Ses
 		if err != nil || !found {
 			return err
 		}
+		// Cancellation of an older occurrence must never stop a newer user/run.
+		if current.Automation != nil && current.Automation.ExecutionKey != key {
+			return nil
+		}
 		intent, found, err := h.runs.sessions.GetSessionActiveRunIntent(current.ID)
+		if current.Automation != nil && found && intent.PlanID != current.Automation.PlanID {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -215,6 +228,9 @@ func (h *AutomationExecutionHost) Cancel(ctx context.Context, snapshot store.Ses
 		}
 		if err != nil || !found {
 			return err
+		}
+		if current.Automation != nil && intent.PlanID != current.Automation.PlanID {
+			return nil
 		}
 		if intent.Status != sessions.RunIntentPendingExecutor && intent.Status != sessions.RunIntentRunning && intent.Status != sessions.RunIntentCancelled {
 			return nil

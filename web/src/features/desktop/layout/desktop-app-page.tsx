@@ -56,6 +56,7 @@ import { useSessionRepositories } from '../runtime/use-session-repositories'
 import { repositoryDialogTargetMatches, repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
+import { AutomationSidebar } from '../tools/automations/automation-session'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
 import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
@@ -4976,7 +4977,7 @@ export function DesktopAppPage() {
   const sidebarContent = (
     <>
       <div className="flex h-full flex-col min-h-0">
-        {topWorkspaceSlug && <a className="shrink-0 border-b border-[var(--app-border)] px-4 py-3 text-sm text-[var(--app-text)] hover:bg-[var(--app-surface-hover)]" href={`/${encodeURIComponent(topWorkspaceSlug)}/automations`}>Automations</a>}
+        {topWorkspaceSlug && topWorkspace?.workspaceId && <AutomationSidebar key={topWorkspace.workspaceId} workspaceId={topWorkspace.workspaceId} workspaceSlug={topWorkspaceSlug} />}
           <div className="font-mono">
             <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>

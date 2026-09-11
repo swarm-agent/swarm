@@ -73,7 +73,18 @@ func (s *Service) ComposeDurableRunStateInstructions(sessionID, mode, runID stri
 	return s.durableRunStateInstructions(sessionID, mode, runID, RunOptions{PlanCheckpointContext: checkpointContext})
 }
 
-func (s *Service) durableRunStateInstructions(sessionID, mode, runID string, options RunOptions) (string, error) {
+func (s *Service) durableRunStateInstructions(sessionID, mode, runID string, options RunOptions) (text string, resultErr error) {
+	defer func() {
+		if resultErr == nil && s != nil && s.automationContext != nil {
+			evidence, err := s.automationContext(sessionID)
+			if err != nil {
+				resultErr = err
+				text = ""
+				return
+			}
+			text += evidence
+		}
+	}()
 	state := compactRunState{
 		SessionMode:         sessionruntime.NormalizeMode(mode),
 		RunKind:             runKindForOptions(mode, options, ""),

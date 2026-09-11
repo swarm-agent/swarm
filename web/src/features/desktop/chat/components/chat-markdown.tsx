@@ -2736,6 +2736,9 @@ function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredTo
   );
 }
 
+import { AutomationProposalCard } from '../../tools/automations/automation-proposal-card';
+import { parseAutomationProposal } from '../../tools/automations/automation-proposal';
+
 export function ToolMessageView({
   toolMessage,
   isGroupItem,
@@ -2770,6 +2773,10 @@ export function ToolMessageView({
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
+  if (['manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
+    const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+    if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
+  }
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }

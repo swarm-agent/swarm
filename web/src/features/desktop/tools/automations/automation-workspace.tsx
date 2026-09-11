@@ -4,9 +4,10 @@ import type { AutomationMutation, AutomationRead, AutomationRecord } from '../..
 import { automationPageKey } from '../../state/desktop-automation-state'
 import { AutomationEditor, automationControl as control } from './automation-editor'
 import { AutomationChat } from './automation-chat'
+import { parseAutomationProposal } from './automation-proposal'
 import { dayKey, groupUpdates, needsAttention, nextDayDelay, parseInstructions } from './automation-view'
 
-function usePage(input: AutomationRead) {
+export function usePage(input: AutomationRead) {
   const key = automationPageKey(input)
   const stable = useMemo(() => input, [key]) // Canonical key includes every query field.
   const page = useAutomationPage(stable)
@@ -97,15 +98,15 @@ function AutomationDetail({ workspaceId, id }: { workspaceId: string; id: string
     {(tab === 'Updates' || tab === 'History') && <><label>Display timezone <select className={control} value={timezone} onChange={event => setTimezone(event.target.value)}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', record?.definition?.schedule.timezone].filter((zone): zone is string => !!zone))].map(zone => <option key={zone}>{zone}</option>)}</select></label><UpdateFeed key={tab} workspaceId={workspaceId} id={id} timezone={timezone} today={dayKey(now, timezone)} history={tab === 'History'} onChat={setSession} /></>}
     {tab === 'Configuration' && record?.definition && <><PolicyPanel workspaceId={workspaceId} id={id} /><RecordHistory record={record} /><AutomationEditor key={record.id} initial={record.definition} revision={record.revision} disabled={disabled} onSave={async definition => { await operation.mutate({ action: 'save', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, definition }) }} /></>}
     {tab === 'Context' && <ContextPanel workspaceId={workspaceId} id={id} />}
-    {record?.definition?.plans.map(binding => <button key={binding.id} className={control} onClick={() => setSession(binding.plan.session_id)}>Manage with plan {binding.id} AI chat</button>)}
-    {!session && <p className="text-sm text-[var(--app-text-muted)]">Use a linked plan conversation for management, or an occurrence conversation to inspect its deliverables. Changes in chat do not replace pinned automation plans or grant execution permission.</p>}
-  </main>{session && <div className="min-w-0"><button className={control} onClick={() => setSession('')}>Close AI chat</button><AutomationChat key={session} sessionId={session} automationId={id || undefined} /></div>}</div>
+    {!record?.definition?.session_id && record?.definition?.plans.map(binding => <button key={binding.id} className={control} onClick={() => setSession(binding.plan.session_id)}>Manage with plan {binding.id} AI chat</button>)}
+    {!session && !record?.definition?.session_id && <p className="text-sm text-[var(--app-text-muted)]">Use a linked plan conversation for management, or an occurrence conversation to inspect its deliverables. Changes in chat do not replace pinned automation plans or grant execution permission.</p>}
+  </main>{(session || record?.definition?.session_id) && <div className="min-w-0">{session && <button className={control} onClick={() => setSession('')}>{record?.definition?.session_id ? 'Return to automation conversation' : 'Close AI chat'}</button>}<AutomationChat key={session || record?.definition?.session_id} sessionId={session || record!.definition!.session_id!} automationId={id || undefined} /></div>}</div>
 }
-function UpdateFeed({ workspaceId, id, timezone, today, history, onChat }: { workspaceId: string; id: string; timezone: string; today: string; history: boolean; onChat: (id: string) => void }) {
+export function UpdateFeed({ workspaceId, id, timezone, today, history, onChat }: { workspaceId: string; id: string; timezone: string; today: string; history: boolean; onChat: (id: string) => void }) {
   const [draft, setDraft] = useState('')
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState<string>()
-  const [kind, setKind] = useState<'audit' | 'occurrence'>('audit')
+  const [kind, setKind] = useState<'audit' | 'occurrence'>(history ? 'occurrence' : 'audit')
   const [attention, setAttention] = useState(false)
   const [historyRecord, setHistoryRecord] = useState<AutomationRecord>()
   const [outcomeRecord, setOutcomeRecord] = useState<AutomationRecord>()
@@ -168,11 +169,12 @@ function ContextHistory({ workspaceId, id }: { workspaceId: string; id: string }
   return <>{page?.data?.records?.map(record => <RecordHistory key={record.id} record={record} />)}</>
 }
 
-function PolicyPanel({ workspaceId, id }: { workspaceId: string; id: string }) {
+export function PolicyPanel({ workspaceId, id }: { workspaceId: string; id: string }) {
   const input: AutomationRead = { workspace_id: workspaceId, action: 'policy', id }
   const page = usePage(input)
   const record = page?.data?.record
   const grant = page?.data?.approval
+  const [enableProposal, setEnableProposal] = useState<AutomationMutation | null>(null)
   const operation = useMutation()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -183,19 +185,18 @@ function PolicyPanel({ workspaceId, id }: { workspaceId: string; id: string }) {
     try {
       const result = await operation.mutate({ action: 'approve', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, policy_sha256: page.data.policy_sha256 })
       if (!result.approval) throw new Error('Approval response missing; refresh policy before retrying.')
-      try {
-        await operation.mutate({ action: 'save', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, definition: { ...record.definition, authorization: { ...record.definition.authorization, mode: 'approved_policy', approval_reference: result.approval.id } } })
-      } catch {
-        throw new Error('Policy grant was created but configuration was not linked. Refresh and review before approving again; execution was not enabled by this request.')
-      }
+      const next = parseAutomationProposal({ result: { status: 'requires_user_approval', applied: false, proposal: result.enable_proposal } })
+      if (!next) throw new Error('Approval recorded, but enable proposal is unavailable. Refresh policy before continuing.')
+      setEnableProposal(next)
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Approval failed') }
     finally { setBusy(false) }
   }
   return <section aria-label="Execution policy" className="space-y-3 rounded border border-[var(--app-border)] p-3">
     <h3 className="font-semibold">Execution policy approval</h3><PageStatus input={input} />
-    <p>Review the exact saved plans, tools, targets, schedule and expiry below. Approval links a grant; enabling remains a separate user action.</p>
+    <p>Review the exact saved plans, tools, targets, schedule and expiry below. Approval upgrades the bound conversation; enabling remains a separate user action.</p>
     {record && <details><summary>Review saved policy · revision {record.revision}</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(record.definition, null, 2)}</pre><p className="break-all">Digest: {page?.data?.policy_sha256}</p></details>}
-    <button className={control} disabled={disabled || !page?.data?.policy_sha256} onClick={() => void approve()}>Approve and link reviewed policy</button>{' '}
+    <button className={control} disabled={disabled || !page?.data?.policy_sha256} onClick={() => void approve()}>Approve reviewed policy</button>{' '}
+    {enableProposal && <div><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(enableProposal, null, 2)}</pre><button className={control} disabled={disabled} onClick={() => { void operation.mutate(enableProposal).then(() => setEnableProposal(null)).catch(() => {}) }}>Accept reviewed enable request</button></div>
     {grant && <><p>Grant revision {grant.revision} · {grant.revoked_at ? 'Revoked' : 'Recorded (server rechecks expiry and ownership)'}</p><button className={control} disabled={disabled || !!grant.revoked_at} onClick={() => { void operation.mutate({ action: 'revoke', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: grant.revision, approval_reference: grant.id }).catch(() => {}) }}>Revoke execution approval</button></>}
     <p role="status">{operation.message}</p>{error && <p role="alert">{error}</p>}
   </section>

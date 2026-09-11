@@ -77,40 +77,42 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	WorktreeAdmission    *WorktreeAdmissionEvidence `json:"-"`
-	WorktreeRecovery     *WorktreeRecoveryMutation  `json:"worktree_recovery,omitempty"`
-	workspaceCatalog     *workspaceCatalogMutation
-	automationRealtime   *automationRealtimeMutation
-	SessionID            string                        `json:"session_id"`
-	UserID               string                        `json:"user_id,omitempty"`
-	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
-	ClientRequestID      string                        `json:"client_request_id,omitempty"`
-	IdempotencyKey       string                        `json:"idempotency_key,omitempty"`
-	PayloadHash          string                        `json:"payload_hash,omitempty"`
-	RequestHash          string                        `json:"request_hash,omitempty"`
-	Kind                 string                        `json:"kind"`
-	EventID              string                        `json:"event_id,omitempty"`
-	EventType            string                        `json:"event_type,omitempty"`
-	EventPayload         json.RawMessage               `json:"event_payload,omitempty"`
-	CausationID          string                        `json:"causation_id,omitempty"`
-	CorrelationID        string                        `json:"correlation_id,omitempty"`
-	Session              *SessionSnapshot              `json:"session,omitempty"`
-	Message              *MessageSnapshot              `json:"message,omitempty"`
-	Lifecycle            *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
-	RunIntent            *V3SessionRunIntent           `json:"run_intent,omitempty"`
-	PlanAcceptance       *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
-	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
-	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
-	Artifact             *V3ArtifactMutation           `json:"artifact,omitempty"`
-	ArtifactV2           *ArtifactV2Mutation           `json:"artifact_v2,omitempty"`
-	ArtifactV3           *ArtifactV3Mutation           `json:"artifact_v3,omitempty"`
-	Transcription        *V3TranscriptionMutation      `json:"transcription,omitempty"`
-	VideoProject         *V3VideoProjectMutation       `json:"video_project,omitempty"`
-	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
-	EpochID              string                        `json:"epoch_id,omitempty"`
-	TurnUsage            *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
-	ExpectedLastEventSeq *uint64                       `json:"expected_last_event_seq,omitempty"`
-	NowUnixMs            int64                         `json:"now_unix_ms,omitempty"`
+	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
+	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
+	WorktreeAdmission            *WorktreeAdmissionEvidence `json:"-"`
+	WorktreeRecovery             *WorktreeRecoveryMutation  `json:"worktree_recovery,omitempty"`
+	workspaceCatalog             *workspaceCatalogMutation
+	automationRealtime           *automationRealtimeMutation
+	SessionID                    string                        `json:"session_id"`
+	UserID                       string                        `json:"user_id,omitempty"`
+	AccountScopeID               string                        `json:"account_scope_id,omitempty"`
+	ClientRequestID              string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey               string                        `json:"idempotency_key,omitempty"`
+	PayloadHash                  string                        `json:"payload_hash,omitempty"`
+	RequestHash                  string                        `json:"request_hash,omitempty"`
+	Kind                         string                        `json:"kind"`
+	EventID                      string                        `json:"event_id,omitempty"`
+	EventType                    string                        `json:"event_type,omitempty"`
+	EventPayload                 json.RawMessage               `json:"event_payload,omitempty"`
+	CausationID                  string                        `json:"causation_id,omitempty"`
+	CorrelationID                string                        `json:"correlation_id,omitempty"`
+	Session                      *SessionSnapshot              `json:"session,omitempty"`
+	Message                      *MessageSnapshot              `json:"message,omitempty"`
+	Lifecycle                    *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
+	RunIntent                    *V3SessionRunIntent           `json:"run_intent,omitempty"`
+	PlanAcceptance               *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
+	PlanSave                     *V3PlanSaveMutation           `json:"plan_save,omitempty"`
+	CheckpointBoundary           *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
+	Artifact                     *V3ArtifactMutation           `json:"artifact,omitempty"`
+	ArtifactV2                   *ArtifactV2Mutation           `json:"artifact_v2,omitempty"`
+	ArtifactV3                   *ArtifactV3Mutation           `json:"artifact_v3,omitempty"`
+	Transcription                *V3TranscriptionMutation      `json:"transcription,omitempty"`
+	VideoProject                 *V3VideoProjectMutation       `json:"video_project,omitempty"`
+	MediaStagingBindings         []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
+	EpochID                      string                        `json:"epoch_id,omitempty"`
+	TurnUsage                    *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq         *uint64                       `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs                    int64                         `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
@@ -661,7 +663,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	}
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
 	defer unlockSession()
-	if input.Session != nil || input.WorktreeRecovery != nil {
+	if input.Session != nil || input.WorktreeRecovery != nil || input.AutomationBinding != nil {
 		s.store.sessionMutations.worktreeMu.Lock()
 		defer s.store.sessionMutations.worktreeMu.Unlock()
 	}
@@ -725,6 +727,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if err := s.guardAutomationSessionMutation(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if input.PlanSave != nil {
 		current, found, err := s.GetPlan(input.SessionID, input.PlanSave.Plan.ID)
 		if err != nil {
@@ -2679,6 +2684,10 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			}
 			if !ok {
 				return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
+			}
+			// Ordinary snapshot writes cannot remove or forge the automation authority.
+			if input.AutomationBinding == nil {
+				session.Automation = current.Automation
 			}
 			if session.UserID == "" {
 				session.UserID = current.UserID

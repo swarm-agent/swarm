@@ -132,6 +132,14 @@ func (s *Service) SaveDefinition(ctx context.Context, p Principal, scope store.A
 	if err != nil {
 		return store.AutomationRecord{}, false, err
 	}
+	if d.SessionID != "" {
+		if err := s.access.PlanSession(ctx, p, scope, d.SessionID); err != nil {
+			return store.AutomationRecord{}, false, err
+		}
+	}
+	if found && old.Definition != nil && old.Definition.SessionID != "" && old.Definition.SessionID != d.SessionID {
+		return store.AutomationRecord{}, false, ErrDenied
+	}
 	if err := store.ValidateAutomationBindings(d.Plans); err != nil {
 		return store.AutomationRecord{}, false, err
 	}

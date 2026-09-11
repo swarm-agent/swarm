@@ -34,11 +34,12 @@ type ApprovalIdentity struct {
 	ExplicitUser func(context.Context) (Principal, error)
 }
 type PolicyApproval struct {
-	repo      ApprovalRepository
-	plans     CanonicalPlans
-	ownership ApprovalOwnership
-	identity  ApprovalIdentity
-	now       func() time.Time
+	repo          ApprovalRepository
+	plans         CanonicalPlans
+	ownership     ApprovalOwnership
+	identity      ApprovalIdentity
+	now           func() time.Time
+	acceptSession func(context.Context, Principal, store.AutomationRecord) error
 }
 
 func NewPolicyApproval(repo ApprovalRepository, plans CanonicalPlans, ownership ApprovalOwnership, identity ApprovalIdentity, now func() time.Time) (*PolicyApproval, error) {
@@ -129,6 +130,14 @@ func (a *PolicyApproval) ApproveUser(ctx context.Context, input ApprovalRequest)
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return store.AutomationApproval{}, err
 	}
+	if r.Definition.SessionID != "" {
+		if a.acceptSession == nil {
+			return store.AutomationApproval{}, ErrDenied
+		}
+		if err := a.acceptSession(ctx, p, r); err != nil {
+			return store.AutomationApproval{}, err
+		}
+	}
 	return a.repo.CreateAutomationApproval(store.AutomationApproval{Scope: r.Scope, ID: hex.EncodeToString(nonce[:]), AutomationID: r.AutomationID, DefinitionRevision: r.Revision, PolicySHA256: digest, SubjectID: p.SubjectID, ExpiresAt: r.Definition.Authorization.ExpiresAt, WrittenAt: a.now().UnixMilli()})
 }
 
@@ -183,6 +192,11 @@ func (a *PolicyApproval) RevokeUser(ctx context.Context, scope store.AutomationS
 }
 
 func (a *PolicyApproval) checkPlans(ctx context.Context, p Principal, scope store.AutomationScope, d store.AutomationDefinition) error {
+	if d.SessionID != "" {
+		if err := a.ownership.PlanSession(ctx, p, scope, d.SessionID); err != nil {
+			return err
+		}
+	}
 	if err := store.ValidateAutomationBindings(d.Plans); err != nil {
 		return err
 	}

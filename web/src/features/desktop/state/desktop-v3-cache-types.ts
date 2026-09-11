@@ -80,6 +80,7 @@ export interface SessionSnapshot {
   title: string
   mode: string
   preference?: unknown
+  automation?: { automation_id: string; workspace_id: string }
   worktree_enabled?: boolean
   worktree_root_path?: string
   worktree_base_branch?: string

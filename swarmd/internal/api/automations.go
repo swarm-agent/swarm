@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -291,7 +293,25 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 			automationHTTPError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"approval": grant})
+		response := map[string]any{"approval": grant}
+		if req.Action == "approve" {
+			// Return an exact, non-applied enable proposal. The explicit client
+			// acceptance flow may submit it; approval itself does not run work.
+			rows, _, readErr := a.domain.History(ctx, p, scope, req.ID, "definition", req.ID, 0, 1)
+			if readErr != nil {
+				automationHTTPError(w, readErr)
+				return
+			}
+			if len(rows) != 1 || rows[0].Definition == nil || rows[0].Revision != req.ExpectedRevision {
+				automationHTTPError(w, store.ErrAutomationConflict)
+				return
+			}
+			definition := *rows[0].Definition
+			definition.Enabled = true
+			definition.Authorization.Mode, definition.Authorization.ApprovalReference = "approved_policy", grant.ID
+			response["enable_proposal"] = map[string]any{"method": "POST", "path": AutomationsPath, "body": automationHTTPRequest{Action: "save", WorkspaceID: scope.WorkspaceID, ID: req.ID, MutationID: fmt.Sprintf("enable-%x", sha256.Sum256([]byte(req.MutationID))), ExpectedRevision: req.ExpectedRevision, Definition: &definition}}
+		}
+		writeJSON(w, http.StatusOK, response)
 		return
 	case "enable", "pause":
 		rows, _, readErr := a.domain.History(ctx, p, scope, req.ID, "definition", req.ID, 0, 1)

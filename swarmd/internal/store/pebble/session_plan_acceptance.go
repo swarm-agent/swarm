@@ -81,6 +81,9 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 		return result, nil
 	}
 
+	if err := s.guardAutomationSessionMutation(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	currentSeq, err := s.readV3SessionSequence(input.SessionID)
 	if err != nil {
 		return V3SessionMutationResult{}, err
@@ -105,6 +108,11 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 		now = time.Now().UnixMilli()
 	}
 	session := normalizeSessionOwnership(acceptance.Session)
+	if current, found, err := s.GetSession(input.SessionID); err != nil {
+		return V3SessionMutationResult{}, err
+	} else if found {
+		session.Automation = current.Automation
+	}
 	session.Mode = "auto"
 	session.UpdatedAt = now
 	plan := acceptance.Plan

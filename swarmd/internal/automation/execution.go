@@ -296,8 +296,17 @@ func (e *ExecutionService) ReconcileOutcome(ctx context.Context, p Principal, sc
 		return r, ErrInvalid
 	}
 	key := executionKey(scope, id, occurrenceID)
-	sid := "automation-" + key
-	if r.Occurrence.SessionID != sid {
+	sid := r.Occurrence.SessionID
+	planID := "automation-" + key
+	definition, exists, err := s.repo.GetAutomationRecord(scope, id, "definition", id, r.Occurrence.DefinitionRevision)
+	if err != nil {
+		return r, err
+	}
+	persistent := exists && definition.Definition != nil && definition.Definition.SessionID != ""
+	if persistent {
+		planID = "automation-plan:" + key
+	}
+	if (!persistent && sid != "automation-"+key) || (persistent && sid != definition.Definition.SessionID) {
 		return r, ErrDenied
 	}
 	if err := s.access.OccurrenceSession(ctx, p, scope, sid); err != nil {
@@ -307,14 +316,14 @@ func (e *ExecutionService) ReconcileOutcome(ctx context.Context, p Principal, sc
 	if err != nil {
 		return r, err
 	}
-	if !found || session.ID != sid || session.AccountScopeID != scope.AccountID || session.UserID != p.SubjectID || session.Metadata["automation_execution_key"] != key || session.Metadata["automation_occurrence_id"] != occurrenceID || !session.WorktreeEnabled {
+	if !found || session.ID != sid || session.AccountScopeID != scope.AccountID || session.UserID != p.SubjectID || (!persistent && (session.Metadata["automation_execution_key"] != key || session.Metadata["automation_occurrence_id"] != occurrenceID)) || (persistent && (session.Automation == nil || session.Automation.AutomationID != id || session.Automation.WorkspaceID != scope.WorkspaceID)) || !session.WorktreeEnabled {
 		return r, ErrDenied
 	}
-	plan, found, err := catalog.GetPlan(sid, sid)
+	plan, found, err := catalog.GetPlan(sid, planID)
 	if err != nil {
 		return r, err
 	}
-	if !found || plan.ID != sid || plan.SessionID != sid || plan.AccountScopeID != scope.AccountID || plan.UserID != session.UserID || plan.Version <= 0 || plan.Document == nil {
+	if !found || plan.ID != planID || plan.SessionID != sid || plan.AccountScopeID != scope.AccountID || plan.UserID != session.UserID || plan.Version <= 0 || plan.Document == nil {
 		return r, ErrDenied
 	}
 	state := canonicalOutcome(plan.Document)

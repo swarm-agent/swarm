@@ -33,6 +33,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
+import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
@@ -3242,6 +3243,7 @@ export function DesktopV3ExistingConversationPane({
       data-desktop-chat-presentation={presentation}
       data-testid="desktop-v3-existing-conversation-pane"
     >
+      {cacheSession?.automation && <AutomationSessionPanel key={`${normalizedSessionId}:${cacheSession.automation.automation_id}`} workspaceId={cacheSession.automation.workspace_id} id={cacheSession.automation.automation_id} />}
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}

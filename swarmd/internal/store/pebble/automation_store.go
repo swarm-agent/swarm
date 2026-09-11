@@ -81,6 +81,7 @@ func ValidateAutomationBindings(bindings []AutomationPlanBinding) error {
 }
 
 type AutomationDefinition struct {
+	SessionID     string                        `json:"session_id,omitempty"`
 	Name          string                        `json:"name"`
 	Enabled       bool                          `json:"enabled"`
 	Plans         []AutomationPlanBinding       `json:"plans"`
@@ -597,7 +598,7 @@ func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID 
 	if err != nil {
 		return err
 	}
-	if def.Definition.Schedule.OverlapPolicy == "serialize" && found && owner != occurrenceID {
+	if (def.Definition.SessionID != "" || def.Definition.Schedule.OverlapPolicy == "serialize") && found && owner != occurrenceID {
 		prior, exists, err := s.GetAutomationRecord(scope, id, "occurrence", owner, 0)
 		if err != nil {
 			return err
@@ -617,7 +618,7 @@ func (s *Store) ClaimAutomationDispatch(scope AutomationScope, id, occurrenceID 
 	}
 	batch := s.NewBatch()
 	defer batch.Close()
-	if def.Definition.Schedule.OverlapPolicy == "serialize" {
+	if def.Definition.SessionID != "" || def.Definition.Schedule.OverlapPolicy == "serialize" {
 		if err := batch.Set([]byte(key), data, nil); err != nil {
 			return err
 		}

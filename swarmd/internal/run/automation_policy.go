@@ -14,11 +14,43 @@ var errAutomationPolicy = errors.New("automation execution policy denied")
 // Only the immutable creation event owns the execution overlay. Metadata edits,
 // checkpoint edits and recovered runs cannot replace or remove it.
 func (s *Service) automationPolicy(sessionID string) (*store.AutomationAuthorizationPolicy, error) {
-	if !strings.HasPrefix(sessionID, "automation-") {
-		return nil, nil
-	}
 	if s == nil || s.sessions == nil {
 		return nil, errAutomationPolicy
+	}
+	currentSession, exists, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if exists && currentSession.Automation != nil {
+		binding := currentSession.Automation
+		if binding.ExecutionKey == "" {
+			return nil, nil
+		}
+		active, found, err := s.sessions.GetActivePlan(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || active.ID != binding.PlanID {
+			return nil, nil
+		}
+		if !currentSession.WorktreeEnabled {
+			return nil, errAutomationPolicy
+		}
+		if err := automationTargetPolicy(binding.Policy, currentSession.Metadata); err != nil {
+			return nil, err
+		}
+		policy := binding.Policy
+		if (len(policy.AllowedTools) != 0 || len(policy.TargetIDs) != 0) && active.Document != nil {
+			for _, cp := range active.Document.Checkpoints {
+				if cp.TaskProgram != nil {
+					return nil, errAutomationPolicy
+				}
+			}
+		}
+		return &policy, nil
+	}
+	if !strings.HasPrefix(sessionID, "automation-") {
+		return nil, nil
 	}
 	events, err := s.sessions.ListSessionEvents(sessionID, 0, 1)
 	if err != nil {

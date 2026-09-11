@@ -59,6 +59,9 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 	if err := v.approval.Verify(ctx, p, def); err != nil {
 		return "", err
 	}
+	if def.Definition.SessionID != "" {
+		return v.ensurePersistent(ctx, p, def, occurrence)
+	}
 	key := executionKey(def.Scope, def.AutomationID, occurrence.ID)
 	id := "automation-" + key
 	snapshot, found, err := v.sessions.GetSession(id)
@@ -209,12 +212,24 @@ func (v *V3Runtime) Cancel(ctx context.Context, p Principal, r store.AutomationR
 		return ErrDenied
 	}
 	key := executionKey(r.Scope, r.AutomationID, r.ID)
-	id := "automation-" + key
+	id := r.Occurrence.SessionID
+	if id == "" {
+		def, ok, err := v.domain.repo.GetAutomationRecord(r.Scope, r.AutomationID, "definition", r.AutomationID, r.Occurrence.DefinitionRevision)
+		if err != nil {
+			return err
+		}
+		if ok && def.Definition != nil {
+			id = def.Definition.SessionID
+		}
+		if id == "" {
+			id = "automation-" + key
+		}
+	}
 	snapshot, found, err := v.sessions.GetSession(id)
 	if err != nil {
 		return err
 	}
-	if found && (snapshot.AccountScopeID != p.AccountID || snapshot.Metadata["automation_execution_key"] != key) {
+	if found && (snapshot.AccountScopeID != p.AccountID || snapshot.Metadata["automation_execution_key"] != key && (snapshot.Automation == nil || snapshot.Automation.AutomationID != r.AutomationID || snapshot.Automation.WorkspaceID != r.Scope.WorkspaceID)) {
 		return ErrDenied
 	}
 	if !found {

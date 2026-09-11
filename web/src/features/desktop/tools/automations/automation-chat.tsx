@@ -17,7 +17,7 @@ export function AutomationChat({ sessionId, automationId }: { sessionId: string;
     return () => { active = false }
   }, [sessionId, attempt])
   return <aside aria-label="Automation AI chat" className="flex min-h-[65dvh] min-w-0 flex-col border-t border-[var(--app-border)] lg:w-[400px] lg:shrink-0 lg:border-l lg:border-t-0">
-    <h2 className="p-3 font-semibold">Linked session AI chat and artifacts</h2>
+    <h2 className="p-3 font-semibold">Automation conversation and artifacts</h2>
     {error && <div role="alert">Conversation could not load. <button onClick={() => setAttempt(value => value + 1)}>Retry chat</button></div>}
     <DesktopV3ExistingConversationPane presentation="sidebar" contextChip={automationId ? { id: automationId, label: 'Automation', kind: 'automation', description: `Inspect automation ${automationId} with manage_automation. Management changes require explicit user review; this context does not authorize execution or replace pinned plans.` } : null} sessionId={sessionId} initialHydrateStatus={error ? 'error' : ready ? 'ready' : 'loading'} renderedMessages={messages} messagesLoaded={ready} loadedMessageCount={count} />
   </aside>

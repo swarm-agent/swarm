@@ -257,3 +257,32 @@ func (h *automationToolHost) Ensure(_ context.Context, p automation.Principal, _
 	h.principal = p
 	return "execution-session", nil
 }
+
+// Purpose: approve is proposal-only even from another owned conversation. Exact
+// definition revision/digest and endpoint are carried without creating a grant.
+func TestAutomationConversationApprovalProposal(t *testing.T) {
+	ctx, _ := automation.BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "manager")
+	p, _ := automation.RuntimePrincipal(ctx)
+	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
+	repo := &automationToolRepo{record: store.AutomationRecord{Scope: scope, AutomationID: "auto", ID: "auto", Kind: "definition", Revision: 2, Definition: &store.AutomationDefinition{SessionID: "canonical", Name: "draft", Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required"}}}}
+	domain, _ := automation.New(repo, automationToolPlans{}, automationToolAccess{}, time.Now)
+	runtime := &Runtime{automations: domain}
+	req := automationToolRequest{Action: "approve", ID: "auto", MutationID: "review", ExpectedRevision: 2}
+	out, err := runtime.automationManagement(ctx, p, scope, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := out["proposal"].(map[string]any)
+	body := proposal["body"].(map[string]any)
+	digest, _ := automation.ApprovalPolicyDigest(*repo.record.Definition)
+	if out["applied"] != false || proposal["path"] != "/v3/automations/approve" || body["policy_sha256"] != digest || body["expected_revision"] != uint64(2) {
+		t.Fatalf("bad proposal: %v", out)
+	}
+	req.ExpectedRevision = 1
+	if _, err := runtime.automationManagement(ctx, p, scope, req); err == nil {
+		t.Fatal("accepted stale approval")
+	}
+	if repo.writes != 0 || repo.record.Definition.SessionID != "canonical" {
+		t.Fatal("proposal mutated authority")
+	}
+}
