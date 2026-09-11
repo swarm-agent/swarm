@@ -9,5 +9,5 @@ export function AutomationToolPage() {
   if (loading) return <main role="status" className="p-6">Loading workspace…</main>
   const workspace = resolveWorkspaceBySlug(workspaces, params.workspaceSlug ?? '')
   if (!workspace?.workspaceId) return <main className="p-6"><h1>Workspace unavailable</h1><p>Choose an accessible workspace before opening automations.</p><a href="/">Workspaces</a></main>
-  return <AutomationWorkspace key={workspace.workspaceId} workspaceId={workspace.workspaceId} workspaceName={workspace.workspaceName} workspaceSlug={params.workspaceSlug!} />
+  return <AutomationWorkspace key={workspace.workspaceId} workspaceId={workspace.workspaceId} workspacePath={workspace.path} workspaceName={workspace.workspaceName} workspaceSlug={params.workspaceSlug!} />
 }

@@ -1101,6 +1101,8 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 		"workspace_id",
 		"local_workspace_binding_id",
 		"parent_session_id",
+		pebblestore.SessionPurposeMetadataKey,
+		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"navigation_hidden",
 		"system_session",
 		"system_sidechat",

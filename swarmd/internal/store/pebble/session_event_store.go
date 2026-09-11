@@ -359,6 +359,7 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	}
 	out := map[string]any{}
 	for _, key := range []string{
+		SessionPurposeMetadataKey, SessionPurposeWorkspaceMetadataKey,
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
 		"swarm_v3_workspace_binding_id", "local_workspace_binding_id", "workspace_id",
 		"swarm_v3_source_workspace_id", "swarm_v3_source_workspace_generation", "swarm_v3_source_workspace_name", "swarm_v3_source_workspace_path",

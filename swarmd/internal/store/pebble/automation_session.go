@@ -15,11 +15,48 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 	if in.Kind == V3SessionMutationCreateSession && in.Session != nil && in.Session.Automation != nil {
 		return ErrAutomationInvalid
 	}
+	if in.Kind == V3SessionMutationCreateSession && in.Session != nil {
+		purpose, _ := in.Session.Metadata[SessionPurposeMetadataKey].(string)
+		workspaceID := SessionAutomationManagementWorkspace(*in.Session)
+		if purpose != "" && (purpose != SessionPurposeAutomationManagement || workspaceID == "") {
+			return ErrAutomationInvalid
+		}
+		if workspaceID != "" {
+			valid := false
+			for _, grant := range in.Session.WorkspaceGrants {
+				valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)
+			}
+			if !valid {
+				return ErrAutomationInvalid
+			}
+		}
+	}
 	if !found {
 		if in.AutomationBinding != nil {
 			return ErrAutomationInvalid
 		}
 		return nil
+	}
+	// Purpose is immutable after creation, including lower-level metadata writers.
+	candidate := in.Session
+	if in.PlanAcceptance != nil {
+		candidate = &in.PlanAcceptance.Session
+	}
+	if candidate != nil {
+		if workspaceID := SessionAutomationManagementWorkspace(current); workspaceID != "" {
+			valid := false
+			for _, grant := range candidate.WorkspaceGrants {
+				valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)
+			}
+			if !valid || candidate.WorkspacePath != current.WorkspacePath {
+				return ErrAutomationConflict
+			}
+		}
+		for _, key := range []string{SessionPurposeMetadataKey, SessionPurposeWorkspaceMetadataKey} {
+			if !reflect.DeepEqual(current.Metadata[key], candidate.Metadata[key]) {
+				return ErrAutomationConflict
+			}
+		}
 	}
 	binding := current.Automation
 	if in.PlanAcceptance != nil {

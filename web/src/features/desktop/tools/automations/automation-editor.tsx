@@ -16,14 +16,16 @@ export function AutomationEditor({ initial, revision = 0, disabled, onSave }: { 
       validatePlans(draft.plans)
       if (draft.schedule.timezone) new Intl.DateTimeFormat('en', { timeZone: draft.schedule.timezone })
       setError('')
-      void onSave(draft).catch(cause => setError(cause instanceof Error ? cause.message : 'Save failed'))
+      // A changed configuration is a new policy draft, never reuse its old grant.
+      const { approval_reference: _grant, ...authorization } = draft.authorization
+      void onSave({ ...draft, enabled: false, authorization: { ...authorization, mode: 'approval_required' } }).catch(cause => setError(cause instanceof Error ? cause.message : 'Save failed'))
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Invalid configuration') }
   }}>
     {changed && <p role="alert">Configuration changed. Reopen Configuration to load the latest revision before editing again.</p>}
     <fieldset disabled={disabled || changed} className="space-y-4">
       <legend className="font-semibold">Configuration</legend>
       {field('Name', draft.name, name => setDraft({ ...draft, name }), true)}
-      <p>Saved paused unless already enabled. Execution always requires live server authorization.</p>
+      <p>Configuration edits save paused and require a new execution-policy approval before enabling. Existing plan pins and the canonical conversation are preserved.</p>
       <label className="flex flex-col gap-1">Trigger<select className={automationControl} value={draft.schedule.kind} onChange={event => setDraft({ ...draft, schedule: { kind: event.target.value as AutomationDefinition['schedule']['kind'], timezone: draft.schedule.timezone, missed_policy: draft.schedule.missed_policy, overlap_policy: draft.schedule.overlap_policy } })}>{['manual', 'interval', 'cron', 'event'].map(value => <option key={value}>{value}</option>)}</select></label>
       {field('Timezone (IANA)', draft.schedule.timezone ?? '', timezone => setDraft({ ...draft, schedule: { ...draft.schedule, timezone } }), true)}
       {draft.schedule.kind === 'cron' && field('Cron expression', draft.schedule.expression ?? '', expression => setDraft({ ...draft, schedule: { ...draft.schedule, expression } }), true)}

@@ -10,10 +10,11 @@ import (
 )
 
 type sessionsV3DiscoveryRequest struct {
-	SessionIDs []string                   `json:"session_ids,omitempty"`
-	Global     bool                       `json:"global,omitempty"`
-	Workspace  sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
-	Recent     sessionsV3WorksetRecent    `json:"recent,omitempty"`
+	AutomationManagementWorkspaceID string                     `json:"automation_management_workspace_id,omitempty"`
+	SessionIDs                      []string                   `json:"session_ids,omitempty"`
+	Global                          bool                       `json:"global,omitempty"`
+	Workspace                       sessionsV3WorksetWorkspace `json:"workspace,omitempty"`
+	Recent                          sessionsV3WorksetRecent    `json:"recent,omitempty"`
 }
 
 func (s *Server) handleSessionsV3Discovery(w http.ResponseWriter, r *http.Request) {
@@ -77,14 +78,18 @@ func sessionsV3DiscoveryOptionsFromRequest(principal identity.Principal, req ses
 	if req.Recent.Limit > 0 && len(workspacePaths) == 0 && !req.Global {
 		return pebblestore.V3SessionWorksetOptions{}, errors.New("session discovery recent selector requires explicit workspace_path, workspace_paths, or global=true")
 	}
+	if req.AutomationManagementWorkspaceID != "" && (len(req.SessionIDs) != 0 || req.Recent.Limit <= 0) {
+		return pebblestore.V3SessionWorksetOptions{}, errors.New("automation management discovery requires a recent selector without explicit session IDs")
+	}
 	return pebblestore.V3SessionWorksetOptions{
-		AccountScopeID:        principal.AccountScopeID,
-		UserID:                principal.UserID,
-		SessionIDs:            req.SessionIDs,
-		WorkspacePaths:        workspacePaths,
-		RecentLimit:           req.Recent.Limit,
-		RecentBeforeUpdatedAt: req.Recent.BeforeUpdatedAt,
-		RecentBeforeSessionID: strings.TrimSpace(req.Recent.BeforeSessionID),
+		AutomationManagementWorkspaceID: req.AutomationManagementWorkspaceID,
+		AccountScopeID:                  principal.AccountScopeID,
+		UserID:                          principal.UserID,
+		SessionIDs:                      req.SessionIDs,
+		WorkspacePaths:                  workspacePaths,
+		RecentLimit:                     req.Recent.Limit,
+		RecentBeforeUpdatedAt:           req.Recent.BeforeUpdatedAt,
+		RecentBeforeSessionID:           strings.TrimSpace(req.Recent.BeforeSessionID),
 		History: pebblestore.V3SessionWorksetHistoryOptions{
 			Mode:           pebblestore.V3SessionWorksetHistoryModeNone,
 			ManifestPolicy: pebblestore.V3SessionWorksetManifestPolicyManifest,

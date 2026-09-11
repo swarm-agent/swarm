@@ -3,7 +3,9 @@ import { desktopAutomations, useAutomationPage } from '../../runtime/desktop-aut
 import type { AutomationMutation, AutomationRead, AutomationRecord } from '../../state/desktop-automation-api'
 import { automationPageKey } from '../../state/desktop-automation-state'
 import { AutomationEditor, automationControl as control } from './automation-editor'
-import { AutomationChat } from './automation-chat'
+import { AutomationOverview } from './automation-overview'
+import { AutomationDefinitionSummary, AutomationProposalSummary } from './automation-summary'
+import { AutomationConversations } from './automation-conversations'
 import { parseAutomationProposal } from './automation-proposal'
 import { dayKey, groupUpdates, needsAttention, nextDayDelay, parseInstructions } from './automation-view'
 
@@ -39,25 +41,36 @@ function useMutation() {
   return { mutate, pending, message }
 }
 
-export function AutomationWorkspace({ workspaceId, workspaceName, workspaceSlug }: { workspaceId: string; workspaceName: string; workspaceSlug: string }) {
+export function AutomationWorkspace({ workspaceId, workspacePath, workspaceName, workspaceSlug }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug: string }) {
   const [selected, setSelected] = useState('')
   const [creating, setCreating] = useState(false)
+  const [overview, setOverview] = useState(true)
+  const [session, setSession] = useState('')
+  const [prompt, setPrompt] = useState<{ id: number; draft: string }>()
+  const promptSequence = useRef(0)
+  const suggest = (draft: string) => { setPrompt({ id: ++promptSequence.current, draft }); document.getElementById('automation-ai')?.focus() }
   const [cursor, setCursor] = useState<string>()
   const input: AutomationRead = { workspace_id: workspaceId, action: 'list', cursor, limit: 20 }
   const page = usePage(input)
-  return <div className="flex min-h-dvh flex-col bg-[var(--app-bg)] text-[var(--app-text)] lg:flex-row">
-    <nav aria-label="Automations" className="space-y-3 border-b border-[var(--app-border)] p-4 lg:w-64 lg:shrink-0 lg:border-r lg:border-b-0">
+  return <div className="flex min-h-dvh flex-col bg-[var(--app-bg)] text-[var(--app-text)] xl:flex-row">
+    <nav aria-label="Automations" className="space-y-3 border-b border-[var(--app-border)] p-4 xl:w-56 xl:shrink-0 xl:border-r xl:border-b-0">
       <a className={control} href={`/${encodeURIComponent(workspaceSlug)}`}>Back to workspace</a>
       <h1 className="mt-4 text-xl font-semibold">Automations</h1><p>{workspaceName}</p>
-      <button className={control} onClick={() => { setCreating(true); setSelected('') }}>New automation</button>
-      <button className={control} onClick={() => { setCreating(false); setSelected('') }}>All updates</button>
+      <div className="flex flex-wrap gap-2"><button className={control} aria-current={overview ? 'page' : undefined} onClick={() => { setOverview(true); setCreating(false); setSelected('') }}>Overview</button>
+      <button className={control} onClick={() => suggest('Help me create a reviewed automation plan for this workspace. Ask about the task, schedule, outputs, permissions and expiry. Do not enable or execute it.')}>Create with AI</button>
+      <button className={control} onClick={() => { setOverview(false); setCreating(false); setSelected('') }}>Outcomes</button></div>
+      <a className={`${control} inline-block`} href="#automation-ai">Go to AI sidebar</a>
+      <details><summary className="cursor-pointer text-sm">Advanced setup</summary><button className={control} onClick={() => { setOverview(false); setCreating(true); setSelected('') }}>Configure manually</button></details>
       <PageStatus input={input} />
-      <ul>{page?.data?.records?.map(record => <li key={record.id}><button className={`${control} my-1 w-full text-left break-words`} aria-current={selected === record.id ? 'page' : undefined} onClick={() => { setSelected(record.id); setCreating(false) }}>{record.definition?.name ?? record.id}<span className="block text-xs">{record.definition?.enabled ? 'Enabled' : 'Paused'}</span></button></li>)}</ul>
-      {page?.data && !page.data.records?.length && <p>No automations on this page.</p>}
+      <ul>{page?.data?.records?.map(record => <li key={record.id}><button className={`${control} my-1 w-full text-left break-words`} aria-current={selected === record.automation_id ? 'page' : undefined} onClick={() => { setSelected(record.automation_id); setCreating(false); setOverview(false) }}>{record.definition?.name ?? record.id}<span className="block text-xs">{record.definition?.enabled ? 'Enabled' : 'Paused'}</span></button></li>)}</ul>
+      {page?.data && !page.data.records?.length && <p>No automations on this page. Start with an idea in Overview or ask the AI to help draft a plan.</p>}
       {cursor && <button className={control} onClick={() => setCursor(undefined)}>First automations</button>}
       {page?.data?.next_cursor && <button className={control} disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</button>}
     </nav>
-    {creating ? <CreateAutomation key={workspaceId} workspaceId={workspaceId} onCreated={id => { setSelected(id); setCreating(false) }} /> : <AutomationDetail key={`${workspaceId}:${selected}`} workspaceId={workspaceId} id={selected} />}
+    <div className="flex min-w-0 flex-1 flex-col lg:flex-row">
+    {overview ? <AutomationOverview onPrompt={suggest} onUpdates={() => { setOverview(false); setSelected('') }} /> : creating ? <CreateAutomation key={workspaceId} workspaceId={workspaceId} onCreated={id => { setSelected(id); setCreating(false) }} /> : <AutomationDetail key={`${workspaceId}:${selected}`} workspaceId={workspaceId} id={selected} onChat={setSession} />}
+    <AutomationConversations key={workspaceId} workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} automationId={selected || undefined} prompt={prompt} />
+    </div>
   </div>
 }
 function CreateAutomation({ workspaceId, onCreated }: { workspaceId: string; onCreated: (id: string) => void }) {
@@ -70,9 +83,8 @@ function CreateAutomation({ workspaceId, onCreated }: { workspaceId: string; onC
     if (mounted.current) onCreated(id)
   }} /></main>
 }
-function AutomationDetail({ workspaceId, id }: { workspaceId: string; id: string }) {
+function AutomationDetail({ workspaceId, id, onChat }: { workspaceId: string; id: string; onChat: (id: string) => void }) {
   const [tab, setTab] = useState('Updates')
-  const [session, setSession] = useState('')
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [now, setNow] = useState(Date.now)
   const definitionInput: AutomationRead = { workspace_id: workspaceId, action: 'list', id: id || undefined, limit: 1 }
@@ -93,14 +105,16 @@ function AutomationDetail({ workspaceId, id }: { workspaceId: string; id: string
   return <div className="flex min-w-0 flex-1 flex-col lg:flex-row"><main className="min-w-0 flex-1 space-y-5 p-4 lg:p-6">
     <header><h2 className="text-2xl font-semibold break-words">{id ? record?.definition?.name ?? 'Automation' : 'Daily updates'}</h2><p className="text-[var(--app-text-muted)]">Readable outcomes, with each blocked incident kept separate.</p></header>
     {id && <><PageStatus input={definitionInput} /><div className="flex flex-wrap gap-2"><button className={control} disabled={disabled} onClick={() => act('run')}>Run now</button><button className={control} disabled={disabled} onClick={() => act(record?.definition?.enabled ? 'pause' : 'enable')}>{record?.definition?.enabled ? 'Pause' : 'Enable'}</button></div></>}
+    {record?.definition && <AutomationDefinitionSummary definition={record.definition} />}
+    {id && definitionPage?.data && !record && <p role="alert">This automation is unavailable. Choose another automation or return to Overview.</p>}
     <p role="status">{operation.message}</p>
     <nav aria-label="Automation sections" className="flex flex-wrap gap-2">{(id ? ['Updates', 'History', 'Configuration', 'Context'] : ['Updates', 'History']).map(value => <button className={control} key={value} aria-pressed={tab === value} onClick={() => setTab(value)}>{value}</button>)}</nav>
-    {(tab === 'Updates' || tab === 'History') && <><label>Display timezone <select className={control} value={timezone} onChange={event => setTimezone(event.target.value)}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', record?.definition?.schedule.timezone].filter((zone): zone is string => !!zone))].map(zone => <option key={zone}>{zone}</option>)}</select></label><UpdateFeed key={tab} workspaceId={workspaceId} id={id} timezone={timezone} today={dayKey(now, timezone)} history={tab === 'History'} onChat={setSession} /></>}
+    {(tab === 'Updates' || tab === 'History') && <><label>Display timezone <select className={control} value={timezone} onChange={event => setTimezone(event.target.value)}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', record?.definition?.schedule.timezone].filter((zone): zone is string => !!zone))].map(zone => <option key={zone}>{zone}</option>)}</select></label><UpdateFeed key={tab} workspaceId={workspaceId} id={id} timezone={timezone} today={dayKey(now, timezone)} history={tab === 'History'} onChat={onChat} /></>}
     {tab === 'Configuration' && record?.definition && <><PolicyPanel workspaceId={workspaceId} id={id} /><RecordHistory record={record} /><AutomationEditor key={record.id} initial={record.definition} revision={record.revision} disabled={disabled} onSave={async definition => { await operation.mutate({ action: 'save', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: record.revision, definition }) }} /></>}
     {tab === 'Context' && <ContextPanel workspaceId={workspaceId} id={id} />}
-    {!record?.definition?.session_id && record?.definition?.plans.map(binding => <button key={binding.id} className={control} onClick={() => setSession(binding.plan.session_id)}>Manage with plan {binding.id} AI chat</button>)}
-    {!session && !record?.definition?.session_id && <p className="text-sm text-[var(--app-text-muted)]">Use a linked plan conversation for management, or an occurrence conversation to inspect its deliverables. Changes in chat do not replace pinned automation plans or grant execution permission.</p>}
-  </main>{(session || record?.definition?.session_id) && <div className="min-w-0">{session && <button className={control} onClick={() => setSession('')}>{record?.definition?.session_id ? 'Return to automation conversation' : 'Close AI chat'}</button>}<AutomationChat key={session || record?.definition?.session_id} sessionId={session || record!.definition!.session_id!} automationId={id || undefined} /></div>}</div>
+    {!record?.definition?.session_id && record?.definition?.plans.map(binding => <button key={binding.id} className={control} onClick={() => onChat(binding.plan.session_id)}>Manage with plan {binding.id} AI chat</button>)}
+    {record?.definition?.session_id && <button className={control} onClick={() => onChat(record.definition!.session_id!)}>Open automation conversation</button>}
+  </main></div>
 }
 export function UpdateFeed({ workspaceId, id, timezone, today, history, onChat }: { workspaceId: string; id: string; timezone: string; today: string; history: boolean; onChat: (id: string) => void }) {
   const [draft, setDraft] = useState('')
@@ -194,9 +208,10 @@ export function PolicyPanel({ workspaceId, id }: { workspaceId: string; id: stri
   return <section aria-label="Execution policy" className="space-y-3 rounded border border-[var(--app-border)] p-3">
     <h3 className="font-semibold">Execution policy approval</h3><PageStatus input={input} />
     <p>Review the exact saved plans, tools, targets, schedule and expiry below. Approval upgrades the bound conversation; enabling remains a separate user action.</p>
+    {record?.definition && <AutomationDefinitionSummary definition={record.definition} />}
     {record && <details><summary>Review saved policy · revision {record.revision}</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(record.definition, null, 2)}</pre><p className="break-all">Digest: {page?.data?.policy_sha256}</p></details>}
     <button className={control} disabled={disabled || !page?.data?.policy_sha256} onClick={() => void approve()}>Approve reviewed policy</button>{' '}
-    {enableProposal && <div><pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(enableProposal, null, 2)}</pre><button className={control} disabled={disabled} onClick={() => { void operation.mutate(enableProposal).then(() => setEnableProposal(null)).catch(() => {}) }}>Accept reviewed enable request</button></div>}
+    {enableProposal && <div><AutomationProposalSummary proposal={enableProposal} /><button className={control} disabled={disabled} onClick={() => { void operation.mutate(enableProposal).then(() => setEnableProposal(null)).catch(() => {}) }}>Accept reviewed enable request</button></div>}
     {grant && <><p>Grant revision {grant.revision} · {grant.revoked_at ? 'Revoked' : 'Recorded (server rechecks expiry and ownership)'}</p><button className={control} disabled={disabled || !!grant.revoked_at} onClick={() => { void operation.mutate({ action: 'revoke', workspace_id: workspaceId, id, mutation_id: crypto.randomUUID(), expected_revision: grant.revision, approval_reference: grant.id }).catch(() => {}) }}>Revoke execution approval</button></>}
     <p role="status">{operation.message}</p>{error && <p role="alert">{error}</p>}
   </section>

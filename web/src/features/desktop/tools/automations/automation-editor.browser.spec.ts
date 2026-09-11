@@ -7,13 +7,15 @@ import { chromium } from 'playwright'
 // and must never attach an old draft to a newer revision. Threat: background
 // invalidation silently overwrites concurrent edits. A hermetic browser component
 // fixture exercises real form events and prop updates, not source-string checks.
+// Editing an enabled policy must also produce a paused, unapproved draft while
+// preserving session/plan identity; the editor must not reuse an old grant.
 // It does not prove server permission enforcement or full workspace visual quality.
 test('configuration uses accessible inputs and refuses stale draft submission', { timeout: 30000 }, async () => {
   const fixture = `import React from 'react'; import {createRoot} from 'react-dom/client';
     import {AutomationEditor} from './src/features/desktop/tools/automations/automation-editor';
     const root=createRoot(document.getElementById('root'));
     window.calls=[];
-    const initial={name:'Daily review',enabled:false,plans:[{id:'first',plan:{session_id:'session',plan_id:'plan',revision:1}}],schedule:{kind:'manual',timezone:'UTC',missed_policy:'skip',overlap_policy:'independent'},authorization:{mode:'approval_required'}};
+    const initial={name:'Daily review',session_id:'canonical-chat',enabled:true,plans:[{id:'first',plan:{session_id:'session',plan_id:'plan',revision:1}}],schedule:{kind:'manual',timezone:'UTC',missed_policy:'skip',overlap_policy:'independent'},authorization:{mode:'approved_policy',approval_reference:'old-grant'}};
     window.show=(revision)=>root.render(<AutomationEditor initial={initial} revision={revision} disabled={false} onSave={async value=>{window.calls.push(value)}}/>);
     window.show(1);`
   const bundle = await build({ stdin: { contents: fixture, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
@@ -32,6 +34,12 @@ test('configuration uses accessible inputs and refuses stale draft submission', 
     await page.waitForFunction(() => (window as any).calls.length === 1)
     assert.equal(await page.evaluate(() => (window as any).calls[0].name), 'Keyboard review')
     assert.equal(await page.evaluate(() => (window as any).calls[0].authorization.expires_at), 2000000000000)
+    const saved = await page.evaluate(() => (window as any).calls[0])
+    assert.equal(saved.enabled, false)
+    assert.equal(saved.authorization.mode, 'approval_required')
+    assert.equal('approval_reference' in saved.authorization, false)
+    assert.equal(saved.session_id, 'canonical-chat')
+    assert.deepEqual(saved.plans, [{ id: 'first', plan: { session_id: 'session', plan_id: 'plan', revision: 1 } }])
     await page.getByLabel('Name', { exact: true }).fill('Unsaved draft')
     await page.evaluate(() => (window as any).show(2))
     await page.getByRole('alert').filter({ hasText: 'Configuration changed' }).waitFor()

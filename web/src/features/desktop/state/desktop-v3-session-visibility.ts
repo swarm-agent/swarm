@@ -1,3 +1,4 @@
+import { isAutomationManagementSession } from './desktop-automation-purpose'
 import type { SessionCacheRecord, SessionSnapshot } from './desktop-v3-cache-types'
 
 function metadataBoolean(metadata: Record<string, unknown> | undefined, key: string): boolean {
@@ -41,7 +42,8 @@ export function isDesktopV3VideoStudioRecord(record: SessionCacheRecord | undefi
 export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | undefined): boolean {
   if (!session) return false
   const metadata = session.metadata
-  return session.navigation_hidden === true
+  return isAutomationManagementSession(session)
+    || session.navigation_hidden === true
     || session.system_session === true
     || session.system_sidechat === true
     || session.lineage_kind?.trim().toLowerCase() === 'system_sidechat'

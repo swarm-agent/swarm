@@ -148,6 +148,9 @@ func (s *SessionStore) selectV3RecentWorksetSessionsFromIndex(reader pebble.Read
 		if !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			return true, nil
 		}
+		if options.AutomationManagementWorkspaceID != "" && SessionAutomationManagementWorkspace(session) != options.AutomationManagementWorkspaceID {
+			return true, nil
+		}
 		sessions = append(sessions, session)
 		return len(sessions) <= limit, nil
 	})

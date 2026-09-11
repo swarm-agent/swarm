@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -37,6 +38,18 @@ func TestConversationDefinition(t *testing.T) {
 	if err != nil || revised.SessionID != "canonical" {
 		t.Fatalf("management moved session: %+v %v", revised, err)
 	}
+	// Existing edits must not resolve the caller's active plan a second time.
+	// They retain exact pins and do not alias or mutate the saved definition.
+	if plans.activeReads != 1 {
+		t.Fatalf("existing edit resolved another active plan: %d", plans.activeReads)
+	}
+	if !reflect.DeepEqual(revised.Plans, existing.Plans) || revised.Enabled || revised.Authorization.ApprovalReference != "" {
+		t.Fatalf("edit replaced pins or inherited approval: %+v", revised)
+	}
+	revised.Plans[0].ID = "edited"
+	if existing.Plans[0].ID == "edited" {
+		t.Fatal("proposal aliased saved plan bindings")
+	}
 	for _, scenario := range []string{"foreign-account", "foreign-session", "unapproved", "changed-bytes", "enabled"} {
 		t.Run(scenario, func(t *testing.T) {
 			d := got
@@ -66,9 +79,13 @@ func TestConversationDefinition(t *testing.T) {
 	}
 }
 
-type conversationPlans struct{ plan store.SessionPlanSnapshot }
+type conversationPlans struct {
+	plan        store.SessionPlanSnapshot
+	activeReads int
+}
 
 func (p *conversationPlans) GetActivePlan(string) (store.SessionPlanSnapshot, bool, error) {
+	p.activeReads++
 	return p.plan, true, nil
 }
 func (p *conversationPlans) GetPlanRevision(string, string, int) (store.SessionPlanSnapshot, bool, error) {

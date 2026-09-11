@@ -19,6 +19,17 @@ export function parseAutomationProposal(payload: unknown): AutomationMutation | 
     const mutation = body as AutomationMutation
     validateAutomationMutation(mutation)
     if (mutation.action === 'save' && (!mutation.definition || typeof mutation.definition.name !== 'string' || typeof mutation.definition.enabled !== 'boolean' || !Array.isArray(mutation.definition.plans) || !mutation.definition.schedule || !mutation.definition.authorization)) return null
+    if (mutation.action === 'save') {
+      const definition = mutation.definition
+      const strings = (value: unknown) => value === undefined || (Array.isArray(value) && value.every(item => typeof item === 'string'))
+      if (!['manual', 'interval', 'cron', 'event'].includes(definition.schedule.kind)
+        || !['skip', 'coalesce'].includes(definition.schedule.missed_policy)
+        || !['independent', 'serialize'].includes(definition.schedule.overlap_policy)
+        || !strings(definition.authorization.allowed_tools) || !strings(definition.authorization.target_ids)
+        || definition.plans.some(binding => !binding || typeof binding.id !== 'string' || !binding.plan || typeof binding.plan.plan_id !== 'string' || typeof binding.plan.session_id !== 'string' || !Number.isSafeInteger(binding.plan.revision) || !strings(binding.depends_on))) return null
+      for (const value of [definition.schedule.expression, definition.schedule.timezone, definition.schedule.trigger_source]) if (value !== undefined && typeof value !== 'string') return null
+      for (const value of [definition.schedule.interval_seconds, definition.authorization.expires_at]) if (value !== undefined && !Number.isSafeInteger(value)) return null
+    }
     if (mutation.action === 'approve' && (typeof mutation.policy_sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(mutation.policy_sha256))) return null
     if (mutation.action === 'cancel' && (typeof mutation.occurrence_id !== 'string' || !mutation.occurrence_id.trim())) return null
     return mutation

@@ -57,6 +57,7 @@ func runV3SessionWorksetAfterSnapshotHook() {
 }
 
 type V3SessionWorksetOptions struct {
+	AutomationManagementWorkspaceID    string
 	AccountScopeID                     string
 	UserID                             string
 	Global                             bool

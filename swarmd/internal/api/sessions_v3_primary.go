@@ -35,6 +35,7 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
+	Purpose                        string                        `json:"purpose,omitempty"`
 	SessionID                      string                        `json:"session_id,omitempty"`
 	ClientRequestID                string                        `json:"client_request_id,omitempty"`
 	IdempotencyKey                 string                        `json:"idempotency_key,omitempty"`
@@ -764,6 +765,10 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if req.Purpose != "" && req.Purpose != pebblestore.SessionPurposeAutomationManagement {
+		writeError(w, http.StatusBadRequest, errors.New("unsupported session purpose"))
+		return
+	}
 	sessionID := strings.TrimSpace(req.SessionID)
 	clientRequestID := strings.TrimSpace(firstNonEmpty(req.ClientRequestID, req.IdempotencyKey, r.Header.Get("Idempotency-Key")))
 	if clientRequestID == "" {
@@ -838,6 +843,14 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		Metadata:        sessionsV3ModelProfileMetadata(sessionsV3CreateServerMetadata(req.Metadata, resolvedAgent, binding), modelProfileSnapshot),
 		CreatedAt:       now,
 		UpdatedAt:       now,
+	}
+	if req.Purpose == pebblestore.SessionPurposeAutomationManagement {
+		if binding.SourceWorkspaceID == "" || resolvedAgent.Name != agentruntime.SwarmAgentID {
+			writeError(w, http.StatusBadRequest, errors.New("automation management requires Swarm and a saved workspace"))
+			return
+		}
+		session.Metadata[pebblestore.SessionPurposeMetadataKey] = req.Purpose
+		session.Metadata[pebblestore.SessionPurposeWorkspaceMetadataKey] = binding.SourceWorkspaceID
 	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
@@ -4090,7 +4103,9 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "agent_name",
+	case pebblestore.SessionPurposeMetadataKey,
+		pebblestore.SessionPurposeWorkspaceMetadataKey,
+		"agent_name",
 		"agent_profile",
 		"model_profile",
 		"resolved_agent_name",

@@ -107,3 +107,46 @@ for (const obsoleteFirst of [true, false]) {
     })
   }
 }
+
+// Requirement: ordinary-chat proposals and page controls share one cache authority.
+// Threat: successful writes leave a sibling consumer stale, or failed CAS writes
+// fabricate grants/retry automatically. The injected runtime/reducer boundary is
+// the narrowest deterministic layer for these postconditions (not live socket proof).
+test('chat and page mutations hydrate shared state and never retry failed approval', async () => {
+  let pages: AutomationPages = {}
+  let revision = 1
+  let writes = 0
+  const reads: string[] = []
+  const runtime = new DesktopAutomationRuntime({
+    pages: () => pages,
+    dispatch: action => { pages = reduceAutomationPages(pages, action) },
+    read: async input => { reads.push(input.workspace_id); return { records: [], next_cursor: String(revision) } },
+    mutate: async input => {
+      writes++
+      if (input.action === 'approve') throw new Error('Automation changed; refresh before retrying.')
+      revision++
+      return { fresh: true }
+    },
+  })
+  const input = { action: 'list' as const, workspace_id: 'workspace' }
+  const foreign = { ...input, workspace_id: 'other' }
+  const chat = runtime.acquire(input)
+  const page = runtime.acquire(input)
+  const other = runtime.acquire(foreign)
+  await Promise.all([chat.ready, page.ready, other.ready])
+  reads.length = 0
+  await runtime.mutate({ action: 'pause', workspace_id: 'workspace', id: 'automation', mutation_id: 'pause', expected_revision: 1 })
+  await runtime.refresh(input)
+  assert.deepEqual(reads, ['workspace'])
+  assert.equal(pages[automationPageKey(input)].data?.next_cursor, '2')
+  assert.equal(pages[automationPageKey(foreign)].data?.next_cursor, '1')
+  await assert.rejects(runtime.mutate({ action: 'approve', workspace_id: 'workspace', id: 'automation', mutation_id: 'approve', expected_revision: 1, policy_sha256: 'stale' }), /changed/)
+  await runtime.refresh(input)
+  assert.equal(writes, 2)
+  assert.equal(pages[automationPageKey(input)].data?.approval, undefined)
+  assert.equal(pages[automationPageKey(input)].data?.next_cursor, '2')
+  chat.release()
+  assert.ok(pages[automationPageKey(input)])
+  page.release(); other.release()
+  assert.deepEqual(pages, {})
+})
