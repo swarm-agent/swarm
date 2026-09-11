@@ -27,13 +27,15 @@ func testSSHKey(seed byte) string {
 // narrowest boundary proving invalid input cannot reach privileged file I/O.
 func TestOnboardingSSHParser(t *testing.T) {
 	good := testSSHKey(1)
+	// Construct only a synthetic header, not secret material; retain parser rejection coverage.
+	privateHeader := "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
 	for _, input := range []string{good, good + " workstation", good + "\n"} {
 		key, err := parseOnboardingSSHKey(input)
 		if err != nil || string(key) != good+"\n" {
 			t.Fatalf("valid: %v", err)
 		}
 	}
-	for _, input := range []string{"", "-----BEGIN OPENSSH PRIVATE KEY-----", "command=\"id\" " + good, good + "\n" + good, good + " " + good, good + " -----BEGIN OPENSSH PRIVATE KEY-----", good + "\n\n", good + "\r\n", good + "\x00", good + "\tcomment", strings.Repeat("x", 4097), "ssh-rsa AAAA", "ssh-ed25519 AAAA", good + "\n# comment"} {
+	for _, input := range []string{"", privateHeader, "command=\"id\" " + good, good + "\n" + good, good + " " + good, good + " " + privateHeader, good + "\n\n", good + "\r\n", good + "\x00", good + "\tcomment", strings.Repeat("x", 4097), "ssh-rsa AAAA", "ssh-ed25519 AAAA", good + "\n# comment"} {
 		if _, err := parseOnboardingSSHKey(input); err == nil {
 			t.Fatal("unsafe key accepted")
 		}

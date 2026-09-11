@@ -84,8 +84,21 @@ func firstInstallArtifact(executable string) (string, error) {
 		return "", nil
 	}
 	root := filepath.Dir(platformDir)
-	for _, rel := range []string{"build-info.txt", "LICENSE", "THIRD_PARTY_NOTICES.md", "linux-amd64/root/rebuild", "linux-amd64/root/swarmdev", "linux-amd64/root/swarm", "linux-amd64/root/swarmsetup", "linux-amd64/root/swarmtui", "linux-amd64/swarmd/swarmd", "linux-amd64/swarmd/swarmctl", "linux-amd64/swarmd/swarm-fff-search", "linux-amd64/swarmd/libfff_c.so", "web/index.html"} {
-		path := filepath.Join(root, filepath.FromSlash(rel))
+	for _, path := range []string{
+		filepath.Join(root, "build-info.txt"),
+		filepath.Join(root, "LICENSE"),
+		filepath.Join(root, "THIRD_PARTY_NOTICES.md"),
+		filepath.Join(toolDir, "rebuild"),
+		filepath.Join(toolDir, "swarmdev"),
+		filepath.Join(toolDir, "swarm"),
+		filepath.Join(toolDir, "swarmsetup"),
+		filepath.Join(toolDir, "swarmtui"),
+		filepath.Join(platformDir, "swarmd", "swarmd"),
+		filepath.Join(platformDir, "swarmd", "swarmctl"),
+		filepath.Join(platformDir, "swarmd", "swarm-fff-search"),
+		filepath.Join(platformDir, "swarmd", "libfff_c.so"),
+		filepath.Join(root, "web", "index.html"),
+	} {
 		info, err := os.Lstat(path)
 		if err != nil {
 			return "", fmt.Errorf("incomplete first-run artifact: %w", err)

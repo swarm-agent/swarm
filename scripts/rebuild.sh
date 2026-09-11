@@ -8,6 +8,8 @@ ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 # artifact without provisioning daemon state; first `swarm` owns account setup.
 if [[ "${EUID}" == 0 && -z "${SUDO_UID:-}" ]]; then
   fresh=true
+  artifact_platform_dir="${ROOT_DIR}/dist/linux-amd64"
+  artifact_tool_dir="${artifact_platform_dir}/root"
   for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm.service; do
     if [[ -e "${path}" || -L "${path}" ]]; then fresh=false; fi
   done
@@ -28,14 +30,14 @@ if [[ "${EUID}" == 0 && -z "${SUDO_UID:-}" ]]; then
     for name in swarm swarmdev rebuild swarmsetup; do
       target="/usr/local/bin/${name}"
       if [[ -e "${target}" || -L "${target}" ]]; then
-        [[ -L "${target}" && "$(readlink "${target}")" == "${ROOT_DIR}/dist/linux-amd64/root/${name}" ]] || { echo "Refusing to replace existing ${target}" >&2; exit 1; }
+        [[ -L "${target}" && "$(readlink "${target}")" == "${artifact_tool_dir}/${name}" ]] || { echo "Refusing to replace existing ${target}" >&2; exit 1; }
       fi
     done
     bash "${SCRIPT_DIR}/run-critical-tests.sh" fast
     bash "${SCRIPT_DIR}/build-main-dist.sh"
     install -d -m 0755 /usr/local/bin
     for name in swarm swarmdev rebuild swarmsetup; do
-      ln -sfn "${ROOT_DIR}/dist/linux-amd64/root/${name}" "/usr/local/bin/${name}"
+      ln -sfn "${artifact_tool_dir}/${name}" "/usr/local/bin/${name}"
     done
     printf '\nNative build ready. Type swarm to begin account selection and onboarding.\nNo runtime account or daemon service has been created or started.\n'
     exit 0
