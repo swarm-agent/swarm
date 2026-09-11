@@ -69,11 +69,11 @@ func runPrerequisiteOnboarding(root string, desktop bool) error {
 					return err
 				}
 				if desktop {
-					profile, err := launcher.LoadRuntimeProfile("main", nil)
+					var err error
+					destination, err = launcher.OnboardingDesktopURL()
 					if err != nil {
 						return err
 					}
-					destination = launcher.DesktopURL(profile, 0)
 				}
 				return nil
 			})
