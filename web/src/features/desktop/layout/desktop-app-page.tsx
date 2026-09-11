@@ -2790,10 +2790,11 @@ export function DesktopAppPage() {
   const updateAvailable = updateStatus?.update_available === true
   const updateDevMode = updateStatus?.dev_mode === true
   const updateActionEnabled = updateAvailable || updateDevMode
-  const updateActionLabel = updateDevMode ? 'Update Dev' : 'Update Swarm'
+  const updateActionLabel = updateDevMode ? 'Rebuild Swarm' : 'Update Swarm'
+  const UpdateActionIcon = updateDevMode ? RefreshCcw : Download
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
-  const updateAttentionVisible = !updateDevMode && (updateActionEnabled || updateRunning || Boolean(updateError))
+  const updateAttentionVisible = updateActionEnabled || updateRunning || Boolean(updateError)
   const updateActionTitle = updateError
     || (updateRunning
       ? updateDevMode ? 'Rebuilding Swarm dev checkout…' : 'Updating Swarm…'
@@ -4964,8 +4965,8 @@ export function DesktopAppPage() {
       ) : null}
       {updateAttentionVisible ? (
         <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
-          <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
-          {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
+          <UpdateActionIcon size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
+          {!updateDevMode && updateAvailable ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
         </Button>
       ) : null}
       <Button variant="ghost" className="mt-auto h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('account')} aria-label="Open settings" title="Settings">
@@ -5074,8 +5075,8 @@ export function DesktopAppPage() {
                         disabled={updateRunning || !updateActionEnabled}
                         title={updateActionTitle}
                       >
-                        <Download size={14} strokeWidth={1.8} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
-                        {updateActionEnabled ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
+                        <UpdateActionIcon size={14} strokeWidth={1.8} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+                        {!updateDevMode && updateAvailable ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
                       </button>
                     ) : null}
                     <button
