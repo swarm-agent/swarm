@@ -18,11 +18,22 @@ test('memory editor preserves a stale draft and exposes scoped preview', { timeo
  page.setDefaultTimeout(5000)
  page.on('pageerror', error=>console.error('memory fixture browser error:', error.message))
  const mutations: Record<string,unknown>[]=[]
+ let reject=true
+ let revision=4
+ let entries=[{id:'saved',kind:'rule',content:'saved content',pinned:true,workspace_id:'workspace'}]
  await page.route('http://memory.test/**',async route=>{
   const req=route.request()
   if(req.url().includes('/v1/memory')){
-   if(req.method()==='POST'){mutations.push(req.postDataJSON());await route.fulfill({status:409,body:'memory revision conflict'});return}
-   const body=req.url().includes('session_id=')?{revision:4,injected_tokens:20,omitted:[{id:'context',reason:'different workspace'}],payload:'explicit rule'}:{revision:4,stored_tokens:13,token_method:'utf8_bytes_upper_bound',entries:[],history:[],jobs:[],settings:{read_enabled:true,remember_enabled:true,automation_enabled:false,mode:'manual',storage_tokens:8000,injection_tokens:2000,included_sessions:[],excluded_sessions:[]}}
+   if(req.method()==='POST'){
+    const mutation=req.postDataJSON();mutations.push(mutation)
+    if(reject){await route.fulfill({status:409,body:'memory revision conflict'});return}
+    assert.equal(mutation.expected_revision,revision)
+    if(mutation.action==='remember')entries=[mutation.entry]
+    else if(mutation.action==='forget')entries=[]
+    revision++
+    await route.fulfill({contentType:'application/json',body:JSON.stringify({revision,entries})});return
+   }
+   const body=req.url().includes('session_id=')?{revision:4,injected_tokens:20,omitted:[{id:'context',reason:'different workspace'}],payload:'explicit rule'}:{revision,stored_tokens:13,token_method:'utf8_bytes_upper_bound',entries,history:[],jobs:[],settings:{read_enabled:true,remember_enabled:true,automation_enabled:false,mode:'manual',storage_tokens:8000,injection_tokens:2000,included_sessions:[],excluded_sessions:[]}}
    await route.fulfill({contentType:'application/json',body:JSON.stringify(body)});return
   }
   await route.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'})
@@ -40,6 +51,23 @@ test('memory editor preserves a stale draft and exposes scoped preview', { timeo
  await page.getByText('different workspace',{exact:false}).waitFor()
  await page.getByRole('button',{name:'New entry',exact:true}).focus()
  assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'New entry')
+ // Selected objects must keep their identity, preserve metadata, refresh on save,
+ // and require confirmation before a destructive request is sent.
+ reject=false
+ await page.getByRole('button',{name:'Edit',exact:true}).click()
+ assert.equal(await page.getByLabel('ID',{exact:true}).isDisabled(),true)
+ await page.getByLabel('Content',{exact:true}).fill('updated object')
+ await page.getByRole('button',{name:'Save explicit memory'}).click()
+ await page.locator('article pre').filter({hasText:'updated object'}).waitFor()
+ assert.equal((mutations[1].entry as {pinned:boolean}).pinned,true)
+ assert.equal(await page.getByLabel('Content',{exact:true}).inputValue(),'')
+ page.once('dialog',dialog=>void dialog.dismiss())
+ await page.getByRole('button',{name:'Forget permanently'}).click()
+ assert.equal(mutations.length,2)
+ page.once('dialog',dialog=>void dialog.accept())
+ await page.getByRole('button',{name:'Forget permanently'}).click()
+ await page.getByText('No saved memories.',{exact:true}).waitFor()
+ assert.equal(mutations[2].entry_id,'saved')
  if(process.env.SWARM_MEMORY_SCREENSHOT)await page.screenshot({path:process.env.SWARM_MEMORY_SCREENSHOT,fullPage:true})
  } finally {await browser.close()}
 })

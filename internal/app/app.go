@@ -67,6 +67,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
+		{Command: "/memory", Hint: "List, edit, or permanently forget saved memories", QuickTips: []string{"/memory", "/memory help"}},
 		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
 		{Command: "/commit", Hint: "Commit all changes with a message, or use AI to generate one", QuickTips: []string{"/commit <message>", "/commit ai"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
@@ -240,11 +241,13 @@ type voiceCaptureEvent struct {
 }
 
 type App struct {
-	screen tcell.Screen
-	home   *ui.HomePage
-	chat   *ui.ChatPage
-	v3Chat *v3chat.Page
-	route  string
+	memoryDocument *client.MemoryDocument
+	memoryDraft    string
+	screen         tcell.Screen
+	home           *ui.HomePage
+	chat           *ui.ChatPage
+	v3Chat         *v3chat.Page
+	route          string
 
 	api                 *client.API
 	startupCWD          string
@@ -2185,6 +2188,8 @@ func (a *App) executeCommand(raw string) {
 		a.home.SetStatus("unknown command: /compact")
 	case "commit":
 		a.handleCommitCommand(raw)
+	case "memory":
+		a.handleMemoryCommand(raw)
 	case "codex":
 		a.handleCodexCommand(args)
 	case "workspace":
@@ -2254,6 +2259,7 @@ func (a *App) showHelp() {
 		"/commit <message>   (stage all changes and commit with the supplied message)",
 		"/commit ai   (generate a commit message with the existing AI Commit workflow, then commit)",
 		"/git   (show authoritative Git status for the active workspace)",
+		"/memory   (list saved objects; /memory help for edit and permanent forget)",
 		"/codex [refresh]   (Codex account usage and reset credits)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",

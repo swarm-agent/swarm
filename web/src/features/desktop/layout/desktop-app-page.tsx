@@ -3895,6 +3895,9 @@ export function DesktopAppPage() {
         if (routeSessionId) openPlanModalForSession(routeSessionId)
         else setDesktopToast({ message: 'Open an existing session to view its plan.', tone: 'info' })
         return
+      case 'open-memory':
+        void navigate({ to: '/memory' })
+        return
       case 'open-feedback':
         setFeedbackOpen(true)
         setMobileSidebarOpen(false)

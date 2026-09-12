@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
@@ -38,15 +39,15 @@ func (s *Service) executeMemoryTool(ctx context.Context, sessionID, arguments st
 		return "", errors.New("memory unavailable")
 	}
 	var a struct {
-		Action      string `json:"action"`
-		Revision    int64  `json:"expected_revision"`
-		Intent      string `json:"intent"`
-		ID          string `json:"entry_id"`
-		Content     string `json:"content"`
-		Kind        string `json:"kind"`
-		WorkspaceID string `json:"workspace_id"`
-		SessionID   string `json:"session_id"`
-		Pinned      bool   `json:"pinned"`
+		Action      string  `json:"action"`
+		Revision    int64   `json:"expected_revision"`
+		Intent      string  `json:"intent"`
+		ID          string  `json:"entry_id"`
+		Content     *string `json:"content"`
+		Kind        *string `json:"kind"`
+		WorkspaceID *string `json:"workspace_id"`
+		SessionID   *string `json:"session_id"`
+		Pinned      *bool   `json:"pinned"`
 	}
 	dec := json.NewDecoder(strings.NewReader(arguments))
 	dec.DisallowUnknownFields()
@@ -69,13 +70,61 @@ func (s *Service) executeMemoryTool(ctx context.Context, sessionID, arguments st
 		}
 		out = map[string]any{"memory": d, "next_request_selection": selected}
 	} else {
+		if a.Action != "remember" && a.Action != "edit" && a.Action != "forget" {
+			return "", store.ErrMemoryPolicy
+		}
+		if strings.TrimSpace(a.ID) == "" || strings.TrimSpace(a.Intent) == "" {
+			return "", fmt.Errorf("%w: entry_id and explicit intent are required; inspect first for expected_revision", store.ErrMemoryPolicy)
+		}
+		entry := store.MemoryEntry{ID: a.ID}
+		if a.Action == "edit" {
+			d, e := s.memoryStore.GetForAccount(p.AccountScopeID)
+			if e != nil {
+				return "", e
+			}
+			if d.Revision != a.Revision {
+				return "", store.ErrMemoryConflict
+			}
+			found := false
+			for _, existing := range d.Entries {
+				if existing.ID == a.ID {
+					entry = existing
+					found = true
+					break
+				}
+			}
+			if !found {
+				return "", fmt.Errorf("%w: edit requires an existing entry_id", store.ErrMemoryPolicy)
+			}
+			if a.Content == nil && a.Kind == nil && a.WorkspaceID == nil && a.SessionID == nil && a.Pinned == nil {
+				return "", fmt.Errorf("%w: edit requires at least one changed field", store.ErrMemoryPolicy)
+			}
+		} else if a.Action == "remember" && (a.Content == nil || a.Kind == nil) {
+			return "", fmt.Errorf("%w: remember requires content and kind (rule, orientation, or learned)", store.ErrMemoryPolicy)
+		}
+		if a.Content != nil {
+			entry.Content = *a.Content
+		}
+		if a.Kind != nil {
+			entry.Kind = *a.Kind
+			if entry.Kind != "learned" {
+				entry.ExpiresAt = 0
+			}
+		}
+		if a.WorkspaceID != nil {
+			entry.WorkspaceID = *a.WorkspaceID
+		}
+		if a.SessionID != nil {
+			entry.SessionID = *a.SessionID
+		}
+		if a.Pinned != nil {
+			entry.Pinned = *a.Pinned
+		}
 		op := "put"
 		if a.Action == "forget" {
 			op = "delete"
-		} else if a.Action != "remember" {
-			return "", store.ErrMemoryPolicy
 		}
-		out, err = s.memoryStore.MutateForAccount(p.AccountScopeID, store.MemoryMutation{ExpectedRevision: a.Revision, Actor: store.MemoryActor{Kind: "user", ID: p.UserID}, Reason: a.Intent, Operation: op, EntryID: a.ID, Entry: store.MemoryEntry{ID: a.ID, Kind: a.Kind, Content: a.Content, WorkspaceID: a.WorkspaceID, SessionID: a.SessionID, Pinned: a.Pinned}})
+		out, err = s.memoryStore.MutateForAccount(p.AccountScopeID, store.MemoryMutation{ExpectedRevision: a.Revision, Actor: store.MemoryActor{Kind: "user", ID: p.UserID}, Reason: a.Intent, Operation: op, EntryID: a.ID, Entry: entry})
 		if err != nil {
 			return "", err
 		}

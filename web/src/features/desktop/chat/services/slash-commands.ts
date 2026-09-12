@@ -22,6 +22,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'show-help' }
   | { kind: 'open-artifact-viewer' }
   | { kind: 'open-feedback' }
+  | { kind: 'open-memory' }
 
 export interface DesktopSlashCommand {
   id: string
@@ -62,6 +63,13 @@ export interface DesktopNewSessionCommandRequest {
 }
 
 const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
+  {
+    id: 'memory', command: '/memory', aliases: [],
+    hint: 'List, edit, or permanently forget saved memories',
+    actionLabel: 'Open Memory',
+    tips: ['/memory', 'Manage individual account memories; permanent forgetting requires confirmation'],
+    state: 'ready', action: { kind: 'open-memory' },
+  },
   {
     id: 'help',
     command: '/help',
