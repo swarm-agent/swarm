@@ -13,6 +13,14 @@ import (
 
 // Validate the recorded facts without silently rewriting historical provenance.
 func validateSessionRepositoryIdentity(session pebblestore.SessionSnapshot) error {
+	return validateSessionRepositoryIdentityWith(session, worktreeruntime.ValidateOwnedIdentity)
+}
+
+func validateSessionExecutionRepositoryIdentity(session pebblestore.SessionSnapshot) error {
+	return validateSessionRepositoryIdentityWith(session, worktreeruntime.ValidateOwnedExecutionIdentity)
+}
+
+func validateSessionRepositoryIdentityWith(session pebblestore.SessionSnapshot, validateOwned func(string, string, string, string) error) error {
 	if !session.WorktreeEnabled {
 		return nil
 	}
@@ -34,14 +42,14 @@ func validateSessionRepositoryIdentity(session pebblestore.SessionSnapshot) erro
 			return errors.New("session worktree history contradicts current identity")
 		}
 	}
-	return worktreeruntime.ValidateOwnedIdentity(source, session.WorktreeRootPath, session.WorktreeBranch, firstNonEmptyString(mapString(session.Metadata, "swarm_v3_worktree_base_commit"), mapString(session.Metadata, "base_commit")))
+	return validateOwned(source, session.WorktreeRootPath, session.WorktreeBranch, firstNonEmptyString(mapString(session.Metadata, "swarm_v3_worktree_base_commit"), mapString(session.Metadata, "base_commit")))
 }
 
 // Sidechats borrow the authenticated parent's lane for execution only. Ownership
 // validation used by workspace transitions deliberately remains unchanged.
 func (s *Service) validateRunRepositoryIdentity(session pebblestore.SessionSnapshot, principal identity.Principal) error {
 	if mapString(session.Metadata, "lineage_kind") != "system_sidechat" {
-		return validateSessionRepositoryIdentity(session)
+		return validateSessionExecutionRepositoryIdentity(session)
 	}
 	kind := mapString(session.Metadata, "system_sidechat_kind")
 	parentID := mapString(session.Metadata, "parent_session_id")
@@ -55,7 +63,7 @@ func (s *Service) validateRunRepositoryIdentity(session pebblestore.SessionSnaps
 	if !ok || !parent.WorktreeEnabled || mapString(parent.Metadata, "swarm_v3_worktree_owner_session_id") != parent.ID || parent.UserID != session.UserID || parent.AccountScopeID != session.AccountScopeID || principal.UserID != session.UserID || principal.AccountScopeID != session.AccountScopeID || mapString(parent.Metadata, "lineage_kind") == "system_sidechat" {
 		return errors.New("sidechat worktree parent ownership mismatch")
 	}
-	if err := validateSessionRepositoryIdentity(parent); err != nil {
+	if err := validateSessionExecutionRepositoryIdentity(parent); err != nil {
 		return err
 	}
 	if session.WorkspacePath != parent.WorkspacePath || session.WorktreeRootPath != parent.WorktreeRootPath || session.WorktreeBranch != parent.WorktreeBranch || session.WorktreeBaseBranch != parent.WorktreeBaseBranch {

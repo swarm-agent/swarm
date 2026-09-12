@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"testing"
 )
 
@@ -116,14 +115,15 @@ func TestOnboardingUnbornSetupPreservesIndexAndFiles(t *testing.T) {
 	}
 }
 
-// Requirement: repository setup must reject even an empty HOME before writing
-// metadata. The service boundary owns this guard independently of TUI advice.
-func TestOnboardingSetupRejectsHome(t *testing.T) {
+// Requirement: repository setup must reject root's home before writing metadata.
+// A verified non-root runtime home is permitted (repository_home_test.go).
+// Inject root identity so the service guard is independent of the test runner UID.
+func TestOnboardingSetupRejectsRootHome(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
 	svc := NewService(store)
 	home := t.TempDir()
-	account := &user.User{Uid: strconv.Itoa(os.Geteuid()), HomeDir: home}
+	account := &user.User{Uid: "0", HomeDir: home}
 	if _, err := svc.setupRepositoryForPrincipal(testPrincipal(), home, home, account); err == nil {
 		t.Fatal("initialized home")
 	}
