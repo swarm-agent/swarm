@@ -184,7 +184,20 @@ type SessionPlanSnapshot struct {
 	Checkpoint          bool                 `json:"checkpoint,omitempty"`
 }
 
+// SessionPlanAutomationIntent identifies the exact paused definition reviewed by
+// this proposal. Definition contains recurrence, timezone, scope/expiry policy and
+// immutable executable plan pins; prose is never interpreted as automation intent.
+// Existing distinguishes an edit from initial conversion, not approval authority.
+type SessionPlanAutomationIntent struct {
+	Scope              AutomationScope      `json:"scope"`
+	AutomationID       string               `json:"automation_id"`
+	DefinitionRevision uint64               `json:"definition_revision"`
+	Existing           bool                 `json:"existing"`
+	Definition         AutomationDefinition `json:"definition"`
+}
+
 type SessionPlanDocument struct {
+	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
 	ID              string                     `json:"id"`
 	Title           string                     `json:"title"`
 	Status          string                     `json:"status,omitempty"`

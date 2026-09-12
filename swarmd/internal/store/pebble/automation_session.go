@@ -1,6 +1,9 @@
 package pebblestore
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"reflect"
 )
 
@@ -32,7 +35,7 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 		}
 	}
 	if !found {
-		if in.AutomationBinding != nil {
+		if in.AutomationBinding != nil || in.automationAcceptance != nil {
 			return ErrAutomationInvalid
 		}
 		return nil
@@ -59,6 +62,46 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 		}
 	}
 	binding := current.Automation
+	if grant := in.automationAcceptance; grant != nil {
+		if current.AccountScopeID != grant.Scope.AccountID || current.UserID != grant.SubjectID || !current.WorktreeEnabled {
+			return ErrAutomationConflict
+		}
+		if binding != nil && (binding.AutomationID != grant.AutomationID || binding.WorkspaceID != grant.Scope.WorkspaceID) {
+			return ErrAutomationConflict
+		}
+		if ref := in.AutomationProposal; ref != nil {
+			plan, ok, err := s.GetPlan(in.SessionID, ref.PlanID)
+			if err != nil {
+				return err
+			}
+			if !ok || ref.SessionID != in.SessionID || uint64(plan.Version) != ref.Revision || plan.AccountScopeID != grant.Scope.AccountID || plan.UserID != grant.SubjectID || plan.Document == nil || plan.Document.Automation == nil {
+				return ErrAutomationConflict
+			}
+			raw, err := json.Marshal(plan.Document)
+			if err != nil {
+				return err
+			}
+			a := plan.Document.Automation
+			def, ok, err := s.store.GetAutomationRecord(grant.Scope, grant.AutomationID, "definition", grant.AutomationID, 0)
+			if err != nil {
+				return err
+			}
+			if !ok || a.Scope != grant.Scope || a.AutomationID != grant.AutomationID || a.DefinitionRevision != grant.DefinitionRevision || def.Definition == nil || !reflect.DeepEqual(a.Definition, *def.Definition) || fmt.Sprintf("%x", sha256.Sum256(raw)) != ref.DocumentSHA256 {
+				return ErrAutomationConflict
+			}
+			archived := plan
+			plan.Version++
+			plan.ParentRevision = archived.Version
+			plan.Status = "approved"
+			plan.ApprovalState = "approved"
+			plan.Active = false
+			plan.UpdatedAt = in.NowUnixMs
+			in.PlanSave = &V3PlanSaveMutation{Plan: plan, ArchivedRevision: &archived, ExpectedParentVersion: archived.Version}
+		}
+		if binding == nil && in.AutomationBinding == nil {
+			return ErrAutomationConflict
+		}
+	}
 	if in.PlanAcceptance != nil {
 		in.Session = &in.PlanAcceptance.Session
 	}

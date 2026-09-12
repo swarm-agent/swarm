@@ -57,6 +57,7 @@ func (s *Server) ConfigureAutomationApproval(approval *automation.PolicyApproval
 }
 
 type automationHTTPRequest struct {
+	Proposal          *store.AutomationPlanReference `json:"proposal,omitempty"`
 	PolicySHA256      string                      `json:"policy_sha256,omitempty"`
 	ApprovalReference string                      `json:"approval_reference,omitempty"`
 	Action            string                      `json:"action"`
@@ -295,7 +296,7 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 		}
 		var grant store.AutomationApproval
 		if req.Action == "approve" {
-			grant, err = a.approval.ApproveUser(ctx, automation.ApprovalRequest{Scope: scope, AutomationID: req.ID, DefinitionRevision: req.ExpectedRevision, PolicySHA256: req.PolicySHA256})
+			grant, err = a.approval.ApproveUser(ctx, automation.ApprovalRequest{Proposal: req.Proposal, Scope: scope, AutomationID: req.ID, DefinitionRevision: req.ExpectedRevision, PolicySHA256: req.PolicySHA256})
 		} else {
 			if req.ApprovalReference == "" {
 				automationHTTPError(w, automation.ErrInvalid)

@@ -39,7 +39,7 @@ type PolicyApproval struct {
 	ownership     ApprovalOwnership
 	identity      ApprovalIdentity
 	now           func() time.Time
-	acceptSession func(context.Context, Principal, store.AutomationRecord) error
+	acceptSession func(context.Context, Principal, store.AutomationRecord) (store.V3SessionMutationInput, error)
 }
 
 func NewPolicyApproval(repo ApprovalRepository, plans CanonicalPlans, ownership ApprovalOwnership, identity ApprovalIdentity, now func() time.Time) (*PolicyApproval, error) {
@@ -81,6 +81,7 @@ func (a *PolicyApproval) OccurrenceSession(ctx context.Context, p Principal, sco
 // CAS. Only Enabled, authorization Mode and the generated reference are excluded
 // from the digest; plans, documents, tools, targets, schedule and expiry are pinned.
 type ApprovalRequest struct {
+	Proposal           *store.AutomationPlanReference `json:"proposal,omitempty"`
 	Scope              store.AutomationScope `json:"scope"`
 	AutomationID       string                `json:"automation_id"`
 	DefinitionRevision uint64                `json:"definition_revision"`
@@ -130,15 +131,22 @@ func (a *PolicyApproval) ApproveUser(ctx context.Context, input ApprovalRequest)
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return store.AutomationApproval{}, err
 	}
+	grant := store.AutomationApproval{Scope: r.Scope, ID: hex.EncodeToString(nonce[:]), AutomationID: r.AutomationID, DefinitionRevision: r.Revision, PolicySHA256: digest, SubjectID: p.SubjectID, ExpiresAt: r.Definition.Authorization.ExpiresAt, WrittenAt: a.now().UnixMilli()}
 	if r.Definition.SessionID != "" {
-		if a.acceptSession == nil {
+		atomic, ok := a.repo.(interface {
+			CreateAutomationApprovalWithSession(store.AutomationApproval, store.V3SessionMutationInput) (store.AutomationApproval, error)
+		})
+		if a.acceptSession == nil || !ok {
 			return store.AutomationApproval{}, ErrDenied
 		}
-		if err := a.acceptSession(ctx, p, r); err != nil {
+		mutation, err := a.acceptSession(ctx, p, r)
+		if err != nil {
 			return store.AutomationApproval{}, err
 		}
+		mutation.AutomationProposal = input.Proposal
+		return atomic.CreateAutomationApprovalWithSession(grant, mutation)
 	}
-	return a.repo.CreateAutomationApproval(store.AutomationApproval{Scope: r.Scope, ID: hex.EncodeToString(nonce[:]), AutomationID: r.AutomationID, DefinitionRevision: r.Revision, PolicySHA256: digest, SubjectID: p.SubjectID, ExpiresAt: r.Definition.Authorization.ExpiresAt, WrittenAt: a.now().UnixMilli()})
+	return a.repo.CreateAutomationApproval(grant)
 }
 
 // Request still requires an explicit authenticated user gesture; runtime/tool

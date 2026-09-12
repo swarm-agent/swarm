@@ -11,32 +11,30 @@ import (
 // authenticating an explicit user and the exact displayed definition digest.
 func (a *PolicyApproval) ConfigureSessionAcceptance(v *V3Runtime) { a.acceptSession = v.acceptSession }
 
-func (v *V3Runtime) acceptSession(ctx context.Context, p Principal, def store.AutomationRecord) error {
+func (v *V3Runtime) acceptSession(ctx context.Context, p Principal, def store.AutomationRecord) (store.V3SessionMutationInput, error) {
 	if p.Role != "user" || def.Definition == nil || def.Definition.SessionID == "" {
-		return ErrDenied
+		return store.V3SessionMutationInput{}, ErrDenied
 	}
 	snapshot, found, err := v.sessions.GetSession(def.Definition.SessionID)
 	if err != nil {
-		return err
+		return store.V3SessionMutationInput{}, err
 	}
 	if !found || snapshot.AccountScopeID != p.AccountID || snapshot.UserID != p.SubjectID || !snapshot.WorktreeEnabled {
-		return ErrDenied
+		return store.V3SessionMutationInput{}, ErrDenied
 	}
 	if err := v.worktrees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, snapshot.ID, snapshot.WorktreeBranch); err != nil {
-		return err
+		return store.V3SessionMutationInput{}, err
 	}
 	binding := &store.SessionAutomationBinding{AutomationID: def.AutomationID, WorkspaceID: def.Scope.WorkspaceID, Policy: def.Definition.Authorization}
 	if snapshot.Automation != nil {
 		if snapshot.Automation.AutomationID != binding.AutomationID || snapshot.Automation.WorkspaceID != binding.WorkspaceID {
-			return ErrDenied
+			return store.V3SessionMutationInput{}, ErrDenied
 		}
-		// The binding is permanent; fresh approval changes the next occurrence policy,
-		// never the policy underneath an existing execution.
-		return nil
+		// Preserve historical occurrence policy; the store authenticates this binding.
+		binding = nil
 	}
 	request := executionKey("accept-session", def.Scope, def.AutomationID, def.Revision, snapshot.ID)
-	_, err = v.apply(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: p.AccountID, Kind: sessions.SessionMutationUpdateMetadata, EventType: "session.automation.accepted", ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, AutomationBinding: binding, AutomationDefinitionRevision: def.Revision, NowUnixMs: time.Now().UnixMilli()})
-	return err
+	return store.V3SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: p.AccountID, Kind: sessions.SessionMutationUpdateMetadata, EventType: "session.automation.accepted", ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, AutomationBinding: binding, AutomationDefinitionRevision: def.Revision, NowUnixMs: time.Now().UnixMilli()}, nil
 }
 
 func (v *V3Runtime) ensurePersistent(ctx context.Context, p Principal, def, occurrence store.AutomationRecord) (string, error) {

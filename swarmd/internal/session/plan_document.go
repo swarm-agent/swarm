@@ -111,6 +111,9 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		add("document", "structured document is required")
 		return validationErr
 	}
+	if err := validatePlanAutomation(doc.Automation); err != nil {
+		add("automation", err.Error())
+	}
 	if strings.TrimSpace(doc.Title) == "" {
 		add("title", "plan title is required")
 	}
@@ -196,6 +199,9 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 	if doc == nil {
 		return nil
+	}
+	if err := validatePlanAutomation(doc.Automation); err != nil {
+		return err
 	}
 	if strings.TrimSpace(doc.ID) == "" {
 		return errors.New("plan document id is required")
@@ -945,6 +951,7 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		return nil
 	}
 	clone := *doc
+	clone.Automation = clonePlanAutomation(doc.Automation)
 	if clone.Info.Scope == "" {
 		clone.Info.Scope = clone.Info.Context
 	}
