@@ -146,6 +146,13 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch q.Get("action") {
+		case "review":
+			review, err := a.domain.ReviewDefinition(ctx, p, scope, q.Get("id"))
+			if err != nil {
+				automationHTTPError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"review": review})
 		case "policy":
 			rows, _, err := a.domain.History(ctx, p, scope, q.Get("id"), "definition", q.Get("id"), 0, 1)
 			if err != nil {

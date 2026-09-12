@@ -165,6 +165,24 @@ func (s *Service) SaveDefinition(ctx context.Context, p Principal, scope store.A
 			}
 		}
 	}
+	// Editing execution bytes is never an implicit enable operation. Compare the
+	// normalized, pinned policies so an old grant cannot ride along with edits.
+	// Occurrences keep their immutable DefinitionRevision; pausing is not cancellation.
+	if found && old.Definition != nil {
+		before, err := ApprovalPolicyDigest(*old.Definition)
+		if err != nil {
+			return store.AutomationRecord{}, false, err
+		}
+		after, err := ApprovalPolicyDigest(d)
+		if err != nil {
+			return store.AutomationRecord{}, false, err
+		}
+		if before != after {
+			d.Enabled = false
+			d.Authorization.Mode = "approval_required"
+			d.Authorization.ApprovalReference = ""
+		}
+	}
 	if d.Enabled {
 		if err := s.execution(ctx, p, scope, d, "enable"); err != nil {
 			return store.AutomationRecord{}, false, err
