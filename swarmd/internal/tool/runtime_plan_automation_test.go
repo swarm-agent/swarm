@@ -3,6 +3,8 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"crypto/sha256"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,7 +13,8 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-type parentEditPlans struct { automationToolPlans; sessions map[string]store.SessionSnapshot }
+type parentEditPlans struct { automationToolPlans; sessions map[string]store.SessionSnapshot; plan store.SessionPlanSnapshot }
+func (p parentEditPlans) GetPlanRevision(string, string, int) (store.SessionPlanSnapshot, bool, error) { return p.plan, true, nil }
 func (p parentEditPlans) GetSession(id string) (store.SessionSnapshot, bool, error) { s, ok := p.sessions[id]; return s, ok, nil }
 type parentEditRepo struct { automationToolRepo }
 func (r *parentEditRepo) ApplyAutomationMutation(m store.AutomationMutation) (store.AutomationRecord, bool, error) {
@@ -24,16 +27,19 @@ func (r *parentEditRepo) ApplyAutomationMutation(m store.AutomationMutation) (st
 // Purpose: the restricted runtime adapter must bind actual child identity and
 // delegate exact-parent/CAS checks to EditParentDefinition, never expose approval.
 // A real domain with isolated session/repository fakes proves rejected requests
-// do not write and accepted edits keep identity/pins while pausing reapproval.
+// do not write and accepted proposals keep exact identity/pins and require user save.
 func TestRestrictedParentAutomationEdit(t *testing.T) {
 	for _, scenario := range []string{"valid", "foreign", "stale", "ordinary", "self-approve"} {
 		t.Run(scenario, func(t *testing.T) {
 			canonical := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
-			definition := store.AutomationDefinition{SessionID: "parent", Name: "daily", Plans: []store.AutomationPlanBinding{{ID: "work"}}, Schedule: store.AutomationSchedulePolicy{Kind: "cron", Expression: "0 9 * * *", Timezone: "UTC"}, Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required", ExpiresAt: 200000}}
+			plan := store.SessionPlanSnapshot{ID: "plan", SessionID: "parent", AccountScopeID: "account", Version: 1, ApprovalState: "approved", Document: &store.SessionPlanDocument{Title: "instructions"}}
+			encoded, _ := json.Marshal(plan.Document)
+			digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
+			definition := store.AutomationDefinition{SessionID: "parent", Name: "daily", Plans: []store.AutomationPlanBinding{{ID: "work", Plan: store.AutomationPlanReference{SessionID: "parent", PlanID: "plan", Revision: 1, DocumentSHA256: digest}}}, Schedule: store.AutomationSchedulePolicy{Kind: "cron", Expression: "0 9 * * *", Timezone: "UTC"}, Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required", ExpiresAt: 200000}}
 			repo := &parentEditRepo{automationToolRepo{record: store.AutomationRecord{Scope: canonical, AutomationID: "auto", ID: "auto", Kind: "definition", Revision: 2, Definition: &definition}}}
-			child := store.SessionSnapshot{AccountScopeID: "account", UserID: "owner", Metadata: map[string]any{"system_sidechat": true, "system_sidechat_kind": "plan", "parent_session_id": "parent"}}
+			child := store.SessionSnapshot{AccountScopeID: "account", UserID: "owner", Metadata: map[string]any{"system_sidechat": true, "system_sidechat_kind": "plan", "parent_session_id": "parent", "lineage_kind": "system_sidechat", "plan_context_source": "automation_definition", "automation_review_id": "auto", "automation_review_revision": "2", "automation_review_workspace_id": "workspace"}}
 			if scenario == "ordinary" { child.Metadata = nil }
-			plans := parentEditPlans{sessions: map[string]store.SessionSnapshot{"child": child, "parent": {AccountScopeID: "account", UserID: "owner", WorkspaceGrants: []store.WorkspaceGrant{{WorkspaceID: "workspace", Kind: store.WorkspaceGrantPrimary}}}}}
+			plans := parentEditPlans{plan: plan, sessions: map[string]store.SessionSnapshot{"child": child, "parent": {AccountScopeID: "account", UserID: "owner", WorkspaceGrants: []store.WorkspaceGrant{{WorkspaceID: "workspace", Kind: store.WorkspaceGrantPrimary}}}}}
 			domain, err := automation.New(repo, plans, automationToolAccess{}, func() time.Time { return time.UnixMilli(100000) })
 			if err != nil { t.Fatal(err) }
 			runtime := &Runtime{automations: domain}
@@ -51,7 +57,21 @@ func TestRestrictedParentAutomationEdit(t *testing.T) {
 			if err != nil { t.Fatal(err) }
 			var result map[string]any
 			if err := json.Unmarshal([]byte(out), &result); err != nil { t.Fatal(err) }
-			if repo.writes != 1 || repo.record.AutomationID != "auto" || repo.record.Revision != 3 || repo.record.Definition.Enabled || repo.record.Definition.SessionID != "parent" || len(repo.record.Definition.Plans) != 1 || repo.record.Definition.Schedule.Expression != "0 18 * * *" || result["activation_status"] == "" { t.Fatal("lost identity, timing or paused status", out) }
+			proposal := result["proposal"].(map[string]any)
+			body := proposal["body"].(map[string]any)
+			proposed := body["definition"].(map[string]any)
+			if result["applied"] != false || proposal["path"] != "/v3/automations" || proposal["method"] != "POST" || body["action"] != "save" || body["id"] != "auto" || body["workspace_id"] != "workspace" || body["expected_revision"] != float64(2) || body["mutation_id"] == "" || body["mutation_id"] == "edit" || proposed["session_id"] != "parent" || proposed["schedule"].(map[string]any)["expression"] != "0 18 * * *" { t.Fatal("incorrect save proposal", out) }
+			if repo.writes != 0 || repo.record.Revision != 2 || repo.record.Definition.Schedule.Expression != "0 9 * * *" { t.Fatal("proposal mutated state", out) }
+			var document store.SessionPlanDocument
+			if err := json.Unmarshal([]byte(`{"title":"new instructions","checkpoints":[{"id":"cp-1","title":"work","tasks":["new work"],"acceptance_criteria":["done"]}]}`), &document); err != nil { t.Fatal(err) }
+			instruction, err := runtime.ProposeParentAutomationInstructions(context.Background(), scope, intent, "draft", 2, &document)
+			if err != nil { t.Fatal(err) }
+			if err := json.Unmarshal([]byte(instruction), &result); err != nil { t.Fatal(err) }
+			proposal = result["proposal"].(map[string]any)
+			body = proposal["body"].(map[string]any)
+			if result["applied"] != false || proposal["path"] != "/v3/sessions/parent/plans" || body["activate"] != false || body["approval_state"] != "pending" || repo.writes != 0 { t.Fatal("instruction draft granted authority", instruction) }
+			intent.DefinitionRevision = 1
+			if _, err := runtime.ProposeParentAutomationInstructions(context.Background(), scope, intent, "draft", 1, &document); err == nil || repo.writes != 0 { t.Fatal("stale instruction proposal admitted") }
 		})
 	}
 }

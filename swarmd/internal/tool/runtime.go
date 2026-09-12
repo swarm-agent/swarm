@@ -722,13 +722,14 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "edit_pending_plan",
-			Description: "Edit the pending plan proposal or saved parent automation configuration bound to the reserved Plan sidechat using optimistic concurrency. For a pending plan pass document as a native structured JSON object, never as serialized/quoted JSON text. For a saved automation pass automation and mutation_id instead of document; expected_revision is its exact definition revision. Automation edits stay paused and need fresh user approval and enabling. Start from authoritative attached context and preserve unrelated fields.",
+			Description: "Edit the pending plan proposal or saved parent automation configuration bound to the reserved Plan sidechat using optimistic concurrency. For a pending plan pass document as a native structured JSON object, never as serialized/quoted JSON text. For a saved automation pass automation and mutation_id instead of document; expected_revision is its exact definition revision. Automation edits return non-applied authenticated POST save proposals, never saved or enabled state. For instruction changes include instruction_document with the automation context to propose a separate non-active executable draft; user save and separate plan approval must precede proposing exact replacement pins. Start from authoritative attached context and preserve unrelated fields.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
 					"document":          sessionExecutablePlanDocumentToolSchema(),
 					"automation":        sessionPlanAutomationToolSchema(),
+					"instruction_document": sessionExecutablePlanDocumentToolSchema(),
 					"mutation_id":       map[string]any{"type": "string"},
 				},
 				"required":             []string{"expected_revision"},

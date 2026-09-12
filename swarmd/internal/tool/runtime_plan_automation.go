@@ -2,7 +2,10 @@ package tool
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"reflect"
 
 	"swarm/packages/swarmd/internal/automation"
@@ -36,13 +39,17 @@ func (r *Runtime) EditParentAutomation(ctx context.Context, scope WorkspaceScope
 	if err != nil {
 		return "", err
 	}
-	record, fresh, err := r.automations.EditParentDefinition(ctx, intent.Scope, intent.AutomationID, mutation, expected, intent.Definition)
+	record, _, err := r.automations.EditParentDefinition(ctx, intent.Scope, intent.AutomationID, mutation, expected, intent.Definition)
 	if err != nil {
 		return "", err
 	}
 	intent.DefinitionRevision = record.Revision
 	intent.Definition = *record.Definition
-	out, err := json.Marshal(map[string]any{"applied": true, "fresh": fresh, "automation": intent, "activation_status": "paused; fresh user approval and enabling required"})
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(map[string]any{"applied": false, "automation": intent, "status": "requires_user_approval", "activation_status": "not saved or enabled; user save, reapproval and enabling required", "proposal": map[string]any{"method": "POST", "path": "/v3/automations", "body": map[string]any{"action": "save", "workspace_id": record.Scope.WorkspaceID, "id": record.AutomationID, "expected_revision": record.Revision, "mutation_id": "automation-edit-" + hex.EncodeToString(nonce[:]), "definition": record.Definition}}})
 	return string(out), err
 }
 
@@ -70,4 +77,22 @@ func (r *Runtime) ReviewPlanAutomation(ctx context.Context, scope WorkspaceScope
 	out["review"] = review
 	raw, err := json.Marshal(out)
 	return string(raw), err
+}
+
+// ProposeParentAutomationInstructions verifies the same exact sidechat capability
+// as a configuration edit, then returns data for explicit authenticated user save.
+// It does not approve a plan, change live pins, or expose general parent reads.
+func (r *Runtime) ProposeParentAutomationInstructions(ctx context.Context, scope WorkspaceScope, intent store.SessionPlanAutomationIntent, mutation string, expected uint64, document *store.SessionPlanDocument) (string, error) {
+	if document == nil || document.Automation != nil || len(document.Checkpoints) == 0 || intent.Definition.SessionID == "" {
+		return "", automation.ErrInvalid
+	}
+	if _, err := r.EditParentAutomation(ctx, scope, intent, mutation, expected); err != nil {
+		return "", err
+	}
+	out, err := json.Marshal(map[string]any{
+		"applied": false, "status": "requires_user_approval",
+		"proposal": map[string]any{"method": "POST", "path": "/v3/sessions/" + url.PathEscape(intent.Definition.SessionID) + "/plans", "body": map[string]any{"document": document, "title": document.Title, "activate": false, "status": "draft", "approval_state": "pending"}},
+		"instruction": "User must save and separately approve this new executable plan through the canonical plan interface. Then refresh the accepted automation review and propose its exact returned parent plan ID, revision and document digest as replacement pins. No instructions, automation configuration, approval or enabling have been applied.",
+	})
+	return string(out), err
 }

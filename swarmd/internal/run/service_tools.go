@@ -2130,7 +2130,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 }
 
 func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (string, error) {
-	if s.permissions == nil || s.sessions == nil {
+	if s.sessions == nil {
 		return "", errors.New("pending plan editing is not configured")
 	}
 	session, ok, err := s.sessions.GetSession(sessionID)
@@ -2164,7 +2164,7 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 			return "", errors.New("automation editing requires a separate configured operation")
 		}
 		for key := range args {
-			if key != "automation" && key != "expected_revision" && key != "mutation_id" {
+			if key != "automation" && key != "expected_revision" && key != "mutation_id" && key != "instruction_document" {
 				return "", errors.New("unsupported automation edit argument")
 			}
 		}
@@ -2172,9 +2172,14 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 		if err := unmarshalPlanToolArg(value, &intent, "automation"); err != nil {
 			return "", err
 		}
+		if value, present := args["instruction_document"]; present {
+			var document pebblestore.SessionPlanDocument
+			if err := unmarshalPlanToolArg(value, &document, "instruction_document"); err != nil { return "", err }
+			return s.tools.ProposeParentAutomationInstructions(context.Background(), buildPermissionWorkspaceScope(session), intent, mapString(args, "mutation_id"), uint64(expected), &document)
+		}
 		return s.tools.EditParentAutomation(context.Background(), buildPermissionWorkspaceScope(session), intent, mapString(args, "mutation_id"), uint64(expected))
 	}
-	if permissionID == "" {
+	if permissionID == "" || s.permissions == nil {
 		return "", errors.New("Plan sidechat is not bound to a pending proposal")
 	}
 	rawDocument, ok := args["document"]
