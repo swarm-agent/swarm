@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowDown, Loader2, Mic, Send, Square, X } from "lucide-react";
+import { AutomationInstructionContext } from '../../tools/automations/automation-instruction-proposal';
 import { Button } from "../../../../components/ui/button";
 import { Textarea } from "../../../../components/ui/textarea";
 import type { DesktopPermissionRecord } from "../../types/realtime";
@@ -323,7 +324,9 @@ export function DesktopPlanAgentSidecar({
             <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]">
               <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">{automation ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.' : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}</div>
               {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}
+              <AutomationInstructionContext.Provider value={automation ? { ...automation, parentSessionId } : null}>
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled index={index} />)}
+              </AutomationInstructionContext.Provider>
               {sidechat.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{sidechat.error}</div> : null}
               <div aria-hidden="true" data-testid="desktop-plan-agent-tail-anchor" className="h-px shrink-0 [overflow-anchor:auto]" />
             </div>

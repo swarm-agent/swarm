@@ -2736,6 +2736,7 @@ function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredTo
   );
 }
 
+import { AutomationInstructionProposal } from '../../tools/automations/automation-instruction-proposal';
 import { AutomationProposalCard } from '../../tools/automations/automation-proposal-card';
 import { parseAutomationProposal } from '../../tools/automations/automation-proposal';
 
@@ -2847,7 +2848,7 @@ export function ToolMessageView({
       : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
-  if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
+  if (isPlanManage) return <><PlanManageToolView toolMessage={toolMessage} />{toolMessage.state === 'done' && <AutomationInstructionProposal payload={toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput)} />}</>;
   if (isManageWorktree) return <ManageWorktreeCard toolMessage={toolMessage} />;
   if (isManageArtifact) {
     return (
