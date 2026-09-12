@@ -3,7 +3,7 @@ import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
+import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
 import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
@@ -56,7 +56,6 @@ import { useSessionRepositories } from '../runtime/use-session-repositories'
 import { repositoryDialogTargetMatches, repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
-import { AutomationSidebar } from '../tools/automations/automation-session'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
 import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
@@ -2548,10 +2547,13 @@ export function DesktopAppPage() {
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
+  const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceTaskMatch
+  const routeWorkspaceSlug = (workspaceAutomationsMatch
+    ? workspaceAutomationsMatch.workspaceSlug
+    : workspaceTaskMatch
     ? workspaceTaskMatch.workspaceSlug
     : workspaceSessionMatch
       ? workspaceSessionMatch.workspaceSlug
@@ -2559,7 +2561,7 @@ export function DesktopAppPage() {
         ? workspaceMatch.workspaceSlug
         : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : null
-  const routeSessionId = mobileCreationPage
+  const routeSessionId = mobileCreationPage || workspaceAutomationsMatch
     ? ''
     : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
@@ -3457,11 +3459,11 @@ export function DesktopAppPage() {
       return
     }
     void navigate({
-      to: '/$workspaceSlug',
+      to: workspaceAutomationsMatch ? '/$workspaceSlug/automations' : '/$workspaceSlug',
       params: { workspaceSlug: canonicalWorkspaceSlug },
       replace: true,
     })
-  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath])
+  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, workspaceAutomationsMatch])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || !routeSessionId) {
@@ -4994,7 +4996,6 @@ export function DesktopAppPage() {
   const sidebarContent = (
     <>
       <div className="flex h-full flex-col min-h-0">
-        {topWorkspaceSlug && topWorkspace?.workspaceId && <AutomationSidebar key={topWorkspace.workspaceId} workspaceId={topWorkspace.workspaceId} workspaceSlug={topWorkspaceSlug} />}
           <div className="font-mono">
             <div className="grid h-[60px] items-center border-b border-[var(--app-border)] bg-[var(--app-surface)] pl-[13px] pr-0">
                 <div className={headerActionRowClass}>
@@ -5151,6 +5152,22 @@ export function DesktopAppPage() {
                     >
                       <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Studio</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (!topWorkspaceSlug) return
+                        setMobileSidebarOpen(false)
+                        void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
+                      }}
+                      disabled={!topWorkspaceSlug}
+                      aria-label="Open Automations"
+                      aria-current={workspaceAutomationsMatch ? 'page' : undefined}
+                      title="Automations"
+                    >
+                      <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Automations</span>
                     </button>
                     <button
                       type="button"
@@ -5425,7 +5442,15 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {mobileCreationPage === 'task' && routeWorkspace ? (
+        {workspaceAutomationsMatch ? (
+          <>
+            <div className="flex h-[60px] shrink-0 items-center border-b border-[var(--app-border)] px-3 sm:hidden">
+              <Button variant="ghost" onClick={() => setMobileSidebarOpen(true)} aria-label="Open sidebar"><Menu size={20} /></Button>
+              <span className="text-sm font-semibold">Automations</span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto"><Outlet /></div>
+          </>
+        ) : mobileCreationPage === 'task' && routeWorkspace ? (
           <BackgroundTaskForm
             presentation="page"
             workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}

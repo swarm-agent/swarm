@@ -41,35 +41,36 @@ function useMutation() {
   return { mutate, pending, message }
 }
 
-export function AutomationWorkspace({ workspaceId, workspacePath, workspaceName, workspaceSlug }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug: string }) {
+export function AutomationWorkspace({ workspaceId, workspacePath, workspaceName }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug: string }) {
   const [selected, setSelected] = useState('')
   const [creating, setCreating] = useState(false)
   const [overview, setOverview] = useState(true)
   const [session, setSession] = useState('')
-  const [prompt, setPrompt] = useState<{ id: number; draft: string }>()
-  const promptSequence = useRef(0)
-  const suggest = (draft: string) => { setPrompt({ id: ++promptSequence.current, draft }); document.getElementById('automation-ai')?.focus() }
+  const [createRequest, setCreateRequest] = useState(0)
+  const [activityCursor, setActivityCursor] = useState<string>()
+  const activityInput: AutomationRead = { workspace_id: workspaceId, action: 'search', kind: 'occurrence', limit: 50, cursor: activityCursor }
+  const activity = usePage(activityInput)
+  const openAutomation = (id: string) => { setSelected(id); setCreating(false); setOverview(false) }
   const [cursor, setCursor] = useState<string>()
   const input: AutomationRead = { workspace_id: workspaceId, action: 'list', cursor, limit: 20 }
   const page = usePage(input)
-  return <div className="flex min-h-dvh flex-col bg-[var(--app-bg)] text-[var(--app-text)] xl:flex-row">
-    <nav aria-label="Automations" className="space-y-3 border-b border-[var(--app-border)] p-4 xl:w-56 xl:shrink-0 xl:border-r xl:border-b-0">
-      <a className={control} href={`/${encodeURIComponent(workspaceSlug)}`}>Back to workspace</a>
+  return <div className="flex min-h-full min-w-0 flex-col bg-[var(--app-bg)] text-[var(--app-text)]">
+    <section aria-label="Automation controls" className="space-y-3 border-b border-[var(--app-border)] p-4">
       <h1 className="mt-4 text-xl font-semibold">Automations</h1><p>{workspaceName}</p>
       <div className="flex flex-wrap gap-2"><button className={control} aria-current={overview ? 'page' : undefined} onClick={() => { setOverview(true); setCreating(false); setSelected('') }}>Overview</button>
-      <button className={control} onClick={() => suggest('Help me create a reviewed automation plan for this workspace. Ask about the task, schedule, outputs, permissions and expiry. Do not enable or execute it.')}>Create with AI</button>
+      <button className={control} onClick={() => { setCreateRequest(value => value + 1); document.getElementById('automation-ai')?.focus() }}>Add automation</button>
       <button className={control} onClick={() => { setOverview(false); setCreating(false); setSelected('') }}>Outcomes</button></div>
       <a className={`${control} inline-block`} href="#automation-ai">Go to AI sidebar</a>
       <details><summary className="cursor-pointer text-sm">Advanced setup</summary><button className={control} onClick={() => { setOverview(false); setCreating(true); setSelected('') }}>Configure manually</button></details>
       <PageStatus input={input} />
       <ul>{page?.data?.records?.map(record => <li key={record.id}><button className={`${control} my-1 w-full text-left break-words`} aria-current={selected === record.automation_id ? 'page' : undefined} onClick={() => { setSelected(record.automation_id); setCreating(false); setOverview(false) }}>{record.definition?.name ?? record.id}<span className="block text-xs">{record.definition?.enabled ? 'Enabled' : 'Paused'}</span></button></li>)}</ul>
-      {page?.data && !page.data.records?.length && <p>No automations on this page. Start with an idea in Overview or ask the AI to help draft a plan.</p>}
+      {page?.data && !page.loading && !page.stale && !page.error && !page.data.records?.length && <p>No automations on this page. Add automation to start a conversation.</p>}
       {cursor && <button className={control} onClick={() => setCursor(undefined)}>First automations</button>}
       {page?.data?.next_cursor && <button className={control} disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</button>}
-    </nav>
+    </section>
     <div className="flex min-w-0 flex-1 flex-col lg:flex-row">
-    {overview ? <AutomationOverview onPrompt={suggest} onUpdates={() => { setOverview(false); setSelected('') }} /> : creating ? <CreateAutomation key={workspaceId} workspaceId={workspaceId} onCreated={id => { setSelected(id); setCreating(false) }} /> : <AutomationDetail key={`${workspaceId}:${selected}`} workspaceId={workspaceId} id={selected} onChat={setSession} />}
-    <AutomationConversations key={workspaceId} workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} automationId={selected || undefined} prompt={prompt} />
+    {overview ? <AutomationOverview records={activity?.data?.records} names={Object.fromEntries((page?.data?.records ?? []).map(row => [row.automation_id, row.definition?.name ?? row.automation_id]))} loading={!activity || activity.loading} stale={!!activity?.stale} error={activity?.error} partial={!!activityCursor || !!activity?.data?.next_cursor} onRetry={() => void desktopAutomations.refresh(activityInput)} onFirst={activityCursor ? () => setActivityCursor(undefined) : undefined} onNext={activity?.data?.next_cursor ? () => setActivityCursor(activity.data?.next_cursor) : undefined} onSelect={openAutomation} /> : creating ? <CreateAutomation key={workspaceId} workspaceId={workspaceId} onCreated={id => { setSelected(id); setCreating(false) }} /> : <AutomationDetail key={`${workspaceId}:${selected}`} workspaceId={workspaceId} id={selected} onChat={setSession} />}
+    <AutomationConversations key={workspaceId} workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} automationId={selected || undefined} createRequest={createRequest} />
     </div>
   </div>
 }

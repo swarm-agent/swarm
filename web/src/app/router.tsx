@@ -248,7 +248,7 @@ const workspaceVideoSessionRoute = createRoute({
 })
 
 const workspaceAutomationsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => conversationRoute,
   path: '/$workspaceSlug/automations',
   parseParams: validateWorkspaceParams,
   component: AutomationToolPage,
@@ -334,10 +334,9 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute]),
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceAutomationsRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
-  workspaceAutomationsRoute,
   workspaceWorktreeRoute,
   workspaceSettingsRoute,
   workspaceToolsRoute,
