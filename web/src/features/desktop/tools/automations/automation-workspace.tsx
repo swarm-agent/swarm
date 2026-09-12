@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUpRight, Clock3, Plus, RefreshCcw, Settings2 } from 'lucide-react'
+import { Button } from '../../../../components/ui/button'
 import { desktopAutomations, useAutomationPage } from '../../runtime/desktop-automations'
 import type { AutomationMutation, AutomationRead, AutomationRecord } from '../../state/desktop-automation-api'
 import { automationPageKey } from '../../state/desktop-automation-state'
@@ -54,22 +56,31 @@ export function AutomationWorkspace({ workspaceId, workspacePath, workspaceName 
   const [cursor, setCursor] = useState<string>()
   const input: AutomationRead = { workspace_id: workspaceId, action: 'list', cursor, limit: 20 }
   const page = usePage(input)
-  return <div className="flex min-h-full min-w-0 flex-col bg-[var(--app-bg)] text-[var(--app-text)]">
-    <section aria-label="Automation controls" className="space-y-3 border-b border-[var(--app-border)] p-4">
-      <h1 className="mt-4 text-xl font-semibold">Automations</h1><p>{workspaceName}</p>
-      <div className="flex flex-wrap gap-2"><button className={control} aria-current={overview ? 'page' : undefined} onClick={() => { setOverview(true); setCreating(false); setSelected('') }}>Overview</button>
-      <button className={control} onClick={() => { setCreateRequest(value => value + 1); document.getElementById('automation-ai')?.focus() }}>Add automation</button>
-      <button className={control} onClick={() => { setOverview(false); setCreating(false); setSelected('') }}>Outcomes</button></div>
-      <a className={`${control} inline-block`} href="#automation-ai">Go to AI sidebar</a>
-      <details><summary className="cursor-pointer text-sm">Advanced setup</summary><button className={control} onClick={() => { setOverview(false); setCreating(true); setSelected('') }}>Configure manually</button></details>
+  return <div className="flex min-h-full min-w-0 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
+    <header className="flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3">
+      <div className="flex min-w-0 items-center gap-3"><RefreshCcw size={16} className="shrink-0 text-[var(--app-primary)]" /><h1 className="text-sm font-semibold">Automations</h1><span className="text-[var(--app-border)]">/</span><span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span></div>
+      <Button variant="primary" size="sm" onClick={() => { setCreateRequest(value => value + 1); document.getElementById('automation-ai')?.focus() }}><Plus size={15} />Add automation</Button>
+    </header>
+    <div className="flex min-w-0 flex-1 flex-col xl:flex-row">
+    <div className="min-w-0 flex-1">
+    <section aria-label="Automation controls" className="mx-auto max-w-5xl space-y-5 px-5 pt-7 sm:px-8">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <nav aria-label="Automation views" className="inline-flex gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
+          <Button size="sm" variant={overview ? 'secondary' : 'ghost'} aria-current={overview ? 'page' : undefined} onClick={() => { setOverview(true); setCreating(false); setSelected('') }}>Overview</Button>
+          <Button size="sm" variant={!overview && !creating && !selected ? 'secondary' : 'ghost'} onClick={() => { setOverview(false); setCreating(false); setSelected('') }}>Outcomes</Button>
+        </nav>
+        <details className="relative"><summary className="cursor-pointer list-none rounded-lg p-2 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]"><span className="flex items-center gap-2"><Settings2 size={14} />Advanced setup</span></summary><div className="absolute right-0 z-10 mt-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 shadow-lg"><Button size="sm" variant="ghost" className="whitespace-nowrap" onClick={() => { setOverview(false); setCreating(true); setSelected('') }}>Configure manually</Button></div></details>
+      </div>
       <PageStatus input={input} />
-      <ul>{page?.data?.records?.map(record => <li key={record.id}><button className={`${control} my-1 w-full text-left break-words`} aria-current={selected === record.automation_id ? 'page' : undefined} onClick={() => { setSelected(record.automation_id); setCreating(false); setOverview(false) }}>{record.definition?.name ?? record.id}<span className="block text-xs">{record.definition?.enabled ? 'Enabled' : 'Paused'}</span></button></li>)}</ul>
-      {page?.data && !page.loading && !page.stale && !page.error && !page.data.records?.length && <p>No automations on this page. Add automation to start a conversation.</p>}
+      <ul className="grid gap-3 sm:grid-cols-2">{page?.data?.records?.map(record => <li key={record.id}><button className={`group flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition-colors hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-[var(--app-focus-ring)] ${selected === record.automation_id ? 'border-[var(--app-primary)] bg-[var(--app-surface-active)]' : 'border-[var(--app-border)] bg-[var(--app-surface)]'}`} aria-current={selected === record.automation_id ? 'page' : undefined} onClick={() => openAutomation(record.automation_id)}><span className="grid size-10 shrink-0 place-items-center rounded-xl border border-[var(--app-border)] text-[var(--app-primary)]"><Clock3 size={18} /></span><span className="min-w-0 flex-1"><span className="block truncate font-medium">{record.definition?.name ?? record.id}</span><span className="mt-1 flex items-center gap-2 text-xs text-[var(--app-text-muted)]"><span className={`size-1.5 rounded-full ${record.definition?.enabled ? 'bg-[var(--app-primary)]' : 'bg-[var(--app-text-subtle)]'}`} />{record.definition?.enabled ? 'Enabled' : 'Paused'} · {record.definition?.schedule.kind ?? 'manual'}</span></span><ArrowUpRight size={15} className="shrink-0 text-[var(--app-text-subtle)]" /></button></li>)}</ul>
+      {page?.data && !page.loading && !page.stale && !page.error && !page.data.records?.length && <div className="flex flex-col items-center rounded-2xl border border-dashed border-[var(--app-border)] px-6 py-9 text-center"><span className="mb-3 grid size-12 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-primary)]"><RefreshCcw size={22} /></span><h2 className="font-semibold">Your automations live here</h2><p className="mt-2 max-w-sm text-xs leading-5 text-[var(--app-text-muted)]">No automations on this page. Add automation to start a conversation.</p></div>}
       {cursor && <button className={control} onClick={() => setCursor(undefined)}>First automations</button>}
       {page?.data?.next_cursor && <button className={control} disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</button>}
     </section>
-    <div className="flex min-w-0 flex-1 flex-col lg:flex-row">
+    <div className="mx-auto min-w-0 max-w-5xl">
     {overview ? <AutomationOverview records={activity?.data?.records} names={Object.fromEntries((page?.data?.records ?? []).map(row => [row.automation_id, row.definition?.name ?? row.automation_id]))} loading={!activity || activity.loading} stale={!!activity?.stale} error={activity?.error} partial={!!activityCursor || !!activity?.data?.next_cursor} onRetry={() => void desktopAutomations.refresh(activityInput)} onFirst={activityCursor ? () => setActivityCursor(undefined) : undefined} onNext={activity?.data?.next_cursor ? () => setActivityCursor(activity.data?.next_cursor) : undefined} onSelect={openAutomation} /> : creating ? <CreateAutomation key={workspaceId} workspaceId={workspaceId} onCreated={id => { setSelected(id); setCreating(false) }} /> : <AutomationDetail key={`${workspaceId}:${selected}`} workspaceId={workspaceId} id={selected} onChat={setSession} />}
+    </div>
+    </div>
     <AutomationConversations key={workspaceId} workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} automationId={selected || undefined} createRequest={createRequest} />
     </div>
   </div>

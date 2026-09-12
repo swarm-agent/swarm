@@ -13,6 +13,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
   | { kind: 'ai-commit' }
+  | { kind: 'integrate-session'; build?: boolean }
   | { kind: 'open-plan-modal' }
   | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
@@ -240,6 +241,20 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     tips: ['/models', 'Browse providers and models', 'Press Enter to open the picker'],
     state: 'ready',
     action: { kind: 'open-model-picker' },
+  },
+  {
+    id: 'integrate-build', command: '/integrate build', aliases: [],
+    hint: 'Integrate, then rebuild the configured Swarm dev checkout',
+    actionLabel: 'Review Integration and Rebuild',
+    tips: ['/integrate build', 'Dev mode only; rebuild runs only after confirmed integration'],
+    state: 'ready', developerOnly: true, action: { kind: 'integrate-session', build: true },
+  },
+  {
+    id: 'integrate', command: '/integrate', aliases: [],
+    hint: 'Review, AI commit if needed, and integrate this session worktree',
+    actionLabel: 'Review Integration',
+    tips: ['/integrate', 'Confirm integration into the captured checkout; no archive or rebuild'],
+    state: 'ready', action: { kind: 'integrate-session' },
   },
   {
     id: 'commit-ai',
@@ -483,8 +498,8 @@ export function buildDesktopSlashPaletteState(input: string, options: DesktopSla
       ?? null
 
   const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
-  const matches = (hasArguments && exactMatch && exactMatchHasPrefix
-    ? [exactMatch]
+  const matches = (hasArguments
+    ? exactMatch && exactMatchHasPrefix ? [exactMatch] : []
     : commands
         .filter((command) => commandMatchRank(command, query) > 0)
         .sort((left, right) => sortCommands(left, right, query)))

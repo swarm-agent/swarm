@@ -59,7 +59,7 @@ import { AICommitButton } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
 import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
+import { checkDesktopDevRebuild, fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
   groupSidebarTaskCallSiblings,
   sessionBackgroundInfo,
@@ -96,6 +96,7 @@ import { DesktopFeedbackModal } from '../feedback/desktop-feedback-modal'
 import { MemoryModal } from '../memory/memory-page'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import { IntegrationConfirmation } from './integration-confirmation'
+import { IntegrateCommandDialog } from './integrate-command-dialog'
 import {
   loadDesktopMainSidebarMode,
   saveDesktopMainSidebarMode,
@@ -2597,6 +2598,7 @@ export function DesktopAppPage() {
   const [gitCommitIntegrate, setGitCommitIntegrate] = useState(false)
   const [gitCommitArchive, setGitCommitArchive] = useState(false)
   const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
+  const [slashIntegrateSession, setSlashIntegrateSession] = useState<{ sessionId: string; build: boolean } | null>(null)
   const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
   const [gitIntegrateHelpBusy, setGitIntegrateHelpBusy] = useState(false)
   const [gitInstallHelpBusy, setGitInstallHelpBusy] = useState(false)
@@ -3894,6 +3896,18 @@ export function DesktopAppPage() {
         if (workspacePath) openMainWorktreeGitPanel(workspacePath, workspaceName)
         return
       }
+      case 'integrate-session': {
+        if ((action.build && !updateDevMode) || (draft.trim() && draft.trim().toLowerCase().replace(/\s+/g, ' ') !== (action.build ? '/integrate build' : '/integrate'))) {
+          setDesktopToast({ message: 'Use /integrate without arguments.', tone: 'error' })
+          return
+        }
+        if (!routeSessionId) {
+          setDesktopToast({ message: 'Open an existing session with a managed worktree before integrating.', tone: 'error' })
+          return
+        }
+        setSlashIntegrateSession(current => current || { sessionId: routeSessionId, build: action.build === true })
+        return
+      }
       case 'ai-commit': {
         const workspacePath = selectedGitWorkspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
         if (!workspacePath) {
@@ -4016,7 +4030,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspace, topWorkspacePath, uiSettings, uiSettingsQuery.data, workspaces, workspaceAuthorityFor])
+  }, [updateDevMode, handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspace, topWorkspacePath, uiSettings, uiSettingsQuery.data, workspaces, workspaceAuthorityFor])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4238,11 +4252,12 @@ export function DesktopAppPage() {
   ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, mergedSidebarWorkspaceEntries.length, routeSessionId, topWorkspaceLabel, topWorkspacePath])
 
 
-  const runDesktopUpdate = useCallback(async () => {
+  const runDesktopUpdate = useCallback(async (expectedDevRoot?: string) => {
+    if (expectedDevRoot !== undefined) await checkDesktopDevRebuild(expectedDevRoot)
     setUpdateRunning(true)
     setUpdateProgress({ open: true, job: null, startedAt: Date.now() })
     try {
-      const initialJob = await startDesktopUpdate()
+      const initialJob = await startDesktopUpdate(expectedDevRoot)
       setUpdateProgress((current) => ({ ...current, job: initialJob }))
       const startedAt = Date.now()
       let sawBackendDrop = false
@@ -4257,6 +4272,7 @@ export function DesktopAppPage() {
           if (job.status === 'running') {
             continue
           }
+          if (job.id !== initialJob.id || job.status !== 'completed') throw new Error('Update failed: expected rebuild job completion was not confirmed')
           const toast = { message: updateCompleteToastMessage(job), tone: 'success' } satisfies DesktopToastState
           setDesktopToast(toast)
           savePendingDesktopToast(toast)
@@ -4284,6 +4300,7 @@ export function DesktopAppPage() {
           error: message,
         },
       }))
+      if (expectedDevRoot !== undefined) throw error
     } finally {
       setUpdateRunning(false)
     }
@@ -5591,6 +5608,7 @@ export function DesktopAppPage() {
         )}
       </main>
 
+      {slashIntegrateSession ? <IntegrateCommandDialog key={slashIntegrateSession.sessionId} sessionId={slashIntegrateSession.sessionId} build={slashIntegrateSession.build ? { check: checkDesktopDevRebuild, run: async (path) => { if (updateRunning) throw new Error('A Swarm update is already running'); await runDesktopUpdate(path) } } : undefined} onClose={() => { setSlashIntegrateSession(null); void queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }); void queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }) }} onRepair={openIntegrationHelpDraft} /> : null}
       {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} repairFixAvailable={reviewFixAvailable} onAskSwarmFix={handleAskSwarmToFixReviewIntegration} /> : null}
 
       <DesktopQuickSettingsModal

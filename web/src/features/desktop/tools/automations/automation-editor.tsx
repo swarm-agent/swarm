@@ -2,7 +2,7 @@ import { useState } from 'react'
 import type { AutomationDefinition } from '../../state/desktop-automation-api'
 import { validatePlans } from './automation-view'
 
-export const automationControl = 'min-h-10 rounded border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-[var(--app-text)] focus-visible:outline-2 focus-visible:outline-[var(--app-primary)] disabled:opacity-50'
+export const automationControl = 'min-h-9 max-w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs text-[var(--app-text)] transition-colors hover:border-[var(--app-border-strong)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:cursor-not-allowed disabled:opacity-50'
 export function AutomationEditor({ initial, revision = 0, disabled, onSave }: { initial?: AutomationDefinition; revision?: number; disabled: boolean; onSave: (definition: AutomationDefinition) => Promise<void> }) {
   const [draft, setDraft] = useState<AutomationDefinition>(() => initial ? structuredClone(initial) : { name: '', enabled: false, plans: [], schedule: { kind: 'manual', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, missed_policy: 'skip', overlap_policy: 'independent' }, authorization: { mode: 'approval_required' } })
   const [error, setError] = useState('')

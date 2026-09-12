@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createAutomationConversation, isAutomationManagementSession, loadAutomationConversations, type AutomationConversationPage } from '../../state/desktop-automation-conversations'
 import { AutomationChat } from './automation-chat'
+import { MessageSquare, Plus } from 'lucide-react'
+import { Button } from '../../../../components/ui/button'
 import { automationControl as control } from './automation-editor'
 
 export function AutomationConversations({ workspaceId, workspacePath, selected, onSelect, automationId, createRequest }: {
@@ -44,18 +46,18 @@ export function AutomationConversations({ workspaceId, workspacePath, selected, 
     } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : 'Conversation could not be created.') }
     finally { lock.current = false; if (mounted.current) setBusy(false) }
   }
-  return <section id="automation-ai" tabIndex={-1} aria-label="Automation management conversations" className="min-w-0 space-y-3 border-t border-[var(--app-border)] p-3 focus-visible:outline-2 lg:sticky lg:top-0 lg:max-h-dvh lg:w-[420px] lg:shrink-0 lg:self-start lg:overflow-y-auto lg:border-t-0 lg:border-l">
-    <header><h2 className="font-semibold">Swarm</h2></header>
-    <button className={control} disabled={busy} onClick={() => void create()}>{busy ? 'Starting…' : 'New automation chat'}</button>
-    <details><summary className="cursor-pointer py-2">Reopen or switch conversations</summary>
+  return <section id="automation-ai" tabIndex={-1} aria-label="Automation management conversations" className="min-w-0 space-y-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-xs focus-visible:outline-2 xl:sticky xl:top-0 xl:max-h-dvh xl:w-[380px] xl:shrink-0 xl:self-start xl:overflow-y-auto xl:border-t-0 xl:border-l">
+    <header className="flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><MessageSquare size={15} className="text-[var(--app-primary)]" />Swarm</h2><Button variant="ghost" size="sm" disabled={busy} onClick={() => void create()}><Plus size={13} />{busy ? 'Starting…' : 'New automation chat'}</Button></header>
+    <details><summary className="cursor-pointer rounded-lg py-2 text-xs text-[var(--app-text-muted)]">Reopen or switch conversations</summary>
       <button className={control} disabled={loading} onClick={() => setRefresh(value => value + 1)}>Refresh conversations</button>
       <nav aria-label="Automation conversations"><ul>{page?.session_order.map(id => page.sessions_by_id[id]).filter(session => isAutomationManagementSession(session, workspaceId)).map(session => <li key={session.id}><button className={`${control} my-1 w-full text-left break-words`} disabled={busy} aria-current={selected === session.id ? 'page' : undefined} onClick={() => onSelect(session.id)}>{session.title || 'Automation conversation'}</button></li>)}</ul></nav>
       {before && <button className={control} onClick={() => setBefore(undefined)}>Latest conversations</button>}
       {page?.pagination.has_more && <button className={control} disabled={loading} onClick={() => setBefore(page.pagination)}>Older conversations</button>}
     </details>
     {loading && <p role="status">Loading conversations…</p>}
-    {!loading && !error && page?.session_order.length === 0 && <p className="text-sm">No automation conversations yet.</p>}
+    {!loading && !error && page?.session_order.length === 0 && <p className="text-xs text-[var(--app-text-subtle)]">No automation conversations yet.</p>}
     {error && <p role="alert">{error} <button className={control} onClick={() => setRefresh(value => value + 1)}>Retry list</button></p>}
+    {!selected && <div className="flex min-h-[280px] flex-col items-center justify-center px-5 text-center"><span className="mb-4 grid size-14 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-primary)]"><MessageSquare size={24} /></span><h3 className="text-sm font-medium">What would you like to automate?</h3><p className="mt-2 max-w-[260px] text-xs leading-5 text-[var(--app-text-muted)]">Work with Swarm to shape the task, schedule and plan. You review before anything runs.</p><Button className="mt-5" variant="primary" size="sm" disabled={busy} onClick={() => void create()}><Plus size={14} />Start a conversation</Button></div>}
     {selected && <AutomationChat key={selected} sessionId={selected} automationId={automationId} />}
   </section>
 }
