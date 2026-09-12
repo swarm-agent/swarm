@@ -11,12 +11,11 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: POST /v3/sessions must create planning-only automation conversations
+// Purpose: POST /v3/sessions must create ordinary Swarm automation conversations
 // without a definition or approved plan. Exercise the authenticated HTTP mutation
 // boundary and durable replay; metadata spoofing must leave the session unchanged.
 func TestAutomationManagementCreateReplayAndProtectedPurpose(t *testing.T) {
-	server, sessions, closeStore := newSessionsV3PrimaryAPITestServer(t, t.TempDir())
-	defer closeStore()
+	server, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	workspace := t.TempDir()
 	binding := seedSessionsV3PrimaryAuthority(t, server, workspace)
 	post := func(body string) *httptest.ResponseRecorder {
@@ -26,7 +25,7 @@ func TestAutomationManagementCreateReplayAndProtectedPurpose(t *testing.T) {
 		server.Handler().ServeHTTP(rec, withTestPrincipal(req))
 		return rec
 	}
-	body := fmt.Sprintf(`{"client_request_id":"management-create","workspace_path":%q,"workspace_binding_id":%q,"agent_name":"swarm","purpose":"automation_management","mode":"plan"}`, workspace, binding)
+	body := fmt.Sprintf(`{"client_request_id":"management-create","workspace_path":%q,"workspace_binding_id":%q,"agent_name":"swarm","purpose":"automation_management","mode":"auto"}`, workspace, binding)
 	first := post(body)
 	if first.Code != http.StatusOK {
 		t.Fatalf("create: %d %s", first.Code, first.Body.String())
@@ -37,7 +36,7 @@ func TestAutomationManagementCreateReplayAndProtectedPurpose(t *testing.T) {
 	if err := json.Unmarshal(first.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Session.Automation != nil || store.SessionAutomationManagementWorkspace(created.Session) == "" || created.Session.MessageCount != 0 {
+	if created.Session.Automation != nil || store.SessionAutomationManagementWorkspace(created.Session) == "" || created.Session.MessageCount != 0 || created.Session.Mode != "auto" {
 		t.Fatalf("unexpected creation: %+v", created.Session)
 	}
 	shell, err := sessionsV3SyncSessionShell(created.Session)

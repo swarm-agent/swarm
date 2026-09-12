@@ -18,7 +18,7 @@ export function loadAutomationConversations(workspaceId: string, workspacePath: 
 export async function createAutomationConversation(workspacePath: string, clientRequestId: string): Promise<SessionSnapshot> {
   const result = await requestJson<{ session: SessionSnapshot }>('/v3/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_request_id: clientRequestId, purpose: AUTOMATION_MANAGEMENT_PURPOSE, workspace_path: workspacePath, agent_name: 'swarm', title: 'Automation planning', mode: 'plan', worktree_mode: 'on', worktree_branch_name: `automation-management-${clientRequestId.slice(0, 8)}` }),
+    body: JSON.stringify({ client_request_id: clientRequestId, purpose: AUTOMATION_MANAGEMENT_PURPOSE, workspace_path: workspacePath, agent_name: 'swarm', title: 'Automation conversation', mode: 'auto', worktree_mode: 'on', worktree_branch_name: `automation-management-${clientRequestId.slice(0, 8)}` }),
   })
   if (!result.session?.id || !isAutomationManagementSession(result.session)) throw new Error('Automation conversation identity was not returned.')
   return result.session

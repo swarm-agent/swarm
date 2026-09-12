@@ -4,7 +4,7 @@ import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
 // Requirement: AutomationConversations creates only on a user gesture, preserves
-// idempotency across uncertain failures, transfers editable drafts without sending,
+// idempotency across uncertain failures, opens chat directly without a draft form,
 // and ignores completion after a workspace unmount. AutomationProposalCard must
 // keep acceptance tied to exact request bytes and require a separate enable click.
 // Threat: duplicate chats, cross-workspace selection and stale/implicit grants.
@@ -16,7 +16,7 @@ test('first-use chat, workspace isolation and exact proposal acceptance', { time
     import {AutomationProposalCard} from './src/features/desktop/tools/automations/automation-proposal-card';
     window.creates=[]; window.selections=[]; window.writes=[]; window.chat=null;
     const root=createRoot(document.getElementById('root'));
-    window.conversations=(workspace='one',selected='')=>root.render(<AutomationConversations key={workspace} workspaceId={workspace} workspacePath={workspace} selected={selected} onSelect={id=>window.selections.push(id)}/>);
+    window.conversations=(workspace='one',selected='',createRequest=0)=>root.render(<AutomationConversations key={workspace} workspaceId={workspace} workspacePath={workspace} selected={selected} createRequest={createRequest} onSelect={id=>window.selections.push(id)}/>);
     window.proposal=(action='approve',revision=1)=>root.render(<AutomationProposalCard payload={{result:{status:'requires_user_approval',applied:false,proposal:{method:'POST',path:action==='approve'?'/v3/automations/approve':'/v3/automations',body:{action,workspace_id:'one',id:'automation',mutation_id:action+revision,expected_revision:revision,...(action==='approve'?{policy_sha256:'a'.repeat(64)}:{})}}}}}/>);
     window.conversations();`
   const bundle = await build({
@@ -25,8 +25,8 @@ test('first-use chat, workspace isolation and exact proposal acceptance', { time
     plugins: [{ name: 'controlled-boundaries', setup(b) {
       b.onResolve({ filter: /(?:desktop-automation-conversations|desktop-automations|automation-chat|automation-session)$/ }, args => ({ path: args.path.split('/').pop()!, namespace: 'fixture' }))
       b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'tsx', resolveDir: process.cwd(), contents: args.path === 'desktop-automation-conversations' ? `
-        export const isAutomationManagementSession=()=>true;
-        export const loadAutomationConversations=async()=>({sessions_by_id:{},session_order:[],pagination:{}});
+        export {isAutomationManagementSession} from './src/features/desktop/state/desktop-automation-purpose';
+        export const loadAutomationConversations=async(workspace)=>({sessions_by_id:{saved:{id:'saved',title:'Saved conversation',metadata:{swarm_v3_session_purpose:'automation_management',swarm_v3_purpose_workspace_id:workspace}},foreign:{id:'foreign',title:'Foreign conversation',metadata:{swarm_v3_session_purpose:'automation_management',swarm_v3_purpose_workspace_id:'foreign'}}},session_order:['saved','foreign'],pagination:{}});
         export const createAutomationConversation=(workspace,id)=>new Promise((resolve,reject)=>{window.creates.push({workspace,id});window.finishCreate=resolve;window.failCreate=()=>reject(new Error('uncertain create'));});
       ` : args.path === 'desktop-automations' ? `
         export const desktopAutomations={mutate:input=>new Promise((resolve,reject)=>{window.writes.push(input);window.finishWrite=resolve;window.failWrite=()=>reject(new Error('stale proposal'));})};
@@ -41,13 +41,15 @@ test('first-use chat, workspace isolation and exact proposal acceptance', { time
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
     await page.goto('https://automation.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    await page.getByLabel('What should this automation do?').fill('Read-only review')
+    await page.getByRole('button', { name: 'New automation chat' }).waitFor()
+    assert.equal(await page.getByRole('textbox').count(), 0)
     assert.deepEqual(await page.evaluate(() => (window as any).creates), [])
-    await page.getByRole('button', { name: 'Start chat with this draft' }).click()
+    await page.evaluate(() => (window as any).conversations('one', '', 1))
+    await page.getByRole('button', { name: 'Starting…' }).waitFor()
     assert.equal(await page.getByRole('button', { name: 'Starting…' }).isDisabled(), true)
     await page.evaluate(() => (window as any).failCreate())
     await page.getByRole('alert').filter({ hasText: 'uncertain create' }).waitFor()
-    await page.getByRole('button', { name: 'Start chat with this draft' }).click()
+    await page.getByRole('button', { name: 'New automation chat' }).click()
     const creates = await page.evaluate(() => (window as any).creates)
     assert.equal(creates.length, 2)
     assert.equal(creates[0].id, creates[1].id)
@@ -55,13 +57,17 @@ test('first-use chat, workspace isolation and exact proposal acceptance', { time
     await page.waitForFunction(() => (window as any).selections.length === 1)
     await page.evaluate(() => (window as any).conversations('one', 'chat-one'))
     await page.getByText('Canonical chat fixture').waitFor()
-    assert.deepEqual(await page.evaluate(() => (window as any).chat.composerDraftRequest), { sessionId: 'chat-one', id: 1, draft: 'Read-only review', append: true })
+    assert.equal(await page.evaluate(() => (window as any).chat.sessionId), 'chat-one')
+    await page.getByText('Reopen or switch conversations').click()
+    assert.equal(await page.getByRole('button', { name: 'Foreign conversation' }).count(), 0)
+    await page.getByRole('button', { name: 'Saved conversation' }).click()
+    assert.deepEqual(await page.evaluate(() => (window as any).selections), ['chat-one', 'saved'])
     await page.getByRole('button', { name: 'New automation chat' }).click()
     await page.evaluate(() => (window as any).conversations('two'))
-    await page.getByLabel('What should this automation do?').waitFor()
+    await page.getByRole('button', { name: 'New automation chat' }).waitFor()
     await page.evaluate(() => (window as any).finishCreate({ id: 'obsolete-chat' }))
-    assert.deepEqual(await page.evaluate(() => (window as any).selections), ['chat-one'])
-    assert.equal(await page.getByLabel('What should this automation do?').inputValue(), '')
+    assert.deepEqual(await page.evaluate(() => (window as any).selections), ['chat-one', 'saved'])
+    assert.equal(await page.getByRole('textbox').count(), 0)
 
     await page.evaluate(() => (window as any).proposal())
     await page.getByRole('button', { name: 'Accept reviewed request', exact: true }).click()
