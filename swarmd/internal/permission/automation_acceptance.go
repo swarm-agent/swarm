@@ -14,39 +14,67 @@ import (
 func (s *Service) CoordinateAutomationAcceptance(g store.AutomationApproval, in store.V3SessionMutationInput, commit func(store.AutomationApproval, store.V3SessionMutationInput) (store.AutomationApproval, error)) (store.AutomationApproval, error) {
 	s.mu.Lock()
 	locked := true
-	defer func() { if locked { s.mu.Unlock() } }()
+	defer func() {
+		if locked {
+			s.mu.Unlock()
+		}
+	}()
 	if commit == nil || in.AutomationProposal == nil || s.sessions == nil {
 		return store.AutomationApproval{}, store.ErrAutomationInvalid
 	}
 	snapshot, found, err := s.sessions.GetSession(in.SessionID)
-	if err != nil { return store.AutomationApproval{}, err }
+	if err != nil {
+		return store.AutomationApproval{}, err
+	}
 	if !found || snapshot.UserID != g.SubjectID || snapshot.AccountScopeID != g.Scope.AccountID {
 		return store.AutomationApproval{}, store.ErrAutomationConflict
 	}
 	plans, ok := s.sessions.(sessionPlanLookup)
-	if !ok { return store.AutomationApproval{}, store.ErrAutomationInvalid }
+	if !ok {
+		return store.AutomationApproval{}, store.ErrAutomationInvalid
+	}
 	plan, found, err := plans.GetPlan(in.SessionID, in.AutomationProposal.PlanID)
-	if err != nil { return store.AutomationApproval{}, err }
-	if !found || plan.Document == nil { return store.AutomationApproval{}, store.ErrAutomationConflict }
+	if err != nil {
+		return store.AutomationApproval{}, err
+	}
+	if !found || plan.Document == nil {
+		return store.AutomationApproval{}, store.ErrAutomationConflict
+	}
 	pending, err := s.store.ListPendingPermissions(in.SessionID, 2001)
-	if err != nil { return store.AutomationApproval{}, err }
-	if len(pending) > 2000 { return store.AutomationApproval{}, store.ErrAutomationConflict }
+	if err != nil {
+		return store.AutomationApproval{}, err
+	}
+	if len(pending) > 2000 {
+		return store.AutomationApproval{}, store.ErrAutomationConflict
+	}
 	var matched *store.PermissionRecord
 	for _, record := range pending {
-		if !isPendingPlanProposalRecord(record) { continue }
+		if !isPendingPlanProposalRecord(record) {
+			continue
+		}
 		var payload struct {
-			PlanID string `json:"plan_id"`
+			PlanID   string                     `json:"plan_id"`
 			Document *store.SessionPlanDocument `json:"document"`
 		}
-		if err := json.Unmarshal([]byte(record.ToolArguments), &payload); err != nil { return store.AutomationApproval{}, err }
-		if payload.PlanID != plan.ID { continue }
-		if payload.Document == nil || payload.Document.Automation == nil { return store.AutomationApproval{}, store.ErrAutomationConflict }
+		if err := json.Unmarshal([]byte(record.ToolArguments), &payload); err != nil {
+			return store.AutomationApproval{}, err
+		}
+		if payload.PlanID != plan.ID {
+			continue
+		}
+		if payload.Document == nil || payload.Document.Automation == nil {
+			return store.AutomationApproval{}, store.ErrAutomationConflict
+		}
 		canonical, err := sessionruntime.NormalizePlanDocumentForSave(plan.ID, plan.Title, payload.Document, nil)
-		if err != nil { return store.AutomationApproval{}, err }
+		if err != nil {
+			return store.AutomationApproval{}, err
+		}
 		want, got := *plan.Document, *canonical
 		want.RevisionID, got.RevisionID = "", ""
 		want.Status, got.Status = "", ""
-		if !reflect.DeepEqual(want, got) || matched != nil { return store.AutomationApproval{}, store.ErrAutomationConflict }
+		if !reflect.DeepEqual(want, got) || matched != nil {
+			return store.AutomationApproval{}, store.ErrAutomationConflict
+		}
 		copy := record
 		matched = &copy
 	}
@@ -63,10 +91,14 @@ func (s *Service) CoordinateAutomationAcceptance(g store.AutomationApproval, in 
 	updated.Error = permissionResolutionError(updated.Status)
 	updated.DurationMS = permissionDurationMS(updated)
 	summary, err := s.summaryForMutationLocked(in.SessionID, matched, updated, g.WrittenAt)
-	if err != nil { return store.AutomationApproval{}, err }
+	if err != nil {
+		return store.AutomationApproval{}, err
+	}
 	in.AutomationPermission = &store.AutomationPermissionResolution{Previous: *matched, Record: updated, Summary: summary}
 	grant, err := commit(g, in)
-	if err != nil { return store.AutomationApproval{}, err }
+	if err != nil {
+		return store.AutomationApproval{}, err
+	}
 	s.notifyWaitersLocked(updated)
 	publishPermission, publishSummary := s.permissionRealtimePublish, s.summaryRealtimePublish
 	s.mu.Unlock()
@@ -74,10 +106,14 @@ func (s *Service) CoordinateAutomationAcceptance(g store.AutomationApproval, in 
 	// Durable rows are already committed. Propagate delivery failures explicitly;
 	// reconnect repairs from the canonical permission and summary records.
 	if publishPermission != nil {
-		if err := publishPermission(in.SessionID, updated); err != nil { return grant, err }
+		if err := publishPermission(in.SessionID, updated); err != nil {
+			return grant, err
+		}
 	}
 	if publishSummary != nil {
-		if err := publishSummary(in.SessionID, summary); err != nil { return grant, err }
+		if err := publishSummary(in.SessionID, summary); err != nil {
+			return grant, err
+		}
 	}
 	return grant, nil
 }

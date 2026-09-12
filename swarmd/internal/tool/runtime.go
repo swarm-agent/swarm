@@ -726,13 +726,13 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
-					"document":          sessionExecutablePlanDocumentToolSchema(),
-					"automation":        sessionPlanAutomationToolSchema(),
+					"expected_revision":    map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
+					"document":             sessionExecutablePlanDocumentToolSchema(),
+					"automation":           sessionPlanAutomationToolSchema(),
 					"instruction_document": sessionExecutablePlanDocumentToolSchema(),
-					"mutation_id":       map[string]any{"type": "string"},
+					"mutation_id":          map[string]any{"type": "string"},
 				},
-				"required":             []string{"expected_revision"},
+				"required": []string{"expected_revision"},
 				"oneOf": []any{
 					map[string]any{"required": []string{"document"}},
 					map[string]any{"required": []string{"automation", "mutation_id"}},

@@ -22,7 +22,7 @@ export function automationProgressSummary(progress: AutomationProgress | undefin
   const exceptional = ['failed', 'blocked', 'cancelled', 'running', 'pending', 'cancelling', 'skipped'].filter(state => progress.counts[state] > 0).map(state => `${progress.counts[state]} ${state}`)
   // The backend exposes forecasts, not a meaningful complete daily quota. No denominator.
   return [automationFrequency(progress.schedule), `${progress.history_complete ? '' : 'at least '}${completed} completed`, ...exceptional,
-    progress.next_eligible && !progress.no_next_reason ? `next ${automationTime(progress.next_eligible.scheduled_at, progress.display_timezone)} (conditional)` : (progress.no_next_reason ?? 'Next run unavailable').replaceAll('_', ' ')].join(' · ')
+    progress.next_eligible && !progress.no_next_reason ? `next ${automationTime(progress.next_eligible.scheduled_at, progress.display_timezone)} (conditional)` : (progress.no_next_reason ?? 'Next run unavailable').replace(/_/g, ' ')].join(' · ')
 }
 export function editedAutomationDefinition(draft: AutomationDefinition): AutomationDefinition {
   const { approval_reference: _grant, ...authorization } = draft.authorization

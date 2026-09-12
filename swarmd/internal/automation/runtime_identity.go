@@ -16,7 +16,9 @@ type runtimeIdentity struct {
 // BindRuntimeIdentity is only for authenticated transport and daemon adapters.
 // Callers must supply the verified identity, never fields decoded from JSON.
 // Agent subjects are canonical execution session IDs; system subjects are the
-// approving user resolved from the durable grant. Neither origin grants approval.
+// approving user resolved from the durable grant, or the store-attributed
+// definition owner for recovery when an edit has cleared that grant. Recovery
+// still rechecks current ownership; neither origin grants execution or approval.
 func BindRuntimeIdentity(ctx context.Context, verified identity.Principal, origin, sessionID string) (context.Context, error) {
 	if !verified.Valid() {
 		return nil, ErrDenied

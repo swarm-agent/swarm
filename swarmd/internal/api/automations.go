@@ -62,19 +62,19 @@ func (s *Server) ConfigureAutomationApproval(approval *automation.PolicyApproval
 
 type automationHTTPRequest struct {
 	Proposal          *store.AutomationPlanReference `json:"proposal,omitempty"`
-	PolicySHA256      string                      `json:"policy_sha256,omitempty"`
-	ApprovalReference string                      `json:"approval_reference,omitempty"`
-	Action            string                      `json:"action"`
-	WorkspaceID       string                      `json:"workspace_id"`
-	ID                string                      `json:"id"`
-	MutationID        string                      `json:"mutation_id"`
-	ExpectedRevision  uint64                      `json:"expected_revision"`
-	Definition        *store.AutomationDefinition `json:"definition,omitempty"`
-	UserInstructions  map[string]string           `json:"user_instructions,omitempty"`
-	OccurrenceID      string                      `json:"occurrence_id,omitempty"`
-	Source            string                      `json:"source,omitempty"`
-	Identity          string                      `json:"identity,omitempty"`
-	ScheduledAt       int64                       `json:"scheduled_at,omitempty"`
+	PolicySHA256      string                         `json:"policy_sha256,omitempty"`
+	ApprovalReference string                         `json:"approval_reference,omitempty"`
+	Action            string                         `json:"action"`
+	WorkspaceID       string                         `json:"workspace_id"`
+	ID                string                         `json:"id"`
+	MutationID        string                         `json:"mutation_id"`
+	ExpectedRevision  uint64                         `json:"expected_revision"`
+	Definition        *store.AutomationDefinition    `json:"definition,omitempty"`
+	UserInstructions  map[string]string              `json:"user_instructions,omitempty"`
+	OccurrenceID      string                         `json:"occurrence_id,omitempty"`
+	Source            string                         `json:"source,omitempty"`
+	Identity          string                         `json:"identity,omitempty"`
+	ScheduledAt       int64                          `json:"scheduled_at,omitempty"`
 }
 
 func decodeAutomationRequest(w http.ResponseWriter, r *http.Request, out *automationHTTPRequest) error {

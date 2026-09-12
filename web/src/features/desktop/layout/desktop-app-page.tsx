@@ -1857,7 +1857,10 @@ interface SessionRowProps {
 
 const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
-  const automation = useDesktopV3CacheSelector(state => selectSession(state, session.id)?.automation)
+  const automation = useDesktopV3CacheSelector(state => {
+    const record = state.sessionsById[session.id]
+    return record?.kind === 'full' ? record.session.automation : undefined
+  })
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
   const backgroundInfo = sessionBackgroundInfo(session)

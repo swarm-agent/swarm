@@ -198,13 +198,13 @@ type SessionPlanAutomationIntent struct {
 
 type SessionPlanDocument struct {
 	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
-	ID              string                     `json:"id"`
-	Title           string                     `json:"title"`
-	Status          string                     `json:"status,omitempty"`
-	SchemaVersion   string                     `json:"schema_version,omitempty"`
-	RevisionID      string                     `json:"revision_id,omitempty"`
-	Info            SessionPlanInfo            `json:"info,omitempty"`
-	ExecutionPolicy SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	ID              string                       `json:"id"`
+	Title           string                       `json:"title"`
+	Status          string                       `json:"status,omitempty"`
+	SchemaVersion   string                       `json:"schema_version,omitempty"`
+	RevisionID      string                       `json:"revision_id,omitempty"`
+	Info            SessionPlanInfo              `json:"info,omitempty"`
+	ExecutionPolicy SessionPlanExecutionPolicy   `json:"execution_policy,omitempty"`
 	// ExecutionOrigin distinguishes lightweight auto-session work from approved
 	// full-plan execution without relying on conversation history.
 	ExecutionOrigin     string                         `json:"execution_origin,omitempty"`

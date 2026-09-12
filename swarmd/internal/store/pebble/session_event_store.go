@@ -85,7 +85,7 @@ type V3SessionMutationInput struct {
 	AutomationPermission         *AutomationPermissionResolution `json:"-"`
 	automationRealtime           *automationRealtimeMutation
 	automationAcceptance         *AutomationApproval
-	AutomationProposal           *AutomationPlanReference `json:"automation_proposal,omitempty"`
+	AutomationProposal           *AutomationPlanReference      `json:"automation_proposal,omitempty"`
 	SessionID                    string                        `json:"session_id"`
 	UserID                       string                        `json:"user_id,omitempty"`
 	AccountScopeID               string                        `json:"account_scope_id,omitempty"`

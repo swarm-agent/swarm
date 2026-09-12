@@ -45,7 +45,7 @@ func (s *Store) CreateAutomationApprovalWithSession(g AutomationApproval, in V3S
 	receiptID := fmt.Sprintf("accept:%x", sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s", g.AutomationID, g.DefinitionRevision, g.SubjectID))))
 	receiptKey, _ := approvalKey(g.Scope, receiptID)
 	var receipt struct {
-		Grant AutomationApproval `json:"grant"`
+		Grant    AutomationApproval       `json:"grant"`
 		Proposal *AutomationPlanReference `json:"proposal,omitempty"`
 	}
 	if ok, err := s.GetJSON(receiptKey+":receipt", &receipt); err != nil {

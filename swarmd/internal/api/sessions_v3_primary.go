@@ -586,12 +586,12 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req struct {
-		AutomationID string `json:"automation_id"`
+		AutomationID       string `json:"automation_id"`
 		AutomationRevision uint64 `json:"automation_revision"`
-		WorkspaceID string `json:"workspace_id"`
-		PermissionID string `json:"permission_id"`
-		PlanID       string `json:"plan_id"`
-		PlanRevision int64  `json:"plan_revision"`
+		WorkspaceID        string `json:"workspace_id"`
+		PermissionID       string `json:"permission_id"`
+		PlanID             string `json:"plan_id"`
+		PlanRevision       int64  `json:"plan_revision"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -784,8 +784,8 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64
-		Automation string
-		AutomationRevision uint64
+		Automation               string
+		AutomationRevision       uint64
 	}{parentSessionID, req.PermissionID, req.PlanID, req.PlanRevision, req.AutomationID, req.AutomationRevision})
 	payloadSum := sha256.Sum256(payload)
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: hex.EncodeToString(payloadSum[:]), RequestHash: hex.EncodeToString(payloadSum[:]), Kind: sessionruntime.SessionMutationCreateSession, Session: &sidecar, NowUnixMs: now})

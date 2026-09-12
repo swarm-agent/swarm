@@ -14,16 +14,16 @@ import (
 
 func sessionPlanAutomationToolSchema() map[string]any {
 	return map[string]any{
-		"type": "object",
+		"type":        "object",
 		"description": "Exact saved paused automation revision, not inferred recurring prose. Preserve complete executable pins, schedule, timezone and policy. Approval remains an explicit user operation.",
 		"properties": map[string]any{
-			"scope": map[string]any{"type": "object", "properties": map[string]any{"account_id": map[string]any{"type": "string"}, "workspace_id": map[string]any{"type": "string"}}, "required": []string{"account_id", "workspace_id"}, "additionalProperties": false},
-			"automation_id": map[string]any{"type": "string"},
+			"scope":               map[string]any{"type": "object", "properties": map[string]any{"account_id": map[string]any{"type": "string"}, "workspace_id": map[string]any{"type": "string"}}, "required": []string{"account_id", "workspace_id"}, "additionalProperties": false},
+			"automation_id":       map[string]any{"type": "string"},
 			"definition_revision": map[string]any{"type": "integer", "minimum": 1},
-			"existing": map[string]any{"type": "boolean"},
-			"definition": automationDefinitionSchema(),
+			"existing":            map[string]any{"type": "boolean"},
+			"definition":          automationDefinitionSchema(),
 		},
-		"required": []string{"scope", "automation_id", "definition_revision", "existing", "definition"},
+		"required":             []string{"scope", "automation_id", "definition_revision", "existing", "definition"},
 		"additionalProperties": false,
 	}
 }
@@ -60,18 +60,32 @@ func (r *Runtime) ReviewPlanAutomation(ctx context.Context, scope WorkspaceScope
 		return "", automation.ErrDenied
 	}
 	ctx, err := automation.BindRuntimeIdentity(ctx, scope.Principal, "agent", scope.SessionID)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	p, err := automation.RuntimePrincipal(ctx)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	review, err := r.automations.ReviewDefinition(ctx, p, intent.Scope, intent.AutomationID)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	rows, _, err := r.automations.History(ctx, p, intent.Scope, intent.AutomationID, "definition", intent.AutomationID, 0, 1)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	if len(rows) != 1 || rows[0].Revision != intent.DefinitionRevision || rows[0].Definition == nil || rows[0].Definition.SessionID != scope.SessionID || !reflect.DeepEqual(*rows[0].Definition, intent.Definition) {
 		return "", automation.ErrDenied
 	}
-	out, err := r.automationManagement(ctx, p, intent.Scope, automationToolRequest{Action: "approve", ID: intent.AutomationID, ExpectedRevision: intent.DefinitionRevision})
-	if err != nil { return "", err }
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	out, err := r.automationManagement(ctx, p, intent.Scope, automationToolRequest{Action: "approve", ID: intent.AutomationID, MutationID: "automation-review-" + hex.EncodeToString(nonce[:]), ExpectedRevision: intent.DefinitionRevision})
+	if err != nil {
+		return "", err
+	}
 	out["automation"] = intent
 	out["review_kind"] = "automation"
 	out["review"] = review
@@ -91,7 +105,7 @@ func (r *Runtime) ProposeParentAutomationInstructions(ctx context.Context, scope
 	}
 	out, err := json.Marshal(map[string]any{
 		"applied": false, "status": "requires_user_approval",
-		"proposal": map[string]any{"method": "POST", "path": "/v3/sessions/" + url.PathEscape(intent.Definition.SessionID) + "/plans", "body": map[string]any{"document": document, "title": document.Title, "activate": false, "status": "draft", "approval_state": "pending"}},
+		"proposal":    map[string]any{"method": "POST", "path": "/v3/sessions/" + url.PathEscape(intent.Definition.SessionID) + "/plans", "body": map[string]any{"document": document, "title": document.Title, "activate": false, "status": "draft", "approval_state": "pending"}},
 		"instruction": "User must save and separately approve this new executable plan through the canonical plan interface. Then refresh the accepted automation review and propose its exact returned parent plan ID, revision and document digest as replacement pins. No instructions, automation configuration, approval or enabling have been applied.",
 	})
 	return string(out), err

@@ -18,10 +18,12 @@ test('configuration uses accessible inputs and refuses stale draft submission', 
     const initial={name:'Daily review',session_id:'canonical-chat',enabled:true,plans:[{id:'first',plan:{session_id:'session',plan_id:'plan',revision:1}}],schedule:{kind:'manual',timezone:'UTC',missed_policy:'skip',overlap_policy:'independent'},authorization:{mode:'approved_policy',approval_reference:'old-grant'}};
     window.show=(revision)=>root.render(<AutomationEditor initial={initial} revision={revision} disabled={false} onSave={async value=>{window.calls.push(value)}}/>);
     window.show(1);`
-  const bundle = await build({ stdin: { contents: fixture, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const bundle = await build({ stdin: { contents: fixture, resolveDir: process.cwd(), loader: 'tsx' }, bundle: true, write: false, outdir: 'out', format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
   const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
   try {
     const page = await browser.newPage()
+    page.setDefaultTimeout(5000)
+    page.on('pageerror', error => console.error('Editor fixture:', error.message))
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
     await page.goto('https://automation.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })

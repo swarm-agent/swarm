@@ -22,10 +22,13 @@ func TestAutomationHostRecoveredStartAndCancellation(t *testing.T) {
 	}
 	defer db.Close()
 	repository := store.NewSessionStore(db)
+	if err := repository.CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	svc := sessions.NewService(repository, nil)
 	key := strings.Repeat("a", 64)
 	snapshot := store.SessionSnapshot{ID: "automation-" + key, AccountScopeID: "account", UserID: "user", Mode: sessions.ModeAuto, WorkspacePath: t.TempDir(), WorktreeRootPath: t.TempDir(), WorktreeBranch: "agent/automation-test", WorktreeEnabled: true, Metadata: map[string]any{"automation_execution_key": key, "automation_execution_policy": "{}"}}
-	if _, err := svc.ApplySessionMutation(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationCreateSession, Session: &snapshot, ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create"}); err != nil {
+	if _, err := svc.ApplySessionMutation(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationCreateSession, Session: &snapshot, WorktreeAdmission: &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: snapshot.ID, Branch: snapshot.WorktreeBranch}, ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create"}); err != nil {
 		t.Fatal(err)
 	}
 	request := "existing-start"

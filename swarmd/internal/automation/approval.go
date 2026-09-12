@@ -34,12 +34,12 @@ type ApprovalIdentity struct {
 	ExplicitUser func(context.Context) (Principal, error)
 }
 type PolicyApproval struct {
-	repo          ApprovalRepository
-	plans         CanonicalPlans
-	ownership     ApprovalOwnership
-	identity      ApprovalIdentity
-	now           func() time.Time
-	acceptSession func(context.Context, Principal, store.AutomationRecord) (store.V3SessionMutationInput, error)
+	repo                 ApprovalRepository
+	plans                CanonicalPlans
+	ownership            ApprovalOwnership
+	identity             ApprovalIdentity
+	now                  func() time.Time
+	acceptSession        func(context.Context, Principal, store.AutomationRecord) (store.V3SessionMutationInput, error)
 	coordinateAcceptance func(store.AutomationApproval, store.V3SessionMutationInput, func(store.AutomationApproval, store.V3SessionMutationInput) (store.AutomationApproval, error)) (store.AutomationApproval, error)
 }
 
@@ -88,10 +88,10 @@ func (a *PolicyApproval) OccurrenceSession(ctx context.Context, p Principal, sco
 // from the digest; plans, documents, tools, targets, schedule and expiry are pinned.
 type ApprovalRequest struct {
 	Proposal           *store.AutomationPlanReference `json:"proposal,omitempty"`
-	Scope              store.AutomationScope `json:"scope"`
-	AutomationID       string                `json:"automation_id"`
-	DefinitionRevision uint64                `json:"definition_revision"`
-	PolicySHA256       string                `json:"policy_sha256"`
+	Scope              store.AutomationScope          `json:"scope"`
+	AutomationID       string                         `json:"automation_id"`
+	DefinitionRevision uint64                         `json:"definition_revision"`
+	PolicySHA256       string                         `json:"policy_sha256"`
 }
 
 func ApprovalPolicyDigest(d store.AutomationDefinition) (string, error) {

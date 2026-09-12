@@ -18,8 +18,8 @@ func validatePlanAutomation(a *store.SessionPlanAutomationIntent) error {
 	if d.Schedule.Kind != "interval" && d.Schedule.Kind != "cron" {
 		return errors.New("automation proposal requires explicit interval or cron recurrence")
 	}
-	if d.Schedule.Kind == "interval" && (d.Schedule.IntervalSeconds <= 0 || d.Schedule.Timezone != "UTC") {
-		return errors.New("interval automation requires positive seconds and UTC time basis")
+	if d.Schedule.Kind == "interval" && (d.Schedule.IntervalSeconds < 60 || d.Schedule.IntervalSeconds > 366*86400 || d.Schedule.Timezone != "" || d.Schedule.Expression != "" || d.Schedule.TriggerSource != "") {
+		return errors.New("interval automation requires 60..31622400 elapsed seconds without cron-only timezone or expression")
 	}
 	if d.Schedule.Kind == "cron" && (d.Schedule.Expression == "" || d.Schedule.Timezone == "") {
 		return errors.New("cron automation requires expression and timezone")

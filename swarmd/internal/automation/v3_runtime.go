@@ -117,7 +117,7 @@ func (v *V3Runtime) Ensure(ctx context.Context, p Principal, def, occurrence sto
 		snapshot.WorkspaceGrants = append(snapshot.WorkspaceGrants, store.WorkspaceGrant{Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available})
 		snapshot.WorkspaceUsage = store.WorkspaceUsageFromGrants(snapshot.WorkspaceGrants)
 		mutationKey := "automation-create-" + key
-		_, err = v.apply(sessions.SessionMutationInput{SessionID: id, UserID: snapshot.UserID, AccountScopeID: p.AccountID, ClientRequestID: mutationKey, IdempotencyKey: mutationKey, PayloadHash: key, RequestHash: key, Kind: sessions.SessionMutationCreateSession, Session: &snapshot, NowUnixMs: occurrence.WrittenAt})
+		_, err = v.apply(sessions.SessionMutationInput{SessionID: id, UserID: snapshot.UserID, AccountScopeID: p.AccountID, ClientRequestID: mutationKey, IdempotencyKey: mutationKey, PayloadHash: key, RequestHash: key, Kind: sessions.SessionMutationCreateSession, Session: &snapshot, WorktreeAdmission: &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: allocation.WorkspacePath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: id, Branch: allocation.BranchName}, NowUnixMs: occurrence.WrittenAt})
 		// An ambiguous create error must retain the lane for recovery, never delete it.
 		if err != nil {
 			return "", err

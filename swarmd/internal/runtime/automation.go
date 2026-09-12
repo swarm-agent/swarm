@@ -220,15 +220,26 @@ func automationSweepAt(ctx context.Context, db *store.Store, execution automatio
 		if row.Definition == nil {
 			continue
 		}
-		grant, found, err := db.GetAutomationApproval(scope, row.Definition.Authorization.ApprovalReference)
+		var grant store.AutomationApproval
+		var found bool
+		var err error
+		if row.Definition.Authorization.ApprovalReference != "" {
+			grant, found, err = db.GetAutomationApproval(scope, row.Definition.Authorization.ApprovalReference)
+		}
 		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
-		if !found {
-			continue
+		// A policy edit clears the current grant, but must not strand historical
+		// outcomes or an already-authorized cancellation fence. Definition
+		// attribution is store-owned; each recovery operation still validates
+		// current membership, workspace/session ownership and occurrence identity.
+		// This identity is not an execution grant: Tick/Dispatch reauthorize.
+		subject := row.SubjectID
+		if found {
+			subject = grant.SubjectID
 		}
-		trusted, err := automation.BindRuntimeIdentity(ctx, identity.Principal{Type: identity.PrincipalTypeUser, UserID: grant.SubjectID, AccountScopeID: scope.AccountID}, "system", "")
+		trusted, err := automation.BindRuntimeIdentity(ctx, identity.Principal{Type: identity.PrincipalTypeUser, UserID: subject, AccountScopeID: scope.AccountID}, "system", "")
 		if err != nil {
 			failures = append(failures, err)
 			continue
