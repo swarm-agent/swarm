@@ -15,6 +15,8 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 	if err != nil {
 		return err
 	}
+	if current.AutomationV2 != nil && (in.AutomationBinding != nil || in.automationAcceptance != nil) { return ErrAutomationV2Conflict }
+	if in.Kind == V3SessionMutationCreateSession && in.Session != nil && in.Session.AutomationV2 != nil { return ErrAutomationV2Conflict }
 	if in.Kind == V3SessionMutationCreateSession && in.Session != nil && in.Session.Automation != nil {
 		return ErrAutomationInvalid
 	}

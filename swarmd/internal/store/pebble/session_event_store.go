@@ -77,6 +77,7 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
+	automationV2 *automationV2Mutation
 	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
 	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
 	WorktreeAdmission            *WorktreeAdmissionEvidence `json:"-"`
@@ -731,14 +732,17 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if err := s.prepareAutomationV2(&input); err != nil { return V3SessionMutationResult{}, err }
 	if err := s.guardAutomationSessionMutation(&input); err != nil {
 		return V3SessionMutationResult{}, err
 	}
 	if input.PlanSave != nil {
+		if input.PlanSave.Plan.Document != nil && input.PlanSave.Plan.Document.AutomationV2 != nil { return V3SessionMutationResult{}, ErrAutomationV2Conflict }
 		current, found, err := s.GetPlan(input.SessionID, input.PlanSave.Plan.ID)
 		if err != nil {
 			return V3SessionMutationResult{}, err
 		}
+		if found && current.Document != nil && current.Document.AutomationV2 != nil { return V3SessionMutationResult{}, ErrAutomationV2Conflict }
 		expected := input.PlanSave.ExpectedParentVersion
 		if expected == 0 && found {
 			return V3SessionMutationResult{}, fmt.Errorf("plan %q was created concurrently", input.PlanSave.Plan.ID)
@@ -1049,6 +1053,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := s.setAutomationV2InBatch(batch, input); err != nil { return V3SessionMutationResult{}, err }
 	if err := setWorktreeOwnershipInBatch(batch, worktreeOwnership); err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -2692,6 +2697,7 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			if !ok {
 				return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
 			}
+			if input.automationV2 == nil { session.AutomationV2 = current.AutomationV2 }
 			// Ordinary snapshot writes cannot remove or forge the automation authority.
 			if input.AutomationBinding == nil {
 				session.Automation = current.Automation
@@ -2965,6 +2971,8 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if input.PlanAcceptance != nil && input.PlanAcceptance.Plan.Document != nil && input.PlanAcceptance.Plan.Document.AutomationV2 != nil { return ErrAutomationV2Conflict }
+	if input.PlanSave != nil && input.PlanSave.Plan.Document != nil && input.PlanSave.Plan.Document.AutomationV2 != nil && (input.PlanSave.Activate || input.PlanSave.Plan.ApprovalState == "approved") { return ErrAutomationV2Conflict }
 	if len(input.MediaStagingBindings) > 0 {
 		if input.Kind != V3SessionMutationCreateSession || input.Message == nil || len(input.Message.Media) != len(input.MediaStagingBindings) {
 			return errors.New("media staging bindings require a create-session mutation with matching message media")

@@ -111,6 +111,10 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		add("document", "structured document is required")
 		return validationErr
 	}
+	if doc.AutomationV2 != nil {
+		if doc.Automation != nil { add("automation_v2", "V1 and V2 cannot coexist") }
+		if err := pebblestore.ValidateAutomationV2Settings(doc.AutomationV2, 0); err != nil { add("automation_v2", err.Error()) }
+	}
 	if err := validatePlanAutomation(doc.Automation); err != nil {
 		add("automation", err.Error())
 	}
@@ -952,6 +956,7 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 	}
 	clone := *doc
 	clone.Automation = clonePlanAutomation(doc.Automation)
+	if doc.AutomationV2 != nil { a := *doc.AutomationV2; clone.AutomationV2 = &a }
 	if clone.Info.Scope == "" {
 		clone.Info.Scope = clone.Info.Context
 	}

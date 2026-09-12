@@ -39,6 +39,7 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 
 	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
 	defer unlockSession()
+	if existing, found, err := s.GetPlan(input.SessionID, acceptance.Plan.ID); err != nil { return V3SessionMutationResult{}, err } else if found && existing.Document != nil && existing.Document.AutomationV2 != nil { return V3SessionMutationResult{}, ErrAutomationV2Conflict }
 	idempotencyKey := KeyV3SessionOperationIdempotency(input.AccountScopeID, input.SessionID, input.Kind, input.ClientRequestID)
 	if existing, ok, err := s.getV3SessionIdempotencyRecordByKey(idempotencyKey); err != nil {
 		return V3SessionMutationResult{}, err
@@ -112,6 +113,7 @@ func (s *SessionStore) applyV3PlanAcceptanceMutation(input V3SessionMutationInpu
 		return V3SessionMutationResult{}, err
 	} else if found {
 		session.Automation = current.Automation
+		session.AutomationV2 = current.AutomationV2
 	}
 	session.Mode = "auto"
 	session.UpdatedAt = now
