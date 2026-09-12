@@ -13,6 +13,7 @@ export function MemoryModal({ onClose }: { onClose: () => void }) {
   const [doc, setDoc] = useState<MemoryDocument>()
   const [draft, setDraft] = useState<Draft>()
   const [forget, setForget] = useState<Entry>()
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const panel = useRef<HTMLElement>(null)
@@ -96,14 +97,19 @@ export function MemoryModal({ onClose }: { onClose: () => void }) {
                 <Button size="sm" disabled={busy || !doc} onClick={() => doc && setDraft({ entry: { id: crypto.randomUUID(), kind: 'rule', content: '', pinned: false }, revision: doc.revision, isNew: true })}><Plus size={16} />Add memory</Button></div>
             </div>
             {!doc ? <p role="status">{error ? 'Use Refresh to load your memories.' : 'Loading memories…'}</p> : !doc.entries?.length ? <div className="memory-empty"><Brain size={28} /><h3>No memories yet</h3><p>Add something you’d like Swarm to remember for next time.</p></div> :
-              <div className="memory-grid" aria-label="Saved memories">{doc.entries.map(entry => <article key={entry.id} className="memory-card">
+              <div className="memory-grid" aria-label="Saved memories">{doc.entries.map(entry => {
+                const isLong = entry.content.length > 180 || entry.content.split('\n').length > 3
+                const preview = entry.content.replace(/\s+/g, ' ').trim().slice(0, 180)
+                return <article key={entry.id} className={`memory-card${expanded[entry.id] ? ' memory-card-expanded' : ''}`}>
                 <button className="memory-card-content" disabled={busy} aria-label={`Edit memory: ${entry.content.slice(0, 80)}`} onClick={() => { setError(''); setDraft({ entry: { id: entry.id, kind: entry.kind, content: entry.content, pinned: entry.pinned, workspace_id: entry.workspace_id, session_id: entry.session_id }, revision: doc.revision, isNew: false }) }}>
-                  <span className="memory-card-kind">{entry.kind === 'rule' ? 'Instruction' : entry.kind === 'orientation' ? 'Context' : 'Learned'}{entry.pinned ? ' · Pinned' : ''}{entry.workspace_id ? ' · Workspace' : entry.session_id ? ' · Session' : ''}</span>
-                  <span className="memory-content">{entry.content}</span>
-                  <span className="memory-card-hint">Click to edit</span>
+                  <span className="memory-content">{isLong && !expanded[entry.id] ? `${preview}…` : entry.content}</span>
                 </button>
-                <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setError(''); setForget(entry) }}>Forget</Button>
-              </article>)}</div>}
+                <div className="memory-card-actions">
+                  {isLong && <button className="memory-expand" aria-expanded={!!expanded[entry.id]} onClick={() => setExpanded(current => ({ ...current, [entry.id]: !current[entry.id] }))}>{expanded[entry.id] ? 'Collapse' : 'Expand'}</button>}
+                  <span className="memory-card-hint">Click text to edit</span>
+                  <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setError(''); setForget(entry) }}>Forget</Button>
+                </div>
+              </article>})}</div>}
           </>}
         </div>
       </section>
