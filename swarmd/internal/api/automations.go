@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"swarm/packages/swarmd/internal/automation"
+	"swarm/packages/swarmd/internal/permission"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -54,6 +55,9 @@ func (s *Server) ConfigureAutomationApproval(approval *automation.PolicyApproval
 		s.automations = &automationHTTPServices{}
 	}
 	s.automations.approval = approval
+	if permissions, ok := s.perm.(*permission.Service); ok && approval != nil {
+		approval.SetAcceptanceCoordinator(permissions.CoordinateAutomationAcceptance)
+	}
 }
 
 type automationHTTPRequest struct {

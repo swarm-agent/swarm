@@ -51,6 +51,9 @@ func (s *Store) CreateAutomationApprovalWithSession(g AutomationApproval, in V3S
 	if ok, err := s.GetJSON(receiptKey+":receipt", &receipt); err != nil {
 		return AutomationApproval{}, err
 	} else if ok {
+		if in.AutomationPermission != nil {
+			return AutomationApproval{}, ErrAutomationConflict
+		}
 		current, exists, err := s.GetAutomationApproval(g.Scope, receipt.Grant.ID)
 		if err != nil {
 			return AutomationApproval{}, err

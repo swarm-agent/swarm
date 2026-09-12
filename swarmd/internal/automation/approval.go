@@ -40,6 +40,7 @@ type PolicyApproval struct {
 	identity      ApprovalIdentity
 	now           func() time.Time
 	acceptSession func(context.Context, Principal, store.AutomationRecord) (store.V3SessionMutationInput, error)
+	coordinateAcceptance func(store.AutomationApproval, store.V3SessionMutationInput, func(store.AutomationApproval, store.V3SessionMutationInput) (store.AutomationApproval, error)) (store.AutomationApproval, error)
 }
 
 func NewPolicyApproval(repo ApprovalRepository, plans CanonicalPlans, ownership ApprovalOwnership, identity ApprovalIdentity, now func() time.Time) (*PolicyApproval, error) {
@@ -47,6 +48,11 @@ func NewPolicyApproval(repo ApprovalRepository, plans CanonicalPlans, ownership 
 		return nil, ErrInvalid
 	}
 	return &PolicyApproval{repo: repo, plans: plans, ownership: ownership, identity: identity, now: now}, nil
+}
+
+// SetAcceptanceCoordinator installs the permission-service transaction owner at startup.
+func (a *PolicyApproval) SetAcceptanceCoordinator(coordinate func(store.AutomationApproval, store.V3SessionMutationInput, func(store.AutomationApproval, store.V3SessionMutationInput) (store.AutomationApproval, error)) (store.AutomationApproval, error)) {
+	a.coordinateAcceptance = coordinate
 }
 
 var _ ExecutionApproval = (*PolicyApproval)(nil)
@@ -144,6 +150,12 @@ func (a *PolicyApproval) ApproveUser(ctx context.Context, input ApprovalRequest)
 			return store.AutomationApproval{}, err
 		}
 		mutation.AutomationProposal = input.Proposal
+		if input.Proposal != nil {
+			if a.coordinateAcceptance == nil {
+				return store.AutomationApproval{}, ErrDenied
+			}
+			return a.coordinateAcceptance(grant, mutation, atomic.CreateAutomationApprovalWithSession)
+		}
 		return atomic.CreateAutomationApprovalWithSession(grant, mutation)
 	}
 	return a.repo.CreateAutomationApproval(grant)
