@@ -75,7 +75,7 @@ func TestOnboardingFlowSSHStartsWithoutExtraEnter(t *testing.T) {
 			s.SetSize(100, 28)
 			post := func(k tcell.Key, r rune) { s.PostEventWait(tcell.NewEventKey(k, r, 0)) }
 			keyRequired, passwordDone := scenario.resume, scenario.resume
-			begins, choices, completes, handoffs := 0, 0, 0
+			begins, choices, completes, handoffs := 0, 0, 0, 0
 			entered, release := make(chan struct{}), make(chan struct{})
 			done := make(chan error, 1)
 			go func() {
