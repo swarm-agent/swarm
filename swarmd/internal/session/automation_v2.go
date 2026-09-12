@@ -40,6 +40,13 @@ func (s *Service) AcceptAutomationV2(account,user,workspace,id string, review pe
 	p,ok,err := s.store.GetAutomationV2Proposal(account,user,workspace,id)
 	if err != nil { return pebblestore.AutomationV2Record{},err }
 	if !ok || p.AutomationV2Review != review { return pebblestore.AutomationV2Record{},pebblestore.ErrAutomationV2Conflict }
+	// A receipt replay is not a new grant: expiry and artifact availability must
+	// not regenerate or revoke the original result. Store reads recheck ownership.
+	if r,found,err := s.store.GetAutomationV2Record(account,user,workspace,id); err != nil { return pebblestore.AutomationV2Record{},err } else if found {
+		if r.AutomationV2Review != review { return pebblestore.AutomationV2Record{},pebblestore.ErrAutomationV2Conflict }
+		return r,nil
+	}
+	if err := validateAutomationV2Proposal(&p.Document); err != nil { return pebblestore.AutomationV2Record{},err }
 	if err := s.authenticatePlanDocumentArtifacts(account,id,&p.Document); err != nil { return pebblestore.AutomationV2Record{},err }
 	return s.store.AcceptAutomationV2(account,user,workspace,id,review)
 }

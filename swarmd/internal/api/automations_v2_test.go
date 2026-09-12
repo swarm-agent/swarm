@@ -26,8 +26,14 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 		t.Run(expiration.Kind, func(t *testing.T) {
 			db, err := store.Open(t.TempDir()); if err != nil { t.Fatal(err) }; defer db.Close()
 			ss := store.NewSessionStore(db)
+			identityStore := store.NewIdentityStore(db)
+			if _,err := identityStore.PutUser(store.UserRecord{ID:"owner",Username:"owner"}); err != nil { t.Fatal(err) }
+			if _,err := identityStore.PutAccountScope(store.AccountScopeRecord{ID:"account",Type:store.AccountScopeTypePersonal,CreatedByUserID:"owner"}); err != nil { t.Fatal(err) }
+			if _,err := identityStore.PutAccountUser(store.AccountUserRecord{ID:"membership",AccountScopeID:"account",UserID:"owner",Status:"active"}); err != nil { t.Fatal(err) }
+			workspace,err := store.NewWorkspaceStore(db).AddForAccount("account",t.TempDir(),"Workspace"); if err != nil { t.Fatal(err) }
+			workspaceID := workspace.WorkspaceID
 			available := true
-			if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: "workspace", Path: t.TempDir(), Available: &available}}}); err != nil { t.Fatal(err) }
+			if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil { t.Fatal(err) }
 			s := &Server{sessions: sessionruntime.NewService(ss, nil)}
 			h := s.apiMux()
 			call := func(method, path, body, user string, agent bool) *httptest.ResponseRecorder {
@@ -42,7 +48,7 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			}
 			encode := func(v any) string { b, err := json.Marshal(v); if err != nil { t.Fatal(err) }; return string(b) }
 			doc := &store.SessionPlanDocument{Title: "Review", Info: store.SessionPlanInfo{Goal: "Work"}, AutomationV2: &store.AutomationV2Settings{SchemaVersion: 2, Schedule: store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, Missed: "skip", Overlap: "serialize", ActivateOnAccept: true, Expiration: expiration}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Work", Objective: "Implement", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Works"}}}}
-			req := automationV2Request{Action: "propose_automation", WorkspaceID: "workspace", SessionID: "conversation", Document: doc}
+			req := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: doc}
 			w := call(http.MethodPost, "/proposal", encode(req), "owner", false)
 			if w.Code != 200 { t.Fatal(w.Code, w.Body.String()) }
 			var proposal struct { Proposal store.AutomationV2Proposal `json:"proposal"` }
@@ -55,11 +61,11 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			if proposal.Proposal.Revision != old.Revision+1 || proposal.Proposal.Digest == old.Digest { t.Fatal("review did not advance") }
 			assertPending := func() {
 				t.Helper()
-				if _, found, err := ss.GetAutomationV2Record("account", "owner", "workspace", "conversation"); err != nil || found { t.Fatal("partial acceptance", found, err) }
+				if _, found, err := ss.GetAutomationV2Record("account", "owner", workspaceID, "conversation"); err != nil || found { t.Fatal("partial acceptance", found, err) }
 				if _, found, err := ss.GetV3SessionActiveRunIntent("conversation"); err != nil || found { t.Fatal("unintended run", found, err) }
 			}
 			assertPending()
-			accept := automationV2Request{Action: "accept_automation", WorkspaceID: "workspace", SessionID: "conversation", Review: proposal.Proposal.AutomationV2Review}
+			accept := automationV2Request{Action: "accept_automation", WorkspaceID: workspaceID, SessionID: "conversation", Review: proposal.Proposal.AutomationV2Review}
 			stale := accept; stale.Review = old
 			for _, tc := range []struct { body, user string; agent bool }{
 				{encode(stale), "owner", false}, {encode(accept), "foreign", false}, {encode(accept), "", false}, {encode(accept), "owner", true},
@@ -79,7 +85,7 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			w = call(http.MethodPost, "/accept", encode(accept), "owner", false)
 			publishCommittedV3RealtimeOutboxWake = wake
 			if w.Code != http.StatusServiceUnavailable { t.Fatal("delivery failure not reported", w.Code) }
-			if _, found, err := ss.GetAutomationV2Record("account", "owner", "workspace", "conversation"); err != nil || !found { t.Fatal("delivery failure lost commit", err) }
+			if _, found, err := ss.GetAutomationV2Record("account", "owner", workspaceID, "conversation"); err != nil || !found { t.Fatal("delivery failure lost commit", err) }
 			var first store.AutomationV2Record
 			for i := 0; i < 2; i++ {
 				w = call(http.MethodPost, "/accept", encode(accept), "owner", false)
@@ -91,7 +97,7 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			wantExpiration := expiration; if wantExpiration.Kind == "" { wantExpiration.Kind = "indefinite" }
 			if first.Authorization != wantExpiration { t.Fatal("expiration changed", first.Authorization) }
 			if _, found, err := ss.GetV3SessionActiveRunIntent("conversation"); err != nil || found { t.Fatal("acceptance started one-shot", err) }
-			w = call(http.MethodGet, "?workspace_id=workspace&limit=1", "", "owner", false)
+			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&limit=1", "", "owner", false)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), first.AutomationID) { t.Fatal("discovery missing accepted record", w.Body.String()) }
 		})
 	}

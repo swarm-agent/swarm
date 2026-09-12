@@ -120,27 +120,45 @@ func (s *SessionStore) automationV2Owner(account, user, workspace, id string) (S
 	current, ok, err := s.GetSession(id)
 	if err != nil { return current, err }
 	if !ok || account == "" || user == "" || workspace == "" || current.AccountScopeID != account || current.UserID != user { return current, ErrAutomationV2Conflict }
-	member, exists, err := NewIdentityStore(s.store).GetAccountUser(account,user)
+	entry,err := s.automationV2WorkspaceOwner(account,user,workspace)
 	if err != nil { return current,err }
-	if exists && member.Status != "active" { return current,ErrAutomationV2Conflict }
 	for _, g := range current.WorkspaceGrants {
-		if g.WorkspaceID == workspace && g.Kind == WorkspaceGrantPrimary && g.Available != nil && *g.Available { return current, nil }
+		if g.WorkspaceID == workspace && g.Kind == WorkspaceGrantPrimary && g.Available != nil && *g.Available && g.Path == entry.Path { return current, nil }
 	}
 	return current, ErrAutomationV2Conflict
+}
+func (s *SessionStore) automationV2WorkspaceOwner(account,user,workspace string) (WorkspaceEntry,error) {
+	member, exists, err := NewIdentityStore(s.store).GetAccountUser(account,user)
+	if err != nil { return WorkspaceEntry{},err }
+	if !exists || member.Status != "active" || member.AccountScopeID != account || member.UserID != user { return WorkspaceEntry{},ErrAutomationV2Conflict }
+	entry, exists, err := NewWorkspaceStore(s.store).GetByWorkspaceIDForAccount(account,workspace)
+	if err != nil { return WorkspaceEntry{},err }
+	if !exists || entry.WorkspaceID != workspace { return WorkspaceEntry{},ErrAutomationV2Conflict }
+	return entry,nil
 }
 func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id string) (AutomationV2Proposal, bool, error) {
 	if _, err := s.automationV2Owner(account,user,workspace,id); err != nil { return AutomationV2Proposal{},false,err }
 	var p AutomationV2Proposal
 	ok, err := s.store.GetJSON(automationV2Key("proposal",account,id), &p)
-	if ok && (p.UserID != user || p.WorkspaceID != workspace) { return AutomationV2Proposal{},false,ErrAutomationV2Conflict }
+	if err != nil { return AutomationV2Proposal{},false,err }
+	if ok { if err := validateAutomationV2Integrity(p,account,user,workspace,id); err != nil { return AutomationV2Proposal{},false,err } }
 	return p,ok,err
 }
 func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string) (AutomationV2Record, bool, error) {
 	if _, err := s.automationV2Owner(account,user,workspace,id); err != nil { return AutomationV2Record{},false,err }
 	var r AutomationV2Record
 	ok, err := s.store.GetJSON(automationV2Key("accepted",account,id), &r)
-	if ok && (r.UserID != user || r.WorkspaceID != workspace) { return AutomationV2Record{},false,ErrAutomationV2Conflict }
+	if err != nil { return AutomationV2Record{},false,err }
+	if ok { if err := validateAutomationV2Integrity(r.AutomationV2Proposal,account,user,workspace,id); err != nil { return AutomationV2Record{},false,err } }
 	return r,ok,err
+}
+
+func validateAutomationV2Integrity(p AutomationV2Proposal, account,user,workspace,id string) error {
+	if p.AccountID != account || p.UserID != user || p.WorkspaceID != workspace || p.SessionID != id || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil { return ErrAutomationV2Conflict }
+	digest,err := AutomationV2DocumentDigest(p.Document)
+	if err != nil { return err }
+	if digest != p.Digest { return ErrAutomationV2Conflict }
+	return nil
 }
 
 // ProposeAutomationV2 stores the reviewed canonical document, but no automation,
@@ -149,6 +167,9 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 	if _, err := s.automationV2Owner(account,user,workspace,id); err != nil { return AutomationV2Proposal{},err }
 	if doc.AutomationV2 == nil || doc.Automation != nil { return AutomationV2Proposal{},ErrAutomationV2Conflict }
 	if err := ValidateAutomationV2Settings(doc.AutomationV2,time.Now().UnixMilli()); err != nil { return AutomationV2Proposal{},err }
+	if expected != (AutomationV2Review{}) && (expected.ProposalID == "" || expected.Digest == "" || expected.Revision == 0) { return AutomationV2Proposal{},ErrAutomationV2Conflict }
+	// The pending plan also stores the revision as int. Reject either overflow.
+	if expected.Revision >= uint64(^uint(0)>>1) { return AutomationV2Proposal{},ErrAutomationV2Conflict }
 	proposalID := expected.ProposalID
 	if proposalID == "" { var err error; proposalID,err = automationV2ID(); if err != nil { return AutomationV2Proposal{},err } }
 	digest,err := AutomationV2DocumentDigest(doc)
@@ -156,7 +177,12 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 	p := AutomationV2Proposal{AutomationV2Review:AutomationV2Review{proposalID,expected.Revision+1,digest},AccountID:account,UserID:user,WorkspaceID:workspace,SessionID:id,Document:doc,CreatedAt:time.Now().UnixMilli()}
 	m := &automationV2Mutation{proposal:p,expected:expected}
 	_,err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID:id,AccountScopeID:account,UserID:user,Kind:V3SessionMutationUpdateMetadata,EventType:"session.automation_v2.proposed",ClientRequestID:fmt.Sprintf("av2:proposal:%s:%d",proposalID,p.Revision),PayloadHash:digest,automationV2:m})
-	return p,err
+	if err != nil { return AutomationV2Proposal{},err }
+	// Never regenerate a replay's timestamp or return an obsolete revision as head.
+	persisted,ok,err := s.GetAutomationV2Proposal(account,user,workspace,id)
+	if err != nil { return AutomationV2Proposal{},err }
+	if !ok || persisted.AutomationV2Review != p.AutomationV2Review { return AutomationV2Proposal{},ErrAutomationV2Conflict }
+	return persisted,nil
 }
 func (s *SessionStore) AcceptAutomationV2(account, user, workspace, id string, review AutomationV2Review) (AutomationV2Record, error) {
 	p,ok,err := s.GetAutomationV2Proposal(account,user,workspace,id)
@@ -173,6 +199,7 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 	m := in.automationV2
 	if m == nil { return nil }
 	p := m.proposal
+	if err := validateAutomationV2Integrity(p,in.AccountScopeID,in.UserID,p.WorkspaceID,in.SessionID); err != nil { return err }
 	current,err := s.automationV2Owner(in.AccountScopeID,in.UserID,p.WorkspaceID,in.SessionID)
 	if err != nil { return err }
 	if current.Automation != nil || current.AutomationV2 != nil { return ErrAutomationV2Conflict }
@@ -182,9 +209,10 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 	var prior AutomationV2Proposal
 	found,err := s.store.GetJSON(automationV2Key("proposal",p.AccountID,p.SessionID), &prior)
 	if err != nil { return err }
+	if found { if err := validateAutomationV2Integrity(prior,in.AccountScopeID,in.UserID,p.WorkspaceID,in.SessionID); err != nil { return err } }
 	if (found && prior.AutomationV2Review != m.expected) || (!found && m.expected != (AutomationV2Review{})) { return ErrAutomationV2Conflict }
 	if m.accept {
-		if !found || ValidateAutomationV2Settings(p.Document.AutomationV2,time.Now().UnixMilli()) != nil { return ErrAutomationV2Conflict }
+		if !found || prior.AutomationV2Review != p.AutomationV2Review || ValidateAutomationV2Settings(prior.Document.AutomationV2,time.Now().UnixMilli()) != nil { return ErrAutomationV2Conflict }
 		id,err := automationV2ID(); if err != nil { return err }
 		m.record = AutomationV2Record{AutomationV2Proposal:prior,AutomationID:id,AcceptedBy:in.UserID,AcceptedAt:time.Now().UnixMilli(),Authorization:prior.Document.AutomationV2.Expiration,Enabled:true}
 		current.AutomationV2 = &SessionAutomationV2Binding{id,p.WorkspaceID,p.Digest}
@@ -204,6 +232,9 @@ func (s *SessionStore) setAutomationV2InBatch(batch *pebble.Batch, in V3SessionM
 	b,err := json.Marshal(value); if err != nil { return err }
 	if err := batch.Set([]byte(automationV2Key(kind,p.AccountID,p.SessionID)),b,nil); err != nil { return err }
 	if !m.accept {
+		// Immutable proposal history is committed with its current-head pointer.
+		historyKey := automationV2Key("history",p.AccountID,p.SessionID)+fmt.Sprintf("/%x/%020d",p.ProposalID,p.Revision)
+		if err := batch.Set([]byte(historyKey),b,nil); err != nil { return err }
 		plan := SessionPlanSnapshot{ID:p.ProposalID,SessionID:p.SessionID,AccountScopeID:p.AccountID,UserID:p.UserID,Title:p.Document.Title,Status:"pending",ApprovalState:"pending",Version:int(p.Revision),Document:&p.Document,CreatedAt:p.CreatedAt,UpdatedAt:p.CreatedAt}
 		if err := setPlanAcceptancePlanInBatch(batch,plan,nil); err != nil { return err }
 	}
@@ -220,6 +251,7 @@ func (s *SessionStore) SetAutomationV2CommitHookForTest(hook func(string) error)
 // visited records and returned bytes. Foreign session records are never emitted.
 func (s *SessionStore) ListAutomationV2Records(account,user,workspace,after string,limit int) ([]AutomationV2Record,string,error) {
 	if account == "" || user == "" || workspace == "" || limit < 1 || limit > 100 { return nil,"",ErrAutomationV2Conflict }
+	if _,err := s.automationV2WorkspaceOwner(account,user,workspace); err != nil { return nil,"",err }
 	prefix := fmt.Sprintf("automation/v2/accepted/%x/",account)
 	if after != "" && !strings.HasPrefix(after,prefix) { return nil,"",ErrAutomationV2Conflict }
 	lower := prefix
@@ -235,7 +267,8 @@ func (s *SessionStore) ListAutomationV2Records(account,user,workspace,after stri
 		var r AutomationV2Record
 		if err := json.Unmarshal(iter.Value(),&r); err != nil { return nil,"",err }
 		if r.UserID != user || r.WorkspaceID != workspace { continue }
-		if _,err := s.automationV2Owner(account,user,workspace,r.SessionID); err != nil { continue }
+		if err := validateAutomationV2Integrity(r.AutomationV2Proposal,account,user,workspace,r.SessionID); err != nil { return nil,"",err }
+		if _,err := s.automationV2Owner(account,user,workspace,r.SessionID); err != nil { return nil,"",err }
 		bytes += len(iter.Value()); out=append(out,r)
 	}
 	return out,"",iter.Error()
