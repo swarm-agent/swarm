@@ -66,6 +66,9 @@ type MemoryEntry struct {
 	ID          string         `json:"id"`
 	Kind        string         `json:"kind"` // rule, orientation, learned
 	Content     string         `json:"content"`
+	Purpose     string         `json:"purpose,omitempty"` // preference, project_context, operational_context, recovery, orientation
+	Origin      string         `json:"origin,omitempty"`  // server-owned creation provenance; empty means legacy unknown
+	Subject     string         `json:"subject,omitempty"` // descriptive label, never an access grant
 	WorkspaceID string         `json:"workspace_id,omitempty"`
 	SessionID   string         `json:"session_id,omitempty"`
 	Pinned      bool           `json:"pinned"`
@@ -577,6 +580,9 @@ func (s *MemoryStore) prepareMutation(d MemoryDocument, m MemoryMutation) (Memor
 			}
 		}
 		i := memoryEntryIndex(d, e.ID)
+		if err := s.prepareMemoryMetadata(d, m, &e, i); err != nil {
+			return MemoryDocument{}, err
+		}
 		if m.Actor.Kind == "learned" {
 			if e.Kind != "learned" || e.Pinned || len(e.Sources) == 0 || (i >= 0 && (d.Entries[i].Kind != "learned" || d.Entries[i].Pinned)) {
 				return MemoryDocument{}, ErrMemoryPolicy

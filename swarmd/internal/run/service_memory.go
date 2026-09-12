@@ -48,6 +48,8 @@ func (s *Service) executeMemoryTool(ctx context.Context, sessionID, arguments st
 		WorkspaceID *string `json:"workspace_id"`
 		SessionID   *string `json:"session_id"`
 		Pinned      *bool   `json:"pinned"`
+		Purpose     *string `json:"purpose"`
+		Subject     *string `json:"subject"`
 	}
 	dec := json.NewDecoder(strings.NewReader(arguments))
 	dec.DisallowUnknownFields()
@@ -96,11 +98,17 @@ func (s *Service) executeMemoryTool(ctx context.Context, sessionID, arguments st
 			if !found {
 				return "", fmt.Errorf("%w: edit requires an existing entry_id", store.ErrMemoryPolicy)
 			}
-			if a.Content == nil && a.Kind == nil && a.WorkspaceID == nil && a.SessionID == nil && a.Pinned == nil {
+			if a.Content == nil && a.Kind == nil && a.WorkspaceID == nil && a.SessionID == nil && a.Pinned == nil && a.Purpose == nil && a.Subject == nil {
 				return "", fmt.Errorf("%w: edit requires at least one changed field", store.ErrMemoryPolicy)
 			}
 		} else if a.Action == "remember" && (a.Content == nil || a.Kind == nil) {
 			return "", fmt.Errorf("%w: remember requires content and kind (rule, orientation, or learned)", store.ErrMemoryPolicy)
+		}
+		if a.Purpose != nil {
+			entry.Purpose = *a.Purpose
+		}
+		if a.Subject != nil {
+			entry.Subject = *a.Subject
 		}
 		if a.Content != nil {
 			entry.Content = *a.Content

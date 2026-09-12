@@ -675,9 +675,14 @@ test("paused checkpoint sidebar exposes the canonical same-session resume action
   ]);
 });
 
+// Requirement: canonical blocked handoff shows the external reason and action,
+// without permission grants or direct resume controls. SSR proves visible copy.
 test("blocked checkpoint sidebar directs the user back to Swarm without unblock controls", () => {
   const base = view({ blocked: true, status: "blocked" });
-  base.activeCheckpoint = { ...base.activeCheckpoint!, status: "blocked" };
+  base.activeCheckpoint = { ...base.activeCheckpoint!, status: "blocked",
+    recommendation: { decision: 'defer', action: 'Grant service access.', reason: 'Missing access', actionState: 'needs_approval' },
+    waitingReason: 'Service access is missing.',
+  };
   base.plan.document.checkpoints = [
     base.activeCheckpoint,
     {
@@ -703,7 +708,9 @@ test("blocked checkpoint sidebar directs the user back to Swarm without unblock 
   assert.match(markup, /Blocked checkpoint/);
   assert.match(markup, /tell Swarm what changed and ask it/);
   assert.match(markup, /resume this same checkpoint in fresh context/);
-  assert.match(markup, /explicitly complete the checkpoint before anything later starts/);
+  assert.match(markup, /Service access is missing/);
+  assert.match(markup, /Next action:.*Grant service access/);
+  assert.match(markup, /Permission requests remain separate/);
   assert.doesNotMatch(markup, /Resolve blocker/);
   assert.doesNotMatch(markup, /start next checkpoint/);
   assert.doesNotMatch(markup, /Restart checkpoint/);

@@ -6,8 +6,8 @@ import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioRecord, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
-export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'QUEUED'
-export type DesktopV3SidebarGroupId = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'FAILED' | 'QUEUED'
+export type DesktopV3SidebarGroupId = 'blocked' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
 
 export interface DesktopV3SidebarCheckpointProgress {
   activeCheckpointId: string
@@ -328,6 +328,7 @@ export function selectDesktopVideoStudioRows(state: DesktopV3CacheState, scopeId
 
 export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> {
   const grouped: Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> = {
+    blocked: [],
     needs_review: [],
     in_progress: [],
     active_chats: [],
@@ -450,8 +451,9 @@ function desktopSidebarCheckpointProgress(document: DesktopSessionPlanDocument, 
 }
 
 function desktopPlanStatusLabel(input: { normalizedStatus: string; checkpointStatus: string; reviewRequired: boolean; blocked: boolean; failed: boolean; completed: boolean }): DesktopV3SidebarPlanStatusLabel {
+  if (input.blocked) return 'BLOCKED'
+  if (input.failed) return 'FAILED'
   if (input.reviewRequired) return 'REVIEW'
-  if (input.blocked || input.failed) return 'BLOCKED'
   if (input.completed) return 'QUEUED'
   if (input.normalizedStatus === 'queued' || input.normalizedStatus === 'pending' || input.checkpointStatus === 'pending') return 'QUEUED'
   return 'RUNNING'
@@ -459,6 +461,7 @@ function desktopPlanStatusLabel(input: { normalizedStatus: string; checkpointSta
 
 function desktopSidebarGroupForRow(input: { hasActivePlan: boolean; planExecution?: DesktopV3SidebarPlanExecution; hasActiveRun: boolean; pendingPermissionCount: number; tombstoned: boolean }): DesktopV3SidebarGroupId {
   if (input.tombstoned) return 'archived'
+  if (input.planExecution?.blocked) return 'blocked'
   if (input.planExecution?.reviewRequired) return 'needs_review'
   if (input.planExecution && !input.planExecution.completed) return 'in_progress'
   if (input.pendingPermissionCount > 0 || input.hasActiveRun || input.hasActivePlan) return 'active_chats'

@@ -117,6 +117,9 @@ func TestProviderManagedAutoStartSessionCheckpointContinuesCurrentRun(t *testing
 	}
 }
 
+// Purpose: the provider tool boundary must persist a genuine blocker and resume
+// only that checkpoint after explicit resolution, without memory consent or
+// advancing later work. A temporary V3 session proves durable postconditions.
 func TestProviderManagedAutoCheckpointCanMarkBlocked(t *testing.T) {
 	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
 	defer cleanup()
@@ -139,10 +142,10 @@ func TestProviderManagedAutoCheckpointCanMarkBlocked(t *testing.T) {
 			return sessionSvc.ApplySessionMutation(input)
 		},
 	})
-	if result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start", Name: "plan_manage", Arguments: `{"action":"start_session_checkpoint","change_request":"demonstrate blocked","checkpoint_title":"Blocked demo"}`}); err != nil || strings.TrimSpace(result.Error) != "" {
+	if result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-start", Name: "plan_manage", Arguments: `{"action":"start_session_checkpoint","change_request":"demonstrate blocked","checkpoint_title":"Blocked demo","tasks":["Verify dependency"],"acceptance_criteria":["Dependency is available"]}`}); err != nil || strings.TrimSpace(result.Error) != "" {
 		t.Fatalf("start inline checkpoint: result=%#v err=%v", result, err)
 	}
-	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-block", Name: "plan_manage", Arguments: `{"action":"mark_blocked","checkpoint_id":"cp-1","report":"dependency missing","result":"blocked"}`})
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-block", Name: "plan_manage", Arguments: `{"action":"mark_blocked","checkpoint_id":"cp-1","report":"dependency missing","result":"blocked","handoff_overview":"Required dependency unavailable; provide it before resuming.","recommendation":{"decision":"defer","action":"Provide the required dependency","reason":"External dependency is missing","action_state":"needs_approval"}}`})
 	if err != nil || strings.TrimSpace(result.Error) != "" {
 		t.Fatalf("mark inline checkpoint blocked: result=%#v err=%v", result, err)
 	}
@@ -158,6 +161,26 @@ func TestProviderManagedAutoCheckpointCanMarkBlocked(t *testing.T) {
 	}
 	if payload.Action != "mark_blocked" || payload.NextAction != "stopped" || payload.Plan.Document == nil || payload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusBlocked {
 		t.Fatalf("blocked payload = %#v output=%s", payload, result.Output)
+	}
+	// A blocker terminates its provider turn; resolution is a fresh user turn.
+	invoker = runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID: sessionID, PermissionSessionID: sessionID, RunID: "run-resolved-inline", Step: 1,
+		SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true,
+		ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			input.UserID = principal.UserID
+			input.AccountScopeID = principal.AccountScopeID
+			return sessionSvc.ApplySessionMutation(input)
+		},
+	})
+	result, err = invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-resolve", Name: "plan_manage", Arguments: `{"action":"resolve_blocked_checkpoint","checkpoint_id":"cp-1","start_next":true}`})
+	if err != nil || result.Error != "" {
+		t.Fatalf("resolve blocker: result=%#v err=%v", result, err)
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Plan.Document == nil || payload.Plan.Document.ActiveCheckpointID != "cp-1" || payload.Plan.Document.Checkpoints[0].Status != sessionruntime.PlanCheckpointStatusInProgress {
+		t.Fatalf("resolution did not resume same incomplete checkpoint: %s", result.Output)
 	}
 }
 

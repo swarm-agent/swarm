@@ -687,6 +687,7 @@ export interface DesktopSessionPlanCheckpoint {
   completedAt: number;
   review: DesktopSessionPlanCheckpointReview | null;
   recommendation?: DesktopSessionPlanCheckpointRecommendation | null;
+  waitingReason?: string;
   finalHandoff?: DesktopPlanFinalHandoff | null;
   attempts: DesktopSessionPlanCheckpointAttempt[];
   order: number;

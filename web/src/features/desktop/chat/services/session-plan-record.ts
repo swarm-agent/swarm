@@ -190,7 +190,8 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
         completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
         review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
         recommendation: normalizeDesktopSessionPlanCheckpointRecommendation(checkpoint.recommendation),
-        finalHandoff: normalizeDesktopPlanFinalHandoff(checkpoint.finalHandoff ?? checkpoint.final_handoff ?? checkpoint.handoff),
+        waitingReason: String(checkpoint.waitingReason ?? objectValue(checkpoint.handoff)?.overview ?? ''),
+      finalHandoff: normalizeDesktopPlanFinalHandoff(checkpoint.finalHandoff ?? checkpoint.final_handoff ?? checkpoint.handoff),
         attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint.order) || index + 1,
       }

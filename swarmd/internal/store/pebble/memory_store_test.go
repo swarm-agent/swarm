@@ -115,7 +115,7 @@ func TestMemoryLearnedOwnershipScopeAndRestore(t *testing.T) {
 	settings.IncludedSessions = []string{"session"}
 	d = memoryApply(t, s, MemoryMutation{ExpectedRevision: d.Revision, Actor: MemoryActor{Kind: "user", ID: "user"}, Reason: "Opt in", Operation: "settings", Settings: &settings})
 	learned := memoryPut(d, "context", "learned", "project context")
-	learned.Actor = MemoryActor{Kind: "learned", ID: "memory", JobID: "job", Model: AgentModelAssignment{Provider: "test", Model: "test", Thinking: "low"}}
+	learned.Actor = MemoryActor{Kind: "learned", ID: "user", JobID: "job", Model: AgentModelAssignment{Provider: "test", Model: "test", Thinking: "low"}}
 	learned.Entry.Sources = []MemorySource{{WorkspaceID: "workspace", SessionID: "session", EventSeq: 1}}
 	// Automatic learning no longer requires a review approval.
 	attack := learned

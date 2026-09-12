@@ -346,7 +346,7 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.match(overlaySource, /topWorkspaceGitStatusQuery\.isFetching/)
   assert.match(overlaySource, /topWorkspaceGitStatusQuery\.error/)
   assert.doesNotMatch(overlaySource, /selectedGitSessionId|gitRealtimeErrors|gitStatusQuery\.error/)
-  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
+  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 3).map((group) => group.id), ['blocked', 'needs_review', 'in_progress'])
 })
 
 test('sidebar shows an accessible current-workspace dropdown before chat and worktree actions', async () => {
@@ -788,6 +788,7 @@ test('sidebar review action is limited to Needs Review outside archive selection
 
 test('sidebar renders contextual controls for active groups without an Archived section', () => {
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.map((group) => group.id), [
+    'blocked',
     'needs_review',
     'in_progress',
     'pinned',

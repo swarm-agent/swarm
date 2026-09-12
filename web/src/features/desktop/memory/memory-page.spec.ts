@@ -6,9 +6,9 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // Purpose: exercise MemoryModal against the canonical /v1/memory contract with
-// fake HTTP. Prevent form-heavy UX, stale-write draft loss, identity changes and
+// fake HTTP. Prevent stale-write draft loss, metadata loss, identity changes and
 // unconfirmed deletion at the narrow browser interaction boundary.
-test('memory modal uses cards and a single writing box with safe mutations', { timeout: 30000 }, async () => {
+test('memory modal organizes context and preserves drafts with safe mutations', { timeout: 30000 }, async () => {
  const scratch=await mkdtemp(join(process.env.TMPDIR!, 'memory-ui-'))
  const output=join(scratch,'page.js')
  await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import{MemoryModal}from'./src/features/desktop/memory/memory-page';createRoot(document.getElementById('root')).render(React.createElement(MemoryModal,{onClose:()=>{}}));`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:output,jsx:'automatic'})
@@ -21,14 +21,14 @@ test('memory modal uses cards and a single writing box with safe mutations', { t
  let reject=true
  let revision=4
  let entries=[{id:'saved',kind:'rule',content:'saved content',pinned:true,workspace_id:'workspace'}]
- await page.route('http://memory.test/**',async route=>{
+ await page.route('https://memory.test/**',async route=>{
   const req=route.request()
   if(req.url().includes('/v1/memory')){
    if(req.method()==='POST'){
     const mutation=req.postDataJSON();mutations.push(mutation)
     if(reject){await route.fulfill({status:409,body:'memory revision conflict'});return}
     assert.equal(mutation.expected_revision,revision)
-    if(mutation.action==='remember')entries=[mutation.entry]
+    if(mutation.action==='remember' || mutation.action==='edit')entries=[mutation.entry]
     else if(mutation.action==='forget')entries=[]
     revision++
     await route.fulfill({contentType:'application/json',body:JSON.stringify({revision,entries})});return
@@ -38,11 +38,12 @@ test('memory modal uses cards and a single writing box with safe mutations', { t
   }
   await route.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'})
  })
- await page.goto('http://memory.test/memory');await page.addStyleTag({content:await readFile(join(scratch,'page.css'),'utf8')});await page.addScriptTag({content:await readFile(output,'utf8')})
+ await page.goto('https://memory.test/memory');await page.addStyleTag({content:await readFile(join(scratch,'page.css'),'utf8')});await page.addScriptTag({content:await readFile(output,'utf8')})
  await page.getByRole('dialog',{name:'Memory',exact:true}).waitFor()
  assert.equal(await page.locator('textarea, input, select').count(),0)
  await page.getByRole('button',{name:'Add memory',exact:true}).click()
- assert.equal(await page.locator('textarea, input, select').count(),1)
+ assert.equal(await page.locator('textarea').count(),1)
+ await page.getByLabel('Purpose',{exact:true}).selectOption('project_context')
  await page.getByRole('textbox',{name:'Memory',exact:true}).fill('keep this draft')
  await page.getByRole('button',{name:'Save memory'}).click()
  await page.getByRole('alert').filter({hasText:'revision conflict'}).waitFor()
@@ -54,10 +55,11 @@ test('memory modal uses cards and a single writing box with safe mutations', { t
  // and require confirmation before a destructive request is sent.
  reject=false
  await page.getByRole('button',{name:'Edit memory: saved content',exact:true}).click()
- assert.equal(await page.locator('input, select').count(),0)
+ assert.equal(await page.getByLabel('Workspace scope ID').inputValue(),'workspace')
  await page.getByRole('textbox',{name:'Memory',exact:true}).fill('updated object')
  await page.getByRole('button',{name:'Save memory'}).click()
  await page.getByRole('button',{name:'Edit memory: updated object',exact:true}).waitFor()
+ assert.equal(mutations[1].action,'edit')
  assert.equal((mutations[1].entry as {pinned:boolean}).pinned,true)
  assert.equal((mutations[1].entry as {id:string}).id,'saved')
  assert.equal((mutations[1].entry as {workspace_id:string}).workspace_id,'workspace')

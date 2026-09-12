@@ -61,16 +61,18 @@ func TestMemoryObjectOperations(t *testing.T) {
 			t.Fatal("invalid write changed state")
 		}
 	}
-	call(`{"action":"remember","expected_revision":1,"intent":"requested","entry_id":"one","kind":"rule","content":"concise","workspace_id":"scope","pinned":true}`)
+	call(`{"action":"remember","expected_revision":1,"intent":"requested","entry_id":"one","kind":"rule","content":"concise","workspace_id":"scope","pinned":true,"purpose":"operational_context","subject":"Build setup"}`)
 	original := get("a").Entries[0]
 	call(`{"action":"edit","expected_revision":2,"intent":"requested edit","entry_id":"one","content":"very concise"}`)
 	edited := get("a").Entries[0]
-	if edited.Content != "very concise" || edited.Kind != original.Kind || edited.WorkspaceID != original.WorkspaceID || !edited.Pinned || edited.CreatedAt != original.CreatedAt || edited.Revision != original.Revision+1 {
+	if edited.Purpose != "operational_context" || edited.Subject != "Build setup" || edited.Origin != "user" || edited.Content != "very concise" || edited.Kind != original.Kind || edited.WorkspaceID != original.WorkspaceID || !edited.Pinned || edited.CreatedAt != original.CreatedAt || edited.Revision != original.Revision+1 {
 		t.Fatalf("edit lost fields: %#v", edited)
 	}
 	before = get("a")
 	for _, args := range []string{
 		`{"action":"edit","expected_revision":2,"intent":"requested","entry_id":"one","content":"stale"}`,
+		`{"action":"edit","expected_revision":3,"intent":"requested","entry_id":"one","purpose":"permission"}`,
+		`{"action":"edit","expected_revision":3,"intent":"requested","entry_id":"one","origin":"learned"}`,
 		`{"action":"edit","expected_revision":3,"intent":"requested","entry_id":"missing","content":"bad"}`,
 		`{"action":"edit","expected_revision":3,"entry_id":"one","content":"no intent"}`,
 		`{"action":"edit","expected_revision":3,"intent":"requested","entry_id":"one"}`,

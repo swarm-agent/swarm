@@ -65,6 +65,35 @@ func (s *Service) Remember(ctx context.Context, revision int64, entry store.Memo
 	}
 	return s.Store.MutateForAccount(p.AccountScopeID, store.MemoryMutation{ExpectedRevision: revision, Actor: store.MemoryActor{Kind: "user", ID: p.UserID}, Reason: reason, Operation: "put", Entry: entry})
 }
+
+// Edit preserves server-owned provenance, source evidence and timestamps while
+// allowing independent content, purpose, subject and contextual scope changes.
+func (s *Service) Edit(ctx context.Context, revision int64, entry store.MemoryEntry, reason string) (store.MemoryDocument, error) {
+	p, err := principal(ctx)
+	if err != nil {
+		return store.MemoryDocument{}, err
+	}
+	d, err := s.Store.GetForAccount(p.AccountScopeID)
+	if err != nil {
+		return d, err
+	}
+	if d.Revision != revision {
+		return d, store.ErrMemoryConflict
+	}
+	if entry.ID == store.MemoryWorkspaceMapID {
+		return d, store.ErrMemoryPolicy
+	}
+	for _, old := range d.Entries {
+		if old.ID != entry.ID {
+			continue
+		}
+		old.Content, old.Purpose, old.Subject = entry.Content, entry.Purpose, entry.Subject
+		old.WorkspaceID, old.SessionID = entry.WorkspaceID, entry.SessionID
+		return s.Store.MutateForAccount(p.AccountScopeID, store.MemoryMutation{ExpectedRevision: revision, Actor: store.MemoryActor{Kind: "user", ID: p.UserID}, Reason: reason, Operation: "put", Entry: old})
+	}
+	return d, store.ErrMemoryPolicy
+}
+
 func (s *Service) Configure(ctx context.Context, revision int64, settings store.MemorySettings) (store.MemoryDocument, error) {
 	p, err := principal(ctx)
 	if err != nil {

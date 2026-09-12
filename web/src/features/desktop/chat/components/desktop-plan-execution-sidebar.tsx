@@ -6,6 +6,7 @@ import {
 import type { TaskChildCardActions, TaskToolRow } from "../types/chat";
 import type { DesktopV3TaskChildViewModel } from "../../state/desktop-v3-cache-selectors";
 import { DesktopPlanSubagentList } from "./desktop-plan-subagent-list";
+import { RecoveryMemoryButton } from '../../memory/recovery-memory-button';
 import { ChevronDown } from "lucide-react";
 import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
@@ -609,12 +610,20 @@ function ActionsSection({
           <div className="text-xs font-semibold text-[var(--app-text)]">
             Blocked checkpoint
           </div>
-          <p className="mt-0.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
-            When the dependency is resolved, tell Swarm what changed and ask it
-            to continue. Swarm will clear the blocker and resume this same
-            checkpoint in fresh context. It will finish any remaining work and
-            explicitly complete the checkpoint before anything later starts.
+          <p className="mt-0.5 break-words text-[11px] leading-4 text-[var(--app-text-muted)]">
+            {view.activeCheckpoint?.waitingReason || view.activeCheckpoint?.finalHandoff?.overview || 'An external dependency must be resolved before work can continue.'}
           </p>
+          <p className="mt-2 break-words text-[11px] leading-4 text-[var(--app-text)]">
+            <strong>Next action: </strong>
+            {view.activeCheckpoint?.recommendation?.action || 'Tell Swarm what changed once the dependency is resolved.'}
+          </p>
+          <p className="mt-2 text-[11px] leading-4 text-[var(--app-text-muted)]">
+            When the dependency is resolved, tell Swarm what changed and ask it
+            to continue. Swarm will verify the resolution and resume this same
+            checkpoint in fresh context. Permission requests remain separate;
+            this message does not grant permission or resume work automatically.
+          </p>
+          <RecoveryMemoryButton />
         </div>
       </section>
     );

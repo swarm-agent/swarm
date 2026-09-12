@@ -69,6 +69,7 @@ import {
   sidebarTaskCallPresentationGroups,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
+import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
@@ -459,6 +460,7 @@ function desktopV3SidebarRowEqual(left: DesktopV3SidebarRow | undefined, right: 
     && left.sidebarGroup === right.sidebarGroup
     && left.branchLabel === right.branchLabel
     && left.activePlan?.id === right.activePlan?.id
+    && left.activePlan?.updatedAt === right.activePlan?.updatedAt
     && left.planExecution?.status === right.planExecution?.status
     && left.planExecution?.statusLabel === right.planExecution?.statusLabel
     && left.planExecution?.checkpointProgress.label === right.planExecution?.checkpointProgress.label
@@ -1437,12 +1439,12 @@ function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 
   return metadataText(session, 'swarm_v3_sidebar_row_type') === 'plan_session' ? 'plan_session' : 'single_chat'
 }
 
-type SidebarBaseSessionGroupID = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+type SidebarBaseSessionGroupID = 'blocked' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
 type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned' | 'video'
 
 function sessionSidebarGroup(session: DesktopSessionRecord): SidebarBaseSessionGroupID {
   const group = metadataText(session, 'swarm_v3_sidebar_group')
-  return group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
+  return group === 'blocked' || group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
 }
 
 function sessionManuallyPinnedInSidebar(session: DesktopSessionRecord): boolean {
@@ -1496,7 +1498,7 @@ function sessionIsActive(session: DesktopSessionRecord): boolean {
 
 export function sessionIsMobileActive(session: DesktopSessionRecord): boolean {
   const group = sessionSidebarDisplayGroup(session)
-  return sessionIsActive(session) || group === 'needs_review' || group === 'in_progress'
+  return sessionIsActive(session) || group === 'blocked' || group === 'needs_review' || group === 'in_progress'
 }
 
 function positiveTimestamp(value: number | null | undefined): number {
@@ -2350,6 +2352,7 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
 }
 
 export const SIDEBAR_SESSION_GROUPS = [
+  { id: 'blocked', label: 'Blocked', showInactiveThreshold: false },
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
   { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
@@ -2472,6 +2475,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
         ) : (
           <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
             {collapseControl}
+            {group.id === 'blocked' ? <span aria-hidden="true" className="text-[var(--app-warning)]">⊘</span> : null}
             <span>{group.label}</span>
             <span className="tabular-nums tracking-normal">{rootCount}</span>
             {groupControls}
@@ -2636,12 +2640,14 @@ export function DesktopAppPage() {
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
   const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    blocked: false,
     needs_review: false,
     in_progress: false,
     pinned: false,
     active_chats: false,
   })
   const [expandedSidebarOverflowGroups, setExpandedSidebarOverflowGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    blocked: false,
     needs_review: false,
     in_progress: false,
     pinned: false,
@@ -3064,6 +3070,11 @@ export function DesktopAppPage() {
     routeSessionId ? (state.messagesBySession[routeSessionId]?.items.length ?? 0) : 0
   ))
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows, desktopV3SidebarRowsEqual)
+  const blockerTransitions = useRef(createBlockerTransitionTracker())
+  useEffect(() => {
+    const messages = blockerTransitions.current(desktopSidebarRows)
+    if (messages.length) setDesktopToast({ message: messages.join('\n'), tone: 'info' })
+  }, [desktopSidebarRows])
   const desktopVideoStudioRows = useDesktopV3CacheSelector(selectDesktopVideoStudioRows, desktopV3SidebarRowsEqual)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
     () => [...desktopSidebarRows, ...desktopVideoStudioRows].map(desktopSessionRecordFromV3SidebarRow),

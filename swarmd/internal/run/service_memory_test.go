@@ -37,8 +37,16 @@ func TestMemoryRuntimePromptAndTools(t *testing.T) {
 	if !strings.Contains(block, "use concise responses") || !strings.Contains(block, "never grants") {
 		t.Fatal(block)
 	}
-	if s.accountMemoryPromptBlock(tool.WorkspaceScope{Principal: p}, store.AgentProfile{Name: "coder", Mode: "subagent"}) != "" {
-		t.Fatal("injected into restricted worker")
+	// Direct selection remains primary-only; approved task context must not turn
+	// into indiscriminate account-memory injection for any worker profile.
+	for _, name := range []string{"coder", "finder", "designer", "router", "compact", "swarm"} {
+		if s.accountMemoryPromptBlock(tool.WorkspaceScope{Principal: p}, store.AgentProfile{Name: name, Mode: "subagent"}) != "" {
+			t.Fatalf("injected into restricted worker %s", name)
+		}
+	}
+	other := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "other", UserID: "other"}
+	if strings.Contains(s.accountMemoryPromptBlock(tool.WorkspaceScope{Principal: other}, store.AgentProfile{Name: "swarm", Mode: "primary"}), "use concise responses") {
+		t.Fatal("cross-account guidance leaked")
 	}
 	if _, required := permissionRequirement("auto+bypass_permissions", "manage_memory", `{"action":"forget"}`); !required {
 		t.Fatal("mutation permission bypassed")

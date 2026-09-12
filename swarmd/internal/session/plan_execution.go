@@ -62,6 +62,8 @@ type PlanExecutionSummary struct {
 	PlanComplete         bool   `json:"plan_complete"`
 	AutoAdvanceAllowed   bool   `json:"auto_advance_allowed"`
 	StopReason           string `json:"stop_reason,omitempty"`
+	WaitingReason        string `json:"waiting_reason,omitempty"`
+	ResolutionAction     string `json:"resolution_action,omitempty"`
 }
 
 type PlanCheckpointStartOptions struct {
@@ -779,6 +781,13 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 				summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 				summary.NextCheckpointStatus = status
 				summary.Blocked = true
+				summary.AutoAdvanceAllowed = false
+				if checkpoint.Handoff != nil {
+					summary.WaitingReason = checkpoint.Handoff.Overview
+				}
+				if checkpoint.Recommendation != nil {
+					summary.ResolutionAction = checkpoint.Recommendation.Action
+				}
 				summary.StopReason = PlanCheckpointStatusBlocked
 				return summary
 			case PlanCheckpointStatusFailed:
@@ -826,6 +835,13 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 			summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 			summary.NextCheckpointStatus = status
 			summary.Blocked = true
+			summary.AutoAdvanceAllowed = false
+			if checkpoint.Handoff != nil {
+				summary.WaitingReason = checkpoint.Handoff.Overview
+			}
+			if checkpoint.Recommendation != nil {
+				summary.ResolutionAction = checkpoint.Recommendation.Action
+			}
 			summary.StopReason = PlanCheckpointStatusBlocked
 			return summary
 		case PlanCheckpointStatusFailed:

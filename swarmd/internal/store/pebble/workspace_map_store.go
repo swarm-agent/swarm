@@ -30,6 +30,11 @@ type WorkspaceMapStore struct {
 	now   func() time.Time
 }
 
+// WorkspaceMapView exposes the canonical revision-guarded map adapter.
+func (s *MemoryStore) WorkspaceMapView() *WorkspaceMapStore {
+	return &WorkspaceMapStore{store: s.store, now: s.now}
+}
+
 func NewWorkspaceMapStore(store *Store) *WorkspaceMapStore {
 	return &WorkspaceMapStore{store: store, now: time.Now}
 }

@@ -54,6 +54,8 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch req.Action {
+		case "edit":
+			result, err = s.memory.Edit(r.Context(), req.ExpectedRevision, req.Entry, req.Reason)
 		case "remember":
 			result, err = s.memory.Remember(r.Context(), req.ExpectedRevision, req.Entry, req.Reason)
 		case "settings":

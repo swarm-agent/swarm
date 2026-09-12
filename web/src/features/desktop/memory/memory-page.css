@@ -28,3 +28,13 @@
 .memory-empty svg { margin: 0 auto 16px; color: var(--app-text-muted); }
 .memory-error { color: var(--app-error); margin-bottom: 16px; overflow-wrap: anywhere; }
 @media (max-width: 600px) { .memory-modal-header, .memory-modal-body { padding: 16px; } }
+
+.memory-modal-inner { max-height: 85vh; }
+.memory-views { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:12px; }
+.memory-views [aria-pressed="true"] { background:var(--app-bg-alt); outline:1px solid var(--app-primary); }
+.memory-explanation, .memory-metadata { font-size:12px; color:var(--app-text-muted); line-height:1.6; overflow-wrap:anywhere; margin:10px 12px; }
+.memory-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:16px 0; }
+.memory-fields label { display:flex; flex-direction:column; gap:4px; font-size:13px; }
+.memory-fields input, .memory-fields select { min-width:0; padding:8px; border:1px solid var(--app-border); border-radius:6px; color:var(--app-text); background:var(--app-bg-alt); }
+.memory-consent { display:flex; align-items:flex-start; gap:8px; margin-top:16px; font-size:13px; }
+@media(max-width:600px) { .memory-fields { grid-template-columns:1fr; } }
