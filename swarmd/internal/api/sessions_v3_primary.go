@@ -2247,7 +2247,7 @@ func (s *Server) handleSessionV3PrimaryActivePlan(w http.ResponseWriter, r *http
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": false, "active_plan": nil})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": plan})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": plan, "document_sha256": sessionPlanDocumentDigest(plan.Document)})
 		return
 	}
 	var req struct {
@@ -2353,7 +2353,7 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": prepared.Plan, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": prepared.Plan, "document_sha256": sessionPlanDocumentDigest(prepared.Plan.Document), "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func (s *Server) preflightSessionsV3PlanFreshRun(_ *http.Request, _ identity.Principal, _ string) (int, error) {
@@ -2417,7 +2417,7 @@ func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "plan not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan, "document_sha256": sessionPlanDocumentDigest(plan.Document)})
 }
 
 func (s *Server) handleSessionsV3SubagentStop(w http.ResponseWriter, r *http.Request) {
