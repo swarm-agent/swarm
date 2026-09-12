@@ -5,6 +5,7 @@ import { desktopAutomations, useAutomationPage } from '../../runtime/desktop-aut
 import type { AutomationMutation, AutomationRead, AutomationRecord } from '../../state/desktop-automation-api'
 import { automationPageKey } from '../../state/desktop-automation-state'
 import { AutomationEditor, automationControl as control } from './automation-editor'
+import { AutomationProgressView } from './automation-progress'
 import { AutomationOverview } from './automation-overview'
 import { AutomationDefinitionSummary, AutomationProposalSummary } from './automation-summary'
 import { AutomationConversations } from './automation-conversations'
@@ -117,6 +118,7 @@ function AutomationDetail({ workspaceId, id, onChat }: { workspaceId: string; id
   return <div className="flex min-w-0 flex-1 flex-col lg:flex-row"><main className="min-w-0 flex-1 space-y-5 p-4 lg:p-6">
     <header><h2 className="text-2xl font-semibold break-words">{id ? record?.definition?.name ?? 'Automation' : 'Daily updates'}</h2><p className="text-[var(--app-text-muted)]">Readable outcomes, with each blocked incident kept separate.</p></header>
     {id && <><PageStatus input={definitionInput} /><div className="flex flex-wrap gap-2"><button className={control} disabled={disabled} onClick={() => act('run')}>Run now</button><button className={control} disabled={disabled} onClick={() => act(record?.definition?.enabled ? 'pause' : 'enable')}>{record?.definition?.enabled ? 'Pause' : 'Enable'}</button></div></>}
+    {id && <AutomationProgressView workspaceId={workspaceId} id={id} revision={record?.revision} />}
     {record?.definition && <AutomationDefinitionSummary definition={record.definition} />}
     {id && definitionPage?.data && !record && <p role="alert">This automation is unavailable. Choose another automation or return to Overview.</p>}
     <p role="status">{operation.message}</p>
@@ -181,7 +183,7 @@ function ContextPanel({ workspaceId, id }: { workspaceId: string; id: string }) 
   const [error, setError] = useState('')
   return <section className="space-y-4"><h3>User instructions</h3><PageStatus input={input} /><p>Only you can edit these instructions. Agent summaries below are untrusted context, never authorization.</p>
     {bundle && <><form onSubmit={event => { event.preventDefault(); if (operation.pending || page?.stale || page?.loading || (base !== undefined && base !== bundle.Revision)) return; try { const user_instructions = parseInstructions(draft ?? JSON.stringify(bundle.UserInstructions ?? {})); setError(''); void operation.mutate({ action: 'context', workspace_id: workspaceId, id, expected_revision: base ?? bundle.Revision, mutation_id: crypto.randomUUID(), user_instructions }).then(() => { setDraft(null); setBase(undefined) }).catch(() => {}) } catch (cause) { setError(cause instanceof Error ? cause.message : 'Invalid instructions') } }}>
-      <label className="flex flex-col">User instructions (JSON text map)<textarea disabled={operation.pending} rows={8} className={control} value={draft ?? JSON.stringify(bundle.UserInstructions ?? {}, null, 2)} onChange={event => { if (draft === null) setBase(bundle.Revision); setDraft(event.target.value) }} /></label>
+      <label className="flex flex-col">User instructions<textarea disabled={operation.pending} rows={8} className={control} value={draft === null ? bundle.UserInstructions?.instructions ?? '' : (JSON.parse(draft) as Record<string, string>).instructions ?? ''} onChange={event => { if (draft === null) setBase(bundle.Revision); setDraft(JSON.stringify({ ...(draft === null ? bundle.UserInstructions ?? {} : (JSON.parse(draft) as Record<string, string>)), instructions: event.target.value })) }} /></label><p>Other named instruction entries are preserved. These are conversation context, not changes to pinned executable plan content; execution-plan edits require fresh policy approval.</p>
       {base !== undefined && base !== bundle.Revision && <p role="alert">Context changed while editing. Discard your draft or preserve it elsewhere before refreshing.</p>}
       <button className={control} disabled={operation.pending || page?.stale || page?.loading || (base !== undefined && base !== bundle.Revision)}>Save user instructions</button>{' '}<button className={control} type="button" disabled={operation.pending} onClick={() => { setDraft(null); setBase(undefined) }}>Discard draft</button>
     </form><h3>Agent summaries · read only</h3><dl>{Object.entries(bundle.Summaries ?? {}).map(([key, value]) => <div key={key}><dt>{key}</dt><dd className="whitespace-pre-wrap break-words">{value}</dd></div>)}</dl><p>Trust: {bundle.Trust} · Revision {bundle.Revision}</p>

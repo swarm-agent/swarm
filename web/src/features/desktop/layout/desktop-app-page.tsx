@@ -69,6 +69,7 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
+import { AutomationProgressView } from '../tools/automations/automation-progress'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
@@ -1856,12 +1857,13 @@ interface SessionRowProps {
 
 const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
   const session = initialSession
+  const automation = useDesktopV3CacheSelector(state => selectSession(state, session.id)?.automation)
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
   const backgroundInfo = sessionBackgroundInfo(session)
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
-  const isPlanRow = rowType === 'plan_session'
+  const isPlanRow = !automation && rowType === 'plan_session'
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -2180,11 +2182,12 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                 </form>
               ) : (
                 <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
-                  {rowTitle}
+                  {automation ? 'Automation · ' : ''}{rowTitle}
                 </span>
               )}
 
             </div>
+            {automation && <AutomationProgressView workspaceId={automation.workspace_id} id={automation.automation_id} compact />}
           </div>
         </div>
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">

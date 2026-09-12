@@ -34,11 +34,23 @@ export interface AutomationApproval {
   scope: AutomationRecord['scope']; id: string; automation_id: string; definition_revision: number
   policy_sha256: string; subject_id: string; expires_at: number; written_at: number; revoked_at?: number; revision: number
 }
+export interface AutomationProgress {
+  automation_id: string; definition_revision: number; schedule: AutomationDefinition['schedule']; interval_anchor?: number
+  display_timezone: string; day_start: number; day_end: number; as_of: number; freshness: string
+  history_complete: boolean; forecast_complete: boolean; upcoming_complete: boolean; forecast_horizon_end: number
+  planned_slots: AutomationProgressSlot[]; upcoming_slots: AutomationProgressSlot[]; next_eligible?: AutomationProgressSlot; no_next_reason?: string
+  counts: Record<string, number>; manual_counts: Record<string, number>; unknown_trigger_count: number
+  occurrences: AutomationProgressOccurrence[]; latest_recorded?: AutomationProgressOccurrence
+  timing_availability: string; missed_availability: string; outcome_availability: string
+}
+export interface AutomationProgressSlot { scheduled_at: number; definition_revision: number; forecast: boolean }
+export interface AutomationProgressOccurrence { id: string; revision: number; definition_revision: number; scheduled_at: number; state: string; trigger_kind: string; recorded_at: number }
 export interface AutomationRead {
   workspace_id: string
-  action: 'list' | 'search' | 'history' | 'get' | 'context' | 'policy'
+  action: 'list' | 'search' | 'history' | 'get' | 'context' | 'policy' | 'progress'
   id?: string
   kind?: AutomationKind
+  display_timezone?: string
   record_id?: string
   query?: string
   cursor?: string
@@ -47,6 +59,7 @@ export interface AutomationRead {
   limit?: number
 }
 export interface AutomationResponse {
+  progress?: AutomationProgress
   records?: AutomationRecord[] | null
   next_cursor?: string
   next_before?: number
@@ -72,6 +85,10 @@ export class AutomationAPIError extends Error {
 }
 export function automationReadURL(input: AutomationRead): string {
   if (!input.workspace_id.trim()) throw new Error('workspace_id required')
+  if (input.action === 'progress') {
+    if (!input.id?.trim() || !input.display_timezone || input.display_timezone === 'Local') throw new Error('Progress identity and display timezone required')
+    new Intl.DateTimeFormat('en', { timeZone: input.display_timezone })
+  }
   const limit = input.limit ?? 20
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error('limit must be 1–50')
   for (const value of [input.before, input.revision]) {

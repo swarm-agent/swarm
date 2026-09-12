@@ -16,7 +16,7 @@ export class DesktopAutomationRuntime {
   acquire(input: AutomationRead): { ready: Promise<void>; release: () => void } {
     const key = automationPageKey(input)
     const current = this.demand.get(key)
-    if (!current && this.demand.size >= 12) throw new Error('Too many automation pages open')
+    if (!current && this.demand.size >= 48) throw new Error('Too many automation pages open')
     this.demand.set(key, { input: { ...input }, count: (current?.count ?? 0) + 1 })
     let released = false
     return { ready: this.refresh(input), release: () => {
@@ -42,6 +42,7 @@ export class DesktopAutomationRuntime {
     const generation = this.deps.pages()[key].generation
     const promise: Promise<void> = this.deps.read(input).then(data => {
       if (this.inFlight.get(key) !== promise) return
+      if (data.progress && (data.progress.automation_id !== input.id || data.progress.display_timezone !== input.display_timezone)) throw new Error('Automation progress scope mismatch')
       const records = [...(data.records ?? []), ...(data.record ? [data.record] : [])]
       if (records.some(record => record.scope.workspace_id !== input.workspace_id || (input.id && record.automation_id !== input.id))) throw new Error('Automation response scope mismatch')
       this.deps.dispatch({ type: 'automation.finish', key, requestId, generation, data })
