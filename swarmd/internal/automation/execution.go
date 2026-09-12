@@ -105,7 +105,19 @@ func (e *ExecutionService) Admit(ctx context.Context, p Principal, scope store.A
 	}
 	key := executionKey(trigger.Kind, trigger.Source, trigger.Identity)
 	occurrenceID := executionKey(scope, id, key)
-	r := store.AutomationRecord{Scope: scope, AutomationID: id, Kind: "occurrence", ID: occurrenceID, Occurrence: &store.AutomationOccurrence{DefinitionRevision: revision, TriggerIdentity: key, ScheduledAt: trigger.ScheduledAt, State: "pending"}}
+	// Legacy admissions predate trigger_kind. Preserve their receipt bytes on
+	// replay rather than attempting to retrofit immutable occurrence identity.
+	prior, found, err := s.repo.GetAutomationRecord(scope, id, "occurrence", occurrenceID, 1)
+	if err != nil {
+		return store.AutomationRecord{}, err
+	}
+	if found && prior.Occurrence != nil && prior.Occurrence.TriggerKind == "" {
+		if prior.SubjectID != p.SubjectID || prior.Actor != p.Role || prior.Occurrence.TriggerIdentity != key || prior.Occurrence.DefinitionRevision != revision || prior.Occurrence.ScheduledAt != trigger.ScheduledAt {
+			return store.AutomationRecord{}, store.ErrAutomationConflict
+		}
+		return prior, nil
+	}
+	r := store.AutomationRecord{Scope: scope, AutomationID: id, Kind: "occurrence", ID: occurrenceID, Occurrence: &store.AutomationOccurrence{DefinitionRevision: revision, TriggerKind: trigger.Kind, TriggerIdentity: key, ScheduledAt: trigger.ScheduledAt, State: "pending"}}
 	out, _, err := s.repo.ApplyAutomationMutation(store.AutomationMutation{Record: r, MutationID: "admit-" + occurrenceID, Actor: p.Role, SubjectID: p.SubjectID, WrittenAt: s.now().UnixMilli()})
 	return out, err
 }

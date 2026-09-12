@@ -146,6 +146,13 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch q.Get("action") {
+		case "progress":
+			progress, err := a.domain.ScheduleProgress(ctx, p, scope, q.Get("id"), q.Get("display_timezone"))
+			if err != nil {
+				automationHTTPError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"progress": progress})
 		case "review":
 			review, err := a.domain.ReviewDefinition(ctx, p, scope, q.Get("id"))
 			if err != nil {

@@ -90,6 +90,7 @@ type AutomationDefinition struct {
 }
 
 type AutomationOccurrence struct {
+	TriggerKind        string `json:"trigger_kind,omitempty"` // empty for legacy records; never infer manual origin
 	DefinitionRevision uint64 `json:"definition_revision"`
 	TriggerIdentity    string `json:"trigger_identity"`
 	ScheduledAt        int64  `json:"scheduled_at"`
@@ -229,6 +230,11 @@ func validateAutomationRecord(r AutomationRecord) error {
 		if r.Occurrence == nil || r.Occurrence.DefinitionRevision == 0 || !automationValidID(r.Occurrence.TriggerIdentity) {
 			return ErrAutomationInvalid
 		}
+		switch r.Occurrence.TriggerKind {
+		case "", "schedule", "manual", "event":
+		default:
+			return ErrAutomationInvalid
+		}
 		switch r.Occurrence.State {
 		case "pending", "running", "blocked", "cancelling", "completed", "failed", "cancelled", "skipped":
 		default:
@@ -361,7 +367,7 @@ func (s *Store) applyAutomationMutation(m AutomationMutation, cancellation bool)
 		}
 		if found {
 			p := old.Occurrence
-			if p.DefinitionRevision != o.DefinitionRevision || p.TriggerIdentity != o.TriggerIdentity || p.ScheduledAt != o.ScheduledAt || (p.SessionID != "" && p.SessionID != o.SessionID) {
+			if p.DefinitionRevision != o.DefinitionRevision || p.TriggerIdentity != o.TriggerIdentity || p.TriggerKind != o.TriggerKind || p.ScheduledAt != o.ScheduledAt || (p.SessionID != "" && p.SessionID != o.SessionID) {
 				return zero, false, ErrAutomationConflict
 			}
 			if !automationStateTransition(p.State, o.State) {

@@ -39,3 +39,45 @@ Desktop configuration reviews saved policy and performs approve→link CAS; expi
 ## Explicit gaps and validation
 
 No delete/tombstone API. No complete daily digest, dedicated management-session creation, automatic application of chat proposals, or rich deliverable index on outcome cards. Approval and link are two operations: failed linking can leave an unlinked expiring grant; no background retry or false success. Browser usability, full UI workflow, live schedule/restart, socket authentication, provider execution and deployment have not been validated by this source audit. Tests/builds/browser trials not run; parent validation required. Source assertions are not execution evidence.
+
+## Bounded schedule/progress read
+
+`GET /v3/automations?action=progress&workspace_id=…&id=…&display_timezone=UTC`
+returns `{progress: …}` from `automation.Service.ScheduleProgress`; agents call
+that same service with their bound principal. `display_timezone` is an explicit
+IANA civil-day timezone (not `Local`); it does not change interval execution or
+cron policy. All numeric times are Unix milliseconds. `definition_revision`,
+`schedule`, and optional `interval_anchor` identify the current immutable policy.
+`day_start`/`day_end` are UTC instants bracketing the local day, not a 24-hour quota.
+
+`planned_slots` enumerates enabled definition validity windows (at most 50
+revisions), retaining earlier pinned revisions across edits. Every slot remains
+a forecast, not an admission promise. `upcoming_slots` enumerates the current
+policy over 48 hours, capped at 100; `forecast_horizon_end` and
+`upcoming_complete` expose that bound. `forecast_complete` applies to today's
+revision-window enumeration only. `next_eligible` is conditional on current
+checks, expiry and observed overlap; future approval/revocation, missed-run,
+shared-target and daemon availability decisions still belong to admission.
+`no_next_reason` distinguishes pause, approval, expiry, manual/event schedules,
+unknown overlap/history, unavailable plan/authorization and horizon exhaustion.
+
+`counts` and `manual_counts` count unique occurrence IDs by their scheduled-day
+cohort and current durable state; only `completed` is confirmed completion.
+Retries/revisions do not add to the count. Legacy scheduled trigger hashes are
+verifiable; other legacy triggers remain `unknown_trigger_count`, never silently
+manual. New admissions persist immutable `trigger_kind`. Occurrences retain their
+pinned definition revision. At most eight 50-result/512-key pages are scanned,
+including empty continuation pages. `history_complete=false` means all counts and
+`latest_recorded` are partial observations, **not totals or globally latest**.
+
+`as_of` is the read-start clock; `freshness=non_atomic_read` explicitly disclaims a
+transaction snapshot. Consume canonical automation durable invalidations and
+reconnect replay to refetch, plus initial hydration/explicit refresh. No network
+poll loop or frontend cron evaluator is part of this contract. Local clock-only
+presentation may mark an old-day projection stale until a canonical refetch.
+
+`recorded_at` is the occurrence state write, not execution start or completion.
+Actual start/completion timing and unrecorded skipped/missed totals are explicitly
+unavailable. Audit summary/details are not scanned by this projection; use the
+existing paginated audit history. Absence of an occurrence never proves a skip,
+success or scheduler health. Daemon-loop composition remains a separate concern.
