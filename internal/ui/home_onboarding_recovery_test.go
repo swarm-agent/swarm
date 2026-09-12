@@ -30,15 +30,22 @@ func TestOnboardingRepositorySetupConsent(t *testing.T) {
 			t.Fatal("failure retained consent")
 		}
 		p.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, 0))
+		if p.OnboardingWorkspacePath() != "" || p.onboarding.SetupConsent {
+			t.Fatal("back did not clear folder and consent")
+		}
+		if _, ok := p.PopHomeAction(); ok {
+			t.Fatal("back queued a mutation")
+		}
+		p.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, 0))
 		if !p.OnboardingProviderActive() {
-			t.Fatal("back did not work")
+			t.Fatal("back from choices did not return to provider")
 		}
 	}
 }
 
 // Requirement: changing location revokes Git consent, and cancelling an edit
-// restores the selected path. Folder creation is a distinct action, never Git
-// consent. Exercise the production key router rather than rendered strings.
+// restores the selected path. New-folder navigation opens a blank name draft,
+// never a filesystem action. Exercise the production key router.
 func TestOnboardingLocationRevokesConsent(t *testing.T) {
 	p := readyOnboardingPage()
 	p.ShowOnboardingWorkspace("")
@@ -58,8 +65,10 @@ func TestOnboardingLocationRevokesConsent(t *testing.T) {
 		t.Fatal("location edit retained consent")
 	}
 	p.HandleKey(tcell.NewEventKey(tcell.KeyCtrlN, 0, 0))
-	action, ok := p.PopHomeAction()
-	if !ok || action.Kind != HomeActionCreateOnboardingFolder || action.WorkspacePath != original {
-		t.Fatalf("folder action: %+v", action)
+	if action, ok := p.PopHomeAction(); ok {
+		t.Fatalf("naming queued a mutation: %+v", action)
+	}
+	if !p.onboarding.NamingProject || p.onboarding.ProjectName != "" || p.onboarding.SetupConsent {
+		t.Fatal("new folder did not open an unconsented blank draft")
 	}
 }
