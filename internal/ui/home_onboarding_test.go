@@ -22,11 +22,18 @@ func readyOnboardingPage() *HomePage {
 	return page
 }
 
+// Requirement: HomePage multi-field Enter moves focus first, then emits exactly
+// one save and waits for API completion. This event boundary prevents premature
+// provider navigation without running a daemon or provisioning identity.
 func TestOnboardingIdentityAdvancesOnlyAfterSaveCompletion(t *testing.T) {
 	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
 	// Unsaved typed names are distinct from persisted identity on resume.
 	page.model.OnboardingUsername = "alice"
 	page.model.OnboardingSwarmName = "Local Swarm"
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if _, ok := page.PopHomeAction(); ok || page.onboarding.Focus != onboardingFocusSwarmName {
+		t.Fatal("first field must focus the final field without saving")
+	}
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	action, ok := page.PopHomeAction()
@@ -59,23 +66,21 @@ func TestOnboardingProviderSkipRequiresWorkspaceConfirmation(t *testing.T) {
 }
 
 // Requirement: TUI onboarding must not admit an unborn repository before explicit
-// setup consent creates HEAD. The UI action gate proves Enter only requests
-// consent and does not bypass canonical managed-worktree admission.
+// setup consent creates HEAD. The UI action gate proves Enter requests only
+// daemon inspection and does not bypass canonical managed-worktree admission.
 func TestOnboardingWorkspaceRejectsRepositoryWithoutInitialCommit(t *testing.T) {
 	page := readyOnboardingPage()
 	page.model.WorkspaceSetupGitReadiness = model.GitReadinessNeedsCommit
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
-	if _, ok := page.PopHomeAction(); ok {
-		t.Fatal("unborn repository queued workspace creation")
-	}
-	if !strings.Contains(page.onboarding.Status, "Press y") {
-		t.Fatalf("unborn repository guidance = %q", page.onboarding.Error)
+	if action, ok := page.PopHomeAction(); !ok || action.Kind != HomeActionInspectOnboardingRepository {
+		t.Fatalf("must inspect before mutation: %+v", action)
 	}
 }
 
 // Requirement: an inconclusive TUI-local Git check must reach the authenticated
-// workspace-add admission gate, which revalidates the exact path before mutation.
+// repository inspection gate before any workspace-add mutation.
 // Threat: namespace or ownership constraints can make client-side Git return an
 // indeterminate status for a repository the daemon can validate, permanently
 // blocking first-run onboarding before the canonical authority is consulted.
@@ -84,21 +89,23 @@ func TestOnboardingWorkspaceIndeterminateReadinessQueuesCanonicalAdmission(t *te
 		page := readyOnboardingPage()
 		page.model.WorkspaceSetupGitReadiness = readiness
 		page.ShowOnboardingWorkspace("Confirm workspace")
+		page.SetOnboardingWorkspacePath("/repo/project")
 		page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 		action, ok := page.PopHomeAction()
-		if !ok || action.Kind != HomeActionCreateOnboardingWorkspace || action.WorkspacePath != "/repo/project" {
+		if !ok || action.Kind != HomeActionInspectOnboardingRepository || action.WorkspacePath != "/repo/project" {
 			t.Fatalf("readiness %q action = %+v, ok=%v", readiness, action, ok)
 		}
 	}
 }
 
-func TestOnboardingWorkspaceEnterQueuesLaunchCWDAndLocksPending(t *testing.T) {
+func TestOnboardingWorkspaceEnterQueuesSelectedPathAndLocksPending(t *testing.T) {
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
 	action, ok := page.PopHomeAction()
-	if !ok || action.Kind != HomeActionCreateOnboardingWorkspace {
+	if !ok || action.Kind != HomeActionInspectOnboardingRepository {
 		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
 	}
 	if action.WorkspacePath != "/repo/project" {
@@ -113,6 +120,7 @@ func TestOnboardingWorkspaceEnterQueuesLaunchCWDAndLocksPending(t *testing.T) {
 func TestOnboardingWorkspaceErrorAllowsRetryAndCompletionUnlocks(t *testing.T) {
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 	if _, ok := page.PopHomeAction(); !ok {
 		t.Fatal("initial workspace action was not queued")
@@ -158,11 +166,44 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 
 	page := readyOnboardingPage()
 	page.ShowOnboardingWorkspace("Confirm workspace")
+	page.SetOnboardingWorkspacePath("/repo/project")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Workspace location (Ctrl+L to edit)", "/repo/project", "Git repository ready"} {
+	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Select another location", "/repo/project", "Inspect selected folder"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}
+	}
+}
+
+// Requirement: daemon guidance must not replace a chosen project or authorize
+// filesystem mutation. HomePage's real key handler is the narrow consent boundary;
+// cancellation and repeated Enter must emit no setup action before explicit y.
+func TestOnboardingDaemonSuggestionRequiresSelectionAndConsent(t *testing.T) {
+	page := readyOnboardingPage()
+	page.ShowOnboardingWorkspace("")
+	original := page.OnboardingWorkspacePath()
+	page.SetOnboardingWorkspaceGuidance("worker", "/projects/new-workspace")
+	if page.OnboardingWorkspacePath() != original {
+		t.Fatal("guidance replaced the selected project")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, tcell.ModNone))
+	if !page.onboarding.NamingProject || page.onboarding.ProjectName != "" || page.onboarding.ProjectParent != "/projects/new-workspace" {
+		t.Fatal("new project must start with a blank name under runtime home")
+	}
+	if _, ok := page.PopHomeAction(); ok {
+		t.Fatal("selection authorized mutation")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'y', tcell.ModNone))
+	if _, ok := page.PopHomeAction(); ok {
+		t.Fatal("cancelled consent remained usable")
+	}
+	focusRepositoryControl(page, "home")
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	action, ok := page.PopHomeAction()
+	if !ok || action.Kind != HomeActionInspectOnboardingRepository || action.WorkspacePath != "/projects/new-workspace" {
+		t.Fatalf("home selection must inspect without mutation = %+v, %v", action, ok)
 	}
 }

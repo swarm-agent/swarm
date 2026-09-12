@@ -176,3 +176,83 @@ func TestServiceLoginRejectsUnsafeReuse(t *testing.T) {
 		})
 	}
 }
+
+// Requirement: consent and all account tools must be checked before useradd.
+// This read-only preflight boundary prevents unsupported hosts and declined
+// installs from reaching account mutation; provision tests above assert commands.
+func TestServiceAccountPreflight(t *testing.T) {
+	for _, scenario := range []string{"declined", "accepted", "existing", "lookup failure", "missing passwd", "missing getent", "missing useradd", "missing shell"} {
+		t.Run(scenario, func(t *testing.T) {
+			checks := 0
+			err := preflightServiceAccount(scenario != "declined", func(string) (*user.User, error) {
+				if scenario == "existing" {
+					return &user.User{}, nil
+				}
+				if scenario == "lookup failure" {
+					return nil, errors.New("unavailable")
+				}
+				return nil, user.UnknownUserError("swarm")
+			}, func(name string) (string, error) {
+				checks++
+				if scenario == "missing "+name {
+					return "", os.ErrNotExist
+				}
+				if scenario == "existing" && name == "useradd" {
+					t.Fatal("reinstall requires creation tool")
+				}
+				return name, nil
+			}, func(string) (os.FileInfo, error) {
+				if scenario == "missing shell" {
+					return nil, os.ErrNotExist
+				}
+				return ownerInfo{mode: 0755}, nil
+			})
+			if (err == nil) != (scenario == "accepted" || scenario == "existing") {
+				t.Fatalf("error=%v", err)
+			}
+			if (scenario == "declined" || scenario == "lookup failure") && checks != 0 {
+				t.Fatal("continued after consent/database rejection")
+			}
+		})
+	}
+}
+
+// Requirement: canonical install directories, not a changed sudo environment,
+// preserve reinstall identity. This filesystem-metadata layer checks conflicting,
+// inaccessible, root-owned and symlink state fail closed without any writes.
+func TestExistingInstallOwner(t *testing.T) {
+	for _, scenario := range []string{"fresh", "consistent", "partial", "conflict", "root", "symlink", "inaccessible"} {
+		t.Run(scenario, func(t *testing.T) {
+			uid, gid, found, err := resolveExistingInstallOwner([]string{"runtime", "config", "data"}, func(path string) (os.FileInfo, error) {
+				if scenario == "fresh" || (scenario == "partial" && path != "data") {
+					return nil, os.ErrNotExist
+				}
+				if scenario == "inaccessible" {
+					return nil, os.ErrPermission
+				}
+				info := ownerInfo{mode: os.ModeDir | 0700, uid: 1234, gid: 1234}
+				if scenario == "conflict" && path == "data" {
+					info.uid = 2000
+				}
+				if scenario == "root" {
+					info.uid = 0
+				}
+				if scenario == "symlink" {
+					info.mode = os.ModeSymlink | 0777
+				}
+				return info, nil
+			})
+			ok := scenario == "fresh" || scenario == "consistent" || scenario == "partial"
+			if (err == nil) != ok {
+				t.Fatalf("error=%v", err)
+			}
+			if ok && scenario != "fresh" {
+				if !found || uid != "1234" || gid != "1234" {
+					t.Fatalf("owner=%s:%s found=%v", uid, gid, found)
+				}
+			} else if found || uid != "" || gid != "" {
+				t.Fatal("returned owner for absent or unsafe state")
+			}
+		})
+	}
+}

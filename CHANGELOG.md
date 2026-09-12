@@ -6,6 +6,9 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix root-user installation and workspace recovery: require explicit consent before creating a service account, preserve existing ownership, and activate the installed candidate when a service is already running.
+- Offer authenticated daemon-owned workspace guidance during fresh and resumed TUI onboarding, with explicit consent for new-folder setup and repository initialization.
+
 - Fix workspace Save in root-launched TUI clients by deferring repository validation to the authenticated daemon, preserving repository-root, initial-commit, and Git ownership checks. Docs impact: clarified workspace validation authority in the Swarm Atlas.
 
 - Fix TUI onboarding exit and recovery: Ctrl+C exits during setup, Enter retries workspace checks, Esc goes back, and explicit confirmation initializes empty folders or creates an empty first commit without staging existing files. Docs impact: documented setup controls and safety boundaries in the Swarm Atlas.
@@ -79,6 +82,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ### Docs impact
 
+- The Swarm Atlas records service-account consent, ownership preservation, authenticated workspace guidance, resumed onboarding, and installed-candidate activation behavior.
 - Public TUI onboarding docs should explain resumed provider/workspace setup, `Ctrl+L` location editing, `Ctrl+U` clearing, `Enter` confirmation, `Esc` cancellation, and `Ctrl+N` folder creation. Document explicit Git consent, home/root protection, and choosing another project when a folder cannot be safely initialized; the Swarm Atlas records these controls and completion behavior.
 - Public artifact docs should explain generation grouping, revision-bound playback, scene remix, exact historical sources, reference-only attachments, retained-draft recovery, sandboxed Three.js support, and frame-budget-based animation duration limits.
 - Public TUI guidance should reflect custom question answers and saved-response display; workspace synchronization, theme targeting, and capture lifecycle fixes need no new setup instructions.

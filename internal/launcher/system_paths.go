@@ -20,6 +20,9 @@ type systemDirSpec struct {
 }
 
 func EnsureSystemInstallReady() error {
+	if err := PreflightInstallation(false); err != nil {
+		return err
+	}
 	if err := prepareInstallOwner(); err != nil {
 		return err
 	}
@@ -263,11 +266,14 @@ func EnsureSystemdServiceUnit() error {
 	if os.Getenv("SWARM_SKIP_SYSTEMD_UNIT") == "1" {
 		return nil
 	}
-	if err := prepareInstallOwner(); err != nil {
-		return err
-	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
+	}
+	if err := PreflightInstallation(true); err != nil {
+		return err
+	}
+	if err := prepareInstallOwner(); err != nil {
+		return err
 	}
 	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
 	if err != nil {
@@ -381,7 +387,7 @@ func validateInstallOwner() error {
 	if err != nil {
 		return fmt.Errorf("resolve install owner uid %q: %w", uid, err)
 	}
-	if owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\n\r\"%") {
+	if owner.Gid != gid || !safeInstallOwnerHome(owner.HomeDir) {
 		return errors.New("install owner requires its primary group and a safe non-root home")
 	}
 	if _, err := user.LookupGroupId(gid); err != nil {
@@ -390,7 +396,21 @@ func validateInstallOwner() error {
 	return nil
 }
 
+func safeInstallOwnerHome(home string) bool {
+	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")
+}
+
 func installOwnerIDs() (string, string) {
+	uid, gid, found, err := existingInstallOwner()
+	if err != nil {
+		return "", ""
+	}
+	if found {
+		return uid, gid
+	}
+	if selectedInstallAccount != nil {
+		return selectedInstallAccount.Uid, selectedInstallAccount.Gid
+	}
 	return resolveInstallOwnerIDs(os.Geteuid(), os.Getuid(), os.Getgid(), os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"), user.Lookup)
 }
 

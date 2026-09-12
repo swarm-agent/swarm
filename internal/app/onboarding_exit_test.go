@@ -81,3 +81,34 @@ func TestOnboardingSetupFailureDoesNotAdmitOrComplete(t *testing.T) {
 	default:
 	}
 }
+
+// Requirement: startup consumes authenticated daemon guidance without changing
+// the selected path or writing state. App/client integration is the narrow layer
+// proving decoding, account mismatch handling, and key-driven consent together.
+func TestOnboardingGuidancePreservesSelectionUntilExplicitKey(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	t.Setenv("DATA_DIR", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/onboarding" {
+			t.Errorf("unexpected mutation/request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Write([]byte(`{"workspace_guidance":{"runtime_username":"worker","runtime_uid":"different-user","runtime_non_root":true,"home_path":"/projects/new"}}`))
+	}))
+	defer server.Close()
+	home := ui.NewHomePage(model.HomeModel{OnboardingRequired: true, CWD: "/selected"})
+	home.ShowOnboardingWorkspace("")
+	a := &App{home: home, api: client.New(server.URL)}
+	a.refreshOnboardingWorkspaceGuidance()
+	if !a.onboardingDifferentUser || home.OnboardingWorkspacePath() != "/selected" {
+		t.Fatal("guidance ignored daemon identity or replaced selection")
+	}
+	home.HandleKey(tcell.NewEventKey(tcell.KeyCtrlS, 0, 0))
+	if home.OnboardingWorkspacePath() != "/projects/new" {
+		t.Fatal("suggestion was not consumed by key handler")
+	}
+	if _, ok := home.PopHomeAction(); ok {
+		t.Fatal("guidance selection bypassed setup consent")
+	}
+}

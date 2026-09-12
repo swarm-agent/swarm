@@ -8,6 +8,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -24,21 +25,37 @@ type onboardingFocus int
 const (
 	onboardingFocusUsername onboardingFocus = iota
 	onboardingFocusSwarmName
+	onboardingFocusContinue
+	onboardingFocusCancel
 )
 
 type onboardingState struct {
-	Visible        bool
-	Locked         bool
-	Phase          onboardingPhase
-	Focus          onboardingFocus
-	Status         string
-	Error          string
-	Pending        bool
-	WorkspacePath  string
-	WorkspaceReady bool
-	SetupConsent   bool
-	EditingPath    bool
-	PreviousPath   string
+	Visible            bool
+	Locked             bool
+	Phase              onboardingPhase
+	Focus              onboardingFocus
+	Status             string
+	Error              string
+	Pending            bool
+	WorkspacePath      string
+	WorkspaceReady     bool
+	SetupConsent       bool
+	EditingPath        bool
+	RuntimeAccount     string
+	HomePath           string
+	ProjectName        string
+	ProjectParent      string
+	NamingProject      bool
+	ProjectField       int
+	PreviousPath       string
+	ActionIndex        int
+	ChoosingRepository bool
+	Repositories       []client.WorkspaceDiscoverEntry
+	Repository         *client.OnboardingRepository
+	Review             *client.OnboardingReview
+	Selected           map[string]bool
+	ConfirmOmissions   bool
+	BaselineAttempt    *client.OnboardingBaseline
 }
 
 func (p *HomePage) SetOnboardingRequired(required bool, username, swarmName string) {
@@ -66,9 +83,9 @@ func (p *HomePage) ShowOnboardingLocked(status string) {
 			p.onboarding.Phase = onboardingPhaseProvider
 		}
 		p.onboarding.Focus = onboardingFocusUsername
-	}
-	if p.onboarding.WorkspacePath == "" {
-		p.onboarding.WorkspacePath = strings.TrimSpace(p.model.CWD)
+		if p.model.OnboardingUsername != "" && p.model.OnboardingSwarmName == "" {
+			p.onboarding.Focus = onboardingFocusSwarmName
+		}
 	}
 	if strings.TrimSpace(status) != "" {
 		p.onboarding.Status = strings.TrimSpace(status)
@@ -85,6 +102,15 @@ func (p *HomePage) OnboardingProviderActive() bool {
 
 func (p *HomePage) OnboardingWorkspaceActive() bool {
 	return p != nil && p.onboarding.Visible && p.onboarding.Phase == onboardingPhaseWorkspace
+}
+
+// Guidance is an offer, never authority to replace a selected workspace or create files.
+func (p *HomePage) SetOnboardingWorkspaceGuidance(account, home string) {
+	p.onboarding.RuntimeAccount = strings.TrimSpace(account)
+	p.onboarding.HomePath = strings.TrimSpace(home)
+	if p.onboarding.ProjectParent == "" {
+		p.onboarding.ProjectParent = p.onboarding.HomePath
+	}
 }
 
 func (p *HomePage) OnboardingWorkspacePath() string {
@@ -130,6 +156,7 @@ func (p *HomePage) ShowOnboardingWorkspace(status string) {
 	p.authModal.Login = nil
 	p.authModal.Loading = false
 	p.onboarding.Phase = onboardingPhaseWorkspace
+	p.onboarding.ActionIndex = 0
 	p.onboarding.Pending = false
 	p.onboarding.Error = ""
 	if strings.TrimSpace(status) != "" {
@@ -189,6 +216,10 @@ func (p *HomePage) handleOnboardingKey(ev *tcell.EventKey) {
 }
 
 func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
+	if ev.Key() == tcell.KeyEnter && p.onboarding.Focus == onboardingFocusCancel {
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
+		return
+	}
 	switch {
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusNext, KeybindEditorMoveDown):
 		p.advanceOnboardingFocus(1)
@@ -203,13 +234,18 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.clearOnboardingField()
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if p.onboarding.Focus == onboardingFocusUsername && strings.TrimSpace(p.model.OnboardingUsername) != "" {
+			p.onboarding.Focus = onboardingFocusSwarmName
+			p.onboarding.Error = ""
+			return
+		}
 		p.submitOnboardingIdentity()
 		return
 	case p.keybinds.Match(ev, KeybindEditorClose):
 		p.onboarding.Error = "Finish all three setup steps before entering Swarm."
 		return
 	}
-	if ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
+	if p.onboarding.Focus > onboardingFocusSwarmName || ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
 		return
 	}
 	if p.onboarding.Focus == onboardingFocusUsername {
@@ -221,16 +257,32 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 }
 
 func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
+	if p.authModal.Loading {
+		return
+	}
+	if p.authModal.Editor == nil && (ev.Key() == tcell.KeyTab || ev.Key() == tcell.KeyBacktab) {
+		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 1) % 3
+		return
+	}
+	if p.authModal.Editor == nil && ev.Key() == tcell.KeyEnter && p.onboarding.ActionIndex != 0 {
+		if p.onboarding.ActionIndex == 1 {
+			p.ShowOnboardingWorkspace("Provider skipped. Verify your workspace to finish.")
+			p.onboarding.ActionIndex = 0
+		} else {
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
+		}
+		return
+	}
 	if p.authModal.Editor != nil {
 		p.handleAuthModalEditorKey(ev)
 		return
 	}
 	if p.keybinds.Match(ev, KeybindEditorClose) {
-		p.ShowOnboardingWorkspace("Provider skipped. Confirm your launch workspace to finish setup.")
+		p.ShowOnboardingWorkspace("Provider skipped. Choose home or a new project folder to finish setup.")
 		return
 	}
 	if ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S') {
-		p.ShowOnboardingWorkspace("Provider skipped. Confirm your launch workspace to finish setup.")
+		p.ShowOnboardingWorkspace("Provider skipped. Choose home or a new project folder to finish setup.")
 		return
 	}
 	switch {
@@ -250,12 +302,16 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 			p.onboarding.Error = "No provider is available yet. Press s to continue without one."
 			return
 		}
+		if provider, ok := p.selectedAuthProvider(); ok && provider.Ready && provider.Runnable {
+			p.ShowOnboardingWorkspace("Connected provider selected. Verify your workspace to finish.")
+			return
+		}
 		p.triggerProviderLogin(providerID)
 		return
 	}
 }
 
-func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
+func (p *HomePage) handleOnboardingWorkspaceShortcut(ev *tcell.EventKey) {
 	if p.onboarding.EditingPath {
 		switch ev.Key() {
 		case tcell.KeyEscape:
@@ -263,7 +319,17 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			p.onboarding.EditingPath = false
 		case tcell.KeyEnter:
 			p.onboarding.EditingPath = false
-			p.onboarding.Status = "Location selected. Enter verifies; Ctrl+N creates this folder."
+			p.onboarding.Repository = nil
+			p.onboarding.Review = nil
+			p.onboarding.ActionIndex = 0
+			if strings.TrimSpace(p.onboarding.WorkspacePath) == "" {
+				p.onboarding.EditingPath = true
+				p.onboarding.Error = "Enter a folder path."
+				return
+			}
+			p.onboarding.Pending = true
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionInspectOnboardingRepository, WorkspacePath: p.onboarding.WorkspacePath}
+			p.onboarding.Status = "Verifying selected folder…"
 		case tcell.KeyCtrlU:
 			p.onboarding.WorkspacePath = ""
 		case tcell.KeyBackspace, tcell.KeyBackspace2:
@@ -281,71 +347,21 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.model.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
 		return
 	}
+	if ev.Key() == tcell.KeyCtrlS || ev.Key() == tcell.KeyCtrlN {
+		p.beginOnboardingProject()
+		return
+	}
 	if ev.Key() == tcell.KeyCtrlL {
+		p.onboarding.ChoosingRepository = false
+		p.onboarding.ConfirmOmissions = false
+		p.onboarding.Review = nil
+		p.onboarding.BaselineAttempt = nil
 		p.onboarding.PreviousPath = p.onboarding.WorkspacePath
 		p.onboarding.EditingPath = true
 		p.onboarding.SetupConsent = false
 		p.onboarding.Error = ""
-		p.onboarding.Status = "Edit location: Ctrl+U clear, Enter select, Esc cancel."
+		p.onboarding.Status = "Edit location: Ctrl+U clear, Enter select and verify, Esc cancel."
 		return
-	}
-	if ev.Key() == tcell.KeyCtrlN {
-		p.onboarding.SetupConsent = false
-		p.pendingHomeAction = &HomeAction{Kind: HomeActionCreateOnboardingFolder, WorkspacePath: p.onboarding.WorkspacePath}
-		p.onboarding.Pending = true
-		return
-	}
-	if p.keybinds.Match(ev, KeybindEditorClose) {
-		p.onboarding.SetupConsent = false
-		p.ShowOnboardingProvider("Choose a provider or press s to return to workspace setup.")
-		return
-	}
-	if p.onboarding.SetupConsent && ev.Key() == tcell.KeyRune && ev.Rune() == 'y' {
-		p.onboarding.SetupConsent = false
-		p.pendingHomeAction = &HomeAction{Kind: HomeActionSetupOnboardingRepository, WorkspacePath: p.onboarding.WorkspacePath}
-		p.onboarding.Pending = true
-		p.onboarding.Status = "Setting up Git; existing files will not be staged..."
-		return
-	}
-	if !p.keybinds.Match(ev, KeybindEditorSubmit) {
-		return
-	}
-	path := strings.TrimSpace(p.onboarding.WorkspacePath)
-	if path == "" {
-		p.onboarding.Error = "Choose a workspace location with Ctrl+L."
-		return
-	}
-	switch p.model.WorkspaceSetupGitReadiness {
-	case model.GitReadinessReady, model.GitReadinessUnknown, model.GitReadinessCheckFailed:
-		// Local readiness is advisory at this boundary. The authenticated
-		// workspace-add API revalidates the exact repository before any catalog,
-		// topology, selection, or session state can be mutated. Let an
-		// indeterminate client-side check reach that canonical admission gate.
-	case model.GitReadinessNotRepository, model.GitReadinessNeedsCommit:
-		p.onboarding.SetupConsent = true
-		p.onboarding.Error = ""
-		p.onboarding.Status = "Press y to initialize Git/create an empty first commit. No files will be staged. Esc goes back."
-		return
-	default:
-		p.onboarding.Error = onboardingGitPrerequisiteMessage(p.model.WorkspaceSetupGitReadiness, path)
-		return
-	}
-	p.pendingHomeAction = &HomeAction{Kind: HomeActionCreateOnboardingWorkspace, WorkspacePath: path}
-	p.onboarding.Pending = true
-	p.onboarding.Status = "Creating workspace and loading Swarm..."
-	p.onboarding.Error = ""
-}
-
-func onboardingGitPrerequisiteMessage(readiness model.GitReadiness, path string) string {
-	switch readiness {
-	case model.GitReadinessUnavailable:
-		return "Install Git, then press Enter to retry. Ctrl+L changes location; Esc goes back; Ctrl+C exits."
-	case model.GitReadinessNotRepository:
-		return fmt.Sprintf("%s is not a Git repository. Desktop can initialize an empty folder with an initial commit; existing files require review of ignore rules and explicit permission before git init, staging, or the first commit.", path)
-	case model.GitReadinessNeedsCommit:
-		return fmt.Sprintf("%s has no initial commit. Ask Swarm to review existing files and ignore rules; Git staging and commits require explicit permission.", path)
-	default:
-		return fmt.Sprintf("Swarm could not verify that %s is a committed Git repository. Fix Git readiness and retry.", path)
 	}
 }
 
@@ -353,11 +369,7 @@ func (p *HomePage) advanceOnboardingFocus(delta int) {
 	if delta == 0 {
 		return
 	}
-	if p.onboarding.Focus == onboardingFocusUsername {
-		p.onboarding.Focus = onboardingFocusSwarmName
-	} else {
-		p.onboarding.Focus = onboardingFocusUsername
-	}
+	p.onboarding.Focus = onboardingFocus((int(p.onboarding.Focus) + delta + 4) % 4)
 	p.onboarding.Error = ""
 }
 
@@ -379,6 +391,9 @@ func (p *HomePage) clearOnboardingField() {
 }
 
 func (p *HomePage) onboardingField() *string {
+	if p.onboarding.Focus > onboardingFocusSwarmName {
+		return nil
+	}
 	if p.onboarding.Focus == onboardingFocusUsername {
 		return &p.model.OnboardingUsername
 	}
@@ -466,7 +481,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	if p.onboarding.Phase == onboardingPhaseProvider {
 		help = "Ctrl+C exit • ←/→ select • Enter connect • s/Esc skip"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		help = "Ctrl+L location · Ctrl+N new folder · Enter retry · Esc back"
+		help = "Tab/↑/↓ choose · Enter activate · Esc back · Ctrl+C exit"
 		if p.onboarding.EditingPath {
 			help = "Type path · Ctrl+U clear · Enter select · Esc cancel"
 		}
@@ -493,7 +508,7 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
 		"Connect now, or skip ahead. Your workspace is still required.",
-		"Swarm uses managed worktrees, so choose a Git repository with an initial commit.",
+		"Git setup is built in. Create or choose a repo for managed worktrees.",
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))
@@ -527,6 +542,14 @@ func (p *HomePage) drawOnboardingIdentity(s tcell.Screen, content Rect) {
 		DrawText(s, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))
 		y += 5
 	}
+	label := "[ Continue ]   [ Cancel / Exit ]"
+	if p.onboarding.Focus == onboardingFocusContinue {
+		label = "› [ Continue ]   [ Cancel / Exit ]"
+	}
+	if p.onboarding.Focus == onboardingFocusCancel {
+		label = "[ Continue ]   › [ Cancel / Exit ]"
+	}
+	DrawText(s, content.X, content.Y+content.H-1, content.W, p.theme.Primary, label)
 }
 
 func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
@@ -537,8 +560,24 @@ func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
 	providers := p.authModal.Providers
 	if len(providers) == 0 {
 		DrawText(s, content.X, content.Y+2, content.W, p.theme.TextMuted, "No providers loaded yet.")
-		DrawText(s, content.X, content.Y+4, content.W, p.theme.Warning, "Press s to continue without a provider.")
+		label := "Skip provider"
+		if p.onboarding.ActionIndex == 1 {
+			label = "› " + label
+		}
+		DrawText(s, content.X, content.Y+4, content.W, p.theme.Warning, label+" (Tab to focus, Enter to activate)")
+		DrawText(s, content.X, content.Y+5, content.W, p.theme.Text, "Cancel / Exit (Tab to focus, Enter)")
 		return
+	}
+	labels := []string{"Connect selected provider", "Skip provider", "Cancel / Exit"}
+	if provider, ok := p.selectedAuthProvider(); ok && provider.Ready && provider.Runnable {
+		labels[0] = "Use connected provider and continue"
+	}
+	for i, label := range labels {
+		prefix := "  "
+		if p.onboarding.ActionIndex == i {
+			prefix = "› "
+		}
+		DrawText(s, content.X, content.Y+content.H-3+i, content.W, p.theme.Primary, prefix+label)
 	}
 	selected := p.authModal.SelectedProvider
 	if selected < 0 || selected >= len(providers) {
@@ -550,7 +589,7 @@ func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
 	const cardHeight = 3
 	const rowGap = 1
 	cardW := (content.W - gutter) / columns
-	maxRows := maxInt(1, (content.H-1)/(cardHeight+rowGap))
+	maxRows := maxInt(1, (content.H-4)/(cardHeight+rowGap))
 	totalRows := (len(providers) + columns - 1) / columns
 	selectedRow := selected / columns
 	startRow := maxInt(0, selectedRow-maxRows/2)
@@ -584,27 +623,5 @@ func (p *HomePage) drawOnboardingProvider(s tcell.Screen, content Rect) {
 		}
 		label := fmt.Sprintf("%s%s  ·  %s", prefix, provider.ID, state)
 		DrawText(s, card.X+1, card.Y+1, card.W-2, textStyle, clampEllipsis(label, card.W-2))
-	}
-}
-
-func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
-	path := strings.TrimSpace(p.onboarding.WorkspacePath)
-	if path == "" {
-		path = "launch directory unavailable"
-	}
-	card := Rect{X: content.X, Y: content.Y + 2, W: content.W, H: 5}
-	DrawBox(s, card, p.theme.BorderActive)
-	DrawText(s, card.X+2, card.Y+1, card.W-4, p.theme.TextMuted, "Workspace location (Ctrl+L to edit)")
-	DrawText(s, card.X+2, card.Y+2, card.W-4, p.theme.Primary, clampTail(path, card.W-4))
-	if p.onboarding.Pending {
-		DrawText(s, card.X+2, card.Y+3, card.W-4, p.theme.Warning, "Please wait — confirming API completion and loading workspace state...")
-	} else {
-		message := "Git repository + initial commit required for managed worktrees"
-		style := p.theme.Warning
-		if p.model.WorkspaceSetupGitReadiness == model.GitReadinessReady {
-			message = "Git repository ready for managed worktrees"
-			style = p.theme.Text
-		}
-		DrawText(s, card.X+2, card.Y+3, card.W-4, style, message)
 	}
 }

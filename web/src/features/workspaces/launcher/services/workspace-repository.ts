@@ -4,6 +4,7 @@ export type WorkspaceRepositoryStateCode =
   | 'not_repository'
   | 'needs_initial_commit'
   | 'needs_assisted_setup'
+  | 'directory_missing' | 'access_denied' | 'trust_required' | 'repository_error' | 'unknown'
 
 export interface WorkspaceRepositoryState {
   state: WorkspaceRepositoryStateCode
@@ -12,6 +13,7 @@ export interface WorkspaceRepositoryState {
   headCommit: string
   canSetup: boolean
   needsReview: boolean
+  contentReady?: boolean
   message: string
 }
 
@@ -22,6 +24,7 @@ export interface WorkspaceRepositoryStateWire {
   head_commit?: string
   can_setup?: boolean
   needs_review?: boolean
+  content_ready?: boolean
   message?: string
 }
 
@@ -43,8 +46,9 @@ export function mapWorkspaceRepositoryState(value: WorkspaceRepositoryStateWire)
     || rawState === 'not_repository'
     || rawState === 'needs_initial_commit'
     || rawState === 'needs_assisted_setup'
+    || rawState === 'directory_missing' || rawState === 'access_denied' || rawState === 'trust_required' || rawState === 'repository_error'
     ? rawState
-    : 'needs_assisted_setup'
+    : 'unknown'
   return {
     state,
     path: String(value.path ?? '').trim(),
@@ -52,6 +56,7 @@ export function mapWorkspaceRepositoryState(value: WorkspaceRepositoryStateWire)
     headCommit: String(value.head_commit ?? '').trim(),
     canSetup: Boolean(value.can_setup),
     needsReview: Boolean(value.needs_review),
+    contentReady: value.content_ready === true,
     message: String(value.message ?? '').trim(),
   }
 }

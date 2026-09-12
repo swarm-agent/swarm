@@ -119,9 +119,14 @@ func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 type onboardingWorkspaceResult struct {
-	model model.HomeModel
-	path  string
-	err   error
+	repositories []client.WorkspaceDiscoverEntry
+	discovered   bool
+	repository   *client.OnboardingRepository
+	review       *client.OnboardingReview
+	prepared     bool
+	model        model.HomeModel
+	path         string
+	err          error
 }
 
 type homeReloadResult struct {
@@ -260,6 +265,7 @@ type App struct {
 	homeWorkspaceBootstrapped atomic.Bool
 	authLoginCh               chan authLoginResult
 	authLogging               atomic.Bool
+	onboardingDifferentUser   bool
 	onboardingWorkspaceCh     chan onboardingWorkspaceResult
 	codexPending              *codexCodeLoginState
 
@@ -452,6 +458,7 @@ func (a *App) Close() {
 }
 
 func (a *App) Run() error {
+	a.refreshOnboardingWorkspaceGuidance()
 	dirty := true
 	for {
 		if dirty {
@@ -5189,6 +5196,14 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 			a.home.ShowOnboardingWorkspace("Folder created. Enter verifies; Git setup requires separate confirmation.")
 			a.refreshOnboardingWorkspaceGitReadiness()
 		}
+	case ui.HomeActionKind("exit-onboarding"):
+		a.requestQuit()
+	case ui.HomeActionDiscoverOnboardingRepositories:
+		a.discoverOnboardingRepositories()
+	case ui.HomeActionInspectOnboardingRepository:
+		a.refreshOnboardingWorkspaceGitReadiness()
+	case ui.HomeActionReviewOnboardingRepository, ui.HomeActionBaselineOnboardingRepository:
+		a.runOnboardingReview(action.Kind, action.WorkspacePath)
 	case ui.HomeActionSetupOnboardingRepository:
 		a.createOnboardingWorkspaceWithSetup(action.WorkspacePath, true)
 	case ui.HomeActionCreateOnboardingWorkspace:
@@ -5325,7 +5340,7 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 		a.refreshAuthModalData("")
 		if a.home.OnboardingProviderActive() {
 			a.refreshOnboardingWorkspaceGitReadiness()
-			a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+			a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
 		}
 		if record.Connection != nil {
 			method := strings.TrimSpace(record.Connection.Method)
@@ -5950,7 +5965,7 @@ func (a *App) consumeAuthLoginResult() {
 			a.home.HideAuthModal()
 			if a.home.OnboardingProviderActive() {
 				a.refreshOnboardingWorkspaceGitReadiness()
-				a.home.ShowOnboardingWorkspace("Provider connected. Confirm your launch workspace to finish setup.")
+				a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
 			}
 		} else {
 			a.home.SetAuthModalLoading(false)
@@ -6444,16 +6459,32 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
+	// Re-read identity before every retry: a lost response may have completed bootstrap.
+	prior, err := a.api.GetOnboardingStatus(ctx)
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Could not verify saved identity: %v", err))
+		return
+	}
+	if prior.Identity.Bootstrapped {
+		username = ""
+		if err := a.api.EnsureLocalAuth(ctx); err != nil {
+			a.home.SetOnboardingError(fmt.Sprintf("Existing identity needs authenticated attachment: %v", err))
+			return
+		}
+	}
 	status, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{Username: username, SwarmName: swarmName})
 	if err != nil {
 		a.home.SetOnboardingError(fmt.Sprintf("identity save failed: %v", err))
 		return
 	}
-	if session, err := a.api.IssueLocalProductSession(ctx); err == nil && strings.TrimSpace(session.Token) != "" {
-		a.api.SetToken(session.Token)
+	session, err := a.api.IssueLocalProductSession(ctx)
+	if err != nil || strings.TrimSpace(session.Token) == "" {
+		a.home.SetOnboardingError("Identity saved, but authenticated attachment failed. Retry to attach without recreating the identity.")
+		return
 	}
+	a.api.SetToken(session.Token)
 	a.home.SetOnboardingRequired(status.NeedsOnboarding, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
-	a.home.SetOnboardingWorkspacePath(a.startupCWD)
+	a.refreshOnboardingWorkspaceGuidance()
 	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
 	a.refreshAuthModalData("Loading providers...")
 }
@@ -6462,7 +6493,24 @@ func (a *App) refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event *tcell.Ev
 	if a == nil || a.home == nil || event == nil || !a.home.OnboardingWorkspaceActive() || !a.keybinds.Match(event, ui.KeybindEditorSubmit) {
 		return
 	}
-	a.refreshOnboardingWorkspaceGitReadiness()
+	// Activation dispatch owns inspection. Do not overwrite focus/consent on Enter.
+}
+
+func (a *App) refreshOnboardingWorkspaceGuidance() {
+	if a.api == nil || a.home == nil || !a.home.OnboardingVisible() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	status, err := a.api.GetOnboardingStatus(ctx)
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Could not load daemon workspace guidance: %v", err))
+		return
+	}
+	if g := status.WorkspaceGuidance; g != nil {
+		a.onboardingDifferentUser = g.RuntimeUID != fmt.Sprint(os.Geteuid())
+		a.home.SetOnboardingWorkspaceGuidance(firstNonEmpty(g.RuntimeUsername, g.RuntimeUID), g.HomePath)
+	}
 }
 
 func (a *App) refreshOnboardingWorkspaceGitReadiness() {
@@ -6473,11 +6521,14 @@ func (a *App) refreshOnboardingWorkspaceGitReadiness() {
 	if path == "" {
 		return
 	}
-	status, _ := gitStatusForPath(path)
-	a.home.SetOnboardingWorkspaceGitReadiness(path, status.HasGit, status.Readiness)
-	a.homeModel.WorkspaceSetupPath = path
-	a.homeModel.WorkspaceSetupHasGit = status.HasGit
-	a.homeModel.WorkspaceSetupGitReadiness = status.Readiness
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	state, err := a.api.InspectOnboardingRepository(ctx, path)
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Daemon inspection failed: %v. Retry or choose another location.", err))
+		return
+	}
+	a.home.SetOnboardingRepository(state)
 }
 
 func (a *App) createOnboardingWorkspace(path string) {
@@ -6492,6 +6543,8 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	a.onboardingCancel = cancel
+	// Setup consent explicitly excludes all existing content from the baseline.
+	committedOnly := setup || a.home.OnboardingCommittedOnly()
 	go func() {
 		defer cancel()
 		var resolution client.WorkspaceResolution
@@ -6500,7 +6553,7 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 			err = a.api.SetupOnboardingRepository(ctx, path)
 		}
 		if err == nil {
-			resolution, err = a.api.AddWorkspace(ctx, path, "", "", true)
+			resolution, err = a.api.AddWorkspaceWithContentConsent(ctx, path, "", "", true, committedOnly)
 		}
 		if err == nil {
 			a.homeWorkspaceBootstrapped.Store(true)
@@ -6515,9 +6568,10 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 		}
 		if err == nil {
 			complete := true
-			_, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
+			var acknowledged client.OnboardingStatus
+			acknowledged, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
 			if err == nil {
-				next.OnboardingRequired = false
+				next, err = acknowledgeOnboardingHomeModel(next, acknowledged)
 			}
 		}
 		result := onboardingWorkspaceResult{model: next, path: readyPath, err: err}
@@ -6529,6 +6583,17 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 			_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
 		}
 	}()
+}
+
+func acknowledgeOnboardingHomeModel(next model.HomeModel, acknowledged client.OnboardingStatus) (model.HomeModel, error) {
+	if !acknowledged.OK || acknowledged.NeedsOnboarding {
+		return next, fmt.Errorf("onboarding completion was not acknowledged")
+	}
+	next.OnboardingRequired = false
+	next.WorkspaceSetupPath = ""
+	next.WorkspaceSetupHasGit = false
+	next.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
+	return next, nil
 }
 
 func homeModelHasActiveWorkspace(home model.HomeModel, path string) bool {
@@ -6562,6 +6627,22 @@ func (a *App) consumeOnboardingWorkspaceResult() {
 	case result := <-a.onboardingWorkspaceCh:
 		if result.err != nil {
 			a.home.SetOnboardingError(fmt.Sprintf("workspace setup failed: %v", result.err))
+			return
+		}
+		if result.discovered {
+			a.home.SetOnboardingRepositories(result.repositories)
+			return
+		}
+		if result.review != nil {
+			a.home.SetOnboardingReview(*result.review)
+			return
+		}
+		if result.repository != nil {
+			a.home.SetOnboardingRepository(*result.repository)
+			if result.prepared {
+				a.home.ClearOnboardingReview()
+				a.createOnboardingWorkspace(result.path)
+			}
 			return
 		}
 		a.syncActiveContextFromHomeModel(result.model)
@@ -7677,6 +7758,7 @@ func (a *App) applyHomeModel(next model.HomeModel) {
 	a.homeModel = next
 	a.home.SetModel(next)
 	if a.home.OnboardingProviderActive() && !wasProvider {
+		a.refreshOnboardingWorkspaceGuidance()
 		a.refreshAuthModalData("Loading providers...")
 	}
 	route := a.selectedChatRouteForWorkspace(a.activeWorkspacePath())

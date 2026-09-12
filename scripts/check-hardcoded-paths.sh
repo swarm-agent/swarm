@@ -13,7 +13,10 @@ filter_allowed_runtime_paths() {
   # Renderer and testbench constants name the fixed Chrome package covered by the
   # reviewed host AppArmor policy. Anchor the complete declaration: no directory,
   # whole-file exemption, alternate binary, or appended shell command is allowed.
+  # Fresh-root detection checks the complete fixed installation layout and must
+  # not bootstrap over existing state. Allow only this exact presence-check list.
   grep -Ev \
+    -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
     -e '^(\./)?scripts/diagnose-live-workset-full-history\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go|scripts/ssh-fast-test\.sh):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
     -e '^(\./)?scripts/check-daemon-storage-paths\.sh:.*(/home/|/root|/tmp/swarm-storage-gate-self-test\.out|forbidden_home_hits|negative fixture|run_scan)' \
@@ -23,6 +26,17 @@ filter_allowed_runtime_paths() {
     -e "^(\./)?scripts/run-testbench-runner\.sh:[0-9]+:readonly SYSTEM_CHROME_PATH='/opt/google/chrome/chrome'$" \
     || true
 }
+
+# Requirement: the fixed fresh-install presence check is allowed, but changes
+# to its targets, appended commands, and other files must remain detectable.
+if [[ "${1:-}" == "--self-test" ]]; then
+  presence_hit='scripts/rebuild.sh:11:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm.service; do'
+  [[ -z "$(printf '%s\n' "${presence_hit}" | filter_allowed_runtime_paths)" ]] || exit 1
+  for rejected_hit in "${presence_hit/swarm.service/other.service}" "${presence_hit}; echo unsafe" "${presence_hit/rebuild.sh/other.sh}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed_runtime_paths)" ]] || exit 1
+  done
+  echo '[path-check] self-test PASS'
+fi
 
 echo "[path-check] scanning non-test runtime code and scripts for hardcoded absolute paths"
 runtime_hits="$(

@@ -277,6 +277,11 @@ function usageRecords(events: EventWire[]): JsonRecord[] {
   return records
 }
 
+function sameRuntimeModel(actual: unknown, expected: string): boolean {
+  const model = String(actual || '')
+  return model === expected || (PROVIDER === 'fireworks' && model === `accounts/fireworks/models/${expected}`)
+}
+
 async function allUsage(page: Page, sessionID: string, events: EventWire[]): Promise<JsonRecord[]> {
   const response = await browserJSON<{ turn_usage_records?: JsonRecord[] }>(page, `/v1/sessions/${encodeURIComponent(sessionID)}/usage?limit=100`)
   return [...usageRecords(events), ...(response.turn_usage_records || [])]
@@ -362,6 +367,9 @@ async function verifyFirstUserMessageAfterCompletion(
 
   await context.page.goto(`${context.appURL}${context.workspaceRoute}/${encodeURIComponent(sessionID)}`, { waitUntil: 'domcontentloaded' })
   await context.page.getByTestId('desktop-chat-scroller').waitFor({ state: 'visible', timeout: 30_000 })
+  // Completed multi-checkpoint conversations open at the bottom. The first
+  // message remains durable but may be virtualized outside the viewport.
+  await context.page.getByTestId('desktop-chat-scroller').evaluate((element) => { element.scrollTop = 0 })
   await context.page.getByText(expectedContent, { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
 }
 
@@ -393,10 +401,11 @@ async function verifySimpleLaunch(
   const events = settled.events_by_session?.[sessionID] || []
   assert.equal(events.some((event) => FAILURE_PATTERN.test(String(event.event_type || ''))), false, `${name} emitted a failure event`)
   const usage = await allUsage(context.page, sessionID, events)
-  assert(usage.some((record) => record.provider === PROVIDER && record.model === expected.model), `${name} has no matching runtime usage evidence`)
+  assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, expected.model)), `${name} has no matching runtime usage evidence`)
   const view = settled.session_views_by_id?.[sessionID] || {}
   assert.equal(Boolean(view.has_active_plan || view.active_plan), false, `${name} unexpectedly created a plan`)
-  await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
+  const literalPrefix = commandPrefix === '/new worktree' ? 'worktree ' : commandPrefix === '/new wp' ? 'wp ' : ''
+  await verifyFirstUserMessageAfterCompletion(context, sessionID, literalPrefix + modePrompt(mode, marker), settled, name)
   return { name, mode, worktree, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
 
@@ -427,7 +436,7 @@ async function verifyTaskLaunch(context: TestContext, mode: 'auto' | 'plan'): Pr
   assert.equal(profile?.model, expected.model, `${name} used the wrong model profile`)
   const events = settled.events_by_session?.[sessionID] || []
   const usage = await allUsage(context.page, sessionID, events)
-  assert(usage.some((record) => record.provider === PROVIDER && record.model === expected.model), `${name} has no matching runtime usage evidence`)
+  assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, expected.model)), `${name} has no matching runtime usage evidence`)
   await verifyFirstUserMessageAfterCompletion(context, sessionID, modePrompt(mode, marker), settled, name)
   return { name, mode, worktree: true, providerVerified: true, assistantModeVerified: true, firstUserMessageVerified: true }
 }
@@ -546,12 +555,12 @@ async function verifyPlanLifecycle(context: TestContext): Promise<ScenarioEviden
   const events = completed.snapshot.events_by_session?.[sessionID] || []
   assert.equal(events.some((event) => FAILURE_PATTERN.test(String(event.event_type || ''))), false, 'plan lifecycle emitted a failure event')
   const usage = await allUsage(context.page, sessionID, events)
-  assert(usage.some((record) => record.provider === PROVIDER && record.model === context.assignments.plan.model), 'no Plan-agent runtime usage was recorded')
+  assert(usage.some((record) => record.provider === PROVIDER && sameRuntimeModel(record.model, context.assignments.plan.model)), 'no Plan-agent runtime usage was recorded')
   const checkpointRunIDs = new Set((completed.snapshot.run_intents_by_session?.[sessionID] || [])
     .filter((intent) => intent.checkpoint_id)
     .map((intent) => String(intent.run_id || '')))
   const autoUsage = usage.filter((record) => record.provider === PROVIDER
-    && record.model === context.assignments.action.model
+    && sameRuntimeModel(record.model, context.assignments.action.model)
     && [...checkpointRunIDs].some((runID) => String(record.run_id || '') === runID || String(record.run_id || '').startsWith(`${runID}/`)))
   assert(autoUsage.length >= 2, `expected Auto-agent usage for both checkpoints, found ${autoUsage.length}`)
   const pending = await browserJSON<{ permissions?: JsonRecord[] }>(context.page, `/v3/sessions/${encodeURIComponent(sessionID)}/permissions?status=pending&limit=50`)
@@ -660,13 +669,13 @@ test('canonical remote Desktop launch suite', { skip: !ENABLED, timeout: Math.ma
       return
     }
     await t.test('/new plan prompt starts a Plan session', async () => {
-      evidence.push(await verifySimpleLaunch(active, 'new-plan', '/new plan', 'plan', false))
+      evidence.push(await verifySimpleLaunch(active, 'new-plan', '/new plan', 'plan', true))
     })
-    await t.test('/new worktree prompt starts a managed-worktree Auto session', async () => {
+    await t.test('/new worktree text stays literal in a managed Auto session', async () => {
       evidence.push(await verifySimpleLaunch(active, 'new-worktree', '/new worktree', 'auto', true))
     })
-    await t.test('/new wp prompt starts a managed-worktree Plan session', async () => {
-      evidence.push(await verifySimpleLaunch(active, 'new-wp', '/new wp', 'plan', true))
+    await t.test('/new wp text stays literal in a managed Auto session', async () => {
+      evidence.push(await verifySimpleLaunch(active, 'new-wp', '/new wp', 'auto', true))
     })
     await t.test('/task starts and completes an Auto Router worktree session', async () => {
       evidence.push(await verifyTaskLaunch(active, 'auto'))

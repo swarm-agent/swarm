@@ -7,9 +7,12 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
+
+	"swarm-refactor/swarmtui/pkg/storagecontract"
 )
 
 const serviceAccountName = "swarm"
@@ -18,8 +21,29 @@ const serviceAccountHome = "/var/lib/swarm"
 // Account creation is install-only. Runtime and service rendering only resolve
 // identities; they must never provision accounts as a side effect.
 func prepareInstallOwner() error {
-	if os.Geteuid() != 0 || os.Getenv("SUDO_UID") != "" || os.Getenv("SUDO_GID") != "" {
+	uid, gid, found, err := existingInstallOwner()
+	if err != nil {
+		return err
+	}
+	if found {
+		if selectedInstallAccount != nil && (selectedInstallAccount.Uid != uid || selectedInstallAccount.Gid != gid) {
+			return errors.New("installation owner changed after account selection; refusing reassignment")
+		}
+		account, err := user.LookupId(uid)
+		if err != nil {
+			return fmt.Errorf("resolve existing install owner: %w", err)
+		}
+		if account.Username != serviceAccountName {
+			return validateInstallOwner()
+		}
+		if gid != account.Gid {
+			return errors.New("existing service owner group mismatch")
+		}
+	} else if selectedInstallAccount != nil || os.Geteuid() != 0 || os.Getenv("SUDO_UID") != "" || os.Getenv("SUDO_GID") != "" {
 		return validateInstallOwner()
+	}
+	if err := preflightServiceAccount(os.Getenv("SWARM_CREATE_SERVICE_ACCOUNT") == "1", user.Lookup, exec.LookPath, os.Stat); err != nil {
+		return err
 	}
 	if err := provisionServiceAccount(user.Lookup, user.LookupGroup, runPrivilegedCommand, os.Lstat); err != nil {
 		return err
@@ -76,7 +100,7 @@ func provisionServiceAccount(lookup func(string) (*user.User, error), group func
 		// useradd creates a locked-password account and its private primary group.
 		// No supplementary groups, sudo policy, or existing account is modified.
 		if err := run("useradd", "--system", "--user-group", "--create-home", "--home-dir", serviceAccountHome, "--shell", "/usr/sbin/nologin", serviceAccountName); err != nil {
-			return fmt.Errorf("create locked Swarm service account (requires useradd): %w", err)
+			return fmt.Errorf("create locked Swarm service account failed; account/group/home may be partially created and were not rolled back: %w", err)
 		}
 		account, err = lookup(serviceAccountName)
 		if err != nil {
@@ -142,4 +166,85 @@ func validateServiceLogin(account *user.User, groups []string, status, passwd st
 		return errors.New("refusing unsafe service login record")
 	}
 	return nil
+}
+
+// PreflightInstallation is read-only and must precede runtime/account mutations.
+func PreflightInstallation(service bool) error {
+	if runtime.GOOS != "linux" {
+		return errors.New("system installation requires Linux")
+	}
+	if _, _, _, err := existingInstallOwner(); err != nil {
+		return err
+	}
+	commands := []string{"git", "bash", "install"}
+	if service {
+		commands = append(commands, "systemctl")
+		if info, err := os.Stat("/run/systemd/system"); err != nil || !info.IsDir() {
+			return errors.New("--service requires a running systemd system; use --no-service instead")
+		}
+	}
+	for _, name := range commands {
+		if _, err := exec.LookPath(name); err != nil {
+			return fmt.Errorf("install prerequisite %s is missing; no installation started: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func preflightServiceAccount(consent bool, lookup func(string) (*user.User, error), lookPath func(string) (string, error), stat func(string) (os.FileInfo, error)) error {
+	_, err := lookup(serviceAccountName)
+	var unknown user.UnknownUserError
+	missing := errors.As(err, &unknown)
+	if err != nil && !missing {
+		return fmt.Errorf("resolve service account: %w", err)
+	}
+	if missing && !consent {
+		return errors.New("root-only installation needs consent to create locked non-root swarm with home /var/lib/swarm; rerun swarmsetup with --create-service-account (no password, sudo, login, or SSH changes)")
+	}
+	commands := []string{"passwd", "getent"}
+	if missing {
+		commands = append(commands, "useradd")
+	}
+	for _, name := range commands {
+		if _, err := lookPath(name); err != nil {
+			return fmt.Errorf("service account prerequisite %s is missing; account not changed: %w", name, err)
+		}
+	}
+	if info, err := stat("/usr/sbin/nologin"); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
+		return errors.New("service account requires executable /usr/sbin/nologin; account not changed")
+	}
+	return nil
+}
+
+func existingInstallOwner() (string, string, bool, error) {
+	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
+	if err != nil {
+		return "", "", false, err
+	}
+	return resolveExistingInstallOwner([]string{systemInstallRoot(), roots.ConfigDir, roots.DataDir}, os.Lstat)
+}
+
+// Existing canonical directory ownership is preserved across root/sudo invocations.
+// Conflicting or unsafe state needs explicit administrator repair, never chown.
+func resolveExistingInstallOwner(paths []string, stat func(string) (os.FileInfo, error)) (string, string, bool, error) {
+	uid, gid := "", ""
+	for _, path := range paths {
+		info, err := stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", "", false, fmt.Errorf("inspect existing install owner at %s: %w", path, err)
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || st.Uid == 0 || st.Gid == 0 || info.Mode().Perm()&0022 != 0 {
+			return "", "", false, fmt.Errorf("unsafe existing install ownership at %s; no automatic ownership repair", path)
+		}
+		u, g := strconv.FormatUint(uint64(st.Uid), 10), strconv.FormatUint(uint64(st.Gid), 10)
+		if uid != "" && (uid != u || gid != g) {
+			return "", "", false, errors.New("conflicting existing install owners; refusing identity change")
+		}
+		uid, gid = u, g
+	}
+	return uid, gid, uid != "", nil
 }

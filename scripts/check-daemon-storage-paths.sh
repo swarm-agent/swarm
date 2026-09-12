@@ -53,7 +53,14 @@ filter_allowed() {
   #   allow only its exact call, not other renames or storage defaults in the author service.
   # Workspace path tokens require a lexical boundary so schema identifiers such as workspace_path are not mistaken for filesystem paths.
   # Permit only the complete reviewed rejection predicate, never a home default.
-  grep -vFx -f <(printf '%s\n' 'internal/launcher/system_paths.go:	if owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\n\r\"%") {') < <(sed -E 's/^(internal\/launcher\/system_paths\.go):[0-9]+:/\1:/') | grep -Ev \
+  # The installation identity message describes retained product state, not a
+  # filesystem path. Keep both exceptions byte-exact after line normalization.
+  # Setup recovery atomically publishes a synced record in the same trusted
+  # directory; this exact call is not a storage migration.
+  grep -vFx -f <(printf '%s\n' \
+    'internal/launcher/system_paths.go:	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")' \
+    'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go):[0-9]+:/\1:/') | grep -Ev \
+    -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
     -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
@@ -116,12 +123,26 @@ fi
 echo "[storage-path-check] PASS"
 
 if [[ "${self_test}" == "1" ]]; then
+  # Requirement: only same-directory atomic recovery publication is exempt;
+  # alternate destinations, extra statements and other files remain rejected.
+  recovery_hit='internal/launcher/onboarding_recovery.go:113: if err := os.Rename(f.Name(), filepath.Join(dir, "onboarding.json")); err != nil {'
+  [[ -z "$(printf '%s\n' "${recovery_hit}" | filter_allowed)" ]] || exit 1
+  for rejected_hit in "${recovery_hit/onboarding.json/other.json}" "${recovery_hit} os.Rename(a, b)" "${recovery_hit/onboarding_recovery.go/other.go}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+  done
   # Requirement: rejecting the root home is not a storage default. Only the
   # complete owner guard may pass; a default assignment must remain detectable.
-  guard_hit=$'internal/launcher/system_paths.go:384:\tif owner.Gid != gid || !filepath.IsAbs(owner.HomeDir) || filepath.Clean(owner.HomeDir) == "/" || filepath.Clean(owner.HomeDir) == "/root" || strings.ContainsAny(owner.HomeDir, "\\n\\r\\\"%") {'
+  guard_hit=$'internal/launcher/system_paths.go:400:\treturn filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\\n\\r\\\"%")'
   if [[ -n "$(printf '%s\n' "${guard_hit}" | filter_allowed)" ]] ||
      [[ -z "$(printf '%s\n' 'internal/launcher/system_paths.go:384:home := "/root"' | filter_allowed)" ]]; then
     echo "[storage-path-check] FAIL: exact owner-rejection exception" >&2
+    exit 1
+  fi
+  message_hit=$'cmd/swarmsetup/main.go:200:\tfmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")'
+  if [[ -n "$(printf '%s\n' "${message_hit}" | filter_allowed)" ]] ||
+     [[ -z "$(printf '%s\n' 'cmd/swarmsetup/main.go:200:root := "/workspace/state"' | filter_allowed)" ]] ||
+     [[ -z "$(printf '%s\n' "${guard_hit/!=/==}" | filter_allowed)" ]]; then
+    echo "[storage-path-check] FAIL: exact-message or changed-predicate exception" >&2
     exit 1
   fi
   tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"

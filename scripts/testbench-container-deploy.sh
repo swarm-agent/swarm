@@ -97,8 +97,12 @@ case "$action" in
       "$SWARM_PRIMARY_SSH" &
     tunnel_pid=$!
     heartbeat() {
+      local sleep_pid=""
+      trap '[[ -z "$sleep_pid" ]] || { kill "$sleep_pid" 2>/dev/null || true; wait "$sleep_pid" 2>/dev/null || true; }; exit 0' TERM INT
       while kill -0 "$tunnel_pid" 2>/dev/null; do
-        sleep 60
+        sleep 60 & sleep_pid=$!
+        wait "$sleep_pid" || return
+        sleep_pid=""
         kill -0 "$tunnel_pid" 2>/dev/null || break
         slot_action touch >/dev/null 2>&1 || break
       done

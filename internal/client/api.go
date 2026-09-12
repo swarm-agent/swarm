@@ -67,12 +67,22 @@ type OnboardingHeuristics struct {
 	AgentCount      int `json:"agent_count"`
 }
 
+type RuntimeWorkspaceGuidance struct {
+	RuntimeUsername string `json:"runtime_username,omitempty"`
+	RuntimeUID      string `json:"runtime_uid"`
+	RuntimeNonRoot  bool   `json:"runtime_non_root"`
+	HomePath        string `json:"home_path,omitempty"`
+	SetupRequired   bool   `json:"setup_required"`
+	Message         string `json:"message"`
+}
+
 type OnboardingStatus struct {
-	OK              bool                 `json:"ok"`
-	NeedsOnboarding bool                 `json:"needs_onboarding"`
-	Identity        OnboardingIdentity   `json:"identity"`
-	Config          OnboardingConfig     `json:"config"`
-	Heuristics      OnboardingHeuristics `json:"heuristics"`
+	WorkspaceGuidance *RuntimeWorkspaceGuidance `json:"workspace_guidance,omitempty"`
+	OK                bool                      `json:"ok"`
+	NeedsOnboarding   bool                      `json:"needs_onboarding"`
+	Identity          OnboardingIdentity        `json:"identity"`
+	Config            OnboardingConfig          `json:"config"`
+	Heuristics        OnboardingHeuristics      `json:"heuristics"`
 }
 
 type SaveOnboardingInput struct {
@@ -1625,6 +1635,12 @@ func New(baseURL string) *API {
 	}
 }
 
+// NewLocalTransport pins requests to one Unix socket. Unlike environment-based
+// discovery it never falls back to unauthenticated HTTP if the socket vanishes.
+func NewLocalTransport(socket string) *API {
+	return &API{baseURL: localTransportBaseURL, http: newLocalTransportHTTPClient(socket)}
+}
+
 func (c *API) BaseURL() string {
 	return c.baseURL
 }
@@ -1665,7 +1681,7 @@ func (c *API) EnsureLocalAuth(ctx context.Context) error {
 
 func (c *API) GetOnboardingStatus(ctx context.Context) (OnboardingStatus, error) {
 	var status OnboardingStatus
-	if err := c.getJSON(ctx, "/v1/onboarding", &status, false); err != nil {
+	if err := c.getJSON(ctx, "/v1/onboarding", &status, strings.TrimSpace(c.Token()) != ""); err != nil {
 		return OnboardingStatus{}, err
 	}
 	return status, nil
@@ -2615,11 +2631,16 @@ func (c *API) SetupOnboardingRepository(ctx context.Context, path string) error 
 }
 
 func (c *API) AddWorkspace(ctx context.Context, path, name, themeID string, makeCurrent bool) (WorkspaceResolution, error) {
+	return c.AddWorkspaceWithContentConsent(ctx, path, name, themeID, makeCurrent, false)
+}
+
+func (c *API) AddWorkspaceWithContentConsent(ctx context.Context, path, name, themeID string, makeCurrent, committedOnly bool) (WorkspaceResolution, error) {
 	req := map[string]any{
-		"path":         strings.TrimSpace(path),
-		"name":         strings.TrimSpace(name),
-		"theme_id":     strings.TrimSpace(themeID),
-		"make_current": makeCurrent,
+		"path":                   strings.TrimSpace(path),
+		"name":                   strings.TrimSpace(name),
+		"theme_id":               strings.TrimSpace(themeID),
+		"make_current":           makeCurrent,
+		"confirm_committed_only": committedOnly,
 	}
 	var resp struct {
 		OK        bool                `json:"ok"`

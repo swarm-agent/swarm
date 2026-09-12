@@ -1,12 +1,14 @@
 package launcher
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const InstalledServiceUnit = "swarm.service"
@@ -137,7 +139,33 @@ func InstalledServiceStatusForProfile(profile Profile) InstalledServiceStatus {
 	} else if !status.Installed {
 		status.Active = "unavailable"
 	}
+	if status.SystemdAvailable && status.Installed {
+		status.Active = installedServiceActiveState()
+	}
+	switch status.Active {
+	case "activating", "reloading":
+		status.StartGuidance = "Swarm is starting; wait for application readiness."
+	case "failed":
+		status.StartGuidance = "Swarm service failed; inspect the service error before deliberately retrying."
+	case "active":
+		status.StartGuidance = "Swarm service is active but the application is not healthy yet."
+	}
 	return status
+}
+
+func installedServiceActiveState() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "systemctl", "show", "--property=ActiveState", "--value", InstalledServiceUnit).Output()
+	if err != nil {
+		return "unknown"
+	}
+	switch state := strings.TrimSpace(string(out)); state {
+	case "active", "activating", "inactive", "failed", "deactivating", "reloading":
+		return state
+	default:
+		return "unknown"
+	}
 }
 
 func EnsureInstalledDaemonReady(profile Profile) error {
@@ -185,7 +213,29 @@ func InstallInstalledDaemon(opts InstallServiceOptions) error {
 	if err := EnsureSystemdServiceUnit(); err != nil {
 		return err
 	}
-	return EnableStartInstalledService()
+	// Query before enable --now: a fresh inactive service needs only one start;
+	// an already active candidate must still be replaced on a real upgrade.
+	active, _, err := serviceActiveForScope(systemdServiceSystem, InstalledServiceUnit)
+	if err != nil {
+		return err
+	}
+	return activateInstalledCandidateIfRunning(active, EnableStartInstalledService, RestartInstalledService)
+}
+
+func activateInstalledCandidate(enable, restart func() error) error {
+	return activateInstalledCandidateIfRunning(true, enable, restart)
+}
+
+func activateInstalledCandidateIfRunning(wasActive bool, enable, restart func() error) error {
+	if err := enable(); err != nil {
+		return err
+	}
+	// enable --now does not replace an already-running previous runtime.
+	// Installation must activate the candidate, not merely leave a service active.
+	if wasActive {
+		return restart()
+	}
+	return nil
 }
 
 func EnableStartInstalledService() error {
