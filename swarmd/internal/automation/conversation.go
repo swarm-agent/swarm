@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"fmt"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -68,7 +69,13 @@ func (s *Service) PrepareConversationDefinition(ctx context.Context, p Principal
 		}
 	}
 	d.Schedule, err = NormalizeSchedule(d.Schedule)
-	return d, err
+	if err != nil {
+		return d, err
+	}
+	if d.Authorization.ExpiresAt <= s.now().UnixMilli() {
+		return d, fmt.Errorf("%w: authorization.expires_at must be a future Unix timestamp in milliseconds, not seconds", ErrInvalid)
+	}
+	return d, nil
 }
 
 // ConversationState is bounded evidence. It does not confer authority and never

@@ -480,7 +480,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("compose automation approval: %w", err)
 	}
-	automationSvc, err := automation.New(store, sessionSvc.Store(), automationApproval, time.Now)
+	automationSvc, err := composeConversationAutomation(store, sessionSvc, automationApproval, time.Now)
 	if err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()

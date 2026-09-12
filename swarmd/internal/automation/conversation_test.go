@@ -20,14 +20,15 @@ func TestConversationDefinition(t *testing.T) {
 	}
 	defer db.Close()
 	plans := &conversationPlans{plan: store.SessionPlanSnapshot{ID: "plan", SessionID: "chat", AccountScopeID: "account", Version: 1, ApprovalState: "approved", Document: &store.SessionPlanDocument{}}}
-	svc, err := New(db, plans, conversationAccess{}, time.Now)
+	now := time.Unix(1789238436, 0)
+	svc, err := New(db, plans, conversationAccess{}, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, _ := BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "chat")
 	p, _ := RuntimePrincipal(ctx)
 	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
-	draft := store.AutomationDefinition{Name: "daily", Schedule: store.AutomationSchedulePolicy{Kind: "manual"}, Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required"}}
+	draft := store.AutomationDefinition{Name: "daily", Schedule: store.AutomationSchedulePolicy{Kind: "manual"}, Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required", ExpiresAt: now.Add(30 * 24 * time.Hour).UnixMilli()}}
 	got, err := svc.PrepareConversationDefinition(ctx, p, scope, nil, draft)
 	if err != nil || got.SessionID != "chat" || len(got.Plans) != 1 || got.Plans[0].Plan.DocumentSHA256 == "" || got.Enabled || got.Authorization.Mode != "approval_required" {
 		t.Fatalf("bad proposal: %+v %v", got, err)
@@ -50,7 +51,7 @@ func TestConversationDefinition(t *testing.T) {
 	if existing.Plans[0].ID == "edited" {
 		t.Fatal("proposal aliased saved plan bindings")
 	}
-	for _, scenario := range []string{"foreign-account", "foreign-session", "unapproved", "changed-bytes", "enabled"} {
+	for _, scenario := range []string{"foreign-account", "foreign-session", "unapproved", "changed-bytes", "enabled", "seconds-expiry", "expired"} {
 		t.Run(scenario, func(t *testing.T) {
 			d := got
 			principal := p
@@ -67,6 +68,10 @@ func TestConversationDefinition(t *testing.T) {
 				d.Plans[0].Plan.DocumentSHA256 = "wrong"
 			case "enabled":
 				d.Enabled = true
+			case "seconds-expiry":
+				d.Authorization.ExpiresAt = 1791830436
+			case "expired":
+				d.Authorization.ExpiresAt = now.UnixMilli()
 			}
 			if _, err := svc.PrepareConversationDefinition(ctx, principal, scope, nil, d); err == nil {
 				t.Fatal("accepted invalid proposal")
