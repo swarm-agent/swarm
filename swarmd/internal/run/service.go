@@ -117,6 +117,7 @@ type Service struct {
 	agents                       *agentruntime.Service
 	discovery                    *discovery.Service
 	workspace                    *workspaceruntime.Service
+	memoryStore                  *pebblestore.MemoryStore
 	workspaceMap                 workspaceMapService
 	uiSettings                   *uisettings.Service
 	agentModelSettings           *agentmodelsettings.Service

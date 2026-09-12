@@ -37,8 +37,10 @@ export class AttachClient {
     const mutationRoutes = ['/v1/workspace/folders/create', '/v1/workspace/repository/setup', '/v1/workspace/add', '/v3/sessions', '/v3/sync/hydrate']
     const ownedRoute = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/(repositories\?limit=20(?:&cursor=[a-zA-Z0-9_%.-]+)?|permissions\?status=pending&limit=20|messages|run\/stop)$/.test(route)
     const permissionResolve = /^\/v3\/sessions\/[a-zA-Z0-9_-]+\/permissions\/[a-zA-Z0-9_-]+\/resolve$/.test(route)
+    const memoryRoute = route === '/v1/memory' || method === 'GET' && /^\/v1\/memory\?session_id=[a-zA-Z0-9_-]*$/.test(route)
+    const memoryOperation = this.memoryTrial === true && memoryRoute && (method === 'GET' || method === 'POST' && ['remember', 'forget', 'settings', 'restore', 'run_now', 'cancel', 'approve'].includes(body?.action))
     const statusRoute = route.startsWith('/v1/workspace/git/status?session_id=')
-    if (!(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&
+    if (!memoryOperation && !(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&
         !(method === 'POST' && (permissionResolve || mutationRoutes.includes(route) || ownedRoute && (route.endsWith('/messages') || route.endsWith('/run/stop'))))) throw new Error('unreviewed attach operation')
     if (permissionResolve && (body?.action !== 'allow_once' || Object.keys(body).some(key => !['action', 'reason'].includes(key)))) throw new Error('only exact allow-once permission resolution is permitted')
     if (route === '/v1/workspace/add' && body?.make_current !== false) throw new Error('attach cannot change shared selection')
@@ -52,9 +54,20 @@ export class AttachClient {
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     const response = await fetch(`${this.origin}${route}`, {
       method, headers, body: body === undefined ? undefined : JSON.stringify(body),
-      redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(Math.min(this.requestMs, remaining)), ...(this.signal ? [this.signal] : [])]),
+      redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(Math.min(memoryOperation && method === 'POST' && body?.action === 'run_now' ? 150000 : this.requestMs, remaining)), ...(this.signal ? [this.signal] : [])]),
     })
-    if (!response.ok) { await response.body?.cancel(); throw new Error(`attach read returned HTTP ${response.status}`) }
+    if (!response.ok) {
+      // Only fixed memory diagnostics are safe to expose; never print provider bodies.
+      if (memoryOperation) {
+        const reader = response.body?.getReader()
+        const chunk = await reader?.read()
+        await reader?.cancel()
+        const text = chunk?.value?.length <= 2048 ? new TextDecoder().decode(chunk.value).trim() : ''
+        const safe = ['memory provider unavailable', 'memory budget exceeded', 'memory provider output rejected', 'memory provider returned invalid JSON', 'memory provider returned trailing output']
+        if (safe.includes(text)) throw new Error(text)
+      } else await response.body?.cancel()
+      throw new Error(`attach read returned HTTP ${response.status}`)
+    }
     const chunks = []
     let length = 0
     for await (const chunk of response.body) {

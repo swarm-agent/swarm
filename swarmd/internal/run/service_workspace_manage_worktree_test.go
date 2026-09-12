@@ -773,9 +773,14 @@ func TestManageWorkspaceAutomaticPolicyApprovalReturnsCanonicalMapArguments(t *t
 	}
 }
 
+// Purpose: execute the map tool and primary-only prompt projection against the
+// canonical memory-backed service; stale and foreign updates must not change it.
+// A committed temporary repository satisfies the current workspace authority.
+// Purpose: compatibility map mutations must refresh the single memory prompt,
+// preserve CAS/permission checks and reject foreign session scope.
 func TestManageWorkspaceMapInspectUpdateRefreshAndStaleRejection(t *testing.T) {
 	principal := testRunPrincipal()
-	workspacePath := t.TempDir()
+	workspacePath := programFixtureRepo(t)
 	workspaceSvc, _, rawStore, cleanup := newTestRunWorkspaceServiceWithRawStore(t)
 	defer cleanup()
 	if _, err := workspaceSvc.AddForPrincipal(principal, workspacePath, "repo", "", true); err != nil {
@@ -788,6 +793,7 @@ func TestManageWorkspaceMapInspectUpdateRefreshAndStaleRejection(t *testing.T) {
 	}
 	runSvc := NewService(sessionruntime.NewService(sessionStore, nil), nil, nil, nil, nil, nil, nil, nil)
 	runSvc.SetWorkspaceService(workspaceSvc)
+	runSvc.SetMemoryStore(pebblestore.NewMemoryStore(rawStore))
 	runSvc.SetWorkspaceMapService(pebblestore.NewWorkspaceMapService(pebblestore.NewWorkspaceMapStore(rawStore)))
 
 	if _, err := parseManageWorkspaceArguments(`{"action":"inspect_map"} {}`); err == nil {
@@ -814,15 +820,15 @@ func TestManageWorkspaceMapInspectUpdateRefreshAndStaleRejection(t *testing.T) {
 		t.Fatalf("get map: output=%s err=%v", getOutput, err)
 	}
 	initialPrompt := runSvc.composeInstructionsForScope(tool.WorkspaceScope{PrimaryPath: workspacePath, Roots: []string{workspacePath}, Principal: principal, SessionID: sessionID}, pebblestore.AgentProfile{Name: "swarm", Mode: "primary"}, "")
-	if !strings.Contains(initialPrompt, "Account Workspace Map") || !strings.Contains(initialPrompt, "revision: 1") || !strings.Contains(initialPrompt, "lower authority than system/developer instructions and workspace AGENTS.md") {
+	if !strings.Contains(initialPrompt, "Account memory (") || !strings.Contains(initialPrompt, `"revision":1`) || !strings.Contains(initialPrompt, "below system/developer and workspace rules") {
 		t.Fatalf("initial prompt omitted map contract: %s", initialPrompt)
 	}
-	mapIndex, rulesIndex := strings.Index(initialPrompt, "Account Workspace Map"), strings.Index(initialPrompt, "Loaded instruction sources:")
+	mapIndex, rulesIndex := strings.Index(initialPrompt, "Account memory ("), strings.Index(initialPrompt, "Loaded instruction sources:")
 	if rulesIndex >= 0 && mapIndex > rulesIndex {
 		t.Fatalf("Workspace Map must render before AGENTS.md sources")
 	}
 	nonPrimaryPrompt := runSvc.composeInstructionsForScope(tool.WorkspaceScope{PrimaryPath: workspacePath, Roots: []string{workspacePath}, Principal: principal, SessionID: sessionID}, pebblestore.AgentProfile{Name: "coder", Mode: "subagent"}, "")
-	if strings.Contains(nonPrimaryPrompt, "Account Workspace Map") {
+	if strings.Contains(nonPrimaryPrompt, "Account memory (") {
 		t.Fatalf("Workspace Map leaked to non-primary agent")
 	}
 
@@ -865,7 +871,7 @@ func TestManageWorkspaceMapInspectUpdateRefreshAndStaleRejection(t *testing.T) {
 		t.Fatalf("update output = %s", updated)
 	}
 	laterPrompt := runSvc.composeInstructionsForScope(tool.WorkspaceScope{PrimaryPath: workspacePath, Roots: []string{workspacePath}, Principal: principal, SessionID: sessionID}, pebblestore.AgentProfile{Name: "swarm", Mode: "primary"}, "")
-	if !strings.Contains(laterPrompt, "revision: 2") || !strings.Contains(laterPrompt, "billing means") {
+	if !strings.Contains(laterPrompt, `"revision":2`) || !strings.Contains(laterPrompt, "billing means") {
 		t.Fatalf("later prompt did not refresh: %s", laterPrompt)
 	}
 	if _, err := runSvc.buildManageWorkspacePermissionPayload(sessionID, callArgs); !errors.Is(err, pebblestore.ErrWorkspaceMapRevisionConflict) {
@@ -876,13 +882,16 @@ func TestManageWorkspaceMapInspectUpdateRefreshAndStaleRejection(t *testing.T) {
 	}
 	freshPrincipal := principal
 	freshPrincipal.SessionID = "fresh-checkpoint-run"
+	if err := sessionStore.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: freshPrincipal.SessionID, WorkspacePath: workspacePath, Metadata: map[string]any{}}, principal.UserID, principal.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
 	freshPrompt := runSvc.composeInstructionsForScope(tool.WorkspaceScope{PrimaryPath: workspacePath, Roots: []string{workspacePath}, Principal: freshPrincipal, SessionID: "fresh-checkpoint-run"}, pebblestore.AgentProfile{Name: "swarm", Mode: "primary"}, "")
-	if !strings.Contains(freshPrompt, "revision: 2") || !strings.Contains(freshPrompt, "billing means") {
+	if !strings.Contains(freshPrompt, `"revision":2`) || !strings.Contains(freshPrompt, "billing means") {
 		t.Fatalf("fresh provider request omitted current map: %s", freshPrompt)
 	}
 	runSvc.SetWorkspaceMapService(failingWorkspaceMapService{})
 	availablePrompt := runSvc.composeInstructionsForScope(tool.WorkspaceScope{PrimaryPath: workspacePath, Roots: []string{workspacePath}, Principal: principal, SessionID: sessionID}, pebblestore.AgentProfile{Name: "swarm", Mode: "primary"}, "")
-	if strings.Contains(availablePrompt, "Account Workspace Map") || !strings.Contains(availablePrompt, "Master harness prompt") {
+	if !strings.Contains(availablePrompt, "billing means") || !strings.Contains(availablePrompt, "Master harness prompt") {
 		t.Fatalf("map failure blocked or polluted prompt composition: %s", availablePrompt)
 	}
 	runSvc.SetWorkspaceMapService(pebblestore.NewWorkspaceMapService(pebblestore.NewWorkspaceMapStore(rawStore)))

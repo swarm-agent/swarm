@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/memory"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,7 +91,9 @@ const (
 )
 
 type Server struct {
-	automations                 *automationHTTPServices
+	automations *automationHTTPServices
+
+	memory                      *memory.Service
 	auth                        *auth.Service
 	agents                      *agentruntime.Service
 	model                       *model.Service

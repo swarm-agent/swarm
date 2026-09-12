@@ -346,6 +346,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"plan_manage":       {Enabled: pebblestore.BoolPtr(true)},
 			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
 			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(true)},
+			"manage_memory":     {Enabled: pebblestore.BoolPtr(true)},
 		},
 	}
 }

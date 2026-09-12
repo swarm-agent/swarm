@@ -3,6 +3,7 @@ package api
 import "net/http"
 
 func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/memory", s.handleMemory)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/ws", s.handleDesktopStream)

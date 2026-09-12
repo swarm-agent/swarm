@@ -14,8 +14,9 @@ const IntegrationsPage = withStartupScreen(lazy(() => import('../features/deskto
 const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
 const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio'])
 const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations'])
+const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/memory/memory-page').then(module => ({ default: module.MemoryPage }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -149,6 +150,8 @@ const agentsRoute = createRoute({
   path: '/agents',
   component: AgentSetupRedirect,
 })
+
+const memoryRoute = createRoute({ getParentRoute: () => rootRoute, path: '/memory', component: MemoryPage })
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -322,6 +325,7 @@ const workspaceImageToolSessionRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
+  memoryRoute,
   agentsRoute,
   integrationsRoute,
   integrationSessionRoute,

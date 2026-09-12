@@ -158,6 +158,7 @@ func buildChatCompletionRequest(req provideriface.Request) (chatCompletionReques
 	}
 	out := chatCompletionRequest{
 		Model:       strings.TrimSpace(req.Model),
+		MaxTokens:   req.MaxOutputTokens,
 		Messages:    messages,
 		Reasoning:   openRouterReasoningForRequest(req),
 		ServiceTier: openRouterServiceTierForRequest(req),

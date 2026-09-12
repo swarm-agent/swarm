@@ -1972,6 +1972,13 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 	}
 
 	switch name {
+	case "manage_memory":
+		if agentProfile.Name != "swarm" || agentProfile.Mode != "primary" {
+			return true, result, errors.New("memory tool requires Swarm primary")
+		}
+		output, err := s.executeMemoryTool(ctx, sessionID, call.Arguments)
+		result.Output = output
+		return true, result, err
 	case "ask_user":
 		output, err := executeAskUserTool(call.Arguments, approvedArguments)
 		result.Output = output
@@ -6567,6 +6574,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"manage_actions":   true,
 		"manage-actions":   true,
 		"manage_workspace": true,
+		"manage_memory":    true,
 		"manage-workspace": true,
 		"manage_video":     true,
 		"manage-video":     true,
@@ -6722,6 +6730,12 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
+	case "manage_memory":
+		var args struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal([]byte(arguments), &args)
+		return toolName, args.Action != "inspect"
 	case "manage_artifact":
 		if permission.ShouldApproveManageArtifactGenerateImage(arguments) && !bypass {
 			return "manage_artifact_generate_image", true

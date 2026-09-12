@@ -38,6 +38,7 @@ import (
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/mediastaging"
+	"swarm/packages/swarmd/internal/memory"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
@@ -158,6 +159,7 @@ type Daemon struct {
 	longSessionDiagnostics    *longsessiondiag.Recorder
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
+	memoryDone                <-chan struct{}
 	copilot                   *copilot.Manager
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
@@ -622,6 +624,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		return err
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
+	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store)})
+	memoryDone := make(chan struct{})
+	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
@@ -672,6 +677,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.ConfigureAutomationApproval(automationApproval)
 	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)
 	runSvc.ConfigureAutomationContext(automationSvc)
+
+	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -863,6 +870,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	startArtifactMaintenance(bgCtx, artifactRegistry)
 	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 	startMintReport(bgCtx, swarmSvc)
+	d.memoryDone = memoryDone
+	go func() {
+		defer close(memoryDone)
+		memorySvc.RunScheduler(bgCtx, pebblestore.NewIdentityStore(store), func(error) { log.Print("memory scheduler operation failed; inspect memory job status") })
+	}()
 	return d, nil
 }
 
@@ -920,6 +932,10 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.memoryDone != nil {
+			<-d.memoryDone
+			d.memoryDone = nil
 		}
 		if d.longSessionDiagnostics != nil {
 			if err := d.longSessionDiagnostics.Close(); err != nil {

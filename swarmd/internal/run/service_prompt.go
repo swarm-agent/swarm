@@ -397,7 +397,7 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
 		}
 	}
-	if workspaceMap := s.accountWorkspaceMapPromptBlock(scope.Principal, agentProfile); workspaceMap != "" {
+	if workspaceMap := s.accountMemoryPromptBlock(scope, agentProfile); workspaceMap != "" {
 		// The account map is high-level orientation. Keep it before repository
 		// AGENTS.md blocks so those more specific rules remain adjacent to the
 		// active-agent instructions and cannot be mistaken for map content.
