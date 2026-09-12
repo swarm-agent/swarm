@@ -1,33 +1,112 @@
-import { useEffect, useState } from 'react'
-import './memory-page.css'
+import { useEffect, useRef, useState } from 'react'
+import { Brain, Plus, X } from 'lucide-react'
+import { Button } from '../../../components/ui/button'
+import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { requestJson } from '../../../app/api'
+import './memory-page.css'
 
-type Entry = { id: string; kind: string; content: string; workspace_id?: string; session_id?: string; pinned: boolean; revision?: number; sources?: unknown[] }
-type Settings = Record<string, boolean | number | string | string[] | null>
-type Change = { revision: number; entry_id: string; operation: string; timestamp: number; actor: unknown; reason: string; before?: Entry; after?: Entry; redacted: boolean; settings_before?: Settings; settings_after?: Settings }
-type Job = { id: string; status: string; error?: string; proposal?: Entry }
-type Document = { revision: number; entries: Entry[] | null; settings: Settings; stored_tokens: number; token_method: string; history: Change[] | null; jobs?: Job[] }
-const blank: Entry = { id: '', kind: 'rule', content: '', pinned: false }
+type Entry = { id: string; kind: string; content: string; workspace_id?: string; session_id?: string; pinned: boolean; revision?: number }
+type MemoryDocument = { revision: number; entries: Entry[] | null }
+type Draft = { entry: Entry; revision: number; isNew: boolean }
 
-export function MemoryPage() {
- const [doc,setDoc]=useState<Document>(); const [entry,setEntry]=useState<Entry>(blank); const [settings,setSettings]=useState<Settings>({}); const [reason,setReason]=useState(''); const [error,setError]=useState(''); const [busy,setBusy]=useState(false); const [session,setSession]=useState(''); const [preview,setPreview]=useState<unknown>();
- const [editingID,setEditingID]=useState('');
- const load=async()=>{ const d=await requestJson<Document>('/v1/memory'); setDoc(d);setSettings(d.settings) }
- useEffect(()=>{void load().catch(e=>setError(String(e)))},[])
- const mutate=async(body: Record<string,unknown>)=>{setBusy(true);setError('');try{await requestJson('/v1/memory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({expected_revision:doc?.revision,reason,...body})},true,150000);await load();setPreview(undefined);if(body.action==='remember'||(body.action==='forget'&&body.entry_id===editingID)){setEntry(blank);setEditingID('')}}catch(e){setError(`${String(e)}. Your draft is preserved. Refresh before retrying a stale save.`)}finally{setBusy(false)}}
- return <main className="memory-page">
-  <nav><a href="/">Workspaces</a> · <a href="/settings">Settings</a></nav><h1 className="text-2xl font-semibold">Memory</h1>
-  <p>Contextual guidance, not permission. Explicit rules, workspace orientation and learned context remain distinct. Automation cannot rewrite pinned rules.</p>
-  {error && <p role="alert">{error}</p>}
-  <button disabled={busy} onClick={()=>void load().catch(e=>setError(String(e)))}>Refresh stored state (replaces settings draft)</button>
-  {!doc ? <p role="status">Loading memory…</p> : <>
-   <p>Revision {doc.revision} · Stored {doc.stored_tokens} / {String(doc.settings.storage_tokens)} · Injection budget {String(doc.settings.injection_tokens)}. Accounting: {doc.token_method} — conservative UTF-8 byte upper bound, not a model tokenizer. Stored counts cover content; injection includes serialized metadata.</p>
-   <section aria-label="Stored entries"><h2>Stored entries</h2><p>Enter a reason in the editor to enable permanent forgetting. Forgetting redacts history and cannot be undone.</p>{!doc.entries?.length&&<p>No saved memories.</p>}{(doc.entries??[]).map(e=><article key={e.id} className="my-3 rounded border p-3"><h3>{e.id} · {e.kind}{e.pinned?' · pinned':''}</h3><p>Workspace: {e.workspace_id||'account'} · Session: {e.session_id||'all'} · Revision {e.revision}</p><pre className="whitespace-pre-wrap break-words">{e.content}</pre><details><summary>Provenance</summary><pre className="whitespace-pre-wrap">{JSON.stringify(e.sources??[],null,2)}</pre></details><button disabled={busy} onClick={()=>{setEntry({...e,sources:undefined});setEditingID(e.id)}}>Edit</button> <button disabled={busy||!reason.trim()} onClick={()=>{if(window.confirm('Permanently forget this entry and redact its history? This cannot be restored.'))void mutate({action:'forget',entry_id:e.id})}}>Forget permanently</button></article>)}</section>
-   <section aria-label="Memory editor"><h2>Explicit memory editor</h2><fieldset disabled={busy}><p>Editing learned content is an explicit user revision, not automated provenance.</p><label>ID <input disabled={!!editingID} value={entry.id} onChange={e=>setEntry({...entry,id:e.target.value})}/></label><label>Kind <select value={entry.kind} onChange={e=>setEntry({...entry,kind:e.target.value})}><option>rule</option><option>orientation</option><option>learned</option></select></label><label>Workspace ID <input value={entry.workspace_id??''} onChange={e=>setEntry({...entry,workspace_id:e.target.value})}/></label><label>Session ID <input value={entry.session_id??''} onChange={e=>setEntry({...entry,session_id:e.target.value})}/></label><label><input type="checkbox" checked={entry.pinned} onChange={e=>setEntry({...entry,pinned:e.target.checked})}/>Pinned</label><label>Content<textarea aria-label="Content" className="block w-full" rows={8} value={entry.content} onChange={e=>setEntry({...entry,content:e.target.value})}/></label><label>Reason for change<input value={reason} onChange={e=>setReason(e.target.value)}/></label><button disabled={busy||!reason.trim()||!entry.id||!entry.content} onClick={()=>void mutate({action:'remember',entry})}>Save explicit memory</button><button onClick={()=>{setEntry(blank);setEditingID('')}}>New entry</button></fieldset></section>
-   <section aria-label="Memory settings"><h2>Scope and automatic memory</h2><p>Automation is opt-in. Manual mode never schedules recurring reads. Exclusions permanently forget source-derived content and history; removing an exclusion does not erase its tombstone.</p>{Object.entries(settings).filter(([key])=>key!=='automation_user_id').map(([key,value])=><label key={key} className="my-2 block">{key.replace(/_/g,' ')} {typeof value==='boolean'?<input type="checkbox" checked={value} onChange={e=>setSettings({...settings,[key]:e.target.checked})}/>:key==='mode'?<select value={String(value)} onChange={e=>setSettings({...settings,[key]:e.target.value})}><option value="manual">Manual only</option><option value="recurring">Recurring</option></select>:<input type={typeof value==='number'?'number':'text'} value={Array.isArray(value)?value.join(', '):value??''} onChange={e=>setSettings({...settings,[key]:typeof value==='number'?Number(e.target.value):Array.isArray(value)||key.includes('workspaces')||key.includes('sessions')?e.target.value.split(',').map(x=>x.trim()).filter(Boolean):e.target.value})}/>}</label>)}<p>Scope lists use comma-separated workspace/session IDs. Scheduled runs incrementally read eligible messages and automatically save useful facts. Unfinished batches resume without skipping unread messages.</p><button disabled={busy} onClick={()=>{if(window.confirm('Apply settings? New exclusions permanently redact affected memory.'))void mutate({action:'settings',settings})}}>Save settings</button><button disabled={busy} onClick={()=>void mutate({action:'settings',settings:{...doc.settings,automation_enabled:false}})}>Pause automation</button></section>
-   <section aria-label="Memory jobs"><h2>Jobs and processing progress</h2><button disabled={busy} onClick={()=>void mutate({action:'run_now',job_id:crypto.randomUUID()})}>Run now</button><p>Refresh to inspect progress. No background polling. Cancel remains available during a request.</p>{(doc.jobs??[]).map(j=><article key={j.id}><h3>{j.id} · {j.status}</h3><pre className="whitespace-pre-wrap break-words">{JSON.stringify(j,null,2)}</pre>{['queued','running','review'].includes(j.status)&&<button onClick={()=>void mutate({action:'cancel',job_id:j.id})}>Cancel / reject</button>}</article>)}</section>
-   <section aria-label="Session injection"><h2>Next-request memory preview</h2><p>This previews current selection, not historical provider input. Rules precede orientation and learned context; omitted entries remain stored.</p><label>Session ID (empty for account-only)<input value={session} onChange={e=>setSession(e.target.value)}/></label><button onClick={()=>void requestJson('/v1/memory?session_id='+encodeURIComponent(session)).then(setPreview).catch(e=>setError(String(e)))}>Inspect injection and omissions</button><pre className="whitespace-pre-wrap break-words">{preview?JSON.stringify(preview,null,2):''}</pre></section>
-   <section aria-label="Memory history"><h2>Diff and history</h2>{(doc.history??[]).slice().reverse().map(h=><details key={h.revision}><summary>Revision {h.revision} · {h.operation} · {new Date(h.timestamp).toLocaleString()} · {h.reason}</summary><pre className="whitespace-pre-wrap break-words">{JSON.stringify(h,null,2)}</pre>{!h.redacted&&h.after&&<button disabled={busy||!reason.trim()} onClick={()=>void mutate({action:'restore',entry_id:h.entry_id,restore_revision:h.revision})}>Restore as a new revision</button>}</details>)}</section>
-  </>}
- </main>
+export function MemoryModal({ onClose }: { onClose: () => void }) {
+  const [doc, setDoc] = useState<MemoryDocument>()
+  const [draft, setDraft] = useState<Draft>()
+  const [forget, setForget] = useState<Entry>()
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const panel = useRef<HTMLElement>(null)
+  const writing = useRef<HTMLTextAreaElement>(null)
+
+  const load = async () => {
+    const next = await requestJson<MemoryDocument>('/v1/memory')
+    setDoc(next)
+  }
+  useEffect(() => {
+    const previous = document.activeElement as HTMLElement | null
+    panel.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    void load().catch(cause => setError(String(cause)))
+    return () => previous?.focus()
+  }, [])
+  useEffect(() => { if (draft) writing.current?.focus() }, [draft?.entry.id])
+
+  const close = () => {
+    if (busy) return
+    if (draft && draft.entry.content !== (doc?.entries?.find(entry => entry.id === draft.entry.id)?.content ?? '') &&
+      !window.confirm('Discard your unsaved memory?')) return
+    onClose()
+  }
+  const mutate = async (body: Record<string, unknown>, revision: number) => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await requestJson('/v1/memory', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...body, expected_revision: revision }),
+      }, true, 150000)
+      setDraft(undefined)
+      setForget(undefined)
+      // A successful write must not remain a retryable draft if the refresh fails.
+      setDoc(undefined)
+      try { await load() } catch (cause) { setError(`Saved, but memories could not be refreshed. ${String(cause)}`) }
+    } catch (cause) {
+      setError(`${String(cause)}. Your text is preserved. If memory changed elsewhere, cancel and reopen it before saving again.`)
+    } finally { setBusy(false) }
+  }
+
+  return <Dialog role="dialog" aria-modal="true" aria-labelledby="memory-title" className="z-[90]" onKeyDown={event => {
+    if (event.key === 'Escape') { event.stopPropagation(); close() }
+    if (event.key !== 'Tab') return
+    const controls = panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled), [tabindex="0"]')
+    if (!controls?.length) { event.preventDefault(); return }
+    const first = controls[0], last = controls[controls.length - 1]
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  }}>
+    <DialogBackdrop onClick={close} />
+    <DialogPanel className="memory-modal">
+      <section ref={panel} className="memory-modal-inner">
+        <header className="memory-modal-header">
+          <div><h2 id="memory-title"><Brain size={20} />{draft ? (draft.isNew ? 'Add memory' : 'Edit memory') : 'Memory'}</h2>
+            <p>{draft ? 'Write it the way you would tell Swarm.' : 'The things you want Swarm to remember.'}</p></div>
+          <Button variant="ghost" size="sm" aria-label="Close memory" disabled={busy} onClick={close}><X size={18} /></Button>
+        </header>
+        <div className="memory-modal-body">
+          {error && <p role="alert" className="memory-error">{error}</p>}
+          {draft ? <>
+            <textarea ref={writing} aria-label="Memory" placeholder="What would you like Swarm to remember?" rows={9} disabled={busy}
+              value={draft.entry.content} onChange={event => setDraft({ ...draft, entry: { ...draft.entry, content: event.target.value } })} />
+            <div className="memory-modal-actions">
+              <Button variant="ghost" disabled={busy} onClick={() => { setDraft(undefined); setError('') }}>Cancel</Button>
+              <Button disabled={busy || !draft.entry.content.trim()} onClick={() => void mutate({ action: 'remember', entry: draft.entry, reason: draft.isNew ? 'User added a memory' : 'User edited this memory' }, draft.revision)}>{busy ? 'Saving…' : 'Save memory'}</Button>
+            </div>
+          </> : forget ? <>
+            <h3>Forget this memory?</h3>
+            <p className="memory-content">{forget.content}</p>
+            <p>This permanently removes the memory and redacts its history. It cannot be undone.</p>
+            <div className="memory-modal-actions">
+              <Button variant="ghost" disabled={busy} onClick={() => { setForget(undefined); setError('') }}>Cancel</Button>
+              <Button disabled={busy || !doc} onClick={() => doc && void mutate({ action: 'forget', entry_id: forget.id, reason: 'User confirmed permanently forgetting this memory' }, doc.revision)}>{busy ? 'Forgetting…' : 'Forget permanently'}</Button>
+            </div>
+          </> : <>
+            <div className="memory-modal-toolbar">
+              <span>{doc ? `${doc.entries?.length ?? 0} saved ${(doc.entries?.length ?? 0) === 1 ? 'memory' : 'memories'}` : 'Your memories'}</span>
+              <div><Button variant="ghost" size="sm" disabled={busy} onClick={() => { setError(''); void load().catch(cause => setError(String(cause))) }}>Refresh</Button>
+                <Button size="sm" disabled={busy || !doc} onClick={() => doc && setDraft({ entry: { id: crypto.randomUUID(), kind: 'rule', content: '', pinned: false }, revision: doc.revision, isNew: true })}><Plus size={16} />Add memory</Button></div>
+            </div>
+            {!doc ? <p role="status">{error ? 'Use Refresh to load your memories.' : 'Loading memories…'}</p> : !doc.entries?.length ? <div className="memory-empty"><Brain size={28} /><h3>No memories yet</h3><p>Add something you’d like Swarm to remember for next time.</p></div> :
+              <div className="memory-grid" aria-label="Saved memories">{doc.entries.map(entry => <article key={entry.id} className="memory-card">
+                <button className="memory-card-content" disabled={busy} aria-label={`Edit memory: ${entry.content.slice(0, 80)}`} onClick={() => { setError(''); setDraft({ entry: { id: entry.id, kind: entry.kind, content: entry.content, pinned: entry.pinned, workspace_id: entry.workspace_id, session_id: entry.session_id }, revision: doc.revision, isNew: false }) }}>
+                  <span className="memory-card-kind">{entry.kind === 'rule' ? 'Instruction' : entry.kind === 'orientation' ? 'Context' : 'Learned'}{entry.pinned ? ' · Pinned' : ''}{entry.workspace_id ? ' · Workspace' : entry.session_id ? ' · Session' : ''}</span>
+                  <span className="memory-content">{entry.content}</span>
+                  <span className="memory-card-hint">Click to edit</span>
+                </button>
+                <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setError(''); setForget(entry) }}>Forget</Button>
+              </article>)}</div>}
+          </>}
+        </div>
+      </section>
+    </DialogPanel>
+  </Dialog>
 }

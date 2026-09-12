@@ -5,13 +5,13 @@ import { chromium } from 'playwright'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// Purpose: execute the real MemoryPage in a browser with a bounded fake HTTP
-// authority. Prove accessible editor controls, exact CAS submission, stale-error
-// draft preservation and preview rendering, rather than checking source strings.
-test('memory editor preserves a stale draft and exposes scoped preview', { timeout: 30000 }, async () => {
+// Purpose: exercise MemoryModal against the canonical /v1/memory contract with
+// fake HTTP. Prevent form-heavy UX, stale-write draft loss, identity changes and
+// unconfirmed deletion at the narrow browser interaction boundary.
+test('memory modal uses cards and a single writing box with safe mutations', { timeout: 30000 }, async () => {
  const scratch=await mkdtemp(join(process.env.TMPDIR!, 'memory-ui-'))
  const output=join(scratch,'page.js')
- await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import{MemoryPage}from'./src/features/desktop/memory/memory-page';createRoot(document.getElementById('root')).render(React.createElement(MemoryPage));`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:output,jsx:'automatic'})
+ await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import{MemoryModal}from'./src/features/desktop/memory/memory-page';createRoot(document.getElementById('root')).render(React.createElement(MemoryModal,{onClose:()=>{}}));`,resolveDir:process.cwd(),loader:'tsx'},bundle:true,outfile:output,jsx:'automatic'})
  const browser=await chromium.launch({headless:true, timeout:10000, ...(process.env.SWARM_TEST_BROWSER ? { executablePath: process.env.SWARM_TEST_BROWSER } : {})})
  try {
  const page=await browser.newPage({viewport:{width:1280,height:900}})
@@ -39,34 +39,35 @@ test('memory editor preserves a stale draft and exposes scoped preview', { timeo
   await route.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'})
  })
  await page.goto('http://memory.test/memory');await page.addStyleTag({content:await readFile(join(scratch,'page.css'),'utf8')});await page.addScriptTag({content:await readFile(output,'utf8')})
- await page.getByRole('heading',{name:'Explicit memory editor'}).waitFor()
- await page.getByLabel('ID',{exact:true}).fill('rule')
- await page.getByLabel('Content',{exact:true}).fill('keep this draft')
- await page.getByLabel('Reason for change').fill('explicit request')
- await page.getByRole('button',{name:'Save explicit memory'}).click()
+ await page.getByRole('dialog',{name:'Memory',exact:true}).waitFor()
+ assert.equal(await page.locator('textarea, input, select').count(),0)
+ await page.getByRole('button',{name:'Add memory',exact:true}).click()
+ assert.equal(await page.locator('textarea, input, select').count(),1)
+ await page.getByRole('textbox',{name:'Memory',exact:true}).fill('keep this draft')
+ await page.getByRole('button',{name:'Save memory'}).click()
  await page.getByRole('alert').filter({hasText:'revision conflict'}).waitFor()
  assert.equal(mutations[0].expected_revision,4)
- assert.equal(await page.getByLabel('Content',{exact:true}).inputValue(),'keep this draft')
- await page.getByRole('button',{name:'Inspect injection and omissions'}).click()
- await page.getByText('different workspace',{exact:false}).waitFor()
- await page.getByRole('button',{name:'New entry',exact:true}).focus()
- assert.equal(await page.evaluate(()=>document.activeElement?.textContent),'New entry')
+ assert.equal(await page.getByRole('textbox',{name:'Memory',exact:true}).inputValue(),'keep this draft')
+ assert.equal(typeof (mutations[0].entry as {id:string}).id,'string')
+ await page.getByRole('button',{name:'Cancel',exact:true}).click()
  // Selected objects must keep their identity, preserve metadata, refresh on save,
  // and require confirmation before a destructive request is sent.
  reject=false
- await page.getByRole('button',{name:'Edit',exact:true}).click()
- assert.equal(await page.getByLabel('ID',{exact:true}).isDisabled(),true)
- await page.getByLabel('Content',{exact:true}).fill('updated object')
- await page.getByRole('button',{name:'Save explicit memory'}).click()
- await page.locator('article pre').filter({hasText:'updated object'}).waitFor()
+ await page.getByRole('button',{name:'Edit memory: saved content',exact:true}).click()
+ assert.equal(await page.locator('input, select').count(),0)
+ await page.getByRole('textbox',{name:'Memory',exact:true}).fill('updated object')
+ await page.getByRole('button',{name:'Save memory'}).click()
+ await page.getByRole('button',{name:'Edit memory: updated object',exact:true}).waitFor()
  assert.equal((mutations[1].entry as {pinned:boolean}).pinned,true)
- assert.equal(await page.getByLabel('Content',{exact:true}).inputValue(),'')
- page.once('dialog',dialog=>void dialog.dismiss())
- await page.getByRole('button',{name:'Forget permanently'}).click()
+ assert.equal((mutations[1].entry as {id:string}).id,'saved')
+ assert.equal((mutations[1].entry as {workspace_id:string}).workspace_id,'workspace')
+ assert.equal(await page.locator('textarea').count(),0)
+ await page.getByRole('button',{name:'Forget',exact:true}).click()
+ await page.getByRole('button',{name:'Cancel',exact:true}).click()
  assert.equal(mutations.length,2)
- page.once('dialog',dialog=>void dialog.accept())
+ await page.getByRole('button',{name:'Forget',exact:true}).click()
  await page.getByRole('button',{name:'Forget permanently'}).click()
- await page.getByText('No saved memories.',{exact:true}).waitFor()
+ await page.getByText('No memories yet',{exact:true}).waitFor()
  assert.equal(mutations[2].entry_id,'saved')
  if(process.env.SWARM_MEMORY_SCREENSHOT)await page.screenshot({path:process.env.SWARM_MEMORY_SCREENSHOT,fullPage:true})
  } finally {await browser.close()}

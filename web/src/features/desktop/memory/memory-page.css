@@ -1,1 +1,25 @@
-.memory-page{box-sizing:border-box;max-width:1100px;margin:0 auto;padding:32px 24px;font:15px/1.6 system-ui,sans-serif;color:var(--app-text,#e6edf5);background:var(--app-bg,#10151e)}.memory-page section{margin:24px 0;padding:24px;border:1px solid var(--app-border,#344053);border-radius:12px}.memory-page h1{font-size:30px}.memory-page h2{font-size:21px;margin:0 0 16px}.memory-page h3{font-size:16px}.memory-page label{display:block;margin:12px 0}.memory-page input:not([type=checkbox]),.memory-page textarea,.memory-page select{box-sizing:border-box;display:block;width:100%;max-width:100%;margin-top:6px;padding:8px 12px;color:inherit;background:var(--app-panel,#192333);border:1px solid var(--app-border,#526078);border-radius:6px;font:inherit}.memory-page button{margin:8px 8px 8px 0;padding:8px 14px;border:1px solid #657894;border-radius:6px;background:var(--app-panel,#24334b);color:inherit;font:inherit;cursor:pointer}.memory-page button:disabled{opacity:.5;cursor:not-allowed}.memory-page :focus-visible{outline:3px solid #83b9ff;outline-offset:3px}.memory-page pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;font-size:13px}.memory-page a{color:#91bfff}.memory-page [role=alert]{padding:12px;border:1px solid #df9477;border-radius:6px;color:#ffc6ac}.memory-page article{border-bottom:1px solid #344053;padding:12px 0}.memory-page summary{cursor:pointer;padding:10px 0}.memory-page p{overflow-wrap:anywhere}@media(max-width:600px){.memory-page{padding:16px 12px}.memory-page section{padding:16px}}
+.memory-modal { width: min(760px, 100%); padding: 0; color: var(--app-text); border-color: var(--app-border-strong); box-shadow: var(--shadow-panel); }
+.memory-modal-inner { display: flex; flex-direction: column; min-height: 0; }
+.memory-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 24px; border-bottom: 1px solid var(--app-border); }
+.memory-modal-header h2 { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 600; }
+.memory-modal-header h2 svg { color: var(--app-primary); }
+.memory-modal-header p, .memory-empty p { margin-top: 6px; color: var(--app-text-muted); font-size: 14px; }
+.memory-modal-body { overflow-y: auto; min-height: 0; padding: 24px; }
+.memory-modal-toolbar, .memory-modal-toolbar > div, .memory-modal-actions { display: flex; align-items: center; gap: 8px; }
+.memory-modal-toolbar { justify-content: space-between; flex-wrap: wrap; margin-bottom: 20px; color: var(--app-text-muted); font-size: 13px; }
+.memory-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.memory-card { min-width: 0; border: 1px solid var(--app-border); border-radius: 16px; background: var(--app-bg-alt); overflow: hidden; padding: 4px; }
+.memory-card:hover { border-color: var(--app-border-strong); }
+.memory-card-content { display: flex; width: 100%; flex-direction: column; gap: 12px; padding: 14px; text-align: left; border-radius: 12px; }
+.memory-card-content:focus-visible { outline: 2px solid var(--app-primary); outline-offset: -2px; }
+.memory-card-kind, .memory-card-hint { color: var(--app-text-muted); font-size: 12px; }
+.memory-content { display: block; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.65; }
+.memory-card .memory-content { max-height: 240px; overflow-y: auto; width: 100%; }
+.memory-modal-body textarea { display: block; box-sizing: border-box; width: 100%; min-height: 220px; max-height: 50vh; resize: vertical; border: 1px solid var(--app-border); border-radius: 16px; background: var(--app-bg-alt); padding: 16px; color: var(--app-text); font: inherit; line-height: 1.7; }
+.memory-modal-body textarea:focus { outline: 2px solid var(--app-primary); outline-offset: 2px; }
+.memory-modal-body textarea::placeholder { color: var(--app-text-muted); }
+.memory-modal-actions { justify-content: flex-end; margin-top: 20px; }
+.memory-empty { padding: 36px 12px; text-align: center; }
+.memory-empty svg { margin: 0 auto 16px; color: var(--app-text-muted); }
+.memory-error { color: var(--app-error); margin-bottom: 16px; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .memory-grid { grid-template-columns: 1fr; } .memory-modal-header, .memory-modal-body { padding: 16px; } }

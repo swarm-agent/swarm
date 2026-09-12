@@ -93,6 +93,7 @@ import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspac
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import { DesktopFeedbackModal } from '../feedback/desktop-feedback-modal'
+import { MemoryModal } from '../memory/memory-page'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import { IntegrationConfirmation } from './integration-confirmation'
 import {
@@ -2573,6 +2574,7 @@ export function DesktopAppPage() {
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [memoryOpen, setMemoryOpen] = useState(false)
   const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
   const [searchModalOpen, setSearchModalOpen] = useState(false)
@@ -3896,7 +3898,7 @@ export function DesktopAppPage() {
         else setDesktopToast({ message: 'Open an existing session to view its plan.', tone: 'info' })
         return
       case 'open-memory':
-        void navigate({ to: '/memory' })
+        setMemoryOpen(true)
         return
       case 'open-feedback':
         setFeedbackOpen(true)
@@ -5593,6 +5595,7 @@ export function DesktopAppPage() {
       />
 
       <DesktopFeedbackModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
 
       <DesktopNotificationsModal
         open={notificationsOpen}

@@ -121,7 +121,7 @@
 # SHA256 swarmd/internal/store/pebble/memory_selection_test.go 27820124d131f477db18964396eecf9a44ad25134403272117456deb6d5db23b
 # SHA256 swarmd/internal/store/pebble/memory_store_test.go e59779e17d09ff7a65bfeb369247f283d0641fa9f0578403a29d1b9ce8acee1b
 # SHA256 swarmd/internal/run/service_workspace_manage_worktree_test.go 27e22ff2db22dd0cc9e8f9871ad2f6a32d1db8f8d34c87689bc8aac792d44c2f
-# SHA256 web/src/features/desktop/memory/memory-page.spec.ts 70ecaa757ed8133ffd82c88f07cc09f88f6389acf37efae6fdcda24d5e450c63
+# INVALIDATED 2026-09-12 web/src/features/desktop/memory/memory-page.spec.ts: modal/card/single-box assertions replace page-form assertions; stale CAS draft retention, metadata preservation and confirmation refusal retained. Not run; P1/P2 unreviewed; reinventory required before relying on a digest or promoting to curated coverage.
 # 2026-09-08 restricted memory jobs inventory, base 480eb56e plus scoped diff. All new tests requirement-first; independent P1/P2 pending; no curated promotion. Focused TestMemory tests repeated twice and memory/store race tests passed. Job tests cover canonical source reads, foreign/excluded scope, forged provenance, cancellation/settings/workspace revocation, restart interruption, capacity-failure atomicity, review, incremental reads and conflict/pin protection. Provider/service tests verify tool-free request, model snapshot, pricing rejection, idempotency and cancellation during generation. Wire tests verify explicit/omitted caps; live billing semantics remain unproven.
 # SHA256 swarmd/internal/store/pebble/memory_jobs_test.go 5d2fe6115bcf2ba234b145fe267e30e5236e1166b2dfe553eee924b0aa43571e
 # SHA256 swarmd/internal/memory/service_test.go f046e69a2f3abbe59c8c48dc71014f59052cc7d61570701f589b28a84b460918

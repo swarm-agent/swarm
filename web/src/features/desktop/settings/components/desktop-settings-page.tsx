@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
 import { Bell, Film, GitBranch, Home, Keyboard, Key, Network, Palette, Shield, SlidersHorizontal, UserRound, Zap, type LucideIcon } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { MemoryModal } from '../../memory/memory-page'
 import { Select } from '../../../../components/ui/select'
 import { AccountSettingsPage } from '../account/components/account-settings-page'
 import { BehaviorSettingsPage } from '../behavior/components/behavior-settings-page'
@@ -42,7 +43,8 @@ interface SettingsSearchParams {
   agent?: unknown
 }
 
-export function DesktopSettingsPage() {
+export function DesktopSettingsPage({ initialMemoryOpen = false }: { initialMemoryOpen?: boolean }) {
+  const [memoryOpen, setMemoryOpen] = useState(initialMemoryOpen)
   const navigate = useNavigate()
   const matchRoute = useMatchRoute()
   const settingsRouteMatch = matchRoute({ to: '/settings', fuzzy: false })
@@ -104,6 +106,7 @@ export function DesktopSettingsPage() {
 
   return (
     <div className="absolute inset-0 flex overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
+      {memoryOpen && <MemoryModal onClose={() => { setMemoryOpen(false); if (initialMemoryOpen) void navigate({ to: '/settings', replace: true }) }} />}
       <aside className="hidden w-[240px] shrink-0 flex-col border-r border-[var(--app-border)] bg-[var(--app-surface)] px-4 py-5 md:flex">
         <Button variant="outline" className="h-11 justify-start rounded-xl" onClick={handleBack}>
           <Home size={16} />
@@ -112,7 +115,7 @@ export function DesktopSettingsPage() {
 
         <div className="mt-6 px-2">
           <h1 className="text-sm font-semibold tracking-tight text-[var(--app-text)]">Settings</h1>
-          <a href="/memory" className="text-sm underline">Memory</a>
+          <Button variant="ghost" size="sm" onClick={() => setMemoryOpen(true)}>Memory</Button>
           <p className="mt-1 text-xs text-[var(--app-text-muted)]">Desktop preferences in one place.</p>
         </div>
 
