@@ -77,7 +77,7 @@ export type AutomationMutation = MutationBase & (
   | { action: 'enable' | 'pause' }
   | { action: 'run'; scheduled_at: number }
   | { action: 'cancel'; occurrence_id: string }
-  | { action: 'approve'; policy_sha256: string }
+  | { action: 'approve'; policy_sha256: string; proposal?: { session_id: string; plan_id: string; revision: number; document_sha256: string } }
   | { action: 'revoke'; approval_reference: string }
 )
 export class AutomationAPIError extends Error {

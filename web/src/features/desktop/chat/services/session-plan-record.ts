@@ -83,6 +83,7 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
   }
 
   const document: DesktopSessionPlanDocument = {
+    automation: record.automation as DesktopSessionPlanDocument['automation'],
     id: stringValue(record, 'id'),
     title: stringValue(record, 'title'),
     status: stringValue(record, 'status'),

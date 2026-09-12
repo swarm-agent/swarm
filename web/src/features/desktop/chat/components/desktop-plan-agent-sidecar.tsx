@@ -23,8 +23,9 @@ import { formatContextWindow } from "../services/model-options";
 
 interface DesktopPlanAgentSidecarProps {
   parentSessionId: string;
-  permission: DesktopPermissionRecord;
-  document: StructuredPlanDocument;
+  permission?: DesktopPermissionRecord;
+  document?: StructuredPlanDocument;
+  automation?: { automation_id: string; automation_revision: number; workspace_id: string };
   onClose?: () => void;
   embedded?: boolean;
   modelLabel?: string;
@@ -89,6 +90,7 @@ export function DesktopPlanAgentSidecar({
   parentSessionId,
   permission,
   document,
+  automation,
   onClose,
   embedded = false,
   modelLabel = "",
@@ -104,7 +106,8 @@ export function DesktopPlanAgentSidecar({
   const dictationBaseRef = useRef("");
   const [dictationSupported, setDictationSupported] = useState(false);
   const [dictationEnabled, setDictationEnabled] = useState(false);
-  const proposalRevision = pendingProposalRevision(permission, document);
+  const proposalRevision = permission && document ? pendingProposalRevision(permission, document) : 0;
+  const automationKey = JSON.stringify(automation);
   const realtimeMessages = useDesktopV3CacheSelector(
     (state) => sidechat.sessionId ? state.messagesBySession[sidechat.sessionId]?.items ?? [] : [],
     (left, right) => left === right,
@@ -142,15 +145,13 @@ export function DesktopPlanAgentSidecar({
 
   useEffect(() => {
     let cancelled = false;
-    setSidechat((current) => ({ ...current, busy: true, error: null }));
+    setSidechat({ ...EMPTY_SIDECHAT, busy: true });
     void (async () => {
       try {
         const result = await ensureSystemSidechat({
           parentSessionId,
           kind: "plan",
-          permissionId: permission.id,
-          planId: document.id || permission.id,
-          planRevision: proposalRevision,
+          ...(automation ? { automation } : { permissionId: permission?.id, planId: document?.id || permission?.id, planRevision: proposalRevision }),
         });
         if (cancelled) return;
         setSidechat((current) => ({ ...current, sessionId: result.sessionId, modelLabel: result.model || modelLabel, runtimeSwarmId: result.runtimeSwarmId, busy: false, error: null }));
@@ -162,7 +163,7 @@ export function DesktopPlanAgentSidecar({
       }
     })();
     return () => { cancelled = true; };
-  }, [document.id, modelLabel, parentSessionId, permission.id, proposalRevision, refresh]);
+  }, [document?.id, modelLabel, parentSessionId, permission?.id, proposalRevision, refresh, automationKey]);
 
   const resizeTextarea = useCallback((textarea: HTMLTextAreaElement | null) => {
     if (!textarea) return;
@@ -314,13 +315,13 @@ export function DesktopPlanAgentSidecar({
           : "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
         <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-3">
-          <div className="font-semibold">{mobileInline ? "Ask Swarm Plan" : "Plan"}</div>
+          <div className="font-semibold">{automation || document?.automation ? 'Automation · Plan agent' : mobileInline ? "Ask Swarm Plan" : "Plan"}</div>
           {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button> : null}
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <div ref={scrollContainerRef} className="h-full min-h-0 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain p-4 [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller" tabIndex={0}>
             <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]">
-              <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.</div>
+              <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">{automation ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.' : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}</div>
               {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled index={index} />)}
               {sidechat.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{sidechat.error}</div> : null}

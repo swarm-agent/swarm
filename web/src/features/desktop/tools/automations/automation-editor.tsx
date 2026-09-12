@@ -1,3 +1,4 @@
+import { AutomationInstructionsEditor } from './automation-instructions-editor'
 import { useState } from 'react'
 import type { AutomationDefinition } from '../../state/desktop-automation-api'
 import { editedAutomationDefinition } from '../../state/desktop-automation-progress'
@@ -42,6 +43,8 @@ export function AutomationEditor({ initial, revision = 0, disabled, onSave }: { 
       {draft.plans.map((binding, index) => {
         const update = (next: typeof binding) => setDraft({ ...draft, plans: draft.plans.map((item, position) => position === index ? next : item) })
         return <fieldset key={index} className="space-y-2 rounded border border-[var(--app-border)] p-3"><legend>Plan {index + 1}</legend>
+          <AutomationInstructionsEditor binding={binding} parentSessionId={draft.session_id} onPin={plan => update({ ...binding, plan })} />
+          {field('Document SHA-256', binding.plan.document_sha256 ?? '', document_sha256 => update({ ...binding, plan: { ...binding.plan, document_sha256 } }))}
           {field('Binding ID', binding.id, id => update({ ...binding, id }), true)}
           {field('Session ID', binding.plan.session_id, session_id => update({ ...binding, plan: { ...binding.plan, session_id } }), true)}
           {field('Plan ID', binding.plan.plan_id, plan_id => update({ ...binding, plan: { ...binding.plan, plan_id } }), true)}

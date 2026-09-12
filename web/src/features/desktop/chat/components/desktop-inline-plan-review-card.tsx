@@ -1,3 +1,4 @@
+import { AutomationPlanApproval } from '../../tools/automations/automation-plan-approval';
 import { useMemo, useState } from "react";
 import { AlertCircle, Check, Copy, MessageCircle } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
@@ -48,7 +49,7 @@ interface DesktopInlinePlanReviewCardProps {
 
 export function DesktopInlinePlanReviewCard({
   permission,
-  parentSessionId: _parentSessionId,
+  parentSessionId,
   pendingPosition,
   pendingCount,
   onResolve,
@@ -124,7 +125,7 @@ export function DesktopInlinePlanReviewCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-            Pending plan edit
+            {document?.automation ? 'Pending Automation' : 'Pending plan edit'}
           </div>
           <h2 className="mt-1 text-lg font-semibold text-[var(--app-text)]">
             {title}
@@ -178,7 +179,7 @@ export function DesktopInlinePlanReviewCard({
         )}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
+      {document?.automation ? <AutomationPlanApproval key={JSON.stringify(document.automation) + document.revisionId} document={document} parentSessionId={parentSessionId} /> : <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
         {supportsExecutionChoice ? (
           <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
         ) : (
@@ -207,7 +208,7 @@ export function DesktopInlinePlanReviewCard({
             {resolutionPending ? "Starting execution…" : "Accept once"}
           </Button>
         </div>
-      </div>
+      </div>}
     </section>
   );
 }

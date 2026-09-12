@@ -1,3 +1,4 @@
+import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 import { useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { desktopAutomations } from '../../runtime/desktop-automations'
@@ -31,6 +32,7 @@ export function AutomationSessionPanel({ workspaceId, id }: { workspaceId: strin
   const page = usePage(input)
   const record = page?.data?.records?.[0]
   const [expanded, setExpanded] = useState(false)
+  const [review, setReview] = useState(false)
   const lock = useRef(false)
   const [pending, setPending] = useState(false)
   const [message, setMessage] = useState('')
@@ -48,6 +50,8 @@ export function AutomationSessionPanel({ workspaceId, id }: { workspaceId: strin
     <strong>Automation · {record?.definition?.name ?? 'Loading configuration'}</strong>{' · '}{record?.definition?.enabled ? 'Enabled' : 'Paused / awaiting approval'}
     <p>Execution and discussion stay in this conversation. Live execution and permission state appear below.</p>
     <AutomationProgressView workspaceId={workspaceId} id={id} revision={record?.revision} />
+    <button disabled={!record?.definition?.session_id || pending || page?.stale || page?.loading} onClick={() => setReview(true)}>Ask Plan agent to edit automation</button>
+    {review && record?.definition?.session_id && <DesktopPlanAgentSidecar key={`${id}:${record.revision}`} parentSessionId={record.definition.session_id} automation={{ automation_id: id, automation_revision: record.revision, workspace_id: workspaceId }} onClose={() => setReview(false)} /> }
     {record?.definition && <details><summary>Edit schedule and configuration</summary><AutomationDefinitionSummary definition={record.definition} /><AutomationEditor initial={record.definition} revision={record.revision} disabled={pending || !!page?.stale || !!page?.loading} onSave={async definition => { await desktopAutomations.mutate({ action: 'save', workspace_id: workspaceId, id, expected_revision: record.revision, mutation_id: crypto.randomUUID(), definition }) }} /></details>}
     {(['run', record?.definition?.enabled ? 'pause' : 'enable'] as const).map(action => <button className="mr-3 underline" key={action} disabled={pending || !record || page?.stale || page?.loading} onClick={() => void act(action)}>{action === 'run' ? 'Run now' : action === 'pause' ? 'Pause' : 'Enable'}</button>)}
     <button aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>Policy and occurrence history</button>

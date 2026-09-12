@@ -12,6 +12,7 @@ export function AutomationDefinitionSummary({ definition }: { definition: Automa
   return <section aria-label="Automation plan summary" className="space-y-3 rounded-lg border border-[var(--app-border)] p-4">
     <h3 className="font-semibold">{definition.name}</h3><dl className="grid gap-3 text-sm sm:grid-cols-2">
       <div><dt className="font-semibold">Trigger</dt><dd>{trigger}</dd></div>
+      <div><dt className="font-semibold">Time basis</dt><dd>{schedule.timezone || (schedule.kind === 'interval' ? 'UTC elapsed interval' : 'Not specified')}</dd></div>
       <div><dt className="font-semibold">Scheduling rules</dt><dd>Missed: {schedule.missed_policy}. Overlap: {schedule.overlap_policy}.</dd></div>
       <div><dt className="font-semibold">Requested state</dt><dd>{definition.enabled ? 'Enabled requested — server authorization still required' : 'Paused'}</dd></div>
       <div><dt className="font-semibold">Policy expires</dt><dd>{dateLabel(definition.authorization.expires_at)}</dd></div>

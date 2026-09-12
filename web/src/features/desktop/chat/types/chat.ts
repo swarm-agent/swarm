@@ -694,6 +694,7 @@ export interface DesktopSessionPlanCheckpoint {
 }
 
 export interface DesktopSessionPlanDocument {
+  automation?: import('../components/structured-plan-document').StructuredPlanAutomation | null;
   id: string;
   title: string;
   status: string;

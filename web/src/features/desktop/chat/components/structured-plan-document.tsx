@@ -1,4 +1,7 @@
 import type { ReactNode } from 'react'
+import { parseAutomationProposal } from '../../tools/automations/automation-proposal'
+import type { AutomationDefinition } from '../../state/desktop-automation-api'
+import { AutomationDefinitionSummary } from '../../tools/automations/automation-summary'
 import { cn } from '../../../../lib/cn'
 import {
   Target,
@@ -115,7 +118,24 @@ export interface StructuredPlanCheckpoint {
   order: number
 }
 
+export interface StructuredPlanAutomation {
+  scope: { account_id: string; workspace_id: string }
+  automation_id: string
+  definition_revision: number
+  existing: boolean
+  definition: AutomationDefinition
+}
+
+function normalizePlanAutomation(value: unknown): StructuredPlanAutomation | null {
+  if (value == null) return null
+  const intent = value as StructuredPlanAutomation
+  const valid = intent.scope?.account_id && intent.scope.workspace_id && typeof intent.existing === 'boolean' && parseAutomationProposal({ result: { status: 'requires_user_approval', applied: false, proposal: { method: 'POST', path: '/v3/automations', body: { action: 'save', workspace_id: intent.scope.workspace_id, id: intent.automation_id, mutation_id: 'display-validation', expected_revision: intent.definition_revision, definition: intent.definition } } } })
+  if (!valid) throw new Error('Invalid typed automation proposal; refresh required.')
+  return intent
+}
+
 export interface StructuredPlanDocument {
+  automation?: StructuredPlanAutomation | null
   id: string
   title: string
   status: string
@@ -348,6 +368,7 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
     .sort((left, right) => left.order - right.order)
 
   const document: StructuredPlanDocument = {
+    automation: normalizePlanAutomation(record.automation),
     id: stringValue(record, 'id'),
     title: stringValue(record, 'title'),
     status: stringValue(record, 'status'),
@@ -450,6 +471,7 @@ export function structuredPlanDocumentToWire(document: StructuredPlanDocument): 
     id: document.id,
     title: document.title,
     status: document.status,
+    automation: document.automation ?? undefined,
     schema_version: document.schemaVersion,
     revision_id: document.revisionId,
     info: structuredPlanInfoToWire(document.info),
@@ -517,6 +539,7 @@ function PlanDetailObjects({ document }: { document: StructuredPlanDocument }) {
   const validationFiles = document.info.validationStrategy.trim() !== '' || document.info.relevantFiles.length > 0
   return (
     <div className="grid gap-4">
+      {document.automation ? <AutomationDefinitionSummary definition={document.automation.definition} /> : null}
       {document.info.goal ? (
         <InfoCard title="Goal" icon={Target}>
           <TextBlock value={document.info.goal} />
@@ -726,6 +749,7 @@ export function StructuredPlanReviewView({ document, className }: { document: St
   const review = structuredPlanReviewProjection(document)
   return (
     <div className={cn('grid gap-4', className)}>
+      {document.automation ? <><h3>Automation · workspace {document.automation.scope.workspace_id}</h3><AutomationDefinitionSummary definition={document.automation.definition} /></> : null}
       <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 sm:p-5">
         <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Objective</div>
         <h3 className="mt-1 text-lg font-semibold text-[var(--app-text)]">{review.title}</h3>
@@ -812,7 +836,7 @@ export function StructuredPlanDocumentView({
       <section className="grid min-w-0 content-start gap-4">
         <div className="flex min-w-0 items-start justify-between gap-3 border-b border-[var(--app-border)] pb-3">
           <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Plan details</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automation ? 'Automation details' : 'Plan details'}</div>
             <h3 className="mt-1 truncate text-lg font-semibold text-[var(--app-text)]">
               {document.title || document.info.goal || 'Structured execution blueprint'}
             </h3>
