@@ -117,3 +117,47 @@ func (conversationAccess) OccurrenceSession(context.Context, Principal, store.Au
 func (conversationAccess) Execution(context.Context, Principal, store.AutomationScope, store.AutomationDefinition, string) error {
 	return ErrDenied
 }
+
+// Purpose: empty-state discovery must retain runtime identity and session access
+// checks even when there is no definition to authorize. The domain fixture is
+// the narrowest layer for forged principals and denied conversation access.
+func TestConversationReadAuthorization(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc, err := New(db, &conversationPlans{}, conversationAccess{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
+	ctx, err := BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := RuntimePrincipal(ctx)
+	if err := svc.CheckConversationRead(ctx, p, scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckConversationRead(context.Background(), p, scope); err == nil {
+		t.Fatal("unbound runtime accepted")
+	}
+	foreign := p
+	foreign.AccountID = "other"
+	if err := svc.CheckConversationRead(ctx, foreign, scope); err == nil {
+		t.Fatal("foreign principal accepted")
+	}
+	deniedCtx, err := BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "denied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied, _ := RuntimePrincipal(deniedCtx)
+	if err := svc.CheckConversationRead(deniedCtx, denied, scope); err == nil {
+		t.Fatal("inaccessible session accepted")
+	}
+	rows, _, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "definition", Limit: 10})
+	if err != nil || len(rows) != 0 {
+		t.Fatal("read created state", err)
+	}
+}

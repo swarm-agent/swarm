@@ -7,6 +7,19 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// CheckConversationRead authorizes empty-state discovery without inventing an
+// automation record or exposing a second persistence authority.
+func (s *Service) CheckConversationRead(ctx context.Context, p Principal, scope store.AutomationScope) error {
+	if err := s.authorize(ctx, p, scope, "read"); err != nil {
+		return err
+	}
+	actual, err := RuntimePrincipal(ctx)
+	if err != nil || actual != p || p.Role != "agent" {
+		return ErrDenied
+	}
+	return s.access.PlanSession(ctx, p, scope, p.SubjectID)
+}
+
 // PrepareConversationDefinition resolves a deliberately omitted plan from the
 // authenticated conversation once, then pins exact bytes. It neither saves nor
 // approves anything. Existing definitions keep their canonical execution session.
@@ -55,7 +68,10 @@ func (s *Service) PrepareConversationDefinition(ctx context.Context, p Principal
 			return d, err
 		}
 		if !found || plan.Version <= 0 {
-			return d, ErrNotFound
+			return d, fmt.Errorf("%w: create a complete structured executable plan in this conversation and obtain approval before proposing automation save", ErrNotFound)
+		}
+		if plan.ApprovalState != "approved" {
+			return d, fmt.Errorf("%w: the current executable plan requires explicit user approval before automation save", ErrDenied)
 		}
 		d.Plans = []store.AutomationPlanBinding{{ID: "primary", Plan: store.AutomationPlanReference{SessionID: p.SubjectID, PlanID: plan.ID, Revision: uint64(plan.Version)}}}
 	}
