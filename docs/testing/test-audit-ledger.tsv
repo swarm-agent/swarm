@@ -6454,3 +6454,9 @@ ta-handoff-no-default-commit	web-test	web/src/features/desktop/chat/components/d
 # 2026-09-11 missing-project inspection inventory: internal/client/onboarding_repository_missing_test.go SHA256 e7f69ad089da03c55f76b91353bb017a6064e99fe1e040aef1fca31a9c0bae61. TestInspectOnboardingMissingDirectory covers typed 409 state preservation, authentication/read-only request shape, mismatched path, denied/untyped/malformed responses and false acknowledgement. Not run; independent P1/P2 unreviewed; no curated promotion.
 
 # 2026-09-11 Desktop redirect regression: internal/launcher/onboarding_desktop_url_test.go TestOnboardingDesktopURLWithoutHome proves system-config destination without HOME/XDG, missing/invalid rejection, and unchanged complete installed config. Focused execution passed twice against scoped change based on 087bca554. Independent P1/P2 unreviewed; not promoted to curated runner.
+
+# Reinventory 2026-09-12: session execution/history policy split; prior verdicts for worktree/identity_test.go do not apply to this digest. Independent P1/P2 pending; no curated promotion.
+# source_sha256 swarmd/internal/worktree/identity_test.go 2aa545e21b5789bc8b54c3c54aeca125441853544339972e20e9c5db1db22702
+# source_sha256 swarmd/internal/run/service_workspace_execution_identity_test.go 9c2e5547d1b53cd0e346e1539b1f6ed1a16bd361daf912b8dfd5b651604c00f6
+# TestRepositoryIdentityIsolation: real-Git reset with staged recovery retained; execution admits unchanged identity, transition rejects ancestry, invalid repository/branch/base rejected. Focused execution passed once.
+# TestRunRepositoryIdentityAfterHistoryReset: production run identity dispatch admits reset history; owner/runtime/source/branch/base negatives and unchanged staged diff/HEAD/provenance. Focused execution passed once.

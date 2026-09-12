@@ -46,6 +46,20 @@ func RepositoryIdentity(path string) (string, error) {
 // ValidateOwnedIdentity never repairs provenance from a path or a display name.
 // Dirty work is valid for execution; cleanliness is a separate transition gate.
 func ValidateOwnedIdentity(source, lane, branch, base string) error {
+	if err := ValidateOwnedExecutionIdentity(source, lane, branch, base); err != nil {
+		return err
+	}
+	if _, err := runGit(lane, "merge-base", "--is-ancestor", base, "HEAD"); err != nil {
+		return errors.New("session worktree base is not an ancestor of HEAD")
+	}
+	return nil
+}
+
+// ValidateOwnedExecutionIdentity checks the owned checkout, not the shape of its
+// mutable history. A reset or rebase must not strand conversation in that lane.
+// The recorded base remains immutable provenance; transitions and integration
+// continue to use ValidateOwnedIdentity and their own history/cleanliness gates.
+func ValidateOwnedExecutionIdentity(source, lane, branch, base string) error {
 	sourceID, err := RepositoryIdentity(source)
 	if err != nil {
 		return fmt.Errorf("source repository identity: %w", err)
@@ -75,8 +89,8 @@ func ValidateOwnedIdentity(source, lane, branch, base string) error {
 	if strings.TrimSpace(base) == "" {
 		return errors.New("session worktree base identity is missing")
 	}
-	if _, err := runGit(lane, "merge-base", "--is-ancestor", base, "HEAD"); err != nil {
-		return errors.New("session worktree base is not an ancestor of HEAD")
+	if _, err := runGit(lane, "rev-parse", "--verify", "--end-of-options", base+"^{commit}"); err != nil {
+		return fmt.Errorf("session worktree base identity is invalid: %w", err)
 	}
 	return nil
 }
