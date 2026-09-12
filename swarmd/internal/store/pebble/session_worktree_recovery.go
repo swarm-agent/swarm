@@ -171,6 +171,12 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 	if !validWorktreePath(path) {
 		return nil, ErrWorktreeRecoveryConflict
 	}
+	// System sidechats borrow their parent's lane; they must never publish a
+	// second ownership claim. Authenticate the complete binding under the same
+	// mutation lock before taking this non-owning path.
+	if mutation == nil && v3LibraryMetadataString(next.Metadata, "lineage_kind") == "system_sidechat" {
+		return nil, s.validateSidechatWorktreeBinding(input, next)
+	}
 	claimOwner := input.SessionID
 	if mutation != nil && (mutation.Action == "reserve_copy" || mutation.Action == "publish_copy" || mutation.Action == "journal_copy" || mutation.Action == "release") {
 		claimOwner = mutation.OwnerSessionID
