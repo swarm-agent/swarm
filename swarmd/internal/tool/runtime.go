@@ -722,14 +722,20 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "edit_pending_plan",
-			Description: "Edit the pending plan proposal bound to the reserved Plan sidechat using optimistic concurrency. Pass document as a native structured JSON object, never as serialized/quoted JSON text. Start from the authoritative attached document and preserve its current title unless the user explicitly requests a rename.",
+			Description: "Edit the pending plan proposal or saved parent automation configuration bound to the reserved Plan sidechat using optimistic concurrency. For a pending plan pass document as a native structured JSON object, never as serialized/quoted JSON text. For a saved automation pass automation and mutation_id instead of document; expected_revision is its exact definition revision. Automation edits stay paused and need fresh user approval and enabling. Start from authoritative attached context and preserve unrelated fields.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
-					"document":          map[string]any{"type": "object", "description": "Complete replacement structured plan supplied directly as a native JSON object; do not pass JSON text, quoted/stringified JSON, markdown, or a wrapper string. Copy the current title from the authoritative attached document unless the user explicitly requests a rename"},
+					"document":          sessionExecutablePlanDocumentToolSchema(),
+					"automation":        sessionPlanAutomationToolSchema(),
+					"mutation_id":       map[string]any{"type": "string"},
 				},
-				"required":             []string{"expected_revision", "document"},
+				"required":             []string{"expected_revision"},
+				"oneOf": []any{
+					map[string]any{"required": []string{"document"}},
+					map[string]any{"required": []string{"automation", "mutation_id"}},
+				},
 				"additionalProperties": false,
 			},
 		},
@@ -1699,6 +1705,7 @@ func sessionPlanDocumentToolSchema() map[string]any {
 			"title":       map[string]any{"type": "string"},
 			"status":      map[string]any{"type": "string"},
 			"info":        sessionPlanInfoToolSchema(),
+			"automation":  sessionPlanAutomationToolSchema(),
 			"artifacts":   map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
 			"checkpoints": map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
 		},

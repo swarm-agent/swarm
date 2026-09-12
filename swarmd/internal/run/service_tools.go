@@ -2145,16 +2145,37 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 	}
 	parentID := strings.TrimSpace(mapString(session.Metadata, "parent_session_id"))
 	permissionID := strings.TrimSpace(mapString(session.Metadata, "plan_permission_id"))
-	if parentID == "" || permissionID == "" {
-		return "", errors.New("Plan sidechat is not bound to a pending proposal")
+	if parentID == "" {
+		return "", errors.New("Plan sidechat is not bound to a parent")
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(firstNonEmptyString(strings.TrimSpace(arguments), "{}")), &args); err != nil {
 		return "", fmt.Errorf("edit_pending_plan arguments invalid: %w", err)
 	}
 	expected := int64(0)
-	if value, ok := args["expected_revision"].(float64); ok {
+	if value, ok := args["expected_revision"].(float64); ok && value > 0 && value < 1<<53 && value == float64(int64(value)) {
 		expected = int64(value)
+	}
+	if expected == 0 {
+		return "", errors.New("expected_revision must be a positive exact integer")
+	}
+	if value, present := args["automation"]; present {
+		if _, mixed := args["document"]; mixed || s.tools == nil {
+			return "", errors.New("automation editing requires a separate configured operation")
+		}
+		for key := range args {
+			if key != "automation" && key != "expected_revision" && key != "mutation_id" {
+				return "", errors.New("unsupported automation edit argument")
+			}
+		}
+		var intent pebblestore.SessionPlanAutomationIntent
+		if err := unmarshalPlanToolArg(value, &intent, "automation"); err != nil {
+			return "", err
+		}
+		return s.tools.EditParentAutomation(context.Background(), buildPermissionWorkspaceScope(session), intent, mapString(args, "mutation_id"), uint64(expected))
+	}
+	if permissionID == "" {
+		return "", errors.New("Plan sidechat is not bound to a pending proposal")
 	}
 	rawDocument, ok := args["document"]
 	if !ok {
@@ -2751,6 +2772,15 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		return marshalExitPlanModeRejectionPayload(input, userMessage, "not_in_plan_mode", "exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead", []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage save."})
 	}
 
+	if input.Document != nil && input.Document.Automation != nil {
+		if s.tools == nil {
+			return "", errors.New("automation review runtime unavailable")
+		}
+		current, found, err := s.sessions.GetSession(sessionID)
+		if err != nil { return "", err }
+		if !found { return "", errors.New("automation review session unavailable") }
+		return s.tools.ReviewPlanAutomation(context.Background(), buildPermissionWorkspaceScope(current), *input.Document.Automation)
+	}
 	input.ApplySessionMutation = applySessionMutation
 	input.BuildLifecycleMessage = func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
 		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_current_context", "context_preserved": true}})
@@ -3854,6 +3884,13 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
+		if document != nil && document.Automation != nil {
+			if s.tools == nil { return "", errors.New("automation review runtime unavailable") }
+			current, found, getErr := s.sessions.GetSession(sessionID)
+			if getErr != nil { return "", getErr }
+			if !found { return "", errors.New("automation review session unavailable") }
+			return s.tools.ReviewPlanAutomation(context.Background(), buildPermissionWorkspaceScope(current), *document.Automation)
+		}
 		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
 		continueAutomatically := (*bool)(nil)
 		if _, ok := args["continue_automatically"]; ok {
