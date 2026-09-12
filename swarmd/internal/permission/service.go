@@ -1823,6 +1823,14 @@ func isPendingPlanProposalRecord(record pebblestore.PermissionRecord) bool {
 }
 
 func approvedArgumentsForResolution(record pebblestore.PermissionRecord, action, clientArguments string) (string, error) {
+	// Recurring proposals require the dedicated revision-bound user acceptance;
+	// generic approval must never release them into one-shot tool execution.
+	if actionIsAllow(action) {
+		payload := parsePermissionJSONMap(record.ToolArguments)
+		if document, ok := payload["document"].(map[string]any); ok && document["automation_v2"] != nil {
+			return "", errors.New("automation v2 requires explicit accept_automation")
+		}
+	}
 	if !actionIsAllow(action) || !isPendingPlanProposalRecord(record) {
 		return sanitizeApprovedArguments(record.ToolName, action, clientArguments, record.ToolArguments), nil
 	}
