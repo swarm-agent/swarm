@@ -1,6 +1,7 @@
 import { commitWorkspaceChanges, fetchSessionRepositories, suggestWorkspaceCommitMessage } from './api'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import type { SessionRepository } from './types'
+import { repositoryMutationSupported } from '../state/session-repositories'
 
 export const integrationAPI = { repositories: fetchSessionRepositories, review: reviewDesktopV3Worktrees, suggest: suggestWorkspaceCommitMessage, commit: commitWorkspaceChanges }
 export type IntegrationAPI = typeof integrationAPI
@@ -9,11 +10,24 @@ export interface IntegrationProgress { phase: string; committed: boolean; integr
 
 export async function inspectIntegration(sessionId: string, api = integrationAPI): Promise<IntegrationSelection> {
   if (!sessionId.trim()) throw new Error('Open an existing session with a managed worktree first.')
-  const inventory = await api.repositories(sessionId)
-  const rows = inventory.items.filter(row => row.session_id === sessionId && row.active && row.kind === 'parent' && row.attached)
+  // Catalog attachment describes the source workspace, not its managed worktree.
+  // Active parent identity is supplied by the authenticated repository inventory.
+  // Inspect a bounded complete inventory so a later page cannot hide ambiguity.
+  const rows: SessionRepository[] = []
+  const cursors = new Set<string>()
+  let cursor = ''
+  for (let page = 0; ; page++) {
+    const inventory = await api.repositories(sessionId, cursor)
+    if (!inventory.ok) throw new Error('Repository inventory is unavailable. Refresh before integrating.')
+    rows.push(...inventory.items.filter(row => row.session_id === sessionId && row.active === true && row.kind === 'parent'))
+    if (!inventory.next_cursor) break
+    if (page >= 9 || cursors.has(inventory.next_cursor)) throw new Error('Repository inventory is incomplete or pagination did not advance. Inspect Git before integrating.')
+    cursor = inventory.next_cursor
+    cursors.add(cursor)
+  }
   if (rows.length !== 1) throw new Error('The current session has no unambiguous active default worktree. Refresh its repository inventory.')
   const repository = rows[0]
-  if (repository.error || !repository.source_path || repository.source_path === repository.workspace_path || !repository.branch || !repository.status?.has_git || (repository.status.branch && repository.status.branch !== repository.branch)) throw new Error('Managed worktree lineage is unavailable.')
+  if (!repositoryMutationSupported(repository, { id: sessionId, path: repository.workspace_path, worktree: true, branch: repository.branch }, false) || repository.error || !repository.source_path || repository.source_path === repository.workspace_path || !repository.branch || !repository.status?.has_git || (repository.status.branch && repository.status.branch !== repository.branch)) throw new Error('Managed worktree lineage is unavailable.')
   const review = await api.review({ workspacePath: repository.source_path, sessionIds: [sessionId] })
   const candidate = [...review.retained, ...review.done].find(row => row.session_id === sessionId)
   if (!review.ok || review.checkout_dirty !== false || !review.current_target_head || !review.current_target_branch) throw new Error('The captured target must be clean and available. Resolve its changes before integrating.')

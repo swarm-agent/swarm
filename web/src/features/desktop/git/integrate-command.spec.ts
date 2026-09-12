@@ -12,7 +12,7 @@ import { buildDesktopSlashPaletteState } from '../chat/services/slash-commands'
 
 function fixture(dirty = false) {
   const calls: string[] = []
-  const row = { session_id: 'session', active: true, default: false, attached: true, kind: 'parent', source_path: '/repo', workspace_path: '/lane', branch: 'agent/change', status: { has_git: true, clean: !dirty, head_oid: 'a'.repeat(40) } } as SessionRepository
+  const row = { session_id: 'session', active: true, default: false, attached: false, kind: 'parent', availability: 'available', files_truncated: false, source_path: '/repo', workspace_path: '/lane', branch: 'agent/change', status: { workspace_path: '/lane', has_git: true, clean: !dirty, head_oid: 'a'.repeat(40) } } as SessionRepository
   const review = { ok: true, checkout_dirty: false, current_target_branch: 'dev', current_target_head: 'b'.repeat(40), retained: [{ session_id: 'session', worktree_path: '/lane', worktree_branch: row.branch, commit_eligible: dirty, integrate_eligible: !dirty }], done: [] } as unknown as ReviewWorktreesResponse
   const api: IntegrationAPI = {
     repositories: async () => { calls.push('repositories'); return { ok: true, items: [structuredClone(row)], history_coverage: 'complete' } },
@@ -105,4 +105,47 @@ test('integration error never starts rebuild', async () => {
   f.api.review = async input => { if (input?.promoteSessionIds) throw new Error('conflict'); return review(input) }
   const result = await runIntegration(selection, () => {}, f.api, { check: async () => {}, run: async () => { assert.fail('must not build') } })
   assert.equal(result.integrated, false); assert.match(result.error!, /conflict/)
+})
+
+// Requirement: managed lanes are not catalog attachments; paged history must not
+// hide the active lane or another candidate. Authority: repository inventory and
+// inspectIntegration/repositoryMutationSupported. Injected pages prove selection
+// and zero downstream calls on incomplete, ambiguous or unavailable evidence.
+test('active managed lane does not require catalog attachment or default flags', async () => {
+  const f = fixture()
+  assert.equal(f.row.attached, false); assert.equal(f.row.default, false)
+  assert.equal((await inspectIntegration('session', f.api)).repository.workspace_path, '/lane')
+  assert.deepEqual(f.calls, ['repositories', 'review'])
+})
+test('active lane on a later page is found using the exact opaque cursor', async () => {
+  const f = fixture(); const cursors: string[] = []
+  f.api.repositories = async (_session, cursor = '') => {
+    cursors.push(cursor)
+    return { ok: true, items: cursor ? [f.row] : [{ ...f.row, kind: 'source', active: false, attached: true, default: true }], next_cursor: cursor ? undefined : 'opaque+/=', history_coverage: 'complete' }
+  }
+  assert.equal((await inspectIntegration('session', f.api)).repository.workspace_path, '/lane')
+  assert.deepEqual(cursors, ['', 'opaque+/=']); assert.deepEqual(f.calls, ['review'])
+})
+test('later ambiguity and incomplete pagination reject before review or mutation', async () => {
+  for (const mode of ['ambiguous', 'cycle', 'limit', 'failed']) {
+    const f = fixture(); let pages = 0
+    f.api.repositories = async () => {
+      pages++
+      return { ok: mode !== 'failed', items: mode === 'ambiguous' || pages === 1 ? [f.row] : [], next_cursor: mode === 'ambiguous' && pages === 2 ? undefined : mode === 'cycle' ? 'same' : `opaque-${pages}`, history_coverage: 'complete' }
+    }
+    await assert.rejects(inspectIntegration('session', f.api), /unambiguous|incomplete|unavailable/)
+    assert.ok(pages <= 10); assert.deepEqual(f.calls, [])
+  }
+})
+test('inactive and unavailable lanes cannot gain authority from attachment flags', async () => {
+  for (const defect of ['inactive', 'unavailable', 'truncated', 'wrong-status-path', 'wrong-branch']) {
+    const f = fixture(); f.row.attached = true; f.row.default = true
+    if (defect === 'inactive') f.row.active = false
+    if (defect === 'unavailable') f.row.availability = 'unavailable'
+    if (defect === 'truncated') f.row.files_truncated = true
+    if (defect === 'wrong-status-path') f.row.status!.workspace_path = '/another-lane'
+    if (defect === 'wrong-branch') f.row.status!.branch = 'agent/another'
+    await assert.rejects(inspectIntegration('session', f.api))
+    assert.deepEqual(f.calls, ['repositories'])
+  }
 })
