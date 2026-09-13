@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -34,6 +35,10 @@ const (
 	maxTaskProgramStages            = 256
 	maxTaskProgramTextRunes         = 4096
 	maxTaskProgramScopeRows         = 256
+
+	// Roughly 50,000 tokens at four Unicode characters per token. This is a
+	// character allowance, not an exact tokenizer or model context budget.
+	maxTaskProgramMetaPromptRunes = 200_000
 )
 
 // TaskProgramRecord is the bounded, restart-safe authority for one fully
@@ -525,7 +530,10 @@ func validateTaskProgramRecord(record TaskProgramRecord) error {
 		}
 	}
 	for _, job := range record.Definition.Jobs {
-		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.WorkspacePath)) > maxTaskProgramTextRunes || len([]rune(job.MetaPrompt)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {
+		if count := utf8.RuneCountInString(job.MetaPrompt); count > maxTaskProgramMetaPromptRunes {
+			return fmt.Errorf("task program job %q meta_prompt exceeds %d Unicode characters (got %d)", job.ID, maxTaskProgramMetaPromptRunes, count)
+		}
+		if len(job.OwnedScope) > maxTaskProgramScopeRows || len(job.AcceptanceCriteria) > maxTaskProgramScopeRows || len([]rune(job.WorkspacePath)) > maxTaskProgramTextRunes || len([]rune(job.Deliverable)) > maxTaskProgramTextRunes {
 			return fmt.Errorf("task program job %q exceeds bounded definition limits", job.ID)
 		}
 		mode := strings.TrimSpace(job.OutputMode)
