@@ -74,6 +74,32 @@ class WorkflowTests(unittest.TestCase):
                     self.assertEqual(doc['jobs']['distro-install']['strategy'], {
                         'fail-fast': 'false', 'matrix': {'distro': ['ubuntu', 'arch']}})
 
+    def test_shell_preflight_rejects_missing_config_and_preserves_relay_failure(self):
+        # Execute the exact workflow shell without network. A successful preflight
+        # must still propagate a failed qualification verifier, never turn green.
+        import os
+        import subprocess
+        import tempfile
+        for name in JOBS:
+            doc = yaml.load((ROOT / '.github/workflows' / (name + '.yml')).read_text(), Loader=yaml.BaseLoader)
+            for job in doc['jobs'].values():
+                program = job['steps'][1]['run']
+                for app, present, code, message in (
+                        ('', False, 1, 'GCP_CHECK_APP_ID repository variable'),
+                        ('invalid', True, 1, 'GCP_CHECK_APP_ID repository variable'),
+                        ('42', False, 1, 'Trusted checkout lacks the relay'),
+                        ('42', True, 7, 'awaiting actual qualification')):
+                    with self.subTest(workflow=name, app=app, present=present), tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        (root / 'scripts').mkdir()
+                        if present:
+                            (root / 'scripts/gcp-result-relay.py').write_text('raise SystemExit(7)\n')
+                        env = dict(PATH=os.environ['PATH'], GCP_CHECK_APP_ID=app, GCP_VERIFIER_SHA='')
+                        result = subprocess.run(['bash', '-c', program], cwd=root, env=env,
+                            text=True, capture_output=True, timeout=5)
+                        self.assertEqual(result.returncode, code, result.stderr)
+                        self.assertIn(message, result.stdout)
+
     def test_each_context_rejects_missing_app_before_network(self):
         for context in JOBS:
             with self.subTest(context=context):
