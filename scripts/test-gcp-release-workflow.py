@@ -45,12 +45,22 @@ class PromotionTests(unittest.TestCase):
                 binding = evidence['receipt']['binding']
                 binding['artifacts']['archive']['sha256'] = digest
                 manifest['evidence_binding'] = copy.deepcopy(binding)
-                provenance = dict(schema='swarm.gcp.build-provenance/v1', builder='gcp', source_sha=f.A, version=inputs['version'], build_id=binding['build_id'], run_id=binding['run_id'], archive_sha256=digest, build_inputs=inputs)
+                original = {k: copy.deepcopy(binding[k]) for k in ('repository_id', 'pull_number', 'controller_id', 'run_id', 'source_tree', 'execution_tree', 'build_inputs')}
+                original['event'] = evidence['admission']['event']
+                token = dict(evidence['admission']['jobs']['build'], run_id=binding['run_id'], binding_digest=f.s.hashed(original))
+                build = dict(token=token, status='passed', build_id=binding['build_id'],
+                             outputs={k: copy.deepcopy(binding['artifacts'][k]) for k in ('archive', 'checksum')},
+                             members=[dict(stage=name, status='passed', timing={'startTime': '2026-01-01T00:00:00Z', 'endTime': '2026-01-01T00:00:01Z'}) for name in f.s.BUILD_STAGES])
+                provenance = dict(schema='swarm.runtime-build-proof/v1', run_id=binding['run_id'], binding=original,
+                                  result=build, authority=evidence['admission']['authority'])
+                manifest['provenance']['sha256'] = f.s.hashed(provenance)
+                binding['artifacts']['provenance']['sha256'] = f.s.hashed(provenance)
+                manifest['evidence_binding'] = copy.deepcopy(binding)
                 predicate = dict(schema='swarm.release-promotion/v1', builder='gcp', promoter='github-actions', source_sha=f.A, archive_sha256=digest, gcp_build_id=binding['build_id'], gcp_run_id=binding['run_id'], github_run_id='1', qualification_evidence_sha256=f.s.digest(f.s.canonical(evidence)))
                 statement = dict(predicateType='https://swarm.dev/attestations/release-promotion/v1', predicate=copy.deepcopy(predicate))
                 if change == 'type': statement['predicateType'] = 'https://slsa.dev/provenance/v1'
                 if change == 'signed': statement['predicate']['builder'] = 'github-actions'
-                if change == 'evidence': evidence['receipt']['cleanup']['verified'] = False
+                if change == 'evidence': evidence['receipt']['cleanup_verified'] = False
                 if change == 'input': binding['build_input_digest'] = '0' * 64
                 if change == 'source': predicate['source_sha'] = f.B
                 if change == 'archive': raw += b'altered'

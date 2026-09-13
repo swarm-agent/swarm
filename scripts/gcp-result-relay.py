@@ -80,10 +80,17 @@ def stage_policy(context, env):
     if context in STAGES:
         return STAGES[context]
     require(context in ('build-main', 'release-candidate'), 'unknown check context')
-    values = decode(env['GCP_REQUIRED_STAGES'])
-    require(isinstance(values, list) and all(isinstance(x, str) and re.fullmatch('[a-z0-9-]+', x) for x in values), 'invalid stage policy')
-    require(len(values) == len(set(values)) and STAGES['install-distro-smoke'] | STAGES['critical-tests'] <= set(values), 'incomplete qualification policy')
-    return set(values)
+    build = STAGES['install-distro-smoke'] | STAGES['critical-tests'] | {'ubuntu-root'}
+    if context == 'build-main' and env.get('GITHUB_EVENT_NAME') == 'workflow_dispatch':
+        return build
+    providers = {'provider-' + p + '-' + surface + '-' + str(n)
+                 for p in ('anthropic', 'fireworks', 'gemini', 'openai', 'openrouter')
+                 for surface in ('desktop', 'tui')
+                 for n in range(1, 4 if (p, surface) == ('anthropic', 'tui') else 2)}
+    return build | providers | {'main-source-policy', 'changelog', 'dependency-vulnerabilities',
+        'head-reverify', 'identity-bootstrap', 'installed-new-user', 'installed-existing-user',
+        'installed-normal-user', 'desktop-launch', 'tui-launch', 'plan-auto', 'task-routing',
+        'task-program', 'provider-sync'}
 
 
 class GitHub:
@@ -105,7 +112,8 @@ class GitHub:
         require(repository_id == positive(event['repository']['id']), 'event repository mismatch')
         name = env['GITHUB_EVENT_NAME']
         head = sha(env['GITHUB_SHA'])
-        expected = {'repository_id': repository_id, 'event_name': name}
+        expected = {'repository_id': repository_id, 'event_name': name,
+                    'pull_number': positive(event['number']) if name == 'pull_request' else 0}
         if name == 'pull_request':
             pr = self.get(self.root + '/pulls/' + str(positive(event['number'])))
             require(pr['state'] == 'open', 'PR no longer open')
@@ -147,7 +155,7 @@ def verify_check(check, expected, context, app_id, stages):
     text = check['output']['text']
     require(isinstance(text, str) and len(text.encode()) <= 65536, 'oversized check evidence')
     result = decode(text)
-    allowed = {'schema', 'repository_id', 'head_sha', 'base_sha', 'execution_sha', 'source_tree', 'execution_tree', 'input_digest', 'run_id', 'context', 'stages', 'state', 'cleanup_verified', 'diagnostics', 'release_handoff', 'event_name', 'before_sha', 'logical_run', 'invocation_created_at'}
+    allowed = {'schema', 'repository_id', 'head_sha', 'base_sha', 'execution_sha', 'source_tree', 'execution_tree', 'input_digest', 'run_id', 'context', 'stages', 'state', 'cleanup_verified', 'diagnostic', 'release', 'phase', 'pull_number', 'event_name', 'before_sha', 'logical_run', 'invocation_created_at'}
     require(set(result) <= allowed, 'unknown check evidence fields')
     require(result['schema'] == 'swarm.gcp.check-result/v1' and result['context'] == context, 'wrong result contract')
     require(all(result.get(k) == v and type(result.get(k)) is type(v) for k, v in expected.items()), 'stale result identity')
@@ -156,10 +164,11 @@ def verify_check(check, expected, context, app_id, stages):
     rows = result['stages']
     require(isinstance(rows, list) and all(isinstance(x, dict) and set(x) == {'id', 'status'} and isinstance(x['id'], str) for x in rows), 'invalid stages')
     require(len(rows) == len(stages) and {x['id'] for x in rows} == stages, 'incomplete or duplicate stages')
-    require(all(x['status'] in ('pending', 'running', 'passed', 'failed', 'cancelled') for x in rows), 'unknown stage status')
-    require(result['state'] in ('queued', 'running', 'success', 'failure', 'cancelled'), 'unknown state')
+    require(all(x['status'] in ('queued', 'running', 'passed', 'failed', 'cancelled') for x in rows), 'unknown stage status')
+    require(result['state'] in ('queued', 'running', 'passed', 'failed', 'cancelled'), 'unknown state')
+    require(result.get('phase') in ('preparation', 'execution'), 'unknown execution phase')
     if check['status'] == 'completed':
-        require(check['conclusion'] == 'success' and result['state'] == 'success' and result['cleanup_verified'] is True and all(x['status'] == 'passed' for x in rows), 'qualification failed')
+        require(check['conclusion'] == 'success' and result['state'] == 'passed' and result['phase'] == 'execution' and result['cleanup_verified'] is True and all(x['status'] == 'passed' for x in rows), 'qualification failed')
         return result, True
     require(check['status'] in ('queued', 'in_progress') and check.get('conclusion') is None and result['state'] in ('queued', 'running'), 'inconsistent check state')
     return result, False
@@ -171,19 +180,33 @@ def poll(env, event, transport=request, sleep=time.sleep, clock=time.monotonic):
     app = positive(env['GCP_CHECK_APP_ID'])
     stages = stage_policy(context, env)
     expected = api.identity(event)
-    deadline, pinned = clock() + 2400, None
+    deadline, pinned, check_id = clock() + 2400, None, None
     while clock() < deadline:
         require(api.identity(event) == expected, 'input changed while polling')
         path = api.root + '/commits/' + expected['head_sha'] + '/check-runs?per_page=100&filter=all&check_name=' + urllib.parse.quote(context, safe='')
         response = api.get(path)
         require(response['total_count'] <= 100 and len(response['check_runs']) == response['total_count'], 'ambiguous paginated checks')
-        matches = [c for c in response['check_runs'] if c['name'] == context and c['app']['id'] == app]
-        require(len(matches) <= 1, 'ambiguous producer checks')
+        matches = []
+        for check in response['check_runs']:
+            if check['name'] != context or check['app']['id'] != app:
+                continue
+            text = check.get('output', {}).get('text')
+            require(isinstance(text, str) and len(text.encode()) <= 65536, 'invalid producer evidence')
+            candidate = decode(text)
+            if all(candidate.get(k) == v and type(candidate.get(k)) is type(v) for k, v in expected.items()):
+                matches.append(check)
+        require(len(matches) <= 1, 'ambiguous current producer checks')
         if matches:
             result, done = verify_check(matches[0], expected, context, app, stages)
-            identity = (matches[0]['id'], result['run_id'], result['input_digest'])
-            require(pinned is None or pinned == identity, 'producer identity changed')
-            pinned = identity
+            observed_id = positive(matches[0]['id'])
+            require(check_id is None or check_id == observed_id, 'producer check changed')
+            check_id = observed_id
+            if result['phase'] == 'execution':
+                identity = (observed_id, result['run_id'], result['input_digest'])
+                require(pinned is None or pinned == identity, 'producer identity changed')
+                pinned = identity
+            else:
+                require(pinned is None, 'execution regressed to preparation')
             if done:
                 require(api.identity(event) == expected, 'input changed at completion')
                 return result

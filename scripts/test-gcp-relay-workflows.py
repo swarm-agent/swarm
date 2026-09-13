@@ -22,7 +22,7 @@ JOBS = {
     'guard-main-pr-source': ['require-dev-head'],
 }
 CHECKOUT = 'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09'
-TRUSTED = '${{ github.event.pull_request.base.sha || github.workflow_sha }}'
+TRUSTED = '${{ vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}'
 spec = importlib.util.spec_from_file_location('relay', ROOT / 'scripts/gcp-result-relay.py')
 relay = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(relay)
@@ -62,9 +62,12 @@ class WorkflowTests(unittest.TestCase):
                         'sparse-checkout': 'scripts/gcp-result-relay.py',
                         'sparse-checkout-cone-mode': 'false'})
                     self.assertEqual(set(run), {'name', 'env', 'run'})
-                    self.assertEqual(run['run'], 'python3 -I scripts/gcp-result-relay.py')
+                    self.assertTrue(run['run'].endswith('python3 -I scripts/gcp-result-relay.py\n'))
+                    self.assertIn('[[ "${GCP_VERIFIER_SHA}" =~ ^[0-9a-f]{40}$ ]]', run['run'])
+                    self.assertIn('[[ "$(git rev-parse HEAD)" == "${GCP_VERIFIER_SHA}" ]]', run['run'])
                     self.assertEqual(run['env'], {
                         'GITHUB_TOKEN': '${{ github.token }}',
+                        'GCP_VERIFIER_SHA': '${{ vars.GCP_VERIFIER_SHA }}',
                         'GCP_CHECK_APP_ID': '${{ vars.GCP_CHECK_APP_ID }}',
                         'GCP_CHECK_CONTEXT': name})
                 if name == 'install-distro-smoke':
@@ -91,10 +94,10 @@ class WorkflowTests(unittest.TestCase):
                            GCP_CHECK_CONTEXT=context)
                 event = dict(repository={'id': 7}, before=base, after=head, ref=env['GITHUB_REF'])
                 result = dict(schema='swarm.gcp.check-result/v1', repository_id=7,
-                              event_name='push', before_sha=base, head_sha=head,
+                              event_name='push', pull_number=0, phase='execution', before_sha=base, head_sha=head,
                               base_sha=base, execution_sha=head, source_tree=tree,
                               execution_tree=tree, input_digest='d' * 64,
-                              run_id='run-1', context=context, state='success',
+                              run_id='run-1', context=context, state='passed',
                               cleanup_verified=True,
                               stages=[{'id': x, 'status': 'passed'} for x in sorted(relay.STAGES[context])])
                 result['stages'][0]['status'] = 'failed'
@@ -111,7 +114,7 @@ class WorkflowTests(unittest.TestCase):
                         value = {'id': 7}
                     return json.dumps(value).encode()
                 with self.assertRaisesRegex(relay.Invalid, 'qualification failed'):
-                    relay.poll(env, event, transport)
+                    relay.poll(env, event, transport, sleep=lambda _: self.fail('terminal failure must not poll again'))
 
 
 if __name__ == '__main__':

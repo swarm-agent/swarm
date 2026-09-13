@@ -248,14 +248,16 @@ statement = rows[0]['verificationResult']['statement']
 release.require(statement['predicateType'] == 'https://swarm.dev/attestations/release-promotion/v1'
                 and statement['predicate'] == predicate, 'wrong signed predicate')
 release.require(binding['source_sha'] == binding['execution_sha'] == inputs['source_sha'] == source
-                and binding['pull_number'] == 0 and inputs['ref'] == 'refs/heads/main', 'nonmerged source')
+                and binding['pull_number'] == 0 and inputs['ref'] == 'detached'
+                and evidence['admission']['event']['kind'] == 'push'
+                and binding['trust_profile'] == 'authenticated-main-push', 'nonmerged source')
 release.require(release.digest(release.canonical({'schema': 'swarm.gcp.workload/v2', **inputs}))
                 == binding['build_input_digest'], 'input digest mismatch')
 release.require(manifest['evidence_binding'] == binding and manifest['archive_sha256'] == digest
                 and manifest['archive']['sha256'] == digest, 'manifest mismatch')
-release.require(provenance == {'schema': 'swarm.gcp.build-provenance/v1', 'builder': 'gcp',
-    'source_sha': source, 'version': inputs['version'], 'build_id': binding['build_id'],
-    'run_id': binding['run_id'], 'archive_sha256': digest, 'build_inputs': inputs}, 'build provenance mismatch')
+release.require(release.digest((directory / 'gcp-build-provenance.json').read_bytes())
+                == manifest['provenance']['sha256'] == binding['artifacts']['provenance']['sha256'], 'build provenance digest mismatch')
+release.verify_provenance({'input_digest': release.hashed(provenance['binding'])}, manifest, evidence, provenance)
 release.require(pathlib.Path(archive).name == 'swarm-' + inputs['version'] + '-linux-amd64.tar.gz', 'archive version mismatch')
 release.require((directory / 'build-info.txt').read_bytes() == release.archive_info(raw, inputs['version'], inputs), 'build info mismatch')
 PY

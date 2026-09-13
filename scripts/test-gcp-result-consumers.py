@@ -28,10 +28,10 @@ A, B, T = 'a' * 40, 'b' * 40, 'c' * 40
 
 
 def fixture():
-    expected = dict(repository_id=7, event_name='push', before_sha=B,
+    expected = dict(repository_id=7, event_name='push', pull_number=0, before_sha=B,
                     head_sha=A, base_sha=B, execution_sha=A, source_tree=T, execution_tree=T)
     result = dict(expected, schema='swarm.gcp.check-result/v1', input_digest='d' * 64,
-                  run_id='run-1', context='critical-tests', state='success', cleanup_verified=True,
+                  run_id='run-1', context='critical-tests', state='passed', phase='execution', cleanup_verified=True,
                   stages=[{'id': x, 'status': 'passed'} for x in sorted(r.STAGES['critical-tests'])])
     check = dict(id=10, app={'id': 42}, name='critical-tests', head_sha=A,
                  status='completed', conclusion='success', output={'text': json.dumps(result)})
@@ -81,7 +81,7 @@ class RelayTests(unittest.TestCase):
             elif '/git/commits/' in url: value = {'tree': {'sha': T}, 'parents': [{'sha': B}]}
             else: value = {'id': 7}
             return json.dumps(value).encode()
-        with self.assertRaisesRegex(r.Invalid, 'ambiguous producer'):
+        with self.assertRaisesRegex(r.Invalid, 'ambiguous current producer'):
             r.poll(env, event, transport)
         self.assertLess(len(calls), 12)
 
@@ -93,26 +93,52 @@ class RelayTests(unittest.TestCase):
 
 class ReleaseTests(unittest.TestCase):
     def evidence(self):
-        expected, result, _ = fixture()
+        _, result, _ = fixture()
+        result['context'] = 'build-main'
+        result['stages'] = [{'id': name, 'status': 'passed'} for name in sorted(s.FULL_STAGES)]
         inputs = dict(source_sha=A, tree_sha=T, build_spec_sha256='1' * 64,
                       locks_sha256='2' * 64, toolchains_sha256='3' * 64, version='v1.2.3',
-                      built_at='2026-01-01T00:00:00Z', actor='automation', ref='refs/heads/main',
-                      trust_realm='trusted', harness_sha=B)
-        result['input_digest'] = s.digest(s.canonical({'schema': 'swarm.gcp.workload/v2', **inputs}))
-        refs = {k: {'bucket': 'example-release', 'object': k, 'generation': '1', 'sha256': 'a' * 64} for k in ('archive', 'checksum', 'provenance')}
+                      built_at='2026-01-01T00:00:00Z', actor='automation', ref='detached',
+                      trust_realm='authenticated-main-push', harness_sha=B)
+        refs = {k: dict(bucket='example-proof' if k == 'provenance' else 'example-package',
+                        object=k, generation='1', sha256='a' * 64) for k in ('archive', 'checksum', 'provenance')}
         binding = dict(repository_id=7, pull_number=0, source_sha=A, comparison_base_sha=B,
-                       execution_sha=A, execution_tree=T, source_tree=T, trust_profile='trusted',
-                       build_inputs=inputs, build_input_digest=result['input_digest'], artifacts=refs,
-                       controller_id='controller', build_id='build-1', run_id='run-1')
-        receipt = dict(binding=binding, stages=result['stages'], onboarding=[{'id': 'first-run', 'status': 'passed'}],
-                       jobs=[{'id': 'job', 'attempt': 2, 'status': 'passed'}], cleanup={'verified': True, 'remaining_resources': []})
-        evidence = dict(schema='swarm.gcp.release-evidence/v1', receipt=receipt,
-                        admission={'binding': copy.deepcopy(binding)}, observed_authority={'binding': copy.deepcopy(binding)})
+                       execution_sha=A, execution_tree=T, source_tree=T, trust_profile='authenticated-main-push',
+                       build_inputs=inputs, build_input_digest=s.hashed({'schema': 'swarm.gcp.workload/v2', **inputs}),
+                       artifacts=refs, controller_id='controller', build_id='build-1', run_id='run-1')
+        event = dict(kind='push', base_ref='main', head_ref='main', head_sha=A, base_sha=B,
+                     merge_sha='', action='', draft=False, same_repository=True, authenticated=True, workflow='')
+        authority = {k: k for k in ('controller', 'builder', 'result_writer', 'provenance_verifier')}
+        jobs = {name: dict(job_id='build-group' if name in s.BUILD_STAGES else name, attempt_id='0', fence=1)
+                for name in s.FULL_STAGES}
+        rows = [dict(schema='swarm.gcp.evidence/v2', stage=name, **jobs[name], source_sha=A, source_tree=T,
+                     binding_digest=s.hashed(binding), status='passed', duration_ms=1, cost_microusd=1,
+                     diagnostic={'code': 'OK'}, queued_ms=0, started_ms=1, ended_ms=2, retry_count=0)
+                for name in sorted(s.FULL_STAGES)]
+        cells = []
+        for cell, provider in s.CELLS.items():
+            gates = {'identity', 'credential', 'workspace', 'canonical-models'}
+            if provider == 'fireworks': gates |= {'explicit-model', 'basic-plan-auto'}
+            cells.append(dict(schema='swarm.gcp.onboarding/v1', cell=cell, source_sha=A,
+                              archive_sha256=refs['archive']['sha256'], build_id='build-1', run_id='run-1',
+                              exit_code=0, cleanup_verified=True, gates={g: True for g in gates},
+                              model='accounts/fireworks/models/deepseek-v4p1-flash'))
+        receipt = dict(schema='swarm.gcp.evidence/v2', binding=binding, stages=rows,
+                       onboarding_receipts=cells, cleanup_verified=True)
+        admission = dict(schema='swarm.gcp.admission/v2', binding=copy.deepcopy(binding), event=event,
+                         jobs=jobs, authority=authority, max_cost_microusd=500000)
+        observed = dict(schema='swarm.gcp.observed-authority/v1', identities=authority,
+                        receipt_sha256=s.hashed(receipt), admission_sha256=s.hashed(admission),
+                        provenance_sha256=refs['provenance']['sha256'])
+        evidence = dict(schema='swarm.gcp.release-evidence/v1', run_id='run-1', receipt=receipt,
+                        admission=admission, observed_authority=observed)
         manifest = dict(schema='swarm.release-handoff/v1', qualification='passed', cleanup_verified=True,
-                        source_sha=A, build_id='build-1', run_id='run-1', evidence_binding=copy.deepcopy(binding), **refs)
-        policy = dict(schema='swarm.gcp.release-policy/v1', stages=[x['id'] for x in result['stages']],
-                      onboarding=['first-run'], current_attempts={'job': 2},
-                      binding={k: copy.deepcopy(v) for k, v in binding.items() if k not in ('artifacts', 'build_id', 'run_id')})
+                        source_sha=A, build_id='build-1', run_id='run-1', evidence_binding=copy.deepcopy(binding),
+                        evidence=dict(bucket='example-proof', object='evidence', generation='1', sha256=s.hashed(evidence)),
+                        **{k: dict(v, bucket='example-release', object='copied/' + k) for k, v in refs.items()})
+        manifest.update({k: copy.deepcopy(evidence[k]) for k in ('receipt', 'admission', 'observed_authority')})
+        policy = dict(schema='swarm.gcp.release-policy/v1', authority=authority,
+                      receipt_bucket='example-proof', qualified_bucket='example-release', package_bucket='example-package')
         return result, manifest, evidence, policy, inputs
 
     def test_full_independent_binding(self):
@@ -123,13 +149,13 @@ class ReleaseTests(unittest.TestCase):
         for change in ('onboarding', 'attempt', 'base', 'source', 'version', 'cleanup', 'authority', 'artifact'):
             with self.subTest(change=change):
                 result, manifest, evidence, policy, _ = self.evidence()
-                if change == 'onboarding': evidence['receipt']['onboarding'] = []
-                if change == 'attempt': evidence['receipt']['jobs'][0]['attempt'] = 1
+                if change == 'onboarding': evidence['receipt']['onboarding_receipts'] = []
+                if change == 'attempt': evidence['receipt']['stages'][0]['attempt_id'] = '1'
                 if change == 'base': result['base_sha'] = A
                 if change == 'source': manifest['source_sha'] = B
-                if change == 'cleanup': evidence['receipt']['cleanup']['remaining_resources'] = ['vm']
-                if change == 'authority': evidence['observed_authority']['binding']['controller_id'] = 'other'
-                if change == 'artifact': manifest['archive'] = {}
+                if change == 'cleanup': evidence['receipt']['cleanup_verified'] = False
+                if change == 'authority': evidence['observed_authority']['identities'] = {}
+                if change == 'artifact': manifest['archive']['sha256'] = 'f' * 64
                 with self.assertRaises(s.relay.Invalid):
                     s.verify_evidence(result, manifest, evidence, policy, 'v1.2.4' if change == 'version' else 'v1.2.3')
 
