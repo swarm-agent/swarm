@@ -40,7 +40,14 @@ export class AttachClient {
     const memoryRoute = route === '/v1/memory' || method === 'GET' && /^\/v1\/memory\?session_id=[a-zA-Z0-9_-]*$/.test(route)
     const memoryOperation = this.memoryTrial === true && memoryRoute && (method === 'GET' || method === 'POST' && ['remember', 'forget', 'settings', 'restore', 'run_now', 'cancel', 'approve'].includes(body?.action))
     const statusRoute = route.startsWith('/v1/workspace/git/status?session_id=')
-    if (!memoryOperation && !(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&
+    // Explicit fixture-owned Automation routes; never authorize account-wide discovery
+    // or an arbitrary parent through the live runner's opt-in.
+    const automationURL = new URL(route, this.origin)
+    const automationScope = this.automationTrial
+    const automationRead = automationScope && method === 'GET' && ['/v3/automations/v2/review', '/v3/automations/v2/progress'].includes(automationURL.pathname) && automationURL.searchParams.get('session_id') === automationScope.sessionId && automationURL.searchParams.get('workspace_id') === automationScope.workspaceId
+    const automationWrite = automationScope && method === 'POST' && ['/v3/automations/v2/proposal', '/v3/automations/v2/accept', '/v3/automations/v2/control'].includes(route) && body?.session_id === automationScope.sessionId && body?.workspace_id === automationScope.workspaceId
+    const automationSidechat = automationScope && method === 'POST' && route === `/v3/sessions/${automationScope.sessionId}/sidechats/plan`
+    if (!automationRead && !automationWrite && !automationSidechat && !memoryOperation && !(method === 'GET' && (readRoutes.includes(route) || statusRoute || ownedRoute && !route.endsWith('/messages') && !route.endsWith('/run/stop'))) &&
         !(method === 'POST' && (permissionResolve || mutationRoutes.includes(route) || ownedRoute && (route.endsWith('/messages') || route.endsWith('/run/stop'))))) throw new Error('unreviewed attach operation')
     if (permissionResolve && (body?.action !== 'allow_once' || Object.keys(body).some(key => !['action', 'reason'].includes(key)))) throw new Error('only exact allow-once permission resolution is permitted')
     if (route === '/v1/workspace/add' && body?.make_current !== false) throw new Error('attach cannot change shared selection')

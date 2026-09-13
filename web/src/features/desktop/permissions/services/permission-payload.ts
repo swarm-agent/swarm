@@ -566,7 +566,7 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return ['plan_update', 'plan_followup_request', 'plan_amendment_request', 'plan_new_request'].includes(
+      return ['automation_v2_acceptance', 'plan_update', 'plan_followup_request', 'plan_amendment_request', 'plan_new_request'].includes(
         safeString(permission.requirement).toLowerCase(),
       )
     case 'task':
