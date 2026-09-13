@@ -366,8 +366,18 @@ func (r *Runtime) RetainRecoverySource(scope WorkspaceScope, req RecoverySourceR
 	sources[req.ExpectedDigest] = source
 	parent.Metadata = cloneRecoveryRow(parent.Metadata)
 	parent.Metadata[recoverySourceMetadataKey] = sources
+	// A resumed legacy parent may have no ownership projection yet. Authenticate
+	// its exact managed lane before supplying legacy admission evidence; the
+	// store still verifies complete same-owner history under the mutation lock.
+	var admission *pebblestore.WorktreeAdmissionEvidence
+	if parent.WorktreeEnabled {
+		if _, err := r.manageWorktreeRecoveryDestination(scope, parent, pebblestore.SessionSnapshot{}, map[string]any{"parent_workspace_path": parent.WorktreeRootPath}); err != nil {
+			return RecoverySource{}, fmt.Errorf("authenticate recovery parent lane: %w", err)
+		}
+		admission = &pebblestore.WorktreeAdmissionEvidence{Kind: "legacy", Path: parent.WorktreeRootPath, SourcePath: asString(parent.Metadata["swarm_v3_source_workspace_path"]), OwnerSessionID: parent.ID, Branch: parent.WorktreeBranch}
+	}
 	key := "recovery-source:" + req.ExpectedDigest
-	mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, Kind: pebblestore.V3SessionMutationUpdateMetadata, Session: &parent, ExpectedLastEventSeq: &seq, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key})
+	mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: parent.ID, UserID: parent.UserID, AccountScopeID: parent.AccountScopeID, Kind: pebblestore.V3SessionMutationUpdateMetadata, Session: &parent, WorktreeAdmission: admission, ExpectedLastEventSeq: &seq, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key})
 	if err != nil {
 		return RecoverySource{}, err
 	}

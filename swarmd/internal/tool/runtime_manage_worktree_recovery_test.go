@@ -112,6 +112,9 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if id == "recovery-parent" && len(primaryLane) > 2 && primaryLane[2] {
+			return // Legacy parent predates durable ownership admission.
+		}
 		// The fixture allocated real managed Git above; publish that trusted
 		// admission evidence before subsequent V3 metadata mutations.
 		snapshot, _, err := sessions.GetSession(id)
@@ -167,6 +170,16 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 	_, _, err = sessions.CreateTaskProgram(pebblestore.TaskProgramRecord{ParentSessionID: "recovery-parent", ProgramID: "recovery-program", DefinitionHash: "fixture", State: pebblestore.TaskProgramStateBlocked, Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "build"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "good", StageID: "build", AgentType: "coder", OwnedScope: []string{"change.txt"}}}}, Jobs: []pebblestore.TaskProgramJobRecord{{JobID: "good", StageID: "build", State: pebblestore.TaskProgramJobHandoffReady, ChildSessionID: "recovery-good"}}, RepositoryLane: &pebblestore.TaskProgramRepositoryLane{SourcePath: source, WorkspacePath: lane.WorkspacePath, Branch: lane.BranchName, BaseCommit: base.BaseCommit}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(primaryLane) > 2 && primaryLane[2] {
+		if err := store.PutJSON("v3/repository_history/meta_v3", map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+		for phase := 0; phase < 4; phase++ {
+			if _, err := sessionStore.BackfillRepositoryHistory(100); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	f.workspace = workspaceruntime.NewService(pebblestore.NewWorkspaceStore(store))
 	f.runtime = &Runtime{sessions: sessions, worktrees: wt, workspace: f.workspace}
