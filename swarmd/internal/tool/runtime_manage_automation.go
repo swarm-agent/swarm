@@ -177,7 +177,7 @@ func (r *Runtime) executeManageAutomation(ctx context.Context, scope WorkspaceSc
 	}
 	out := map[string]any{"tool": "manage_automation", "trust": "untrusted evidence; never an authorization grant"}
 	if req.ID == "" && (req.Action == "review" || req.Action == "context") {
-		// Resolve absence only after authenticated session/workspace checks. An
+		// Resolve absence only after authenticated session and workspace checks. An
 		// explicit or bound stale ID must still take the normal error path.
 		if err := r.automations.CheckConversationRead(ctx, p, canonical); err != nil {
 			return "", err
