@@ -29,6 +29,13 @@ export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceNam
     </main><AutomationConversations workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} createRequest={createRequest} /></div>
   </div>
 }
+// Persisted scheduling handoff survives permission removal, navigation and reload.
+export function AutomationV2ScheduleHandoff({ workspaceId, sessionId }: { workspaceId: string; sessionId: string }) {
+  const page = useAutomationV2Page({ action: 'progress', workspace_id: workspaceId, session_id: sessionId, timezone: 'UTC' })
+  const record = page?.data?.progress?.record
+  if (!record) return null
+  return <section aria-label="Automation handoff" className="m-4 space-y-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">{record.cancelled ? 'Automation cancelled' : record.enabled ? 'Automation scheduled' : 'Automation paused'}</h3><p className="text-sm">Accepted revision {record.revision}. Acceptance does not start an immediate run.</p><p className="text-sm">{record.enabled && !record.cancelled && record.next_due_at ? `Next scheduled time: ${new Date(record.next_due_at).toISOString()} (UTC)` : 'No active next scheduled time.'}</p><p className="text-xs text-[var(--app-text-muted)]">{page?.stale || page?.loading ? 'Refreshing observed schedule… ' : ''}Scheduled is not admitted or running. Automation details shows the schedule, expiration and observed work.</p></section>
+}
 export function AutomationV2Detail({ workspaceId, sessionId, onChat }: { workspaceId: string; sessionId: string; onChat?: (id: string) => void }) {
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cursor, setCursor] = useState<string>()

@@ -1072,6 +1072,12 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "agent_name",
 		"model_profile",
+		// Bounded canonical occurrence attribution is required for protected
+		// automation composers, handoffs and links after hydration/reconnect.
+		"automation_v2_occurrence_id",
+		"automation_v2_authoring_session_id",
+		"automation_v2_digest",
+		"automation_v2_revision",
 		"resolved_agent_name",
 		"agent_mode",
 		"runtime_mode",

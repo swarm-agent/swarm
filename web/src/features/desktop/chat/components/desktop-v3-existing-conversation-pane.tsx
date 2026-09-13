@@ -33,7 +33,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
-import { AutomationV2Detail } from '../../tools/automations/automation-v2-workspace';
+import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
@@ -592,6 +592,9 @@ const IsolatedPlanExecutionSidebar = memo(function IsolatedPlanExecutionSidebar(
   );
 
   const automationV2 = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation_v2 : undefined; });
+  const occurrenceParent = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? metadataString(record.session.metadata, 'automation_v2_authoring_session_id') : ''; });
+  const occurrenceWorkspace = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.workspace_grants?.find(g => g.kind === 'primary')?.workspace_id : undefined; });
+  if (occurrenceParent && occurrenceWorkspace) return <div className="min-h-0 overflow-y-auto p-3"><p className="mb-3 text-xs text-[var(--app-text-muted)]">Scheduled occurrence · accepted instructions are immutable. Current schedule and recorded work:</p><AutomationV2Detail workspaceId={occurrenceWorkspace} sessionId={occurrenceParent} /></div>;
   if (automationV2) return <div className="min-h-0 overflow-y-auto p-3"><AutomationV2Detail workspaceId={automationV2.workspace_id} sessionId={sessionId} /></div>;
   if (automation) return <AutomationSessionPanel workspaceId={automation.workspace_id} id={automation.automation_id} />;
   return (
@@ -2284,6 +2287,7 @@ export function DesktopV3ExistingConversationPane({
     ? heldPlanPermissionRef.current
     : null;
   const stablePlanPermission = pendingPlanPermission ?? heldPlanPermission;
+  const isPendingAutomationV2 = Boolean(pendingPlanDocument?.automationV2);
   const stablePlanDocument = pendingPlanDocument ?? (heldPlanPermission
     ? structuredPlanDocumentFromPermission(heldPlanPermission)
     : null);
@@ -3501,7 +3505,7 @@ export function DesktopV3ExistingConversationPane({
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
                   {hasSessionArtifacts ? (
                     <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
-                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 ? 'Show automation' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation || cacheSession?.automation_v2 ? 'Automation' : 'Plan'}</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show automation' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan'}</button>
                       <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}</button>
                     </div>
                   ) : null}
@@ -3524,6 +3528,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
+          {cacheSession?.automation_v2 ? <AutomationV2ScheduleHandoff workspaceId={cacheSession.automation_v2.workspace_id} sessionId={normalizedSessionId} /> : null}
           {cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? <section aria-label="Automation conversation protected" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm"><strong>Automation conversation</strong><p className="mt-1 text-[var(--app-text-muted)]">This conversation is reserved for scheduled work. Use “Talk to Swarm to help optimize this automation” in Automation details to discuss changes without changing accepted instructions.</p></section> : composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
@@ -3632,7 +3637,7 @@ export function DesktopV3ExistingConversationPane({
           >
             {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
-                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 ? 'Show automation sidebar' : 'Show plan sidebar'} title={cacheSession?.automation || cacheSession?.automation_v2 ? 'Automation' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation || cacheSession?.automation_v2 ? 'Automation' : 'Plan') : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show automation sidebar' : 'Show plan sidebar'} title={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan') : null}</button>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
@@ -3650,7 +3655,7 @@ export function DesktopV3ExistingConversationPane({
                   modelLabel={displayedPreference.model}
                   displayMode={planSidebarDisplayMode}
                 />
-              ) : showPlanExecutionSidebar || cacheSession?.automation || cacheSession?.automation_v2 ? (
+              ) : showPlanExecutionSidebar || cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? (
                 <IsolatedPlanExecutionSidebar
                   sessionId={normalizedSessionId}
                   busyAction={planExecutionBusyAction}
