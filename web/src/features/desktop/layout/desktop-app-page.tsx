@@ -70,6 +70,7 @@ import {
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
+import { AutomationV2SidebarMetadata } from '../tools/automations/automation-v2-sidebar-metadata'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
@@ -1908,7 +1909,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     : activeSession
       ? sessionActivityLabel(session)
       : sessionMeta(session) || ''
-  const rightSideLabel = hasPendingPermission || isPlanRow ? '' : singleStatusLabel
+  const rightSideLabel = hasPendingPermission || isPlanRow || automationV2 ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const showStatusCircle = activeSession || statusTone === 'error'
   const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
@@ -2250,26 +2251,30 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           ) : null}
         </span>
       </div>
-      <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-        <span className="flex min-w-0 items-center gap-1.5">
-          {childIdentityLabel ? (
-            <>
-              <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
-              <span aria-hidden="true">·</span>
-            </>
-          ) : null}
-          <span className="min-w-0 truncate">{workspaceLabel}</span>
-          {showBranchLabel ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="min-w-0 truncate">{branchLabel}</span>
-            </>
-          ) : null}
-        </span>
-        <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
-          {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
-        </span>
-      </div>
+      {automationV2 ? (
+        <AutomationV2SidebarMetadata sessionId={session.id} identity={automationV2} now={now} needsApproval={hasPendingPermission} />
+      ) : (
+        <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <span className="flex min-w-0 items-center gap-1.5">
+            {childIdentityLabel ? (
+              <>
+                <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
+                <span aria-hidden="true">·</span>
+              </>
+            ) : null}
+            <span className="min-w-0 truncate">{workspaceLabel}</span>
+            {showBranchLabel ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="min-w-0 truncate">{branchLabel}</span>
+              </>
+            ) : null}
+          </span>
+          <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
+            {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
+          </span>
+        </div>
+      )}
 
       {showPlanProgressBar ? (
         <div className="flex min-w-0 items-center gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
