@@ -410,6 +410,24 @@ export function getDesktopSlashCommands(options: DesktopSlashCommandOptions = {}
   return availableDesktopSlashCommands(options).slice()
 }
 
+export function parseDesktopIntegrationCommand(input: string, options: DesktopSlashCommandOptions = {}): { build: boolean } {
+  const normalized = input.trim().toLowerCase().replace(/\s+/g, ' ')
+  if (normalized === '/integrate') return { build: false }
+  if (normalized === '/integrate build') {
+    if (!options.developerMode) throw new Error('/integrate build requires developer mode. Use /integrate to integrate without rebuilding.')
+    return { build: true }
+  }
+  throw new Error(options.developerMode
+    ? 'Use /integrate or /integrate build; no other arguments are supported.'
+    : 'Use /integrate without arguments. /integrate build requires developer mode.')
+}
+
+// Selecting a palette item completes its typed prefix, but never discards extra arguments.
+export function desktopIntegrationSelectionDraft(command: DesktopSlashCommand, draft: string): string {
+  const normalized = draft.trim().toLowerCase().replace(/\s+/g, ' ')
+  return command.command.startsWith(normalized) ? command.command : draft
+}
+
 export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {
   const match = input.trim().match(/^\/new(?:\s+([\s\S]*))?$/i)
   if (!match) return null
@@ -487,7 +505,7 @@ export function buildDesktopSlashPaletteState(input: string, options: DesktopSla
   const parts = trimmedBody === '' ? [] : trimmedBody.split(/\s+/)
   const query = normalizeSlashToken(parts[0] ?? '')
   const hasArguments = parts.length > 1
-  const fullQuery = normalizeSlashToken(trimmedBody)
+  const fullQuery = normalizeSlashToken(parts.join(' '))
   const exactMatch = query === ''
     ? null
     : commands

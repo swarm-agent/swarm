@@ -9,8 +9,8 @@ import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, Mo
 import type { DesktopSessionMode } from '../../settings/swarm/types/swarm-settings'
 import type { DesktopV3MediaCapability, DesktopV3MediaReference } from '../../state/desktop-v3-cache-types'
 import type { DesktopV3RoutedComposerSnapshot, DesktopV3RoutedNewSessionState } from '../../session-v3/new-session-flow'
-import { buildDesktopFlagTaskPrompt, buildDesktopSlashPaletteState, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
-import { desktopComposerBackgroundRouterCommand, submitDesktopComposer } from '../services/composer-submit'
+import { buildDesktopFlagTaskPrompt, buildDesktopSlashPaletteState, desktopIntegrationSelectionDraft, parseDesktopNewSessionCommand, type DesktopSlashCommand, type DesktopSlashPaletteState } from '../services/slash-commands'
+import { desktopComposerBackgroundRouterCommand, dispatchDesktopIntegrationCommand, submitDesktopComposer } from '../services/composer-submit'
 import {
   DESKTOP_COMPOSER_TEXT_FILE_MAX_COUNT,
   DESKTOP_COMPOSER_TEXT_TOTAL_MAX_BYTES,
@@ -786,6 +786,15 @@ export function DesktopV3AgenticComposer({
     }
     if (routedNewSession && routedSubmissionRef.current) return
     const rawDraft = textareaRef.current?.value ?? dictationComposer
+    try {
+      if (await dispatchDesktopIntegrationCommand({
+        draft: rawDraft, developerMode, onSlashCommand,
+        clear: () => { onDraftChange(''); setAttachmentError(null) },
+      })) return
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : String(error))
+      return
+    }
     if (slashPalette.exactMatch?.action.kind === 'open-artifact-viewer' && !slashPalette.hasArguments) {
       setArtifactViewerOpen(true)
       onDraftChange('')
@@ -886,7 +895,7 @@ export function DesktopV3AgenticComposer({
       onStop,
       onSlashCommand,
     })
-  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, dictationComposer, mode, onDraftChange, onModeSelect, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, selectedWorkspaceAction, selectedWorkspaceSkill, sessionId, slashPalette.exactMatch?.action.kind, slashPalette.exactMatch?.id, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
+  }, [artifactSelections, attachments, canStop, clearComposerForSubmit, developerMode, dictationComposer, mode, onDraftChange, onModeSelect, onRoutedSubmit, onSlashCommand, onStop, onSubmit, primedTaskMode, resizeTextareaElement, routedNewSession, routedStagedAttachments, selectedWorkspaceAction, selectedWorkspaceSkill, sessionId, slashPalette.exactMatch?.action.kind, slashPalette.exactMatch?.id, slashPalette.hasArguments, textAttachments, uploadingAttachment, videoAttachments])
 
   const handleMentionInsert = useCallback((agent: string) => {
     const trimmedStartLength = draft.length - draft.replace(/^[\s\t\r\n]+/, '').length
@@ -907,6 +916,15 @@ export function DesktopV3AgenticComposer({
 
   const handleSlashSelect = useCallback((command: DesktopSlashCommand) => {
     if (command.state !== 'ready') return
+    if (command.action.kind === 'integrate-session') {
+      void dispatchDesktopIntegrationCommand({
+        draft: desktopIntegrationSelectionDraft(command, draft),
+        developerMode,
+        clear: () => { onDraftChange(''); setAttachmentError(null) },
+        onSlashCommand,
+      }).catch(error => setAttachmentError(error instanceof Error ? error.message : String(error)))
+      return
+    }
     if (command.action.kind === 'open-artifact-viewer') {
       setArtifactViewerOpen(true)
       onDraftChange('')
@@ -949,7 +967,7 @@ export function DesktopV3AgenticComposer({
       return
     }
     if (!slashPalette.hasArguments) onDraftChange('')
-  }, [currentAgent, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
+  }, [currentAgent, developerMode, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
   const handleKeyDown = useCallback((event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (routedNewSession && event.key === 'Tab' && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {

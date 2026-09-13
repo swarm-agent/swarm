@@ -47,7 +47,7 @@ import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
-import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { parseDesktopIntegrationCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { resolveDesktopTaskWorkspace } from '../chat/services/task-workspace-selection'
 import { executeDesktopTipsCommand } from '../chat/services/home-tips'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, suggestWorkspaceCommitMessage } from '../git/api'
@@ -3914,15 +3914,11 @@ export function DesktopAppPage() {
         return
       }
       case 'integrate-session': {
-        if ((action.build && !updateDevMode) || (draft.trim() && draft.trim().toLowerCase().replace(/\s+/g, ' ') !== (action.build ? '/integrate build' : '/integrate'))) {
-          setDesktopToast({ message: 'Use /integrate without arguments.', tone: 'error' })
-          return
-        }
+        const request = parseDesktopIntegrationCommand(draft || command.command, { developerMode: updateDevMode })
         if (!routeSessionId) {
-          setDesktopToast({ message: 'Open an existing session with a managed worktree before integrating.', tone: 'error' })
-          return
+          throw new Error('Open an existing session with a managed worktree before integrating.')
         }
-        setSlashIntegrateSession(current => current || { sessionId: routeSessionId, build: action.build === true })
+        setSlashIntegrateSession(current => current || { sessionId: routeSessionId, build: request.build })
         return
       }
       case 'ai-commit': {
