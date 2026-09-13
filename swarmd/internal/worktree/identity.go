@@ -3,6 +3,8 @@ package worktree
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -46,7 +48,7 @@ func RepositoryIdentity(path string) (string, error) {
 // ValidateOwnedIdentity never repairs provenance from a path or a display name.
 // Dirty work is valid for execution; cleanliness is a separate transition gate.
 func ValidateOwnedIdentity(source, lane, branch, base string) error {
-	if err := ValidateOwnedExecutionIdentity(source, lane, branch, base); err != nil {
+	if err := validateOwnedIdentity(source, lane, branch, base, false); err != nil {
 		return err
 	}
 	if _, err := runGit(lane, "merge-base", "--is-ancestor", base, "HEAD"); err != nil {
@@ -60,6 +62,10 @@ func ValidateOwnedIdentity(source, lane, branch, base string) error {
 // The recorded base remains immutable provenance; transitions and integration
 // continue to use ValidateOwnedIdentity and their own history/cleanliness gates.
 func ValidateOwnedExecutionIdentity(source, lane, branch, base string) error {
+	return validateOwnedIdentity(source, lane, branch, base, true)
+}
+
+func validateOwnedIdentity(source, lane, branch, base string, allowRebase bool) error {
 	sourceID, err := RepositoryIdentity(source)
 	if err != nil {
 		return fmt.Errorf("source repository identity: %w", err)
@@ -84,7 +90,12 @@ func ValidateOwnedExecutionIdentity(source, lane, branch, base string) error {
 		return err
 	}
 	if branch == "" || strings.TrimSpace(actual) != branch {
-		return errors.New("session worktree branch identity is stale")
+		if !allowRebase || actual != "" || branch == "" {
+			return errors.New("session worktree branch identity is stale")
+		}
+		if err := validateRebaseBranch(lane, branch); err != nil {
+			return fmt.Errorf("session worktree branch identity is stale: %w", err)
+		}
 	}
 	if strings.TrimSpace(base) == "" {
 		return errors.New("session worktree base identity is missing")
@@ -93,4 +104,108 @@ func ValidateOwnedExecutionIdentity(source, lane, branch, base string) error {
 		return fmt.Errorf("session worktree base identity is invalid: %w", err)
 	}
 	return nil
+}
+
+// validateRebaseBranch recognizes Git's detached rebase state for execution only.
+// Resolve the administrative directory through Git: a linked checkout's .git is
+// a file, and another worktree's rebase state is never evidence for this lane.
+// This is a read-only consistency check, not permission to repair Git metadata.
+func validateRebaseBranch(lane, branch string) error {
+	ref := "refs/heads/" + branch
+	if _, err := runGit(lane, "check-ref-format", ref); err != nil {
+		return errors.New("invalid recorded branch")
+	}
+	gitDir, err := runGit(lane, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return err
+	}
+	gitDir, err = filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		return err
+	}
+	var state string
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		reported, err := runGit(lane, "rev-parse", "--git-path", name)
+		if err != nil {
+			return err
+		}
+		path, err := resolveGitPath(lane, reported)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil || !info.IsDir() || resolved != filepath.Join(gitDir, name) {
+			return errors.New("invalid worktree rebase metadata path")
+		}
+		if state != "" {
+			return errors.New("ambiguous worktree rebase metadata")
+		}
+		state = path
+	}
+	if state == "" {
+		return errors.New("detached HEAD has no worktree rebase metadata")
+	}
+	headName, err := readRebaseIdentity(state, "head-name")
+	if err != nil || headName != ref {
+		return errors.New("rebase branch does not match recorded branch")
+	}
+	original, err := readRebaseIdentity(state, "orig-head")
+	if err != nil {
+		return err
+	}
+	onto, err := readRebaseIdentity(state, "onto")
+	if err != nil {
+		return err
+	}
+	// Require exact commit IDs, not revision expressions supplied in state files.
+	for _, oid := range []string{original, onto} {
+		resolved, err := runGit(lane, "rev-parse", "--verify", "--end-of-options", oid+"^{commit}")
+		if err != nil || resolved != oid {
+			return errors.New("invalid rebase commit identity")
+		}
+	}
+	tip, err := runGit(lane, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	if err != nil || tip != original {
+		return errors.New("rebase original HEAD does not match recorded branch tip")
+	}
+	if _, err := runGit(lane, "merge-base", "--is-ancestor", onto, "HEAD"); err != nil {
+		return errors.New("detached HEAD is outside the rebase destination history")
+	}
+	return nil
+}
+
+func readRebaseIdentity(state, name string) (string, error) {
+	path := filepath.Join(state, name)
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 4096 {
+		return "", errors.New("invalid rebase identity file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return "", errors.New("rebase identity file changed during validation")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil {
+		return "", err
+	}
+	value := strings.TrimSuffix(string(data), "\n")
+	if len(data) > 4096 || value == "" || strings.ContainsAny(value, "\r\n\x00") {
+		return "", errors.New("invalid rebase identity value")
+	}
+	return value, nil
 }
