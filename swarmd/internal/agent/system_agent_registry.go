@@ -667,7 +667,8 @@ func PlanSidechatAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
 		"read": {Enabled: pebblestore.BoolPtr(true)}, "search": {Enabled: pebblestore.BoolPtr(true)}, "find": {Enabled: pebblestore.BoolPtr(true)}, "list": {Enabled: pebblestore.BoolPtr(true)},
 		"websearch": {Enabled: pebblestore.BoolPtr(true)}, "webfetch": {Enabled: pebblestore.BoolPtr(true)}, "edit_pending_plan": {Enabled: pebblestore.BoolPtr(true)},
-		"write": {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
+		"write":             {Enabled: pebblestore.BoolPtr(false)}, "edit": {Enabled: pebblestore.BoolPtr(false)}, "bash": {Enabled: pebblestore.BoolPtr(false)},
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)},
 		"exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 	}}

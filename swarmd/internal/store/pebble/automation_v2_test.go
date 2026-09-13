@@ -104,6 +104,24 @@ func testAutomationV2AtomicAcceptance(t *testing.T, expiration AutomationV2Expir
 	if !reflect.DeepEqual(accepted.Document, doc) || accepted.Authorization != expiration || !accepted.Enabled {
 		t.Fatal("review changed", accepted)
 	}
+	// Requirement: accepted authoring chats reject free-form turns atomically.
+	// Threat: a late user message starts an ordinary run and contaminates the
+	// accepted conversation. The real mutation boundary must publish nothing.
+	beforeSeq, err := s.readV3SessionSequence(original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: original.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "late-user", PayloadHash: "late-user", Message: &MessageSnapshot{ID: "late-user", Role: "user", Content: "Change the task now"}})
+	if err == nil {
+		t.Fatal("accepted automation accepted free-form conversation")
+	}
+	afterSeq, err := s.readV3SessionSequence(original.ID)
+	if err != nil || afterSeq != beforeSeq {
+		t.Fatal("rejected message published state", err)
+	}
+	if _, exists, err := s.GetV3SessionActiveRunIntent(original.ID); err != nil || exists {
+		t.Fatal("rejected message admitted a run", err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}

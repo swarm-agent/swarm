@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // guardAutomationSessionMutation runs under the canonical session mutation lock.
@@ -15,8 +16,12 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 	if err != nil {
 		return err
 	}
-	if current.AutomationV2 != nil && (in.AutomationBinding != nil || in.automationAcceptance != nil) { return ErrAutomationV2Conflict }
-	if in.Kind == V3SessionMutationCreateSession && in.Session != nil && in.Session.AutomationV2 != nil { return ErrAutomationV2Conflict }
+	if current.AutomationV2 != nil && (in.AutomationBinding != nil || in.automationAcceptance != nil) {
+		return ErrAutomationV2Conflict
+	}
+	if in.Kind == V3SessionMutationCreateSession && in.Session != nil && in.Session.AutomationV2 != nil {
+		return ErrAutomationV2Conflict
+	}
 	if in.Kind == V3SessionMutationCreateSession && in.Session != nil && in.Session.Automation != nil {
 		return ErrAutomationInvalid
 	}
@@ -42,12 +47,29 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 		}
 		return nil
 	}
+	// Accepted automation conversations and occurrence transcripts are not chat
+	// inputs. This runs under the same mutation lock as acceptance, before any
+	// event/outbox/message publication. Scheduler checkpoints use typed intents.
+	occurrenceID, _ := current.Metadata["automation_v2_occurrence_id"].(string)
+	if (current.AutomationV2 != nil || occurrenceID != "") && in.Message != nil && strings.EqualFold(strings.TrimSpace(in.Message.Role), "user") {
+		return fmt.Errorf("automation_conversation_read_only: use the bound optimization sidechat")
+	}
+	if in.Kind == V3SessionMutationRecordRunIntent && in.RunIntent != nil && (in.RunIntent.Status == V3RunIntentPendingExecutor || in.RunIntent.Status == V3RunIntentRunning) {
+		if current.AutomationV2 != nil || (occurrenceID != "" && in.RunIntent.PlanID != occurrenceID) {
+			return ErrAutomationV2Conflict
+		}
+	}
 	// Purpose is immutable after creation, including lower-level metadata writers.
 	candidate := in.Session
 	if in.PlanAcceptance != nil {
 		candidate = &in.PlanAcceptance.Session
 	}
 	if candidate != nil {
+		for _, key := range []string{"automation_v2_occurrence_id", "automation_v2_authoring_session_id", "automation_v2_digest", "automation_v2_revision"} {
+			if !reflect.DeepEqual(current.Metadata[key], candidate.Metadata[key]) {
+				return ErrAutomationV2Conflict
+			}
+		}
 		if workspaceID := SessionAutomationManagementWorkspace(current); workspaceID != "" {
 			valid := false
 			for _, grant := range candidate.WorkspaceGrants {

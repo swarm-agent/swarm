@@ -5,6 +5,7 @@ import { desktopAutomationV2, useAutomationV2Page } from '../../runtime/desktop-
 import { automationV2Review, type AutomationV2Record, type AutomationV2Mutation } from '../../state/desktop-automation-v2-api'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationConversations } from './automation-conversations'
+import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 
 export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceName }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug?: string }) {
   const [cursor, setCursor] = useState<string>()
@@ -32,6 +33,7 @@ export function AutomationV2Detail({ workspaceId, sessionId, onChat }: { workspa
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cursor, setCursor] = useState<string>()
   const [editing, setEditing] = useState(false)
+  const [optimizing, setOptimizing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const lock = useRef(false)
@@ -48,14 +50,16 @@ export function AutomationV2Detail({ workspaceId, sessionId, onChat }: { workspa
   }
   const time = (ms: number) => new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'long' }).format(ms)
   return <section aria-label="Automation details" className="min-w-0 space-y-4 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
-    <h2 className="break-words text-lg font-semibold">Automation · {record?.document.title ?? 'Loading'}</h2>
+    <header><h2 className="text-lg font-semibold">Automation</h2><p className="break-words text-sm">{record?.document.title ?? 'Loading'}</p></header>
     {(page?.loading || page?.stale) && <p role="status">Refreshing observed state…</p>}{(error || page?.error) && <p role="alert">{error || page?.error}</p>}
-    <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void desktopAutomationV2.refresh(input)}>Refresh progress</Button><Button size="sm" disabled={disabled || record?.cancelled} onClick={() => setEditing(v => !v)}>Edit automation plan</Button>{onChat && <Button size="sm" variant="ghost" onClick={() => onChat(sessionId)}>Open authoring conversation</Button>}</div>
+    <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => void desktopAutomationV2.refresh(input)}>Refresh progress</Button><Button size="sm" disabled={disabled || record?.cancelled} onClick={() => setEditing(v => !v)}>Change instructions or times</Button>{onChat && <Button size="sm" variant="ghost" onClick={() => onChat(sessionId)}>Open authoring conversation</Button>}</div>
+    {record && <section aria-label="Automation schedule handoff" className="space-y-2 rounded-xl bg-[var(--app-bg)] p-3"><h3 className="font-semibold">{record.cancelled ? 'Automation cancelled' : !record.enabled ? 'Automation paused' : 'Automation schedule active'}</h3><p className="text-sm">{record.document.info.goal}</p><p className="text-sm">{record.document.automation_v2.schedule.kind === 'interval' ? `Every ${record.document.automation_v2.schedule.interval_seconds} seconds, anchored to revision acceptance.` : `${record.document.automation_v2.schedule.cron} · ${record.document.automation_v2.schedule.timezone}`}</p><p className="text-sm">{record.enabled && !record.cancelled && record.next_due_at ? `Next scheduled time: ${time(record.next_due_at)}` : 'No active next scheduled time.'}</p><p className="text-xs text-[var(--app-text-muted)]">Acceptance schedules work; it does not start an immediate run. See observed occurrences below for admitted, running and terminal outcomes.</p></section>}
     {record && <><p className="text-sm">{record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'} · accepted revision {record.revision} · {record.authorization.kind === 'indefinite' ? 'Indefinite' : `Expires ${time(record.authorization.expires_at!)}`}</p>
       <div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" disabled={disabled || record.cancelled} onClick={() => void control(record.enabled ? 'pause' : 'resume')}>{record.enabled ? 'Pause future occurrences' : 'Resume schedule'}</Button><Button size="sm" variant="outline" disabled={disabled || record.cancelled} onClick={() => void control('cancel_future')}>Cancel future occurrences</Button><Button size="sm" variant="outline" disabled={disabled} onClick={() => void control('cancel_all')}>Cancel future and in-flight work</Button></div>
       <p className="text-xs text-[var(--app-text-muted)]">Pause and cancel-future leave admitted work unchanged. Cancel-all requests cancellation of admitted work; it is not immediate confirmation that it stopped.</p>
     </>}
     {editing && record && <AutomationV2Edit record={record} />}
+    {record && <section className="space-y-3" aria-label="Automation optimization"><Button variant="outline" size="sm" disabled={disabled} onClick={() => setOptimizing(v => !v)}>Talk to Swarm to help optimize this automation</Button><p className="text-xs text-[var(--app-text-muted)]">A separate conversation for instructions, timing and recorded work. Changes require review and explicit acceptance.</p>{optimizing && <DesktopPlanAgentSidecar parentSessionId={sessionId} automation={{ automation_v2: true, automation_id: record.automation_id, automation_revision: record.revision, workspace_id: workspaceId }} embedded mobileInline onClose={() => setOptimizing(false)} />}</section>}
     <label className="block text-xs">Display timezone<select className="ml-2 rounded border border-[var(--app-border)] bg-[var(--app-bg)] p-2" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', record?.document.automation_v2.schedule.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}</select></label>
     {progress && <><p className="text-xs text-[var(--app-text-muted)]">Observed {time(progress.observed_at)}. Forecasts are not admissions or guaranteed start times.</p><h3 className="font-semibold">Next forecast slots</h3>{progress.no_next_reason && <p>No next slot: {progress.no_next_reason.replace(/_/g, ' ')}</p>}<ul className="space-y-1 text-xs">{progress.forecast.map(ms => <li key={ms}>{time(ms)}</li>)}</ul>
       <h3 className="font-semibold">Observed occurrences</h3><p className="text-xs text-[var(--app-text-muted)]">Admitted is not running. Succeeded means canonical checkpoints completed, not independently verified task correctness. {progress.complete ? 'End of this occurrence listing.' : 'Partial page; more observations available.'}</p>

@@ -586,6 +586,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req struct {
+		AutomationV2       bool   `json:"automation_v2"`
 		AutomationID       string `json:"automation_id"`
 		AutomationRevision uint64 `json:"automation_revision"`
 		WorkspaceID        string `json:"workspace_id"`
@@ -603,7 +604,25 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.PermissionID, req.PlanID = strings.TrimSpace(req.PermissionID), strings.TrimSpace(req.PlanID)
-	automationReview := req.AutomationID != ""
+	if req.AutomationV2 {
+		if kind != "plan" || parent.AutomationV2 == nil || req.AutomationID != parent.AutomationV2.AutomationID || req.WorkspaceID != parent.AutomationV2.WorkspaceID || req.PermissionID != "" || req.PlanID != "" || req.PlanRevision != 0 {
+			automationV2Error(w, pebblestore.ErrAutomationV2Conflict)
+			return
+		}
+		record, found, readErr := s.sessions.GetAutomationV2Record(principal.AccountScopeID, principal.UserID, req.WorkspaceID, parentSessionID)
+		if readErr != nil || !found || record.Revision != req.AutomationRevision {
+			automationV2Error(w, pebblestore.ErrAutomationV2Conflict)
+			return
+		}
+		proposal, found, readErr := s.sessions.GetAutomationV2Proposal(principal.AccountScopeID, principal.UserID, req.WorkspaceID, parentSessionID)
+		if readErr != nil || !found {
+			automationV2Error(w, pebblestore.ErrAutomationV2Conflict)
+			return
+		}
+		req.PermissionID = pebblestore.AutomationV2PermissionID(proposal.ProposalID)
+		req.PlanID, req.PlanRevision = proposal.ProposalID, int64(proposal.Revision)
+	}
+	automationReview := req.AutomationID != "" && !req.AutomationV2
 	var automationRecord pebblestore.AutomationRecord
 	if automationReview {
 		if kind != "plan" || req.PermissionID != "" || req.PlanID != "" || req.PlanRevision != 0 || s.automations == nil || s.automations.domain == nil {
@@ -706,6 +725,9 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			return
 		}
 		profile.Prompt = agentruntime.PlanSidechatAgentPromptWithContext(string(contextJSON))
+		if req.AutomationV2 {
+			profile.Prompt += "\nYou are Swarm helping optimize this bound Automation. Read manage_automation context/progress for current review and recorded work. Propose instruction and timing changes only through edit_pending_plan with the exact automation_review. Conversation belongs only here, never in the main automation or occurrence chat. Acceptance is exclusively the user's action; do not execute the automation."
+		}
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	metadata := sessionsV3SystemSidechatMetadata(parentSessionID, kind, profile)
@@ -721,6 +743,10 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			metadata["automation_review_revision"] = strconv.FormatUint(req.AutomationRevision, 10)
 			metadata["automation_review_workspace_id"] = req.WorkspaceID
 		}
+	}
+	if req.AutomationV2 {
+		metadata["automation_v2_optimization"] = true
+		metadata["automation_v2_parent_id"] = parentSessionID
 	}
 	metadata["originating_agent_name"] = firstNonEmpty(sessionsV3MetadataString(parent.Metadata, "resolved_agent_name"), sessionsV3MetadataString(parent.Metadata, "agent_name"), parentProfile.Name)
 	metadata["originating_provider"], metadata["originating_model"] = profile.Provider, profile.Model

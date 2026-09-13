@@ -92,6 +92,9 @@ func automationV2ToolOutput(p store.AutomationV2Proposal) (string, error) {
 	return string(raw), err
 }
 func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, error) {
+	if s.sessions == nil {
+		return "", errors.New("session service required")
+	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return "", err
@@ -101,10 +104,22 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 			return "", errors.New("V2 reads accept only action, cursor and limit; submit edits through the canonical plan review")
 		}
 	}
-	current, workspace, err := s.automationV2ToolSession(id)
+	readID := id
+	if child, found, err := s.sessions.GetSession(id); err != nil {
+		return "", err
+	} else if found && mapString(child.Metadata, "system_sidechat_kind") == "plan" && mapString(child.Metadata, "lineage_kind") == "system_sidechat" {
+		parentID := mapString(child.Metadata, "parent_session_id")
+		parent, found, err := s.sessions.GetSession(parentID)
+		if err != nil || !found || parent.AccountScopeID != child.AccountScopeID || parent.UserID != child.UserID {
+			return "", errors.New("automation sidechat ownership mismatch")
+		}
+		readID = parentID
+	}
+	current, workspace, err := s.automationV2ToolSession(readID)
 	if err != nil {
 		return "", err
 	}
+	id = readID
 	var out any
 	switch mapString(args, "action") {
 	case "review", "context":

@@ -1983,7 +1983,7 @@ export async function ensureSystemSidechat(input: {
   permissionId?: string;
   planId?: string;
   planRevision?: number;
-  automation?: { automation_id: string; automation_revision: number; workspace_id: string };
+  automation?: { automation_id: string; automation_revision: number; workspace_id: string; automation_v2?: boolean };
 }): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string; runtimeSwarmId: string }> {
   const parentSessionId = input.parentSessionId.trim();
   const permissionId = input.permissionId?.trim() ?? "";

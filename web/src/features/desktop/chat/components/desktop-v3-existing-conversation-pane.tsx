@@ -3524,7 +3524,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          {composerOverride ?? <DesktopV3ExistingConversationComposer
+          {cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? <section aria-label="Automation conversation protected" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm"><strong>Automation conversation</strong><p className="mt-1 text-[var(--app-text-muted)]">This conversation is reserved for scheduled work. Use “Talk to Swarm to help optimize this automation” in Automation details to discuss changes without changing accepted instructions.</p></section> : composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
@@ -3774,8 +3774,16 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
+  const automationOccurrence = useDesktopV3CacheSelector(state => {
+    const id = 'message' in item && 'session_id' in item.message ? item.message.session_id : '';
+    const record = id ? state.sessionsById[id] : undefined;
+    return record?.kind === 'full' ? metadataString(record.session.metadata, 'automation_v2_occurrence_id') : '';
+  });
   const userMessage = desktopV3UserMessageElement(item);
   if (userMessage) return userMessage;
+  if (automationOccurrence && (item.type === 'plan-final-handoff' || item.type === 'plan-checkpoint-handoff' || item.type === 'plan-blocked-handoff')) {
+    return <section aria-label="Automation execution handoff" className="space-y-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">Automation execution handoff</h3><p className="text-sm text-[var(--app-text-muted)]">This report belongs to one scheduled occurrence. It does not start another run or change the accepted schedule. Check Automation details for the observed occurrence state and next forecast.</p><details><summary className="cursor-pointer text-sm">Checkpoint report and evidence</summary><div className="mt-3">{item.type === 'plan-final-handoff' ? <DesktopV3PlanFinalHandoff item={item} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} /> : item.type === 'plan-blocked-handoff' ? <DesktopV3PlanBlockedHandoff item={item} /> : <DesktopV3PlanCheckpointHandoff item={item} />}</div></details></section>;
+  }
 
   switch (item.type) {
     case "plan-break":

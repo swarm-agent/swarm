@@ -120,7 +120,7 @@ export function DesktopInlinePlanReviewCard({
   if (permission.requirement === 'automation_v2_acceptance') {
     const proposal = automationV2PermissionProposal(permission);
     if (!proposal || proposal.session_id !== parentSessionId) return <p role="alert">Automation review unavailable. Refresh before accepting.</p>;
-    return <AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} />;
+    return <section><AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} />{onAskForChanges && <Button variant="outline" size="sm" className="mt-3" disabled={resolutionPending} onClick={onAskForChanges}>Ask Plan to change this automation</Button>}</section>;
   }
 
   return (
