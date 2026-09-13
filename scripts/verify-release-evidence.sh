@@ -11,7 +11,8 @@ usage: verify-release-evidence.sh ARCHIVE CHECKSUM SIGSTORE_BUNDLE PROVENANCE_BU
   --workflow-sha FULL_GIT_SHA \
   --workflow-identity HTTPS_GITHUB_WORKFLOW_IDENTITY \
   --workflow-name NAME \
-  --event-name EVENT
+  --event-name EVENT \
+  (--gcp-promotion-dir DIRECTORY | --legacy-slsa)
 USAGE
   exit 2
 }
@@ -34,9 +35,20 @@ workflow_sha=""
 workflow_identity=""
 workflow_name=""
 event_name=""
+gcp_promotion_dir=""
+legacy_slsa=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --gcp-promotion-dir)
+      [[ $# -ge 2 ]] || usage
+      gcp_promotion_dir="$2"
+      shift 2
+      ;;
+    --legacy-slsa)
+      legacy_slsa=true
+      shift
+      ;;
     --repository)
       [[ $# -ge 2 ]] || usage
       repository="$2"
@@ -89,6 +101,11 @@ require_cmd() {
     exit 1
   }
 }
+
+if [[ -z "${gcp_promotion_dir}" && "${legacy_slsa}" != true ]] || [[ -n "${gcp_promotion_dir}" && "${legacy_slsa}" == true ]]; then
+  echo "select exactly one provenance contract: --gcp-promotion-dir DIR or --legacy-slsa" >&2
+  exit 1
+fi
 
 require_cmd awk
 require_cmd cosign
@@ -177,6 +194,7 @@ cosign verify-blob \
   --certificate-github-workflow-trigger "${event_name}" \
   "${archive_path}"
 
+if [[ "${legacy_slsa}" == true ]]; then
 gh attestation verify "${archive_path}" \
   --bundle "${provenance_bundle_path}" \
   --repo "${repository}" \
@@ -186,5 +204,61 @@ gh attestation verify "${archive_path}" \
   --source-digest "${source_sha}" \
   --source-ref "${source_ref}" \
   --deny-self-hosted-runners
+
+else
+  require_cmd python3
+  : "${TMPDIR:?private scratch root required for verified attestation output}"
+  verified="$(mktemp "${TMPDIR}/swarm-promotion.XXXXXX")"
+  trap 'rm -f -- "${verified}"' EXIT
+  gh attestation verify "${archive_path}" \
+    --bundle "${provenance_bundle_path}" --repo "${repository}" \
+    --cert-identity "${workflow_identity}" \
+    --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
+    --signer-digest "${workflow_sha}" --source-digest "${source_sha}" \
+    --source-ref "${source_ref}" --deny-self-hosted-runners \
+    --predicate-type https://swarm.dev/attestations/release-promotion/v1 \
+    --format json > "${verified}"
+  python3 -B - "${verified}" "${gcp_promotion_dir}" "${archive_path}" "${source_sha}" <<'PY'
+import hashlib, importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location('release', pathlib.Path('scripts/gcp-release-input.py'))
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+verified, directory, archive, source = sys.argv[1:]
+directory = pathlib.Path(directory)
+def load(name):
+    return release.decode((directory / name).read_bytes())
+predicate = load('promotion-predicate.json')
+evidence_raw = (directory / 'gcp-qualification-evidence.json').read_bytes()
+evidence = release.decode(evidence_raw)
+manifest = load('gcp-release-manifest.json')
+provenance = load('gcp-build-provenance.json')
+binding = evidence['receipt']['binding']
+inputs = binding['build_inputs']
+raw = pathlib.Path(archive).read_bytes()
+digest = release.digest(raw)
+release.require(predicate == {
+    'schema': 'swarm.release-promotion/v1', 'builder': 'gcp', 'promoter': 'github-actions',
+    'source_sha': source, 'archive_sha256': digest,
+    'gcp_build_id': binding['build_id'], 'gcp_run_id': binding['run_id'],
+    'github_run_id': str(release.relay.positive(predicate['github_run_id'])),
+    'qualification_evidence_sha256': release.digest(evidence_raw)}, 'promotion binding mismatch')
+rows = release.decode(pathlib.Path(verified).read_bytes())
+release.require(isinstance(rows, list) and len(rows) == 1, 'ambiguous verified attestation')
+statement = rows[0]['verificationResult']['statement']
+release.require(statement['predicateType'] == 'https://swarm.dev/attestations/release-promotion/v1'
+                and statement['predicate'] == predicate, 'wrong signed predicate')
+release.require(binding['source_sha'] == binding['execution_sha'] == inputs['source_sha'] == source
+                and binding['pull_number'] == 0 and inputs['ref'] == 'refs/heads/main', 'nonmerged source')
+release.require(release.digest(release.canonical({'schema': 'swarm.gcp.workload/v2', **inputs}))
+                == binding['build_input_digest'], 'input digest mismatch')
+release.require(manifest['evidence_binding'] == binding and manifest['archive_sha256'] == digest
+                and manifest['archive']['sha256'] == digest, 'manifest mismatch')
+release.require(provenance == {'schema': 'swarm.gcp.build-provenance/v1', 'builder': 'gcp',
+    'source_sha': source, 'version': inputs['version'], 'build_id': binding['build_id'],
+    'run_id': binding['run_id'], 'archive_sha256': digest, 'build_inputs': inputs}, 'build provenance mismatch')
+release.require(pathlib.Path(archive).name == 'swarm-' + inputs['version'] + '-linux-amd64.tar.gz', 'archive version mismatch')
+release.require((directory / 'build-info.txt').read_bytes() == release.archive_info(raw, inputs['version'], inputs), 'build info mismatch')
+PY
+fi
 
 echo "verified release evidence for ${archive_name} from ${workflow_identity} at ${source_sha}"

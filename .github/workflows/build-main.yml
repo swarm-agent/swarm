@@ -2,8 +2,7 @@ name: build-main
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,161 +14,84 @@ concurrency:
 
 jobs:
   build-stable-release:
-    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     permissions:
       contents: read
+      checks: read
+      actions: read
       id-token: write
       attestations: write
       artifact-metadata: write
-
     outputs:
-      version: ${{ steps.version.outputs.version }}
-
+      version: ${{ steps.input.outputs.version }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
-
-      - name: Check for committed secrets
-        run: ./scripts/check-secrets.sh
-
-      - name: Install deterministic video runtime
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
-
-      - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-
-      - name: Set up Node.js
-        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: '24'
-
-      - name: Set up pnpm
-        shell: bash
-        run: |
-          corepack enable
-          corepack pnpm --version
-
-      - name: Install Desktop dependencies
-        working-directory: web
-        run: corepack pnpm install --frozen-lockfile
-
-      - name: Run atlas-driven critical tests
+          persist-credentials: false
+      - name: Consume exact merged GCP release input
+        id: input
         env:
-          TMPDIR: ${{ runner.temp }}
-        run: bash scripts/run-critical-tests.sh all
-
-      - name: Resolve candidate version
-        id: version
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GCP_CHECK_APP_ID: ${{ vars.GCP_CHECK_APP_ID }}
+          GCP_REQUIRED_STAGES: ${{ vars.GCP_REQUIRED_STAGES }}
+          GCP_CHECK_CONTEXT: build-main
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_READ_SERVICE_ACCOUNT: ${{ vars.GCP_READ_SERVICE_ACCOUNT }}
+          GCP_ALLOWED_BUCKETS: ${{ vars.GCP_ALLOWED_BUCKETS }}
+          GCP_RELEASE_POLICY_JSON: ${{ vars.GCP_RELEASE_POLICY_JSON }}
+          GCP_RELEASE_POLICY_PATH: ${{ runner.temp }}/release-policy.json
+          GCP_OUTPUT_DIR: dist
         run: |
           set -euo pipefail
-          short_sha="${GITHUB_SHA::12}"
-          case "${EVENT_NAME}" in
-            push)
-              version="$(./scripts/resolve-release-version.sh)"
-              ;;
-            workflow_dispatch)
-              version="dispatch-${short_sha}"
-              ;;
-            *)
-              echo "unsupported event: ${EVENT_NAME}" >&2
-              exit 1
-              ;;
-          esac
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
-
-      - name: Build stable release archive
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: ./scripts/build-main-dist.sh --output-dir dist --version "${{ steps.version.outputs.version }}"
-
-      - name: Smoke release archive and artifact-root install
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: ./scripts/smoke-release-archive.sh "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --evidence "dist/smoke-evidence.txt"
-
-      - name: Provision mandatory prerequisites and install on Ubuntu
-        env:
-          TMPDIR: ${{ runner.temp }}
-          SWARM_INSTALL_DISTRO_RUNTIME: docker
-        run: ./scripts/test-install-distro.sh --archive "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" --checksum "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --distro ubuntu
-
-      - name: Verify fresh root-server installation and repeat install
-        timeout-minutes: 10
-        env:
-          TMPDIR: ${{ runner.temp }}
-          SWARM_INSTALL_DISTRO_RUNTIME: podman
-        run: ./scripts/test-install-distro.sh --archive "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" --checksum "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --distro ubuntu --identity root
-
-      - name: Provision mandatory prerequisites and install on Arch
-        env:
-          TMPDIR: ${{ runner.temp }}
-          SWARM_INSTALL_DISTRO_RUNTIME: docker
-        run: ./scripts/test-install-distro.sh --archive "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz" --checksum "dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256" --distro arch
-
+          : "${GCP_CHECK_APP_ID:?approved App ID required}"
+          : "${GCP_REQUIRED_STAGES:?approved stage policy required}"
+          : "${GCP_RELEASE_POLICY_JSON:?independent exact-input release policy required}"
+          : "${GCP_WORKLOAD_IDENTITY_PROVIDER:?read-only WIF required}"
+          : "${GCP_READ_SERVICE_ACCOUNT:?read-only service account required}"
+          : "${GCP_ALLOWED_BUCKETS:?approved buckets required}"
+          printf '%s' "${GCP_RELEASE_POLICY_JSON}" > "${GCP_RELEASE_POLICY_PATH}"
+          GCP_RELEASE_VERSION="$(./scripts/resolve-release-version.sh)"
+          export GCP_RELEASE_VERSION
+          python3 -B scripts/gcp-release-input.py
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
-
-      - name: Sign final Linux archive with keyless Sigstore
-        shell: bash
+      - name: Sign exact GCP archive
         env:
-          ARCHIVE: dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
-        run: cosign sign-blob --yes --bundle "${ARCHIVE}.sigstore.json" "${ARCHIVE}"
-
-      - name: Attest final Linux archive provenance
+          VERSION: ${{ steps.input.outputs.version }}
+        run: cosign sign-blob --yes --bundle "dist/swarm-${VERSION}-linux-amd64.tar.gz.sigstore.json" "dist/swarm-${VERSION}-linux-amd64.tar.gz"
+      - name: Attest GCP qualification promotion, not GitHub build
         id: provenance
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
         with:
-          subject-checksums: dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
-
-      - name: Preserve and independently verify release evidence
-        shell: bash
+          subject-checksums: dist/swarm-${{ steps.input.outputs.version }}-linux-amd64.tar.gz.sha256
+          predicate-type: https://swarm.dev/attestations/release-promotion/v1
+          predicate-path: dist/promotion-predicate.json
+      - name: Independently verify signed promotion
         env:
-          ARCHIVE: dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
+          TMPDIR: ${{ runner.temp }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.input.outputs.version }}
           PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
-          EXPECTED_WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
-          EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
-          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          cp -- "${PROVENANCE_BUNDLE}" "${ARCHIVE}.provenance.sigstore.json"
-          ./scripts/verify-release-evidence.sh \
-            "${ARCHIVE}" \
-            "${ARCHIVE}.sha256" \
-            "${ARCHIVE}.sigstore.json" \
-            "${ARCHIVE}.provenance.sigstore.json" \
-            --repository "${GITHUB_REPOSITORY}" \
-            --source-sha "${GITHUB_SHA}" \
-            --source-ref "${GITHUB_REF}" \
-            --workflow-ref "${EXPECTED_WORKFLOW_REF}" \
-            --workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-            --workflow-identity "${EXPECTED_WORKFLOW_IDENTITY}" \
-            --workflow-name "${GITHUB_WORKFLOW}" \
-            --event-name "${GITHUB_EVENT_NAME}"
-
-      - name: Upload stable release artifacts
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+          archive="dist/swarm-${VERSION}-linux-amd64.tar.gz"
+          cp -- "${PROVENANCE_BUNDLE}" "${archive}.provenance.sigstore.json"
+          ./scripts/verify-release-evidence.sh "${archive}" "${archive}.sha256" "${archive}.sigstore.json" "${archive}.provenance.sigstore.json" \
+            --repository "${GITHUB_REPOSITORY}" --source-sha "${GITHUB_SHA}" --source-ref "${GITHUB_REF}" \
+            --workflow-ref "${WORKFLOW_REF}" --workflow-sha "${WORKFLOW_SHA}" --workflow-identity "https://github.com/${WORKFLOW_REF}" \
+            --workflow-name "${GITHUB_WORKFLOW}" --event-name "${GITHUB_EVENT_NAME}" --gcp-promotion-dir dist
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: stable-release-${{ steps.version.outputs.version }}
-          path: |
-            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz
-            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sha256
-            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.sigstore.json
-            dist/swarm-${{ steps.version.outputs.version }}-linux-amd64.tar.gz.provenance.sigstore.json
-            dist/build-info.txt
-            dist/smoke-evidence.txt
+          name: stable-release-${{ steps.input.outputs.version }}
+          path: dist/
           if-no-files-found: error
           retention-days: 14
 
@@ -181,93 +103,38 @@ jobs:
     environment: stable-release
     permissions:
       contents: write
-
     steps:
-      - name: Check out immutable release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           ref: ${{ github.sha }}
-
-      - name: Download this run's verified candidate
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: stable-release-${{ needs.build-stable-release.outputs.version }}
           path: release-evidence
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.2
-
-      - name: Reverify and publish the exact stable evidence set
-        shell: bash
+      - name: Reverify and publish protected exact bytes
         env:
+          TMPDIR: ${{ runner.temp }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build-stable-release.outputs.version }}
-          EXPECTED_WORKFLOW_IDENTITY: ${{ github.server_url }}/${{ github.workflow_ref }}
-          EXPECTED_WORKFLOW_REF: ${{ github.workflow_ref }}
-          EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          [[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "refusing non-stable release version: ${VERSION}" >&2
-            exit 1
-          }
-
+          [[ "${VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           archive="release-evidence/swarm-${VERSION}-linux-amd64.tar.gz"
-          checksum="${archive}.sha256"
-          signature="${archive}.sigstore.json"
-          provenance="${archive}.provenance.sigstore.json"
-          build_info="release-evidence/build-info.txt"
-          smoke_evidence="release-evidence/smoke-evidence.txt"
-
-          for required in "${archive}" "${checksum}" "${signature}" "${provenance}" "${build_info}" "${smoke_evidence}"; do
-            [[ -f "${required}" ]] || {
-              echo "required release asset missing: ${required}" >&2
-              exit 1
-            }
-          done
-          [[ "$(awk -F= '$1 == "version" { print $2 }' "${build_info}")" == "${VERSION}" ]] || {
-            echo "build metadata version does not match release version" >&2
-            exit 1
-          }
-          [[ "$(awk -F= '$1 == "commit" { print $2 }' "${build_info}")" == "${GITHUB_SHA}" ]] || {
-            echo "build metadata commit does not match immutable release source" >&2
-            exit 1
-          }
-
-          ./scripts/verify-release-evidence.sh \
-            "${archive}" \
-            "${checksum}" \
-            "${signature}" \
-            "${provenance}" \
-            --repository "${GITHUB_REPOSITORY}" \
-            --source-sha "${GITHUB_SHA}" \
-            --source-ref "${GITHUB_REF}" \
-            --workflow-ref "${EXPECTED_WORKFLOW_REF}" \
-            --workflow-sha "${EXPECTED_WORKFLOW_SHA}" \
-            --workflow-identity "${EXPECTED_WORKFLOW_IDENTITY}" \
-            --workflow-name "${GITHUB_WORKFLOW}" \
-            --event-name "${GITHUB_EVENT_NAME}"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/${VERSION}" >/dev/null 2>&1; then
-            echo "release tag already exists: ${VERSION}" >&2
-            exit 1
-          fi
-          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "GitHub Release already exists: ${VERSION}" >&2
-            exit 1
-          fi
-
-          gh release create "${VERSION}" \
-            "${archive}" \
-            "${checksum}" \
-            "${signature}" \
-            "${provenance}" \
-            "${build_info}" \
-            "${smoke_evidence}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
-            --title "Swarm ${VERSION}" \
-            --notes "Protected stable release for ${GITHUB_SHA}. The attached archive, checksum, Sigstore signature bundle, provenance bundle, build metadata, and smoke evidence were built once and independently verified in this workflow run."
+          ./scripts/verify-release-evidence.sh "${archive}" "${archive}.sha256" "${archive}.sigstore.json" "${archive}.provenance.sigstore.json" \
+            --repository "${GITHUB_REPOSITORY}" --source-sha "${GITHUB_SHA}" --source-ref "${GITHUB_REF}" \
+            --workflow-ref "${WORKFLOW_REF}" --workflow-sha "${WORKFLOW_SHA}" --workflow-identity "https://github.com/${WORKFLOW_REF}" \
+            --workflow-name "${GITHUB_WORKFLOW}" --event-name "${GITHUB_EVENT_NAME}" --gcp-promotion-dir release-evidence
+          # API failures must not be interpreted as an absent tag/release.
+          gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${VERSION}" > "${RUNNER_TEMP}/release-tags.json"
+          jq -e --arg ref "refs/tags/${VERSION}" 'all(.[]; .ref != $ref)' "${RUNNER_TEMP}/release-tags.json"
+          gh release create "${VERSION}" "${archive}" "${archive}.sha256" "${archive}.sigstore.json" "${archive}.provenance.sigstore.json" \
+            release-evidence/build-info.txt release-evidence/gcp-qualification-evidence.json release-evidence/gcp-release-manifest.json \
+            release-evidence/gcp-build-provenance.json release-evidence/promotion-predicate.json \
+            --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" --title "Swarm ${VERSION}" \
+            --notes "GCP-built and qualified exact merged source; GitHub verified, keyless-signed and promoted these unchanged bytes after protected environment approval."

@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Promote immutable GCP-qualified merged-source release archives without rebuilding on GitHub; retain keyless signatures and protected publication with explicit GCP promotion attestations. Docs impact: release configuration and verification contract in the deploy checklist and atlas.
+
 - Fix root-user installation and workspace recovery: require explicit consent before creating a service account, preserve existing ownership, and activate the installed candidate when a service is already running.
 - Offer authenticated daemon-owned workspace guidance during fresh and resumed TUI onboarding, with explicit consent for new-folder setup and repository initialization.
 

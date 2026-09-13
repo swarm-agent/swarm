@@ -7,7 +7,7 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 - `dev` is the day-to-day integration branch.
 - `main` is the protected release/build branch.
 - Pull requests to `main` must update `CHANGELOG.md`; `.github/workflows/require-changelog.yml` enforces the release-note gate.
-- Pull requests to `dev`/`main` and pushes to `dev` run `.github/workflows/install-distro-smoke.yml`, which builds one exact candidate and verifies fresh Ubuntu/Arch systemd installation. Pushes to `main` and manual dispatch run `.github/workflows/build-main.yml`, which builds, tests, signs, attests, and verifies the release candidate.
+- Pull requests to `dev`/`main` and pushes to `dev` run `.github/workflows/install-distro-smoke.yml`, which builds one exact candidate and verifies fresh Ubuntu/Arch systemd installation. Pushes to `main` and manual dispatch run `.github/workflows/build-main.yml`, which downloads independently verified GCP-built bytes for the exact merged source and stable version, then signs, attests promotion, and verifies without rebuilding.
 - On a protected `main` push produced by the user's approved PR merge, the same workflow re-verifies that run's exact evidence set without rebuilding it, then automatically creates the stable tag and GitHub Release.
 - Record the exact `origin/main`, `origin/dev`, promotion range, and selected release tag in the promotion PR or release record instead of maintaining a stale fixed snapshot here.
 
@@ -40,10 +40,10 @@ This file is the canonical operator checklist for promoting `dev` to `main`, tes
 ## Canonical version reference
 
 - The preferred public release version is a stable semver tag such as `v0.x.y` on the promoted `main` commit.
-- Phase 1 candidate versions are event-derived (`pr-*`, `main-*`, or `dispatch-*`) and are not stable release tags.
+- Main push and main manual dispatch resolve the same stable version from `resolve-release-version.sh`. Manual dispatch never publishes. A PR/tree-equivalent archive cannot be renamed or relabeled; changed commit/version/byte-affecting metadata requires fresh GCP qualification.
 - Building `release-candidate-<version>` does **not** publish it. The candidate build and hermetic archive/install smoke complete before evidence upload.
 - Creating a Git tag or GitHub release is publication. The protected `main` push workflow performs it automatically only after the user merges the PR and candidate verification succeeds.
-- The `release-candidate-<version>` workflow artifact is the evidence bundle: it contains the candidate archive, exact `.sha256` file, keyless Sigstore bundle, GitHub provenance bundle, `build-info.txt`, and `smoke-evidence.txt`. The build job verifies checksum, signer identity, provenance, source SHA/ref, workflow identity/SHA, issuer, event, and hosted-runner status before upload.
+- The `stable-release-<version>` artifact retains the unchanged archive/checksum, keyless signature, typed GCP promotion attestation, extracted `build-info.txt`, authenticated GCP qualification evidence, immutable manifest, GCP build provenance and promotion predicate. No synthetic smoke-pass file is created. Signature and promotion verification bind source, workflow, issuer and actual archive bytes; the promotion predicate does not claim a GitHub build.
 - Candidate evidence is per SHA and workflow run. Never treat an older artifact, checksum, smoke transcript, or fixed branch snapshot in documentation as evidence for a newer commit.
 - `dist/build-info.txt` carries release metadata (`version`, `commit`, `actor`, `ref`, `built_at`) but is not itself the tag authority.
 
@@ -149,3 +149,9 @@ For the first stable release, there is no older public stable version from which
 - `cmd/swarmsetup/main.go`
 - `internal/launcher/launcher.go`
 - `internal/model/home.go`
+
+## GCP promotion prerequisites
+
+Before rollout, separately approve nonsecret repository variables `GCP_CHECK_APP_ID`, `GCP_REQUIRED_STAGES`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_READ_SERVICE_ACCOUNT`, `GCP_ALLOWED_BUCKETS` (JSON array), and `GCP_RELEASE_POLICY_JSON` (the independently reviewed `swarm.gcp.release-policy/v1` exact merged-input binding, stage/onboarding coverage and current attempts). Never derive policy from downloaded evidence. Configure WIF for this repository/main workflow and read-only approved object buckets; do not grant build/deploy/write access. Missing/stale policy fails closed. Provision current metadata through an independently authorized controller/configuration path before each qualification; this workflow does not invent it or launch cloud resources.
+
+Retain `stable-release` environment reviewers and protected publication. Validate the producer/consumer schema and custom `https://swarm.dev/attestations/release-promotion/v1` verification with actual GitHub/Sigstore evidence before enabling publication. The checked-in installer/launcher do not invoke `gh attestation verify`; consumers of the old release verifier must explicitly choose `--legacy-slsa` for historical GitHub-built releases. New releases require `--gcp-promotion-dir` with the complete evidence set, never automatic legacy fallback.
