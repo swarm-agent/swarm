@@ -1,5 +1,6 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
+import { selectAutomationV2Identity } from './desktop-automation-v2-state'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
@@ -7,7 +8,7 @@ import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession, 
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
 export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'FAILED' | 'QUEUED'
-export type DesktopV3SidebarGroupId = 'blocked' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+export type DesktopV3SidebarGroupId = 'blocked' | 'automation' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
 
 export interface DesktopV3SidebarCheckpointProgress {
   activeCheckpointId: string
@@ -302,7 +303,7 @@ function buildDesktopV3SidebarRows(
       pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
       ...planState,
       rowType: planState.planExecution ? 'plan_session' : 'single_chat',
-      sidebarGroup: desktopSidebarGroupForRow({
+      sidebarGroup: selectAutomationV2Identity(state, sessionId) ? 'automation' : desktopSidebarGroupForRow({
         hasActivePlan: planState.hasActivePlan,
         planExecution: planState.planExecution,
         hasActiveRun: hasActiveRunIntent(state.currentRunIntentBySession[sessionId]),
@@ -329,6 +330,7 @@ export function selectDesktopVideoStudioRows(state: DesktopV3CacheState, scopeId
 export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> {
   const grouped: Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> = {
     blocked: [],
+    automation: [],
     needs_review: [],
     in_progress: [],
     active_chats: [],

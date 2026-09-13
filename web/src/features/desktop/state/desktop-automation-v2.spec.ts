@@ -4,6 +4,7 @@ import { validateAutomationV2, automationV2Review, type AutomationV2Settings } f
 import { reduceAutomationV2Pages, automationV2PageKey, selectAutomationV2Identity, type AutomationV2Pages } from './desktop-automation-v2-state'
 import { DesktopAutomationV2Runtime } from '../runtime/desktop-automation-v2'
 import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
+import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
 
 // Requirement: client validation preserves exact supported timing and expiration.
 // Threat: silently altered cadence or hidden cutoff. The typed API validator is
@@ -74,4 +75,24 @@ test('V2 progress rejects foreign nested accepted snapshots without replacing ob
     assert.equal(pages[key].stale, true)
   }
   lease.release()
+})
+
+// Requirement: pending/accepted automation authors occupy the Automation section,
+// not Needs Review or Active Chats. Canonical selector state proves grouping;
+// rejection, hidden sidechats and tombstones must not leak or duplicate rows.
+test('V2 sidebar groups automation authors without exposing hidden or removed sessions', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionOrderByScope.scope = ['author', 'ordinary', 'hidden']
+  for (const id of state.sessionOrderByScope.scope) state.sessionsById[id] = { kind: 'full', session: { id, title: 'Automation title is not identity' }, needsHydrate: false } as any
+  state.permissionsBySession.author = [{ status: 'pending', requirement: 'automation_v2_acceptance' } as any]
+  state.sessionsById.hidden = { kind: 'full', session: { id: 'hidden', navigation_hidden: true, automation_v2: { automation_id: 'a', workspace_id: 'w', digest: 'd' } }, needsHydrate: false } as any
+  let rows = selectDesktopSidebarRows(state, 'scope')
+  assert.deepEqual(rows.map(row => [row.sessionId, row.sidebarGroup]), [['author', 'automation'], ['ordinary', 'active_chats']])
+  state.permissionsBySession.author = []
+  assert.equal(selectDesktopSidebarRows(state, 'scope')[0].sidebarGroup, 'active_chats')
+  state.sessionsById.author = { kind: 'full', session: { id: 'author', automation_v2: { automation_id: 'a', workspace_id: 'w', digest: 'd' } }, needsHydrate: false } as any
+  assert.equal(selectDesktopSidebarRows(state, 'scope')[0].sidebarGroup, 'automation')
+  state.tombstonesBySession.author = { session_id: 'author' } as any
+  rows = selectDesktopSidebarRows(state, 'scope')
+  assert.deepEqual(rows.map(row => row.sessionId), ['ordinary'])
 })

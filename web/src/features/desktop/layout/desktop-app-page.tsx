@@ -1442,12 +1442,12 @@ function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 
   return metadataText(session, 'swarm_v3_sidebar_row_type') === 'plan_session' ? 'plan_session' : 'single_chat'
 }
 
-type SidebarBaseSessionGroupID = 'blocked' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+type SidebarBaseSessionGroupID = 'blocked' | 'automation' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
 type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned' | 'video'
 
 function sessionSidebarGroup(session: DesktopSessionRecord): SidebarBaseSessionGroupID {
   const group = metadataText(session, 'swarm_v3_sidebar_group')
-  return group === 'blocked' || group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
+  return group === 'blocked' || group === 'automation' || group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
 }
 
 function sessionManuallyPinnedInSidebar(session: DesktopSessionRecord): boolean {
@@ -2367,6 +2367,7 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
 
 export const SIDEBAR_SESSION_GROUPS = [
   { id: 'blocked', label: 'Blocked', showInactiveThreshold: false },
+  { id: 'automation', label: 'Automation', showInactiveThreshold: false },
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
   { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
@@ -2659,6 +2660,7 @@ export function DesktopAppPage() {
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
   const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
     blocked: false,
+    automation: false,
     needs_review: false,
     in_progress: false,
     pinned: false,
@@ -2666,6 +2668,7 @@ export function DesktopAppPage() {
   })
   const [expandedSidebarOverflowGroups, setExpandedSidebarOverflowGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
     blocked: false,
+    automation: false,
     needs_review: false,
     in_progress: false,
     pinned: false,

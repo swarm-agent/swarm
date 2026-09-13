@@ -346,7 +346,9 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.match(overlaySource, /topWorkspaceGitStatusQuery\.isFetching/)
   assert.match(overlaySource, /topWorkspaceGitStatusQuery\.error/)
   assert.doesNotMatch(overlaySource, /selectedGitSessionId|gitRealtimeErrors|gitStatusQuery\.error/)
-  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 3).map((group) => group.id), ['blocked', 'needs_review', 'in_progress'])
+  // Requirement: Automation sits immediately above Needs Review in the shared
+  // desktop/mobile group catalog, without moving Blocked out of first place.
+  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 4).map((group) => group.id), ['blocked', 'automation', 'needs_review', 'in_progress'])
 })
 
 test('sidebar shows an accessible current-workspace dropdown before chat and worktree actions', async () => {

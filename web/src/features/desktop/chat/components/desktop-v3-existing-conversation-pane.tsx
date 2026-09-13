@@ -594,8 +594,8 @@ const IsolatedPlanExecutionSidebar = memo(function IsolatedPlanExecutionSidebar(
   const automationV2 = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation_v2 : undefined; });
   const occurrenceParent = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? metadataString(record.session.metadata, 'automation_v2_authoring_session_id') : ''; });
   const occurrenceWorkspace = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.workspace_grants?.find(g => g.kind === 'primary')?.workspace_id : undefined; });
-  if (occurrenceParent && occurrenceWorkspace) return <div className="min-h-0 overflow-y-auto p-3"><p className="mb-3 text-xs text-[var(--app-text-muted)]">Scheduled occurrence · accepted instructions are immutable. Current schedule and recorded work:</p><AutomationV2Detail workspaceId={occurrenceWorkspace} sessionId={occurrenceParent} /></div>;
-  if (automationV2) return <div className="min-h-0 overflow-y-auto p-3"><AutomationV2Detail workspaceId={automationV2.workspace_id} sessionId={sessionId} /></div>;
+  if (occurrenceParent && occurrenceWorkspace) return <div className="min-h-0 min-w-0 overflow-y-auto bg-[var(--app-bg-alt)] p-4"><p className="mb-3 text-[11px] text-[var(--app-text-muted)]">Scheduled run · uses the instructions accepted for this run.</p><AutomationV2Detail workspaceId={occurrenceWorkspace} sessionId={occurrenceParent} /></div>;
+  if (automationV2) return <div className="min-h-0 min-w-0 overflow-y-auto bg-[var(--app-bg-alt)] p-4"><AutomationV2Detail workspaceId={automationV2.workspace_id} sessionId={sessionId} /></div>;
   if (automation) return <AutomationSessionPanel workspaceId={automation.workspace_id} id={automation.automation_id} />;
   return (
     <DesktopPlanExecutionSidebar
