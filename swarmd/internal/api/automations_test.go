@@ -59,10 +59,9 @@ func (automationAPIEvents) VerifyEvent(r *http.Request, _ automation.Principal, 
 	return nil
 }
 
-// Purpose: handleAutomations must derive principals outside JSON, reject foreign
-// ownership and stale writes, and leave canonical Pebble heads unchanged. Real
-// domain/store with request-context identity is the narrowest HTTP boundary test;
-// fake access does not prove the daemon's ownership/approval adapter.
+// Purpose: the retired V1 HTTP entrypoint must reject every execution mutation,
+// even when a legacy execution service is configured. A real store proves that
+// retries, foreign callers and event intake create no definitions or occurrences.
 func TestAutomationHTTPAuthorityAndReplay(t *testing.T) {
 	repo, err := store.Open(t.TempDir())
 	if err != nil {
@@ -94,31 +93,30 @@ func TestAutomationHTTPAuthorityAndReplay(t *testing.T) {
 	body := string(encoded)
 	for _, account := range []string{"", "foreign"} {
 		w := call(body, account, "")
-		if w.Code != 401 && w.Code != 403 {
+		if w.Code != 401 && w.Code != http.StatusGone {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
-	if w := call(body, "account", ""); w.Code != 200 {
+	if w := call(body, "account", ""); w.Code != http.StatusGone {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	if w := call(body, "account", ""); w.Code != 200 {
+	if w := call(body, "account", ""); w.Code != http.StatusGone {
 		t.Fatal("replay", w.Code, w.Body.String())
 	}
 	request.MutationID = "stale"
 	request.Definition.Name = "Wrong"
 	encoded, _ = json.Marshal(request)
-	if w := call(string(encoded), "account", ""); w.Code != 409 {
+	if w := call(string(encoded), "account", ""); w.Code != http.StatusGone {
 		t.Fatal("stale", w.Code, w.Body.String())
 	}
 	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
 	head, found, err := repo.GetAutomationRecord(scope, "check", "definition", "check", 0)
-	if err != nil || !found || head.Revision != 1 || head.Definition.Name != "Check" {
+	if err != nil || found {
 		t.Fatal("partial write", head, err)
 	}
-	// A supplied source is not authentication. Rejected intake must leave no
-	// occurrence or successful receipt; verified replay must create exactly one.
+	// V1 event intake remains retired even with formerly valid credentials.
 	event := `{"action":"event","workspace_id":"workspace","id":"check","mutation_id":"delivery","expected_revision":1,"source":"ci","identity":"event-1","scheduled_at":100000}`
-	if w := call(event, "account", "forged"); w.Code != 403 {
+	if w := call(event, "account", "forged"); w.Code != http.StatusGone {
 		t.Fatal(w.Code)
 	}
 	rows, _, err := repo.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "occurrence", Limit: 10})
@@ -126,15 +124,15 @@ func TestAutomationHTTPAuthorityAndReplay(t *testing.T) {
 		t.Fatal("forged event wrote", rows, err)
 	}
 	for i := 0; i < 2; i++ {
-		if w := call(event, "account", "valid"); w.Code != 202 {
+		if w := call(event, "account", "valid"); w.Code != http.StatusGone {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
 	rows, _, err = repo.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "occurrence", Limit: 10})
-	if err != nil || len(rows) != 1 || rows[0].Revision != 1 || rows[0].Occurrence.State != "pending" {
+	if err != nil || len(rows) != 0 {
 		t.Fatal("replay duplicated/dispatched", rows, err)
 	}
-	if w := call(strings.Replace(event, `"identity":"event-1"`, `"identity":"event-1","account_id":"foreign"`, 1), "account", "valid"); w.Code != 400 {
+	if w := call(strings.Replace(event, `"identity":"event-1"`, `"identity":"event-1","account_id":"foreign"`, 1), "account", "valid"); w.Code != http.StatusGone {
 		t.Fatal("forged envelope", w.Code)
 	}
 }
@@ -198,8 +196,8 @@ func TestAutomationHTTPRuntimeOrigin(t *testing.T) {
 			r = httptest.NewRequest(http.MethodPost, AutomationsPath+"/approve", strings.NewReader(`{"workspace_id":"workspace","id":"check","mutation_id":"approve","expected_revision":1,"policy_sha256":"forged"}`)).WithContext(ctx)
 			w = httptest.NewRecorder()
 			s.handleAutomations(w, r)
-			if w.Code != http.StatusForbidden {
-				t.Fatal("upgraded origin", w.Code)
+			if w.Code != http.StatusGone {
+				t.Fatal("retired origin", w.Code)
 			}
 		}
 	}
@@ -209,9 +207,8 @@ func TestAutomationHTTPRuntimeOrigin(t *testing.T) {
 	}
 }
 
-// Purpose: explicit approval returns an exact enable proposal, not enabled work.
-// The real policy/store boundary rejects a stale digest and preserves definition
-// state; fake ownership isolates HTTP integration, not daemon session acceptance.
+// Purpose: retired V1 approval must preserve preexisting legacy definitions and
+// never produce a grant or enable proposal, even for their exact current digest.
 func TestAutomationHTTPApprovalEnableProposal(t *testing.T) {
 	db, err := store.Open(t.TempDir())
 	if err != nil {
@@ -248,24 +245,12 @@ func TestAutomationHTTPApprovalEnableProposal(t *testing.T) {
 		s.handleAutomations(w, req)
 		return w
 	}
-	if w := call("stale"); w.Code != http.StatusForbidden {
+	if w := call("stale"); w.Code != http.StatusGone {
 		t.Fatalf("stale policy: %d", w.Code)
 	}
 	w := call(digest)
-	if w.Code != http.StatusOK {
-		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
-	}
-	var out struct {
-		Enable struct {
-			Body automationHTTPRequest `json:"body"`
-		} `json:"enable_proposal"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-		t.Fatal(err)
-	}
-	body := out.Enable.Body
-	if body.ExpectedRevision != record.Revision || body.Definition == nil || !body.Definition.Enabled || body.Definition.Authorization.ApprovalReference == "" {
-		t.Fatalf("missing exact enable: %+v", body)
+	if w.Code != http.StatusGone || strings.Contains(w.Body.String(), "enable_proposal") {
+		t.Fatalf("retired approval: %d %s", w.Code, w.Body.String())
 	}
 	head, _, _ := db.GetAutomationRecord(scope, "auto", "definition", "auto", 0)
 	if head.Revision != record.Revision || head.Definition.Enabled {

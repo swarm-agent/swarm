@@ -49,6 +49,9 @@ func (s *Service) automationPolicy(sessionID string) (*store.AutomationAuthoriza
 		}
 		return &policy, nil
 	}
+	if strings.HasPrefix(sessionID, "av2-execution-") {
+		return nil, s.validateAutomationV2Execution(currentSession)
+	}
 	if !strings.HasPrefix(sessionID, "automation-") {
 		return nil, nil
 	}

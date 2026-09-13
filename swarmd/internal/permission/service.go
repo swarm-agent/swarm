@@ -697,6 +697,10 @@ func (s *Service) EditPendingPlanProposal(input PendingPlanProposalEditInput) (P
 		s.mu.Unlock()
 		return PendingPlanProposalEditResult{}, errors.New("permission is not a recognized pending plan proposal")
 	}
+	if record.Requirement == "automation_v2_acceptance" || input.Document.AutomationV2 != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, errors.New("Automation V2 edits require the exact canonical automation review, not ordinary plan editing")
+	}
 	currentRevision := record.ProposalRevision
 	if currentRevision <= 0 {
 		currentRevision = 1

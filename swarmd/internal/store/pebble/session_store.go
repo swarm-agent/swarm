@@ -69,7 +69,7 @@ type SessionAutomationBinding struct {
 }
 
 type SessionSnapshot struct {
-	AutomationV2 *SessionAutomationV2Binding `json:"automation_v2,omitempty"`
+	AutomationV2            *SessionAutomationV2Binding  `json:"automation_v2,omitempty"`
 	Automation              *SessionAutomationBinding    `json:"automation,omitempty"`
 	ID                      string                       `json:"id"`
 	UserID                  string                       `json:"user_id,omitempty"`
@@ -198,7 +198,7 @@ type SessionPlanAutomationIntent struct {
 }
 
 type SessionPlanDocument struct {
-	AutomationV2 *AutomationV2Settings `json:"automation_v2,omitempty"`
+	AutomationV2    *AutomationV2Settings        `json:"automation_v2,omitempty"`
 	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
 	ID              string                       `json:"id"`
 	Title           string                       `json:"title"`

@@ -81,6 +81,7 @@ export interface SessionSnapshot {
   mode: string
   preference?: unknown
   automation?: { automation_id: string; workspace_id: string }
+  automation_v2?: { automation_id: string; workspace_id: string; digest: string }
   worktree_enabled?: boolean
   worktree_root_path?: string
   worktree_base_branch?: string
@@ -996,6 +997,7 @@ export interface DesktopInitialHydrateState {
 
 export interface DesktopV3CacheState {
   automationPages: import('./desktop-automation-state').AutomationPages
+  automationV2Pages: import('./desktop-automation-v2-state').AutomationV2Pages
   version: 1
   syncScopesById: Record<string, SyncScopeCache>
   realtime: RealtimeCache
@@ -1050,6 +1052,7 @@ export interface CacheEvent {
 
 export type DesktopV3CacheAction =
   | import('./desktop-automation-state').AutomationCacheAction
+  | import('./desktop-automation-v2-state').AutomationV2CacheAction
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
   | { type: 'desktopV3Cache.markHydrateInFlight'; sessionIds: string[]; inFlight: boolean }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }

@@ -113,6 +113,10 @@ func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusGone, errors.New("automation V1 execution is retired; submit an Automation V2 plan for explicit acceptance"))
+		return
+	}
 	approvalRoute := r.URL.Path == AutomationsPath+"/approve" || r.URL.Path == AutomationsPath+"/revoke"
 	if r.URL.Path != AutomationsPath && !approvalRoute {
 		http.NotFound(w, r)

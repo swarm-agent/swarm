@@ -2847,6 +2847,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				return RunResult{}, err
 			}
 		}
+		for i, call := range toolCalls {
+			if automationV2PlanCall(call) && gatedResults[i].Error == "" && mapString(decodeToolPayload(gatedResults[i].Output), "next_action") == "await_automation_acceptance" {
+				terminalPlanState.MarkTerminal()
+			}
+		}
+		if terminalPlanState.IsTerminal() {
+			break
+		}
 		designerRefinementFeedback := ""
 		if isDesignerRun {
 			refinementIndex, refinementCode, refinementEligible := managedDesignerRefinementCandidate(activeAgent, options.ArtifactRunContext, designerManagedRefinementAttempts, toolCalls, gatedResults)

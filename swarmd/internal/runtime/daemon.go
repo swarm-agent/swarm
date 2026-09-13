@@ -129,6 +129,7 @@ func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapS
 type Daemon struct {
 	automationMu              sync.Mutex
 	automationClosed          bool
+	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
 	automationLoop            *automationLoop
 	automationExecution       *automation.ExecutionService
 	automationApproval        *automation.PolicyApproval
@@ -487,7 +488,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("compose automations: %w", err)
 	}
-	toolRuntime.SetManageAutomationService(automationSvc)
+	// V1 tool creation/execution is retired; existing records remain readable.
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
@@ -630,53 +631,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
-	automationApply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
-		result, err := sessionSvc.ApplySessionMutation(input)
-		if err != nil {
-			return result, err
-		}
-		outboxes := result.RealtimeOutboxes
-		if len(outboxes) == 0 && result.RealtimeOutbox != nil {
-			outboxes = []pebblestore.V3RealtimeOutboxRecord{*result.RealtimeOutbox}
-		}
-		for _, outbox := range outboxes {
-			if err := apiServer.PublishCommittedV3RealtimeOutbox(outbox); err != nil {
-				log.Print("automation realtime wake failed after durable commit")
-			}
-		}
-		return result, nil
-	}
-	automationHost, err := run.NewAutomationExecutionHost(runSvc, sessionSvc.Store(), automationApply, apiServer.EnqueueAutomationRun)
-	if err != nil {
-		bgCancel()
-		_ = secretStore.Close()
-		_ = store.Close()
-		_ = lk.Release()
-		return nil, err
-	}
-	automationRuntime, err := automation.NewV3Runtime(automationSvc, sessionSvc, worktreeSvc, automationApproval, automationHost, automationApply)
-	if err != nil {
-		bgCancel()
-		_ = secretStore.Close()
-		_ = store.Close()
-		_ = lk.Release()
-		return nil, err
-	}
-	automationEvents := automation.NewApprovedEventAuthority(automationApproval)
-	automationExecution, err := automation.NewExecutionService(automationSvc, automationRuntime, automationEvents)
-	if err != nil {
-		bgCancel()
-		_ = secretStore.Close()
-		_ = store.Close()
-		_ = lk.Release()
-		return nil, err
-	}
 	apiServer.ConfigureAutomationRealtime(store)
-	apiServer.ConfigureAutomations(automationSvc, automationExecution, automationExecution, automationEvents)
-	automationApproval.ConfigureSessionAcceptance(automationRuntime)
-	apiServer.ConfigureAutomationApproval(automationApproval)
-	toolRuntime.ConfigureAutomationExecution(automationExecution, automationApproval)
-	runSvc.ConfigureAutomationContext(automationSvc)
+	// Keep the legacy catalog read-only. Do not install V1 approval, dispatch,
+	// tool execution, or run-context authorities alongside plan-native V2.
+	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
 
 	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
@@ -703,6 +661,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
+	automationV2Host, err := run.NewAutomationV2ExecutionHost(runSvc, sessionSvc.Store(), worktreeSvc, sessionSvc.ApplySessionMutation, apiServer.EnqueueAutomationRun)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automation v2 execution: %w", err)
+	}
 	runSvc.SetAITaskBinder(todoSvc)
 	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
 	if err != nil {
@@ -769,18 +735,17 @@ func New(cfg config.Config) (*Daemon, error) {
 	localTransportRuntimeName := ""
 
 	d := &Daemon{
-		cfg:                       cfg,
-		lock:                      lk,
-		store:                     store,
-		secretStore:               secretStore,
-		events:                    events,
-		hub:                       hub,
-		apiServer:                 apiServer,
-		notificationService:       notificationSvc,
-		bgCtx:                     bgCtx,
-		bgCancel:                  bgCancel,
-		automationExecution:       automationExecution,
-		automationApproval:        automationApproval,
+		cfg:                 cfg,
+		lock:                lk,
+		store:               store,
+		secretStore:         secretStore,
+		events:              events,
+		hub:                 hub,
+		apiServer:           apiServer,
+		notificationService: notificationSvc,
+		bgCtx:               bgCtx,
+		bgCancel:            bgCancel,
+		// V1 scheduling/approval authorities are intentionally not installed.
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
@@ -852,6 +817,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = d.cleanup()
 		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
 	}
+	d.automationV2Scheduler = sessionruntime.NewAutomationV2Scheduler(sessionSvc, automationV2Host)
 	d.longSessionDiagnostics = diagnostics
 	if diagnostics != nil {
 		codexClient.SetLongSessionDiagnostics(diagnostics)
@@ -1110,10 +1076,11 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
-	// New composes authorities without executing schedules. Run activates them
-	// only after listener setup succeeds; cleanup joins the worker before DB close.
-	if err := d.StartAutomationScheduling(context.Background()); err != nil {
-		return fmt.Errorf("start automation scheduler: %w", err)
+	// Start only V2, after listeners succeed; never migrate or execute V1 records.
+	if d.automationV2Scheduler != nil {
+		if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {
+			return err
+		}
 	}
 	return d.waitForShutdown()
 }
@@ -1135,6 +1102,13 @@ func (d *Daemon) waitForShutdown() error {
 		reason = "requested"
 	}
 	var errs []error
+	d.automationMu.Lock()
+	if d.automationLoop != nil {
+		d.automationLoop.Close()
+		d.automationLoop = nil
+	}
+	d.automationClosed = true
+	d.automationMu.Unlock()
 	if d.apiServer != nil {
 		d.apiServer.BeginShutdown()
 		d.apiServer.CancelInFlightRuns()

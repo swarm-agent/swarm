@@ -47,6 +47,8 @@ import {
   permissionRequirementLabel,
 } from '../services/permission-payload'
 
+import { AutomationV2PlanReview, automationV2PermissionProposal } from '../../tools/automations/automation-v2-plan-review'
+
 interface DesktopPermissionModalProps {
   open: boolean
   permission: DesktopPermissionRecord | null
@@ -3308,6 +3310,12 @@ function genericPermissionPersistentRulePreview(permission: DesktopPermissionRec
 export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   const kind = props.permission ? permissionKind(props.permission) : 'generic'
 
+  if (props.permission?.requirement === 'automation_v2_acceptance') {
+    const proposal = automationV2PermissionProposal(props.permission)
+    return <ModalShell open={props.open} title="Automation plan" subtitle="Review recurring execution" sessionMode={props.sessionMode} widthClassName="max-w-3xl" pendingCount={props.pendingCount} onOpenChange={props.onOpenChange}>
+      {proposal ? <AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} onReject={() => props.onResolve('deny', '')} /> : <p role="alert">Automation review unavailable. Refresh before accepting.</p>}
+    </ModalShell>
+  }
   if (kind === 'workspace-scope') {
     return <WorkspaceScopeModal {...props} />
   }

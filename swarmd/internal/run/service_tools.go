@@ -1637,6 +1637,32 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
+		if automationV2PlanCall(toolCalls[i]) {
+			current, _, scopeErr := s.automationV2ToolSession(sessionID)
+			if scopeErr != nil {
+				decisions[i].Result.Error = scopeErr.Error()
+				continue
+			}
+			// Proposal authoring is not plan acceptance. Evaluate explicit restrictions
+			// against the tool identity without remapping it to one-shot acceptance.
+			explain, policyErr := s.permissions.ExplainAutomationV2Proposal(current.AccountScopeID, sessionMode, toolCalls[i].Name, toolCalls[i].Arguments, overlay)
+			if policyErr != nil {
+				decisions[i].Result.Error = policyErr.Error()
+				continue
+			}
+			if explain.Decision == permission.PolicyDecisionDeny {
+				decisions[i].Result.Error = explain.Reason
+				continue
+			}
+			output, err := s.executeAutomationV2PlanTool(sessionID, sessionruntime.NormalizeMode(sessionMode), toolCalls[i])
+			decisions[i].Result.Output = output
+			if err != nil {
+				decisions[i].Err = err
+				decisions[i].Result.Error = err.Error()
+			}
+			// A durable pending review is the result, not approval to execute the call.
+			continue
+		}
 		permissionMode := sessionMode
 		permissionArguments := strings.TrimSpace(toolCalls[i].Arguments)
 		var err error
@@ -2107,6 +2133,10 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		}
 		result.Output = fmt.Sprintf("Plan context compact handoff accepted (%d characters).", len([]rune(handoff)))
 		return true, result, nil
+	case "manage_automation":
+		output, err := s.executeManageAutomationV2Tool(sessionID, call.Arguments)
+		result.Output = output
+		return true, result, err
 	case "exit_plan_mode":
 		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output
@@ -2195,6 +2225,27 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 	var document pebblestore.SessionPlanDocument
 	if err := json.Unmarshal(raw, &document); err != nil {
 		return "", fmt.Errorf("edit_pending_plan document invalid: %w", err)
+	}
+	if document.AutomationV2 != nil {
+		parent, workspace, err := s.automationV2ToolSession(parentID)
+		if err != nil {
+			return "", err
+		}
+		if session.AccountScopeID != parent.AccountScopeID || session.UserID != parent.UserID {
+			return "", errors.New("Plan sidechat ownership mismatch")
+		}
+		var review pebblestore.AutomationV2Review
+		if err := unmarshalPlanToolArg(args["automation_review"], &review, "automation_review"); err != nil {
+			return "", err
+		}
+		if review.Revision != uint64(expected) || permissionID != pebblestore.AutomationV2PermissionID(review.ProposalID) {
+			return "", errors.New("exact bound Automation plan review required")
+		}
+		proposal, err := s.sessions.ProposeAutomationV2(parent.AccountScopeID, parent.UserID, workspace, parentID, &document, review)
+		if err != nil {
+			return "", err
+		}
+		return automationV2ToolOutput(proposal)
 	}
 	edited, err := s.permissions.EditPendingPlanProposal(permission.PendingPlanProposalEditInput{SessionID: parentID, PermissionID: permissionID, ExpectedRevision: expected, Document: &document})
 	if err != nil {
@@ -2768,6 +2819,9 @@ func decodeAskUserFeedback(feedback string) (string, map[string]string) {
 }
 
 func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	if automationV2PlanCall(tool.Call{Name: "exit_plan_mode", Arguments: arguments}) {
+		return s.executeAutomationV2PlanTool(sessionID, sessionMode, tool.Call{Name: "exit_plan_mode", Arguments: arguments})
+	}
 	input, args, userMessage, err := s.prepareExitPlanModeLifecycleInput(sessionID, arguments, feedback)
 	if err != nil {
 		return "", err
@@ -3074,6 +3128,9 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 }
 
 func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
+	if automationV2PlanCall(tool.Call{Name: "plan_manage", Arguments: arguments}) {
+		return s.executeAutomationV2PlanTool(sessionID, "auto", tool.Call{Name: "plan_manage", Arguments: arguments})
+	}
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
 	}

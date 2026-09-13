@@ -1,4 +1,5 @@
 import { AutomationPlanApproval } from '../../tools/automations/automation-plan-approval';
+import { AutomationV2PlanReview, automationV2PermissionProposal } from '../../tools/automations/automation-v2-plan-review';
 import { useMemo, useState } from "react";
 import { AlertCircle, Check, Copy, MessageCircle } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
@@ -115,6 +116,12 @@ export function DesktopInlinePlanReviewCard({
       setLoading(false);
     }
   };
+
+  if (permission.requirement === 'automation_v2_acceptance') {
+    const proposal = automationV2PermissionProposal(permission);
+    if (!proposal || proposal.session_id !== parentSessionId) return <p role="alert">Automation review unavailable. Refresh before accepting.</p>;
+    return <AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} />;
+  }
 
   return (
     <section

@@ -316,7 +316,7 @@ export function DesktopPlanAgentSidecar({
           : "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
         <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-3">
-          <div className="font-semibold">{automation || document?.automation ? 'Automation · Plan agent' : mobileInline ? "Ask Swarm Plan" : "Plan"}</div>
+          <div className="font-semibold">{automation || document?.automation || document?.automationV2 ? 'Automation plan · Plan agent' : mobileInline ? "Ask Swarm Plan" : "Plan"}</div>
           {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button> : null}
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">

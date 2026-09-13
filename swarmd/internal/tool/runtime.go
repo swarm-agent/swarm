@@ -722,21 +722,15 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "edit_pending_plan",
-			Description: "Edit the pending plan proposal or saved parent automation configuration bound to the reserved Plan sidechat using optimistic concurrency. For a pending plan pass document as a native structured JSON object, never as serialized/quoted JSON text. For a saved automation pass automation and mutation_id instead of document; expected_revision is its exact definition revision. Automation edits return non-applied authenticated POST save proposals, never saved or enabled state. For instruction changes include instruction_document with the automation context to propose a separate non-active executable draft; user save and separate plan approval must precede proposing exact replacement pins. Start from authoritative attached context and preserve unrelated fields.",
+			Description: "Edit the exact pending canonical plan bound to the reserved Plan sidechat. Pass complete native document and expected_revision; for Automation V2 also pass the complete automation_review from attached context. Preserve unrelated instructions/settings. Editing never accepts, enables or runs the plan; V1 automation save/pin workflows are retired.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"expected_revision":    map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
-					"document":             sessionExecutablePlanDocumentToolSchema(),
-					"automation":           sessionPlanAutomationToolSchema(),
-					"instruction_document": sessionExecutablePlanDocumentToolSchema(),
-					"mutation_id":          map[string]any{"type": "string"},
+					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
+					"document":          sessionExecutablePlanDocumentToolSchema(),
+					"automation_review": automationV2ReviewSchema(),
 				},
-				"required": []string{"expected_revision"},
-				"oneOf": []any{
-					map[string]any{"required": []string{"document"}},
-					map[string]any{"required": []string{"automation", "mutation_id"}},
-				},
+				"required":             []string{"expected_revision", "document"},
 				"additionalProperties": false,
 			},
 		},
@@ -1364,7 +1358,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
-		manageAutomationDefinition(),
+		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
@@ -1438,6 +1432,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"title":                  map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
 					"plan":                   map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
+					"automation_review":      automationV2ReviewSchema(),
 					"document":               sessionExecutablePlanDocumentToolSchema(),
 					"plan_id":                map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
 					"id":                     map[string]any{"type": "string", "description": "Alias for plan_id."},
@@ -1482,6 +1477,7 @@ func (r *Runtime) Definitions() []Definition {
 					"amend_future_checkpoints":   map[string]any{"type": "boolean", "description": "For amend_plan: allow replacing pending future checkpoints; when replace_from_checkpoint_id is omitted, the first pending future checkpoint is used."},
 					"override_stale":             map[string]any{"type": "boolean", "description": "For amend_plan only: explicitly allow amendment when base_revision is missing or stale."},
 					"checkpoint":                 map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
+					"automation_review":          automationV2ReviewSchema(),
 					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument. For approval-bearing actions (request_new_plan and amend_plan), an explicit object with title, info.goal, and at least one complete ordered pending checkpoint is required; markdown-only and partial documents are rejected. Draft mutation actions retain the looser document shape."},
 					"document_patch":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
 					"document_operation":         map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
@@ -1702,13 +1698,13 @@ func sessionPlanDocumentToolSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":          map[string]any{"type": "string"},
-			"title":       map[string]any{"type": "string"},
-			"status":      map[string]any{"type": "string"},
-			"info":        sessionPlanInfoToolSchema(),
-			"automation":  sessionPlanAutomationToolSchema(),
-			"artifacts":   map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
-			"checkpoints": map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
+			"id":            map[string]any{"type": "string"},
+			"title":         map[string]any{"type": "string"},
+			"status":        map[string]any{"type": "string"},
+			"info":          sessionPlanInfoToolSchema(),
+			"automation_v2": sessionPlanAutomationV2ToolSchema(),
+			"artifacts":     map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
+			"checkpoints":   map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
 		},
 		"additionalProperties": true,
 	}
@@ -1967,7 +1963,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
 	case "manage-automation", "manage_automation":
-		return r.executeManageAutomation(ctx, scope, args)
+		return "", errors.New("manage_automation V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
 	case "artifact-v2-author", "artifact_v2_author":

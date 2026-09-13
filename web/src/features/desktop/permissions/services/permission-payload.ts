@@ -608,6 +608,7 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
           return 'plan-followup-request'
         case 'plan_amendment_request':
           return 'plan-amendment-request'
+        case 'automation_v2_acceptance':
         case 'plan_new_request':
           return 'plan-new-request'
         case 'plan_update':

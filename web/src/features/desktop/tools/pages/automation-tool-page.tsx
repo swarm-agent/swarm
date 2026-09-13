@@ -1,7 +1,7 @@
 import { useParams } from '@tanstack/react-router'
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
-import { AutomationWorkspace } from '../automations/automation-workspace'
+import { AutomationV2Workspace as AutomationWorkspace } from '../automations/automation-v2-workspace'
 
 export function AutomationToolPage() {
   const params = useParams({ strict: false }) as { workspaceSlug?: string }

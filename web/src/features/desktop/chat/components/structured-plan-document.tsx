@@ -135,6 +135,7 @@ function normalizePlanAutomation(value: unknown): StructuredPlanAutomation | nul
 }
 
 export interface StructuredPlanDocument {
+  automationV2?: import('../../state/desktop-automation-v2-api').AutomationV2Settings
   automation?: StructuredPlanAutomation | null
   id: string
   title: string
@@ -369,6 +370,7 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
 
   const document: StructuredPlanDocument = {
     automation: normalizePlanAutomation(record.automation),
+    automationV2: record.automation_v2 as import('../../state/desktop-automation-v2-api').AutomationV2Settings | undefined,
     id: stringValue(record, 'id'),
     title: stringValue(record, 'title'),
     status: stringValue(record, 'status'),
@@ -472,6 +474,7 @@ export function structuredPlanDocumentToWire(document: StructuredPlanDocument): 
     title: document.title,
     status: document.status,
     automation: document.automation ?? undefined,
+    automation_v2: document.automationV2,
     schema_version: document.schemaVersion,
     revision_id: document.revisionId,
     info: structuredPlanInfoToWire(document.info),
@@ -836,7 +839,7 @@ export function StructuredPlanDocumentView({
       <section className="grid min-w-0 content-start gap-4">
         <div className="flex min-w-0 items-start justify-between gap-3 border-b border-[var(--app-border)] pb-3">
           <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automation ? 'Automation details' : 'Plan details'}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automationV2 || document.automation ? 'Automation plan details' : 'Plan details'}</div>
             <h3 className="mt-1 truncate text-lg font-semibold text-[var(--app-text)]">
               {document.title || document.info.goal || 'Structured execution blueprint'}
             </h3>

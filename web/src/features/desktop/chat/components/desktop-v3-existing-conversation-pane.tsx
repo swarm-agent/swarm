@@ -33,6 +33,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
+import { AutomationV2Detail } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
@@ -555,7 +556,7 @@ const IsolatedPlanExecutionSummary = memo(function IsolatedPlanExecutionSummary(
     [sessionId],
   );
   const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
-  const automation = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation : undefined; });
+  const automation = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation_v2 ?? record.session.automation : undefined; });
 
   return (
     <>
@@ -590,6 +591,8 @@ const IsolatedPlanExecutionSidebar = memo(function IsolatedPlanExecutionSidebar(
     taskRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })),
   );
 
+  const automationV2 = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation_v2 : undefined; });
+  if (automationV2) return <div className="min-h-0 overflow-y-auto p-3"><AutomationV2Detail workspaceId={automationV2.workspace_id} sessionId={sessionId} /></div>;
   if (automation) return <AutomationSessionPanel workspaceId={automation.workspace_id} id={automation.automation_id} />;
   return (
     <DesktopPlanExecutionSidebar
@@ -2294,7 +2297,7 @@ export function DesktopV3ExistingConversationPane({
     heldPlanPermissionRef.current = null;
     setResolvingPlanPermissionId("");
   }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
-  const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument) || Boolean(cacheSession?.automation);
+  const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument) || Boolean(cacheSession?.automation) || Boolean(cacheSession?.automation_v2);
   const hasSessionArtifacts = desktopV3HasArtifactSidebarContent({
     artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
     error: sessionArtifactV3Error,
@@ -3485,7 +3488,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          {!stablePlanDocument && showPlanExecutionSidebar ? (
+          {!stablePlanDocument && (showPlanExecutionSidebar || cacheSession?.automation_v2) ? (
             <div
               className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:hidden"
               data-testid="desktop-plan-execution-composer-region"
@@ -3498,7 +3501,7 @@ export function DesktopV3ExistingConversationPane({
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
                   {hasSessionArtifacts ? (
                     <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
-                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation ? 'Show automation' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation ? 'Automation' : 'Plan'}</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 ? 'Show automation' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation || cacheSession?.automation_v2 ? 'Automation' : 'Plan'}</button>
                       <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}</button>
                     </div>
                   ) : null}
@@ -3629,7 +3632,7 @@ export function DesktopV3ExistingConversationPane({
           >
             {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
-                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation ? 'Show automation sidebar' : 'Show plan sidebar'} title={cacheSession?.automation ? 'Automation' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation ? 'Automation' : 'Plan') : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 ? 'Show automation sidebar' : 'Show plan sidebar'} title={cacheSession?.automation || cacheSession?.automation_v2 ? 'Automation' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation || cacheSession?.automation_v2 ? 'Automation' : 'Plan') : null}</button>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
@@ -3647,7 +3650,7 @@ export function DesktopV3ExistingConversationPane({
                   modelLabel={displayedPreference.model}
                   displayMode={planSidebarDisplayMode}
                 />
-              ) : showPlanExecutionSidebar || cacheSession?.automation ? (
+              ) : showPlanExecutionSidebar || cacheSession?.automation || cacheSession?.automation_v2 ? (
                 <IsolatedPlanExecutionSidebar
                   sessionId={normalizedSessionId}
                   busyAction={planExecutionBusyAction}

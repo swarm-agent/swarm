@@ -1,3 +1,4 @@
+import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
 import { reduceAutomationPages } from './desktop-automation-state'
 import type {
   CacheEvent,
@@ -61,6 +62,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
   return {
     version: 1,
     automationPages: {},
+    automationV2Pages: {},
     syncScopesById: {},
     realtime: {
       status: 'closed',
@@ -113,6 +115,11 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
 
 export function desktopV3CacheReducer(state: DesktopV3CacheState, action: DesktopV3CacheAction): DesktopV3CacheState {
   switch (action.type) {
+    case 'automationV2.begin':
+    case 'automationV2.finish':
+    case 'automationV2.invalidate':
+    case 'automationV2.evict':
+      return { ...state, automationV2Pages: reduceAutomationV2Pages(state.automationV2Pages, action) }
     case 'automation.begin':
     case 'automation.finish':
     case 'automation.invalidate':

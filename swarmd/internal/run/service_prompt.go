@@ -66,6 +66,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"Use tools when needed to inspect files or execute commands.",
 		"The active execution mode and tool policy are provided below and must be followed.",
 		"Execution strategy:",
+		tool.AutomationV2AuthoringInstructions,
 		"- Start discovery with search (FFF content/symbol lookup), find (FFF file/directory/path discovery), and list before broad file reads.",
 		"- Use search for text inside files: exact symbols, error strings, config keys, or short natural fragments; use find for filenames, directories, mixed path candidates, or glob-only discovery.",
 		"- For independent search/find intents, batch multiple search/read/list calls in the same step instead of one-tool-per-step loops.",

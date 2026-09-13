@@ -17,9 +17,10 @@ type keyedSessionLock struct {
 }
 
 type sessionMutationCoordinator struct {
-	worktreeMu sync.Mutex
-	locksMu    sync.Mutex
-	locks      map[string]*keyedSessionLock
+	automationV2Mu sync.Mutex
+	worktreeMu     sync.Mutex
+	locksMu        sync.Mutex
+	locks          map[string]*keyedSessionLock
 
 	outboxMu          sync.Mutex
 	outboxCond        *sync.Cond
@@ -63,7 +64,7 @@ type sessionMutationCoordinator struct {
 	beforeArtifactV2Commit func(sessionID string) error
 	// beforeArtifactV3Commit injects a failure after a native Git transaction but
 	// before its canonical event/projection/idempotency/outbox batch is durable.
-	beforeArtifactV3Commit func(sessionID string) error
+	beforeArtifactV3Commit   func(sessionID string) error
 	beforeAutomationV2Commit func(sessionID string) error
 	// beforeExecutionEpochCommit injects a pre-commit failure for the canonical
 	// compound epoch transition. Returning an error must leave no durable rows.
