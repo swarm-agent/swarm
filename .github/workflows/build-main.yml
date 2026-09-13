@@ -36,12 +36,12 @@ jobs:
         id: input
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GCP_CHECK_APP_ID: ${{ vars.GCP_CHECK_APP_ID }}
+          GCP_CHECK_APP_ID: ${{ secrets.GCP_CHECK_APP_ID || vars.GCP_CHECK_APP_ID }}
           GCP_CHECK_CONTEXT: build-main
-          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          GCP_READ_SERVICE_ACCOUNT: ${{ vars.GCP_READ_SERVICE_ACCOUNT }}
-          GCP_ALLOWED_BUCKETS: ${{ vars.GCP_ALLOWED_BUCKETS }}
-          GCP_RELEASE_POLICY_JSON: ${{ vars.GCP_RELEASE_POLICY_JSON }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER || vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_READ_SERVICE_ACCOUNT: ${{ secrets.GCP_READ_SERVICE_ACCOUNT || vars.GCP_READ_SERVICE_ACCOUNT }}
+          GCP_ALLOWED_BUCKETS: ${{ secrets.GCP_ALLOWED_BUCKETS || vars.GCP_ALLOWED_BUCKETS }}
+          GCP_RELEASE_POLICY_JSON: ${{ secrets.GCP_RELEASE_POLICY_JSON || vars.GCP_RELEASE_POLICY_JSON }}
           GCP_RELEASE_POLICY_PATH: ${{ runner.temp }}/release-policy.json
           GCP_OUTPUT_DIR: dist
         run: |

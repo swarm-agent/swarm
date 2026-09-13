@@ -22,7 +22,7 @@ JOBS = {
     'guard-main-pr-source': ['require-dev-head'],
 }
 CHECKOUT = 'actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09'
-TRUSTED = '${{ vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}'
+TRUSTED = '${{ secrets.GCP_VERIFIER_SHA || vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}'
 spec = importlib.util.spec_from_file_location('relay', ROOT / 'scripts/gcp-result-relay.py')
 relay = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(relay)
@@ -67,8 +67,8 @@ class WorkflowTests(unittest.TestCase):
                     self.assertIn('[[ "$(git rev-parse HEAD)" == "${GCP_VERIFIER_SHA}" ]]', run['run'])
                     self.assertEqual(run['env'], {
                         'GITHUB_TOKEN': '${{ github.token }}',
-                        'GCP_VERIFIER_SHA': '${{ vars.GCP_VERIFIER_SHA }}',
-                        'GCP_CHECK_APP_ID': '${{ vars.GCP_CHECK_APP_ID }}',
+                        'GCP_VERIFIER_SHA': '${{ secrets.GCP_VERIFIER_SHA || vars.GCP_VERIFIER_SHA }}',
+                        'GCP_CHECK_APP_ID': '${{ secrets.GCP_CHECK_APP_ID || vars.GCP_CHECK_APP_ID }}',
                         'GCP_CHECK_CONTEXT': name})
                 if name == 'install-distro-smoke':
                     self.assertEqual(doc['jobs']['distro-install']['strategy'], {
@@ -85,8 +85,8 @@ class WorkflowTests(unittest.TestCase):
             for job in doc['jobs'].values():
                 program = job['steps'][1]['run']
                 for app, present, code, message in (
-                        ('', False, 1, 'GCP_CHECK_APP_ID repository variable'),
-                        ('invalid', True, 1, 'GCP_CHECK_APP_ID repository variable'),
+                        ('', False, 1, 'GCP_CHECK_APP_ID repository secret or variable'),
+                        ('invalid', True, 1, 'GCP_CHECK_APP_ID repository secret or variable'),
                         ('42', False, 1, 'Trusted checkout lacks the relay'),
                         ('42', True, 7, 'awaiting actual qualification')):
                     with self.subTest(workflow=name, app=app, present=present), tempfile.TemporaryDirectory() as tmp:
@@ -99,6 +99,22 @@ class WorkflowTests(unittest.TestCase):
                             text=True, capture_output=True, timeout=5)
                         self.assertEqual(result.returncode, code, result.stderr)
                         self.assertIn(message, result.stdout)
+
+    def test_release_configuration_accepts_secrets_without_changing_permissions(self):
+        doc = yaml.load((ROOT / '.github/workflows/build-main.yml').read_text(), Loader=yaml.BaseLoader)
+        job = doc['jobs']['build-stable-release']
+        step = next(s for s in job['steps'] if s.get('id') == 'input')
+        for key in ('GCP_CHECK_APP_ID', 'GCP_WORKLOAD_IDENTITY_PROVIDER',
+                    'GCP_READ_SERVICE_ACCOUNT', 'GCP_ALLOWED_BUCKETS', 'GCP_RELEASE_POLICY_JSON'):
+            self.assertEqual(step['env'][key], '${{ secrets.' + key + ' || vars.' + key + ' }}')
+            self.assertNotIn('${{ secrets.', step['run'])  # No secret interpolation into shell source.
+        self.assertEqual(job['permissions']['contents'], 'read')
+        self.assertEqual(job['permissions']['checks'], 'read')
+        self.assertEqual(doc['jobs']['publish-stable-release']['environment'], 'stable-release')
+        # Never switch to pull_request_target to obtain secrets for fork code.
+        for name in JOBS:
+            workflow = yaml.load((ROOT / '.github/workflows' / (name + '.yml')).read_text(), Loader=yaml.BaseLoader)
+            self.assertNotIn('pull_request_target', workflow['on'])
 
     def test_each_context_rejects_missing_app_before_network(self):
         for context in JOBS:

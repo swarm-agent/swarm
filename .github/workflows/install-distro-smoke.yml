@@ -28,15 +28,15 @@ jobs:
       - name: Check out trusted immutable verifier
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}
+          ref: ${{ secrets.GCP_VERIFIER_SHA || vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}
           persist-credentials: false
           sparse-checkout: scripts/gcp-result-relay.py
           sparse-checkout-cone-mode: false
       - name: Verify exact GCP result
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GCP_VERIFIER_SHA: ${{ vars.GCP_VERIFIER_SHA }}
-          GCP_CHECK_APP_ID: ${{ vars.GCP_CHECK_APP_ID }}
+          GCP_VERIFIER_SHA: ${{ secrets.GCP_VERIFIER_SHA || vars.GCP_VERIFIER_SHA }}
+          GCP_CHECK_APP_ID: ${{ secrets.GCP_CHECK_APP_ID || vars.GCP_CHECK_APP_ID }}
           GCP_CHECK_CONTEXT: install-distro-smoke
         run: |
           set -euo pipefail
@@ -44,7 +44,7 @@ jobs:
             [[ "${GCP_VERIFIER_SHA}" =~ ^[0-9a-f]{40}$ ]]
             [[ "$(git rev-parse HEAD)" == "${GCP_VERIFIER_SHA}" ]]
           fi
-          [[ "${GCP_CHECK_APP_ID}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::GCP_CHECK_APP_ID repository variable is missing or invalid'; exit 1; }
+          [[ "${GCP_CHECK_APP_ID}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::GCP_CHECK_APP_ID repository secret or variable is missing or invalid'; exit 1; }
           [[ -f scripts/gcp-result-relay.py ]] || { echo '::error::Trusted checkout lacks the relay; configure GCP_VERIFIER_SHA to the reviewed verifier commit'; exit 1; }
           echo 'GCP relay configuration and trusted verifier are available; awaiting actual qualification'
           python3 -I scripts/gcp-result-relay.py
@@ -64,15 +64,15 @@ jobs:
       - name: Check out trusted immutable verifier
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}
+          ref: ${{ secrets.GCP_VERIFIER_SHA || vars.GCP_VERIFIER_SHA || github.event.pull_request.base.sha || github.workflow_sha }}
           persist-credentials: false
           sparse-checkout: scripts/gcp-result-relay.py
           sparse-checkout-cone-mode: false
       - name: Verify exact GCP result
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          GCP_VERIFIER_SHA: ${{ vars.GCP_VERIFIER_SHA }}
-          GCP_CHECK_APP_ID: ${{ vars.GCP_CHECK_APP_ID }}
+          GCP_VERIFIER_SHA: ${{ secrets.GCP_VERIFIER_SHA || vars.GCP_VERIFIER_SHA }}
+          GCP_CHECK_APP_ID: ${{ secrets.GCP_CHECK_APP_ID || vars.GCP_CHECK_APP_ID }}
           GCP_CHECK_CONTEXT: install-distro-smoke
         run: |
           set -euo pipefail
@@ -80,7 +80,7 @@ jobs:
             [[ "${GCP_VERIFIER_SHA}" =~ ^[0-9a-f]{40}$ ]]
             [[ "$(git rev-parse HEAD)" == "${GCP_VERIFIER_SHA}" ]]
           fi
-          [[ "${GCP_CHECK_APP_ID}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::GCP_CHECK_APP_ID repository variable is missing or invalid'; exit 1; }
+          [[ "${GCP_CHECK_APP_ID}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::GCP_CHECK_APP_ID repository secret or variable is missing or invalid'; exit 1; }
           [[ -f scripts/gcp-result-relay.py ]] || { echo '::error::Trusted checkout lacks the relay; configure GCP_VERIFIER_SHA to the reviewed verifier commit'; exit 1; }
           echo 'GCP relay configuration and trusted verifier are available; awaiting actual qualification'
           python3 -I scripts/gcp-result-relay.py
