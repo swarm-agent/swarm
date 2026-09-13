@@ -6660,10 +6660,6 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	if !parent.WorktreeEnabled || strings.TrimSpace(parent.WorktreeRootPath) == "" || strings.TrimSpace(parent.WorktreeBranch) == "" {
 		return "", errors.New("manage-worktree integrate requires an authenticated session-owned parent lane; use promote for a captured checkout")
 	}
-	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
-	if err != nil {
-		return "", err
-	}
 	selected := asStringSlice(args["session_ids"])
 	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
 	if len(selected) > 0 && selectedTaskCallID != "" {
@@ -6754,9 +6750,32 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		return candidates[i].index < candidates[j].index
 	})
-	integrationParentPath := parentPath
-	if len(candidates) > 0 {
-		integrationParentPath = candidates[0].parentPath
+	integrationParentPath := candidates[0].parentPath
+	// workspace_path is an assertion about the selected durable destination, not
+	// a request to retarget children or an ignored hint to use the default lane.
+	if requested := strings.TrimSpace(asString(args["workspace_path"])); requested != "" {
+		absolute, resolved, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, requested)
+		if err != nil {
+			return "", err
+		}
+		if absolute != resolved {
+			return "", errors.New("integration selector must be a canonical workspace path")
+		}
+		if absolute != integrationParentPath {
+			if integrationParentPath == parent.WorktreeRootPath {
+				if absolute != asString(parent.Metadata["swarm_v3_source_workspace_path"]) {
+					return "", errors.New("integration selector does not match the selected child destination")
+				}
+			} else {
+				lane, err := r.selectedRepositoryLane(scope, parent, absolute, "")
+				if err != nil {
+					return "", err
+				}
+				if lane.WorkspacePath != integrationParentPath {
+					return "", errors.New("integration selector does not match the selected child destination")
+				}
+			}
+		}
 	}
 	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
 	for _, item := range candidates {

@@ -46,7 +46,7 @@ func TestTaskProgramRealStageUsesIntegratedBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := pebblestore.TaskProgramRecord{ParentSessionID: id, ProgramID: "stage-program", DefinitionHash: "hash", State: "running", ActiveStageID: "build", Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}, {ID: "design", DependsOn: []string{"build"}, DependencyEvidence: "integrated source"}}}}
+	record := pebblestore.TaskProgramRecord{ParentSessionID: id, ProgramID: "stage-program", ReservationRunID: "stage-run", DefinitionHash: "hash", State: "running", ActiveStageID: "build", Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}, {ID: "design", DependsOn: []string{"build"}, DependencyEvidence: "integrated source"}}}}
 	children := make([]worktree.Allocation, 2)
 	// Both allocations precede either commit, matching one parallel cohort's base.
 	for i, file := range []string{"first.txt", "second.txt"} {

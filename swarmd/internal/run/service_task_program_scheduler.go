@@ -782,6 +782,14 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 	// stage destination. The normal launch authority still authenticates source,
 	// Git ownership, captured ancestry and cleanliness before reuse.
 	if p.record.RepositoryLane != nil {
+		if p.record.Revision > 0 {
+			if p.record.ParentSessionID != parent.ID {
+				return "", errors.New("Task Program repository admission parent mismatch")
+			}
+			if _, err := p.service.sessions.TaskProgramRepositoryLanesForAdmission(p.record); err != nil {
+				return "", err
+			}
+		}
 		path, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: p.record.RepositoryLane})
 		return path, err
 	}

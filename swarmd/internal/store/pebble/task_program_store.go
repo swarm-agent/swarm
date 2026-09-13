@@ -368,6 +368,18 @@ func (s *SessionStore) TransitionTaskProgram(parentSessionID, programID string, 
 		return TaskProgramRecord{}, false, fmt.Errorf("task program revision mismatch: expected %d, current %d", transition.ExpectedRevision, record.Revision)
 	}
 	if transition.RepositoryLane != nil {
+		// Admission lookup is read-only. Recheck competing schedulers under the
+		// session/worktree locks before publishing a lane, so two concurrent
+		// lookups cannot both acquire a retained mutable destination.
+		programs, err := s.ListTaskPrograms(parentSessionID)
+		if err != nil {
+			return TaskProgramRecord{}, false, err
+		}
+		for _, other := range programs {
+			if other.ProgramID != programID && (other.State == TaskProgramStateDeclared || other.State == TaskProgramStateRunning) {
+				return TaskProgramRecord{}, false, errors.New("another active Task Program prevents repository lane admission")
+			}
+		}
 		lane := *transition.RepositoryLane
 		if record.RepositoryLane != nil && *record.RepositoryLane != lane {
 			return TaskProgramRecord{}, false, errors.New("task program repository lane is immutable")
