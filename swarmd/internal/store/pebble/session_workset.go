@@ -509,7 +509,16 @@ func V3SessionNavigationHidden(session SessionSnapshot) bool {
 		return true
 	}
 	lineageKind, _ := session.Metadata["lineage_kind"].(string)
-	return strings.EqualFold(strings.TrimSpace(lineageKind), "system_sidechat")
+	if strings.EqualFold(strings.TrimSpace(lineageKind), "system_sidechat") {
+		return true
+	}
+	if purpose, _ := session.Metadata[SessionPurposeMetadataKey].(string); strings.EqualFold(strings.TrimSpace(purpose), SessionPurposeAutomationExecution) {
+		return true
+	}
+	if occurrenceID, _ := session.Metadata["automation_v2_occurrence_id"].(string); strings.TrimSpace(occurrenceID) != "" {
+		return true
+	}
+	return false
 }
 
 func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID string, userID string, workspacePath string) bool {

@@ -70,7 +70,7 @@ import {
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
-import { AutomationV2SidebarMetadata } from '../tools/automations/automation-v2-sidebar-metadata'
+import { AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
@@ -2252,7 +2252,13 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         </span>
       </div>
       {automationV2 ? (
-        <AutomationV2SidebarMetadata sessionId={session.id} identity={automationV2} now={now} needsApproval={hasPendingPermission} />
+        <AutomationV2SidebarMetadata
+          sessionId={session.id}
+          identity={automationV2}
+          now={now}
+          needsApproval={hasPendingPermission}
+          workspaceSlug={rowWorkspaceSlug}
+        />
       ) : (
         <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -2323,6 +2329,7 @@ interface RenderSidebarSessionGroupsInput {
   gitBehindCount: number
   gitDirtyCount: number
   onOpenGit: () => void
+  onOpenAutomations?: () => void
   onToggleReviewCleanup: () => void
   onToggleGroupCollapsed: (group: SidebarSessionGroupID) => void
   onToggleGroupOverflow: (group: SidebarSessionGroupID) => void
@@ -2498,6 +2505,19 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             {group.id === 'blocked' ? <span aria-hidden="true" className="text-[var(--app-warning)]">⊘</span> : null}
             <span>{group.label}</span>
             <span className="tabular-nums tracking-normal">{rootCount}</span>
+            {group.id === 'automation' && input.onOpenAutomations ? (
+              <button
+                type="button"
+                className={input.presentation === 'mobile'
+                  ? 'ml-auto inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
+                  : 'ml-auto inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] font-normal normal-case tracking-normal text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
+                aria-label="Open top-down Automations view"
+                title="Open top-down Automations view"
+                onClick={input.onOpenAutomations}
+              >
+                <span>View</span>
+              </button>
+            ) : null}
             {groupControls}
           </div>
         )}
@@ -3249,6 +3269,7 @@ export function DesktopAppPage() {
     ?? mergedSidebarWorkspaceEntries[0]
     ?? visibleSidebarWorkspaceEntries[0]
     ?? null
+  const topWorkspaceId = topWorkspace?.workspaceId
   const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
   const topWorkspacePath = topWorkspace?.path || selectedWorkspacePath || ''
   const topWorkspaceSlug = topWorkspacePath
@@ -4507,6 +4528,10 @@ export function DesktopAppPage() {
     gitBehindCount: topWorkspaceGitBehindCount,
     gitDirtyCount: topWorkspaceGitDirtyCount,
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
+    onOpenAutomations: topWorkspaceSlug ? () => {
+      setMobileSidebarOpen(false)
+      void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
+    } : undefined,
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
     onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
@@ -5202,7 +5227,10 @@ export function DesktopAppPage() {
                       title="Automations"
                     >
                       <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="min-w-0 truncate">Automations</span>
+                      <span className="flex min-w-0 items-center justify-between gap-1.5">
+                        <span className="min-w-0 truncate">Automations</span>
+                        <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -5398,6 +5426,10 @@ export function DesktopAppPage() {
                     gitBehindCount: topWorkspaceGitBehindCount,
                     gitDirtyCount: topWorkspaceGitDirtyCount,
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
+                    onOpenAutomations: topWorkspaceSlug ? () => {
+                      setMobileSidebarOpen(false)
+                      void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
+                    } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
                     onToggleGroupOverflow: handleToggleSidebarGroupOverflow,

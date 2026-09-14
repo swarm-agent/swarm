@@ -11,7 +11,16 @@ export interface AutomationV2Settings {
 export interface AutomationV2Document extends Record<string, unknown> {
   title: string
   info: { goal: string; [key: string]: unknown }
-  checkpoints: Array<{ id: string; title: string; tasks?: string[]; objective?: string; acceptance_criteria: string[]; [key: string]: unknown }>
+  checkpoints: Array<{
+    id: string
+    title: string
+    tasks?: string[]
+    objective?: string
+    acceptance_criteria: string[]
+    closing_state?: string
+    alert_conditions?: string
+    [key: string]: unknown
+  }>
   automation_v2: AutomationV2Settings
 }
 export interface AutomationV2Review { proposal_id: string; revision: number; digest: string }
@@ -22,10 +31,42 @@ export interface AutomationV2Record extends AutomationV2Proposal {
   automation_id: string; generation: number; enabled: boolean; cancelled: boolean; accepted_at: number
   authorization: AutomationV2Settings['expiration']; next_due_at?: number
 }
+export interface AutomationV2OccurrenceDeliverable {
+  label?: string
+  path?: string
+  media_type?: string
+  filename?: string
+  artifact_id?: string
+  revision_ref?: string
+  session_id?: string
+  collection_id?: string
+  variant_id?: string
+  source_ref?: string
+  url?: string
+}
+
+export interface AutomationV2Occurrence {
+  id: string
+  state: string
+  detail?: string
+  due_at: number
+  session_id: string
+  accepted: AutomationV2Record
+  run_id?: string
+  admitted_at?: number
+  observed_at?: number
+  closing_state?: string
+  deliverables?: AutomationV2OccurrenceDeliverable[]
+  artifacts?: AutomationV2OccurrenceDeliverable[]
+  summary?: string
+  result?: string
+  report?: string
+}
+
 export interface AutomationV2Progress {
   record: AutomationV2Record; observed_at: number; timezone: string; forecast: number[]; forecast_is_admission: false
   no_next_reason?: string; complete: boolean; next_cursor?: string
-  occurrences: Array<{ id: string; state: string; detail?: string; due_at: number; session_id: string; accepted: AutomationV2Record }>
+  occurrences: AutomationV2Occurrence[]
 }
 export interface AutomationV2Read { workspace_id: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string }
 export interface AutomationV2Response { records?: AutomationV2Record[]; next_cursor?: string; proposal?: AutomationV2Proposal; record?: AutomationV2Record; progress?: AutomationV2Progress }

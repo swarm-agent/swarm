@@ -102,6 +102,9 @@ type PlanCheckpointOutcomeOptions struct {
 	Artifacts       []pebblestore.SessionPlanArtifactReference
 	Recommendation  *pebblestore.SessionPlanCheckpointRecommendation
 	Handoff         *pebblestore.SessionPlanCheckpointHandoff
+	ClosingState    string
+	Summary         string
+	AlertConditions string
 	StartedAt       int64
 	CompletedAt     int64
 }
@@ -1177,6 +1180,15 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 			return PlanCheckpointOutcomeDecision{}, err
 		}
 		checkpoint.Handoff = &handoff
+	}
+	if closingState := strings.TrimSpace(options.ClosingState); closingState != "" {
+		checkpoint.ClosingState = closingState
+	}
+	if summary := strings.TrimSpace(options.Summary); summary != "" {
+		checkpoint.Summary = summary
+	}
+	if alertConditions := strings.TrimSpace(options.AlertConditions); alertConditions != "" {
+		checkpoint.AlertConditions = alertConditions
 	}
 	if options.StartedAt > 0 && checkpoint.StartedAt == 0 {
 		checkpoint.StartedAt = options.StartedAt

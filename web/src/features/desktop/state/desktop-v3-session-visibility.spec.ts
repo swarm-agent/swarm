@@ -12,12 +12,27 @@ const hiddenSession = {
   metadata: { lineage_kind: 'system_sidechat' },
 }
 
+const automationExecutionSession = {
+  ...sessionB,
+  id: 'automation-occurrence-run',
+  metadata: {
+    automation_v2_occurrence_id: 'occ-12345678',
+    swarm_v3_session_purpose: 'automation_execution',
+    swarm_v3_purpose_workspace_id: 'workspace-a',
+    navigation_hidden: true,
+  },
+}
+
 test('navigation-hidden predicate recognizes every supported backend marker', () => {
   assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, navigation_hidden: true }), true)
   assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, system_session: true }), true)
   assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, system_sidechat: true }), true)
   assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, lineage_kind: 'system_sidechat' }), true)
   assert.equal(isDesktopV3NavigationHiddenSession(hiddenSession), true)
+  assert.equal(isDesktopV3NavigationHiddenSession(automationExecutionSession), true)
+  assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, metadata: { automation_v2_occurrence_id: 'occ-123' } }), true)
+  assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, metadata: { swarm_v3_session_purpose: 'automation_execution', swarm_v3_purpose_workspace_id: 'ws' } }), true)
+  assert.equal(isDesktopV3NavigationHiddenSession({ ...sessionA, metadata: { automation_v2_occurrence_id: '' } }), false)
   assert.equal(isDesktopV3NavigationHiddenSession(sessionA), false)
 })
 
@@ -126,4 +141,71 @@ test('archived hidden sessions are excluded by the final sidebar selector', () =
   }
 
   assert.deepEqual(selectDesktopSidebarRows(state, 'sidebar').map((row) => row.sessionId), [sessionA.id])
+})
+
+test('bootstrap, hydrate, and realtime exclude automation occurrence execution sessions from sidebar while keeping them hydrated by ID', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const snapshot = snapshotFixture({
+    sessions_by_id: {
+      [sessionA.id]: sessionA,
+      [automationExecutionSession.id]: automationExecutionSession,
+    },
+    projections_by_session: {},
+    messages_by_session: {},
+    run_intents_by_session: {},
+    session_order: [automationExecutionSession.id, sessionA.id],
+  })
+  applySnapshot(state, { source: 'bootstrap', scopeId: snapshot.scope_id, snapshot })
+
+  // Sidebar must only include sessionA, never the automation execution session
+  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
+  // Execution session must remain fully durable and hydrated in cache, addressable by ID
+  assert.equal(state.sessionsById[automationExecutionSession.id]?.kind, 'full')
+  assert.equal(state.sessionsById[automationExecutionSession.id]?.session.id, automationExecutionSession.id)
+
+  // Explicit hydrate retains execution session cache data without sidebar membership
+  const hydratedState = createEmptyDesktopV3CacheState()
+  hydratedState.desktopSidebarBootstrap = { status: 'ready', scopeId: 'sidebar' }
+  hydratedState.sessionOrderByScope.sidebar = []
+  applyHydrateSnapshot(hydratedState, hydrateSnapshotFixture({
+    session_order: [automationExecutionSession.id],
+    sessions_by_id: { [automationExecutionSession.id]: automationExecutionSession },
+    projections_by_session: {},
+    messages_by_session: {},
+    selector: { kind: 'session_ids', session_ids: [automationExecutionSession.id] },
+  }), [automationExecutionSession.id])
+  assert.equal(hydratedState.sessionsById[automationExecutionSession.id]?.kind, 'full')
+  assert.deepEqual(selectDesktopSidebarRows(hydratedState, 'sidebar'), [])
+
+  // Reconnect removes execution session from sidebar navigation
+  state.sessionOrderByScope.sidebar = [automationExecutionSession.id]
+  applyReconnectSnapshot(state, reconnectFixture({
+    workset_id: 'sidebar',
+    session_order: [automationExecutionSession.id],
+    sessions_by_id: { [automationExecutionSession.id]: automationExecutionSession },
+  }))
+  assert.equal(state.sessionOrderByScope.sidebar.includes(automationExecutionSession.id), false)
+
+  // Realtime discovered removes execution session from sidebar navigation
+  state.sessionOrderByScope.sidebar = [automationExecutionSession.id]
+  applyWorksetSessionDiscovered(state, {
+    kind: 'workset.session.discovered',
+    workset_id: 'sidebar',
+    session_id: automationExecutionSession.id,
+    session: automationExecutionSession,
+    endpoint_cursor: 'cursor-discovered',
+  })
+  assert.equal(state.sessionOrderByScope.sidebar.includes(automationExecutionSession.id), false)
+
+  // Realtime updated removes execution session from sidebar navigation
+  state.sessionOrderByScope.sidebar = [automationExecutionSession.id]
+  applyWorksetSessionUpdated(state, {
+    kind: 'workset.session.updated',
+    workset_id: 'sidebar',
+    session_id: automationExecutionSession.id,
+    session: automationExecutionSession,
+    endpoint_cursor: 'cursor-updated',
+  })
+  assert.equal(state.sessionOrderByScope.sidebar.includes(automationExecutionSession.id), false)
+  assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
 })

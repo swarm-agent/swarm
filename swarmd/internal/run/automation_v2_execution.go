@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -89,6 +90,9 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	metadata["automation_v2_authoring_session_id"] = r.SessionID
 	metadata["automation_v2_digest"] = r.Digest
 	metadata["automation_v2_revision"] = r.Revision
+	metadata["navigation_hidden"] = true
+	metadata[store.SessionPurposeMetadataKey] = store.SessionPurposeAutomationExecution
+	metadata[store.SessionPurposeWorkspaceMetadataKey] = canonical.SourceWorkspaceID
 	metadata["swarm_v3_mandatory_worktree"] = true
 	metadata["swarm_v3_worktree_owner_session_id"] = o.SessionID
 	metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
@@ -113,7 +117,7 @@ func (h *AutomationV2ExecutionHost) current(o store.AutomationV2Occurrence) (sto
 	if err != nil {
 		return snapshot, false, err
 	}
-	if found && (snapshot.AccountScopeID != o.Record.AccountID || snapshot.UserID != o.Record.UserID || snapshot.Metadata["automation_v2_occurrence_id"] != o.ID || snapshot.Metadata["automation_v2_digest"] != o.Record.Digest || !snapshot.WorktreeEnabled) {
+	if found && (snapshot.AccountScopeID != o.Record.AccountID || snapshot.UserID != o.Record.UserID || snapshot.Metadata["automation_v2_occurrence_id"] != o.ID || snapshot.Metadata["automation_v2_digest"] != o.Record.Digest || snapshot.Metadata["navigation_hidden"] != true || snapshot.Metadata[store.SessionPurposeMetadataKey] != store.SessionPurposeAutomationExecution || !snapshot.WorktreeEnabled) {
 		return snapshot, false, store.ErrAutomationV2Conflict
 	}
 	return snapshot, found, nil
@@ -245,6 +249,141 @@ func (h *AutomationV2ExecutionHost) Cancel(ctx context.Context, o store.Automati
 	return err
 }
 
+type automationRunClosing struct {
+	closingState string
+	summary      string
+	detail       string
+	deliverables []store.SessionPlanArtifactReference
+	report       string
+	result       string
+}
+
+func normalizeClosingState(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, "-", "_")
+	s = strings.ReplaceAll(s, " ", "_")
+	switch s {
+	case "routine_clean", "routine", "clean":
+		return "routine_clean"
+	case "deliverable_ready", "deliverable", "deliverables":
+		return "deliverable_ready"
+	case "attention_alert", "alert", "attention", "warning":
+		return "attention_alert"
+	case "blocked", "block":
+		return "blocked"
+	default:
+		return ""
+	}
+}
+
+func extractAutomationRunClosing(doc *store.SessionPlanDocument, execSummary sessions.PlanExecutionSummary, allCompleted bool) automationRunClosing {
+	var targetCP *store.SessionPlanCheckpoint
+	deliverables := append([]store.SessionPlanArtifactReference(nil), doc.Artifacts...)
+	for i := range doc.Checkpoints {
+		cp := &doc.Checkpoints[i]
+		deliverables = append(deliverables, cp.Artifacts...)
+		if targetCP == nil || cp.Status == "completed" || cp.Status == "failed" || cp.Status == "blocked" || cp.Status == "in_progress" {
+			targetCP = cp
+		}
+	}
+
+	// 1. Explicit closing state or fallback
+	closingState := ""
+	if targetCP != nil && targetCP.ClosingState != "" {
+		closingState = normalizeClosingState(targetCP.ClosingState)
+	}
+	if closingState == "" {
+		if execSummary.Failed || (targetCP != nil && targetCP.Status == "failed") {
+			closingState = "attention_alert"
+		} else if execSummary.Blocked || (targetCP != nil && targetCP.Status == "blocked") {
+			closingState = "blocked"
+		} else if len(deliverables) > 0 {
+			closingState = "deliverable_ready"
+		} else if allCompleted {
+			closingState = "routine_clean"
+		}
+	}
+
+	// 2. Explicit summary or fallback
+	summary := ""
+	if targetCP != nil && strings.TrimSpace(targetCP.Summary) != "" {
+		summary = strings.TrimSpace(targetCP.Summary)
+	}
+	if summary == "" && targetCP != nil {
+		if targetCP.Handoff != nil && strings.TrimSpace(targetCP.Handoff.Overview) != "" {
+			summary = strings.TrimSpace(targetCP.Handoff.Overview)
+		} else if strings.TrimSpace(targetCP.Result) != "" && !strings.EqualFold(targetCP.Result, "done") {
+			summary = strings.TrimSpace(targetCP.Result)
+		} else if strings.TrimSpace(targetCP.Report) != "" {
+			line := strings.TrimSpace(strings.Split(targetCP.Report, "\n")[0])
+			line = strings.TrimLeft(line, "# -*")
+			if len(line) > 120 {
+				line = line[:120]
+			}
+			summary = strings.TrimSpace(line)
+		}
+	}
+	if summary == "" {
+		switch closingState {
+		case "routine_clean":
+			summary = "Clean run · All good"
+		case "deliverable_ready":
+			summary = "Deliverable ready"
+		case "attention_alert":
+			summary = "Attention needed"
+		case "blocked":
+			summary = "Execution blocked"
+		}
+	}
+
+	// 3. Detail mapping to calm one-liner or alert badge text
+	var detail string
+	switch closingState {
+	case "routine_clean":
+		if summary != "" {
+			detail = summary
+		} else {
+			detail = "All checkpoints completed · All good"
+		}
+	case "deliverable_ready":
+		if strings.Contains(strings.ToLower(summary), "deliverable") || strings.Contains(strings.ToLower(summary), "report") {
+			detail = summary
+		} else {
+			detail = "Deliverable ready: " + summary
+		}
+	case "attention_alert":
+		if strings.HasPrefix(strings.ToLower(summary), "alert") {
+			detail = summary
+		} else {
+			detail = "Alert · " + summary
+		}
+	case "blocked":
+		if strings.HasPrefix(strings.ToLower(summary), "blocked") {
+			detail = summary
+		} else {
+			detail = "Blocked: " + summary
+		}
+	default:
+		detail = summary
+	}
+
+	report := ""
+	result := ""
+	if targetCP != nil {
+		report = targetCP.Report
+		result = targetCP.Result
+	}
+
+	return automationRunClosing{
+		closingState: closingState,
+		summary:      summary,
+		detail:       detail,
+		deliverables: deliverables,
+		report:       report,
+		result:       result,
+	}
+}
+
 // Outcome is observed from canonical checkpoint state, never from a successful
 // wake or a completed provider turn. Missing evidence stays explicitly unavailable.
 func (h *AutomationV2ExecutionHost) Outcome(o store.AutomationV2Occurrence) (string, string, error) {
@@ -266,17 +405,29 @@ func (h *AutomationV2ExecutionHost) Outcome(o store.AutomationV2Occurrence) (str
 		return "unavailable", "canonical plan unavailable", store.ErrAutomationV2Conflict
 	}
 	summary := sessions.SummarizePlanExecution(plan.Document)
-	if summary.Failed {
-		return "failed", "canonical checkpoint failed", nil
-	}
 	allCompleted := len(plan.Document.Checkpoints) > 0
 	for _, cp := range plan.Document.Checkpoints {
 		if cp.Status != "completed" {
 			allCompleted = false
 		}
 	}
+	if summary.Failed {
+		closing := extractAutomationRunClosing(plan.Document, summary, allCompleted)
+		_ = h.repository.PersistAutomationV2ClosingState(o, closing.closingState, closing.summary, closing.deliverables, closing.report, closing.result, closing.detail, time.Now().UnixMilli())
+		detail := closing.detail
+		if detail == "" {
+			detail = "canonical checkpoint failed"
+		}
+		return "failed", detail, nil
+	}
 	if allCompleted {
-		return "succeeded", "all canonical checkpoints completed; user review is separate", nil
+		closing := extractAutomationRunClosing(plan.Document, summary, allCompleted)
+		_ = h.repository.PersistAutomationV2ClosingState(o, closing.closingState, closing.summary, closing.deliverables, closing.report, closing.result, closing.detail, time.Now().UnixMilli())
+		detail := closing.detail
+		if detail == "" {
+			detail = "all canonical checkpoints completed; user review is separate"
+		}
+		return "succeeded", detail, nil
 	}
 	intent, found, err := h.runs.sessions.GetSessionActiveRunIntent(o.SessionID)
 	if err != nil {
@@ -293,6 +444,10 @@ func (h *AutomationV2ExecutionHost) Outcome(o store.AutomationV2Occurrence) (str
 		}
 	}
 	if summary.Blocked || summary.Paused || summary.ReviewRequired {
+		closing := extractAutomationRunClosing(plan.Document, summary, allCompleted)
+		if closing.closingState != "" {
+			_ = h.repository.PersistAutomationV2ClosingState(o, closing.closingState, closing.summary, closing.deliverables, closing.report, closing.result, closing.detail, time.Now().UnixMilli())
+		}
 		return "unavailable", "checkpoint awaits resolution or review", nil
 	}
 	return "unavailable", "no active execution evidence", nil
@@ -319,7 +474,7 @@ func (s *Service) validateAutomationV2Execution(current store.SessionSnapshot) e
 	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
 		return store.ErrAutomationV2Conflict
 	}
-	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "automation_v2_occurrence_id", "automation_v2_authoring_session_id", "automation_v2_digest"} {
+	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "automation_v2_occurrence_id", "automation_v2_authoring_session_id", "automation_v2_digest", "navigation_hidden", store.SessionPurposeMetadataKey} {
 		if !reflect.DeepEqual(current.Metadata[key], pinned.Metadata[key]) {
 			return store.ErrAutomationV2Conflict
 		}

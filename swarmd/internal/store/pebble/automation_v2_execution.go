@@ -24,9 +24,15 @@ type AutomationV2Occurrence struct {
 	RunID       string             `json:"run_id"`
 	State       string             `json:"state"`
 	Version     uint64             `json:"version"`
-	ObservedAt  int64              `json:"observed_at"`
-	Detail      string             `json:"detail,omitempty"`
-	Preparation *SessionSnapshot   `json:"preparation,omitempty"`
+	ObservedAt   int64                          `json:"observed_at"`
+	Detail       string                         `json:"detail,omitempty"`
+	Preparation  *SessionSnapshot               `json:"preparation,omitempty"`
+	ClosingState string                         `json:"closing_state,omitempty"`
+	Summary      string                         `json:"summary,omitempty"`
+	Deliverables []SessionPlanArtifactReference `json:"deliverables,omitempty"`
+	Artifacts    []SessionPlanArtifactReference `json:"artifacts,omitempty"`
+	Result       string                         `json:"result,omitempty"`
+	Report       string                         `json:"report,omitempty"`
 }
 
 type automationV2ExecutionMutation struct {
@@ -367,7 +373,58 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			return ErrAutomationV2Conflict
 		}
 		o.State, o.Detail, o.ObservedAt = m.occurrence.State, m.occurrence.Detail, now
+		if m.occurrence.ClosingState != "" {
+			o.ClosingState = m.occurrence.ClosingState
+		}
+		if m.occurrence.Summary != "" {
+			o.Summary = m.occurrence.Summary
+		}
+		if len(m.occurrence.Deliverables) > 0 {
+			o.Deliverables = m.occurrence.Deliverables
+		}
+		if len(m.occurrence.Artifacts) > 0 {
+			o.Artifacts = m.occurrence.Artifacts
+		}
+		if m.occurrence.Result != "" {
+			o.Result = m.occurrence.Result
+		}
+		if m.occurrence.Report != "" {
+			o.Report = m.occurrence.Report
+		}
 		o.Version++
+		m.occurrence = o
+	case "closing":
+		o, found, err := s.GetAutomationV2Occurrence(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, m.occurrence.ID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrAutomationV2Conflict
+		}
+		if m.occurrence.ClosingState != "" {
+			o.ClosingState = m.occurrence.ClosingState
+		}
+		if m.occurrence.Summary != "" {
+			o.Summary = m.occurrence.Summary
+		}
+		if len(m.occurrence.Deliverables) > 0 {
+			o.Deliverables = m.occurrence.Deliverables
+			o.Artifacts = m.occurrence.Deliverables
+		}
+		if len(m.occurrence.Artifacts) > 0 && len(o.Artifacts) == 0 {
+			o.Artifacts = m.occurrence.Artifacts
+		}
+		if m.occurrence.Result != "" {
+			o.Result = m.occurrence.Result
+		}
+		if m.occurrence.Report != "" {
+			o.Report = m.occurrence.Report
+		}
+		if m.occurrence.Detail != "" {
+			o.Detail = m.occurrence.Detail
+		}
+		o.Version++
+		o.ObservedAt = now
 		m.occurrence = o
 	default:
 		return ErrAutomationV2Conflict
@@ -380,7 +437,7 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V3SessionMutationInput) error {
 	m := in.automationV2.execution
 	r := in.automationV2.record
-	if m.action != "observed" && m.action != "prepared" {
+	if m.action != "observed" && m.action != "prepared" && m.action != "closing" {
 		b, err := json.Marshal(r)
 		if err != nil {
 			return err
@@ -418,4 +475,22 @@ func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V
 func (s *SessionStore) JournalAutomationV2Preparation(o AutomationV2Occurrence, snapshot SessionSnapshot) error {
 	o.Preparation = &snapshot
 	return s.automationV2ExecutionApply(&automationV2ExecutionMutation{action: "prepared", expected: o.Record, occurrence: o, now: time.Now().UnixMilli()})
+}
+
+// PersistAutomationV2ClosingState records the AI's chosen or inferred closing state,
+// summary, deliverables, and report on the occurrence receipt.
+func (s *SessionStore) PersistAutomationV2ClosingState(o AutomationV2Occurrence, closingState, summary string, deliverables []SessionPlanArtifactReference, report, result, detail string, now int64) error {
+	o.ClosingState = closingState
+	o.Summary = summary
+	o.Deliverables = deliverables
+	o.Artifacts = deliverables
+	o.Report = report
+	o.Result = result
+	if detail != "" {
+		if len(detail) > 512 {
+			detail = detail[:512]
+		}
+		o.Detail = detail
+	}
+	return s.automationV2ExecutionApply(&automationV2ExecutionMutation{action: "closing", expected: o.Record, occurrence: o, now: now})
 }

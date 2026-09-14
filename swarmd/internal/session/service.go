@@ -873,9 +873,7 @@ func (s *Service) ListTopSessionsByWorkspace(workspacePaths []string, perWorkspa
 		return nil, err
 	}
 	for i := range groups {
-		for j := range groups[i].Sessions {
-			groups[i].Sessions[j].Mode = NormalizeMode(groups[i].Sessions[j].Mode)
-		}
+		groups[i].Sessions = normalizeVisibleSessionList(groups[i].Sessions)
 	}
 	return groups, nil
 }

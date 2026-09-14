@@ -56,3 +56,68 @@ func TestAutomationManagementPurposeDurabilityAndIsolation(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: execution classification must survive reopening Pebble and be scoped
+// by account and workspace. The session must be identified as navigation hidden
+// and immutable against unauthorized purpose changes, while remaining inspectable by ID.
+func TestAutomationExecutionPurposeDurabilityAndIsolation(t *testing.T) {
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSessionStore(db)
+	original := SessionSnapshot{
+		ID:             "occurrence-session",
+		UserID:         "owner",
+		AccountScopeID: "account",
+		WorkspacePath:  t.TempDir(),
+		UpdatedAt:      100,
+		Metadata: map[string]any{
+			SessionPurposeMetadataKey:          SessionPurposeAutomationExecution,
+			SessionPurposeWorkspaceMetadataKey: "workspace",
+			"navigation_hidden":                 true,
+			"automation_v2_occurrence_id":       "occ-999",
+		},
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: "workspace"}},
+	}
+	if err := s.CreateSession(original); err != nil {
+		t.Fatal(err)
+	}
+	if !V3SessionNavigationHidden(original) {
+		t.Fatal("expected V3SessionNavigationHidden true")
+	}
+	if SessionAutomationExecutionWorkspace(original) != "workspace" {
+		t.Fatalf("expected workspace, got %q", SessionAutomationExecutionWorkspace(original))
+	}
+	changed := original
+	changed.Metadata = map[string]any{
+		SessionPurposeMetadataKey:          SessionPurposeAutomationExecution,
+		SessionPurposeWorkspaceMetadataKey: "other",
+		"navigation_hidden":                 true,
+		"automation_v2_occurrence_id":       "occ-999",
+	}
+	in := V3SessionMutationInput{SessionID: original.ID, Session: &changed, Kind: V3SessionMutationUpdateMetadata}
+	if err := s.guardAutomationSessionMutation(&in); !errors.Is(err, ErrAutomationConflict) {
+		t.Fatalf("purpose workspace change allowed: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s = NewSessionStore(db)
+	got, found, err := s.GetSession(original.ID)
+	if err != nil || !found {
+		t.Fatalf("session missing after restart: %v", err)
+	}
+	if SessionAutomationExecutionWorkspace(got) != "workspace" || !V3SessionNavigationHidden(got) {
+		t.Fatalf("restart corrupted execution identity: %+v", got)
+	}
+	if got.Metadata["automation_v2_occurrence_id"] != "occ-999" {
+		t.Fatalf("restart lost occurrence metadata: %+v", got.Metadata)
+	}
+}

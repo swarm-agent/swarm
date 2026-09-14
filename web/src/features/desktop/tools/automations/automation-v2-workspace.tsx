@@ -1,14 +1,32 @@
-import { useRef, useState } from 'react'
-import { Clock3, Plus, RefreshCcw } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Clock3,
+  ExternalLink,
+  FileText,
+  Plus,
+  RefreshCcw,
+} from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { cn } from '../../../../lib/cn'
 import { desktopAutomationV2, useAutomationV2Page } from '../../runtime/desktop-automation-v2'
-import { automationV2Review, type AutomationV2Record, type AutomationV2Mutation } from '../../state/desktop-automation-v2-api'
+import {
+  automationV2Review,
+  type AutomationV2Record,
+  type AutomationV2Mutation,
+  type AutomationV2Occurrence,
+  type AutomationV2OccurrenceDeliverable,
+} from '../../state/desktop-automation-v2-api'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationConversations } from './automation-conversations'
 import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
 
-export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceName }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug?: string }) {
+export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceName, workspaceSlug }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug?: string }) {
   const [cursor, setCursor] = useState<string>()
   const [selected, setSelected] = useState('')
   const [session, setSession] = useState('')
@@ -26,7 +44,7 @@ export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceNam
       <ul className="grid gap-3 sm:grid-cols-2">{records.map(record => <li key={record.automation_id}><button className="flex w-full min-w-0 items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => setSelected(record.session_id)} aria-current={selected === record.session_id ? 'page' : undefined}><Clock3 className="shrink-0 text-[var(--app-primary)]" size={18} /><span className="min-w-0"><span className="block truncate font-medium">{record.document.title}</span><span className="text-xs text-[var(--app-text-muted)]">{record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'} · Automation · revision {record.revision}</span></span></button></li>)}</ul>
       {page?.data && !page.loading && !page.stale && !records.length && <p className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center text-[var(--app-text-muted)]">No accepted automations on this page. Start a conversation to propose one.</p>}
       <div className="flex gap-2">{cursor && <Button variant="outline" size="sm" onClick={() => setCursor(undefined)}>First page</Button>}{page?.data?.next_cursor && <Button variant="outline" size="sm" disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</Button>}</div>
-      {selected && <AutomationV2Detail key={selected} workspaceId={workspaceId} sessionId={selected} onChat={setSession} />}
+      {selected && <AutomationV2Detail key={selected} workspaceId={workspaceId} sessionId={selected} onChat={setSession} workspaceSlug={workspaceSlug} />}
     </main><AutomationConversations workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} createRequest={createRequest} /></div>
   </div>
 }
@@ -37,7 +55,19 @@ export function AutomationV2ScheduleHandoff({ workspaceId, sessionId }: { worksp
   if (!record) return null
   return <section aria-label="Automation handoff" className="m-4 space-y-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">{record.cancelled ? 'Automation cancelled' : record.enabled ? 'Automation scheduled' : 'Automation paused'}</h3><p className="text-sm">Accepted revision {record.revision}. Acceptance does not start an immediate run.</p><p className="text-sm">{record.enabled && !record.cancelled && record.next_due_at ? `Next scheduled time: ${new Date(record.next_due_at).toISOString()} (UTC)` : 'No active next scheduled time.'}</p><p className="text-xs text-[var(--app-text-muted)]">{page?.stale || page?.loading ? 'Refreshing observed schedule… ' : ''}Scheduled is not admitted or running. Automation details shows the schedule, expiration and observed work.</p></section>
 }
-export function AutomationV2Detail({ workspaceId, sessionId, onChat }: { workspaceId: string; sessionId: string; onChat?: (id: string) => void }) {
+export function AutomationV2Detail({
+  workspaceId,
+  sessionId,
+  onChat,
+  workspaceSlug,
+  onOpenSession,
+}: {
+  workspaceId: string
+  sessionId: string
+  onChat?: (id: string) => void
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+}) {
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cursor, setCursor] = useState<string>()
   const [editing, setEditing] = useState(false)
@@ -80,11 +110,40 @@ export function AutomationV2Detail({ workspaceId, sessionId, onChat }: { workspa
       {editing && <AutomationV2Edit record={record} />}
       <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
     </>}
-    {progress && <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Run history & upcoming times</summary><div className="mt-3 space-y-3">
-      <label className="block text-[11px]">Display timezone<select className="mt-1 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}</select></label>
-      <p className="text-[11px] text-[var(--app-text-muted)]">Observed {time(progress.observed_at)}. Forecasts are not guaranteed starts.</p><h3 className={eyebrow}>Upcoming times</h3>{progress.no_next_reason && <p>{progress.no_next_reason.replace(/_/g, ' ')}</p>}<ul className="space-y-1">{progress.forecast.map(ms => <li key={ms}>{time(ms)}</li>)}</ul>
-      <h3 className={eyebrow}>Observed runs</h3><p className="text-[11px] text-[var(--app-text-muted)]">Admitted means queued, not running. Succeeded means checkpoints completed, not independently verified results.</p>
-      <ul className="space-y-2">{progress.occurrences.map(o => <li key={o.id} className="rounded-lg border border-[var(--app-border)]/60 p-2"><p className="font-medium">{o.state.replace(/_/g, ' ')} · {time(o.due_at)}</p><p className="mt-1 text-[11px] text-[var(--app-text-muted)]">{o.detail}</p></li>)}</ul>{!progress.occurrences.length && <p>No recorded runs yet.</p>}<div className="flex flex-wrap gap-2">{cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}{progress.next_cursor && <Button size="sm" variant="outline" disabled={disabled} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}</div><p className="text-[10px] text-[var(--app-text-subtle)]">{progress.complete ? 'End of run history.' : 'More observations may be available.'}</p>
+    {progress && <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Run history & upcoming times</summary><div className="mt-3 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/40 pb-2">
+        <label className="block text-[11px]">Display timezone<select className="mt-1 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}</select></label>
+        <p className="text-[11px] text-[var(--app-text-muted)]">Observed {time(progress.observed_at)}. Forecasts are not guaranteed starts.</p>
+      </div>
+      {progress.forecast && progress.forecast.length > 0 && (
+        <div className="space-y-1">
+          <h3 className={eyebrow}>Upcoming times</h3>
+          {progress.no_next_reason && <p className="text-[11px] text-[var(--app-text-muted)]">{progress.no_next_reason.replace(/_/g, ' ')}</p>}
+          <ul className="space-y-1">{progress.forecast.map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)]">{time(ms)}</li>)}</ul>
+        </div>
+      )}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className={eyebrow}>Observed runs</h3>
+          <span className="text-[10px] text-[var(--app-text-subtle)]">{progress.occurrences.length} {progress.occurrences.length === 1 ? 'run' : 'runs'} recorded</span>
+        </div>
+        <p className="text-[11px] text-[var(--app-text-muted)]">Top-down run feed. Routine clean executions show calm status; deliverables and raw execution sessions are inspectable on demand.</p>
+        <AutomationV2RunFeed
+          occurrences={progress.occurrences}
+          timezone={timezone}
+          workspaceSlug={workspaceSlug}
+          onOpenSession={onOpenSession}
+          onChat={onChat}
+        />
+        {!progress.occurrences.length && <p className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-center text-[11px] text-[var(--app-text-muted)]">No recorded runs yet.</p>}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+          <div className="flex gap-2">
+            {cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}
+            {progress.next_cursor && <Button size="sm" variant="outline" disabled={disabled} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}
+          </div>
+          <p className="text-[10px] text-[var(--app-text-subtle)]">{progress.complete ? 'End of run history.' : 'More observations may be available.'}</p>
+        </div>
+      </div>
     </div></details>}
     </div>
     {record && <div className="space-y-3 border-t border-[var(--app-border)]/60 p-3">
@@ -104,4 +163,571 @@ function AutomationV2Edit({ record }: { record: AutomationV2Record }) {
   // The exact current proposal (including any AI changes), never the accepted
   // record's old review token, is the edit base. Server CAS fences all updates.
   return <section aria-label="Edit recurring plan"><p className="mb-3 text-sm">Unaccepted changes do not change active execution. Review the current proposal before replacing future settings.</p>{page?.error && <p role="alert">{page.error} <Button size="sm" variant="outline" onClick={() => void desktopAutomationV2.refresh({ action: 'review', workspace_id: record.workspace_id, session_id: record.session_id })}>Refresh current review</Button></p>}{proposal ? <AutomationV2PlanReview key={proposal.proposal_id} proposal={{ ...proposal, ...automationV2Review(proposal) }} disabled={page?.loading || page?.stale} /> : <p role="status">Loading current review…</p>}</section>
+}
+
+export function extractOccurrenceDeliverables(
+  occurrence: AutomationV2Occurrence,
+): AutomationV2OccurrenceDeliverable[] {
+  if (occurrence.deliverables && occurrence.deliverables.length > 0) {
+    return occurrence.deliverables
+  }
+  if (occurrence.artifacts && occurrence.artifacts.length > 0) {
+    return occurrence.artifacts
+  }
+  const checkpoints = occurrence.accepted?.document?.checkpoints ?? []
+  const checkpointDeliverables: AutomationV2OccurrenceDeliverable[] = []
+  for (const cp of checkpoints) {
+    if (Array.isArray(cp.artifacts)) {
+      for (const a of cp.artifacts) {
+        if (a && typeof a === 'object') {
+          const item = a as Record<string, unknown>
+          checkpointDeliverables.push({
+            label: (item.label as string) || (item.filename as string) || (item.path as string) || cp.title,
+            path: item.path as string | undefined,
+            media_type: item.media_type as string | undefined,
+            filename: (item.filename as string) || (item.path as string) || undefined,
+            artifact_id: item.artifact_id as string | undefined,
+            revision_ref: item.revision_ref as string | undefined,
+            session_id: (item.session_id as string) || occurrence.session_id,
+            collection_id: item.collection_id as string | undefined,
+            variant_id: item.variant_id as string | undefined,
+            source_ref: item.source_ref as string | undefined,
+          })
+        }
+      }
+    }
+  }
+  if (checkpointDeliverables.length > 0) {
+    return checkpointDeliverables
+  }
+  if (
+    occurrence.closing_state === 'deliverable_ready' ||
+    (occurrence.detail && /deliverable|report|summary\s+document|output\s+ready/i.test(occurrence.detail))
+  ) {
+    return [
+      {
+        label: occurrence.accepted?.document?.title
+          ? `${occurrence.accepted.document.title} - Output`
+          : 'Execution Deliverable',
+        session_id: occurrence.session_id,
+        media_type: 'text/markdown',
+      },
+    ]
+  }
+  return []
+}
+
+export function formatCalmStatus(occurrence: AutomationV2Occurrence): string {
+  if (occurrence.summary?.trim()) return occurrence.summary.trim()
+  if (occurrence.detail?.trim()) {
+    const detail = occurrence.detail.trim()
+    if (detail.toLowerCase().includes('all canonical checkpoints completed')) {
+      return 'All checkpoints completed · All good'
+    }
+    return detail
+  }
+  return 'Clean run · All good'
+}
+
+export function isOccurrenceAwaitingDocument(o: AutomationV2Occurrence): boolean {
+  if (o.state === 'awaiting_document' || o.state === 'review_required' || o.state === 'blocked') return true
+  if (o.closing_state === 'awaiting_document' || o.closing_state === 'review_required' || o.closing_state === 'blocked') return true
+  if (typeof o.detail === 'string' && /awaits (resolution or )?review|awaiting document|blocked/i.test(o.detail)) return true
+  return false
+}
+
+export function isOccurrenceDeliverableReady(o: AutomationV2Occurrence): boolean {
+  if (o.closing_state === 'deliverable_ready') return true
+  return extractOccurrenceDeliverables(o).length > 0
+}
+
+export function isOccurrenceRoutineClean(o: AutomationV2Occurrence): boolean {
+  if (o.closing_state === 'routine_clean') return true
+  if (o.state === 'succeeded' || o.state === 'completed') {
+    if (o.closing_state === 'deliverable_ready' || o.closing_state === 'attention_alert' || o.closing_state === 'blocked') {
+      return false
+    }
+    if (isOccurrenceAwaitingDocument(o)) return false
+    if (extractOccurrenceDeliverables(o).length > 0) return false
+    return true
+  }
+  return false
+}
+
+export function OpenExecutionSessionButton({
+  sessionId,
+  workspaceSlug,
+  onOpenSession,
+  onChat,
+  className,
+}: {
+  sessionId: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+  className?: string
+}) {
+  const handleClick = (e: React.MouseEvent) => {
+    if (onOpenSession) {
+      e.preventDefault()
+      e.stopPropagation()
+      onOpenSession(sessionId)
+    } else if (onChat) {
+      e.preventDefault()
+      e.stopPropagation()
+      onChat(sessionId)
+    }
+  }
+
+  const href = workspaceSlug ? `/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(sessionId)}` : undefined
+
+  const buttonContent = (
+    <>
+      <span>Open execution session</span>
+      <ExternalLink size={11} className="shrink-0 opacity-70" aria-hidden="true" />
+    </>
+  )
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        onClick={handleClick}
+        aria-label="Open execution session"
+        title="Inspect raw messages, tool calls, and changes on demand"
+        data-testid="open-execution-session-link"
+        className={cn(
+          'inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] cursor-pointer transition-colors',
+          className,
+        )}
+      >
+        {buttonContent}
+      </a>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      aria-label="Open execution session"
+      title="Inspect raw messages, tool calls, and changes on demand"
+      data-testid="open-execution-session-button"
+      className={cn(
+        'inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] cursor-pointer transition-colors',
+        className,
+      )}
+    >
+      {buttonContent}
+    </button>
+  )
+}
+
+export function DeliverablePreviewLink({
+  deliverable,
+  workspaceSlug,
+  sessionId,
+  onOpenSession,
+  onChat,
+}: {
+  deliverable: AutomationV2OccurrenceDeliverable
+  workspaceSlug?: string
+  sessionId: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+}) {
+  const href = deliverable.url || (workspaceSlug && deliverable.artifact_id
+    ? `/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(deliverable.session_id || sessionId)}?artifact=${encodeURIComponent(deliverable.artifact_id)}`
+    : workspaceSlug
+      ? `/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(deliverable.session_id || sessionId)}`
+      : undefined)
+
+  const handleClick = (e: React.MouseEvent) => {
+    if (onOpenSession) {
+      e.preventDefault()
+      e.stopPropagation()
+      onOpenSession(deliverable.session_id || sessionId)
+    } else if (onChat) {
+      e.preventDefault()
+      e.stopPropagation()
+      onChat(deliverable.session_id || sessionId)
+    }
+  }
+
+  return (
+    <a
+      href={href || '#'}
+      onClick={handleClick}
+      aria-label={`Preview ${deliverable.label || deliverable.filename || 'deliverable'}`}
+      title="Preview or open deliverable"
+      data-testid="run-deliverable-link"
+      className="inline-flex items-center gap-1 rounded border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-primary)] hover:border-[var(--app-primary-border)] hover:bg-[var(--app-primary-soft)] transition-colors cursor-pointer"
+    >
+      <span>Preview</span>
+      <ExternalLink size={10} className="shrink-0" aria-hidden="true" />
+    </a>
+  )
+}
+
+export function CalmRunCard({
+  occurrence,
+  timeStr,
+  workspaceSlug,
+  onOpenSession,
+  onChat,
+}: {
+  occurrence: AutomationV2Occurrence
+  timeStr: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const calmText = formatCalmStatus(occurrence)
+
+  return (
+    <li
+      className="group rounded-xl border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)]/40 px-3 py-2 text-xs transition-colors hover:border-[var(--app-border)] hover:bg-[var(--app-bg-alt)]/70"
+      data-testid="calm-run-card"
+      data-run-id={occurrence.id}
+    >
+      <div className="flex min-w-0 items-center justify-between gap-3" data-testid="calm-run-status">
+        <div className="flex min-w-0 items-center gap-2">
+          <CheckCircle2
+            size={13}
+            className="shrink-0 text-[var(--app-success)]"
+            aria-hidden="true"
+          />
+          <span className="truncate font-medium text-[var(--app-text)]" title={calmText}>
+            {calmText}
+          </span>
+          <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">
+            {timeStr}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <OpenExecutionSessionButton
+            sessionId={occurrence.session_id}
+            workspaceSlug={workspaceSlug}
+            onOpenSession={onOpenSession}
+            onChat={onChat}
+          />
+          {occurrence.detail && occurrence.detail !== calmText && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-label={expanded ? 'Hide run details' : 'Show run details'}
+              title={expanded ? 'Hide run details' : 'Show run details'}
+              className="text-[var(--app-text-muted)] hover:text-[var(--app-text)] focus-visible:outline-none"
+            >
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+          )}
+        </div>
+      </div>
+      {expanded && occurrence.detail && (
+        <div className="mt-2 border-t border-[var(--app-border)]/30 pt-2 text-[11px] text-[var(--app-text-muted)] leading-4">
+          <p>{occurrence.detail}</p>
+        </div>
+      )}
+    </li>
+  )
+}
+
+export function DeliverableRunCard({
+  occurrence,
+  deliverables,
+  timeStr,
+  workspaceSlug,
+  onOpenSession,
+  onChat,
+}: {
+  occurrence: AutomationV2Occurrence
+  deliverables: AutomationV2OccurrenceDeliverable[]
+  timeStr: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+}) {
+  return (
+    <li
+      className="rounded-xl border border-[var(--app-primary-border)]/60 bg-[var(--app-primary-soft)]/20 p-3 text-xs shadow-xs space-y-2.5"
+      data-testid="deliverable-run-card"
+      data-run-id={occurrence.id}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--app-primary)] uppercase tracking-wider">
+          <FileText size={11} aria-hidden="true" />
+          Deliverable ready
+        </span>
+        <span className="text-[10px] text-[var(--app-text-subtle)]">{timeStr}</span>
+      </div>
+
+      {occurrence.detail && (
+        <p className="text-xs font-medium text-[var(--app-text)] leading-4">{occurrence.detail}</p>
+      )}
+
+      <div className="space-y-1.5" data-testid="run-deliverables-list">
+        {deliverables.map((deliv, index) => {
+          const title = deliv.label || deliv.filename || deliv.path || 'Requested Deliverable'
+          return (
+            <div
+              key={deliv.path || deliv.artifact_id || index}
+              className="flex items-center justify-between gap-3 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-2 shadow-xs"
+              data-testid="run-deliverable-item"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <FileText size={13} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+                <span className="truncate font-medium text-[var(--app-text)]" title={title}>
+                  {title}
+                </span>
+                {deliv.media_type && (
+                  <span className="shrink-0 rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[9px] text-[var(--app-text-subtle)]">
+                    {deliv.media_type}
+                  </span>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <DeliverablePreviewLink
+                  deliverable={deliv}
+                  workspaceSlug={workspaceSlug}
+                  sessionId={occurrence.session_id}
+                  onOpenSession={onOpenSession}
+                  onChat={onChat}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-[var(--app-border)]/40 pt-2 text-[11px]">
+        <span className="text-[10px] text-[var(--app-text-subtle)]">Occurrence receipt verified</span>
+        <OpenExecutionSessionButton
+          sessionId={occurrence.session_id}
+          workspaceSlug={workspaceSlug}
+          onOpenSession={onOpenSession}
+          onChat={onChat}
+        />
+      </div>
+    </li>
+  )
+}
+
+export function AwaitingDocumentRunCard({
+  occurrence,
+  timeStr,
+  workspaceSlug,
+  onOpenSession,
+  onChat,
+}: {
+  occurrence: AutomationV2Occurrence
+  timeStr: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+}) {
+  const isBlocked = occurrence.closing_state === 'blocked' || occurrence.state === 'blocked' || /blocked/i.test(occurrence.detail || '')
+
+  return (
+    <li
+      className="rounded-xl border border-[var(--app-warning,rgba(234,179,8,0.5))]/50 bg-[var(--app-warning-soft,rgba(234,179,8,0.12))] p-3 text-xs shadow-xs space-y-2"
+      data-testid="awaiting-document-run-card"
+      data-run-id={occurrence.id}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning,rgba(234,179,8,0.2))] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--app-warning)] uppercase tracking-wider">
+          <AlertCircle size={11} aria-hidden="true" />
+          {isBlocked ? 'Blocked · Action needed' : 'Awaiting document review'}
+        </span>
+        <span className="text-[10px] text-[var(--app-text-subtle)]">{timeStr}</span>
+      </div>
+
+      <p className="text-xs text-[var(--app-text)] leading-4">
+        {occurrence.detail || (isBlocked ? 'Execution is blocked: external dependency or permission required.' : 'Execution produced a document awaiting user review or checkpoint acceptance.')}
+      </p>
+
+      <div className="flex items-center justify-between border-t border-[var(--app-warning,rgba(234,179,8,0.3))]/30 pt-2 text-[11px]">
+        <span className="text-[10px] text-[var(--app-text-muted)]">Action needed</span>
+        <OpenExecutionSessionButton
+          sessionId={occurrence.session_id}
+          workspaceSlug={workspaceSlug}
+          onOpenSession={onOpenSession}
+          onChat={onChat}
+        />
+      </div>
+    </li>
+  )
+}
+
+export function StandardRunCard({
+  occurrence,
+  timeStr,
+  workspaceSlug,
+  onOpenSession,
+  onChat,
+}: {
+  occurrence: AutomationV2Occurrence
+  timeStr: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+}) {
+  const isRunning = occurrence.state === 'running' || occurrence.state === 'in_progress'
+  const isFailed = occurrence.state === 'failed' || occurrence.closing_state === 'attention_alert'
+  const isAdmitted = occurrence.state === 'admitted'
+
+  return (
+    <li
+      className={cn(
+        'rounded-xl border p-3 text-xs space-y-2 transition-colors',
+        isRunning
+          ? 'border-[var(--app-success-border,rgba(34,197,94,0.4))] bg-[var(--app-success-soft,rgba(34,197,94,0.08))]'
+          : isFailed
+            ? 'border-[var(--app-danger-border,rgba(239,68,68,0.4))] bg-[var(--app-danger-soft,rgba(239,68,68,0.08))]'
+            : 'border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/40',
+      )}
+      data-testid="standard-run-card"
+      data-run-id={occurrence.id}
+      data-run-state={occurrence.state}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          {isRunning ? (
+            <span className="flex items-center gap-1 text-[var(--app-success)] font-medium">
+              <span
+                data-testid="run-running-dot"
+                className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
+                aria-hidden="true"
+              />
+              <span className="capitalize">{occurrence.state.replace(/_/g, ' ')}</span>
+            </span>
+          ) : isFailed ? (
+            <span className="flex items-center gap-1 text-[var(--app-danger)] font-medium">
+              <AlertTriangle size={12} aria-hidden="true" />
+              <span className="capitalize">Alert · {occurrence.state.replace(/_/g, ' ')}</span>
+            </span>
+          ) : (
+            <span className="capitalize font-medium text-[var(--app-text)]">
+              {occurrence.state.replace(/_/g, ' ')}
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] text-[var(--app-text-subtle)]">{timeStr}</span>
+      </div>
+
+      {occurrence.detail && (
+        <p className="text-[11px] text-[var(--app-text-muted)] leading-4">{occurrence.detail}</p>
+      )}
+
+      <div className="flex items-center justify-between border-t border-[var(--app-border)]/30 pt-2 text-[11px]">
+        <span className="text-[10px] text-[var(--app-text-subtle)]">
+          {isAdmitted
+            ? 'Admitted means queued for dispatch.'
+            : isRunning
+              ? 'Active execution in progress.'
+              : 'Completed observation.'}
+        </span>
+        <OpenExecutionSessionButton
+          sessionId={occurrence.session_id}
+          workspaceSlug={workspaceSlug}
+          onOpenSession={onOpenSession}
+          onChat={onChat}
+        />
+      </div>
+    </li>
+  )
+}
+
+export function AutomationV2RunFeed({
+  occurrences,
+  timezone,
+  workspaceSlug,
+  onOpenSession,
+  onChat,
+}: {
+  occurrences: AutomationV2Occurrence[]
+  timezone: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+}) {
+  const time = (ms: number) =>
+    new Intl.DateTimeFormat(undefined, {
+      timeZone: timezone,
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(ms)
+
+  // Top-down chronological ordering: newest run first (by due_at descending)
+  const sorted = useMemo(() => {
+    return [...occurrences].sort((a, b) => (b.due_at || 0) - (a.due_at || 0))
+  }, [occurrences])
+
+  if (!sorted.length) return null
+
+  return (
+    <ul
+      role="feed"
+      aria-label="Run feed"
+      data-testid="automation-run-feed"
+      className="space-y-2"
+    >
+      {sorted.map((o) => {
+        const timeStr = time(o.due_at)
+        const deliverables = extractOccurrenceDeliverables(o)
+
+        if (isOccurrenceAwaitingDocument(o)) {
+          return (
+            <AwaitingDocumentRunCard
+              key={o.id}
+              occurrence={o}
+              timeStr={timeStr}
+              workspaceSlug={workspaceSlug}
+              onOpenSession={onOpenSession}
+              onChat={onChat}
+            />
+          )
+        }
+
+        if (isOccurrenceDeliverableReady(o) || deliverables.length > 0) {
+          return (
+            <DeliverableRunCard
+              key={o.id}
+              occurrence={o}
+              deliverables={deliverables}
+              timeStr={timeStr}
+              workspaceSlug={workspaceSlug}
+              onOpenSession={onOpenSession}
+              onChat={onChat}
+            />
+          )
+        }
+
+        if (isOccurrenceRoutineClean(o)) {
+          return (
+            <CalmRunCard
+              key={o.id}
+              occurrence={o}
+              timeStr={timeStr}
+              workspaceSlug={workspaceSlug}
+              onOpenSession={onOpenSession}
+              onChat={onChat}
+            />
+          )
+        }
+
+        return (
+          <StandardRunCard
+            key={o.id}
+            occurrence={o}
+            timeStr={timeStr}
+            workspaceSlug={workspaceSlug}
+            onOpenSession={onOpenSession}
+            onChat={onChat}
+          />
+        )
+      })}
+    </ul>
+  )
 }

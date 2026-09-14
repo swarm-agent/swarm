@@ -1,27 +1,121 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Clock3 } from 'lucide-react'
+import { cn } from '../../../../lib/cn'
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
+import type { DesktopV3CacheState } from '../../state/desktop-v3-cache-types'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Record, AutomationV2Settings } from '../../state/desktop-automation-v2-api'
 import { automationV2PermissionProposal } from './automation-v2-plan-review'
 import { scheduleFrequency, scheduleLabel } from './automation-v2-schedule'
 
-export function AutomationSidebarMetadataRow({ schedule, status, nextDueAt }: {
-  schedule?: AutomationV2Settings['schedule']; status: string; nextDueAt?: number
+export function AutomationSidebarMetadataRow({
+  schedule,
+  status,
+  nextDueAt,
+  running,
+  workspaceSlug,
+  onNavigateToAutomations,
+}: {
+  schedule?: AutomationV2Settings['schedule']
+  status: string
+  nextDueAt?: number
+  running?: boolean
+  workspaceSlug?: string
+  onNavigateToAutomations?: () => void
 }) {
+  const isRunning = running || status === 'Running'
   const cadence = schedule ? scheduleLabel(schedule) : 'Automation'
-  const details = [cadence, schedule?.timezone, schedule && scheduleFrequency(schedule), status,
+  const details = [
+    cadence,
+    schedule?.timezone,
+    schedule && scheduleFrequency(schedule),
+    status,
     nextDueAt ? `Next scheduled: ${new Date(nextDueAt).toLocaleString()} (local time; not a guaranteed start)` : undefined,
+    onNavigateToAutomations || workspaceSlug ? 'Open Automations view' : undefined,
   ].filter(Boolean).join(' · ')
-  return <div aria-label="Automation metadata" title={details} className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-    <span className="flex min-w-0 items-center gap-1.5"><Clock3 size={11} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" /><span className="min-w-0 truncate">{cadence}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}</span></span>
-    <span className="shrink-0 text-[var(--app-text-muted)]">{status}</span>
-  </div>
+
+  const statusContent = (
+    <span
+      className={cn(
+        'shrink-0 inline-flex items-center gap-1',
+        isRunning ? 'font-medium text-[var(--app-success)]' : 'text-[var(--app-text-muted)]',
+      )}
+    >
+      {isRunning && (
+        <span
+          data-testid="automation-running-dot"
+          className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
+          aria-hidden="true"
+        />
+      )}
+      <span>{status}</span>
+    </span>
+  )
+
+  return (
+    <div
+      aria-label="Automation metadata"
+      title={details}
+      className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]"
+    >
+      <span className="flex min-w-0 items-center gap-1.5">
+        <Clock3
+          size={11}
+          className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 truncate">
+          {cadence}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}
+        </span>
+      </span>
+      {onNavigateToAutomations ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onNavigateToAutomations()
+          }}
+          aria-label="Open Automations view"
+          title="Open top-down Automations view"
+          className="inline-flex shrink-0 items-center gap-1 rounded hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] cursor-pointer"
+        >
+          {statusContent}
+        </button>
+      ) : workspaceSlug ? (
+        <a
+          href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+          onClick={(e) => {
+            e.stopPropagation()
+          }}
+          aria-label="Open Automations view"
+          title="Open top-down Automations view"
+          className="inline-flex shrink-0 items-center gap-1 rounded hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
+        >
+          {statusContent}
+        </a>
+      ) : (
+        statusContent
+      )}
+    </div>
+  )
 }
 
-export function AutomationV2SidebarMetadata({ sessionId, identity, now, needsApproval }: {
-  sessionId: string; identity: 'pending' | 'accepted'; now: number; needsApproval: boolean
+export function AutomationV2SidebarMetadata({
+  sessionId,
+  identity,
+  now,
+  needsApproval,
+  workspaceSlug,
+  onNavigateToAutomations,
+}: {
+  sessionId: string
+  identity: 'pending' | 'accepted'
+  now: number
+  needsApproval: boolean
+  workspaceSlug?: string
+  onNavigateToAutomations?: () => void
 }) {
   const permission = useDesktopV3CacheSelector(state => state.permissionsBySession[sessionId]?.find(p => p.status === 'pending' && p.requirement === 'automation_v2_acceptance'))
   const proposal = useMemo(() => permission ? automationV2PermissionProposal(permission) : null, [permission])
@@ -36,13 +130,51 @@ export function AutomationV2SidebarMetadata({ sessionId, identity, now, needsApp
     }
     return undefined
   })
-  if (identity === 'pending') return <AutomationSidebarMetadataRow schedule={proposal?.document.automation_v2.schedule} status="Awaiting acceptance" />
-  if (!workspaceId) return <AutomationSidebarMetadataRow status="Schedule unavailable" />
-  return <AcceptedAutomationMetadata workspaceId={workspaceId} sessionId={sessionId} now={now} needsApproval={needsApproval} />
+  if (identity === 'pending') {
+    return (
+      <AutomationSidebarMetadataRow
+        schedule={proposal?.document.automation_v2.schedule}
+        status="Awaiting acceptance"
+        workspaceSlug={workspaceSlug}
+        onNavigateToAutomations={onNavigateToAutomations}
+      />
+    )
+  }
+  if (!workspaceId) {
+    return (
+      <AutomationSidebarMetadataRow
+        status="Schedule unavailable"
+        workspaceSlug={workspaceSlug}
+        onNavigateToAutomations={onNavigateToAutomations}
+      />
+    )
+  }
+  return (
+    <AcceptedAutomationMetadata
+      workspaceId={workspaceId}
+      sessionId={sessionId}
+      now={now}
+      needsApproval={needsApproval}
+      workspaceSlug={workspaceSlug}
+      onNavigateToAutomations={onNavigateToAutomations}
+    />
+  )
 }
 
-function AcceptedAutomationMetadata({ workspaceId, sessionId, now, needsApproval }: {
-  workspaceId: string; sessionId: string; now: number; needsApproval: boolean
+function AcceptedAutomationMetadata({
+  workspaceId,
+  sessionId,
+  now,
+  needsApproval,
+  workspaceSlug,
+  onNavigateToAutomations,
+}: {
+  workspaceId: string
+  sessionId: string
+  now: number
+  needsApproval: boolean
+  workspaceSlug?: string
+  onNavigateToAutomations?: () => void
 }) {
   const input = useMemo(() => ({ action: 'progress' as const, workspace_id: workspaceId, session_id: sessionId, timezone: 'UTC' }), [workspaceId, sessionId])
   const key = automationV2PageKey(input)
@@ -53,16 +185,278 @@ function AcceptedAutomationMetadata({ workspaceId, sessionId, now, needsApproval
     catch { setCapacityError(true) }
   }, [input])
   const record = page?.data?.progress?.record
+  const occurrences = page?.data?.progress?.occurrences
+
+  const isRunning = useDesktopV3CacheSelector(state => {
+    if (occurrences?.some(o => o.state === 'running' || o.state === 'in_progress')) return true
+    if (occurrences) {
+      for (const occ of occurrences) {
+        const intent = state.currentRunIntentBySession[occ.session_id]
+        if (intent && ['pending_executor', 'running', 'dispatch_blocked'].includes(intent.status)) return true
+        const sessionRecord = state.sessionsById[occ.session_id]
+        if (sessionRecord?.kind === 'full') {
+          const runIntents = state.runIntentsBySession[occ.session_id]
+          if (runIntents && Object.values(runIntents).some(i => ['pending_executor', 'running', 'dispatch_blocked'].includes(i.status))) return true
+        }
+      }
+    }
+    const selfIntent = state.currentRunIntentBySession[sessionId]
+    if (selfIntent && ['pending_executor', 'running', 'dispatch_blocked'].includes(selfIntent.status)) return true
+    return false
+  })
+
   const unavailable = capacityError || !!page?.error
   const refreshing = !page || page.loading || page.stale
-  const status = unavailable ? 'Schedule unavailable' : refreshing ? 'Updating schedule…' : record ? automationSidebarStatus(record, now, needsApproval) : 'Schedule unavailable'
-  return <AutomationSidebarMetadataRow schedule={record?.document.automation_v2.schedule} status={status} nextDueAt={!unavailable && !refreshing && record && status === 'Scheduled' ? record.next_due_at : undefined} />
+  const status = unavailable
+    ? 'Schedule unavailable'
+    : refreshing
+      ? 'Updating schedule…'
+      : record
+        ? automationSidebarStatus(record, now, needsApproval, isRunning)
+        : 'Schedule unavailable'
+  const running = status === 'Running'
+
+  return (
+    <AutomationSidebarMetadataRow
+      schedule={record?.document.automation_v2.schedule}
+      status={status}
+      running={running}
+      nextDueAt={!unavailable && !refreshing && record && (status === 'Scheduled' || running) ? record.next_due_at : undefined}
+      workspaceSlug={workspaceSlug}
+      onNavigateToAutomations={onNavigateToAutomations}
+    />
+  )
 }
 
-export function automationSidebarStatus(record: AutomationV2Record, now: number, needsApproval: boolean): string {
+export function automationSidebarStatus(
+  record: AutomationV2Record,
+  now: number,
+  needsApproval: boolean,
+  runningOrOccurrences?: boolean | Array<{ state: string }>,
+): string {
   if (record.cancelled) return 'Cancelled'
   if (record.authorization.kind === 'at' && record.authorization.expires_at !== undefined && record.authorization.expires_at <= now) return 'Expired'
   if (!record.enabled) return 'Paused'
   if (needsApproval) return 'Needs approval'
+  const isRunning = Array.isArray(runningOrOccurrences)
+    ? runningOrOccurrences.some(o => o.state === 'running' || o.state === 'in_progress')
+    : Boolean(runningOrOccurrences)
+  if (isRunning) return 'Running'
   return 'Scheduled'
 }
+
+export interface AutomationSummaryCounts {
+  running: number
+  scheduled: number
+  paused: number
+  pending: number
+  total: number
+}
+
+export function selectAutomationSummaryCounts(
+  state: DesktopV3CacheState,
+  workspaceId?: string,
+  now = Date.now(),
+): AutomationSummaryCounts {
+  let running = 0
+  let scheduled = 0
+  let paused = 0
+  let pending = 0
+
+  const seenAutomationIds = new Set<string>()
+  const seenSessionIds = new Set<string>()
+
+  for (const page of Object.values(state.automationV2Pages ?? {})) {
+    if (workspaceId && page.input.workspace_id !== workspaceId) continue
+    const records = page.data?.records ?? (page.data?.record ? [page.data.record] : (page.data?.progress?.record ? [page.data.progress.record] : []))
+    for (const record of records) {
+      if (seenAutomationIds.has(record.automation_id)) continue
+      seenAutomationIds.add(record.automation_id)
+      seenSessionIds.add(record.session_id)
+      if (record.cancelled) continue
+      if (record.authorization.kind === 'at' && record.authorization.expires_at !== undefined && record.authorization.expires_at <= now) continue
+      if (!record.enabled) {
+        paused++
+        continue
+      }
+      // Check occurrences on this page or any progress page for this session
+      let occurrences = page.data?.progress?.occurrences
+      if (!occurrences) {
+        for (const p of Object.values(state.automationV2Pages ?? {})) {
+          if (p.input.session_id === record.session_id && p.data?.progress?.occurrences) {
+            occurrences = p.data.progress.occurrences
+            break
+          }
+        }
+      }
+      let isRunning = false
+      if (occurrences?.some(o => o.state === 'running' || o.state === 'in_progress')) {
+        isRunning = true
+      } else if (occurrences) {
+        for (const occ of occurrences) {
+          const intent = state.currentRunIntentBySession[occ.session_id]
+          if (intent && ['pending_executor', 'running', 'dispatch_blocked'].includes(intent.status)) {
+            isRunning = true
+            break
+          }
+        }
+      }
+      if (!isRunning) {
+        const authorIntent = state.currentRunIntentBySession[record.session_id]
+        if (authorIntent && ['pending_executor', 'running', 'dispatch_blocked'].includes(authorIntent.status)) {
+          isRunning = true
+        }
+      }
+      if (isRunning) {
+        running++
+      } else {
+        scheduled++
+      }
+    }
+  }
+
+  for (const [sId, sessionRecord] of Object.entries(state.sessionsById ?? {})) {
+    if (sessionRecord.kind !== 'full' || !sessionRecord.session.automation_v2) continue
+    const av2 = sessionRecord.session.automation_v2
+    if (workspaceId && av2.workspace_id !== workspaceId) continue
+    if (seenSessionIds.has(sId)) continue
+    seenSessionIds.add(sId)
+    const permissions = state.permissionsBySession[sId]
+    if (permissions?.some(p => p.status === 'pending' && p.requirement === 'automation_v2_acceptance')) {
+      pending++
+      continue
+    }
+    const intent = state.currentRunIntentBySession[sId]
+    if (intent && ['pending_executor', 'running', 'dispatch_blocked'].includes(intent.status)) {
+      running++
+    } else {
+      scheduled++
+    }
+  }
+
+  for (const [sId, perms] of Object.entries(state.permissionsBySession ?? {})) {
+    if (seenSessionIds.has(sId)) continue
+    if (perms?.some(p => p.status === 'pending' && p.requirement === 'automation_v2_acceptance')) {
+      pending++
+    }
+  }
+
+  const total = running + scheduled + paused + pending
+  return { running, scheduled, paused, pending, total }
+}
+
+export function AutomationSidebarSummaryBadge({
+  counts,
+  workspaceSlug,
+  onNavigate,
+  className,
+}: {
+  counts: AutomationSummaryCounts
+  workspaceSlug?: string
+  onNavigate?: () => void
+  className?: string
+}) {
+  if (counts.total === 0) return null
+
+  const isRunning = counts.running > 0
+  const label = isRunning
+    ? `${counts.running} running${counts.scheduled > 0 ? ` · ${counts.scheduled} scheduled` : ''}`
+    : counts.scheduled > 0
+      ? `${counts.scheduled} scheduled`
+      : counts.pending > 0
+        ? `${counts.pending} awaiting approval`
+        : `${counts.paused} paused`
+
+  const title = [
+    counts.running > 0 ? `${counts.running} active running automation${counts.running === 1 ? '' : 's'}` : undefined,
+    counts.scheduled > 0 ? `${counts.scheduled} scheduled automation${counts.scheduled === 1 ? '' : 's'}` : undefined,
+    counts.paused > 0 ? `${counts.paused} paused` : undefined,
+    counts.pending > 0 ? `${counts.pending} awaiting approval` : undefined,
+    'Click to open top-down Automations view',
+  ].filter(Boolean).join(' · ')
+
+  const badge = (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none tracking-normal transition-colors',
+        isRunning
+          ? 'bg-[var(--app-success-subtle,rgba(34,197,94,0.14))] text-[var(--app-success)]'
+          : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
+        className,
+      )}
+      aria-label={`Automations summary: ${label}`}
+      title={title}
+    >
+      {isRunning ? (
+        <span
+          data-testid="summary-running-dot"
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--app-success)] animate-pulse"
+          aria-hidden="true"
+        />
+      ) : (
+        <Clock3 size={10} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+      )}
+      <span className="truncate">{label}</span>
+    </span>
+  )
+
+  if (onNavigate) {
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onNavigate()
+        }}
+        aria-label={`Automations summary: ${label}. Open top-down Automations view`}
+        title={title}
+        className="inline-flex shrink-0 items-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] rounded-full cursor-pointer"
+      >
+        {badge}
+      </button>
+    )
+  }
+
+  if (workspaceSlug) {
+    return (
+      <a
+        href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+        onClick={(e) => {
+          e.stopPropagation()
+        }}
+        aria-label={`Automations summary: ${label}. Open top-down Automations view`}
+        title={title}
+        className="inline-flex shrink-0 items-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] rounded-full cursor-pointer"
+      >
+        {badge}
+      </a>
+    )
+  }
+
+  return badge
+}
+
+export function AutomationV2SidebarSummaryIndicator({
+  workspaceId,
+  workspaceSlug,
+  onNavigate,
+  className,
+}: {
+  workspaceId?: string
+  workspaceSlug?: string
+  onNavigate?: () => void
+  className?: string
+}) {
+  const counts = useDesktopV3CacheSelector(state => selectAutomationSummaryCounts(state, workspaceId))
+  return (
+    <AutomationSidebarSummaryBadge
+      counts={counts}
+      workspaceSlug={workspaceSlug}
+      onNavigate={onNavigate}
+      className={className}
+    />
+  )
+}
+
+export const AutomationSummaryIndicator = AutomationV2SidebarSummaryIndicator

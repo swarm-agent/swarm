@@ -14,6 +14,7 @@ export interface DesktopV3CacheMutation {
 type DesktopV3CacheListener = (mutation?: DesktopV3CacheMutation) => void
 
 const store = createStore<DesktopV3CacheState>(() => createEmptyDesktopV3CacheState())
+store.getInitialState = () => store.getState()
 const mutationListeners = new Set<DesktopV3CacheListener>()
 
 export function getDesktopV3CacheSnapshot(): DesktopV3CacheState {
@@ -79,6 +80,7 @@ export function useDesktopV3CacheSelector<T>(
 
 export function resetDesktopV3CacheForTests(state: DesktopV3CacheState = createEmptyDesktopV3CacheState()): void {
   store.setState(state, true)
+  store.getInitialState = () => store.getState()
   for (const listener of mutationListeners) {
     listener()
   }

@@ -307,6 +307,9 @@ type SessionPlanCheckpoint struct {
 	Handoff         *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
 	Attempts        []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
 	Order           int                                  `json:"order,omitempty"`
+	ClosingState    string                               `json:"closing_state,omitempty"`
+	Summary         string                               `json:"summary,omitempty"`
+	AlertConditions string                               `json:"alert_conditions,omitempty"`
 }
 
 type SessionPlanSubtask struct {
@@ -1487,6 +1490,9 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
+		if V3SessionNavigationHidden(session) {
+			return nil
+		}
 		matchedWorkspacePath := ""
 		for _, candidate := range order {
 			// Worktree sessions are physically rooted outside the source workspace; group them by binding/source identity when present.

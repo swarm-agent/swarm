@@ -1,4 +1,4 @@
-import { isAutomationManagementSession } from './desktop-automation-purpose'
+import { isAutomationExecutionSession, isAutomationManagementSession } from './desktop-automation-purpose'
 import type { SessionCacheRecord, SessionSnapshot } from './desktop-v3-cache-types'
 
 function metadataBoolean(metadata: Record<string, unknown> | undefined, key: string): boolean {
@@ -43,6 +43,7 @@ export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | un
   if (!session) return false
   const metadata = session.metadata
   return isAutomationManagementSession(session)
+    || isAutomationExecutionSession(session)
     || session.navigation_hidden === true
     || session.system_session === true
     || session.system_sidechat === true
@@ -51,6 +52,7 @@ export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | un
     || metadataBoolean(metadata, 'system_session')
     || metadataBoolean(metadata, 'system_sidechat')
     || metadataString(metadata, 'lineage_kind') === 'system_sidechat'
+    || Boolean(metadataString(metadata, 'automation_v2_occurrence_id'))
 }
 
 export function isDesktopV3NavigationHiddenRecord(record: SessionCacheRecord | undefined): boolean {

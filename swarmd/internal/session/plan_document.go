@@ -293,6 +293,9 @@ type PlanDocumentPatch struct {
 	Artifacts          []pebblestore.SessionPlanArtifactReference       `json:"artifacts,omitempty"`
 	Recommendation     *pebblestore.SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	Handoff            *pebblestore.SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
+	ClosingState       string                                           `json:"closing_state,omitempty"`
+	Summary            string                                           `json:"summary,omitempty"`
+	AlertConditions    string                                           `json:"alert_conditions,omitempty"`
 	Operations         []PlanDocumentPatchOperation                     `json:"operations,omitempty"`
 }
 
@@ -500,6 +503,9 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			Artifacts:       op.Artifacts,
 			Recommendation:  op.Recommendation,
 			Handoff:         op.Handoff,
+			ClosingState:    op.ClosingState,
+			Summary:         op.Summary,
+			AlertConditions: op.AlertConditions,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -537,6 +543,9 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			Artifacts:       op.Artifacts,
 			Recommendation:  op.Recommendation,
 			Handoff:         op.Handoff,
+			ClosingState:    op.ClosingState,
+			Summary:         op.Summary,
+			AlertConditions: op.AlertConditions,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -902,6 +911,15 @@ func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoi
 	if op.Handoff != nil {
 		handoff := *op.Handoff
 		checkpoint.Handoff = &handoff
+	}
+	if closingState := strings.TrimSpace(op.ClosingState); closingState != "" {
+		checkpoint.ClosingState = closingState
+	}
+	if summary := strings.TrimSpace(op.Summary); summary != "" {
+		checkpoint.Summary = summary
+	}
+	if alertConditions := strings.TrimSpace(op.AlertConditions); alertConditions != "" {
+		checkpoint.AlertConditions = alertConditions
 	}
 }
 

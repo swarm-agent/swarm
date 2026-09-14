@@ -27,16 +27,33 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 	}
 	if in.Kind == V3SessionMutationCreateSession && in.Session != nil {
 		purpose, _ := in.Session.Metadata[SessionPurposeMetadataKey].(string)
-		workspaceID := SessionAutomationManagementWorkspace(*in.Session)
-		if purpose != "" && (purpose != SessionPurposeAutomationManagement || workspaceID == "") {
-			return ErrAutomationInvalid
-		}
-		if workspaceID != "" {
-			valid := false
-			for _, grant := range in.Session.WorkspaceGrants {
-				valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)
-			}
-			if !valid {
+		if purpose != "" {
+			switch purpose {
+			case SessionPurposeAutomationManagement:
+				workspaceID := SessionAutomationManagementWorkspace(*in.Session)
+				if workspaceID == "" {
+					return ErrAutomationInvalid
+				}
+				valid := false
+				for _, grant := range in.Session.WorkspaceGrants {
+					valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)
+				}
+				if !valid {
+					return ErrAutomationInvalid
+				}
+			case SessionPurposeAutomationExecution:
+				workspaceID := SessionAutomationExecutionWorkspace(*in.Session)
+				if workspaceID == "" {
+					return ErrAutomationInvalid
+				}
+				valid := false
+				for _, grant := range in.Session.WorkspaceGrants {
+					valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)
+				}
+				if !valid {
+					return ErrAutomationInvalid
+				}
+			default:
 				return ErrAutomationInvalid
 			}
 		}
@@ -71,6 +88,15 @@ func (s *SessionStore) guardAutomationSessionMutation(in *V3SessionMutationInput
 			}
 		}
 		if workspaceID := SessionAutomationManagementWorkspace(current); workspaceID != "" {
+			valid := false
+			for _, grant := range candidate.WorkspaceGrants {
+				valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)
+			}
+			if !valid || candidate.WorkspacePath != current.WorkspacePath {
+				return ErrAutomationConflict
+			}
+		}
+		if workspaceID := SessionAutomationExecutionWorkspace(current); workspaceID != "" {
 			valid := false
 			for _, grant := range candidate.WorkspaceGrants {
 				valid = valid || (grant.WorkspaceID == workspaceID && grant.Kind == WorkspaceGrantPrimary)

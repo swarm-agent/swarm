@@ -456,3 +456,47 @@ func TestApplyPlanDocumentPatchIsAtomicOnInvalidBatch(t *testing.T) {
 		t.Fatalf("invalid batch mutated current plan: %#v", current)
 	}
 }
+
+func TestApplyPlanDocumentPatchCompleteCheckpointClosingState(t *testing.T) {
+	svc, cleanup := newPlanTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanTestSession(t, svc)
+	first, _, err := svc.SavePlanWithMetadata(sessionID, "plan-closing", "Closing Plan", "# Plan", "approved", "approved", true, PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:        pebblestore.SessionPlanInfo{Goal: "closing state goal"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Model", Status: PlanCheckpointStatusInProgress}},
+	}})
+	if err != nil {
+		t.Fatalf("save structured plan: %v", err)
+	}
+
+	_, _, err = svc.PatchPlan(sessionID, PlanPatchOptions{
+		PlanID: first.ID,
+		DocumentPatch: &PlanDocumentPatch{
+			Operation:    "complete_checkpoint",
+			CheckpointID: "cp-1",
+			ClosingState: "routine_clean",
+			Summary:      "Routine maintenance completed cleanly",
+			Report:       "All tasks complete",
+			Result:       "done",
+		},
+	})
+	if err != nil {
+		t.Fatalf("patch complete_checkpoint with closing_state: %v", err)
+	}
+
+	current, ok, err := svc.GetPlan(sessionID, first.ID)
+	if err != nil || !ok {
+		t.Fatalf("get current plan: ok=%v err=%v", ok, err)
+	}
+	cp := current.Document.Checkpoints[0]
+	if cp.Status != PlanCheckpointStatusCompleted {
+		t.Errorf("expected status completed, got %s", cp.Status)
+	}
+	if cp.ClosingState != "routine_clean" {
+		t.Errorf("expected closing_state routine_clean, got %q", cp.ClosingState)
+	}
+	if cp.Summary != "Routine maintenance completed cleanly" {
+		t.Errorf("expected summary, got %q", cp.Summary)
+	}
+}

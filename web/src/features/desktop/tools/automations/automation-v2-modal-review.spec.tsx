@@ -4,7 +4,12 @@ import assert from 'node:assert/strict'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { DesktopPermissionRecord } from '../../types/realtime'
 import { DesktopPermissionModal } from '../../permissions/components/desktop-permission-modal'
-import { AutomationV2PlanReview } from './automation-v2-plan-review'
+import {
+  AutomationV2PlanReview,
+  AUTOMATION_INTENT_PRESETS,
+  getCheckpointClosingState,
+  getCheckpointAlertConditions,
+} from './automation-v2-plan-review'
 import {
   isAutomationPermission,
   isPlanProposalPermission,
@@ -179,4 +184,131 @@ test('AutomationV2PlanReview non-modal mode preserves compact details accordion'
 
   // Non-modal uses details element for steps
   assert.match(markup, /<details[^>]*><summary[^>]*>What Swarm will do/, 'expected collapsed details in non-modal mode')
+})
+
+test('AutomationV2PlanReview renders suggested intent presets with plain-English guidance', () => {
+  const proposal = createAutomationProposal()
+  const markup = renderToStaticMarkup(
+    <AutomationV2PlanReview proposal={proposal} modalMode={true} />
+  )
+
+  // Presets container
+  assert.match(markup, /data-testid="intent-presets-section"/, 'expected intent presets section')
+  assert.match(markup, /Suggested Intent Presets/, 'expected section heading')
+  assert.match(markup, /Select an intent preset to configure recommended outcome states/, 'expected explanatory text')
+
+  // All 3 presets present
+  assert.match(markup, /data-testid="intent-preset-silent_maintenance"/, 'expected silent maintenance preset')
+  assert.match(markup, /Silent maintenance/, 'expected silent maintenance title')
+  assert.match(markup, /Calm background/, 'expected silent maintenance tag')
+  assert.match(markup, /Runs quietly in the background/, 'expected silent maintenance description')
+
+  assert.match(markup, /data-testid="intent-preset-summary_report"/, 'expected summary report preset')
+  assert.match(markup, /Summary report/, 'expected summary report title')
+  assert.match(markup, /Periodic status/, 'expected summary report tag')
+  assert.match(markup, /Produces a concise summary report/, 'expected summary report description')
+
+  assert.match(markup, /data-testid="intent-preset-deliverable_output"/, 'expected deliverable output preset')
+  assert.match(markup, /Deliverable output/, 'expected deliverable output title')
+  assert.match(markup, /Deliverables &amp; files|Deliverables & files/, 'expected deliverable output tag')
+  assert.match(markup, /Generates or updates project files/, 'expected deliverable output description')
+})
+
+test('AutomationV2PlanReview displays closing states and alert conditions configuration', () => {
+  const proposal = createAutomationProposal()
+  const markup = renderToStaticMarkup(
+    <AutomationV2PlanReview proposal={proposal} modalMode={true} />
+  )
+
+  // Closing states & alert conditions fieldset
+  assert.match(markup, /data-testid="closing-states-config"/, 'expected closing states config fieldset')
+  assert.match(markup, /Closing States &amp; Alert Conditions|Closing States & Alert Conditions/, 'expected section legend')
+  assert.match(markup, /The AI proposes how to classify completed runs/, 'expected explanation text')
+
+  // Expected outcome select and options
+  assert.match(markup, /Expected outcome \(closing state\)/, 'expected closing state label')
+  assert.match(markup, /aria-label="Closing state"/, 'expected select with Closing state label')
+  assert.match(markup, /Routine clean — Calm minimal status/, 'expected routine_clean option text')
+  assert.match(markup, /Deliverable ready — Highlights generated files/, 'expected deliverable_ready option text')
+  assert.match(markup, /Attention alert — Raises an alert badge/, 'expected attention_alert option text')
+  assert.match(markup, /Blocked — Flags run as waiting on permissions/, 'expected blocked option text')
+
+  // Alert conditions textarea and explanation
+  assert.match(markup, /Alert conditions \(when to notify\)/, 'expected alert conditions label')
+  assert.match(markup, /aria-label="Alert conditions"/, 'expected alert conditions textarea')
+  assert.match(markup, /Swarm evaluates these conditions at completion/, 'expected alert evaluation description')
+})
+
+test('AutomationV2PlanReview replaces technical schedule jargon with clear human explanations', () => {
+  const proposal = createAutomationProposal()
+  const markup = renderToStaticMarkup(
+    <AutomationV2PlanReview proposal={proposal} modalMode={true} />
+  )
+
+  // Run behavior & policies header
+  assert.match(markup, /Run behavior &amp; policies|Run behavior & policies/, 'expected run behavior legend')
+
+  // Missed runs policy in plain English without jargon
+  assert.match(markup, /aria-label="Missed runs"/, 'expected accessible Missed runs dropdown')
+  assert.match(markup, /Skip missed runs \(resume on next scheduled time\)/, 'expected plain-English skip option')
+  assert.match(markup, /Catch up once \(run immediately when back online\)/, 'expected plain-English coalesce option')
+  assert.match(markup, /If your computer is sleeping or offline when a run is scheduled/, 'expected human explanation for missed runs')
+
+  // Overlap policy in plain English without jargon
+  assert.match(markup, /aria-label="Overlap policy"/, 'expected accessible Overlap policy dropdown')
+  assert.match(markup, /Wait for earlier run \(execute one at a time in order\)/, 'expected plain-English serialize option')
+  assert.match(markup, /Run concurrently \(execute in parallel without waiting\)/, 'expected plain-English independent option')
+  assert.match(markup, /If a previous execution is still running when the next scheduled time arrives/, 'expected human explanation for overlap policy')
+
+  // Ensure raw technical jargon strings are NOT present as bare text
+  assert.doesNotMatch(markup, /missed: skip/, 'should not have raw technical jargon missed: skip')
+  assert.doesNotMatch(markup, /overlap: serialize/, 'should not have raw technical jargon overlap: serialize')
+})
+
+test('AutomationV2PlanReview respects custom proposed closing states and alert conditions', () => {
+  const proposal = createAutomationProposal()
+  proposal.document.checkpoints[0].closing_state = 'deliverable_ready'
+  proposal.document.checkpoints[0].alert_conditions = 'Alert if output PDF generation fails or size is 0 bytes'
+  proposal.document.automation_v2.missed = 'coalesce'
+  proposal.document.automation_v2.overlap = 'independent'
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2PlanReview proposal={proposal} modalMode={true} />
+  )
+
+  // Should render deliverable ready explanation
+  assert.match(markup, /Deliverable run\. Highlights generated documents or artifacts/, 'expected deliverable ready explanation')
+  // Should render the custom alert condition in textarea
+  assert.match(markup, /Alert if output PDF generation fails or size is 0 bytes/, 'expected custom alert conditions in markup')
+  // Should render coalesce explanation
+  assert.match(markup, /Swarm executes a single catch-up run immediately upon reconnecting/, 'expected coalesce explanation')
+  // Should render independent explanation
+  assert.match(markup, /the new run starts immediately in parallel/, 'expected independent explanation')
+})
+
+test('getCheckpointClosingState and getCheckpointAlertConditions helpers classify checkpoints accurately', () => {
+  // 1. Explicit closing_state
+  assert.equal(getCheckpointClosingState({ closing_state: 'deliverable_ready' }), 'deliverable_ready')
+  assert.equal(getCheckpointClosingState({ closing_state: 'attention_alert' }), 'attention_alert')
+  assert.equal(getCheckpointClosingState({ closing_state: 'blocked' }), 'blocked')
+  assert.equal(getCheckpointClosingState({ closing_state: 'routine_clean' }), 'routine_clean')
+
+  // 2. Inferred from text when not explicit
+  assert.equal(getCheckpointClosingState({ title: 'Generate monthly deliverable' }), 'deliverable_ready')
+  assert.equal(getCheckpointClosingState({ acceptance_criteria: ['Check alert conditions on error'] }), 'attention_alert')
+  assert.equal(getCheckpointClosingState({ tasks: ['Routine database backup'] }), 'routine_clean')
+
+  // 3. Alert conditions helper
+  assert.equal(
+    getCheckpointAlertConditions({ alert_conditions: 'Alert when CPU exceeds 90%' }),
+    'Alert when CPU exceeds 90%'
+  )
+  assert.equal(
+    getCheckpointAlertConditions({ acceptance_criteria: ['Alert if error count > 5', 'Store logs'] }),
+    'Alert if error count > 5'
+  )
+  assert.match(
+    getCheckpointAlertConditions({ acceptance_criteria: ['Ping database'] }),
+    /Alert if health checks fail/
+  )
 })
