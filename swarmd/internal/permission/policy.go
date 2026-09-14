@@ -1392,7 +1392,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow
 		// through the already-approved task manifest and permission-session scope.
-		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+		if (ShouldApproveManageArtifactGenerateImage(toolArguments) || ShouldApproveManageArtifactGenerateVideo(toolArguments)) && !bypass {
 			return PolicyDecisionAsk
 		}
 		// Other managed artifact operations remain inside the authenticated session

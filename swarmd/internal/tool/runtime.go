@@ -42,6 +42,7 @@ import (
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
+	"swarm/packages/swarmd/internal/videogen"
 	"swarm/packages/swarmd/internal/videosource"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -182,6 +183,7 @@ type Runtime struct {
 	animationJobsMu       sync.Mutex
 	animationJobs         map[string]context.CancelFunc
 	imageGeneration       ManagedImageGenerationService
+	videoGeneration       ManagedVideoGenerationService
 	video                 manageVideoService
 	videoSources          *videosource.Service
 	videoProjects         manageVideoProjectService
@@ -324,6 +326,10 @@ type manageTodoService interface {
 type ManagedImageGenerationService interface {
 	ManagedImageCapabilities(selectionID string) (imagegen.ManagedImageCapabilities, error)
 	GenerateManagedImage(context.Context, imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error)
+}
+
+type ManagedVideoGenerationService interface {
+	GenerateManagedVideo(context.Context, videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -604,6 +610,12 @@ func (r *Runtime) SetArtifactV3VideoConversionService(service ArtifactV3VideoCon
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
 	if r != nil {
 		r.imageGeneration = service
+	}
+}
+
+func (r *Runtime) SetManagedVideoGenerationService(service ManagedVideoGenerationService) {
+	if r != nil {
+		r.videoGeneration = service
 	}
 }
 

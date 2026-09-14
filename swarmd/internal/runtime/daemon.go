@@ -67,6 +67,7 @@ import (
 	update "swarm/packages/swarmd/internal/update"
 	"swarm/packages/swarmd/internal/videoproject"
 	"swarm/packages/swarmd/internal/videorender"
+	"swarm/packages/swarmd/internal/videogen"
 	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
@@ -702,6 +703,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManagedImageGenerationService(imageGenSvc)
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
+	videoGenSvc := videogen.NewService(authStore, uiSettingsSvc, modelSvc)
+	toolRuntime.SetManagedVideoGenerationService(videoGenSvc)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)

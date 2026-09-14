@@ -3578,8 +3578,14 @@ type uiToolImageSettingsPatchPresence struct {
 	DefaultModel *string `json:"default_model"`
 }
 
+type uiToolVideoSettingsPatchPresence struct {
+	DefaultModel   *string `json:"default_model"`
+	IterationModel *string `json:"iteration_model"`
+}
+
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
+	Video *uiToolVideoSettingsPatchPresence `json:"video"`
 }
 
 type uiMediaSettingsPatchPresence struct {
@@ -3682,9 +3688,17 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			settings.Swarm.RemoteSSHTargets = patch.Swarm.RemoteSSHTargets
 		}
 	}
-	if raw.Tools != nil && raw.Tools.Image != nil {
-		if raw.Tools.Image.DefaultModel != nil {
+	if raw.Tools != nil {
+		if raw.Tools.Image != nil && raw.Tools.Image.DefaultModel != nil {
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
+		}
+		if raw.Tools.Video != nil {
+			if raw.Tools.Video.DefaultModel != nil {
+				settings.Tools.Video.DefaultModel = patch.Tools.Video.DefaultModel
+			}
+			if raw.Tools.Video.IterationModel != nil {
+				settings.Tools.Video.IterationModel = patch.Tools.Video.IterationModel
+			}
 		}
 	}
 	if raw.Media != nil && raw.Media.TranscriptionModel != nil {

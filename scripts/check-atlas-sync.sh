@@ -48,6 +48,7 @@ sensitive_paths=(
   'swarmd/internal/videosource/*.go'
   'swarmd/internal/videoproject/*.go'
   'swarmd/internal/videorender/*.go'
+  'swarmd/internal/videogen/*.go'
   'swarmd/internal/provider/*.go'
   'swarmd/internal/runtime/*.go'
   'pkg/startupconfig/*.go'

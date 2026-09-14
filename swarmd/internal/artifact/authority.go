@@ -86,6 +86,7 @@ type CreateInput struct {
 	VideoRevisionEventSeq uint64
 	ArtifactStepID        string
 	CandidateIndex        int
+	IterationID           string
 	AutoAccept            bool
 	Body                  []byte
 }
@@ -990,12 +991,16 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 			sourceSessionID = childSessionID
 		}
 	}
-	return pebblestore.SessionArtifactLineage{
+		iterationID := strings.TrimSpace(principal.IterationID)
+		if iterationID == "" {
+			iterationID = strings.TrimSpace(input.IterationID)
+		}
+		return pebblestore.SessionArtifactLineage{
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
 		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), SourceEventSeq: input.SourceEventSeq,
 		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),
 		ChildSessionID: childSessionID, IterationGroupID: strings.TrimSpace(principal.IterationGroupID), IterationGroup: strings.TrimSpace(principal.IterationGroup),
-		IterationID: strings.TrimSpace(principal.IterationID), IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),
+		IterationID: iterationID, IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),
 		IterationSectionID: strings.TrimSpace(principal.IterationSectionID), IterationSectionLabel: strings.TrimSpace(principal.IterationSectionLabel), IterationSectionStartMs: principal.IterationSectionStartMs, IterationSectionEndMs: principal.IterationSectionEndMs,
 		PartID: strings.TrimSpace(principal.PartID), PartLabel: strings.TrimSpace(principal.PartLabel), PartKind: strings.TrimSpace(principal.PartKind),
 		SelectedReviewTargetIDs: strings.TrimSpace(principal.SelectedReviewTargetIDs),

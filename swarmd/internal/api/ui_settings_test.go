@@ -362,6 +362,57 @@ func TestUISettingsPostPersistsImageDefaultModel(t *testing.T) {
 	}
 }
 
+func TestUISettingsPostPersistsVideoModels(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-video-models.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	reqBody := []byte(`{"tools":{"video":{"default_model":"veo-3.1-generate-preview","iteration_model":"gemini-omni-1.1-flash"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "video-user", AccountScopeID: "video-settings-account"}
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Tools.Video.DefaultModel != "veo-3.1-generate-preview" {
+		t.Fatalf("video default model = %q, want veo-3.1-generate-preview", response.Tools.Video.DefaultModel)
+	}
+	if response.Tools.Video.IterationModel != "gemini-omni-1.1-flash" {
+		t.Fatalf("video iteration model = %q, want gemini-omni-1.1-flash", response.Tools.Video.IterationModel)
+	}
+
+	loaded, err := settingsSvc.GetForAccount("video-settings-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Tools.Video.DefaultModel != "veo-3.1-generate-preview" {
+		t.Fatalf("persisted video default model = %q, want veo-3.1-generate-preview", loaded.Tools.Video.DefaultModel)
+	}
+	if loaded.Tools.Video.IterationModel != "gemini-omni-1.1-flash" {
+		t.Fatalf("persisted video iteration model = %q, want gemini-omni-1.1-flash", loaded.Tools.Video.IterationModel)
+	}
+}
+
 func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-theme-only.pebble"))
 	if err != nil {

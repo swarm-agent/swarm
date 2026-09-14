@@ -13,8 +13,15 @@ import { resolveWorkspaceBySlug } from '../../../../workspaces/launcher/services
 import { browseDesktopVideoSource, DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT } from '../../../chat/services/video-source-attachments'
 import { saveImageDefaultModel } from '../../swarm/mutations/save-image-default-model'
 import { saveMediaTranscriptionModel } from '../../swarm/mutations/save-media-transcription-model'
+import { saveVideoDefaultModel, saveVideoIterationModel } from '../../swarm/mutations/save-video-models'
 import { getUISettings } from '../../swarm/queries/get-ui-settings'
-import { normalizeImageDefaultModel, normalizeMediaTranscriptionModel, type UISettingsWire } from '../../swarm/types/swarm-settings'
+import {
+  normalizeImageDefaultModel,
+  normalizeMediaTranscriptionModel,
+  normalizeVideoDefaultModel,
+  normalizeVideoIterationModel,
+  type UISettingsWire,
+} from '../../swarm/types/swarm-settings'
 import {
   addSourceMediaDirectory,
   cancelVideoTranscription,
@@ -225,6 +232,14 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
     mutationFn: (transcriptionModel: string) => saveMediaTranscriptionModel({ current: settingsQuery.data ?? {}, transcriptionModel }),
     onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
   })
+  const videoDefaultSave = useMutation({
+    mutationFn: (defaultModel: string) => saveVideoDefaultModel({ current: settingsQuery.data ?? {}, defaultModel }),
+    onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
+  })
+  const videoIterationSave = useMutation({
+    mutationFn: (iterationModel: string) => saveVideoIterationModel({ current: settingsQuery.data ?? {}, iterationModel }),
+    onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
+  })
   const addFolder = useMutation({
     mutationFn: (directoryPath: string) => addSourceMediaDirectory(workspacePath, directoryPath),
     onSuccess: (directories) => {
@@ -280,14 +295,26 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
 
   const imageModels = catalogQuery.data?.image_models ?? []
   const transcriptionModels = catalogQuery.data?.transcription_models ?? []
+  const videoGenerationModels = catalogQuery.data?.video_generation_models ?? catalogQuery.data?.video_models ?? []
+  const videoIterationModels = catalogQuery.data?.video_iteration_models ?? []
   const configuredImage = normalizeImageDefaultModel(settingsQuery.data)
   const configuredImageID = configuredImage === 'gpt-5.5' ? 'codex-image-gen' : configuredImage
   const configuredTranscription = normalizeMediaTranscriptionModel(settingsQuery.data)
+  const configuredVideoDefault = normalizeVideoDefaultModel(settingsQuery.data)
+  const configuredVideoIteration = normalizeVideoIterationModel(settingsQuery.data)
   const selectedImage = imageModels.some((model) => model.id === configuredImageID) ? configuredImageID : ''
   const selectedTranscription = transcriptionModels.some((model) => model.id === configuredTranscription) ? configuredTranscription : ''
+  const selectedVideoDefault = videoGenerationModels.some((model) => model.id === configuredVideoDefault)
+    ? configuredVideoDefault
+    : videoGenerationModels.find((model) => model.id === 'veo-3.1-generate-preview' || model.id === 'gemini-omni-1.1-flash')?.id ?? videoGenerationModels[0]?.id ?? ''
+  const selectedVideoIteration = videoIterationModels.some((model) => model.id === configuredVideoIteration)
+    ? configuredVideoIteration
+    : videoIterationModels.find((model) => model.id === 'gemini-omni-1.1-flash')?.id ?? videoIterationModels[0]?.id ?? ''
   const selectedImageOption = imageModels.find((model) => model.id === selectedImage)
   const selectedTranscriptionOption = transcriptionModels.find((model) => model.id === selectedTranscription)
-  const settingsError = imageSave.error || transcriptionSave.error || settingsQuery.error || catalogQuery.error
+  const selectedVideoDefaultOption = videoGenerationModels.find((model) => model.id === selectedVideoDefault)
+  const selectedVideoIterationOption = videoIterationModels.find((model) => model.id === selectedVideoIteration)
+  const settingsError = imageSave.error || transcriptionSave.error || videoDefaultSave.error || videoIterationSave.error || settingsQuery.error || catalogQuery.error
   const folders = sourceQuery.data ?? []
 
   const activeTranscriptionJobRefs = transcriptionJobs.filter((job) => !isTerminalVideoTranscriptionStatus(job.status)).map((job) => job.ref).join(',')
@@ -389,10 +416,74 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
         </section>
       </Card>
 
-      <Card className="overflow-hidden p-5">
-        <section aria-labelledby="video-generation-title" className="flex items-start justify-between gap-4">
-          <div className="flex items-start gap-3"><Video size={18} className="mt-1 text-[var(--app-text-muted)]" /><div><h3 id="video-generation-title" className="text-lg font-semibold text-[var(--app-text)]">Video generation</h3><p className="mt-1 text-sm text-[var(--app-text-muted)]">Generate managed video alternatives from Swarm briefs.</p></div></div>
-          <span className="shrink-0 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-1 text-xs font-semibold uppercase tracking-wide text-[var(--app-text-muted)]">Coming soon</span>
+      <Card className="p-5">
+        <section aria-labelledby="video-generation-title" className="space-y-5">
+          <div className="flex items-start gap-3">
+            <Video size={18} className="mt-1 text-[var(--app-text-muted)]" />
+            <div>
+              <h3 id="video-generation-title" className="text-lg font-semibold text-[var(--app-text)]">Video generation & iteration</h3>
+              <p className="mt-1 text-sm text-[var(--app-text-muted)]">
+                Configure generative AI models for creating new video clips and conversational editing across turns.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+              <label className="block space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-[var(--app-text)]">Base video generation model</span>
+                  <span className="rounded bg-[var(--app-surface)] px-2 py-0.5 text-xs text-[var(--app-text-subtle)]">Initial scenes</span>
+                </div>
+                <p className="text-xs text-[var(--app-text-muted)]">
+                  Used when generating a brand-new video from text prompts or still images. For cinematic fidelity, realistic physics, and synchronized native audio, choose Veo 3.1.
+                </p>
+                <ModelSelect
+                  models={videoGenerationModels}
+                  value={selectedVideoDefault}
+                  disabled={videoDefaultSave.isPending}
+                  onChange={(value) => videoDefaultSave.mutate(value)}
+                />
+              </label>
+              {selectedVideoDefaultOption && !selectedVideoDefaultOption.ready ? (
+                <p className="text-xs text-[var(--app-warning)]">
+                  {selectedVideoDefaultOption.reason || `${providerLabel(selectedVideoDefaultOption.provider)} needs authentication before it can generate videos.`}
+                </p>
+              ) : null}
+              {videoDefaultSave.isSuccess ? <p className="text-xs text-[var(--app-success)]">Generation model saved.</p> : null}
+            </div>
+
+            <div className="space-y-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+              <label className="block space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-[var(--app-text)]">Video iteration model</span>
+                  <span className="rounded bg-[var(--app-surface)] px-2 py-0.5 text-xs text-[var(--app-text-subtle)]">Conversational edits</span>
+                </div>
+                <p className="text-xs text-[var(--app-text-muted)]">
+                  Used when modifying or refining an existing video clip. Gemini Omni Flash uses conversational multi-turn editing to modify elements, lighting, and action while preserving unmentioned scene context.
+                </p>
+                <ModelSelect
+                  models={videoIterationModels}
+                  value={selectedVideoIteration}
+                  disabled={videoIterationSave.isPending}
+                  onChange={(value) => videoIterationSave.mutate(value)}
+                />
+              </label>
+              {selectedVideoIterationOption && !selectedVideoIterationOption.ready ? (
+                <p className="text-xs text-[var(--app-warning)]">
+                  {selectedVideoIterationOption.reason || `${providerLabel(selectedVideoIterationOption.provider)} needs authentication before it can edit videos.`}
+                </p>
+              ) : null}
+              {videoIterationSave.isSuccess ? <p className="text-xs text-[var(--app-success)]">Iteration model saved.</p> : null}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs text-[var(--app-text-muted)] space-y-1">
+            <p className="font-medium text-[var(--app-text)]">How video iteration works:</p>
+            <p>
+              When you ask Swarm to iterate or remix an existing video artifact, the AI automatically selects iteration mode and routes the request to your configured iteration model (Gemini Omni Flash), applying your requested changes while keeping the scene consistent.
+            </p>
+          </div>
         </section>
       </Card>
 
