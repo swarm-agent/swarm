@@ -631,9 +631,17 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 					if json.Unmarshal(value, &text) != nil || string(value) == "null" {
 						text = string(value)
 					}
+					// Google's protobuf Schema rejects empty enum members. Canonical
+					// optional string fields can represent their unset value as "";
+					// omission already represents that state on the provider wire.
+					if text == "" {
+						continue
+					}
 					enums = append(enums, text)
 				}
-				out[key] = enums
+				if len(enums) > 0 {
+					out[key] = enums
+				}
 			} else {
 				// Preserve malformed input for normal serialization/provider
 				// rejection rather than silently removing its constraint.
