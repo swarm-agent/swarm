@@ -57,8 +57,8 @@ const EMPTY_RENDERED_MESSAGES = {
   pendingUser: [],
   liveRuns: [],
   runIntents: [],
-  currentRunIntent: null,
-  latestRunIntent: null,
+  currentRunIntent: undefined,
+  latestRunIntent: undefined,
 };
 
 type SpeechRecognitionLike = {

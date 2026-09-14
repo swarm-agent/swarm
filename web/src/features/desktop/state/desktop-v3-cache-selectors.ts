@@ -585,7 +585,7 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
     pendingUser: selectPendingUserMessages(state, sessionId),
     liveRuns: selectLiveRuns(state, sessionId),
     runIntents,
-    currentRunIntent: state.currentRunIntentBySession?.[sessionId] ?? null,
+    currentRunIntent: state.currentRunIntentBySession?.[sessionId],
     latestRunIntent: runIntents[runIntents.length - 1],
   }
 }
