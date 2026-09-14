@@ -61,6 +61,7 @@ func (s *Service) generateGoogleOmni(
 	aspectRatio string,
 	resolution string,
 	source *ManagedVideoSource,
+	img *ManagedVideoImage,
 ) (ManagedVideoResult, error) {
 	reqBody := omniInteractionRequest{
 		Model: modelID,
@@ -71,18 +72,48 @@ func (s *Service) generateGoogleOmni(
 		},
 	}
 
+	var imageContent map[string]any
+	if img != nil && len(img.Bytes) > 0 {
+		mimeType := strings.ToLower(strings.TrimSpace(img.MediaType))
+		if mimeType == "" {
+			mimeType = http.DetectContentType(img.Bytes)
+		}
+		imageContent = map[string]any{
+			"type":      "image",
+			"data":      base64.StdEncoding.EncodeToString(img.Bytes),
+			"mime_type": mimeType,
+		}
+	}
+
 	if source != nil && strings.TrimSpace(source.InteractionID) != "" {
 		// Multi-turn conversational edit using previous_interaction_id
 		reqBody.PreviousInteractionID = strings.TrimSpace(source.InteractionID)
-		reqBody.Input = prompt
+		if imageContent != nil {
+			reqBody.Input = []map[string]any{
+				imageContent,
+				{"type": "text", "text": prompt},
+			}
+		} else {
+			reqBody.Input = prompt
+		}
 	} else if source != nil && len(source.Bytes) > 0 {
 		// External video input via Google Files API upload
 		fileURI, err := s.uploadGoogleFile(ctx, apiKey, source.Bytes, "video/mp4")
 		if err != nil {
 			return ManagedVideoResult{}, fmt.Errorf("upload video to Google for editing: %w", err)
 		}
-		reqBody.Input = []map[string]any{
+		inputs := []map[string]any{
 			{"type": "video", "uri": fileURI},
+			{"type": "text", "text": prompt},
+		}
+		if imageContent != nil {
+			inputs = append(inputs, imageContent)
+		}
+		reqBody.Input = inputs
+	} else if imageContent != nil {
+		// Image-to-video with Omni
+		reqBody.Input = []map[string]any{
+			imageContent,
 			{"type": "text", "text": prompt},
 		}
 	} else {

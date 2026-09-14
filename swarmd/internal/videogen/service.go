@@ -43,6 +43,12 @@ type ManagedVideoRequest struct {
 	DurationSeconds int
 	Principal       identity.Principal
 	Source          *ManagedVideoSource
+	Image           *ManagedVideoImage
+}
+
+type ManagedVideoImage struct {
+	Bytes     []byte
+	MediaType string
 }
 
 type ManagedVideoSource struct {
@@ -200,16 +206,16 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 			return ManagedVideoResult{}, err
 		}
 		if isOmniModel(modelID) {
-			result, genErr = s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, req.Source)
+			result, genErr = s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, req.Source, req.Image)
 		} else {
-			result, genErr = s.generateGoogleVeo(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds)
+			result, genErr = s.generateGoogleVeo(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds, req.Image)
 		}
 	case ProviderOpenRouter:
 		apiKey, err := s.getOpenRouterAPIKey(req.Principal.AccountScopeID)
 		if err != nil {
 			return ManagedVideoResult{}, err
 		}
-		result, genErr = s.generateOpenRouter(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds)
+		result, genErr = s.generateOpenRouter(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds, req.Image)
 	default:
 		return ManagedVideoResult{}, fmt.Errorf("unsupported video provider %q", providerID)
 	}

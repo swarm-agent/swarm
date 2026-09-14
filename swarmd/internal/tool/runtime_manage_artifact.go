@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 	"io"
@@ -257,8 +258,10 @@ func manageArtifactDefinition() Definition {
 			"properties": map[string]any{
 				"artifact_id":      map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
 				"resume_draft":     map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash)."},
+				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). For image-to-video, pass image (or image_path) with a workspace image path, data URI, or artifact reference alongside prompt."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image and generate_video. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
+				"image":            map[string]any{"description": "Optional image input for generate_video (image-to-video). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
+				"image_path":       map[string]any{"type": "string", "description": "Optional workspace file path to an image for generate_video (image-to-video)."},
 				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated video (e.g. 'Tokyo Rain Flyover'). If omitted, a descriptive title is automatically derived from the prompt."},
 				"aspect_ratio":     map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
 				"resolution":       map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, or 360p."},
@@ -510,6 +513,9 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["reference"] = managedArtifactReferenceWithSession(videoResult.LastVariant.SessionID, videoResult.LastVariant.CollectionID, videoResult.LastVariant.ID, videoResult.LastVariant.EventSeq)
 		response["variants"] = videoResult.Variants
 		response["references"] = videoResult.References
+		if videoResult.HasImageInput {
+			response["has_image_input"] = true
+		}
 	case "create":
 		artifactV3Result, err := r.createDirectArtifactV3HTML(ctx, scope, principal, callID, args)
 		if err != nil {
@@ -1645,6 +1651,7 @@ type managedVideoArtifactResult struct {
 	CostPerVideoUSD       float64
 	TotalEstimatedCostUSD float64
 	PricingSummary        string
+	HasImageInput         bool `json:"has_image_input,omitempty"`
 }
 
 func deriveVideoTitle(prompt string) string {
@@ -1687,6 +1694,212 @@ func deriveVideoTitle(prompt string) string {
 	return string(r)
 }
 
+func (r *Runtime) resolveVideoImageInput(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, raw any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {
+	if raw == nil {
+		return nil, nil, nil
+	}
+	switch v := raw.(type) {
+	case string:
+		str := strings.TrimSpace(v)
+		if str == "" {
+			return nil, nil, nil
+		}
+		if strings.HasPrefix(str, "data:image/") {
+			idx := strings.Index(str, ",")
+			if idx < 0 {
+				return nil, nil, errors.New("invalid image data URI: missing comma separator")
+			}
+			header := str[:idx]
+			encoded := str[idx+1:]
+			mimeType := "image/png"
+			if semi := strings.Index(header, ";"); semi > 5 {
+				mimeType = strings.TrimPrefix(header[:semi], "data:")
+			} else {
+				mimeType = strings.TrimPrefix(header, "data:")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("decode image data URI: %w", err)
+			}
+			if len(decoded) == 0 {
+				return nil, nil, errors.New("image data URI payload is empty")
+			}
+			return &videogen.ManagedVideoImage{
+				Bytes:     decoded,
+				MediaType: canonicalArtifactMediaType(mimeType),
+			}, nil, nil
+		}
+
+		// Try resolving as a workspace path
+		rooted, err := openRootedWorkspacePath(scope, str)
+		if err == nil {
+			defer rooted.Close()
+			info, statErr := rooted.stat()
+			if statErr == nil && info.Mode().IsRegular() {
+				if info.Size() > int64(manageArtifactMaxImageReadBytes) {
+					return nil, nil, fmt.Errorf("image file %q exceeds maximum limit of %d bytes", str, manageArtifactMaxImageReadBytes)
+				}
+				f, openErr := rooted.open()
+				if openErr != nil {
+					return nil, nil, fmt.Errorf("open image file %q: %w", str, openErr)
+				}
+				defer f.Close()
+				data, readErr := io.ReadAll(io.LimitReader(f, manageArtifactMaxImageReadBytes+1))
+				if readErr != nil {
+					return nil, nil, fmt.Errorf("read image file %q: %w", str, readErr)
+				}
+				if len(data) == 0 {
+					return nil, nil, fmt.Errorf("image file %q is empty", str)
+				}
+				mimeType := http.DetectContentType(data)
+				ext := strings.ToLower(filepath.Ext(str))
+				switch ext {
+				case ".png":
+					mimeType = "image/png"
+				case ".jpg", ".jpeg":
+					mimeType = "image/jpeg"
+				case ".webp":
+					mimeType = "image/webp"
+				case ".gif":
+					mimeType = "image/gif"
+				}
+				return &videogen.ManagedVideoImage{
+					Bytes:     data,
+					MediaType: canonicalArtifactMediaType(mimeType),
+				}, nil, nil
+			}
+		}
+
+		// Try as base64 string if sufficiently long and does not look like a filesystem path
+		if len(str) > 64 && !strings.ContainsAny(str, "/\\") {
+			decoded, b64Err := base64.StdEncoding.DecodeString(str)
+			if b64Err == nil && len(decoded) > 0 {
+				detected := http.DetectContentType(decoded)
+				if strings.HasPrefix(detected, "image/") {
+					return &videogen.ManagedVideoImage{
+						Bytes:     decoded,
+						MediaType: canonicalArtifactMediaType(detected),
+					}, nil, nil
+				}
+			}
+		}
+
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve image path %q: %w", str, err)
+		}
+		return nil, nil, fmt.Errorf("image file %q not found or is not a regular file", str)
+
+	case map[string]any:
+		if pathVal := strings.TrimSpace(asString(v["path"])); pathVal != "" {
+			return r.resolveVideoImageInput(ctx, scope, principal, pathVal)
+		}
+		if b64Val := strings.TrimSpace(firstNonEmptyString(asString(v["bytes_base64"]), asString(v["data"]))); b64Val != "" {
+			decoded, err := base64.StdEncoding.DecodeString(b64Val)
+			if err != nil {
+				return nil, nil, fmt.Errorf("decode image base64: %w", err)
+			}
+			mime := strings.TrimSpace(asString(v["mime_type"]))
+			if mime == "" {
+				mime = http.DetectContentType(decoded)
+			}
+			return &videogen.ManagedVideoImage{
+				Bytes:     decoded,
+				MediaType: canonicalArtifactMediaType(mime),
+			}, nil, nil
+		}
+		if assetID := strings.TrimSpace(asString(v["asset_id"])); assetID != "" {
+			if r.sessions == nil {
+				return nil, nil, errors.New("sessions service is not configured to resolve asset_id")
+			}
+			asset, payload, err := r.sessions.ReadSessionMediaAsset(principal.AccountScopeID, principal.SessionID, assetID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("read image asset %q: %w", assetID, err)
+			}
+			mime := asset.DetectedMIMEType
+			if mime == "" {
+				mime = http.DetectContentType(payload)
+			}
+			return &videogen.ManagedVideoImage{
+				Bytes:     payload,
+				MediaType: canonicalArtifactMediaType(mime),
+			}, nil, nil
+		}
+		if artRefRaw, ok := v["artifact_reference"].(map[string]any); ok {
+			return r.resolveVideoArtifactReference(ctx, principal, artRefRaw)
+		}
+		if artV3Raw, ok := v["artifact_v3_reference"].(map[string]any); ok {
+			return r.resolveVideoArtifactV3Reference(ctx, principal, artV3Raw)
+		}
+		if strings.TrimSpace(asString(v["collection_id"])) != "" && strings.TrimSpace(asString(v["variant_id"])) != "" {
+			return r.resolveVideoArtifactReference(ctx, principal, v)
+		}
+		if strings.TrimSpace(asString(v["artifact_id"])) != "" && strings.TrimSpace(asString(v["revision_ref"])) != "" {
+			return r.resolveVideoArtifactV3Reference(ctx, principal, v)
+		}
+		return nil, nil, errors.New("unsupported image input object: expected path, asset_id, artifact_reference, or bytes_base64")
+
+	default:
+		return nil, nil, fmt.Errorf("unsupported image input type %T", raw)
+	}
+}
+
+func (r *Runtime) resolveVideoArtifactReference(ctx context.Context, principal artifact.Principal, m map[string]any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {
+	if r.artifactAuthority == nil {
+		return nil, nil, errors.New("artifact authority is not configured to resolve artifact reference")
+	}
+	sessionID := strings.TrimSpace(asString(m["session_id"]))
+	if sessionID == "" {
+		sessionID = principal.SessionID
+	}
+	collectionID := strings.TrimSpace(asString(m["collection_id"]))
+	variantID := strings.TrimSpace(asString(m["variant_id"]))
+	eventSeq := asUint64(m["event_seq"])
+	if collectionID == "" || variantID == "" || eventSeq == 0 {
+		return nil, nil, errors.New("artifact reference requires collection_id, variant_id, and non-zero event_seq")
+	}
+	ref := pebblestore.SessionArtifactSelectionReference{
+		SessionID:    sessionID,
+		CollectionID: collectionID,
+		VariantID:    variantID,
+		EventSeq:     eventSeq,
+	}
+	body, variant, err := r.artifactAuthority.ReadReference(ctx, principal, ref, manageArtifactMaxImageReadBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read image artifact reference: %w", err)
+	}
+	if len(body) == 0 || !strings.HasPrefix(canonicalArtifactMediaType(variant.MediaType), "image/") {
+		return nil, nil, errors.New("artifact reference is empty or not a supported ready image")
+	}
+	return &videogen.ManagedVideoImage{
+		Bytes:     append([]byte(nil), body...),
+		MediaType: canonicalArtifactMediaType(variant.MediaType),
+	}, &ref, nil
+}
+
+func (r *Runtime) resolveVideoArtifactV3Reference(ctx context.Context, principal artifact.Principal, m map[string]any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {
+	if r.artifactV3Author == nil {
+		return nil, nil, errors.New("artifact v3 authority is not configured to resolve artifact_v3_reference")
+	}
+	sessionID := strings.TrimSpace(asString(m["session_id"]))
+	if sessionID == "" {
+		sessionID = principal.SessionID
+	}
+	artifactID := strings.TrimSpace(asString(m["artifact_id"]))
+	revisionRef := strings.TrimSpace(asString(m["revision_ref"]))
+	if artifactID == "" || revisionRef == "" {
+		return nil, nil, errors.New("artifact_v3_reference requires artifact_id and revision_ref")
+	}
+	payload, err := r.artifactV3Author.ReadPreviewEvidence(ctx, principal.AccountScopeID, principal.UserID, sessionID, artifactID, revisionRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read artifact v3 preview evidence: %w", err)
+	}
+	mime := http.DetectContentType(payload)
+	return &videogen.ManagedVideoImage{
+		Bytes:     payload,
+		MediaType: canonicalArtifactMediaType(mime),
+	}, nil, nil
+}
+
 func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (managedVideoArtifactResult, error) {
 	if strings.TrimSpace(principal.SessionID) == "" {
 		return managedVideoArtifactResult{}, identity.ErrPrincipalRequired
@@ -1695,7 +1908,8 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		switch key {
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
-			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
+			"image", "image_path":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -1764,6 +1978,8 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 
 	var sourceRef *pebblestore.SessionArtifactSelectionReference
 	var source *videogen.ManagedVideoSource
+	var videoImage *videogen.ManagedVideoImage
+
 	sourceFields := 0
 	for _, key := range []string{"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq"} {
 		if _, supplied := args[key]; supplied {
@@ -1788,15 +2004,43 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		if readErr != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("resolve video iteration source: %w", readErr)
 		}
-		if len(body) == 0 || (variant.MediaType != "video/mp4" && !strings.HasPrefix(variant.MediaType, "video/")) {
-			return managedVideoArtifactResult{}, errors.New("video iteration source is empty or not a supported ready video/mp4")
+		if strings.HasPrefix(variant.MediaType, "image/") {
+			if len(body) == 0 {
+				return managedVideoArtifactResult{}, errors.New("image source artifact is empty")
+			}
+			videoImage = &videogen.ManagedVideoImage{
+				Bytes:     append([]byte(nil), body...),
+				MediaType: canonicalArtifactMediaType(variant.MediaType),
+			}
+			sourceRef = &ref
+		} else if variant.MediaType == "video/mp4" || strings.HasPrefix(variant.MediaType, "video/") {
+			if len(body) == 0 {
+				return managedVideoArtifactResult{}, errors.New("video iteration source is empty")
+			}
+			sourceRef = &ref
+			interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+			source = &videogen.ManagedVideoSource{
+				Bytes:         append([]byte(nil), body...),
+				MediaType:     "video/mp4",
+				InteractionID: interactionID,
+			}
+		} else {
+			return managedVideoArtifactResult{}, errors.New("video iteration source is empty or not a supported ready video/mp4 or image")
 		}
-		sourceRef = &ref
-		interactionID := strings.TrimSpace(variant.Lineage.IterationID)
-		source = &videogen.ManagedVideoSource{
-			Bytes:         append([]byte(nil), body...),
-			MediaType:     "video/mp4",
-			InteractionID: interactionID,
+	}
+
+	rawImage := args["image"]
+	if rawImage == nil {
+		rawImage = args["image_path"]
+	}
+	if rawImage != nil {
+		img, imgRef, err := r.resolveVideoImageInput(ctx, scope, principal, rawImage)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("resolve image input: %w", err)
+		}
+		videoImage = img
+		if imgRef != nil && sourceRef == nil {
+			sourceRef = imgRef
 		}
 	}
 
@@ -1818,6 +2062,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
 			Source:          source,
+			Image:           videoImage,
 		})
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("generate managed video: %w", err)
@@ -1910,6 +2155,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		CostPerVideoUSD:       costPerVideo,
 		TotalEstimatedCostUSD: totalCost,
 		PricingSummary:        pricingSummary,
+		HasImageInput:         videoImage != nil,
 	}, nil
 }
 

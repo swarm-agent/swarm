@@ -3,6 +3,7 @@ package videogen
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,12 +13,23 @@ import (
 	"time"
 )
 
+type openRouterFrameImage struct {
+	Type      string                  `json:"type"`
+	ImageURL  openRouterImageURLValue `json:"image_url"`
+	FrameType string                  `json:"frame_type"`
+}
+
+type openRouterImageURLValue struct {
+	URL string `json:"url"`
+}
+
 type openRouterVideoRequest struct {
-	Model       string `json:"model"`
-	Prompt      string `json:"prompt"`
-	AspectRatio string `json:"aspect_ratio,omitempty"`
-	Duration    int    `json:"duration,omitempty"`
-	Resolution  string `json:"resolution,omitempty"`
+	Model       string                 `json:"model"`
+	Prompt      string                 `json:"prompt"`
+	AspectRatio string                 `json:"aspect_ratio,omitempty"`
+	Duration    int                    `json:"duration,omitempty"`
+	Resolution  string                 `json:"resolution,omitempty"`
+	FrameImages []openRouterFrameImage `json:"frame_images,omitempty"`
 }
 
 type openRouterVideoJobResponse struct {
@@ -39,6 +51,7 @@ func (s *Service) generateOpenRouter(
 	aspectRatio string,
 	resolution string,
 	durationSeconds int,
+	img *ManagedVideoImage,
 ) (ManagedVideoResult, error) {
 	reqBody := openRouterVideoRequest{
 		Model:       modelID,
@@ -46,6 +59,20 @@ func (s *Service) generateOpenRouter(
 		AspectRatio: aspectRatio,
 		Duration:    durationSeconds,
 		Resolution:  resolution,
+	}
+	if img != nil && len(img.Bytes) > 0 {
+		mimeType := strings.ToLower(strings.TrimSpace(img.MediaType))
+		if mimeType == "" {
+			mimeType = http.DetectContentType(img.Bytes)
+		}
+		dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(img.Bytes))
+		reqBody.FrameImages = []openRouterFrameImage{
+			{
+				Type:      "image_url",
+				ImageURL:  openRouterImageURLValue{URL: dataURI},
+				FrameType: "first_frame",
+			},
+		}
 	}
 
 	payload, err := json.Marshal(reqBody)

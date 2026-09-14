@@ -2,7 +2,11 @@ package tool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -305,5 +309,268 @@ func TestManageArtifactGenerateVideoExplicitTitle(t *testing.T) {
 	}
 	if authority.created.Presentation.Description != "A speeding red sports car on the highway" {
 		t.Fatalf("created presentation description mismatch: %q", authority.created.Presentation.Description)
+	}
+}
+
+func TestManageArtifactGenerateVideoWithWorkspaceImagePath(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	tempDir := t.TempDir()
+	pngData := testPNGImage()
+	imagePath := filepath.Join(tempDir, "input_portrait.png")
+	if err := os.WriteFile(imagePath, pngData, 0o644); err != nil {
+		t.Fatalf("write test image: %v", err)
+	}
+
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = tempDir
+
+	call := Call{
+		CallID: "video-gen-img-path",
+		Name:   "manage_artifact",
+		Arguments: fmt.Sprintf(`{"action":"generate_video","prompt":"Animate this portrait with gentle camera motion","image":"%s"}`,
+			filepath.Base(imagePath)),
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video with image path: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", res["status"])
+	}
+	if res["has_image_input"] != true {
+		t.Fatalf("expected has_image_input = true in response: %+v", res)
+	}
+	if generator.lastReq.Image == nil {
+		t.Fatal("expected generator.lastReq.Image to be non-nil")
+	}
+	if string(generator.lastReq.Image.Bytes) != string(pngData) {
+		t.Fatal("generator image bytes mismatch")
+	}
+	if generator.lastReq.Image.MediaType != "image/png" {
+		t.Fatalf("generator image media type = %q, want image/png", generator.lastReq.Image.MediaType)
+	}
+}
+
+func TestManageArtifactGenerateVideoWithDataURI(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	pngData := testPNGImage()
+	dataURI := fmt.Sprintf("data:image/png;base64,%s", base64.StdEncoding.EncodeToString(pngData))
+
+	call := Call{
+		CallID: "video-gen-data-uri",
+		Name:   "manage_artifact",
+		Arguments: fmt.Sprintf(`{"action":"generate_video","prompt":"Bring painting to life","image":"%s"}`,
+			dataURI),
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video with data URI: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["has_image_input"] != true {
+		t.Fatalf("expected has_image_input = true")
+	}
+	if generator.lastReq.Image == nil {
+		t.Fatal("expected non-nil image in request")
+	}
+	if string(generator.lastReq.Image.Bytes) != string(pngData) {
+		t.Fatal("image bytes mismatch")
+	}
+	if generator.lastReq.Image.MediaType != "image/png" {
+		t.Fatalf("image media type = %q, want image/png", generator.lastReq.Image.MediaType)
+	}
+}
+
+func TestManageArtifactGenerateVideoWithArtifactReference(t *testing.T) {
+	runtime := NewRuntime(1)
+	pngData := testPNGImage()
+	authority := &fakeArtifactAuthority{
+		variant: pebblestore.SessionArtifactVariant{
+			ID:           "img-var-1",
+			CollectionID: "coll-img",
+			SessionID:    "session-1",
+			EventSeq:     10,
+			Status:       pebblestore.SessionArtifactStatusReady,
+			MediaType:    "image/png",
+		},
+		readBody: pngData,
+	}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "video-gen-art-ref",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_video",
+			"prompt": "Animate the artwork",
+			"image": {
+				"session_id": "session-1",
+				"collection_id": "coll-img",
+				"variant_id": "img-var-1",
+				"event_seq": 10
+			}
+		}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video with artifact reference: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["has_image_input"] != true {
+		t.Fatalf("expected has_image_input = true")
+	}
+	if generator.lastReq.Image == nil {
+		t.Fatal("expected non-nil image in request")
+	}
+	if string(generator.lastReq.Image.Bytes) != string(pngData) {
+		t.Fatal("image bytes mismatch")
+	}
+	if authority.created.SourceVariantID != "img-var-1" || authority.created.SourceCollectionID != "coll-img" || authority.created.SourceEventSeq != 10 {
+		t.Fatalf("lineage not preserved: %+v", authority.created)
+	}
+}
+
+func TestManageArtifactGenerateVideoWithSourceImageArtifact(t *testing.T) {
+	runtime := NewRuntime(1)
+	pngData := testPNGImage()
+	authority := &fakeArtifactAuthority{
+		variant: pebblestore.SessionArtifactVariant{
+			ID:           "source-img-var",
+			CollectionID: "coll-source",
+			SessionID:    "session-1",
+			EventSeq:     25,
+			Status:       pebblestore.SessionArtifactStatusReady,
+			MediaType:    "image/jpeg",
+		},
+		readBody: pngData,
+	}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "video-gen-source-img",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_video",
+			"prompt": "Add subtle motion to this image",
+			"source_session_id": "session-1",
+			"source_collection_id": "coll-source",
+			"source_variant_id": "source-img-var",
+			"source_event_seq": 25
+		}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video with source image: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["has_image_input"] != true {
+		t.Fatalf("expected has_image_input = true")
+	}
+	if generator.lastReq.Image == nil {
+		t.Fatal("expected non-nil image from source artifact")
+	}
+	if generator.lastReq.Source != nil {
+		t.Fatal("expected nil video source when source is an image")
+	}
+	if authority.created.SourceVariantID != "source-img-var" || authority.created.SourceEventSeq != 25 {
+		t.Fatalf("source lineage mismatch: %+v", authority.created)
+	}
+}
+
+func TestManageArtifactGenerateVideoWithImagePathArg(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	tempDir := t.TempDir()
+	pngData := testPNGImage()
+	imagePath := filepath.Join(tempDir, "alt_input.png")
+	if err := os.WriteFile(imagePath, pngData, 0o644); err != nil {
+		t.Fatalf("write test image: %v", err)
+	}
+
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = tempDir
+
+	call := Call{
+		CallID: "video-gen-image-path-arg",
+		Name:   "manage_artifact",
+		Arguments: fmt.Sprintf(`{"action":"generate_video","prompt":"Animate image","image_path":"%s"}`,
+			filepath.Base(imagePath)),
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video with image_path arg: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["has_image_input"] != true {
+		t.Fatalf("expected has_image_input = true")
+	}
+	if generator.lastReq.Image == nil {
+		t.Fatal("expected non-nil image")
+	}
+}
+
+func TestManageArtifactGenerateVideoImageNotFound(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "video-gen-missing-img",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_video",
+			"prompt": "Animate image",
+			"image": "nonexistent_file_12345.png"
+		}`,
+	}
+
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err == nil || !strings.Contains(err.Error(), "resolve image input") {
+		t.Fatalf("expected error containing 'resolve image input', got: %v", err)
 	}
 }

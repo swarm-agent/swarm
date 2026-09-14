@@ -3,9 +3,14 @@ package videogen
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	"image/png"
 	"io"
 	"net/http"
 	"strings"
@@ -17,8 +22,14 @@ type veoPredictRequest struct {
 	Parameters *veoParameters `json:"parameters,omitempty"`
 }
 
+type veoImageInput struct {
+	BytesBase64Encoded string `json:"bytesBase64Encoded,omitempty"`
+	MIMEType           string `json:"mimeType,omitempty"`
+}
+
 type veoInstance struct {
-	Prompt string `json:"prompt"`
+	Prompt string         `json:"prompt"`
+	Image  *veoImageInput `json:"image,omitempty"`
 }
 
 type veoParameters struct {
@@ -58,9 +69,18 @@ func (s *Service) generateGoogleVeo(
 	aspectRatio string,
 	resolution string,
 	durationSeconds int,
+	img *ManagedVideoImage,
 ) (ManagedVideoResult, error) {
+	instance := veoInstance{Prompt: prompt}
+	if img != nil && len(img.Bytes) > 0 {
+		veoImg, err := prepareVeoImage(img)
+		if err != nil {
+			return ManagedVideoResult{}, err
+		}
+		instance.Image = veoImg
+	}
 	reqBody := veoPredictRequest{
-		Instances: []veoInstance{{Prompt: prompt}},
+		Instances: []veoInstance{instance},
 		Parameters: &veoParameters{
 			AspectRatio:     aspectRatio,
 			DurationSeconds: durationSeconds,
@@ -178,4 +198,42 @@ func extractVeoVideoURI(op veoOperationResponse) string {
 		return op.Response.GeneratedVideos[0].Video.URI
 	}
 	return ""
+}
+
+func prepareVeoImage(img *ManagedVideoImage) (*veoImageInput, error) {
+	if img == nil || len(img.Bytes) == 0 {
+		return nil, errors.New("image bytes are empty")
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(img.MediaType))
+	if mimeType == "image/jpeg" || mimeType == "image/jpg" {
+		return &veoImageInput{
+			BytesBase64Encoded: base64.StdEncoding.EncodeToString(img.Bytes),
+			MIMEType:           "image/jpeg",
+		}, nil
+	}
+	if mimeType == "image/png" {
+		return &veoImageInput{
+			BytesBase64Encoded: base64.StdEncoding.EncodeToString(img.Bytes),
+			MIMEType:           "image/png",
+		}, nil
+	}
+	decoded, _, err := image.Decode(bytes.NewReader(img.Bytes))
+	if err != nil {
+		detected := http.DetectContentType(img.Bytes)
+		if detected == "image/jpeg" || detected == "image/png" {
+			return &veoImageInput{
+				BytesBase64Encoded: base64.StdEncoding.EncodeToString(img.Bytes),
+				MIMEType:           detected,
+			}, nil
+		}
+		return nil, fmt.Errorf("unsupported image format %q for Veo: %w", mimeType, err)
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, decoded); err != nil {
+		return nil, fmt.Errorf("convert image to PNG for Veo: %w", err)
+	}
+	return &veoImageInput{
+		BytesBase64Encoded: base64.StdEncoding.EncodeToString(buf.Bytes()),
+		MIMEType:           "image/png",
+	}, nil
 }

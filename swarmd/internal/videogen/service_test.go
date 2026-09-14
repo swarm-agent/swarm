@@ -184,7 +184,7 @@ func TestGenerateGoogleOmniInitialAndConversationalEdit(t *testing.T) {
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 
 	// Turn 1: Initial generation with Omni explicitly requested
-	res1, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "A violinist in the park", "16:9", "720p", nil)
+	res1, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "A violinist in the park", "16:9", "720p", nil, nil)
 	if err != nil {
 		t.Fatalf("Turn 1 failed: %v", err)
 	}
@@ -395,7 +395,7 @@ func TestGenerateOpenRouterVideo(t *testing.T) {
 	svc.SetBaseURLs("", server.URL)
 	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
 
-	res, err := svc.generateOpenRouter(context.Background(), "test-or-key", "google/veo-3.1", "A serene lake", "16:9", "720p", 8)
+	res, err := svc.generateOpenRouter(context.Background(), "test-or-key", "google/veo-3.1", "A serene lake", "16:9", "720p", 8, nil)
 	if err != nil {
 		t.Fatalf("generateOpenRouter failed: %v", err)
 	}
@@ -407,6 +407,210 @@ func TestGenerateOpenRouterVideo(t *testing.T) {
 	}
 	if res.Provider != ProviderOpenRouter {
 		t.Fatalf("provider = %q, want %q", res.Provider, ProviderOpenRouter)
+	}
+}
+
+func TestGenerateGoogleVeoVideoWithImageInput(t *testing.T) {
+	fakeMP4 := []byte("fake-veo-image-video-bytes")
+	var receivedImageB64, receivedMIME string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case stringsContains(r.URL.Path, "predictLongRunning"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			instances, _ := body["instances"].([]any)
+			if len(instances) > 0 {
+				inst := instances[0].(map[string]any)
+				if imgMap, ok := inst["image"].(map[string]any); ok {
+					receivedImageB64, _ = imgMap["bytesBase64Encoded"].(string)
+					receivedMIME, _ = imgMap["mimeType"].(string)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "operations/op-img-1",
+				"done": false,
+			})
+		case stringsContains(r.URL.Path, "operations/op-img-1"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "operations/op-img-1",
+				"done": true,
+				"response": map[string]any{
+					"generateVideoResponse": map[string]any{
+						"generatedSamples": []map[string]any{
+							{"video": map[string]string{"uri": "/download/video-img.mp4"}},
+						},
+					},
+				},
+			})
+		case stringsContains(r.URL.Path, "download/video-img.mp4"):
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(fakeMP4)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	svc := NewService(authStore, nil, nil)
+	svc.SetBaseURLs(server.URL, "")
+	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+
+	rawPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	res, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "Animate this portrait",
+		Principal: principal,
+		Image: &ManagedVideoImage{
+			Bytes:     rawPNG,
+			MediaType: "image/png",
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedVideo with image failed: %v", err)
+	}
+	if string(res.Bytes) != string(fakeMP4) {
+		t.Fatalf("bytes mismatch: %q", string(res.Bytes))
+	}
+	if receivedMIME != "image/png" {
+		t.Fatalf("expected MIME image/png, got %q", receivedMIME)
+	}
+	if receivedImageB64 != base64.StdEncoding.EncodeToString(rawPNG) {
+		t.Fatalf("image base64 mismatch")
+	}
+}
+
+func TestGenerateGoogleOmniWithImageInput(t *testing.T) {
+	fakeMP4 := []byte("fake-omni-image-video-bytes")
+	rawPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
+	var receivedImageB64, receivedMIME, receivedText string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !stringsContains(r.URL.Path, "/interactions") {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		inputs, ok := req["input"].([]any)
+		if ok {
+			for _, item := range inputs {
+				m := item.(map[string]any)
+				if m["type"] == "image" {
+					receivedImageB64, _ = m["data"].(string)
+					receivedMIME, _ = m["mime_type"].(string)
+				}
+				if m["type"] == "text" {
+					receivedText, _ = m["text"].(string)
+				}
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "omni-img-1",
+			"status": "completed",
+			"model":  "gemini-omni-1.1-flash",
+			"steps": []map[string]any{
+				{
+					"type": "model_output",
+					"content": []map[string]any{
+						{"type": "video", "mime_type": "video/mp4", "data": base64.StdEncoding.EncodeToString(fakeMP4)},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	svc := NewService(authStore, nil, nil)
+	svc.SetBaseURLs(server.URL, "")
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	res, err := svc.generateGoogleOmni(context.Background(), "test-google-key", "gemini-omni-1.1-flash", "Bring this image to life", "16:9", "720p", nil, &ManagedVideoImage{
+		Bytes:     rawPNG,
+		MediaType: "image/png",
+	})
+	if err != nil {
+		t.Fatalf("generateGoogleOmni with image failed: %v", err)
+	}
+	if string(res.Bytes) != string(fakeMP4) {
+		t.Fatalf("bytes mismatch: %q", string(res.Bytes))
+	}
+	if receivedText != "Bring this image to life" {
+		t.Fatalf("text mismatch: %q", receivedText)
+	}
+	if receivedMIME != "image/png" {
+		t.Fatalf("MIME mismatch: %q", receivedMIME)
+	}
+	if receivedImageB64 != base64.StdEncoding.EncodeToString(rawPNG) {
+		t.Fatalf("base64 mismatch")
+	}
+	_ = principal
+}
+
+func TestGenerateOpenRouterWithImageInput(t *testing.T) {
+	fakeMP4 := []byte("fake-openrouter-image-video-bytes")
+	rawPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\rIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
+	var receivedFrameURL, receivedFrameType string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && stringsContains(r.URL.Path, "/api/v1/videos"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if frames, ok := body["frame_images"].([]any); ok && len(frames) > 0 {
+				f := frames[0].(map[string]any)
+				receivedFrameType, _ = f["frame_type"].(string)
+				if imgURL, ok := f["image_url"].(map[string]any); ok {
+					receivedFrameURL, _ = imgURL["url"].(string)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":          "job-or-img",
+				"status":      "pending",
+				"polling_url": "/api/v1/videos/job-or-img",
+			})
+		case r.Method == http.MethodGet && stringsContains(r.URL.Path, "/api/v1/videos/job-or-img"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            "job-or-img",
+				"status":        "completed",
+				"unsigned_urls": []string{"/download/or-img.mp4"},
+			})
+		case stringsContains(r.URL.Path, "download/or-img.mp4"):
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(fakeMP4)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authStore, _ := setupTestAuthStore(t, "", "test-or-key")
+	svc := NewService(authStore, nil, nil)
+	svc.SetBaseURLs("", server.URL)
+	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+
+	res, err := svc.generateOpenRouter(context.Background(), "test-or-key", "google/veo-3.1", "Slow pan across image", "16:9", "720p", 4, &ManagedVideoImage{
+		Bytes:     rawPNG,
+		MediaType: "image/png",
+	})
+	if err != nil {
+		t.Fatalf("generateOpenRouter with image failed: %v", err)
+	}
+	if string(res.Bytes) != string(fakeMP4) {
+		t.Fatalf("bytes mismatch: %q", string(res.Bytes))
+	}
+	if receivedFrameType != "first_frame" {
+		t.Fatalf("expected frame_type first_frame, got %q", receivedFrameType)
+	}
+	expectedDataURI := "data:image/png;base64," + base64.StdEncoding.EncodeToString(rawPNG)
+	if receivedFrameURL != expectedDataURI {
+		t.Fatalf("expected data URI %q, got %q", expectedDataURI, receivedFrameURL)
 	}
 }
 
