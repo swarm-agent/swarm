@@ -2775,7 +2775,7 @@ export function DesktopAppPage() {
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
   const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
     blocked: false,
-    automation: false,
+    automation: true,
     needs_review: false,
     in_progress: false,
     pinned: false,

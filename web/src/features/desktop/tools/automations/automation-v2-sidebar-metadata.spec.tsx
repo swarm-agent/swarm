@@ -251,7 +251,7 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
 
   const compactMarkup = renderToStaticMarkup(
     <AutomationSidebarCompactCardView
-      counts={{ running: 1, scheduled: 2, paused: 0, pending: 0, total: 3, runsToday: 4, upcoming: 2 }}
+      counts={{ running: 1, scheduled: 2, paused: 0, pending: 0, total: 3, runsToday: 4, upcoming: 2, alerts: 0 }}
       rootCount={8}
       onExpand={() => { expanded = true }}
       onOpenAutomations={() => { navigated = true }}
@@ -264,10 +264,12 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
   assert.match(compactMarkup, /1 running/)
   assert.match(compactMarkup, /4 ran today · 2 upcoming/)
   assert.match(compactMarkup, /Expand/)
+  assert.match(compactMarkup, /data-testid="compact-expand-button"/)
+  assert.match(compactMarkup, /data-testid="compact-view-button"/)
 
-  // Direct element test for expand and view click handlers
+  // Direct element test: clicking card navigates to top-down view when onOpenAutomations is present
   const element = AutomationSidebarCompactCardView({
-    counts: { running: 0, scheduled: 5, paused: 0, pending: 0, total: 5, runsToday: 0, upcoming: 0 },
+    counts: { running: 0, scheduled: 5, paused: 0, pending: 0, total: 5, runsToday: 0, upcoming: 0, alerts: 0 },
     rootCount: 5,
     onExpand: () => { expanded = true },
     onOpenAutomations: () => { navigated = true },
@@ -275,24 +277,65 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
   assert.ok(element)
   assert.equal((element as any).type, 'div')
   ;(element as any).props.onClick()
-  assert.equal(expanded, true)
+  assert.equal(navigated, true)
 
-  expanded = false
+  navigated = false
   ;(element as any).props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  assert.equal(navigated, true)
+
+  navigated = false
+  ;(element as any).props.onKeyDown({ key: ' ', preventDefault() {} })
+  assert.equal(navigated, true)
+
+  // When onOpenAutomations is absent, clicking card expands
+  const expandFallbackElement = AutomationSidebarCompactCardView({
+    counts: { running: 0, scheduled: 5, paused: 0, pending: 0, total: 5, runsToday: 0, upcoming: 0, alerts: 0 },
+    rootCount: 5,
+    onExpand: () => { expanded = true },
+  })
+  ;(expandFallbackElement as any).props.onClick()
   assert.equal(expanded, true)
 
+  // Find and trigger the explicit Expand button
   expanded = false
-  ;(element as any).props.onKeyDown({ key: ' ', preventDefault() {} })
+  const bottomRow = (element as any).props.children[1]
+  const actionsContainer = bottomRow.props.children[1]
+  const expandButton = actionsContainer.props.children[1]
+  assert.ok(expandButton)
+  assert.equal(expandButton.props['data-testid'], 'compact-expand-button')
+  expandButton.props.onClick({ stopPropagation() {} })
   assert.equal(expanded, true)
 
   // Find and trigger the View button
-  const bottomRow = (element as any).props.children[1]
-  const actionsContainer = bottomRow.props.children[1]
+  navigated = false
   const viewButton = actionsContainer.props.children[0]
   assert.ok(viewButton)
-  assert.equal(viewButton.type, 'button')
+  assert.equal(viewButton.props['data-testid'], 'compact-view-button')
   viewButton.props.onClick({ stopPropagation() {} })
   assert.equal(navigated, true)
+})
+
+test('compact card renders alert pill and warning icon when alerts are present', () => {
+  const alertMarkup = renderToStaticMarkup(
+    <AutomationSidebarCompactCardView
+      counts={{ running: 0, scheduled: 2, paused: 0, pending: 0, total: 2, runsToday: 3, upcoming: 1, alerts: 2 }}
+      rootCount={2}
+      onExpand={() => {}}
+      onOpenAutomations={() => {}}
+    />
+  )
+  assert.match(alertMarkup, /2 alerts/)
+  assert.match(alertMarkup, /bg-\[var\(--app-warning-bg\)\]/)
+  assert.match(alertMarkup, /2 alerts · 3 ran today · 1 upcoming/)
+
+  const pendingMarkup = renderToStaticMarkup(
+    <AutomationSidebarCompactCardView
+      counts={{ running: 0, scheduled: 1, paused: 0, pending: 1, total: 2, runsToday: 0, upcoming: 0, alerts: 0 }}
+      rootCount={2}
+      onExpand={() => {}}
+    />
+  )
+  assert.match(pendingMarkup, /1 awaiting approval/)
 })
 
 test('sidebarVisibleGroupNodes limits visible automation cards and supports overflow expansion for 50+ automations', () => {

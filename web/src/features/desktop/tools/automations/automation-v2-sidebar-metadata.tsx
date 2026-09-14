@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Clock3, RefreshCcw } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Clock3, RefreshCcw } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
@@ -316,6 +316,7 @@ export interface AutomationSummaryCounts {
   total: number
   runsToday: number
   upcoming: number
+  alerts: number
 }
 
 export function selectAutomationSummaryCounts(
@@ -329,6 +330,7 @@ export function selectAutomationSummaryCounts(
   let pending = 0
   let runsToday = 0
   let upcoming = 0
+  let alerts = 0
 
   const seenAutomationIds = new Set<string>()
   const seenSessionIds = new Set<string>()
@@ -385,7 +387,14 @@ export function selectAutomationSummaryCounts(
       }
       if (occurrences) {
         const todayKey = getOccurrenceDayKey(now, tz)
-        runsToday += occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey).length
+        const todayOccurrences = occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey)
+        runsToday += todayOccurrences.length
+        alerts += todayOccurrences.filter(o =>
+          o.closing_state === 'attention_alert' ||
+          o.closing_state === 'blocked' ||
+          o.state === 'failed' ||
+          o.state === 'blocked'
+        ).length
       }
       if (forecast && forecast.length > 0) {
         upcoming += forecast.filter(ms => ms > now).length
@@ -422,7 +431,7 @@ export function selectAutomationSummaryCounts(
   }
 
   const total = running + scheduled + paused + pending
-  return { running, scheduled, paused, pending, total, runsToday, upcoming }
+  return { running, scheduled, paused, pending, total, runsToday, upcoming, alerts }
 }
 
 export function AutomationSidebarSummaryBadge({
@@ -439,7 +448,11 @@ export function AutomationSidebarSummaryBadge({
   if (counts.total === 0) return null
 
   const isRunning = counts.running > 0
+  const hasAlerts = (counts.alerts ?? 0) > 0
   const parts: string[] = []
+  if (hasAlerts) {
+    parts.push(`${counts.alerts} alert${counts.alerts === 1 ? '' : 's'}`)
+  }
   if (isRunning) {
     parts.push(`${counts.running} running`)
     if (counts.runsToday > 0) {
@@ -467,6 +480,7 @@ export function AutomationSidebarSummaryBadge({
   const label = parts.join(' · ')
 
   const title = [
+    counts.alerts > 0 ? `${counts.alerts} alert${counts.alerts === 1 ? '' : 's'}` : undefined,
     counts.running > 0 ? `${counts.running} active running automation${counts.running === 1 ? '' : 's'}` : undefined,
     counts.runsToday > 0 ? `${counts.runsToday} ran today` : undefined,
     counts.upcoming > 0 ? `${counts.upcoming} upcoming` : undefined,
@@ -480,15 +494,19 @@ export function AutomationSidebarSummaryBadge({
     <span
       className={cn(
         'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none tracking-normal transition-colors',
-        isRunning
-          ? 'bg-[var(--app-success-bg,rgba(34,197,94,0.14))] text-[var(--app-success)]'
-          : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
+        hasAlerts
+          ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]'
+          : isRunning
+            ? 'bg-[var(--app-success-bg,rgba(34,197,94,0.14))] text-[var(--app-success)]'
+            : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
         className,
       )}
       aria-label={`Automations summary: ${label}`}
       title={title}
     >
-      {isRunning ? (
+      {hasAlerts ? (
+        <AlertTriangle size={10} className="shrink-0 text-[var(--app-warning)]" aria-hidden="true" />
+      ) : isRunning ? (
         <span
           data-testid="summary-running-dot"
           className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--app-success)] animate-pulse"
@@ -577,8 +595,13 @@ export function AutomationSidebarCompactCardView({
 }) {
   const isRunning = counts.running > 0
   const activeCount = rootCount || counts.total
+  const alertCount = (counts.alerts ?? 0) + (counts.pending ?? 0)
+  const hasAlerts = alertCount > 0
 
   const runMetaParts: string[] = []
+  if (counts.alerts && counts.alerts > 0) {
+    runMetaParts.push(`${counts.alerts} alert${counts.alerts === 1 ? '' : 's'}`)
+  }
   if (counts.runsToday > 0) {
     runMetaParts.push(`${counts.runsToday} ran today`)
   }
@@ -587,28 +610,50 @@ export function AutomationSidebarCompactCardView({
   }
   const runMeta = runMetaParts.join(' · ')
 
+  const handleCardClick = () => {
+    if (onOpenAutomations) {
+      onOpenAutomations()
+    } else {
+      onExpand()
+    }
+  }
+
   return (
     <div
       data-testid="automation-sidebar-compact-card"
       role="button"
       tabIndex={0}
-      aria-label={`Automations overview: ${activeCount} automations, ${isRunning ? `${counts.running} running` : 'none running'}. Click to expand list`}
-      onClick={onExpand}
+      aria-label={`Automations overview: ${activeCount} automations, ${
+        hasAlerts
+          ? `${alertCount} alert${alertCount === 1 ? '' : 's'}`
+          : isRunning
+            ? `${counts.running} running`
+            : `${counts.scheduled} scheduled`
+      }. Click to open top-down Automations view`}
+      onClick={handleCardClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
-          onExpand()
+          handleCardClick()
         }
       }}
       className="group relative flex flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/40 p-2.5 text-left transition-all hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] cursor-pointer"
     >
       <div className="flex min-w-0 items-center justify-between gap-1.5">
         <span className="flex min-w-0 items-center gap-1.5">
-          <RefreshCcw
-            size={12}
-            className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
-            aria-hidden="true"
-          />
+          {hasAlerts ? (
+            <AlertTriangle
+              size={12}
+              className="shrink-0 text-[var(--app-warning)]"
+              aria-hidden="true"
+            />
+          ) : (
+            <RefreshCcw
+              size={12}
+              className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
+              aria-hidden="true"
+            />
+          )}
           <span className="truncate text-[11px] font-semibold text-[var(--app-text)]">
             Automations Overview
           </span>
@@ -616,24 +661,39 @@ export function AutomationSidebarCompactCardView({
             ({activeCount})
           </span>
         </span>
-        {isRunning ? (
-          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)]">
-            <span
-              data-testid="compact-running-dot"
-              className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
-              aria-hidden="true"
-            />
-            <span>{counts.running} running</span>
-          </span>
-        ) : counts.scheduled > 0 ? (
-          <span className="inline-flex shrink-0 items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-muted)]">
-            {counts.scheduled} scheduled
-          </span>
-        ) : (
-          <span className="inline-flex shrink-0 items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)]">
-            Idle
-          </span>
-        )}
+        <div className="flex items-center gap-1 shrink-0">
+          {counts.alerts > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)]">
+              <AlertTriangle size={8} aria-hidden="true" />
+              <span>{counts.alerts} alert{counts.alerts === 1 ? '' : 's'}</span>
+            </span>
+          )}
+          {counts.alerts === 0 && counts.pending > 0 && (
+            <span className="inline-flex items-center rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)]">
+              <span>{counts.pending} awaiting approval</span>
+            </span>
+          )}
+          {isRunning ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)]">
+              <span
+                data-testid="compact-running-dot"
+                className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
+                aria-hidden="true"
+              />
+              <span>{counts.running} running</span>
+            </span>
+          ) : counts.alerts === 0 && counts.pending === 0 ? (
+            counts.scheduled > 0 ? (
+              <span className="inline-flex items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-muted)]">
+                {counts.scheduled} scheduled
+              </span>
+            ) : (
+              <span className="inline-flex items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)]">
+                Idle
+              </span>
+            )
+          ) : null}
+        </div>
       </div>
 
       <div className="flex min-w-0 items-center justify-between gap-1 text-[9px] text-[var(--app-text-muted)]">
@@ -644,31 +704,43 @@ export function AutomationSidebarCompactCardView({
           {onOpenAutomations ? (
             <button
               type="button"
+              data-testid="compact-view-button"
               onClick={(e) => {
                 e.stopPropagation()
                 onOpenAutomations()
               }}
               title="Open top-down Automations view"
-              className="text-[9px] text-[var(--app-text-subtle)] hover:text-[var(--app-primary)] hover:underline"
+              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
             >
-              View
+              View →
             </button>
           ) : workspaceSlug ? (
             <a
               href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+              data-testid="compact-view-link"
               onClick={(e) => {
                 e.stopPropagation()
               }}
               title="Open top-down Automations view"
-              className="text-[9px] text-[var(--app-text-subtle)] hover:text-[var(--app-primary)] hover:underline"
+              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline"
             >
-              View
+              View →
             </a>
           ) : null}
-          <span className="inline-flex items-center gap-0.5 font-medium text-[var(--app-primary)] group-hover:underline">
+          <button
+            type="button"
+            data-testid="compact-expand-button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onExpand()
+            }}
+            aria-label="Expand automations in sidebar"
+            title="Expand automations in sidebar"
+            className="inline-flex items-center gap-0.5 rounded px-1 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
+          >
             <span>Expand</span>
-            <span aria-hidden="true">▾</span>
-          </span>
+            <ChevronDown size={11} className="shrink-0" aria-hidden="true" />
+          </button>
         </div>
       </div>
     </div>
