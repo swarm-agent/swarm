@@ -858,6 +858,7 @@ export interface LiveTaskToolStreamState {
   taskCallId?: string
   launchCount?: number
   imageCount?: number
+  videoCount?: number
   taskMode?: string
   executionFormat?: string
   programId?: string

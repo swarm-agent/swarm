@@ -48,6 +48,7 @@ interface StructuredToolMessageInput {
     taskMode?: string;
     executionFormat?: string;
     imageCount?: number;
+    videoCount?: number;
     programId?: string;
     programState?: string;
     activeStageId?: string;

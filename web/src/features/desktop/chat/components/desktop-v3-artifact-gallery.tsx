@@ -356,7 +356,7 @@ export function DesktopV3ArtifactGallery({
   const [iterationTimeMs, setIterationTimeMs] = useState(0)
   const [iterationPlaying, setIterationPlaying] = useState(false)
   const [iterationPlayerReadyVersion, setIterationPlayerReadyVersion] = useState(0)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'swarm-video' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [actionConfirmation, setActionConfirmation] = useState('')
   const [query, setQuery] = useState('')
