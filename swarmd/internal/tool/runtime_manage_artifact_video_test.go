@@ -30,6 +30,11 @@ func (f *fakeVideoGenerationService) GenerateManagedVideo(ctx context.Context, r
 		res.Model = "veo-3.1-generate-preview"
 		res.Provider = "google"
 	}
+	if res.EstimatedCostUSD == 0 && res.PricingSummary == "" {
+		cost, summary := videogen.EstimateVideoCost(res.Provider, res.Model, req.DurationSeconds, req.Source != nil, nil)
+		res.EstimatedCostUSD = cost
+		res.PricingSummary = summary
+	}
 	return res, nil
 }
 
@@ -104,6 +109,21 @@ func TestManageArtifactGenerateVideoInitialGeneration(t *testing.T) {
 	if res["status"] != "ok" {
 		t.Fatalf("status = %v, want ok", res["status"])
 	}
+	if res["prompt"] != "A drone flying over Tokyo at night" {
+		t.Fatalf("prompt = %v, want %q", res["prompt"], "A drone flying over Tokyo at night")
+	}
+	if res["title"] != "A drone flying over Tokyo at night" {
+		t.Fatalf("title = %v, want 'A drone flying over Tokyo at night'", res["title"])
+	}
+	if res["cost_per_video_usd"] == nil || res["estimated_cost_usd"] == nil {
+		t.Fatalf("expected cost fields in response: %+v", res)
+	}
+	if res["pricing_summary"] == "" {
+		t.Fatalf("expected non-empty pricing summary in response")
+	}
+	if refs, ok := res["references"].([]any); !ok || len(refs) != 1 {
+		t.Fatalf("expected 1 reference in references array, got: %v", res["references"])
+	}
 
 	if generator.calls != 1 {
 		t.Fatalf("expected 1 generator call, got %d", generator.calls)
@@ -120,6 +140,15 @@ func TestManageArtifactGenerateVideoInitialGeneration(t *testing.T) {
 
 	if authority.created.MediaType != "video/mp4" || authority.created.Presentation.Kind != "video" || !authority.created.Presentation.Previewable {
 		t.Fatalf("authority created artifact mismatch: %+v", authority.created)
+	}
+	if authority.created.Presentation.Label != "A drone flying over Tokyo at night" {
+		t.Fatalf("presentation label mismatch: %q", authority.created.Presentation.Label)
+	}
+	if authority.created.Presentation.Description != "A drone flying over Tokyo at night" {
+		t.Fatalf("presentation description should contain prompt, got: %q", authority.created.Presentation.Description)
+	}
+	if authority.created.CollectionDescription != "A drone flying over Tokyo at night" {
+		t.Fatalf("collection description should contain prompt, got: %q", authority.created.CollectionDescription)
 	}
 	if string(authority.created.Body) != "veo-output-video" {
 		t.Fatalf("body mismatch: %q", string(authority.created.Body))
@@ -179,6 +208,16 @@ func TestManageArtifactGenerateVideoIterationWithSource(t *testing.T) {
 		t.Fatalf("decode output: %v", err)
 	}
 
+	if res["prompt"] != "Add heavy rain and glowing neon puddles" {
+		t.Fatalf("prompt mismatch: %v", res["prompt"])
+	}
+	if res["cost_per_video_usd"] == nil || res["estimated_cost_usd"] == nil {
+		t.Fatalf("expected cost fields in iteration response: %+v", res)
+	}
+	if authority.created.Presentation.Description != "Add heavy rain and glowing neon puddles" {
+		t.Fatalf("presentation description mismatch: %q", authority.created.Presentation.Description)
+	}
+
 	if generator.lastReq.Source == nil {
 		t.Fatalf("expected non-nil source in iteration request")
 	}
@@ -222,5 +261,49 @@ func TestManageArtifactGenerateVideoCountBatch(t *testing.T) {
 	}
 	if generator.calls != 3 {
 		t.Fatalf("expected 3 generator calls, got %d", generator.calls)
+	}
+	if variants, ok := res["variants"].([]any); !ok || len(variants) != 3 {
+		t.Fatalf("expected 3 variants in variants array, got: %v", res["variants"])
+	}
+	if refs, ok := res["references"].([]any); !ok || len(refs) != 3 {
+		t.Fatalf("expected 3 references in references array, got: %v", res["references"])
+	}
+	if authority.created.IterationIndex != 3 {
+		t.Fatalf("expected last variant iteration index 3, got: %d", authority.created.IterationIndex)
+	}
+	if !strings.Contains(authority.created.IterationLabel, "Variant 3") {
+		t.Fatalf("expected iteration label to contain Variant 3, got: %q", authority.created.IterationLabel)
+	}
+}
+
+func TestManageArtifactGenerateVideoExplicitTitle(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID:    "video-gen-title",
+		Name:      "manage_artifact",
+		Arguments: `{"action":"generate_video","prompt":"A speeding red sports car on the highway","title":"Crimson Velocity"}`,
+	}
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["title"] != "Crimson Velocity" {
+		t.Fatalf("title = %v, want 'Crimson Velocity'", res["title"])
+	}
+	if authority.created.CollectionName != "Crimson Velocity" || authority.created.Presentation.Label != "Crimson Velocity" {
+		t.Fatalf("created collection name or label mismatch: %+v", authority.created)
+	}
+	if authority.created.Presentation.Description != "A speeding red sports car on the highway" {
+		t.Fatalf("created presentation description mismatch: %q", authority.created.Presentation.Description)
 	}
 }

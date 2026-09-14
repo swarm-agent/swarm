@@ -21,6 +21,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/artifact"
@@ -258,6 +259,7 @@ func manageArtifactDefinition() Definition {
 				"resume_draft":     map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
 				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash)."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image and generate_video. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
+				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated video (e.g. 'Tokyo Rain Flyover'). If omitted, a descriptive title is automatically derived from the prompt."},
 				"aspect_ratio":     map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
 				"resolution":       map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, or 360p."},
 				"duration_seconds": map[string]any{"type": "integer", "description": "Optional video duration in seconds: 4, 6, or 8 (default 8)."},
@@ -489,12 +491,25 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
 	case "generate_video":
-		variant, err := r.generateManagedVideoArtifact(ctx, scope, principal, callID, requestID, args)
+		videoResult, err := r.generateManagedVideoArtifact(ctx, scope, principal, callID, requestID, args)
 		if err != nil {
 			return "", err
 		}
-		response["artifact"] = managedArtifactVariant(variant)
-		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+		response["status"] = "ok"
+		response["title"] = videoResult.Title
+		response["prompt"] = videoResult.Prompt
+		response["model"] = videoResult.Model
+		response["provider"] = videoResult.Provider
+		response["aspect_ratio"] = videoResult.AspectRatio
+		response["resolution"] = videoResult.Resolution
+		response["duration_seconds"] = videoResult.DurationSeconds
+		response["estimated_cost_usd"] = videoResult.TotalEstimatedCostUSD
+		response["cost_per_video_usd"] = videoResult.CostPerVideoUSD
+		response["pricing_summary"] = videoResult.PricingSummary
+		response["artifact"] = managedArtifactVariant(videoResult.LastVariant)
+		response["reference"] = managedArtifactReferenceWithSession(videoResult.LastVariant.SessionID, videoResult.LastVariant.CollectionID, videoResult.LastVariant.ID, videoResult.LastVariant.EventSeq)
+		response["variants"] = videoResult.Variants
+		response["references"] = videoResult.References
 	case "create":
 		artifactV3Result, err := r.createDirectArtifactV3HTML(ctx, scope, principal, callID, args)
 		if err != nil {
@@ -1616,28 +1631,84 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	return r.artifactAuthority.Create(ctx, principal, create)
 }
 
-func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
+type managedVideoArtifactResult struct {
+	LastVariant           pebblestore.SessionArtifactVariant
+	Variants              []map[string]any
+	References            []map[string]any
+	Title                 string
+	Prompt                string
+	Model                 string
+	Provider              string
+	AspectRatio           string
+	Resolution            string
+	DurationSeconds       int
+	CostPerVideoUSD       float64
+	TotalEstimatedCostUSD float64
+	PricingSummary        string
+}
+
+func deriveVideoTitle(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "Generated video"
+	}
+	clean := prompt
+	for _, prefix := range []string{
+		"generate a video of ", "generate a video showing ", "generate video of ",
+		"a video of ", "video of ", "a clip of ", "clip of ", "show a video of ",
+		"create a video of ", "please generate a video of ",
+	} {
+		if strings.HasPrefix(strings.ToLower(clean), prefix) {
+			clean = clean[len(prefix):]
+			break
+		}
+	}
+	clean = strings.TrimLeft(clean, "\"'`# ")
+	for _, sep := range []string{". ", "! ", "? ", "; ", "\n"} {
+		if idx := strings.Index(clean, sep); idx > 0 {
+			clean = clean[:idx]
+			break
+		}
+	}
+	runes := []rune(clean)
+	if len(runes) > 50 {
+		cut := string(runes[:50])
+		if lastSpace := strings.LastIndex(cut, " "); lastSpace > 20 {
+			cut = cut[:lastSpace]
+		}
+		clean = strings.TrimSpace(cut)
+	}
+	clean = strings.TrimRight(clean, ".,;:-! ")
+	if clean == "" {
+		return "Generated video"
+	}
+	r := []rune(clean)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (managedVideoArtifactResult, error) {
 	if strings.TrimSpace(principal.SessionID) == "" {
-		return pebblestore.SessionArtifactVariant{}, identity.ErrPrincipalRequired
+		return managedVideoArtifactResult{}, identity.ErrPrincipalRequired
 	}
 	for key := range args {
 		switch key {
-		case "action", "prompt", "aspect_ratio", "resolution", "duration_seconds", "count",
+		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
+			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
 	}
 	if r.videoGeneration == nil {
-		return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact video generation is not configured")
+		return managedVideoArtifactResult{}, errors.New("manage_artifact video generation is not configured")
 	}
 	prompt := strings.TrimSpace(asString(args["prompt"]))
 	if prompt == "" {
-		return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact generate_video requires prompt")
+		return managedVideoArtifactResult{}, errors.New("manage_artifact generate_video requires prompt")
 	}
 	if len([]rune(prompt)) > manageArtifactMaxPromptRunes {
-		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact video prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+		return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact video prompt exceeds %d characters", manageArtifactMaxPromptRunes)
 	}
 
 	aspectRatio := strings.TrimSpace(asString(args["aspect_ratio"]))
@@ -1649,18 +1720,25 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		count = 1
 	}
 	if count > 8 {
-		return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact generate_video count exceeds maximum of 8")
+		return managedVideoArtifactResult{}, errors.New("manage_artifact generate_video count exceeds maximum of 8")
 	}
 
 	requestedPresentation, err := parseArtifactPresentation(args["presentation"])
 	if err != nil {
-		return pebblestore.SessionArtifactVariant{}, err
+		return managedVideoArtifactResult{}, err
 	}
 
+	rawTitle := strings.TrimSpace(firstNonEmptyString(asString(args["title"]), asString(args["collection_name"]), asString(args["label"])))
+	if rawTitle == "" || strings.EqualFold(rawTitle, "Generated video") {
+		rawTitle = deriveVideoTitle(prompt)
+	}
+	title := rawTitle
+
 	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
-	collectionName, collectionDescription := strings.TrimSpace(asString(args["collection_name"])), strings.TrimSpace(asString(args["collection_description"]))
-	if collectionName == "" {
-		collectionName = "Generated video"
+	collectionName := title
+	collectionDescription := strings.TrimSpace(asString(args["collection_description"]))
+	if collectionDescription == "" {
+		collectionDescription = prompt
 	}
 	if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
 		collectionID = supplied
@@ -1680,7 +1758,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 	}
 	if sourceFields != 0 {
 		if sourceFields != 4 {
-			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact video iteration requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
+			return managedVideoArtifactResult{}, errors.New("manage_artifact video iteration requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
 		}
 		sourceEventSeq := asUint64(args["source_event_seq"])
 		ref := pebblestore.SessionArtifactSelectionReference{
@@ -1690,14 +1768,14 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			EventSeq:     sourceEventSeq,
 		}
 		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq == 0 {
-			return pebblestore.SessionArtifactVariant{}, errors.New("manage_artifact video iteration requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
+			return managedVideoArtifactResult{}, errors.New("manage_artifact video iteration requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
 		}
 		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, 100<<20)
 		if readErr != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve video iteration source: %w", readErr)
+			return managedVideoArtifactResult{}, fmt.Errorf("resolve video iteration source: %w", readErr)
 		}
 		if len(body) == 0 || (variant.MediaType != "video/mp4" && !strings.HasPrefix(variant.MediaType, "video/")) {
-			return pebblestore.SessionArtifactVariant{}, errors.New("video iteration source is empty or not a supported ready video/mp4")
+			return managedVideoArtifactResult{}, errors.New("video iteration source is empty or not a supported ready video/mp4")
 		}
 		sourceRef = &ref
 		interactionID := strings.TrimSpace(variant.Lineage.IterationID)
@@ -1709,6 +1787,11 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 	}
 
 	var lastVariant pebblestore.SessionArtifactVariant
+	var allVariants []map[string]any
+	var allReferences []map[string]any
+	var costPerVideo, totalCost float64
+	var pricingSummary, lastModel, lastProvider string
+
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
 		if i > 0 {
@@ -1723,23 +1806,22 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			Source:          source,
 		})
 		if err != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("generate managed video: %w", err)
+			return managedVideoArtifactResult{}, fmt.Errorf("generate managed video: %w", err)
 		}
 		if len(generated.Bytes) == 0 {
-			return pebblestore.SessionArtifactVariant{}, errors.New("generated video output is empty")
+			return managedVideoArtifactResult{}, errors.New("generated video output is empty")
+		}
+
+		variantTitle := title
+		if count > 1 {
+			variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
 		}
 
 		presentation := requestedPresentation
 		presentation.Kind, presentation.Previewable = "video", true
-		if strings.TrimSpace(presentation.Label) == "" {
-			presentation.Label = strings.TrimSpace(asString(args["collection_name"]))
-		}
-		if strings.TrimSpace(presentation.Description) == "" {
-			presentation.Description = strings.TrimSpace(asString(args["collection_description"]))
-		}
-		if presentation.Label == "" {
-			presentation.Label = "Generated video"
-		}
+		presentation.Label = variantTitle
+		presentation.Description = prompt
+
 		filename := strings.TrimSpace(asString(args["filename"]))
 		if filename == "" {
 			filename = "generated-video.mp4"
@@ -1758,6 +1840,8 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			MediaType:             "video/mp4",
 			Presentation:          presentation,
 			IterationID:           generated.InteractionID,
+			IterationIndex:        i + 1,
+			IterationLabel:        variantTitle,
 			Body:                  append([]byte(nil), generated.Bytes...),
 			AutoAccept:            true,
 		}
@@ -1770,12 +1854,33 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
-			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("publish video artifact: %w", err)
+			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
 		}
 		lastVariant = published
+		allVariants = append(allVariants, managedArtifactVariant(published))
+		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
+		costPerVideo = generated.EstimatedCostUSD
+		totalCost += generated.EstimatedCostUSD
+		pricingSummary = generated.PricingSummary
+		lastModel = generated.Model
+		lastProvider = generated.Provider
 	}
 
-	return lastVariant, nil
+	return managedVideoArtifactResult{
+		LastVariant:           lastVariant,
+		Variants:              allVariants,
+		References:            allReferences,
+		Title:                 title,
+		Prompt:                prompt,
+		Model:                 lastModel,
+		Provider:              lastProvider,
+		AspectRatio:           aspectRatio,
+		Resolution:            resolution,
+		DurationSeconds:       durationSeconds,
+		CostPerVideoUSD:       costPerVideo,
+		TotalEstimatedCostUSD: totalCost,
+		PricingSummary:        pricingSummary,
+	}, nil
 }
 
 func applyImageOutputRequirements(settings map[string]any, size *string, requirements *pebblestore.SessionArtifactOutputRequirements) {

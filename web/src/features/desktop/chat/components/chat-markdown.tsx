@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -1390,6 +1390,11 @@ function toolJsonString(record: Record<string, unknown> | null | undefined, key:
   return typeof value === "string" ? value.trim() : "";
 }
 
+function toolJsonNumber(record: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 interface ManageSessionNavigation {
   sessionId: string;
   href: string;
@@ -1542,6 +1547,8 @@ export function ManageArtifactCard({
   const action = (toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create").trim().toLowerCase();
   const isImageCapabilities = action === "image_capabilities";
   const isImageGeneration = action === "generate_image";
+  const isVideoGeneration = action === "generate_video";
+  const isVideoIteration = isVideoGeneration && (Boolean(toolJsonString(args, "source_variant_id")) || Boolean(toolJsonString(args, "source_session_id")));
   const isInspection = ["get", "read", "list"].includes(action);
   const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
 
@@ -1572,25 +1579,49 @@ export function ManageArtifactCard({
       </div>
     );
   }
+  const prompt = toolJsonString(args, "prompt") || toolJsonString(output, "prompt");
+  const videoTitle = toolJsonString(args, "title") || toolJsonString(output, "title");
+  const estimatedCost = toolJsonNumber(output, "estimated_cost_usd") ?? toolJsonNumber(output, "cost_per_video_usd");
+  const pricingSummary = toolJsonString(output, "pricing_summary");
+  const videoModel = toolJsonString(output, "model");
+
   const label = artifact?.label
+    || videoTitle
     || toolJsonString(args, "label")
     || toolJsonString(args, "filename")
-    || (isImageCapabilities ? "Image generation options" : isImageGeneration ? "Generated image" : "Artifact");
+    || (isImageCapabilities ? "Image generation options" : isImageGeneration ? "Generated image" : isVideoGeneration ? "Generated video" : "Artifact");
   const description = artifact?.description
+    || prompt
     || toolJsonString(args, "description")
     || (isImageCapabilities ? "Checking the configured image model and supported output sizes." : "");
-  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type");
-  const filename = artifact?.filename || toolJsonString(args, "filename");
+  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type") || (isVideoGeneration ? "video/mp4" : "");
+  const filename = artifact?.filename || toolJsonString(args, "filename") || (isVideoGeneration ? "generated-video.mp4" : "");
   const status = artifact?.status || (isError ? "failed" : isRunning ? "staging" : "ready");
 
-  const actionTitle = isImageCapabilities ? "Image setup" : isImageGeneration ? "Image generation" : action === "create_package" ? "Artifact package" : action === "list" ? "Artifact list" : action === "get" || action === "read" ? "Artifact read" : "Artifact";
+  const actionTitle = isImageCapabilities
+    ? "Image setup"
+    : isImageGeneration
+      ? "Image generation"
+      : isVideoIteration
+        ? "Video iteration"
+        : isVideoGeneration
+          ? "Video generation"
+          : action === "create_package"
+            ? "Artifact package"
+            : action === "list"
+              ? "Artifact list"
+              : action === "get" || action === "read"
+                ? "Artifact read"
+                : "Artifact";
   const statusLabel = isError
     ? "Failed"
     : isImageCapabilities
       ? isRunning ? "Checking…" : "Options ready"
       : isImageGeneration
         ? isRunning ? "Generating…" : status === "ready" ? "Image ready" : status || "Created"
-        : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
+        : isVideoGeneration
+          ? isRunning ? "Generating video…" : status === "ready" ? "Video ready" : status || "Created"
+          : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
 
   const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
 
@@ -1659,7 +1690,7 @@ export function ManageArtifactCard({
         <div className="flex min-w-0 items-center justify-between gap-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-accent)_15%,transparent)] text-[var(--app-accent)]">
-              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : isVideoGeneration ? <Film size={14} /> : <Sparkles size={14} />}
             </span>
             <div className="min-w-0">
               <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{actionTitle}</span>
@@ -1698,6 +1729,51 @@ export function ManageArtifactCard({
           </div>
         ) : null}
 
+        {isVideoGeneration && isRunning ? (
+          <div
+            className="relative mt-3 aspect-video w-full max-w-3xl overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_35%,var(--app-border))] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-zinc-950 to-black text-white shadow-xl"
+            data-testid="video-generation-pending"
+            role="status"
+            aria-label="Generating video"
+          >
+            <div className="absolute inset-x-0 top-0 flex h-3 items-center justify-between px-2 bg-black/70 border-b border-white/10" aria-hidden="true">
+              {Array.from({ length: 14 }).map((_, idx) => (
+                <div key={idx} className="h-1.5 w-2.5 rounded-sm bg-white/20" />
+              ))}
+            </div>
+            <div className="absolute inset-x-0 bottom-0 flex h-3 items-center justify-between px-2 bg-black/70 border-t border-white/10" aria-hidden="true">
+              {Array.from({ length: 14 }).map((_, idx) => (
+                <div key={idx} className="h-1.5 w-2.5 rounded-sm bg-white/20" />
+              ))}
+            </div>
+            <div className="absolute inset-0 motion-safe:animate-pulse bg-[radial-gradient(circle_at_50%_45%,rgba(99,102,241,0.22),transparent_55%),radial-gradient(circle_at_80%_20%,rgba(236,72,153,0.18),transparent_40%)] motion-reduce:animate-none" aria-hidden="true" />
+            <div className="relative flex size-full flex-col items-center justify-center px-6 py-6 text-center">
+              <div className="relative mb-3">
+                <span className="grid size-12 place-items-center rounded-2xl bg-white/10 text-[var(--app-primary)] shadow-lg ring-1 ring-white/20">
+                  <Film size={22} className="motion-safe:animate-pulse motion-reduce:animate-none text-indigo-400" aria-hidden="true" />
+                </span>
+                <span className="absolute -bottom-1 -right-1 flex size-5 items-center justify-center rounded-full bg-[var(--app-primary)] text-white shadow">
+                  <Loader2 size={12} className="animate-spin" />
+                </span>
+              </div>
+              <div className="text-sm font-semibold tracking-wide text-white">
+                {isVideoIteration ? "Iterating video with Gemini Omni…" : "Generating cinematic video with Veo…"}
+              </div>
+              <p className="mt-1 text-xs text-white/70 max-w-md">
+                Synthesizing high-frame-rate motion and diffusion keyframes. This usually takes 30–60 seconds.
+              </p>
+              {prompt ? (
+                <div className="mt-2.5 max-w-md rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 font-mono text-[11px] text-white/90 line-clamp-2" title={prompt}>
+                  "{prompt}"
+                </div>
+              ) : null}
+              <div className="mt-3.5 h-1.5 w-48 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-indigo-500 via-[var(--app-primary)] to-pink-500 motion-safe:animate-[pulse_1.5s_ease-in-out_infinite]" />
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         {artifact && status === "ready" ? (
           href ? (
             <a
@@ -1728,6 +1804,16 @@ export function ManageArtifactCard({
           {mediaType && !isImageCapabilities ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
           {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
           {artifact?.collectionId ? <span className="font-mono text-[10px] truncate max-w-36">col: {artifact.collectionId}</span> : null}
+          {estimatedCost !== undefined && estimatedCost !== null && estimatedCost > 0 ? (
+            <span className="rounded bg-[var(--app-primary-soft)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--app-primary)]" title={pricingSummary || `Estimated cost: $${estimatedCost.toFixed(2)}`}>
+              Est. ${estimatedCost.toFixed(2)}
+            </span>
+          ) : null}
+          {videoModel ? (
+            <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">
+              {videoModel}
+            </span>
+          ) : null}
         </div>
 
         {isError && toolMessage.error ? (

@@ -2,6 +2,7 @@ package videogen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -52,14 +53,16 @@ type ManagedVideoSource struct {
 }
 
 type ManagedVideoResult struct {
-	Bytes         []byte
-	MediaType     string
-	InteractionID string
-	Model         string
-	Provider      string
-	DurationMs    int
-	Width         int
-	Height        int
+	Bytes            []byte
+	MediaType        string
+	InteractionID    string
+	Model            string
+	Provider         string
+	DurationMs       int
+	Width            int
+	Height           int
+	EstimatedCostUSD float64
+	PricingSummary   string
 }
 
 type Service struct {
@@ -188,6 +191,8 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	resolution := normalizeResolution(req.Resolution)
 	durationSeconds := normalizeDuration(req.DurationSeconds, modelID, resolution)
 
+	var result ManagedVideoResult
+	var genErr error
 	switch providerID {
 	case ProviderGoogleGemini:
 		apiKey, err := s.getGoogleAPIKey(req.Principal.AccountScopeID)
@@ -195,18 +200,29 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 			return ManagedVideoResult{}, err
 		}
 		if isOmniModel(modelID) {
-			return s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, req.Source)
+			result, genErr = s.generateGoogleOmni(ctx, apiKey, modelID, prompt, aspectRatio, resolution, req.Source)
+		} else {
+			result, genErr = s.generateGoogleVeo(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds)
 		}
-		return s.generateGoogleVeo(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds)
 	case ProviderOpenRouter:
 		apiKey, err := s.getOpenRouterAPIKey(req.Principal.AccountScopeID)
 		if err != nil {
 			return ManagedVideoResult{}, err
 		}
-		return s.generateOpenRouter(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds)
+		result, genErr = s.generateOpenRouter(ctx, apiKey, modelID, prompt, aspectRatio, resolution, durationSeconds)
 	default:
 		return ManagedVideoResult{}, fmt.Errorf("unsupported video provider %q", providerID)
 	}
+
+	if genErr != nil {
+		return ManagedVideoResult{}, genErr
+	}
+
+	catalogPricing := s.resolveModelPricing(providerID, modelID)
+	cost, summary := EstimateVideoCost(providerID, modelID, durationSeconds, isIteration, catalogPricing)
+	result.EstimatedCostUSD = cost
+	result.PricingSummary = summary
+	return result, nil
 }
 
 func (s *Service) resolveTargetModel(ctx context.Context, principal identity.Principal, isIteration bool) (string, string, error) {
@@ -308,4 +324,58 @@ func normalizeDuration(durationSeconds int, modelID, resolution string) int {
 		return durationSeconds
 	}
 	return 8
+}
+
+func (s *Service) resolveModelPricing(providerID, modelID string) []byte {
+	if s == nil || s.modelCatalog == nil {
+		return nil
+	}
+	records, err := s.modelCatalog.ListCatalog(providerID, 100)
+	if err != nil {
+		return nil
+	}
+	for _, rec := range records {
+		if strings.EqualFold(rec.Model, modelID) && len(rec.Pricing) > 0 {
+			return rec.Pricing
+		}
+	}
+	return nil
+}
+
+func EstimateVideoCost(providerID, modelID string, durationSeconds int, isIteration bool, catalogPricing []byte) (float64, string) {
+	if len(catalogPricing) > 0 {
+		var p struct {
+			VideoOutput float64 `json:"video_output"`
+			Prompt      float64 `json:"prompt"`
+		}
+		if err := json.Unmarshal(catalogPricing, &p); err == nil {
+			if p.VideoOutput > 0 {
+				return p.VideoOutput, fmt.Sprintf("$%.2f per generation (catalog)", p.VideoOutput)
+			}
+			if p.Prompt > 0 {
+				return p.Prompt, fmt.Sprintf("$%.2f per generation (catalog)", p.Prompt)
+			}
+		}
+	}
+
+	if !isIteration && (strings.Contains(strings.ToLower(modelID), "veo") || (providerID == ProviderGoogleGemini && !isOmniModel(modelID))) {
+		if durationSeconds <= 0 {
+			durationSeconds = 8
+		}
+		costPerSecond := 0.07
+		total := float64(durationSeconds) * costPerSecond
+		return total, fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (Google Veo)", costPerSecond, total, durationSeconds)
+	}
+
+	if isIteration || isOmniModel(modelID) {
+		cost := 0.05
+		return cost, "$0.05 per conversational edit (Gemini Omni Flash)"
+	}
+
+	if providerID == ProviderOpenRouter {
+		cost := 0.30
+		return cost, "$0.30 per generation (OpenRouter estimated)"
+	}
+
+	return 0.10, "$0.10 per generation (estimated)"
 }

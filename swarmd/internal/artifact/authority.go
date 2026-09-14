@@ -87,6 +87,8 @@ type CreateInput struct {
 	ArtifactStepID        string
 	CandidateIndex        int
 	IterationID           string
+	IterationIndex        int
+	IterationLabel        string
 	AutoAccept            bool
 	Body                  []byte
 }
@@ -995,12 +997,20 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 		if iterationID == "" {
 			iterationID = strings.TrimSpace(input.IterationID)
 		}
+		iterationIndex := principal.IterationIndex
+		if iterationIndex == 0 {
+			iterationIndex = input.IterationIndex
+		}
+		iterationLabel := strings.TrimSpace(principal.IterationLabel)
+		if iterationLabel == "" {
+			iterationLabel = strings.TrimSpace(input.IterationLabel)
+		}
 		return pebblestore.SessionArtifactLineage{
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
 		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), SourceEventSeq: input.SourceEventSeq,
 		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),
 		ChildSessionID: childSessionID, IterationGroupID: strings.TrimSpace(principal.IterationGroupID), IterationGroup: strings.TrimSpace(principal.IterationGroup),
-		IterationID: iterationID, IterationIndex: principal.IterationIndex, IterationLabel: strings.TrimSpace(principal.IterationLabel), IterationTheme: strings.TrimSpace(principal.IterationTheme),
+		IterationID: iterationID, IterationIndex: iterationIndex, IterationLabel: iterationLabel, IterationTheme: strings.TrimSpace(principal.IterationTheme),
 		IterationSectionID: strings.TrimSpace(principal.IterationSectionID), IterationSectionLabel: strings.TrimSpace(principal.IterationSectionLabel), IterationSectionStartMs: principal.IterationSectionStartMs, IterationSectionEndMs: principal.IterationSectionEndMs,
 		PartID: strings.TrimSpace(principal.PartID), PartLabel: strings.TrimSpace(principal.PartLabel), PartKind: strings.TrimSpace(principal.PartKind),
 		SelectedReviewTargetIDs: strings.TrimSpace(principal.SelectedReviewTargetIDs),
