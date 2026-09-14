@@ -41,7 +41,7 @@ export function AutomationConversations({ workspaceId, workspacePath, selected, 
     lock.current = true; setBusy(true); setError('')
     requestId.current ||= crypto.randomUUID()
     try {
-      const session = await createAutomationConversation(workspacePath, requestId.current)
+      const session = await createAutomationConversation(workspacePath, requestId.current, workspaceId)
       if (!mounted.current) return
       requestId.current = ''; onSelect(session.id); setBefore(undefined); setRefresh(value => value + 1)
     } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : 'Conversation could not be created.') }

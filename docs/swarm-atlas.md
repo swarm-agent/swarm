@@ -1697,3 +1697,16 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
 
 - Formatted `swarmd/internal/store/pebble/automation_v2_execution.go` and `swarmd/internal/store/pebble/session_purpose_test.go` with standard `gofmt` to align struct tags and map literals in compliance with precommit checks.
 - Validation: `gofmt -l` clean, `check-precommit.sh` passed.
+
+### Automations Sidecar Session Creation and Plan Model Alignment (2026-09-14)
+
+- **Backend session creation (`swarmd/internal/api/sessions_v3_primary.go`):**
+  - Added `WorkspaceID` to `sessionsV3CreateRequest` to accept `workspace_id` without failing under strict `DisallowUnknownFields` JSON decoding.
+  - In `resolveSessionsV3PrimaryBinding`, supported resolving canonical workspace binding by `WorkspaceID` matching `candidate.SourceWorkspaceID` as an authoritative binding lookup alongside `WorkspaceBindingID` and `WorkspacePath`.
+  - Included `WorkspaceID` in `sessionsV3CreatePayloadHash` canonical payload structure.
+  - Updated `sessions_v3_automation_management_test.go` verifying `POST /v3/sessions` with `workspace_id` and `mode: "plan"` returns 200 OK and binds `profile.Plan`.
+- **Frontend sidecar session configuration (`web/src/features/desktop/state/desktop-automation-conversations.ts`, `automation-v2-sidecar.tsx`, `automation-v2-workspace.tsx`, `automation-tool-page.tsx`):**
+  - Updated `createAutomationConversation` to create sessions with `mode: 'plan'` instead of `'auto'` so Swarm uses the plan agent's model (`settings.Swarm.Plan`) as requested.
+  - Passed `workspace_binding_id` from workspace entry metadata through `AutomationToolPage` and `AutomationV2Workspace` down to `createAutomationConversation`.
+  - Removed forbidden top-level `navigation_hidden`, protected `swarm_v3_session_purpose` in client-authored metadata (which is exclusively server-owned), and unnecessary `worktree_mode: 'on'` from sidecar session creation.
+  - Added regression tests in `desktop-automation-conversations.spec.ts`.

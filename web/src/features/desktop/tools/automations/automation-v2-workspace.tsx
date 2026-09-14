@@ -511,6 +511,7 @@ export function AutomationV2Workspace({
   workspaceId,
   workspacePath,
   workspaceName,
+  workspaceBindingId,
   workspaceSlug,
   initialSessionId,
   onOpenSession,
@@ -518,6 +519,7 @@ export function AutomationV2Workspace({
   workspaceId: string
   workspacePath: string
   workspaceName: string
+  workspaceBindingId?: string
   workspaceSlug?: string
   initialSessionId?: string
   onOpenSession?: (id: string) => void
@@ -1196,6 +1198,7 @@ export function AutomationV2Workspace({
           <AutomationV2Sidecar
             workspaceId={workspaceId}
             workspacePath={workspacePath}
+            workspaceBindingId={workspaceBindingId}
             selectedAutomation={selectedRecord}
             activeSessionId={session}
             onSelectSession={(id) => {

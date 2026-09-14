@@ -48,6 +48,7 @@ export function formatAutomationSessionTitle(session: SessionSnapshot): string {
 export interface AutomationV2SidecarProps {
   workspaceId: string
   workspacePath: string
+  workspaceBindingId?: string
   selectedAutomation?: AutomationV2Record | null
   activeSessionId?: string
   onSelectSession?: (sessionId: string) => void
@@ -60,6 +61,7 @@ export interface AutomationV2SidecarProps {
 export function AutomationV2Sidecar({
   workspaceId,
   workspacePath,
+  workspaceBindingId,
   selectedAutomation,
   activeSessionId,
   onSelectSession,
@@ -144,7 +146,7 @@ export function AutomationV2Sidecar({
     setCreating(true)
     try {
       const clientRequestId = crypto.randomUUID()
-      const newSession = await createAutomationConversation(workspacePath, clientRequestId, workspaceId)
+      const newSession = await createAutomationConversation(workspacePath, clientRequestId, workspaceId, undefined, workspaceBindingId)
       if (!mountedRef.current) return
       setConversations((prev) => [newSession, ...prev.filter((s) => s.id !== newSession.id)])
       setDirectSessionId(newSession.id)

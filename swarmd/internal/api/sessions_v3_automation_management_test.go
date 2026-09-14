@@ -74,4 +74,23 @@ func TestAutomationManagementCreateReplayAndProtectedPurpose(t *testing.T) {
 	if _, found, err := sessions.Store().GetActivePlan(current.ID); err != nil || found {
 		t.Fatalf("creation installed a plan: %v %v", found, err)
 	}
+
+	// Test payload with workspace_id and mode plan:
+	cleanBody := fmt.Sprintf(`{"client_request_id":"frontend-clean","purpose":"automation_management","workspace_id":"workspace-v3-%s","agent_name":"swarm","mode":"plan"}`, binding)
+	cleanResp := post(cleanBody)
+	if cleanResp.Code != http.StatusOK {
+		t.Fatalf("clean payload failed: %d %s", cleanResp.Code, cleanResp.Body.String())
+	}
+	var cleanCreated struct {
+		Session store.SessionSnapshot `json:"session"`
+	}
+	if err := json.Unmarshal(cleanResp.Body.Bytes(), &cleanCreated); err != nil {
+		t.Fatal(err)
+	}
+	if cleanCreated.Session.Mode != "plan" {
+		t.Fatalf("expected mode plan, got %q", cleanCreated.Session.Mode)
+	}
+	if cleanCreated.Session.Preference.Model != "plan" {
+		t.Fatalf("expected plan model %q, got %q", "plan", cleanCreated.Session.Preference.Model)
+	}
 }

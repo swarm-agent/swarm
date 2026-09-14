@@ -17,6 +17,7 @@ export function AutomationToolPage() {
       workspaceId={workspace.workspaceId}
       workspacePath={workspace.path}
       workspaceName={workspace.workspaceName}
+      workspaceBindingId={workspace.localWorkspaceBindingId}
       workspaceSlug={params.workspaceSlug!}
       initialSessionId={search?.sessionId}
       onOpenSession={(id) => {

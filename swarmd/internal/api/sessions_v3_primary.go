@@ -44,6 +44,7 @@ type sessionsV3CreateRequest struct {
 	WorkspacePath                  string                        `json:"workspace_path"`
 	WorkspaceName                  string                        `json:"workspace_name,omitempty"`
 	WorkspaceBindingID             string                        `json:"workspace_binding_id,omitempty"`
+	WorkspaceID                    string                        `json:"workspace_id,omitempty"`
 	SwarmID                        string                        `json:"swarm_id,omitempty"`
 	TargetKind                     string                        `json:"target_kind,omitempty"`
 	TargetRelationship             string                        `json:"target_relationship,omitempty"`
@@ -3366,6 +3367,20 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary target_relationship %q is not self", strings.TrimSpace(req.TargetRelationship))
 	}
 	workspaceBindingID := strings.TrimSpace(req.WorkspaceBindingID)
+	if workspaceBindingID == "" && strings.TrimSpace(req.WorkspaceID) != "" {
+		reqWorkspaceID := strings.TrimSpace(req.WorkspaceID)
+		allBindings, listErr := s.topology.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100)
+		if listErr == nil {
+			for _, candidate := range allBindings {
+				if strings.TrimSpace(candidate.SourceWorkspaceID) == reqWorkspaceID && strings.TrimSpace(candidate.DestinationRuntimeSwarmID) == primarySwarmID && strings.TrimSpace(candidate.State) == pebblestore.TopologyWorkspaceBindingStateBound {
+					if workspaceBindingID != "" && workspaceBindingID != strings.TrimSpace(candidate.BindingID) {
+						return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary default workspace has multiple canonical local bindings")
+					}
+					workspaceBindingID = strings.TrimSpace(candidate.BindingID)
+				}
+			}
+		}
+	}
 	defaultWorkspacePath := ""
 	if workspaceBindingID == "" {
 		workspacePath := strings.TrimSpace(req.WorkspacePath)
@@ -3713,6 +3728,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorkspacePath            string                        `json:"workspace_path"`
 		WorkspaceName            string                        `json:"workspace_name"`
 		WorkspaceBindingID       string                        `json:"workspace_binding_id"`
+		WorkspaceID              string                        `json:"workspace_id,omitempty"`
 		SwarmID                  string                        `json:"swarm_id"`
 		Mode                     string                        `json:"mode"`
 		AgentName                string                        `json:"agent_name,omitempty"`
@@ -3731,6 +3747,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorkspacePath:            strings.TrimSpace(workspacePath),
 		WorkspaceName:            workspaceName,
 		WorkspaceBindingID:       strings.TrimSpace(req.WorkspaceBindingID),
+		WorkspaceID:              strings.TrimSpace(req.WorkspaceID),
 		SwarmID:                  strings.TrimSpace(req.SwarmID),
 		Mode:                     sessionruntime.NormalizeMode(req.Mode),
 		AgentName:                strings.TrimSpace(req.AgentName),
