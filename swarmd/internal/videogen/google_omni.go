@@ -27,10 +27,10 @@ type omniResponseFormat struct {
 }
 
 type omniInteractionResponse struct {
-	ID     string      `json:"id"`
-	Status string      `json:"status"`
-	Model  string      `json:"model"`
-	Steps  []omniStep  `json:"steps"`
+	ID     string           `json:"id"`
+	Status string           `json:"status"`
+	Model  string           `json:"model"`
+	Steps  []omniStep       `json:"steps"`
 	Error  *googleRPCStatus `json:"error,omitempty"`
 }
 
@@ -77,6 +77,9 @@ func (s *Service) generateGoogleOmni(
 		mimeType := strings.ToLower(strings.TrimSpace(img.MediaType))
 		if mimeType == "" {
 			mimeType = http.DetectContentType(img.Bytes)
+		}
+		if mimeType == "image/svg+xml" || (len(img.Bytes) > 4 && strings.Contains(string(img.Bytes[:min(len(img.Bytes), 256)]), "<svg")) {
+			return ManagedVideoResult{}, errors.New("vector SVG images must be rasterized to PNG or JPEG before passing to video generation")
 		}
 		imageContent = map[string]any{
 			"type":      "image",
@@ -293,8 +296,8 @@ func (s *Service) pollGoogleFileActive(ctx context.Context, apiKey string, fileN
 			continue
 		}
 		var statusResp struct {
-			State string `json:"state"`
-			URI   string `json:"uri"`
+			State string           `json:"state"`
+			URI   string           `json:"uri"`
 			Error *googleRPCStatus `json:"error,omitempty"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&statusResp)

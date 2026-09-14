@@ -67,18 +67,18 @@ func TestMediaCatalogResponsePopulatesVideoGenerationAndIterationModels(t *testi
 	veoRecord := pebblestore.ModelCatalogRecord{
 		Provider: "google", Model: "veo-3.1-generate-preview", DisplayName: "Veo 3.1",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"video"}},
-		Pricing: pricing,
+		Pricing:           pricing,
 	}
 	omniRecord := pebblestore.ModelCatalogRecord{
 		Provider: "google", Model: "gemini-omni-1.1-flash", DisplayName: "Gemini Omni 1.1 Flash",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"video"}},
-		ProviderSpecific: json.RawMessage(`{"google":{"video_generation":{"features":{"conversational_editing":{"supported":true}}}}}`),
-		Pricing: pricing,
+		ProviderSpecific:  json.RawMessage(`{"google":{"video_generation":{"features":{"conversational_editing":{"supported":true}}}}}`),
+		Pricing:           pricing,
 	}
 	openRouterVeoRecord := pebblestore.ModelCatalogRecord{
 		Provider: "openrouter", Model: "google/veo-3.1", DisplayName: "Google: Veo 3.1",
 		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"video"}},
-		Pricing: pricing,
+		Pricing:           pricing,
 	}
 
 	for _, rec := range []pebblestore.ModelCatalogRecord{veoRecord, omniRecord, openRouterVeoRecord} {

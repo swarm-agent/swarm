@@ -993,19 +993,19 @@ func (a *Authority) lineage(principal Principal, input CreateInput) pebblestore.
 			sourceSessionID = childSessionID
 		}
 	}
-		iterationID := strings.TrimSpace(principal.IterationID)
-		if iterationID == "" {
-			iterationID = strings.TrimSpace(input.IterationID)
-		}
-		iterationIndex := principal.IterationIndex
-		if iterationIndex == 0 {
-			iterationIndex = input.IterationIndex
-		}
-		iterationLabel := strings.TrimSpace(principal.IterationLabel)
-		if iterationLabel == "" {
-			iterationLabel = strings.TrimSpace(input.IterationLabel)
-		}
-		return pebblestore.SessionArtifactLineage{
+	iterationID := strings.TrimSpace(principal.IterationID)
+	if iterationID == "" {
+		iterationID = strings.TrimSpace(input.IterationID)
+	}
+	iterationIndex := principal.IterationIndex
+	if iterationIndex == 0 {
+		iterationIndex = input.IterationIndex
+	}
+	iterationLabel := strings.TrimSpace(principal.IterationLabel)
+	if iterationLabel == "" {
+		iterationLabel = strings.TrimSpace(input.IterationLabel)
+	}
+	return pebblestore.SessionArtifactLineage{
 		ParentSessionID: principal.SessionID, SourceSessionID: sourceSessionID,
 		SourceCollectionID: strings.TrimSpace(input.SourceCollectionID), SourceVariantID: strings.TrimSpace(input.SourceVariantID), SourceEventSeq: input.SourceEventSeq,
 		TaskCallID: strings.TrimSpace(principal.TaskCallID), ProgramID: strings.TrimSpace(principal.ProgramID), ProgramJobID: strings.TrimSpace(principal.ProgramJobID),

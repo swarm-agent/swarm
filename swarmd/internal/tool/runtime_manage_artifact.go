@@ -1762,6 +1762,8 @@ func (r *Runtime) resolveVideoImageInput(ctx context.Context, scope WorkspaceSco
 					mimeType = "image/webp"
 				case ".gif":
 					mimeType = "image/gif"
+				case ".svg":
+					mimeType = "image/svg+xml"
 				}
 				return &videogen.ManagedVideoImage{
 					Bytes:     data,

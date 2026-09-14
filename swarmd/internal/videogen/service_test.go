@@ -480,6 +480,19 @@ func TestGenerateGoogleVeoVideoWithImageInput(t *testing.T) {
 	if receivedImageB64 != base64.StdEncoding.EncodeToString(rawPNG) {
 		t.Fatalf("image base64 mismatch")
 	}
+
+	// Test SVG input rejection with clear actionable error message
+	_, svgErr := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "Animate SVG",
+		Principal: principal,
+		Image: &ManagedVideoImage{
+			Bytes:     []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>`),
+			MediaType: "image/svg+xml",
+		},
+	})
+	if svgErr == nil || !stringsContains(svgErr.Error(), "vector SVG images must be rasterized to PNG or JPEG") {
+		t.Fatalf("expected SVG rasterization error, got: %v", svgErr)
+	}
 }
 
 func TestGenerateGoogleOmniWithImageInput(t *testing.T) {

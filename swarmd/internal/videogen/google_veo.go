@@ -226,6 +226,9 @@ func prepareVeoImage(img *ManagedVideoImage) (*veoImageInput, error) {
 				MIMEType:           detected,
 			}, nil
 		}
+		if mimeType == "image/svg+xml" || (len(img.Bytes) > 4 && strings.Contains(string(img.Bytes[:min(len(img.Bytes), 256)]), "<svg")) {
+			return nil, errors.New("vector SVG images must be rasterized to PNG or JPEG before passing to video generation")
+		}
 		return nil, fmt.Errorf("unsupported image format %q for Veo: %w", mimeType, err)
 	}
 	var buf bytes.Buffer

@@ -65,6 +65,9 @@ func (s *Service) generateOpenRouter(
 		if mimeType == "" {
 			mimeType = http.DetectContentType(img.Bytes)
 		}
+		if mimeType == "image/svg+xml" || (len(img.Bytes) > 4 && strings.Contains(string(img.Bytes[:min(len(img.Bytes), 256)]), "<svg")) {
+			return ManagedVideoResult{}, errors.New("vector SVG images must be rasterized to PNG or JPEG before passing to video generation")
+		}
 		dataURI := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(img.Bytes))
 		reqBody.FrameImages = []openRouterFrameImage{
 			{

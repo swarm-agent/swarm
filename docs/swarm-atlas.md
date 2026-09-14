@@ -1643,3 +1643,9 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Google Omni (`videogen/google_omni.go`): includes image input in the multimodal `input` array for Interactions API (`type: "image"` with base64 data and MIME type).
   - OpenRouter (`videogen/openrouter.go`): passes `frame_images` array with `type: "image_url"` and `frame_type: "first_frame"` using image data URI.
 - **Validation:** Added unit tests in `swarmd/internal/videogen/service_test.go` (`TestGenerateGoogleVeoVideoWithImageInput`, `TestGenerateGoogleOmniWithImageInput`, `TestGenerateOpenRouterWithImageInput`) and `swarmd/internal/tool/runtime_manage_artifact_video_test.go` (`TestManageArtifactGenerateVideoWithWorkspaceImagePath`, `TestManageArtifactGenerateVideoWithDataURI`, `TestManageArtifactGenerateVideoWithArtifactReference`, `TestManageArtifactGenerateVideoWithSourceImageArtifact`, `TestManageArtifactGenerateVideoWithImagePathArg`, `TestManageArtifactGenerateVideoImageNotFound`). All tests pass.
+
+### Video generation SVG image input handling (2026-09-14)
+
+- **MIME type detection for SVG:** Added `.svg` -> `image/svg+xml` mapping in `runtime_manage_artifact.go` so SVG files are properly recognized as SVG media rather than generic XML (`text/xml`).
+- **Clear error reporting for vector SVG inputs:** Google Veo, Google Omni, and OpenRouter require raster image frames (JPEG/PNG/WebP). When a vector SVG input is passed, the video generation providers return an actionable error explaining that SVG vector images must be rasterized to PNG or JPEG before video generation.
+- **Validation:** Added unit tests in `swarmd/internal/videogen/service_test.go` (`TestGenerateGoogleVeoVideoWithImageInput` SVG rejection assertion) and `swarmd/internal/tool/runtime_manage_artifact_video_test.go` (`TestManageArtifactGenerateVideoWithWorkspaceSVGImagePath`). Verified end-to-end video generation with rasterized PNG from Swarm SVG against Google Veo 3.1.
