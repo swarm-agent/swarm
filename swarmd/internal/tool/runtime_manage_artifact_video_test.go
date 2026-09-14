@@ -21,6 +21,20 @@ type fakeVideoGenerationService struct {
 	err     error
 }
 
+type fakeSVGRasterizer struct {
+	rasterizedPNG []byte
+	called        bool
+	err           error
+}
+
+func (f *fakeSVGRasterizer) RasterizeSVG(ctx context.Context, svgBytes []byte) ([]byte, error) {
+	f.called = true
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.rasterizedPNG, nil
+}
+
 func (f *fakeVideoGenerationService) GenerateManagedVideo(ctx context.Context, req videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error) {
 	f.calls++
 	f.lastReq = req
@@ -591,6 +605,57 @@ func TestManageArtifactGenerateVideoWithWorkspaceSVGImagePath(t *testing.T) {
 	}
 	if generator.lastReq.Image.MediaType != "image/svg+xml" {
 		t.Fatalf("expected MediaType image/svg+xml, got %q", generator.lastReq.Image.MediaType)
+	}
+}
+
+func TestManageArtifactGenerateVideoWithSVGRasterizerAutoRasterizesToPNG(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeVideoGenerationService{}
+	runtime.SetManagedVideoGenerationService(generator)
+	rasterizer := &fakeSVGRasterizer{rasterizedPNG: []byte("\x89PNG\r\n\x1a\nfake-rasterized-png")}
+	runtime.SetSVGRasterizer(rasterizer)
+
+	tempDir := t.TempDir()
+	svgData := []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100"/></svg>`)
+	imagePath := filepath.Join(tempDir, "logo.svg")
+	if err := os.WriteFile(imagePath, svgData, 0o644); err != nil {
+		t.Fatalf("write test svg: %v", err)
+	}
+
+	ctx, scope := artifactToolContext()
+	scope.PrimaryPath = tempDir
+
+	call := Call{
+		CallID: "video-gen-svg-rasterizer",
+		Name:   "manage_artifact",
+		Arguments: fmt.Sprintf(`{"action":"generate_video","prompt":"Animate svg logo with rasterizer","image_path":"%s"}`,
+			filepath.Base(imagePath)),
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video with svg image_path: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["has_image_input"] != true {
+		t.Fatalf("expected has_image_input = true")
+	}
+	if !rasterizer.called {
+		t.Fatal("expected SVGRasterizer to be called")
+	}
+	if generator.lastReq.Image == nil {
+		t.Fatal("expected non-nil image")
+	}
+	if generator.lastReq.Image.MediaType != "image/png" {
+		t.Fatalf("expected MediaType image/png, got %q", generator.lastReq.Image.MediaType)
+	}
+	if string(generator.lastReq.Image.Bytes) != "\x89PNG\r\n\x1a\nfake-rasterized-png" {
+		t.Fatalf("unexpected image bytes: %q", string(generator.lastReq.Image.Bytes))
 	}
 }
 

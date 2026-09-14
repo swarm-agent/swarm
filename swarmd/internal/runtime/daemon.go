@@ -284,9 +284,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	authSvc := auth.NewService(authStore, events)
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
+	var htmlRenderer *htmlcapture.ChromedpRenderer
 	cacheRoot, cacheRootErr := storagecontract.ResolveRoot(storagecontract.RootCache, storagecontract.Options{})
 	if cacheRootErr == nil {
-		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency()))
+		htmlRenderer = htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())
+		toolRuntime.SetHTMLCaptureRenderer(htmlRenderer)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
@@ -704,6 +706,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
 	videoGenSvc := videogen.NewService(authStore, uiSettingsSvc, modelSvc)
+	if htmlRenderer != nil {
+		videoGenSvc.SetSVGRasterizer(htmlRenderer)
+	}
 	toolRuntime.SetManagedVideoGenerationService(videoGenSvc)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetActionService(actionSvc)

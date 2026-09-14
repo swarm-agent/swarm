@@ -51,6 +51,11 @@ type ManagedVideoImage struct {
 	MediaType string
 }
 
+// SVGRasterizer converts vector SVG images into raster PNG images.
+type SVGRasterizer interface {
+	RasterizeSVG(ctx context.Context, svgBytes []byte) ([]byte, error)
+}
+
 type ManagedVideoSource struct {
 	Bytes         []byte
 	MediaType     string
@@ -76,6 +81,7 @@ type Service struct {
 	uiSettings        *uisettings.Service
 	modelCatalog      ModelCatalog
 	httpClient        *http.Client
+	svgRasterizer     SVGRasterizer
 	googleBaseURL     string
 	openRouterBaseURL string
 	pollInterval      time.Duration
@@ -102,6 +108,21 @@ func (s *Service) SetHTTPClient(client *http.Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.httpClient = client
+}
+
+func (s *Service) SetSVGRasterizer(rasterizer SVGRasterizer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.svgRasterizer = rasterizer
+}
+
+func (s *Service) SVGRasterizer() SVGRasterizer {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.svgRasterizer
 }
 
 func (s *Service) SetBaseURLs(googleURL, openRouterURL string) {
@@ -187,6 +208,12 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		return ManagedVideoResult{}, ctx.Err()
 	}
 
+	if req.Image != nil && len(req.Image.Bytes) > 0 {
+		if err := s.ensureRasterImage(ctx, req.Image); err != nil {
+			return ManagedVideoResult{}, err
+		}
+	}
+
 	isIteration := req.Source != nil && len(req.Source.Bytes) > 0
 	modelID, providerID, err := s.resolveTargetModel(ctx, req.Principal, isIteration)
 	if err != nil {
@@ -229,6 +256,34 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	result.EstimatedCostUSD = cost
 	result.PricingSummary = summary
 	return result, nil
+}
+
+func (s *Service) ensureRasterImage(ctx context.Context, img *ManagedVideoImage) error {
+	if img == nil || len(img.Bytes) == 0 {
+		return nil
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(img.MediaType))
+	if mimeType == "" {
+		mimeType = http.DetectContentType(img.Bytes)
+	}
+	isSVG := mimeType == "image/svg+xml" || (len(img.Bytes) > 4 && strings.Contains(string(img.Bytes[:min(len(img.Bytes), 256)]), "<svg"))
+	if !isSVG {
+		return nil
+	}
+	rasterizer := s.SVGRasterizer()
+	if rasterizer == nil {
+		return errors.New("vector SVG images must be rasterized to PNG or JPEG before passing to video generation")
+	}
+	pngBytes, err := rasterizer.RasterizeSVG(ctx, img.Bytes)
+	if err != nil {
+		return fmt.Errorf("rasterize SVG image to PNG: %w", err)
+	}
+	if len(pngBytes) == 0 {
+		return errors.New("rasterized SVG image is empty")
+	}
+	img.Bytes = pngBytes
+	img.MediaType = "image/png"
+	return nil
 }
 
 func (s *Service) resolveTargetModel(ctx context.Context, principal identity.Principal, isIteration bool) (string, string, error) {

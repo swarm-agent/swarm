@@ -180,6 +180,7 @@ type Runtime struct {
 	artifactV3Video       ArtifactV3VideoConversionService
 	htmlCapture           htmlcapture.Renderer
 	htmlAnimationCapture  htmlcapture.AnimationRenderer
+	svgRasterizer         videogen.SVGRasterizer
 	animationJobsMu       sync.Mutex
 	animationJobs         map[string]context.CancelFunc
 	imageGeneration       ManagedImageGenerationService
@@ -533,7 +534,23 @@ func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {
 		if animationRenderer, ok := renderer.(htmlcapture.AnimationRenderer); ok {
 			r.htmlAnimationCapture = animationRenderer
 		}
+		if rasterizer, ok := renderer.(videogen.SVGRasterizer); ok {
+			r.svgRasterizer = rasterizer
+		}
 	}
+}
+
+func (r *Runtime) SetSVGRasterizer(rasterizer videogen.SVGRasterizer) {
+	if r != nil {
+		r.svgRasterizer = rasterizer
+	}
+}
+
+func (r *Runtime) SVGRasterizer() videogen.SVGRasterizer {
+	if r == nil {
+		return nil
+	}
+	return r.svgRasterizer
 }
 
 func (r *Runtime) SetHTMLAnimationRenderer(renderer htmlcapture.AnimationRenderer) {

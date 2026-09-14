@@ -493,6 +493,34 @@ func TestGenerateGoogleVeoVideoWithImageInput(t *testing.T) {
 	if svgErr == nil || !stringsContains(svgErr.Error(), "vector SVG images must be rasterized to PNG or JPEG") {
 		t.Fatalf("expected SVG rasterization error, got: %v", svgErr)
 	}
+
+	// Test SVG input auto-rasterization when SVGRasterizer is configured
+	rasterizer := &fakeSVGRasterizer{rasterizedPNG: rawPNG}
+	svc.SetSVGRasterizer(rasterizer)
+
+	resWithRasterizer, errWithRasterizer := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "Animate SVG with rasterizer",
+		Principal: principal,
+		Image: &ManagedVideoImage{
+			Bytes:     []byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>`),
+			MediaType: "image/svg+xml",
+		},
+	})
+	if errWithRasterizer != nil {
+		t.Fatalf("generate video with SVGRasterizer failed: %v", errWithRasterizer)
+	}
+	if !rasterizer.called {
+		t.Fatal("expected SVGRasterizer to be called")
+	}
+	if len(resWithRasterizer.Bytes) == 0 {
+		t.Fatal("expected non-empty video result bytes")
+	}
+	if receivedMIME != "image/png" {
+		t.Fatalf("expected provider received MIME image/png, got %q", receivedMIME)
+	}
+	if receivedImageB64 != base64.StdEncoding.EncodeToString(rawPNG) {
+		t.Fatalf("provider received image base64 mismatch")
+	}
 }
 
 func TestGenerateGoogleOmniWithImageInput(t *testing.T) {
@@ -638,4 +666,18 @@ func stringSearch(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+type fakeSVGRasterizer struct {
+	rasterizedPNG []byte
+	called        bool
+	err           error
+}
+
+func (f *fakeSVGRasterizer) RasterizeSVG(ctx context.Context, svgBytes []byte) ([]byte, error) {
+	f.called = true
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.rasterizedPNG, nil
 }

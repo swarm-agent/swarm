@@ -2046,6 +2046,18 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		}
 	}
 
+	if videoImage != nil {
+		isSVG := videoImage.MediaType == "image/svg+xml" || (len(videoImage.Bytes) > 4 && strings.Contains(string(videoImage.Bytes[:min(len(videoImage.Bytes), 256)]), "<svg"))
+		if isSVG && r.svgRasterizer != nil {
+			pngBytes, err := r.svgRasterizer.RasterizeSVG(ctx, videoImage.Bytes)
+			if err != nil {
+				return managedVideoArtifactResult{}, fmt.Errorf("rasterize SVG image to PNG: %w", err)
+			}
+			videoImage.Bytes = pngBytes
+			videoImage.MediaType = "image/png"
+		}
+	}
+
 	var lastVariant pebblestore.SessionArtifactVariant
 	var allVariants []map[string]any
 	var allReferences []map[string]any
