@@ -140,6 +140,15 @@ export function DesktopPlanAgentSidecar({
   const [dictationSupported, setDictationSupported] = useState(false);
   const [dictationEnabled, setDictationEnabled] = useState(false);
   const proposalRevision = permission && document ? pendingProposalRevision(permission, document) : 0;
+  const isAutomationPlan = Boolean(
+    modalInline ||
+    document?.automation ||
+    document?.automationV2 ||
+    permission?.requirement === 'automation_v2_acceptance' ||
+    automation?.automation_v2 ||
+    automation
+  );
+  const isAutomationContext = isAutomationPlan || Boolean(directSessionId);
   const automationKey = JSON.stringify(automation);
   const realtimeMessages = useDesktopV3CacheSelector(
     (state) => sidechat.sessionId ? state.messagesBySession[sidechat.sessionId]?.items ?? [] : [],
@@ -408,13 +417,13 @@ export function DesktopPlanAgentSidecar({
                   ? 'Ask Swarm to adjust schedule, tasks, or acceptance criteria. Changes update this automation review live.'
                   : automation?.automation_v2
                     ? 'Discuss instructions, timing and recorded work here. Proposed changes do not alter the active schedule until you explicitly accept them; admitted runs retain their accepted instructions.'
-                    : automation
+                    : automation || document?.automation
                       ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.'
                       : directSessionId
                         ? 'Talk to Swarm about automations. Propose instructions, timing, or ask about recurring tasks.'
                         : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}
               </div>
-              {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}
+              {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />{isAutomationContext ? 'Opening automations assistant…' : 'Opening durable Plan sidechat…'}</div> : null}
               <AutomationInstructionContext.Provider value={automation && (parentSessionId || sidechat.sessionId) ? { ...automation, parentSessionId: parentSessionId || sidechat.sessionId } : null}>
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled index={index} />)}
               </AutomationInstructionContext.Provider>
@@ -438,8 +447,8 @@ export function DesktopPlanAgentSidecar({
                       resizeTextarea(event.target);
                     }}
                     onKeyDown={handleComposerKeyDown}
-                    placeholder={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation…' : automation?.automation_v2 ? 'Ask Swarm about this automation' : directSessionId ? 'Talk to Swarm about automations…' : 'Talk to your plan'}
-                    aria-label={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation' : automation?.automation_v2 ? 'Automation optimization message' : 'Plan message'}
+                    placeholder={modalInline ? 'Ask Swarm to change this automation…' : isAutomationContext ? 'Talk to your automations' : 'Talk to your plan'}
+                    aria-label={modalInline || isAutomationPlan ? 'Ask Swarm to change this automation' : automation?.automation_v2 ? 'Automation optimization message' : 'Plan message'}
                     className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
                     rows={1}
                     disabled={sidechat.busy || !sidechat.sessionId}

@@ -78,6 +78,9 @@ export function AutomationV2Sidecar({
       if (!selectedAutomation && (!list || list.length === 0) && !autoCreatedRef.current) {
         autoCreatedRef.current = true
         void handleCreateNew()
+      } else if (!selectedAutomation && list && list.length > 0 && !directSessionId && !activeSessionId) {
+        setDirectSessionId(list[0].id)
+        onSelectSession?.(list[0].id)
       }
     })
     return () => controller.abort()
@@ -106,7 +109,7 @@ export function AutomationV2Sidecar({
     setCreating(true)
     try {
       const clientRequestId = crypto.randomUUID()
-      const newSession = await createAutomationConversation(workspacePath, clientRequestId)
+      const newSession = await createAutomationConversation(workspacePath, clientRequestId, workspaceId)
       if (!mountedRef.current) return
       setConversations((prev) => [newSession, ...prev.filter((s) => s.id !== newSession.id)])
       setDirectSessionId(newSession.id)
@@ -123,9 +126,13 @@ export function AutomationV2Sidecar({
       setDirectSessionId(undefined)
       if (selectedAutomation) onSelectSession?.(selectedAutomation.session_id)
     } else if (value === '__all__') {
-      setDirectSessionId(undefined)
       onClearSelectedAutomation?.()
-      onSelectSession?.('')
+      if (conversations.length > 0) {
+        setDirectSessionId(conversations[0].id)
+        onSelectSession?.(conversations[0].id)
+      } else {
+        void handleCreateNew()
+      }
     } else if (value.startsWith('automation:')) {
       const targetSessionId = value.slice('automation:'.length)
       setDirectSessionId(undefined)
@@ -280,16 +287,19 @@ export function AutomationV2Sidecar({
         directSessionId={directSessionId}
         parentSessionId={directSessionId ? undefined : selectedAutomation?.session_id}
         automation={
-          directSessionId
-            ? undefined
-            : selectedAutomation
+          selectedAutomation
             ? {
                 automation_v2: true,
                 automation_id: selectedAutomation.automation_id,
                 automation_revision: selectedAutomation.revision,
                 workspace_id: workspaceId,
               }
-            : undefined
+            : {
+                automation_v2: true,
+                automation_id: '',
+                automation_revision: 0,
+                workspace_id: workspaceId,
+              }
         }
         title={title}
         headerActions={headerActions}

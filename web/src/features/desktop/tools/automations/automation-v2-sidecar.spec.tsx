@@ -338,6 +338,7 @@ test('AutomationV2Sidecar supports switching to workspace-level discussion of al
   assert.match(markup, /Hourly Health Check/)
   assert.match(markup, /Daily Commit Digest/)
   assert.match(markup, />New<\/span>/)
+  assert.match(markup, /placeholder="Talk to your automations"/, 'sidecar composer placeholder should be Talk to your automations in workspace overview')
 })
 
 test('computeUpcomingAutomationEvents and formatRelativeTime compute future slots and countdowns', () => {

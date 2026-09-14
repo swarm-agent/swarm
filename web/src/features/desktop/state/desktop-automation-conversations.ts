@@ -15,13 +15,14 @@ export function loadAutomationConversations(workspaceId: string, workspacePath: 
   })
 }
 // Explicit user gesture only. Retain clientRequestId on retry after uncertain failure.
-export async function createAutomationConversation(workspacePath: string, clientRequestId: string): Promise<SessionSnapshot> {
+export async function createAutomationConversation(workspacePath: string, clientRequestId: string, workspaceId?: string): Promise<SessionSnapshot> {
   const result = await requestJson<{ session: SessionSnapshot }>('/v3/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       client_request_id: clientRequestId,
       purpose: AUTOMATION_MANAGEMENT_PURPOSE,
       workspace_path: workspacePath,
+      ...(workspaceId ? { workspace_id: workspaceId } : {}),
       agent_name: 'swarm',
       title: 'Automation conversation',
       mode: 'auto',
@@ -31,9 +32,10 @@ export async function createAutomationConversation(workspacePath: string, client
       metadata: {
         navigation_hidden: true,
         swarm_v3_session_purpose: AUTOMATION_MANAGEMENT_PURPOSE,
+        ...(workspaceId ? { swarm_v3_purpose_workspace_id: workspaceId } : {}),
       },
     }),
   })
-  if (!result.session?.id || !isAutomationManagementSession(result.session)) throw new Error('Automation conversation identity was not returned.')
+  if (!result.session?.id || !isAutomationManagementSession(result.session, workspaceId)) throw new Error('Automation conversation identity was not returned.')
   return result.session
 }
