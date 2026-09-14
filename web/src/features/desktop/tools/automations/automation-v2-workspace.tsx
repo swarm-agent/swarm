@@ -1202,7 +1202,7 @@ export function AutomationV2Workspace({
               setSession(id)
               if (records.some((r) => r.session_id === id)) {
                 setSelected(id)
-              } else if (id === '') {
+              } else {
                 setSelected('')
               }
             }}

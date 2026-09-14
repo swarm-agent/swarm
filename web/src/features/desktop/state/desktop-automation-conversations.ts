@@ -15,7 +15,7 @@ export function loadAutomationConversations(workspaceId: string, workspacePath: 
   })
 }
 // Explicit user gesture only. Retain clientRequestId on retry after uncertain failure.
-export async function createAutomationConversation(workspacePath: string, clientRequestId: string, workspaceId?: string): Promise<SessionSnapshot> {
+export async function createAutomationConversation(workspacePath: string, clientRequestId: string, workspaceId?: string, title?: string): Promise<SessionSnapshot> {
   const result = await requestJson<{ session: SessionSnapshot }>('/v3/sessions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -24,7 +24,7 @@ export async function createAutomationConversation(workspacePath: string, client
       workspace_path: workspacePath,
       ...(workspaceId ? { workspace_id: workspaceId } : {}),
       agent_name: 'swarm',
-      title: 'Automation conversation',
+      ...(title ? { title } : {}),
       mode: 'auto',
       worktree_mode: 'on',
       worktree_branch_name: `automation-management-${clientRequestId.slice(0, 8)}`,

@@ -4801,7 +4801,9 @@ func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {
 		return false
 	}
 	title := strings.TrimSpace(session.Title)
-	return title == "" || strings.EqualFold(title, sessionV3TitleDefault)
+	return title == "" || strings.EqualFold(title, sessionV3TitleDefault) ||
+		strings.EqualFold(title, "Automation conversation") ||
+		strings.EqualFold(title, "Automation session")
 }
 
 func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapshot, messages []pebblestore.MessageSnapshot) bool {

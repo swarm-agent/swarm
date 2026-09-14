@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { AutomationV2Sidecar } from './automation-v2-sidecar'
+import { AutomationV2Sidecar, isGenericSessionTitle, formatAutomationSessionTitle } from './automation-v2-sidecar'
 import {
   AutomationV2Workspace,
   AutomationUpcomingScheduleChart,
@@ -450,5 +450,101 @@ test('AutomationV2Workspace renders summary cards with pulse and open session li
   // Crucially: verify that granular run feed is NOT inlined by default when opening the page
   assert.doesNotMatch(markup, /data-testid="automation-run-feed"/)
   assert.doesNotMatch(markup, /Run history &amp; upcoming times/)
+})
+
+test('isGenericSessionTitle identifies generic and custom session titles', () => {
+  assert.equal(isGenericSessionTitle(undefined), true)
+  assert.equal(isGenericSessionTitle(''), true)
+  assert.equal(isGenericSessionTitle('New Session'), true)
+  assert.equal(isGenericSessionTitle('new session'), true)
+  assert.equal(isGenericSessionTitle('Automation conversation'), true)
+  assert.equal(isGenericSessionTitle('automation session'), true)
+  assert.equal(isGenericSessionTitle('New chat'), true)
+  assert.equal(isGenericSessionTitle('Hourly Postgres Backup'), false)
+  assert.equal(isGenericSessionTitle('Lint and Test Monitor'), false)
+})
+
+test('formatAutomationSessionTitle formats real titles and provides clean fallbacks for generic ones', () => {
+  const customSession = {
+    id: 's-1',
+    workspace_path: '/work',
+    workspace_name: 'work',
+    title: 'Hourly Postgres Backup',
+    mode: 'auto',
+    created_at: 1700000000000,
+    updated_at: 1700000000000,
+    message_count: 5,
+    last_message_at: 1700000000000,
+  }
+  assert.equal(formatAutomationSessionTitle(customSession), 'Hourly Postgres Backup')
+
+  const genericWithMessages = {
+    id: 's-2',
+    workspace_path: '/work',
+    workspace_name: 'work',
+    title: 'Automation conversation',
+    mode: 'auto',
+    created_at: 1700000000000,
+    updated_at: 1700000000000,
+    message_count: 3,
+    last_message_at: 1700000000000,
+  }
+  const formatted = formatAutomationSessionTitle(genericWithMessages)
+  assert.match(formatted, /^Chat · /)
+  assert.doesNotMatch(formatted, /Automation conversation/)
+
+  const emptySession = {
+    id: 's-3',
+    workspace_path: '/work',
+    workspace_name: 'work',
+    title: 'New Session',
+    mode: 'auto',
+    created_at: 1700000000000,
+    updated_at: 1700000000000,
+    message_count: 0,
+    last_message_at: 0,
+  }
+  assert.equal(formatAutomationSessionTitle(emptySession), 'New chat')
+})
+
+test('AutomationV2Sidecar renders recent automation chats with real titles and New chat option', () => {
+  const sessionRealTitle = {
+    id: 'session-real-1',
+    workspace_path: '/path/to/work',
+    workspace_name: 'work',
+    title: 'Hourly Postgres Backup',
+    mode: 'auto',
+    created_at: 1700000000000,
+    updated_at: 1700000000000,
+    message_count: 4,
+    last_message_at: 1700000000000,
+  }
+  dispatchDesktopV3Cache({
+    type: 'sync.applied',
+    snapshot: {
+      sessions_by_id: {
+        'session-real-1': sessionRealTitle,
+      },
+      projections_by_session: {},
+      messages_by_session: {},
+      run_intents_by_session: {},
+    },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Sidecar
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      records={[sampleRecord]}
+    />
+  )
+
+  // Verify dropdown includes New chat option
+  assert.match(markup, /✨ New chat/)
+  // Verify dropdown includes All workspace automations
+  assert.match(markup, /All workspace automations/)
+  // Verify composer is mounted and ready to chat
+  assert.match(markup, /data-testid="desktop-plan-composer"/)
+  assert.match(markup, /placeholder="Talk to your automations"/)
 })
 

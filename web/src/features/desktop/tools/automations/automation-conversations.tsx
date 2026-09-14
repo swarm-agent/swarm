@@ -4,6 +4,7 @@ import { AutomationChat } from './automation-chat'
 import { MessageSquare, Plus } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { automationControl as control } from './automation-editor'
+import { formatAutomationSessionTitle } from './automation-v2-sidecar'
 
 export function AutomationConversations({ workspaceId, workspacePath, selected, onSelect, automationId, createRequest }: {
   workspaceId: string; workspacePath: string; selected: string; onSelect: (id: string) => void; automationId?: string; createRequest?: number
@@ -50,7 +51,7 @@ export function AutomationConversations({ workspaceId, workspacePath, selected, 
     <header className="flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><MessageSquare size={15} className="text-[var(--app-primary)]" />Swarm</h2><Button variant="ghost" size="sm" disabled={busy} onClick={() => void create()}><Plus size={13} />{busy ? 'Starting…' : 'New automation chat'}</Button></header>
     <details><summary className="cursor-pointer rounded-lg py-2 text-xs text-[var(--app-text-muted)]">Reopen or switch conversations</summary>
       <button className={control} disabled={loading} onClick={() => setRefresh(value => value + 1)}>Refresh conversations</button>
-      <nav aria-label="Automation conversations"><ul>{page?.session_order.map(id => page.sessions_by_id[id]).filter(session => isAutomationManagementSession(session, workspaceId)).map(session => <li key={session.id}><button className={`${control} my-1 w-full text-left break-words`} disabled={busy} aria-current={selected === session.id ? 'page' : undefined} onClick={() => onSelect(session.id)}>{session.title || 'Automation conversation'}</button></li>)}</ul></nav>
+      <nav aria-label="Automation conversations"><ul>{page?.session_order.map(id => page.sessions_by_id[id]).filter(session => isAutomationManagementSession(session, workspaceId)).map(session => <li key={session.id}><button className={`${control} my-1 w-full text-left break-words`} disabled={busy} aria-current={selected === session.id ? 'page' : undefined} onClick={() => onSelect(session.id)}>{formatAutomationSessionTitle(session)}</button></li>)}</ul></nav>
       {before && <button className={control} onClick={() => setBefore(undefined)}>Latest conversations</button>}
       {page?.pagination.has_more && <button className={control} disabled={loading} onClick={() => setBefore(page.pagination)}>Older conversations</button>}
     </details>

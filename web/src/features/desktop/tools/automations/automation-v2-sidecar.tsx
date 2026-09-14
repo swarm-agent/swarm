@@ -13,6 +13,38 @@ import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import { getOccurrenceDayKey } from './automation-v2-workspace'
 
+export function isGenericSessionTitle(title?: string): boolean {
+  if (!title) return true
+  const lower = title.trim().toLowerCase()
+  return (
+    lower === 'new session' ||
+    lower === 'automation conversation' ||
+    lower === 'automation session' ||
+    lower === 'new conversation' ||
+    lower === 'new chat'
+  )
+}
+
+export function formatAutomationSessionTitle(session: SessionSnapshot): string {
+  const title = session.title?.trim()
+  if (title && !isGenericSessionTitle(title)) {
+    return title
+  }
+  if (session.message_count && session.message_count > 0 && (session.created_at || session.updated_at)) {
+    const timestamp = session.created_at || session.updated_at
+    const dateStr = new Date(timestamp).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    })
+    const timeStr = new Date(timestamp).toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    })
+    return `Chat · ${dateStr}, ${timeStr}`
+  }
+  return 'New chat'
+}
+
 export interface AutomationV2SidecarProps {
   workspaceId: string
   workspacePath: string
@@ -73,18 +105,21 @@ export function AutomationV2Sidecar({
   useEffect(() => {
     const controller = new AbortController()
     void refreshConversations(controller.signal).then((list) => {
-      // If no automation is selected and no conversations exist, auto-create the initial conversation
-      // so the user is immediately ready to chat by default without having to click into it
-      if (!selectedAutomation && (!list || list.length === 0) && !autoCreatedRef.current) {
-        autoCreatedRef.current = true
-        void handleCreateNew()
-      } else if (!selectedAutomation && list && list.length > 0 && !directSessionId && !activeSessionId) {
-        setDirectSessionId(list[0].id)
-        onSelectSession?.(list[0].id)
+      // If opening without an explicit automation or active session selected, default to prepping a new chat
+      if (!selectedAutomation && !activeSessionId && !directSessionId) {
+        // If the most recent conversation is already empty (message_count === 0), reuse it as the new chat
+        const emptyConv = list?.find((c) => !c.message_count || c.message_count === 0)
+        if (emptyConv) {
+          setDirectSessionId(emptyConv.id)
+          onSelectSession?.(emptyConv.id)
+        } else if (!autoCreatedRef.current) {
+          autoCreatedRef.current = true
+          void handleCreateNew()
+        }
       }
     })
     return () => controller.abort()
-  }, [refreshConversations, selectedAutomation])
+  }, [refreshConversations, selectedAutomation, activeSessionId])
 
   // Sync with activeSessionId passed from parent (e.g. onChat callback from run feed or details)
   useEffect(() => {
@@ -113,6 +148,7 @@ export function AutomationV2Sidecar({
       if (!mountedRef.current) return
       setConversations((prev) => [newSession, ...prev.filter((s) => s.id !== newSession.id)])
       setDirectSessionId(newSession.id)
+      onClearSelectedAutomation?.()
       onSelectSession?.(newSession.id)
     } catch {
       // Failed creation leaves current selection
@@ -122,17 +158,18 @@ export function AutomationV2Sidecar({
   }
 
   const handleSelectSession = (value: string) => {
-    if (value === '__bound__') {
-      setDirectSessionId(undefined)
-      if (selectedAutomation) onSelectSession?.(selectedAutomation.session_id)
-    } else if (value === '__all__') {
+    if (value === '__new__' || value === '__all__') {
       onClearSelectedAutomation?.()
-      if (conversations.length > 0) {
-        setDirectSessionId(conversations[0].id)
-        onSelectSession?.(conversations[0].id)
+      const emptyConv = mergedConversations.find((c) => !c.message_count || c.message_count === 0)
+      if (emptyConv) {
+        setDirectSessionId(emptyConv.id)
+        onSelectSession?.(emptyConv.id)
       } else {
         void handleCreateNew()
       }
+    } else if (value === '__bound__') {
+      setDirectSessionId(undefined)
+      if (selectedAutomation) onSelectSession?.(selectedAutomation.session_id)
     } else if (value.startsWith('automation:')) {
       const targetSessionId = value.slice('automation:'.length)
       setDirectSessionId(undefined)
@@ -143,11 +180,34 @@ export function AutomationV2Sidecar({
     }
   }
 
-  // Active title calculation
+  // Live session cache selector for reactive title and message count updates
+  const cacheSessionsById = useDesktopV3CacheSelector((state) => state.sessionsById)
+  const mergedConversations = useMemo(() => {
+    return conversations.map((c) => {
+      const cached = cacheSessionsById[c.id]
+      return cached && cached.kind === 'full' ? cached.session : c
+    })
+  }, [conversations, cacheSessionsById])
+
   const currentConversation = useMemo(() => {
     if (!directSessionId) return null
+    const cached = cacheSessionsById[directSessionId]
+    if (cached && cached.kind === 'full') return cached.session
     return conversations.find((c) => c.id === directSessionId) ?? null
-  }, [conversations, directSessionId])
+  }, [cacheSessionsById, conversations, directSessionId])
+
+  const currentEmptyConversation = useMemo(() => {
+    return mergedConversations.find((c) => !c.message_count || c.message_count === 0) ?? null
+  }, [mergedConversations])
+
+  const pastConversations = useMemo(() => {
+    return mergedConversations.filter((c) => {
+      if (currentEmptyConversation && c.id === currentEmptyConversation.id) {
+        return false
+      }
+      return true
+    })
+  }, [mergedConversations, currentEmptyConversation])
 
   const progressKey = useMemo(() => {
     if (!selectedAutomation) return null
@@ -193,14 +253,24 @@ export function AutomationV2Sidecar({
   }, [forecast, selectedAutomation])
 
   const title = useMemo(() => {
+    if (selectedAutomation && !directSessionId) {
+      return `Optimize: ${selectedAutomation.document.title}`
+    }
     if (currentConversation) {
-      return currentConversation.title || 'Automation conversation'
+      const convTitle = currentConversation.title?.trim()
+      if (convTitle && !isGenericSessionTitle(convTitle)) {
+        return convTitle
+      }
+      if (currentConversation.message_count && currentConversation.message_count > 0) {
+        return formatAutomationSessionTitle(currentConversation)
+      }
+      return 'New automation chat'
     }
     if (selectedAutomation) {
       return `Optimize: ${selectedAutomation.document.title}`
     }
     return 'Automations Assistant'
-  }, [currentConversation, selectedAutomation])
+  }, [currentConversation, directSessionId, selectedAutomation])
 
   // Header switcher: dropdown for prior conversations and + New button
   const headerActions = (
@@ -226,25 +296,45 @@ export function AutomationV2Sidecar({
           {upcomingCount > 0 ? `${upcomingCount} upcoming` : ''}
         </span>
       )}
-      {(conversations.length > 0 || selectedAutomation || (records && records.length > 0)) && (
+      {(mergedConversations.length > 0 || selectedAutomation || (records && records.length > 0)) && (
         <label className="relative flex items-center" title="Switch or reopen automation sessions">
           <History size={12} className="pointer-events-none absolute left-2 text-[var(--app-text-muted)]" aria-hidden="true" />
           <select
             className="h-7 max-w-[150px] truncate rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] pl-6 pr-2 text-[11px] font-medium text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] sm:max-w-[180px]"
-            value={directSessionId ?? (selectedAutomation ? '__bound__' : '__all__')}
+            value={
+              selectedAutomation && !directSessionId
+                ? '__bound__'
+                : directSessionId
+                  ? currentEmptyConversation && directSessionId === currentEmptyConversation.id
+                    ? currentEmptyConversation.id
+                    : directSessionId
+                  : '__new__'
+            }
             onChange={(e) => handleSelectSession(e.target.value)}
             aria-label="Prior automation sessions"
           >
+            <option value={currentEmptyConversation ? currentEmptyConversation.id : '__new__'}>
+              ✨ New chat
+            </option>
+            <option value="__all__">
+              🌐 All workspace automations
+            </option>
             {selectedAutomation && (
               <option value="__bound__">
                 ⚡ {selectedAutomation.document.title}
               </option>
             )}
-            <option value="__all__">
-              🌐 All workspace automations
-            </option>
+            {pastConversations.length > 0 && (
+              <optgroup label="Recent automation chats">
+                {pastConversations.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    💬 {formatAutomationSessionTitle(c)}
+                  </option>
+                ))}
+              </optgroup>
+            )}
             {records && records.filter((r) => r.session_id !== selectedAutomation?.session_id).length > 0 && (
-              <optgroup label="Other automations">
+              <optgroup label="Automation sessions">
                 {records
                   .filter((r) => r.session_id !== selectedAutomation?.session_id)
                   .map((r) => (
@@ -252,15 +342,6 @@ export function AutomationV2Sidecar({
                       ⚡ {r.document.title}
                     </option>
                   ))}
-              </optgroup>
-            )}
-            {conversations.length > 0 && (
-              <optgroup label="Prior conversations">
-                {conversations.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    💬 {c.title || 'Automation conversation'}
-                  </option>
-                ))}
               </optgroup>
             )}
           </select>
