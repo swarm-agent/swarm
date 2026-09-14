@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Check, ChevronRight, FileAudio, Folder, FolderOpen, Image, Sparkles, Video } from 'lucide-react'
+import { AlertTriangle, ArrowUp, Check, ChevronRight, FileAudio, Folder, FolderOpen, Image, Sparkles, Video } from 'lucide-react'
 import { Button } from '../../../../../components/ui/button'
 import { Card } from '../../../../../components/ui/card'
 import { Input } from '../../../../../components/ui/input'
@@ -475,6 +475,15 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 </p>
               ) : null}
               {videoIterationSave.isSuccess ? <p className="text-xs text-[var(--app-success)]">Iteration model saved.</p> : null}
+              {selectedVideoIteration.toLowerCase().includes('omni') ? (
+                <div className="mt-2 flex items-start gap-2 rounded-lg border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] p-2.5 text-xs leading-5 text-[var(--app-warning)]">
+                  <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+                  <div>
+                    <span className="font-semibold">Regional Notice (EU / EEA / UK / Switzerland): </span>
+                    Google restricts editing uploaded external video files (e.g. from Veo) in these regions. To edit videos here, set your primary Video Generation model to Gemini Omni Flash as well so generation and iteration run natively in the same multi-turn conversation.
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
 

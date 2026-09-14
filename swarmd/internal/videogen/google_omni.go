@@ -118,10 +118,14 @@ func (s *Service) generateGoogleOmni(
 		var errResp struct {
 			Error googleRPCStatus `json:"error"`
 		}
+		errMsg := string(bodyBytes)
 		if err := json.Unmarshal(bodyBytes, &errResp); err == nil && errResp.Error.Message != "" {
-			return ManagedVideoResult{}, fmt.Errorf("google omni api error (%d): %s", resp.StatusCode, errResp.Error.Message)
+			errMsg = errResp.Error.Message
 		}
-		return ManagedVideoResult{}, fmt.Errorf("google omni api error (%d): %s", resp.StatusCode, string(bodyBytes))
+		if resp.StatusCode == 400 && (strings.Contains(errMsg, "content_blocked") || strings.Contains(errMsg, "content_policy")) && source != nil && strings.TrimSpace(source.InteractionID) == "" {
+			return ManagedVideoResult{}, fmt.Errorf("google omni api error (400): %s (editing uploaded external videos is restricted in the EU/EEA, UK, and Switzerland; generate the initial video with Gemini Omni Flash to enable multi-turn conversational editing in this region)", errMsg)
+		}
+		return ManagedVideoResult{}, fmt.Errorf("google omni api error (%d): %s", resp.StatusCode, errMsg)
 	}
 
 	var omniResp omniInteractionResponse

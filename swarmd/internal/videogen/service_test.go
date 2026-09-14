@@ -299,6 +299,61 @@ func TestGenerateGoogleOmniBridgeEditFromExternalVideo(t *testing.T) {
 	}
 }
 
+func TestGenerateGoogleOmniContentBlockedDiagnostic(t *testing.T) {
+	fakeSourceBytes := []byte("source-external-video-bytes")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && stringsContains(r.URL.Path, "/upload/v1beta/files"):
+			w.Header().Set("X-Goog-Upload-URL", "http://"+r.Host+"/upload-finalize")
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && stringsContains(r.URL.Path, "/upload-finalize"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"file": map[string]any{
+					"name":  "files/external-file-2",
+					"uri":   "https://generativelanguage.googleapis.com/v1beta/files/external-file-2",
+					"state": "ACTIVE",
+				},
+			})
+		case r.Method == http.MethodPost && stringsContains(r.URL.Path, "/interactions"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code":    400,
+					"message": "content_blocked",
+					"status":  "INVALID_ARGUMENT",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	svc := NewService(authStore, nil, nil)
+	svc.SetBaseURLs(server.URL, "")
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	_, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "Change lighting to sunset",
+		Principal: principal,
+		Source: &ManagedVideoSource{
+			Bytes:         fakeSourceBytes,
+			MediaType:     "video/mp4",
+			InteractionID: "", // External source without Omni interaction ID
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !stringsContains(err.Error(), "EU/EEA, UK, and Switzerland") {
+		t.Fatalf("expected regional diagnostic in error message, got: %v", err)
+	}
+}
+
 func TestGenerateOpenRouterVideo(t *testing.T) {
 	fakeMP4 := []byte("openrouter-video-bytes")
 
