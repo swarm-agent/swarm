@@ -162,6 +162,33 @@ test('summary counts aggregate active running and scheduled states without listi
   assert.equal(counts.paused, 1)
   assert.equal(counts.pending, 0)
   assert.equal(counts.total, 3)
+  assert.equal(counts.runsToday, 2)
+  assert.equal(counts.upcoming, 0)
+})
+
+test('sidebar summary badge and metadata row display running state, runs today, and upcoming counts', () => {
+  const badgeMarkup = renderToStaticMarkup(
+    <AutomationSidebarSummaryBadge
+      counts={{ running: 1, scheduled: 0, paused: 0, pending: 0, total: 1, runsToday: 4, upcoming: 2 }}
+      workspaceSlug="team-workspace"
+    />
+  )
+  assert.match(badgeMarkup, /1 running · 4 ran today · 2 upcoming/)
+  assert.match(badgeMarkup, /data-testid="summary-running-dot"/)
+
+  const rowMarkup = renderToStaticMarkup(
+    <AutomationSidebarMetadataRow
+      schedule={{ kind: 'interval', interval_seconds: 3600 }}
+      status="Running"
+      running={true}
+      runsToday={3}
+      upcomingCount={2}
+      workspaceSlug="my-project"
+    />
+  )
+  assert.match(rowMarkup, /3 ran today · 2 upcoming/)
+  assert.match(rowMarkup, /data-testid="automation-running-dot"/)
+  assert.match(rowMarkup, /Running/)
 })
 
 test('sidebar summary badge displays calm high-level state and navigates on click', () => {

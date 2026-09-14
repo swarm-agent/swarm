@@ -149,3 +149,47 @@ test('AutomationV2Workspace integrates full-height sidebar and eliminates halfwa
   // Verify Optimize with Swarm button exists in detail
   assert.match(markup, />Optimize with Swarm<\/button>/)
 })
+
+test('AutomationV2Sidecar displays running status badge and today/upcoming run counts', () => {
+  const progressKey = automationV2PageKey({ action: 'progress', workspace_id: 'ws-test', session_id: sampleRecord.session_id, timezone: 'UTC' })
+  const now = Date.now()
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key: progressKey,
+    input: { action: 'progress', workspace_id: 'ws-test', session_id: sampleRecord.session_id, timezone: 'UTC' },
+    requestId: 'req-prog-sidecar-1',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: progressKey,
+    requestId: 'req-prog-sidecar-1',
+    generation: 0,
+    data: {
+      progress: {
+        record: sampleRecord,
+        observed_at: now,
+        timezone: 'UTC',
+        complete: true,
+        forecast: [now + 3600000, now + 7200000],
+        occurrences: [
+          { id: 'occ-run-1', state: 'running', session_id: 'exec-1', due_at: now, accepted: sampleRecord },
+          { id: 'occ-run-2', state: 'succeeded', session_id: 'exec-2', due_at: now - 60000, accepted: sampleRecord },
+        ],
+      },
+    },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Sidecar
+      workspaceId="ws-test"
+      workspacePath="/home/roy/work"
+      selectedAutomation={sampleRecord}
+    />
+  )
+
+  assert.match(markup, /data-testid="sidecar-running-badge"/)
+  assert.match(markup, /Running/)
+  assert.match(markup, /data-testid="sidecar-run-stats"/)
+  assert.match(markup, /2 today/)
+  assert.match(markup, /2 upcoming/)
+})

@@ -9,6 +9,9 @@ import {
 } from '../../state/desktop-automation-conversations'
 import type { SessionSnapshot } from '../../state/desktop-v3-cache-types'
 import type { AutomationV2Record } from '../../state/desktop-automation-v2-api'
+import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
+import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
+import { getOccurrenceDayKey } from './automation-v2-workspace'
 
 export interface AutomationV2SidecarProps {
   workspaceId: string
@@ -125,6 +128,49 @@ export function AutomationV2Sidecar({
     return conversations.find((c) => c.id === directSessionId) ?? null
   }, [conversations, directSessionId])
 
+  const progressKey = useMemo(() => {
+    if (!selectedAutomation) return null
+    return automationV2PageKey({
+      action: 'progress',
+      workspace_id: workspaceId,
+      session_id: selectedAutomation.session_id,
+      timezone: 'UTC',
+    })
+  }, [selectedAutomation, workspaceId])
+  const progressPage = useDesktopV3CacheSelector((state) => progressKey ? state.automationV2Pages?.[progressKey] : undefined)
+  const isRunning = useDesktopV3CacheSelector((state) => {
+    if (!selectedAutomation) return false
+    const occurrences = progressPage?.data?.progress?.occurrences
+    if (occurrences?.some((o) => o.state === 'running' || o.state === 'in_progress')) return true
+    if (occurrences) {
+      for (const occ of occurrences) {
+        const intent = state.currentRunIntentBySession?.[occ.session_id]
+        if (intent && ['pending_executor', 'running', 'dispatch_blocked'].includes(intent.status)) return true
+      }
+    }
+    const selfIntent = state.currentRunIntentBySession?.[selectedAutomation.session_id]
+    if (selfIntent && ['pending_executor', 'running', 'dispatch_blocked'].includes(selfIntent.status)) return true
+    return false
+  })
+
+  const tz = progressPage?.data?.progress?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const occurrences = progressPage?.data?.progress?.occurrences
+  const forecast = progressPage?.data?.progress?.forecast
+
+  const runsToday = useMemo(() => {
+    if (!occurrences) return 0
+    const todayKey = getOccurrenceDayKey(Date.now(), tz)
+    return occurrences.filter((o) => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey).length
+  }, [occurrences, tz])
+
+  const upcomingCount = useMemo(() => {
+    const now = Date.now()
+    if (forecast && forecast.length > 0) {
+      return forecast.filter((ms) => ms > now).length
+    }
+    return selectedAutomation?.next_due_at && selectedAutomation.next_due_at > now ? 1 : 0
+  }, [forecast, selectedAutomation])
+
   const title = useMemo(() => {
     if (currentConversation) {
       return currentConversation.title || 'Automation conversation'
@@ -138,6 +184,27 @@ export function AutomationV2Sidecar({
   // Header switcher: dropdown for prior conversations and + New button
   const headerActions = (
     <div className="flex items-center gap-1.5" data-testid="automation-sidecar-session-switcher">
+      {isRunning && (
+        <span
+          data-testid="sidecar-running-badge"
+          className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-success)]"
+          title="Automation is currently running an occurrence"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse" aria-hidden="true" />
+          <span>Running</span>
+        </span>
+      )}
+      {(runsToday > 0 || upcomingCount > 0) && (
+        <span
+          data-testid="sidecar-run-stats"
+          className="hidden text-[10px] tabular-nums text-[var(--app-text-muted)] sm:inline-block"
+          title={`${runsToday} executed today · ${upcomingCount} upcoming`}
+        >
+          {runsToday > 0 ? `${runsToday} today` : ''}
+          {runsToday > 0 && upcomingCount > 0 ? ' · ' : ''}
+          {upcomingCount > 0 ? `${upcomingCount} upcoming` : ''}
+        </span>
+      )}
       {(conversations.length > 0 || selectedAutomation) && (
         <label className="relative flex items-center" title="Switch or reopen automation sessions">
           <History size={12} className="pointer-events-none absolute left-2 text-[var(--app-text-muted)]" aria-hidden="true" />

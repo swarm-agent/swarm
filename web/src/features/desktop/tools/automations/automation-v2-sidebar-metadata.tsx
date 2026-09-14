@@ -8,12 +8,15 @@ import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Record, AutomationV2Settings } from '../../state/desktop-automation-v2-api'
 import { automationV2PermissionProposal } from './automation-v2-plan-review'
 import { scheduleFrequency, scheduleLabel } from './automation-v2-schedule'
+import { getOccurrenceDayKey } from './automation-v2-workspace'
 
 export function AutomationSidebarMetadataRow({
   schedule,
   status,
   nextDueAt,
   running,
+  runsToday,
+  upcomingCount,
   workspaceSlug,
   onNavigateToAutomations,
 }: {
@@ -21,16 +24,28 @@ export function AutomationSidebarMetadataRow({
   status: string
   nextDueAt?: number
   running?: boolean
+  runsToday?: number
+  upcomingCount?: number
   workspaceSlug?: string
   onNavigateToAutomations?: () => void
 }) {
   const isRunning = running || status === 'Running'
   const cadence = schedule ? scheduleLabel(schedule) : 'Automation'
+  const runMetaParts: string[] = []
+  if (typeof runsToday === 'number' && runsToday > 0) {
+    runMetaParts.push(`${runsToday} ran today`)
+  }
+  if (typeof upcomingCount === 'number' && upcomingCount > 0) {
+    runMetaParts.push(`${upcomingCount} upcoming`)
+  }
+  const runMeta = runMetaParts.join(' · ')
+
   const details = [
     cadence,
+    isRunning ? 'Running now' : status,
     schedule?.timezone,
     schedule && scheduleFrequency(schedule),
-    status,
+    runMeta || undefined,
     nextDueAt ? `Next scheduled: ${new Date(nextDueAt).toLocaleString()} (local time; not a guaranteed start)` : undefined,
     onNavigateToAutomations || workspaceSlug ? 'Open Automations view' : undefined,
   ].filter(Boolean).join(' · ')
@@ -66,7 +81,7 @@ export function AutomationSidebarMetadataRow({
           aria-hidden="true"
         />
         <span className="min-w-0 truncate">
-          {cadence}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}
+          {cadence}{runMeta ? ` · ${runMeta}` : schedule?.timezone ? ` · ${schedule.timezone}` : ''}
         </span>
       </span>
       {onNavigateToAutomations ? (
@@ -186,6 +201,21 @@ function AcceptedAutomationMetadata({
   }, [input])
   const record = page?.data?.progress?.record
   const occurrences = page?.data?.progress?.occurrences
+  const forecast = page?.data?.progress?.forecast
+  const timezone = page?.data?.progress?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+
+  const todayKey = getOccurrenceDayKey(now, timezone)
+  const runsToday = useMemo(() => {
+    if (!occurrences) return 0
+    return occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, timezone) === todayKey).length
+  }, [occurrences, timezone, todayKey])
+
+  const upcomingCount = useMemo(() => {
+    if (forecast && forecast.length > 0) {
+      return forecast.filter(ms => ms > now).length
+    }
+    return record && record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now ? 1 : 0
+  }, [forecast, now, record])
 
   const isRunning = useDesktopV3CacheSelector(state => {
     if (occurrences?.some(o => o.state === 'running' || o.state === 'in_progress')) return true
@@ -221,6 +251,8 @@ function AcceptedAutomationMetadata({
       schedule={record?.document.automation_v2.schedule}
       status={status}
       running={running}
+      runsToday={runsToday}
+      upcomingCount={upcomingCount}
       nextDueAt={!unavailable && !refreshing && record && (status === 'Scheduled' || running) ? record.next_due_at : undefined}
       workspaceSlug={workspaceSlug}
       onNavigateToAutomations={onNavigateToAutomations}
@@ -251,6 +283,8 @@ export interface AutomationSummaryCounts {
   paused: number
   pending: number
   total: number
+  runsToday: number
+  upcoming: number
 }
 
 export function selectAutomationSummaryCounts(
@@ -262,6 +296,8 @@ export function selectAutomationSummaryCounts(
   let scheduled = 0
   let paused = 0
   let pending = 0
+  let runsToday = 0
+  let upcoming = 0
 
   const seenAutomationIds = new Set<string>()
   const seenSessionIds = new Set<string>()
@@ -281,10 +317,14 @@ export function selectAutomationSummaryCounts(
       }
       // Check occurrences on this page or any progress page for this session
       let occurrences = page.data?.progress?.occurrences
+      let forecast = page.data?.progress?.forecast
+      let tz = page.data?.progress?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
       if (!occurrences) {
         for (const p of Object.values(state.automationV2Pages ?? {})) {
           if (p.input.session_id === record.session_id && p.data?.progress?.occurrences) {
             occurrences = p.data.progress.occurrences
+            forecast = p.data.progress.forecast ?? forecast
+            tz = p.data.progress.timezone ?? tz
             break
           }
         }
@@ -311,6 +351,15 @@ export function selectAutomationSummaryCounts(
         running++
       } else {
         scheduled++
+      }
+      if (occurrences) {
+        const todayKey = getOccurrenceDayKey(now, tz)
+        runsToday += occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey).length
+      }
+      if (forecast && forecast.length > 0) {
+        upcoming += forecast.filter(ms => ms > now).length
+      } else if (record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now) {
+        upcoming++
       }
     }
   }
@@ -342,7 +391,7 @@ export function selectAutomationSummaryCounts(
   }
 
   const total = running + scheduled + paused + pending
-  return { running, scheduled, paused, pending, total }
+  return { running, scheduled, paused, pending, total, runsToday, upcoming }
 }
 
 export function AutomationSidebarSummaryBadge({
@@ -359,16 +408,37 @@ export function AutomationSidebarSummaryBadge({
   if (counts.total === 0) return null
 
   const isRunning = counts.running > 0
-  const label = isRunning
-    ? `${counts.running} running${counts.scheduled > 0 ? ` · ${counts.scheduled} scheduled` : ''}`
-    : counts.scheduled > 0
-      ? `${counts.scheduled} scheduled`
-      : counts.pending > 0
-        ? `${counts.pending} awaiting approval`
-        : `${counts.paused} paused`
+  const parts: string[] = []
+  if (isRunning) {
+    parts.push(`${counts.running} running`)
+    if (counts.runsToday > 0) {
+      parts.push(`${counts.runsToday} ran today`)
+    }
+    if (counts.upcoming > 0) {
+      parts.push(`${counts.upcoming} upcoming`)
+    } else if (counts.scheduled > 0) {
+      parts.push(`${counts.scheduled} scheduled`)
+    }
+  } else if (counts.runsToday > 0) {
+    parts.push(`${counts.runsToday} ran today`)
+    if (counts.upcoming > 0) {
+      parts.push(`${counts.upcoming} upcoming`)
+    } else if (counts.scheduled > 0) {
+      parts.push(`${counts.scheduled} scheduled`)
+    }
+  } else if (counts.scheduled > 0) {
+    parts.push(`${counts.scheduled} scheduled`)
+  } else if (counts.pending > 0) {
+    parts.push(`${counts.pending} awaiting approval`)
+  } else {
+    parts.push(`${counts.paused} paused`)
+  }
+  const label = parts.join(' · ')
 
   const title = [
     counts.running > 0 ? `${counts.running} active running automation${counts.running === 1 ? '' : 's'}` : undefined,
+    counts.runsToday > 0 ? `${counts.runsToday} ran today` : undefined,
+    counts.upcoming > 0 ? `${counts.upcoming} upcoming` : undefined,
     counts.scheduled > 0 ? `${counts.scheduled} scheduled automation${counts.scheduled === 1 ? '' : 's'}` : undefined,
     counts.paused > 0 ? `${counts.paused} paused` : undefined,
     counts.pending > 0 ? `${counts.pending} awaiting approval` : undefined,
