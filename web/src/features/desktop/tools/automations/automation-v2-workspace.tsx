@@ -173,7 +173,7 @@ export function AutomationV2Detail({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-success,rgba(16,185,129,0.3))]/40 bg-[var(--app-success,rgba(16,185,129,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-success)]">
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-success-border,rgba(16,185,129,0.3))] bg-[var(--app-success-bg,rgba(16,185,129,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-success)]">
             ✓ {todayStats.clean} clean
           </span>
           {todayStats.deliverables > 0 && (
@@ -182,12 +182,17 @@ export function AutomationV2Detail({
             </span>
           )}
           {todayStats.alerts > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning,rgba(245,158,11,0.4))] bg-[var(--app-warning,rgba(245,158,11,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-warning)]">
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-warning)]">
               ⚠ {todayStats.alerts} alert{todayStats.alerts === 1 ? '' : 's'}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-subtle)]">
               0 alerts
+            </span>
+          )}
+          {todayStats.blocked > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-danger-border,rgba(239,68,68,0.4))] bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-danger)]">
+              ✕ {todayStats.blocked} blocked
             </span>
           )}
         </div>
@@ -631,12 +636,12 @@ export function AwaitingDocumentRunCard({
 
   return (
     <li
-      className="rounded-xl border border-[var(--app-warning,rgba(234,179,8,0.5))]/50 bg-[var(--app-warning-soft,rgba(234,179,8,0.12))] p-3 text-xs shadow-xs space-y-2"
+      className="rounded-xl border border-[var(--app-warning-border,rgba(234,179,8,0.5))]/50 bg-[var(--app-warning-bg,rgba(234,179,8,0.12))] p-3 text-xs shadow-xs space-y-2"
       data-testid="awaiting-document-run-card"
       data-run-id={occurrence.id}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning,rgba(234,179,8,0.2))] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--app-warning)] uppercase tracking-wider">
+        <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg,rgba(234,179,8,0.2))] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--app-warning)] uppercase tracking-wider">
           <AlertCircle size={11} aria-hidden="true" />
           {isBlocked ? 'Blocked · Action needed' : 'Awaiting document review'}
         </span>
@@ -647,7 +652,7 @@ export function AwaitingDocumentRunCard({
         {occurrence.detail || (isBlocked ? 'Execution is blocked: external dependency or permission required.' : 'Execution produced a document awaiting user review or checkpoint acceptance.')}
       </p>
 
-      <div className="flex items-center justify-between border-t border-[var(--app-warning,rgba(234,179,8,0.3))]/30 pt-2 text-[11px]">
+      <div className="flex items-center justify-between border-t border-[var(--app-warning-border,rgba(234,179,8,0.3))]/30 pt-2 text-[11px]">
         <span className="text-[10px] text-[var(--app-text-muted)]">Action needed</span>
         <OpenExecutionSessionButton
           sessionId={occurrence.session_id}

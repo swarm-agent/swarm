@@ -380,7 +380,7 @@ export function AutomationSidebarSummaryBadge({
       className={cn(
         'inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none tracking-normal transition-colors',
         isRunning
-          ? 'bg-[var(--app-success-subtle,rgba(34,197,94,0.14))] text-[var(--app-success)]'
+          ? 'bg-[var(--app-success-bg,rgba(34,197,94,0.14))] text-[var(--app-success)]'
           : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
         className,
       )}

@@ -621,6 +621,9 @@ test('AutomationV2Detail renders Today executive pulse strip with clean metric p
   assert.match(markup, /data-testid="today-executive-strip"/)
   assert.match(markup, /Today(&#x27;|')s Pulse/)
   assert.match(markup, /1 clean/)
+  assert.match(markup, /bg-\[var\(--app-success-bg,/)
+  assert.match(markup, /border-\[var\(--app-success-border,/)
+  assert.doesNotMatch(markup, /bg-\[var\(--app-success,/)
   assert.match(markup, /0 alerts/)
 })
 
