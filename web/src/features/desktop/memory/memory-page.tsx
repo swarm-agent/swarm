@@ -4,7 +4,6 @@ import { Button } from '../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
 import { requestJson } from '../../../app/api'
 import { WorkspaceMapEditor } from './workspace-map-editor'
-import './memory-page.css'
 
 type Entry = { id: string; kind: string; content: string; workspace_id?: string; session_id?: string; pinned: boolean; purpose?: string; origin?: string; subject?: string; created_at?: number; updated_at?: number }
 type MemoryDocument = { revision: number; entries: Entry[] | null }

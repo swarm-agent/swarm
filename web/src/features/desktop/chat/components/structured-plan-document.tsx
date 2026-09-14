@@ -817,6 +817,14 @@ export function StructuredPlanDocumentView({
   if (compact) {
     return (
       <div className={cn('grid gap-5', className)}>
+        <div className="flex min-w-0 items-start justify-between gap-3 border-b border-[var(--app-border)] pb-3">
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automationV2 || document.automation ? 'Automation plan details' : 'Plan details'}</div>
+            <h3 className="mt-1 truncate text-lg font-semibold text-[var(--app-text)]">
+              {document.title || document.info.goal || 'Structured execution blueprint'}
+            </h3>
+          </div>
+        </div>
         <PlanDetailObjects document={document} />
         <section className="grid gap-3 border-t border-[var(--app-border)] pt-5">
           <div className="flex items-center justify-between gap-3">

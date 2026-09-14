@@ -48,6 +48,7 @@ import {
 } from '../services/permission-payload'
 
 import { AutomationV2PlanReview, automationV2PermissionProposal } from '../../tools/automations/automation-v2-plan-review'
+import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 
 interface DesktopPermissionModalProps {
   open: boolean
@@ -630,7 +631,7 @@ function GenericPermissionModal({
 
 
 function ExitPlanDocumentView({ document }: { document: StructuredPlanDocument }) {
-  return <StructuredPlanDocumentView document={document} review />
+  return <StructuredPlanDocumentView document={document} compact />
 }
 
 export function exitPlanExecutionArguments(): {
@@ -1213,6 +1214,77 @@ function PlanAmendmentDeltaPreview({ payload }: { payload: PlanUpdatePayload }) 
         {delta?.overrideStale ? <span>override stale enabled</span> : null}
       </div>
     </section>
+  )
+}
+
+function PlanRevisionRequestModal({
+  permission,
+  open,
+  pendingCount,
+  sessionMode,
+  onOpenChange,
+  onResolve,
+}: DesktopPermissionModalProps) {
+  const [note, setNote] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setNote('')
+      setLoading(false)
+    }
+  }, [open, permission?.id])
+
+  if (!permission) return null
+  const payload = parsePlanUpdatePermission(permission)
+  const resolve = async (action: 'approve' | 'deny' | 'approve_always') => {
+    setLoading(true)
+    try {
+      if (action === 'approve_always') await savePlanAcceptanceMode('always_allow')
+      await onResolve(action === 'approve_always' ? 'approve' : action, note.trim(), action !== 'deny' ? planLifecycleApprovedArguments(payload, 'request_plan_revision') : undefined)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <ModalShell
+      open={open}
+      title={payload.title || 'Review Plan Revision'}
+      subtitle={payload.planId ? `Plan ${payload.planId}` : 'Approve this request to revise an existing plan'}
+      pendingCount={pendingCount}
+      sessionMode={sessionMode}
+      widthClassName="w-full sm:w-[min(1400px,calc(100vw-48px))] xl:w-[min(1550px,calc(100vw-64px))]"
+      bodyClassName="overflow-y-auto"
+      footer={
+        <PermissionActionBar
+          loading={loading}
+          onApprove={() => void resolve('approve')}
+          onDeny={() => void resolve('deny')}
+          approveLabel="Approve revision"
+          note={note}
+          onNoteChange={setNote}
+          noteLabel="Message to agent"
+        />
+      }
+      onOpenChange={onOpenChange}
+      onPrimaryShortcut={() => void resolve('approve')}
+      onDenyShortcut={() => void resolve('deny')}
+      shortcutsDisabled={loading}
+    >
+      <PlanUpdateReview
+        diffLines={payload.diffLines}
+        priorPlan={payload.priorPlan}
+        plan={payload.plan}
+        priorTitle={payload.priorTitle}
+        updateSummary={payload.updateSummary}
+        updateScope={payload.updateScope}
+        updateKind={payload.updateKind}
+        checkpoint={payload.checkpoint}
+        document={payload.document}
+        priorDocument={payload.priorDocument}
+      />
+    </ModalShell>
   )
 }
 
@@ -3307,14 +3379,117 @@ function genericPermissionPersistentRulePreview(permission: DesktopPermissionRec
   return `allow tool: ${toolName}`
 }
 
+function AutomationV2Modal(props: DesktopPermissionModalProps) {
+  const proposal = props.permission ? automationV2PermissionProposal(props.permission) : null
+  const [activeTab, setActiveTab] = useState<'details' | 'ai'>('details')
+  const structuredDoc = useMemo(
+    () => proposal ? normalizeStructuredPlanDocument(proposal.document) : null,
+    [proposal]
+  )
+
+  if (!proposal || !props.permission) {
+    return (
+      <ModalShell
+        open={props.open}
+        title="Automation plan"
+        subtitle="Review recurring execution"
+        sessionMode={props.sessionMode}
+        widthClassName="max-w-3xl"
+        pendingCount={props.pendingCount}
+        onOpenChange={props.onOpenChange}
+      >
+        <p role="alert">Automation review unavailable. Refresh before accepting.</p>
+      </ModalShell>
+    )
+  }
+
+  return (
+    <ModalShell
+      open={props.open}
+      title={proposal.document.title || "Automation plan"}
+      subtitle="Review recurring execution and chat with Swarm Plan to make changes before accepting"
+      pendingCount={props.pendingCount}
+      sessionMode={props.sessionMode}
+      widthClassName="w-[min(1520px,calc(100vw-24px))] sm:w-[min(1580px,calc(100vw-36px))] max-w-[1600px] h-[min(92vh,940px)] max-h-[min(92vh,940px)]"
+      bodyClassName="p-0 overflow-hidden flex-1 min-h-0 flex flex-col"
+      planStyle={true}
+      showSessionMeta={false}
+      onOpenChange={props.onOpenChange}
+      onRequestClose={() => props.onOpenChange(false)}
+    >
+      <div className="flex shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface-elevated)] p-1 lg:hidden">
+        <button
+          type="button"
+          onClick={() => setActiveTab('details')}
+          className={cn(
+            'flex-1 rounded-lg py-1.5 text-xs font-semibold transition',
+            activeTab === 'details'
+              ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm'
+              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+          )}
+        >
+          Automation Details
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('ai')}
+          className={cn(
+            'flex-1 rounded-lg py-1.5 text-xs font-semibold transition flex items-center justify-center gap-1.5',
+            activeTab === 'ai'
+              ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm'
+              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+          )}
+        >
+          <span>AI Assistant</span>
+          <span className="rounded-full bg-[var(--app-primary-soft)] px-1.5 py-0.2 text-[10px] font-bold text-[var(--app-primary)]">
+            Chat
+          </span>
+        </button>
+      </div>
+
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col lg:flex-row divide-y lg:divide-y-0 lg:divide-x divide-[var(--app-border)] overflow-hidden">
+        <div
+          className={cn(
+            'flex-1 min-w-0 flex flex-col h-full overflow-hidden bg-[var(--app-surface)]',
+            activeTab !== 'details' && 'hidden lg:flex'
+          )}
+        >
+          <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6">
+            <AutomationV2PlanReview
+              key={proposal.proposal_id}
+              proposal={proposal}
+              modalMode={true}
+              onReject={() => props.onResolve('deny', '')}
+            />
+          </div>
+        </div>
+
+        <div
+          className={cn(
+            'w-full lg:w-[420px] xl:w-[460px] shrink-0 flex flex-col h-full overflow-hidden bg-[var(--app-surface-subtle)]',
+            activeTab !== 'ai' && 'hidden lg:flex'
+          )}
+          data-testid="automation-modal-ai-sidebar"
+        >
+          <DesktopPlanAgentSidecar
+            parentSessionId={proposal.session_id}
+            permission={props.permission}
+            document={structuredDoc ?? undefined}
+            modalInline={true}
+            embedded={true}
+            mobileOpen={true}
+          />
+        </div>
+      </div>
+    </ModalShell>
+  )
+}
+
 export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   const kind = props.permission ? permissionKind(props.permission) : 'generic'
 
-  if (props.permission?.requirement === 'automation_v2_acceptance') {
-    const proposal = automationV2PermissionProposal(props.permission)
-    return <ModalShell open={props.open} title="Automation plan" subtitle="Review recurring execution" sessionMode={props.sessionMode} widthClassName="max-w-3xl" pendingCount={props.pendingCount} onOpenChange={props.onOpenChange}>
-      {proposal ? <AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} onReject={() => props.onResolve('deny', '')} /> : <p role="alert">Automation review unavailable. Refresh before accepting.</p>}
-    </ModalShell>
+  if (props.permission?.requirement === 'automation_v2_acceptance' || kind === 'automation-v2-acceptance') {
+    return <AutomationV2Modal {...props} />
   }
   if (kind === 'workspace-scope') {
     return <WorkspaceScopeModal {...props} />
@@ -3330,6 +3505,9 @@ export function DesktopPermissionModal(props: DesktopPermissionModalProps) {
   }
   if (kind === 'plan-amendment-request') {
     return <PlanAmendmentRequestModal {...props} />
+  }
+  if (kind === 'plan-revision-request') {
+    return <PlanRevisionRequestModal {...props} />
   }
   if (kind === 'plan-new-request') {
     return <NewPlanRequestModal {...props} />

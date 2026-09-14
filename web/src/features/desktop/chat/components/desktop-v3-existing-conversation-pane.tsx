@@ -17,6 +17,7 @@ import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
+  CalendarClock,
   CheckCircle2,
   Check,
   ChevronDown,
@@ -33,6 +34,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
+import { Button } from "../../../../components/ui/button";
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
@@ -155,6 +157,7 @@ import {
 import type { AgentModelControlConfirmInput } from "./agent-model-control";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
+  isAutomationPermission,
   isPlanProposalPermission,
   permissionDisplayToolName,
   permissionRequiresApproval,
@@ -1823,8 +1826,16 @@ export function DesktopV3ExistingConversationPane({
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
+  const [automationModalDismissedId, setAutomationModalDismissedId] = useState<string | null>(null);
   const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
   const planSidebarViewport = usePlanSidebarViewport() && presentation !== "sidebar";
+  const pendingAutomationPermission = pendingPermissions.find(isAutomationPermission) ?? null;
+  useEffect(() => {
+    if (!pendingAutomationPermission) {
+      setAutomationModalDismissedId(null);
+    }
+  }, [pendingAutomationPermission?.id]);
+  const isAutomationModalOpen = Boolean(selectedPermission) && (!isAutomationPermission(selectedPermission) || automationModalDismissedId !== selectedPermission.id);
   useEffect(() => {
     setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
@@ -3423,6 +3434,39 @@ export function DesktopV3ExistingConversationPane({
                     onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
+                {pendingAutomationPermission && automationModalDismissedId === pendingAutomationPermission.id ? (
+                  <div
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 shadow-sm"
+                    data-testid="automation-modal-reopen-banner"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+                        <CalendarClock size={18} aria-hidden="true" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
+                            Pending Automation
+                          </span>
+                          <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-primary)]">
+                            Modal review
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-sm font-semibold text-[var(--app-text)]">
+                          {structuredPlanDocumentFromPermission(pendingAutomationPermission)?.title || "Automation plan review"}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => setAutomationModalDismissedId(null)}
+                    >
+                      Open automation modal
+                    </Button>
+                  </div>
+                ) : null}
                 {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
@@ -3745,11 +3789,15 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
-        open={Boolean(selectedPermission)}
+        open={isAutomationModalOpen}
         permission={selectedPermission}
         pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
-        onOpenChange={() => undefined}
+        onOpenChange={(open) => {
+          if (!open && selectedPermission && isAutomationPermission(selectedPermission)) {
+            setAutomationModalDismissedId(selectedPermission.id);
+          }
+        }}
         onOpenPermissions={openPermissionsSettings}
         onResolve={handleResolvePermission}
       />

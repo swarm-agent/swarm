@@ -32,6 +32,7 @@ interface DesktopPlanAgentSidecarProps {
   modelLabel?: string;
   mobileOpen?: boolean;
   mobileInline?: boolean;
+  modalInline?: boolean;
   displayMode?: "full" | "compact" | "thin";
 }
 
@@ -97,6 +98,7 @@ export function DesktopPlanAgentSidecar({
   modelLabel = "",
   mobileOpen = true,
   mobileInline = false,
+  modalInline = false,
   displayMode = "full",
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
@@ -146,7 +148,10 @@ export function DesktopPlanAgentSidecar({
 
   useEffect(() => {
     let cancelled = false;
-    setSidechat({ ...EMPTY_SIDECHAT, busy: true });
+    setSidechat((current) => ({
+      ...current,
+      busy: current.sessionId ? current.busy : true,
+    }));
     void (async () => {
       try {
         const result = await ensureSystemSidechat({
@@ -297,32 +302,64 @@ export function DesktopPlanAgentSidecar({
   return (
     <div
       className={embedded
-        ? mobileInline
-          ? mobileOpen
-            ? "flex min-h-0 min-w-0 flex-col overflow-hidden border-t border-[var(--app-border)] bg-[var(--app-surface)]"
-            : "hidden"
-          : mobileOpen
-            ? `fixed inset-0 z-50 flex bg-black/30 min-[1300px]:static min-[1300px]:z-auto min-[1300px]:min-h-0 min-[1300px]:flex-1 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
-            : `hidden min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:flex-1 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
+        ? modalInline
+          ? "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-surface)]"
+          : mobileInline
+            ? mobileOpen
+              ? "flex min-h-0 min-w-0 flex-col overflow-hidden border-t border-[var(--app-border)] bg-[var(--app-surface)]"
+              : "hidden"
+            : mobileOpen
+              ? `fixed inset-0 z-50 flex bg-black/30 min-[1300px]:static min-[1300px]:z-auto min-[1300px]:min-h-0 min-[1300px]:flex-1 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
+              : `hidden min-[1300px]:flex min-[1300px]:min-h-0 min-[1300px]:flex-1 min-[1300px]:border-l min-[1300px]:border-[var(--app-border)] min-[1300px]:bg-[var(--app-surface)] ${displayMode === "thin" ? "min-[1300px]:w-[56px] min-[1300px]:max-w-[56px]" : displayMode === "compact" ? "min-[1300px]:w-[280px] min-[1300px]:max-w-[280px]" : "min-[1300px]:w-[360px] min-[1300px]:max-w-[360px]"}`
         : "fixed inset-0 z-50 bg-black/30 md:left-auto md:w-[28rem]"}
       id={mobileInline ? "mobile-plan-agent-panel" : undefined}
       data-testid="desktop-plan-agent-sidecar"
       data-embedded={embedded ? "true" : "false"}
       data-mobile-inline={mobileInline ? "true" : undefined}
+      data-modal-inline={modalInline ? "true" : undefined}
     >
       <aside className={embedded
-        ? mobileInline
-          ? "flex h-[min(62dvh,36rem)] max-h-[62dvh] min-h-[18rem] min-w-0 flex-col overflow-hidden bg-[var(--app-surface)]"
-          : "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
+        ? modalInline
+          ? "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-surface)]"
+          : mobileInline
+            ? "flex h-[min(62dvh,36rem)] max-h-[62dvh] min-h-[18rem] min-w-0 flex-col overflow-hidden bg-[var(--app-surface)]"
+            : "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
-        <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-3 py-3">
-          <div className="font-semibold">{automation?.automation_v2 ? 'Talk to Swarm to help optimize this automation' : automation || document?.automation || document?.automationV2 ? 'Automation plan · Plan agent' : mobileInline ? "Ask Swarm Plan" : "Plan"}</div>
-          {onClose ? <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button> : null}
+        <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-4 py-3 bg-[var(--app-surface)]">
+          <div className="flex items-center gap-2">
+            <span className="inline-block size-2 rounded-full bg-[var(--app-primary)]" />
+            <div className="font-semibold text-sm text-[var(--app-text)]">
+              {modalInline
+                ? "Swarm Plan AI Sidebar"
+                : automation?.automation_v2
+                  ? "Talk to Swarm to help optimize this automation"
+                  : automation || document?.automation || document?.automationV2
+                    ? "Automation plan · Plan agent"
+                    : mobileInline
+                      ? "Ask Swarm Plan"
+                      : "Plan"}
+            </div>
+          </div>
+          {modalInline ? (
+            <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)]">
+              Live Editing
+            </span>
+          ) : onClose ? (
+            <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button>
+          ) : null}
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <div ref={scrollContainerRef} className="h-full min-h-0 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain p-4 [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller" tabIndex={0}>
             <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]">
-              <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">{automation?.automation_v2 ? 'Discuss instructions, timing and recorded work here. Proposed changes do not alter the active schedule until you explicitly accept them; admitted runs retain their accepted instructions.' : automation ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.' : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}</div>
+              <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">
+                {modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance'
+                  ? 'Ask Swarm to adjust schedule, tasks, or acceptance criteria. Changes update this automation review live.'
+                  : automation?.automation_v2
+                    ? 'Discuss instructions, timing and recorded work here. Proposed changes do not alter the active schedule until you explicitly accept them; admitted runs retain their accepted instructions.'
+                    : automation
+                      ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.'
+                      : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}
+              </div>
               {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}
               <AutomationInstructionContext.Provider value={automation ? { ...automation, parentSessionId } : null}>
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled index={index} />)}
@@ -347,8 +384,8 @@ export function DesktopPlanAgentSidecar({
                       resizeTextarea(event.target);
                     }}
                     onKeyDown={handleComposerKeyDown}
-                    placeholder={automation?.automation_v2 ? 'Ask Swarm about this automation' : 'Talk to your plan'}
-                    aria-label={automation?.automation_v2 ? 'Automation optimization message' : 'Plan message'}
+                    placeholder={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation…' : automation?.automation_v2 ? 'Ask Swarm about this automation' : 'Talk to your plan'}
+                    aria-label={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation' : automation?.automation_v2 ? 'Automation optimization message' : 'Plan message'}
                     className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
                     rows={1}
                     disabled={sidechat.busy || !sidechat.sessionId}
