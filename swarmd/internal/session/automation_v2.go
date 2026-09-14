@@ -91,6 +91,6 @@ func (s *Service) GetAutomationV2Record(account, user, workspace, id string) (pe
 	return s.store.GetAutomationV2Record(account, user, workspace, id)
 }
 
-func (s *Service) ListAutomationV2Records(account, user, workspace, after string, limit int) ([]pebblestore.AutomationV2Record, string, error) {
-	return s.store.ListAutomationV2Records(account, user, workspace, after, limit)
+func (s *Service) ListAutomationV2Records(account, user, workspace, after string, limit int, archivedMode ...string) ([]pebblestore.AutomationV2Record, string, error) {
+	return s.store.ListAutomationV2Records(account, user, workspace, after, limit, archivedMode...)
 }

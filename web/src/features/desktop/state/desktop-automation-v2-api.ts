@@ -30,6 +30,8 @@ export interface AutomationV2Proposal extends AutomationV2Review {
 export interface AutomationV2Record extends AutomationV2Proposal {
   automation_id: string; generation: number; enabled: boolean; cancelled: boolean; accepted_at: number
   authorization: AutomationV2Settings['expiration']; next_due_at?: number
+  archived?: boolean
+  archived_at?: number
 }
 export interface AutomationV2OccurrenceDeliverable {
   label?: string
@@ -68,7 +70,7 @@ export interface AutomationV2Progress {
   no_next_reason?: string; complete: boolean; next_cursor?: string
   occurrences: AutomationV2Occurrence[]
 }
-export interface AutomationV2Read { workspace_id: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string }
+export interface AutomationV2Read { workspace_id: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string; archived_mode?: 'exclude' | 'include' | 'only' }
 export interface AutomationV2Response { records?: AutomationV2Record[]; next_cursor?: string; proposal?: AutomationV2Proposal; record?: AutomationV2Record; progress?: AutomationV2Progress }
 export type AutomationV2Mutation = { workspace_id: string; session_id: string } & (
   | { action: 'propose_automation'; document: AutomationV2Document; review: AutomationV2Review }
@@ -104,6 +106,7 @@ export async function readAutomationV2(input: AutomationV2Read): Promise<Automat
   if (input.session_id) query.set('session_id', input.session_id)
   if (input.timezone) query.set('timezone', input.timezone)
   if (input.cursor) query.set('cursor', input.cursor)
+  if (input.archived_mode) query.set('archived_mode', input.archived_mode)
   if (input.action === 'list') query.set('limit', '20')
   const value = await requestJson<AutomationV2Response & AutomationV2Progress>(`/v3/automations/v2${input.action === 'list' ? '' : '/' + input.action}?${query}`)
   return input.action === 'progress' ? { progress: value, record: value.record } : value

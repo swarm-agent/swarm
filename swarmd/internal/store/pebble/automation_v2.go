@@ -59,6 +59,8 @@ type AutomationV2Record struct {
 	Cancelled     bool                   `json:"cancelled"`
 	NextDueAt     int64                  `json:"next_due_at,omitempty"`
 	CancelThrough int64                  `json:"cancel_through,omitempty"`
+	Archived      bool                   `json:"archived,omitempty"`
+	ArchivedAt    int64                  `json:"archived_at,omitempty"`
 }
 type SessionAutomationV2Binding struct {
 	AutomationID string `json:"automation_id"`
@@ -166,24 +168,49 @@ type automationV2Mutation struct {
 	execution *automationV2ExecutionMutation
 }
 
-func (s *SessionStore) automationV2Owner(account, user, workspace, id string) (SessionSnapshot, error) {
+func (s *SessionStore) automationV2OwnerStatus(account, user, workspace, id string) (SessionSnapshot, bool, int64, error) {
 	current, ok, err := s.GetSession(id)
 	if err != nil {
-		return current, err
+		return current, false, 0, err
+	}
+	isArchived := false
+	archivedAt := int64(0)
+	if !ok {
+		tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(id)
+		if tombstoneErr != nil {
+			return current, false, 0, tombstoneErr
+		}
+		if tombstoneOK && tombstone.Archived && !tombstone.Deleted && tombstone.Session.ID != "" {
+			current = tombstone.Session
+			ok = true
+			isArchived = true
+			archivedAt = tombstone.UpdatedAt
+		}
 	}
 	if !ok || account == "" || user == "" || workspace == "" || current.AccountScopeID != account || current.UserID != user {
-		return current, ErrAutomationV2Conflict
+		return current, false, 0, ErrAutomationV2Conflict
 	}
 	entry, err := s.automationV2WorkspaceOwner(account, user, workspace)
 	if err != nil {
-		return current, err
+		return current, false, 0, err
 	}
 	for _, g := range current.WorkspaceGrants {
 		if g.WorkspaceID == workspace && g.Kind == WorkspaceGrantPrimary && g.Available != nil && *g.Available && g.Path == entry.Path {
-			return current, nil
+			return current, isArchived, archivedAt, nil
 		}
 	}
-	return current, ErrAutomationV2Conflict
+	return current, false, 0, ErrAutomationV2Conflict
+}
+
+func (s *SessionStore) automationV2Owner(account, user, workspace, id string) (SessionSnapshot, error) {
+	session, isArchived, _, err := s.automationV2OwnerStatus(account, user, workspace, id)
+	if err != nil {
+		return session, err
+	}
+	if isArchived {
+		return session, ErrAutomationV2Conflict
+	}
+	return session, nil
 }
 func (s *SessionStore) automationV2WorkspaceOwner(account, user, workspace string) (WorkspaceEntry, error) {
 	member, exists, err := NewIdentityStore(s.store).GetAccountUser(account, user)
@@ -219,7 +246,8 @@ func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id stri
 	return p, ok, err
 }
 func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string) (AutomationV2Record, bool, error) {
-	if _, err := s.automationV2Owner(account, user, workspace, id); err != nil {
+	_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, workspace, id)
+	if err != nil {
 		return AutomationV2Record{}, false, err
 	}
 	var r AutomationV2Record
@@ -234,6 +262,8 @@ func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string
 		if r.AutomationID == "" || r.AcceptedBy != user || r.AcceptedAt <= 0 || r.Authorization != r.Document.AutomationV2.Expiration {
 			return AutomationV2Record{}, false, ErrAutomationV2Conflict
 		}
+		r.Archived = isArchived
+		r.ArchivedAt = archivedAt
 	}
 	return r, ok, err
 }
@@ -468,7 +498,14 @@ func (s *SessionStore) SetAutomationV2CommitHookForTest(hook func(string) error)
 
 // ListAutomationV2Records uses an exclusive opaque storage cursor and caps both
 // visited records and returned bytes. Foreign session records are never emitted.
-func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after string, limit int) ([]AutomationV2Record, string, error) {
+func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after string, limit int, archivedMode ...string) ([]AutomationV2Record, string, error) {
+	mode := "exclude"
+	if len(archivedMode) > 0 && archivedMode[0] != "" {
+		mode = archivedMode[0]
+	}
+	if mode != "exclude" && mode != "include" && mode != "only" {
+		return nil, "", ErrAutomationV2Conflict
+	}
 	if account == "" || user == "" || workspace == "" || limit < 1 || limit > 100 {
 		return nil, "", ErrAutomationV2Conflict
 	}
@@ -507,8 +544,17 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, workspace, r.SessionID); err != nil {
 			return nil, "", err
 		}
-		if _, err := s.automationV2Owner(account, user, workspace, r.SessionID); err != nil {
-			return nil, "", err
+		_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, workspace, r.SessionID)
+		if err != nil {
+			continue
+		}
+		r.Archived = isArchived
+		r.ArchivedAt = archivedAt
+		if mode == "exclude" && isArchived {
+			continue
+		}
+		if mode == "only" && !isArchived {
+			continue
 		}
 		bytes += len(iter.Value())
 		out = append(out, r)

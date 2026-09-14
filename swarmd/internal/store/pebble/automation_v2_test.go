@@ -314,6 +314,112 @@ func TestAutomationV2AuthorityIntegrityReplay(t *testing.T) {
 	})
 }
 
+func TestAutomationV2ArchivedAndDeletedSessionLifecycle(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	available := true
+	if err := s.CreateSession(SessionSnapshot{ID: "auto-session", AccountScopeID: "account", UserID: "owner", WorkspacePath: workspace.Path, WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspace.WorkspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	doc := SessionPlanDocument{Title: "Review", Info: SessionPlanInfo{Goal: "Work"}, Checkpoints: []SessionPlanCheckpoint{{ID: "cp-1", Title: "Work", Objective: "Implement", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Works"}}}, AutomationV2: &AutomationV2Settings{SchemaVersion: 2, Schedule: AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, Missed: "skip", Overlap: "serialize", ActivateOnAccept: true, Expiration: AutomationV2Expiration{Kind: "indefinite"}}}
+	p, err := s.ProposeAutomationV2("account", "owner", workspace.WorkspaceID, "auto-session", doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "auto-session", p.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Archived {
+		t.Fatal("expected newly accepted automation not to be archived")
+	}
+
+	// Active listing
+	activeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10)
+	if err != nil || len(activeRows) != 1 || activeRows[0].Archived {
+		t.Fatalf("expected 1 active unarchived record: rows=%+v, err=%v", activeRows, err)
+	}
+
+	// Archive the session
+	if err := s.ArchiveSession("auto-session"); err != nil {
+		t.Fatalf("archive session failed: %v", err)
+	}
+
+	// Active listing (exclude) should return 0 records without conflict error
+	excludeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "exclude")
+	if err != nil || len(excludeRows) != 0 {
+		t.Fatalf("expected 0 exclude records: rows=%+v, err=%v", excludeRows, err)
+	}
+
+	// Archived only listing should return 1 archived record
+	onlyRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "only")
+	if err != nil || len(onlyRows) != 1 || !onlyRows[0].Archived {
+		t.Fatalf("expected 1 archived record: rows=%+v, err=%v", onlyRows, err)
+	}
+
+	// Include listing should return 1 archived record
+	includeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "include")
+	if err != nil || len(includeRows) != 1 || !includeRows[0].Archived {
+		t.Fatalf("expected 1 include record: rows=%+v, err=%v", includeRows, err)
+	}
+
+	// GetAutomationV2Record should return the record with Archived=true
+	rec, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "auto-session")
+	if err != nil || !found || !rec.Archived || rec.ArchivedAt <= 0 {
+		t.Fatalf("expected found archived record with timestamp: found=%v, rec=%+v, err=%v", found, rec, err)
+	}
+
+	// Unarchive the session
+	tombstone, ok, err := s.GetV3SessionTombstone("auto-session")
+	if err != nil || !ok {
+		t.Fatalf("tombstone missing: ok=%v, err=%v", ok, err)
+	}
+	if err := s.ReactivateArchivedSessions([]string{"auto-session"}, map[string]int64{"auto-session": tombstone.UpdatedAt}); err != nil {
+		t.Fatalf("reactivate failed: %v", err)
+	}
+
+	// Active listing should now return 1 record again
+	restoredRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10)
+	if err != nil || len(restoredRows) != 1 || restoredRows[0].Archived {
+		t.Fatalf("expected 1 active restored record: rows=%+v, err=%v", restoredRows, err)
+	}
+
+	// Delete the session permanently
+	if err := s.DeleteSessions([]string{"auto-session"}); err != nil {
+		t.Fatalf("delete sessions failed: %v", err)
+	}
+
+	// List should return 0 records and no error
+	deletedListRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "include")
+	if err != nil || len(deletedListRows) != 0 {
+		t.Fatalf("expected 0 records after deletion: rows=%+v, err=%v", deletedListRows, err)
+	}
+
+	// Get should return conflict error or not found
+	_, foundAfterDelete, _ := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "auto-session")
+	if foundAfterDelete {
+		t.Fatal("expected record not to be found after session deletion")
+	}
+}
+
 // Store tests inject a bounded fixture validator; API/session tests exercise the
 // canonical executable validator. This is not a production alternate validator.
 func fixtureAutomationV2Validator(doc *SessionPlanDocument) error {

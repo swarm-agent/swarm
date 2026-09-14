@@ -270,11 +270,50 @@ test('AutomationV2Workspace renders flat overview of all workspace automations a
   assert.match(markup, /title="Discuss all automations with the assistant"/)
   assert.match(markup, />Discuss with Swarm<\/span>/)
 
+  // Verify Archive and Delete buttons on cards and Archived tab
+  assert.match(markup, /title="Archive automation"/)
+  assert.match(markup, /title="Permanently delete automation"/)
+  assert.match(markup, />Archived \(0\)<\/button>/)
+
   // Verify Consider adding new automations section with starter templates
   assert.match(markup, /aria-label="Consider adding new automations"/)
   assert.match(markup, /Repository Health Check/)
   assert.match(markup, /Test &amp; Build Sentinel|Test & Build Sentinel/)
   assert.match(markup, />Propose with Swarm →<\/span>/)
+})
+
+test('AutomationV2Workspace renders Unarchive button and Archived status for archived automations', () => {
+  const archivedRecord: AutomationV2Record = {
+    ...sampleRecord,
+    automation_id: 'auto-archived-1',
+    session_id: 'session-archived-1',
+    archived: true,
+    archived_at: 1789000000000,
+  }
+  const archivedKey = automationV2PageKey({ action: 'list', workspace_id: 'ws-test', archived_mode: 'only' })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key: archivedKey,
+    input: { action: 'list', workspace_id: 'ws-test', archived_mode: 'only' },
+    requestId: 'req-list-archived',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: archivedKey,
+    requestId: 'req-list-archived',
+    generation: 0,
+    data: { records: [archivedRecord] },
+  })
+
+  // Verify archived tab button count is rendered
+  const markup = renderToStaticMarkup(
+    <AutomationV2Workspace
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      workspaceName="Test Workspace"
+    />
+  )
+  assert.match(markup, />Archived \(1\)<\/button>/)
 })
 
 test('AutomationV2Sidecar supports switching to workspace-level discussion of all automations', () => {

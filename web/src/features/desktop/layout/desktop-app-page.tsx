@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, Trash2, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -92,7 +92,7 @@ import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
 import { SearchChatsModal } from '../session-search/search-chats-modal'
-import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
+import { deleteDesktopSessions, type DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
@@ -1858,10 +1858,11 @@ interface SessionRowProps {
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
   onRename: (sessionId: string, title: string) => Promise<void>
+  onDelete?: (sessionId: string) => void
   onOpenAutomations?: () => void
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onOpenAutomations }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onDelete, onOpenAutomations }: SessionRowProps) {
   const session = initialSession
   const automation = useDesktopV3CacheSelector(state => {
     const record = state.sessionsById[session.id]
@@ -2021,6 +2022,23 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       {pendingAction === 'archive' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Archive size={12} aria-hidden="true" />}
     </button>
   )
+  const deleteActionControl = onDelete ? (
+    <button
+      type="button"
+      className={cn(actionButtonBaseClass, 'text-[var(--app-danger)] hover:text-[var(--app-danger)] hover:bg-[var(--app-danger-bg,rgba(239,68,68,0.1))]')}
+      disabled={pendingAction !== null}
+      aria-label={`Delete ${rowTitle}`}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        closeActionMenu()
+        onDelete(session.id)
+      }}
+    >
+      <Trash2 size={12} aria-hidden="true" />
+      <span>Delete</span>
+    </button>
+  ) : null
   const selectActionControl = selectionEligible && selectionGroup && onEnterSelectionMode ? (
     <button
       type="button"
@@ -2107,6 +2125,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           {subagentSessionsActionControl}
           {renameActionControl}
           {selectActionControl}
+          {deleteActionControl}
         </span>
       ) : null}
     </span>
@@ -2393,6 +2412,7 @@ interface RenderSidebarSessionGroupsInput {
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
   onRename: (sessionId: string, title: string) => Promise<void>
+  onDelete?: (sessionId: string) => void
 }
 
 export function sidebarRootIDsForSelectionGroup(nodes: SidebarSessionNode[], group: SidebarSessionGroupID | null): string[] {
@@ -2635,6 +2655,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                         onTogglePinned={input.onTogglePinned}
                         onArchive={input.onArchive}
                         onRename={input.onRename}
+                        onDelete={input.onDelete}
                         onOpenAutomations={input.onOpenAutomations}
                       />
                     ))}
@@ -2693,6 +2714,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                       onTogglePinned={input.onTogglePinned}
                       onArchive={input.onArchive}
                       onRename={input.onRename}
+                      onDelete={input.onDelete}
                       onOpenAutomations={input.onOpenAutomations}
                     />
                   ))}
@@ -3917,6 +3939,41 @@ export function DesktopAppPage() {
       })
   }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
 
+  const handleDeleteSidebarSession = useCallback(async (sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
+    try {
+      const preview = await deleteDesktopSessions({
+        session_ids: [normalizedSessionId],
+        archived_mode: 'include',
+        global: true,
+        dry_run: true,
+      })
+      const warning = preview.recent_75_overlap_count > 0 ? '\nThis includes one of your newest 75 conversations.' : ''
+      if (!window.confirm(`Permanently delete this session and its content?${warning}`)) return
+      setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'archive' }))
+      await deleteDesktopSessions({
+        session_ids: [normalizedSessionId],
+        archived_mode: 'include',
+        global: true,
+        confirmation_token: preview.confirmation_token,
+        confirm_recent: preview.recent_75_overlap_count > 0,
+      })
+      setDesktopToast({ message: 'Deleted session.', tone: 'success' })
+      if (routeSessionId === normalizedSessionId) {
+        handleArchivePlanSession(normalizedSessionId)
+      }
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to delete session.', tone: 'error' })
+    } finally {
+      setSidebarSessionActions((current) => {
+        const next = { ...current }
+        delete next[normalizedSessionId]
+        return next
+      })
+    }
+  }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
+
   const handleRenameSidebarSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
     const normalizedSessionId = sessionId.trim()
     if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
@@ -4734,6 +4791,7 @@ export function DesktopAppPage() {
     onTogglePinned: handleToggleSidebarPinned,
     onArchive: handleArchiveSidebarSession,
     onRename: handleRenameSidebarSession,
+    onDelete: handleDeleteSidebarSession,
   })
 
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
@@ -4798,6 +4856,7 @@ export function DesktopAppPage() {
                     onTogglePinned={handleToggleSidebarPinned}
                     onArchive={handleArchiveSidebarSession}
                     onRename={handleRenameSidebarSession}
+                    onDelete={handleDeleteSidebarSession}
                   />
                 ))}
               </div>
@@ -5586,6 +5645,7 @@ export function DesktopAppPage() {
                             onTogglePinned={handleToggleSidebarPinned}
                             onArchive={handleArchiveSidebarSession}
                             onRename={handleRenameSidebarSession}
+                            onDelete={handleDeleteSidebarSession}
                           />
                         ))}
                       </div>
@@ -5634,6 +5694,7 @@ export function DesktopAppPage() {
                     onTogglePinned: handleToggleSidebarPinned,
                     onArchive: handleArchiveSidebarSession,
                     onRename: handleRenameSidebarSession,
+                    onDelete: handleDeleteSidebarSession,
                   })}
                   {globalFlattenedSessionNodes.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>

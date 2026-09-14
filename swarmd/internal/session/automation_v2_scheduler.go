@@ -62,7 +62,7 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 	// Admission always compares the current accepted revision and generation in
 	// the same V3 mutation that advances due time and writes the pending receipt.
 	var failures []error
-	if r.Enabled && !r.Cancelled && r.NextDueAt <= now && !(r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt) {
+	if r.Enabled && !r.Cancelled && !r.Archived && r.NextDueAt <= now && !(r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt) {
 		_, err := db.AdmitAutomationV2(r, now)
 		if err != nil && !errors.Is(err, store.ErrAutomationV2Conflict) {
 			failures = append(failures, err)
@@ -157,6 +157,8 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 	}
 	out = AutomationV2Progress{Record: r, ObservedAt: now, Timezone: timezone, Forecast: []int64{}, Occurrences: rows, NextCursor: next, Complete: next == ""}
 	switch {
+	case r.Archived:
+		out.NoNextReason = "archived"
 	case r.Cancelled:
 		out.NoNextReason = "cancelled"
 	case !r.Enabled:

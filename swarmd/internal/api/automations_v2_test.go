@@ -257,6 +257,23 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 				t.Fatal("revision not applied")
 			}
 
+			// Test archived_mode discovery
+			if err := ss.ArchiveSession("conversation"); err != nil {
+				t.Fatal(err)
+			}
+			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=exclude", "", "owner", false)
+			if w.Code != 200 || strings.Contains(w.Body.String(), first.AutomationID) {
+				t.Fatal("expected archived automation excluded", w.Body.String())
+			}
+			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=only", "", "owner", false)
+			if w.Code != 200 || !strings.Contains(w.Body.String(), first.AutomationID) {
+				t.Fatal("expected archived automation returned with archived_mode=only", w.Body.String())
+			}
+			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=invalid", "", "owner", false)
+			if w.Code != 400 {
+				t.Fatal("expected 400 for invalid archived_mode", w.Code)
+			}
+
 		})
 	}
 }

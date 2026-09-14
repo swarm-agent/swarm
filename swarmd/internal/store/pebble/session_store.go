@@ -1056,6 +1056,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 	for _, key := range []string{
 		KeySessionUsageSummary(session.ID), KeySessionUsageSummaryByAccount(session.AccountScopeID, session.ID),
 		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID), KeyExecutionEpochActive(session.ID), KeyExecutionEpochLatest(session.ID),
+		automationV2Key("accepted", session.AccountScopeID, session.ID), automationV2Key("proposal", session.AccountScopeID, session.ID),
 	} {
 		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err

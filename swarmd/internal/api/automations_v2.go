@@ -58,7 +58,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && (r.URL.Path == AutomationsV2Path || r.URL.Path == AutomationsV2Path+"/review" || r.URL.Path == AutomationsV2Path+"/progress") {
 		q := r.URL.Query()
 		for key, values := range q {
-			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "limit" && key != "cursor" && key != "timezone") {
+			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode") {
 				automationV2Error(w, errors.New("invalid query"))
 				return
 			}
@@ -82,6 +82,10 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		}
 		if q.Has("timezone") {
 			automationV2Error(w, errors.New("timezone only applies to progress"))
+			return
+		}
+		if r.URL.Path != AutomationsV2Path && q.Has("archived_mode") {
+			automationV2Error(w, errors.New("archived_mode only applies to list"))
 			return
 		}
 		if r.URL.Path == AutomationsV2Path+"/review" {
@@ -110,7 +114,15 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, errors.New("invalid discovery query"))
 			return
 		}
-		records, next, err := s.sessions.ListAutomationV2Records(p.AccountScopeID, p.UserID, q.Get("workspace_id"), q.Get("cursor"), limit)
+		archivedMode := q.Get("archived_mode")
+		if archivedMode == "" {
+			archivedMode = "exclude"
+		}
+		if archivedMode != "exclude" && archivedMode != "include" && archivedMode != "only" {
+			automationV2Error(w, errors.New("invalid discovery query"))
+			return
+		}
+		records, next, err := s.sessions.ListAutomationV2Records(p.AccountScopeID, p.UserID, q.Get("workspace_id"), q.Get("cursor"), limit, archivedMode)
 		if err != nil {
 			automationV2Error(w, err)
 			return

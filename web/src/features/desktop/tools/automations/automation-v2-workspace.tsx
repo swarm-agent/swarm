@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -9,12 +11,14 @@ import {
   ExternalLink,
   FileText,
   GitBranch,
+  LoaderCircle,
   MessageSquare,
   Pause,
   Plus,
   RefreshCcw,
   Search,
   Sparkles,
+  Trash2,
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
@@ -26,6 +30,10 @@ import {
   type AutomationV2Occurrence,
   type AutomationV2OccurrenceDeliverable,
 } from '../../state/desktop-automation-v2-api'
+import { archiveDesktopV3Sessions } from '../../session-v3/plan-execution-api'
+import { unarchiveDesktopV3ReviewSessions } from '../../session-v3/review-worktrees-api'
+import { deleteDesktopSessions } from '../../session-search/session-search-api'
+import { getDesktopV3CacheSnapshot } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
 import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
@@ -131,11 +139,22 @@ export function AutomationV2Workspace({
   const [createRequest, setCreateRequest] = useState(0)
   const [draftPrompt, setDraftPrompt] = useState<string | undefined>()
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'paused'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'paused' | 'archived'>('all')
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
+  const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
+  const [deleteBusy, setDeleteBusy] = useState(false)
 
-  const input = { action: 'list' as const, workspace_id: workspaceId, cursor }
-  const page = useAutomationV2Page(input)
-  const records = page?.data?.records ?? []
+  const isArchivedTab = statusFilter === 'archived'
+  const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: !isArchivedTab ? cursor : undefined }), [workspaceId, cursor, isArchivedTab])
+  const activePage = useAutomationV2Page(activeInput)
+  const activeRecords = activePage?.data?.records ?? []
+
+  const archivedInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: isArchivedTab ? cursor : undefined, archived_mode: 'only' as const }), [workspaceId, cursor, isArchivedTab])
+  const archivedPage = useAutomationV2Page(archivedInput)
+  const archivedRecords = archivedPage?.data?.records ?? []
+
+  const page = isArchivedTab ? archivedPage : activePage
+  const records = isArchivedTab ? archivedRecords : activeRecords
 
   useEffect(() => {
     if (initialSessionId) {
@@ -192,10 +211,88 @@ export function AutomationV2Workspace({
     }
   }
 
+  const handleArchiveRecord = async (record: AutomationV2Record) => {
+    setActionLoadingId(record.session_id)
+    try {
+      if (record.enabled && !record.cancelled) {
+        try {
+          await desktopAutomationV2.mutate({
+            workspace_id: workspaceId,
+            session_id: record.session_id,
+            generation: record.generation,
+            action: 'pause',
+          } as AutomationV2Mutation)
+        } catch {
+          // ignore
+        }
+      }
+      await archiveDesktopV3Sessions([record.session_id])
+      desktopAutomationV2.invalidate(workspaceId)
+    } catch (err) {
+      console.error('Failed to archive automation', err)
+    } finally {
+      setActionLoadingId(null)
+    }
+  }
+
+  const handleUnarchiveRecord = async (record: AutomationV2Record) => {
+    setActionLoadingId(record.session_id)
+    try {
+      const version = record.archived_at || getDesktopV3CacheSnapshot().tombstonesBySession[record.session_id]?.updated_at || Date.now()
+      await unarchiveDesktopV3ReviewSessions({ [record.session_id]: version })
+      desktopAutomationV2.invalidate(workspaceId)
+    } catch (err) {
+      console.error('Failed to unarchive automation', err)
+    } finally {
+      setActionLoadingId(null)
+    }
+  }
+
+  const handleDeleteRecord = (record: AutomationV2Record) => {
+    setDeleteConfirmRecord(record)
+  }
+
+  const confirmDeleteRecord = async () => {
+    if (!deleteConfirmRecord || deleteBusy) return
+    const rec = deleteConfirmRecord
+    setDeleteBusy(true)
+    try {
+      if (!rec.cancelled) {
+        try {
+          await desktopAutomationV2.mutate({
+            workspace_id: workspaceId,
+            session_id: rec.session_id,
+            generation: rec.generation,
+            action: 'cancel_all',
+          } as AutomationV2Mutation)
+        } catch {
+          // ignore
+        }
+      }
+      const preview = await deleteDesktopSessions({ session_ids: [rec.session_id], archived_mode: 'include', global: true, dry_run: true })
+      await deleteDesktopSessions({
+        session_ids: [rec.session_id],
+        archived_mode: 'include',
+        global: true,
+        confirmation_token: preview.confirmation_token,
+        confirm_recent: preview.recent_75_overlap_count > 0,
+      })
+      desktopAutomationV2.invalidate(workspaceId)
+      setDeleteConfirmRecord(null)
+    } catch (err) {
+      console.error('Failed to delete automation', err)
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   const filteredRecords = useMemo(() => {
-    return records.filter((r) => {
-      if (statusFilter === 'enabled' && (!r.enabled || r.cancelled)) return false
-      if (statusFilter === 'paused' && (r.enabled || r.cancelled)) return false
+    const list = isArchivedTab ? archivedRecords : activeRecords
+    return list.filter((r) => {
+      if (!isArchivedTab) {
+        if (statusFilter === 'enabled' && (!r.enabled || r.cancelled)) return false
+        if (statusFilter === 'paused' && (r.enabled || r.cancelled)) return false
+      }
       if (searchQuery.trim()) {
         const query = searchQuery.trim().toLowerCase()
         const titleMatch = r.document.title.toLowerCase().includes(query)
@@ -204,11 +301,11 @@ export function AutomationV2Workspace({
       }
       return true
     })
-  }, [records, statusFilter, searchQuery])
+  }, [isArchivedTab, archivedRecords, activeRecords, statusFilter, searchQuery])
 
-  const enabledCount = useMemo(() => records.filter((r) => r.enabled && !r.cancelled).length, [records])
-  const pausedCount = useMemo(() => records.filter((r) => !r.enabled && !r.cancelled).length, [records])
-  const cancelledCount = useMemo(() => records.filter((r) => r.cancelled).length, [records])
+  const enabledCount = useMemo(() => activeRecords.filter((r) => r.enabled && !r.cancelled).length, [activeRecords])
+  const pausedCount = useMemo(() => activeRecords.filter((r) => !r.enabled && !r.cancelled).length, [activeRecords])
+  const archivedCount = useMemo(() => archivedRecords.length, [archivedRecords])
 
   const time = (ms: number) =>
     new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
@@ -251,7 +348,7 @@ export function AutomationV2Workspace({
                 Flat overview of all active and scheduled workspace automations.
               </p>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => void desktopAutomationV2.refresh(input)}>
+            <Button variant="ghost" size="sm" onClick={() => { void desktopAutomationV2.refresh(activeInput); void desktopAutomationV2.refresh(archivedInput) }}>
               <RefreshCcw size={13} />
               Refresh automations
             </Button>
@@ -266,11 +363,11 @@ export function AutomationV2Workspace({
           {page?.error && <p role="alert" className="text-xs text-[var(--app-danger)]">{page.error}</p>}
 
           {/* Executive Pulse / Metrics Strip */}
-          {records.length > 0 && (
+          {(activeRecords.length > 0 || archivedRecords.length > 0) && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5" data-testid="automations-summary-strip">
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Total</div>
-                <div className="mt-1 text-lg font-semibold text-[var(--app-text)]">{records.length}</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--app-text)]">{activeRecords.length}</div>
               </div>
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Scheduled</div>
@@ -281,20 +378,14 @@ export function AutomationV2Workspace({
                 <div className="mt-1 text-lg font-semibold text-[var(--app-text-muted)]">{pausedCount}</div>
               </div>
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Status</div>
-                <div className="mt-1 text-xs font-medium text-[var(--app-text)]">
-                  {cancelledCount > 0
-                    ? `${cancelledCount} cancelled`
-                    : enabledCount > 0
-                    ? 'All active monitored'
-                    : 'None active'}
-                </div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Archived</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--app-text-muted)]">{archivedCount}</div>
               </div>
             </div>
           )}
 
           {/* Search & Status Filter Controls */}
-          {records.length > 2 && (
+          {(activeRecords.length > 0 || archivedRecords.length > 0) && (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <div className="relative min-w-[200px] flex-1 max-w-sm">
                 <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
@@ -317,7 +408,7 @@ export function AutomationV2Workspace({
                   )}
                   onClick={() => setStatusFilter('all')}
                 >
-                  All ({records.length})
+                  All ({activeRecords.length})
                 </button>
                 <button
                   type="button"
@@ -343,6 +434,18 @@ export function AutomationV2Workspace({
                 >
                   Paused ({pausedCount})
                 </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                    statusFilter === 'archived'
+                      ? 'bg-[var(--app-surface-hover)] text-[var(--app-text)] font-semibold'
+                      : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                  )}
+                  onClick={() => setStatusFilter('archived')}
+                >
+                  Archived ({archivedCount})
+                </button>
               </div>
             </div>
           )}
@@ -353,7 +456,8 @@ export function AutomationV2Workspace({
               const schedule = record.document.automation_v2.schedule
               const isSelected = selected === record.session_id
               const isExpanded = Boolean(expandedIds[record.session_id] || isSelected)
-              const statusText = record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'
+              const isArchived = Boolean(record.archived)
+              const statusText = isArchived ? 'Archived' : record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'
 
               return (
                 <article
@@ -373,14 +477,18 @@ export function AutomationV2Workspace({
                       <span
                         className={cn(
                           "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold",
-                          record.cancelled
+                          isArchived
+                            ? 'bg-[var(--app-surface-hover)] border border-[var(--app-border)] text-[var(--app-text-muted)]'
+                            : record.cancelled
                             ? 'bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] border border-[var(--app-danger-border,rgba(239,68,68,0.25))] text-[var(--app-danger)]'
                             : record.enabled
                             ? 'bg-[var(--app-success-bg,rgba(16,185,129,0.12))] border border-[var(--app-success-border,rgba(16,185,129,0.25))] text-[var(--app-success)]'
                             : 'bg-[var(--app-surface-hover)] border border-[var(--app-border)] text-[var(--app-text-muted)]'
                         )}
                       >
-                        {record.cancelled ? (
+                        {isArchived ? (
+                          <Archive size={12} />
+                        ) : record.cancelled ? (
                           <AlertCircle size={12} />
                         ) : record.enabled ? (
                           <Clock3 size={12} />
@@ -397,7 +505,9 @@ export function AutomationV2Workspace({
                       </span>
                     </div>
                     <div className="text-xs font-medium text-[var(--app-text-muted)]">
-                      {record.enabled && !record.cancelled && record.next_due_at ? (
+                      {isArchived ? (
+                        <span>Archived</span>
+                      ) : record.enabled && !record.cancelled && record.next_due_at ? (
                         <span>Next: {time(record.next_due_at)}</span>
                       ) : (
                         <span>No upcoming run</span>
@@ -449,25 +559,74 @@ export function AutomationV2Workspace({
                   {/* Card Actions */}
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[var(--app-border)]/60 pt-3">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-8 gap-1.5 rounded-xl text-xs"
-                        onClick={() => handleChatWithAutomation(record.session_id)}
-                        title="Discuss or optimize this automation with Swarm"
-                      >
-                        <MessageSquare size={13} />
-                        <span>Discuss with Swarm</span>
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-8 text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
-                        disabled={record.cancelled}
-                        onClick={() => void handleControlRecord(record, record.enabled ? 'pause' : 'resume')}
-                      >
-                        {record.enabled ? 'Pause' : 'Resume'}
-                      </Button>
+                      {isArchived ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 gap-1.5 rounded-xl text-xs text-[var(--app-primary)] border-[var(--app-primary-border)] hover:bg-[var(--app-primary-soft)]"
+                            disabled={actionLoadingId === record.session_id}
+                            onClick={() => void handleUnarchiveRecord(record)}
+                            title="Unarchive automation"
+                          >
+                            {actionLoadingId === record.session_id ? <LoaderCircle size={13} className="animate-spin" /> : <ArchiveRestore size={13} />}
+                            <span>Unarchive</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 gap-1 rounded-xl text-xs text-[var(--app-text-muted)] hover:text-[var(--app-danger)]"
+                            onClick={() => handleDeleteRecord(record)}
+                            title="Permanently delete automation"
+                          >
+                            <Trash2 size={13} />
+                            <span>Delete</span>
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-8 gap-1.5 rounded-xl text-xs"
+                            onClick={() => handleChatWithAutomation(record.session_id)}
+                            title="Discuss or optimize this automation with Swarm"
+                          >
+                            <MessageSquare size={13} />
+                            <span>Discuss with Swarm</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                            disabled={record.cancelled}
+                            onClick={() => void handleControlRecord(record, record.enabled ? 'pause' : 'resume')}
+                          >
+                            {record.enabled ? 'Pause' : 'Resume'}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 gap-1 rounded-xl text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                            disabled={actionLoadingId === record.session_id}
+                            onClick={() => void handleArchiveRecord(record)}
+                            title="Archive automation"
+                          >
+                            {actionLoadingId === record.session_id ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}
+                            <span>Archive</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 gap-1 rounded-xl text-xs text-[var(--app-text-muted)] hover:text-[var(--app-danger)]"
+                            onClick={() => handleDeleteRecord(record)}
+                            title="Permanently delete automation"
+                          >
+                            <Trash2 size={13} />
+                            <span>Delete</span>
+                          </Button>
+                        </>
+                      )}
                     </div>
                     <Button
                       size="sm"
@@ -499,19 +658,25 @@ export function AutomationV2Workspace({
           </div>
 
           {/* Empty State */}
-          {page?.data && !page.loading && !page.stale && !records.length && (
+          {page?.data && !page.loading && !page.stale && !filteredRecords.length && (
             <div className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center bg-[var(--app-surface)] space-y-3">
               <div className="mx-auto flex size-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-primary)]">
-                <Clock3 size={24} />
+                {isArchivedTab ? <Archive size={24} /> : <Clock3 size={24} />}
               </div>
-              <h3 className="text-base font-semibold text-[var(--app-text)]">No accepted automations on this page</h3>
+              <h3 className="text-base font-semibold text-[var(--app-text)]">
+                {isArchivedTab ? 'No archived automations' : 'No accepted automations on this page'}
+              </h3>
               <p className="mx-auto max-w-md text-xs text-[var(--app-text-muted)] leading-relaxed">
-                No accepted automations on this page. Start a conversation to propose one, or pick a starter template below.
+                {isArchivedTab
+                  ? 'Archived automations will appear here. Archiving an automation pauses its schedule and moves it out of your active workspace views.'
+                  : 'No accepted automations on this page. Start a conversation to propose one, or pick a starter template below.'}
               </p>
-              <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
-                <Plus size={15} />
-                Add automation
-              </Button>
+              {!isArchivedTab && (
+                <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
+                  <Plus size={15} />
+                  Add automation
+                </Button>
+              )}
             </div>
           )}
 
@@ -620,6 +785,42 @@ export function AutomationV2Workspace({
           />
         </aside>
       </div>
+
+      {/* Delete Automation Confirmation Modal */}
+      {deleteConfirmRecord && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-automation-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-[var(--app-danger)]">
+              <Trash2 size={20} />
+              <h3 id="delete-automation-title" className="text-base font-semibold text-[var(--app-text)]">
+                Delete automation?
+              </h3>
+            </div>
+            <p className="text-xs leading-relaxed text-[var(--app-text-muted)]">
+              Are you sure you want to delete <strong className="text-[var(--app-text)]">“{deleteConfirmRecord.document.title}”</strong>? This will cancel all future recurring runs and permanently delete the automation session.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" size="sm" disabled={deleteBusy} onClick={() => setDeleteConfirmRecord(null)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                className="bg-[var(--app-danger)] text-white hover:bg-[var(--app-danger)]/90 gap-1.5"
+                disabled={deleteBusy}
+                onClick={() => void confirmDeleteRecord()}
+              >
+                {deleteBusy ? <LoaderCircle size={13} className="animate-spin" /> : null}
+                <span>{deleteBusy ? 'Deleting…' : 'Delete automation'}</span>
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
