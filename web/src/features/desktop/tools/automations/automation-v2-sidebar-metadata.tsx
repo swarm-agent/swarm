@@ -109,8 +109,8 @@ export function AutomationSidebarMetadataRow({
       className="mt-1 flex min-w-0 flex-col gap-1 text-[10px] leading-4 text-[var(--app-text-subtle)]"
     >
       {/* Row 2 of card: Cadence, timezone, and status pill */}
-      <div className="flex min-w-0 items-center justify-between gap-1.5">
-        <span className="flex min-w-0 items-center gap-1.5">
+      <div className="flex w-full min-w-0 max-w-full items-center justify-between gap-1.5">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
           <Clock3
             size={11}
             className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
@@ -124,8 +124,8 @@ export function AutomationSidebarMetadataRow({
       </div>
 
       {/* Row 3 of card: Activity stats (today/upcoming) and next run time or direct view prompt */}
-      <div className="flex min-w-0 items-center justify-between gap-1.5 text-[9px] text-[var(--app-text-muted)]">
-        <span className="flex min-w-0 items-center gap-1.5 truncate">
+      <div className="flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 text-[9px] text-[var(--app-text-muted)]">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate">
           {runMeta ? (
             <span className="truncate tabular-nums font-medium">{runMeta}</span>
           ) : schedule ? (
@@ -657,7 +657,7 @@ export function AutomationSidebarCompactCardView({
           handleCardClick()
         }
       }}
-      className="group relative flex flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/40 p-2.5 text-left transition-all hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] cursor-pointer"
+      className="group relative flex w-full min-w-0 max-w-full box-border flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/40 p-2.5 text-left transition-all hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] cursor-pointer overflow-hidden"
     >
       <div className="flex min-w-0 items-center justify-between gap-1.5">
         <span className="flex min-w-0 items-center gap-1.5">
@@ -812,11 +812,11 @@ export function AutomationSidebarExpandedContainerView({
   return (
     <div
       data-testid="automation-sidebar-expanded-container"
-      className="flex flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/30 p-2 text-left"
+      className="w-full min-w-0 max-w-full box-border flex flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/30 p-2 text-left overflow-hidden"
     >
       {/* Container Header */}
-      <div className="flex min-w-0 items-center justify-between gap-1.5 pb-1.5 border-b border-[var(--app-border)]/40">
-        <span className="flex min-w-0 items-center gap-1.5">
+      <div className="flex w-full min-w-0 max-w-full items-center justify-between gap-1 pb-1.5 border-b border-[var(--app-border)]/40">
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
           {hasAlerts ? (
             <AlertTriangle
               size={12}
@@ -834,15 +834,15 @@ export function AutomationSidebarExpandedContainerView({
             {headline}
           </span>
         </span>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 ml-auto">
           {counts.alerts > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)]">
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)] shrink-0">
               <AlertTriangle size={8} aria-hidden="true" />
               <span>{counts.alerts} alert{counts.alerts === 1 ? '' : 's'}</span>
             </span>
           )}
           {isRunning && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)]">
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)] shrink-0">
               <span
                 data-testid="expanded-running-dot"
                 className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
@@ -860,7 +860,7 @@ export function AutomationSidebarExpandedContainerView({
                 onOpenAutomations()
               }}
               title="Open top-down Automations view"
-              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
+              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer shrink-0"
             >
               View →
             </button>
@@ -872,7 +872,7 @@ export function AutomationSidebarExpandedContainerView({
                 e.stopPropagation()
               }}
               title="Open top-down Automations view"
-              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline"
+              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline shrink-0"
             >
               View →
             </a>
@@ -886,7 +886,7 @@ export function AutomationSidebarExpandedContainerView({
             }}
             aria-label="Collapse automations to summary card"
             title="Collapse automations to summary card"
-            className="inline-flex items-center gap-0.5 rounded px-1 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
+            className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer shrink-0"
           >
             <span>Collapse</span>
             <ChevronUp size={11} className="shrink-0" aria-hidden="true" />
@@ -895,12 +895,12 @@ export function AutomationSidebarExpandedContainerView({
       </div>
 
       {/* Container Body holding session cards */}
-      <div className="flex flex-col gap-1">
+      <div className="flex w-full min-w-0 max-w-full flex-col gap-1 overflow-hidden">
         {children}
       </div>
 
       {/* Container Footer with bottom collapse button */}
-      <div className="flex items-center justify-between pt-1 border-t border-[var(--app-border)]/40 text-[9px] text-[var(--app-text-muted)]">
+      <div className="flex w-full min-w-0 max-w-full items-center justify-between pt-1 border-t border-[var(--app-border)]/40 text-[9px] text-[var(--app-text-muted)]">
         <button
           type="button"
           data-testid="expanded-bottom-collapse-button"
@@ -910,7 +910,7 @@ export function AutomationSidebarExpandedContainerView({
           }}
           aria-label="Collapse automations section"
           title="Collapse automations section"
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
         >
           <ChevronUp size={10} className="shrink-0" aria-hidden="true" />
           <span>Collapse to summary</span>
@@ -920,7 +920,7 @@ export function AutomationSidebarExpandedContainerView({
             type="button"
             onClick={onOpenAutomations}
             title="Open top-down Automations view"
-            className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
+            className="shrink-0 text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer truncate"
           >
             All automations ({rootCount}) →
           </button>

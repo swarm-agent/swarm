@@ -2137,9 +2137,9 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     onMouseEnter: () => onPrefetch(session.id),
     onFocus: () => onPrefetch(session.id),
     className: cn(
-      'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
+      'group relative grid w-full min-w-0 max-w-full box-border rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform] overflow-hidden',
       isAutomationRow
-        ? 'rounded-lg border-[var(--app-border)]/65 bg-[var(--app-surface-subtle)]/35 p-2.5 gap-1.5 shadow-xs hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'
+        ? 'rounded-md border-[var(--app-border)]/55 bg-[var(--app-surface)]/60 p-2 gap-1 shadow-xs hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'
         : isPlanRow
           ? 'gap-1.5 px-2.5 py-2'
           : 'gap-1 px-2.5 py-1.5',
@@ -2548,7 +2548,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
       </div>
     )
     return [(
-      <section key={group.id} className="group/section grid content-start gap-1.5">
+      <section key={group.id} className="group/section grid w-full min-w-0 max-w-full content-start gap-1.5">
         {group.id === 'needs_review' ? (
           <>
             <div data-sidebar-review-toolbar className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold text-[var(--app-text-subtle)]">
@@ -2600,14 +2600,14 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             onCollapse={() => input.onToggleGroupCollapsed(group.id)}
             onOpenAutomations={input.onOpenAutomations}
           >
-            <div className="grid gap-1">
+            <div className="grid w-full min-w-0 max-w-full gap-1">
               {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
                 const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
                 return (
                   <div
                     key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
                     data-sidebar-task-group={taskCallId || undefined}
-                    className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+                    className={cn('grid w-full min-w-0 max-w-full gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
                   >
                     {taskGroup.map((node) => (
                       <SessionRow
@@ -2642,16 +2642,16 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 )
               })}
               {hasOverflow ? (
-                <div className="flex items-center gap-1.5 pt-0.5">
+                <div className="flex w-full min-w-0 max-w-full items-center gap-1.5 pt-0.5">
                   <button
                     type="button"
-                    className="flex flex-1 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    className="flex flex-1 min-w-0 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
                     aria-label={overflowExpanded ? `Show fewer ${group.label} sessions` : `Show ${hiddenRootCount} more ${group.label} sessions`}
                     aria-expanded={overflowExpanded}
                     onClick={() => input.onToggleGroupOverflow(group.id)}
                   >
-                    <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
-                    <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+                    <ChevronDown size={14} className={cn('transition-transform shrink-0', overflowExpanded && 'rotate-180')} />
+                    <span className="truncate">{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
                   </button>
                 </div>
               ) : null}
@@ -5475,8 +5475,8 @@ export function DesktopAppPage() {
             </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
-            <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-              <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
+            <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-3 py-3">
+              <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto overflow-x-hidden font-mono">
                   <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
                     <div ref={workspaceDropdownRef} className="relative min-w-0">
                       <button

@@ -259,7 +259,9 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
       onOpenAutomations={() => { navigated = true }}
     />
   )
-  assert.match(compactMarkup, /data-testid="automation-sidebar-compact-card"/)
+  // Verifies compact card is strictly constrained to sidebar width without overflowing
+  assert.match(compactMarkup, /w-full min-w-0 max-w-full box-border/)
+  assert.match(compactMarkup, /overflow-hidden/)
   assert.match(compactMarkup, /4 automations today/)
   assert.match(compactMarkup, /data-testid="compact-running-dot"/)
   assert.match(compactMarkup, /1 running/)
@@ -416,8 +418,10 @@ test('expanded container holds automation sessions with collapse controls and he
     </AutomationSidebarExpandedContainerView>
   )
 
-  // Verifies container exists
+  // Verifies container exists and is strictly constrained to sidebar width without overflowing
   assert.match(expandedMarkup, /data-testid="automation-sidebar-expanded-container"/)
+  assert.match(expandedMarkup, /w-full min-w-0 max-w-full box-border/)
+  assert.match(expandedMarkup, /overflow-hidden/)
   // Verifies headline
   assert.match(expandedMarkup, /5 automations today/)
   // Verifies running indicator
