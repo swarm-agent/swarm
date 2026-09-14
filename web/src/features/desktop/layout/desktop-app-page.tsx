@@ -71,9 +71,10 @@ import {
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
 import { AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
+import { AutomationToolPage } from '../tools/pages/automation-tool-page'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
-import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
@@ -2107,47 +2108,47 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       ) : null}
     </span>
   )
-  return (
-    <Link
-      to="/$workspaceSlug/$sessionId"
-      params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
-      onClick={(event) => {
-        if (event.defaultPrevented || event.button !== 0) return
+  const isAcceptedAutomation = automationV2 === 'accepted'
+  const linkProps = {
+    onClick: (event: React.MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return
+      if (selectionMode && selectionEligible) {
+        event.preventDefault()
+        onToggleSelected?.(session.id, event.shiftKey)
+        return
+      }
+      if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+      event.preventDefault()
+      onSelect(session.id)
+    },
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === ' ') {
+        event.preventDefault()
         if (selectionMode && selectionEligible) {
-          event.preventDefault()
           onToggleSelected?.(session.id, event.shiftKey)
           return
         }
-        if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
-        event.preventDefault()
         onSelect(session.id)
-      }}
-      onKeyDown={(event) => {
-        if (event.key === ' ') {
-          event.preventDefault()
-          if (selectionMode && selectionEligible) {
-            onToggleSelected?.(session.id, event.shiftKey)
-            return
-          }
-          onSelect(session.id)
-        }
-      }}
-      onMouseEnter={() => onPrefetch(session.id)}
-      onFocus={() => onPrefetch(session.id)}
-      className={cn(
-        'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
-        isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
-        active
-          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
-          : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
-        pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
-        isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
-        isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
-        hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
-        actionsOpen ? 'z-30' : null,
-      )}
-      title={tooltip || [workspaceLabel, showBranchLabel ? branchLabel : ''].filter(Boolean).join(' · ')}
-    >
+      }
+    },
+    onMouseEnter: () => onPrefetch(session.id),
+    onFocus: () => onPrefetch(session.id),
+    className: cn(
+      'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
+      isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
+      active
+        ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
+        : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
+      pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
+      isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
+      isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
+      hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
+      actionsOpen ? 'z-30' : null,
+    ),
+    title: tooltip || [workspaceLabel, showBranchLabel ? branchLabel : ''].filter(Boolean).join(' · '),
+  }
+  const rowContent = (
+    <>
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
@@ -2300,7 +2301,29 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           </div>
         </div>
       ) : null}
+    </>
+  )
 
+  if (isAcceptedAutomation) {
+    return (
+      <Link
+        to="/$workspaceSlug/automations"
+        params={{ workspaceSlug: rowWorkspaceSlug }}
+        search={{ sessionId: session.id }}
+        {...linkProps}
+      >
+        {rowContent}
+      </Link>
+    )
+  }
+
+  return (
+    <Link
+      to="/$workspaceSlug/$sessionId"
+      params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
+      {...linkProps}
+    >
+      {rowContent}
     </Link>
   )
 })
@@ -2309,6 +2332,7 @@ interface RenderSidebarSessionGroupsInput {
   nodes: SidebarSessionNode[]
   presentation?: 'desktop' | 'mobile'
   routeSessionId: string
+  routeAutomationSessionId?: string
   now: number
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
@@ -2533,7 +2557,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 {taskGroup.map((node) => (
                   <SessionRow
                     key={node.session.id}
-                    active={input.routeSessionId === node.session.id}
+                    active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && input.routeAutomationSessionId === node.session.id)}
                     now={input.now}
                     session={node.session}
                     workspaceSlug={input.workspaceSlug}
@@ -2582,7 +2606,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newPlan?: unknown }
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newPlan?: unknown; sessionId?: unknown }
   const requestedAgentSetup = search.agentSetup === '1'
   const requestedNewPlan = search.newPlan === '1'
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
@@ -2605,6 +2629,9 @@ export function DesktopAppPage() {
   const routeSessionId = mobileCreationPage || workspaceAutomationsMatch
     ? ''
     : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const routeAutomationSessionId = workspaceAutomationsMatch && typeof search.sessionId === 'string'
+    ? search.sessionId.trim()
+    : ''
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
@@ -3536,6 +3563,22 @@ export function DesktopAppPage() {
 
 
 
+  const routeSessionIsAcceptedAutomation = useDesktopV3CacheSelector((state) => {
+    if (!routeSessionId) return false
+    return selectAutomationV2Identity(state, routeSessionId) === 'accepted'
+  })
+
+  useEffect(() => {
+    if (routeSessionIsAcceptedAutomation && routeWorkspaceSlug && routeSessionId) {
+      void navigate({
+        to: '/$workspaceSlug/automations',
+        params: { workspaceSlug: routeWorkspaceSlug },
+        search: { sessionId: routeSessionId },
+        replace: true,
+      })
+    }
+  }, [navigate, routeSessionIsAcceptedAutomation, routeSessionId, routeWorkspaceSlug])
+
   const handleSelectVideoSidebarSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
     const session = sessionById.get(normalizedSessionId)
@@ -3574,6 +3617,21 @@ export function DesktopAppPage() {
 
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
+
+    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
+    if (automationIdentity === 'accepted') {
+      void navigate({
+        to: '/$workspaceSlug/automations',
+        params: {
+          workspaceSlug,
+        },
+        search: {
+          sessionId: session.id,
+        },
+      })
+      return true
+    }
+
     void navigate({
       to: '/$workspaceSlug/$sessionId',
       params: {
@@ -4508,6 +4566,7 @@ export function DesktopAppPage() {
     nodes,
     presentation: 'mobile',
     routeSessionId,
+    routeAutomationSessionId,
     now: sidebarNow,
     workspaceSlug: globalSessionWorkspaceSlug,
     expandedAgentSessions,
@@ -5406,6 +5465,7 @@ export function DesktopAppPage() {
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
+                    routeAutomationSessionId,
                     now: sidebarNow,
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
@@ -5536,6 +5596,10 @@ export function DesktopAppPage() {
                 Desktop state route readiness marked this session as {routeReadinessStatus}. Refresh the workspace if this session was just created elsewhere.
               </p>
             </Card>
+          </div>
+        ) : routeSessionIsAcceptedAutomation ? (
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto">
+            <AutomationToolPage />
           </div>
         ) : routeSessionId || (topWorkspace?.path && activeWorkspaceAuthority && (!routeWorkspaceSlug || chatWorkspacePath)) ? (
           <div className="flex min-h-0 flex-1 flex-col">

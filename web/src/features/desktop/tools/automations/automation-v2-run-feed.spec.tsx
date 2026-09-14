@@ -16,6 +16,7 @@ import {
   DeliverablePreviewLink,
   extractOccurrenceDeliverables,
   formatCalmStatus,
+  groupOccurrencesByDay,
   isOccurrenceRoutineClean,
   isOccurrenceDeliverableReady,
   isOccurrenceAwaitingDocument,
@@ -512,5 +513,61 @@ test('attention_alert closing state triggers alert badge and blocked closing sta
   assert.match(blockedMarkup, /Blocked · Action needed/)
   assert.match(blockedMarkup, /Blocked · AWS credentials expired/)
   assert.match(blockedMarkup, /Action needed/)
+})
+
+test('run feed groups occurrences by day and renders daily summary headers with metrics', () => {
+  const now = Date.now()
+  const todayOccurrence1: AutomationV2Occurrence = {
+    id: 'occ-today-1',
+    state: 'succeeded',
+    closing_state: 'routine_clean',
+    detail: 'Routine clean run 1',
+    due_at: now - 3600000,
+    session_id: 'exec-t1',
+    accepted: baseRecord,
+  }
+  const todayOccurrence2: AutomationV2Occurrence = {
+    id: 'occ-today-2',
+    state: 'succeeded',
+    closing_state: 'deliverable_ready',
+    detail: 'Generated daily report',
+    due_at: now - 1800000,
+    session_id: 'exec-t2',
+    accepted: baseRecord,
+    deliverables: [{ label: 'Daily Digest.md', path: 'docs/digest.md' }],
+  }
+  const yesterdayOccurrence: AutomationV2Occurrence = {
+    id: 'occ-yesterday',
+    state: 'succeeded',
+    closing_state: 'attention_alert',
+    detail: 'High CPU warning',
+    due_at: now - 86400000 - 3600000,
+    session_id: 'exec-y1',
+    accepted: baseRecord,
+  }
+
+  const groups = groupOccurrencesByDay([todayOccurrence2, todayOccurrence1, yesterdayOccurrence], 'UTC')
+  assert.equal(groups.length, 2)
+  assert.equal(groups[0].label, 'Today')
+  assert.equal(groups[0].stats.total, 2)
+  assert.equal(groups[0].stats.clean, 1)
+  assert.equal(groups[0].stats.deliverables, 1)
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2RunFeed
+      occurrences={[todayOccurrence2, todayOccurrence1, yesterdayOccurrence]}
+      timezone="UTC"
+      workspaceSlug="team-ops"
+    />
+  )
+
+  assert.match(markup, /data-testid="run-feed-day-group"/)
+  assert.match(markup, /data-testid="run-feed-day-header"/)
+  assert.match(markup, /Today/)
+  assert.match(markup, /2 runs/)
+  assert.match(markup, /1 clean/)
+  assert.match(markup, /1 deliverable/)
+  assert.match(markup, /Yesterday/)
+  assert.match(markup, /1 alert/)
 })
 

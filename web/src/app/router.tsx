@@ -90,16 +90,20 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
   }
 }
 
-function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string } {
+function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string; sessionId?: string; automationId?: string } {
   const settingsSearch = validateSettingsSearch(search)
   const artifactSession = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
   const artifact = typeof search.artifact === 'string' ? search.artifact.trim() : ''
   const collection = typeof search.collection === 'string' ? search.collection.trim() : ''
+  const sessionId = typeof search.sessionId === 'string' ? search.sessionId.trim() : ''
+  const automationId = typeof search.automationId === 'string' ? search.automationId.trim() : ''
   return {
     ...settingsSearch,
     ...(artifactSession ? { artifactSession } : {}),
     ...(artifact ? { artifact } : {}),
     ...(collection ? { collection } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(automationId ? { automationId } : {}),
   }
 }
 
@@ -251,6 +255,7 @@ const workspaceAutomationsRoute = createRoute({
   getParentRoute: () => conversationRoute,
   path: '/$workspaceSlug/automations',
   parseParams: validateWorkspaceParams,
+  validateSearch: validateWorkspaceSessionSearch,
   component: AutomationToolPage,
 })
 

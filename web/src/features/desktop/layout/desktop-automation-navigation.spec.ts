@@ -43,3 +43,9 @@ test('automation content cannot restore a second workspace navigation shell', as
   assert.doesNotMatch(content, /Back to workspace|<nav aria-label="Automations"|min-h-dvh/)
   assert.match(content, /aria-label="Automation controls"/)
 })
+
+test('clicking an accepted automation session navigates to the automations page instead of conversation chat', () => {
+  assert.match(source, /if \(isAcceptedAutomation\)\s*\{\s*return \(\s*<Link\s+to="\/\$workspaceSlug\/automations"[\s\S]*?search=\{\{\s*sessionId:\s*session\.id\s*\}\}/)
+  assert.match(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*void navigate\(\{\s*to: '\/\$workspaceSlug\/automations',\s*params: \{\s*workspaceSlug,\s*\},\s*search: \{\s*sessionId:\s*session\.id,\s*\},\s*\}\)/)
+  assert.match(source, /routeSessionIsAcceptedAutomation \? \(\s*<div[^>]*>\s*<AutomationToolPage \/>\s*<\/div>\s*\) : routeSessionId/)
+})

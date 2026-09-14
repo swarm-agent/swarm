@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -26,14 +26,34 @@ import { AutomationConversations } from './automation-conversations'
 import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
 
-export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceName, workspaceSlug }: { workspaceId: string; workspacePath: string; workspaceName: string; workspaceSlug?: string }) {
+export function AutomationV2Workspace({
+  workspaceId,
+  workspacePath,
+  workspaceName,
+  workspaceSlug,
+  initialSessionId,
+}: {
+  workspaceId: string
+  workspacePath: string
+  workspaceName: string
+  workspaceSlug?: string
+  initialSessionId?: string
+}) {
   const [cursor, setCursor] = useState<string>()
-  const [selected, setSelected] = useState('')
+  const [selected, setSelected] = useState(initialSessionId || '')
   const [session, setSession] = useState('')
   const [createRequest, setCreateRequest] = useState(0)
   const input = { action: 'list' as const, workspace_id: workspaceId, cursor }
   const page = useAutomationV2Page(input)
   const records = page?.data?.records ?? []
+
+  useEffect(() => {
+    if (initialSessionId) {
+      setSelected(initialSessionId)
+    } else if (!selected && records.length > 0) {
+      setSelected(records[0].session_id)
+    }
+  }, [initialSessionId, records, selected])
   return <div className="flex min-h-full min-w-0 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
     <header className="flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3"><div className="flex min-w-0 items-center gap-3"><RefreshCcw size={16} className="text-[var(--app-primary)]" /><h1 className="font-semibold">Automations</h1><span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span></div><Button size="sm" onClick={() => setCreateRequest(n => n + 1)}><Plus size={15} />Add automation</Button></header>
     <div className="flex min-w-0 flex-1 flex-col xl:flex-row"><main className="min-w-0 flex-1 space-y-5 p-5 sm:p-8">
@@ -41,7 +61,7 @@ export function AutomationV2Workspace({ workspaceId, workspacePath, workspaceNam
       <p className="text-xs text-[var(--app-text-muted)]">Only explicitly accepted V2 plans appear here. Legacy records are retained but cannot execute.</p>
       {(!page || page.loading || page.stale) && <p role="status">{page?.stale && page.data ? 'Updating automation state…' : 'Loading automations…'}</p>}
       {page?.error && <p role="alert">{page.error}</p>}
-      <ul className="grid gap-3 sm:grid-cols-2">{records.map(record => <li key={record.automation_id}><button className="flex w-full min-w-0 items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => setSelected(record.session_id)} aria-current={selected === record.session_id ? 'page' : undefined}><Clock3 className="shrink-0 text-[var(--app-primary)]" size={18} /><span className="min-w-0"><span className="block truncate font-medium">{record.document.title}</span><span className="text-xs text-[var(--app-text-muted)]">{record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'} · Automation · revision {record.revision}</span></span></button></li>)}</ul>
+      <ul className="grid gap-3 sm:grid-cols-2">{records.map(record => <li key={record.automation_id}><button className={cn("flex w-full min-w-0 items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left hover:bg-[var(--app-surface-hover)] transition-all", selected === record.session_id ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)] bg-[var(--app-surface-hover)]' : '')} onClick={() => setSelected(record.session_id)} aria-current={selected === record.session_id ? 'page' : undefined}><Clock3 className="shrink-0 text-[var(--app-primary)]" size={18} /><span className="min-w-0"><span className="block truncate font-medium">{record.document.title}</span><span className="text-xs text-[var(--app-text-muted)]">{record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'} · Automation · revision {record.revision}</span></span></button></li>)}</ul>
       {page?.data && !page.loading && !page.stale && !records.length && <p className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center text-[var(--app-text-muted)]">No accepted automations on this page. Start a conversation to propose one.</p>}
       <div className="flex gap-2">{cursor && <Button variant="outline" size="sm" onClick={() => setCursor(undefined)}>First page</Button>}{page?.data?.next_cursor && <Button variant="outline" size="sm" disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</Button>}</div>
       {selected && <AutomationV2Detail key={selected} workspaceId={workspaceId} sessionId={selected} onChat={setSession} workspaceSlug={workspaceSlug} />}
@@ -110,41 +130,58 @@ export function AutomationV2Detail({
       {editing && <AutomationV2Edit record={record} />}
       <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
     </>}
-    {progress && <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Run history & upcoming times</summary><div className="mt-3 space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/40 pb-2">
-        <label className="block text-[11px]">Display timezone<select className="mt-1 w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>{[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}</select></label>
-        <p className="text-[11px] text-[var(--app-text-muted)]">Observed {time(progress.observed_at)}. Forecasts are not guaranteed starts.</p>
-      </div>
-      {progress.forecast && progress.forecast.length > 0 && (
-        <div className="space-y-1">
-          <h3 className={eyebrow}>Upcoming times</h3>
-          {progress.no_next_reason && <p className="text-[11px] text-[var(--app-text-muted)]">{progress.no_next_reason.replace(/_/g, ' ')}</p>}
-          <ul className="space-y-1">{progress.forecast.map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)]">{time(ms)}</li>)}</ul>
-        </div>
-      )}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
-          <h3 className={eyebrow}>Observed runs</h3>
-          <span className="text-[10px] text-[var(--app-text-subtle)]">{progress.occurrences.length} {progress.occurrences.length === 1 ? 'run' : 'runs'} recorded</span>
-        </div>
-        <p className="text-[11px] text-[var(--app-text-muted)]">Top-down run feed. Routine clean executions show calm status; deliverables and raw execution sessions are inspectable on demand.</p>
-        <AutomationV2RunFeed
-          occurrences={progress.occurrences}
-          timezone={timezone}
-          workspaceSlug={workspaceSlug}
-          onOpenSession={onOpenSession}
-          onChat={onChat}
-        />
-        {!progress.occurrences.length && <p className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-center text-[11px] text-[var(--app-text-muted)]">No recorded runs yet.</p>}
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
-          <div className="flex gap-2">
-            {cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}
-            {progress.next_cursor && <Button size="sm" variant="outline" disabled={disabled} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}
+    {progress && (
+      <section aria-label="Run history & daily summaries" className="rounded-xl bg-[var(--app-bg-alt)] p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/40 pb-2">
+          <div>
+            <h3 className={eyebrow}>Run history & upcoming times</h3>
+            <p className="text-[11px] text-[var(--app-text-muted)]">
+              {progress.occurrences.length} {progress.occurrences.length === 1 ? 'run' : 'runs'} observed · Times shown in {timezone}
+            </p>
           </div>
-          <p className="text-[10px] text-[var(--app-text-subtle)]">{progress.complete ? 'End of run history.' : 'More observations may be available.'}</p>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-[var(--app-text-subtle)]">Timezone:</span>
+              <select className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>
+                {[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}
+              </select>
+            </label>
+          </div>
         </div>
-      </div>
-    </div></details>}
+        {progress.forecast && progress.forecast.length > 0 && (
+          <details className="rounded-lg bg-[var(--app-surface)]/60 p-2.5">
+            <summary className="cursor-pointer text-[11px] font-medium text-[var(--app-text-muted)]">
+              Upcoming schedule forecast ({progress.forecast.length} {progress.forecast.length === 1 ? 'time' : 'times'})
+            </summary>
+            <div className="mt-2 space-y-1">
+              {progress.no_next_reason && <p className="text-[11px] text-[var(--app-text-muted)]">{progress.no_next_reason.replace(/_/g, ' ')}</p>}
+              <ul className="space-y-1">{progress.forecast.map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)] font-mono">{time(ms)}</li>)}</ul>
+            </div>
+          </details>
+        )}
+        <div className="space-y-3">
+          <AutomationV2RunFeed
+            occurrences={progress.occurrences}
+            timezone={timezone}
+            workspaceSlug={workspaceSlug}
+            onOpenSession={onOpenSession}
+            onChat={onChat}
+          />
+          {!progress.occurrences.length && (
+            <p className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-center text-[11px] text-[var(--app-text-muted)]">
+              No recorded runs yet.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--app-border)]/30">
+            <div className="flex gap-2">
+              {cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}
+              {progress.next_cursor && <Button size="sm" variant="outline" disabled={disabled} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}
+            </div>
+            <p className="text-[10px] text-[var(--app-text-subtle)]">{progress.complete ? 'End of run history.' : 'More observations may be available.'}</p>
+          </div>
+        </div>
+      </section>
+    )}
     </div>
     {record && <div className="space-y-3 border-t border-[var(--app-border)]/60 p-3">
       <Button variant="outline" size="sm" className="h-9 w-full rounded-xl text-xs" disabled={disabled} onClick={() => setOptimizing(v => !v)} aria-expanded={optimizing}>Optimize with Swarm</Button>
@@ -639,6 +676,82 @@ export function StandardRunCard({
   )
 }
 
+export interface DayOccurrenceGroup {
+  dayKey: string
+  label: string
+  occurrences: AutomationV2Occurrence[]
+  stats: {
+    total: number
+    clean: number
+    alerts: number
+    deliverables: number
+    blocked: number
+  }
+}
+
+export function getOccurrenceDayKey(ms: number, timeZone: string): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+    return formatter.format(new Date(ms))
+  } catch {
+    return new Date(ms).toISOString().slice(0, 10)
+  }
+}
+
+export function getOccurrenceDayDisplayLabel(dayKey: string, timeZone: string): string {
+  const todayKey = getOccurrenceDayKey(Date.now(), timeZone)
+  const yesterdayKey = getOccurrenceDayKey(Date.now() - 86400000, timeZone)
+  if (dayKey === todayKey) return 'Today'
+  if (dayKey === yesterdayKey) return 'Yesterday'
+  try {
+    const [year, month, day] = dayKey.split('-').map(Number)
+    const date = new Date(Date.UTC(year, month - 1, day, 12, 0, 0))
+    return new Intl.DateTimeFormat(undefined, { timeZone, weekday: 'short', month: 'short', day: 'numeric' }).format(date)
+  } catch {
+    return dayKey
+  }
+}
+
+export function groupOccurrencesByDay(occurrences: AutomationV2Occurrence[], timezone: string): DayOccurrenceGroup[] {
+  const groups: DayOccurrenceGroup[] = []
+  const groupMap = new Map<string, DayOccurrenceGroup>()
+
+  for (const o of occurrences) {
+    const due = o.due_at || 0
+    const dayKey = getOccurrenceDayKey(due, timezone)
+    let group = groupMap.get(dayKey)
+    if (!group) {
+      group = {
+        dayKey,
+        label: getOccurrenceDayDisplayLabel(dayKey, timezone),
+        occurrences: [],
+        stats: { total: 0, clean: 0, alerts: 0, deliverables: 0, blocked: 0 },
+      }
+      groupMap.set(dayKey, group)
+      groups.push(group)
+    }
+    group.occurrences.push(o)
+    group.stats.total += 1
+    if (isOccurrenceRoutineClean(o)) {
+      group.stats.clean += 1
+    }
+    if (isOccurrenceAwaitingDocument(o)) {
+      if (o.closing_state === 'blocked' || o.state === 'blocked') {
+        group.stats.blocked += 1
+      } else {
+        group.stats.alerts += 1
+      }
+    } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+      group.stats.alerts += 1
+    }
+    if (isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0) {
+      group.stats.deliverables += 1
+    }
+  }
+
+  return groups
+}
+
 export function AutomationV2RunFeed({
   occurrences,
   timezone,
@@ -664,70 +777,102 @@ export function AutomationV2RunFeed({
     return [...occurrences].sort((a, b) => (b.due_at || 0) - (a.due_at || 0))
   }, [occurrences])
 
+  const dayGroups = useMemo(() => {
+    return groupOccurrencesByDay(sorted, timezone)
+  }, [sorted, timezone])
+
   if (!sorted.length) return null
 
   return (
-    <ul
+    <div
       role="feed"
       aria-label="Run feed"
       data-testid="automation-run-feed"
-      className="space-y-2"
+      className="space-y-4"
     >
-      {sorted.map((o) => {
-        const timeStr = time(o.due_at)
-        const deliverables = extractOccurrenceDeliverables(o)
+      {dayGroups.map((group) => (
+        <section key={group.dayKey} aria-label={`Runs for ${group.label}`} className="space-y-2" data-testid="run-feed-day-group">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--app-surface)]/70 px-3 py-1.5 border border-[var(--app-border)]/50" data-testid="run-feed-day-header">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-[var(--app-text)]">{group.label}</span>
+              <span className="rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">
+                {group.stats.total} {group.stats.total === 1 ? 'run' : 'runs'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-[10px]">
+              {group.stats.clean > 0 && (
+                <span className="font-medium text-[var(--app-success)]">✓ {group.stats.clean} clean</span>
+              )}
+              {group.stats.deliverables > 0 && (
+                <span className="font-medium text-[var(--app-primary)]">★ {group.stats.deliverables} deliverable{group.stats.deliverables === 1 ? '' : 's'}</span>
+              )}
+              {group.stats.alerts > 0 && (
+                <span className="font-medium text-[var(--app-warning)]">⚠ {group.stats.alerts} alert{group.stats.alerts === 1 ? '' : 's'}</span>
+              )}
+              {group.stats.blocked > 0 && (
+                <span className="font-medium text-[var(--app-danger)]">✕ {group.stats.blocked} blocked</span>
+              )}
+            </div>
+          </div>
+          <ul className="space-y-2">
+            {group.occurrences.map((o) => {
+              const timeStr = time(o.due_at)
+              const deliverables = extractOccurrenceDeliverables(o)
 
-        if (isOccurrenceAwaitingDocument(o)) {
-          return (
-            <AwaitingDocumentRunCard
-              key={o.id}
-              occurrence={o}
-              timeStr={timeStr}
-              workspaceSlug={workspaceSlug}
-              onOpenSession={onOpenSession}
-              onChat={onChat}
-            />
-          )
-        }
+              if (isOccurrenceAwaitingDocument(o)) {
+                return (
+                  <AwaitingDocumentRunCard
+                    key={o.id}
+                    occurrence={o}
+                    timeStr={timeStr}
+                    workspaceSlug={workspaceSlug}
+                    onOpenSession={onOpenSession}
+                    onChat={onChat}
+                  />
+                )
+              }
 
-        if (isOccurrenceDeliverableReady(o) || deliverables.length > 0) {
-          return (
-            <DeliverableRunCard
-              key={o.id}
-              occurrence={o}
-              deliverables={deliverables}
-              timeStr={timeStr}
-              workspaceSlug={workspaceSlug}
-              onOpenSession={onOpenSession}
-              onChat={onChat}
-            />
-          )
-        }
+              if (isOccurrenceDeliverableReady(o) || deliverables.length > 0) {
+                return (
+                  <DeliverableRunCard
+                    key={o.id}
+                    occurrence={o}
+                    deliverables={deliverables}
+                    timeStr={timeStr}
+                    workspaceSlug={workspaceSlug}
+                    onOpenSession={onOpenSession}
+                    onChat={onChat}
+                  />
+                )
+              }
 
-        if (isOccurrenceRoutineClean(o)) {
-          return (
-            <CalmRunCard
-              key={o.id}
-              occurrence={o}
-              timeStr={timeStr}
-              workspaceSlug={workspaceSlug}
-              onOpenSession={onOpenSession}
-              onChat={onChat}
-            />
-          )
-        }
+              if (isOccurrenceRoutineClean(o)) {
+                return (
+                  <CalmRunCard
+                    key={o.id}
+                    occurrence={o}
+                    timeStr={timeStr}
+                    workspaceSlug={workspaceSlug}
+                    onOpenSession={onOpenSession}
+                    onChat={onChat}
+                  />
+                )
+              }
 
-        return (
-          <StandardRunCard
-            key={o.id}
-            occurrence={o}
-            timeStr={timeStr}
-            workspaceSlug={workspaceSlug}
-            onOpenSession={onOpenSession}
-            onChat={onChat}
-          />
-        )
-      })}
-    </ul>
+              return (
+                <StandardRunCard
+                  key={o.id}
+                  occurrence={o}
+                  timeStr={timeStr}
+                  workspaceSlug={workspaceSlug}
+                  onOpenSession={onOpenSession}
+                  onChat={onChat}
+                />
+              )
+            })}
+          </ul>
+        </section>
+      ))}
+    </div>
   )
 }
