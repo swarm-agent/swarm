@@ -571,3 +571,56 @@ test('run feed groups occurrences by day and renders daily summary headers with 
   assert.match(markup, /1 alert/)
 })
 
+test('AutomationV2Detail renders Today executive pulse strip with clean metric pills', () => {
+  const now = Date.now()
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const todayProgressOccurrence: AutomationV2Occurrence = {
+    id: 'occ-today-exec',
+    state: 'succeeded',
+    closing_state: 'routine_clean',
+    detail: 'Cleaned up sessions, all good',
+    due_at: now,
+    session_id: 'exec-today-1',
+    accepted: baseRecord,
+  }
+
+  const input = { action: 'progress' as const, workspace_id: 'ws-1', session_id: 'author-session', timezone }
+  const key = automationV2PageKey(input)
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key,
+    input,
+    requestId: 'req-today-1',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key,
+    requestId: 'req-today-1',
+    generation: 0,
+    data: {
+      action: 'progress',
+      workspace_id: 'ws-1',
+      progress: {
+        record: baseRecord,
+        timezone,
+        observed_at: now,
+        occurrences: [todayProgressOccurrence],
+        complete: true,
+      },
+    },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Detail
+      workspaceId="ws-1"
+      sessionId="author-session"
+      workspaceSlug="team-workspace"
+    />
+  )
+
+  assert.match(markup, /data-testid="today-executive-strip"/)
+  assert.match(markup, /Today(&#x27;|')s Pulse/)
+  assert.match(markup, /1 clean/)
+  assert.match(markup, /0 alerts/)
+})
+

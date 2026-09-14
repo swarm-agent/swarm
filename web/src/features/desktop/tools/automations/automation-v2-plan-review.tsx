@@ -203,7 +203,7 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
 
   const display = normalizeStructuredPlanDocument(draft)
   const containerClass = modalMode
-    ? "min-w-0 space-y-5 font-sans"
+    ? "min-w-0 space-y-3.5 font-sans"
     : "min-w-0 space-y-4 rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 font-sans"
 
   const activeClosingState = draft.checkpoints.length > 0 ? getCheckpointClosingState(draft.checkpoints[0]) : 'routine_clean'
@@ -236,12 +236,13 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
     </div>
 
     {/* Suggested Intent Presets */}
-    <section aria-label="Suggested intent presets" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 space-y-3" data-testid="intent-presets-section">
-      <div>
-        <div className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Suggested Intent Presets</div>
-        <p className="mt-0.5 text-xs text-[var(--app-text-muted)]">Select an intent preset to configure recommended outcome states and alert behaviors, or customize them below.</p>
+    <section aria-label="Suggested intent presets" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 space-y-2" data-testid="intent-presets-section">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">Suggested Intent Presets</div>
+        <span className="text-[10px] text-[var(--app-primary)]">1-click configuration</span>
       </div>
-      <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+      <p className="text-[11px] text-[var(--app-text-muted)]">Select an intent preset to configure recommended outcome states and alert behaviors, or customize them below.</p>
+      <div className="grid min-w-0 gap-2.5 sm:grid-cols-3">
         {AUTOMATION_INTENT_PRESETS.map(preset => {
           const isSelected = activePresetId === preset.id
           return (
@@ -250,25 +251,25 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
               type="button"
               disabled={blocked}
               onClick={() => applyIntentPreset(preset.id)}
-              className={`flex flex-col justify-between rounded-xl border p-3 text-left transition-colors cursor-pointer ${
+              className={`flex flex-col justify-between rounded-xl border p-2.5 text-left transition-all cursor-pointer ${
                 isSelected
-                  ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-text)] shadow-xs'
-                  : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-hover)] text-[var(--app-text)]'
+                  ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-text)] shadow-xs ring-1 ring-[var(--app-primary)]'
+                  : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] text-[var(--app-text)]'
               }`}
               data-testid={`intent-preset-${preset.id}`}
             >
               <div>
                 <div className="flex items-center justify-between gap-1">
                   <span className="text-xs font-bold">{preset.title}</span>
-                  <span className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+                  <span className="rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9.5px] font-medium text-[var(--app-text-muted)]">
                     {preset.tag}
                   </span>
                 </div>
-                <p className="mt-1.5 text-[11px] leading-4 text-[var(--app-text-muted)]">
+                <p className="mt-1 text-[10.5px] leading-3.5 text-[var(--app-text-muted)]">
                   {preset.description}
                 </p>
               </div>
-              <div className="mt-3 flex items-center gap-1.5 border-t border-[var(--app-border)]/50 pt-2 text-[10px] text-[var(--app-text-subtle)]">
+              <div className="mt-2.5 flex items-center gap-1.5 border-t border-[var(--app-border)]/50 pt-1.5 text-[10px] text-[var(--app-text-subtle)]">
                 <span>Outcome:</span>
                 <span className="font-semibold text-[var(--app-text)]">{preset.stateLabel}</span>
               </div>
@@ -279,9 +280,9 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
     </section>
 
     {/* Recommended Closing States & Alert Conditions */}
-    <fieldset disabled={blocked} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 space-y-4" data-testid="closing-states-config">
-      <legend className="px-1 text-sm font-semibold text-[var(--app-text)]">Closing States & Alert Conditions</legend>
-      <p className="text-xs text-[var(--app-text-muted)]">
+    <fieldset disabled={blocked} className="min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 space-y-3" data-testid="closing-states-config">
+      <legend className="px-1 text-xs font-semibold text-[var(--app-text)]">Closing States & Alert Conditions</legend>
+      <p className="text-[11px] text-[var(--app-text-muted)]">
         The AI proposes how to classify completed runs and when to trigger an alert. You can customize the expected outcome state and alert criteria below.
       </p>
       {draft.checkpoints.map((checkpoint, cpIndex) => {
@@ -290,16 +291,16 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
         return (
           <div
             key={checkpoint.id || `cp-${cpIndex}`}
-            className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3.5 space-y-3"
+            className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 space-y-2.5"
             data-testid={`checkpoint-closing-state-${checkpoint.id || cpIndex}`}
           >
             {draft.checkpoints.length > 1 && (
-              <div className="text-xs font-semibold text-[var(--app-text)]">
+              <div className="text-[11px] font-semibold text-[var(--app-text)]">
                 Step {cpIndex + 1}: {checkpoint.title}
               </div>
             )}
             <div className="grid min-w-0 gap-3 sm:grid-cols-2">
-              <label className="block space-y-1.5 text-xs">
+              <label className="block space-y-1 text-xs">
                 <span className="font-semibold text-[var(--app-text)]">Expected outcome (closing state)</span>
                 <select
                   aria-label="Closing state"
@@ -312,24 +313,24 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
                   <option value="attention_alert">Attention alert — Raises an alert badge and notification</option>
                   <option value="blocked">Blocked — Flags run as waiting on permissions or inputs</option>
                 </select>
-                <span className="block text-[11px] text-[var(--app-text-subtle)] leading-normal">
+                <span className="block text-[10.5px] text-[var(--app-text-subtle)] leading-normal">
                   {closingState === 'routine_clean' && 'Clean background run. Renders as a calm, minimal one-line status without cluttering chat.'}
                   {closingState === 'deliverable_ready' && 'Deliverable run. Highlights generated documents or artifacts on the run card with preview links.'}
                   {closingState === 'attention_alert' && 'Alert run. Prominently flags warnings or issues that require your attention.'}
                   {closingState === 'blocked' && 'Blocked run. Surfaces an alert indicating execution needs permissions or external inputs.'}
                 </span>
               </label>
-              <label className="block space-y-1.5 text-xs">
+              <label className="block space-y-1 text-xs">
                 <span className="font-semibold text-[var(--app-text)]">Alert conditions (when to notify)</span>
                 <textarea
                   aria-label="Alert conditions"
                   className={field}
-                  rows={3}
+                  rows={2}
                   value={alertConditions}
                   onChange={e => updateCheckpointAlertConditions(cpIndex, e.target.value)}
                   placeholder="e.g. Trigger an alert if checks fail, error rates exceed thresholds, or unexpected drift occurs"
                 />
-                <span className="block text-[11px] text-[var(--app-text-subtle)] leading-normal">
+                <span className="block text-[10.5px] text-[var(--app-text-subtle)] leading-normal">
                   Swarm evaluates these conditions at completion to decide whether to trigger an alert.
                 </span>
               </label>

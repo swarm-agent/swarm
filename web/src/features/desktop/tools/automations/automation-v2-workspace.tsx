@@ -111,6 +111,33 @@ export function AutomationV2Detail({
   const eyebrow = 'text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]'
   const disclosure = 'cursor-pointer text-xs font-medium text-[var(--app-text-muted)]'
   const schedule = record?.document.automation_v2.schedule
+  const todayStats = useMemo(() => {
+    if (!progress?.occurrences) return null
+    const todayKey = getOccurrenceDayKey(Date.now(), timezone)
+    const todayOccurrences = progress.occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, timezone) === todayKey)
+    let clean = 0
+    let deliverables = 0
+    let alerts = 0
+    let blockedCount = 0
+    for (const o of todayOccurrences) {
+      if (isOccurrenceRoutineClean(o)) clean++
+      if (isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0) deliverables++
+      if (isOccurrenceAwaitingDocument(o)) {
+        if (o.closing_state === 'blocked' || o.state === 'blocked') blockedCount++
+        else alerts++
+      } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+        alerts++
+      }
+    }
+    return {
+      total: todayOccurrences.length,
+      clean,
+      deliverables,
+      alerts,
+      blocked: blockedCount,
+    }
+  }, [progress?.occurrences, timezone])
+
   return <section aria-label="Automation details" className="min-w-0 rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] font-sans text-xs shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)] [overflow-wrap:anywhere]">
     <div className="space-y-3 p-4">
     <header className="border-b border-[var(--app-border)]/60 pb-3">
@@ -130,6 +157,42 @@ export function AutomationV2Detail({
       {editing && <AutomationV2Edit record={record} />}
       <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
     </>}
+    {todayStats && (
+      <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3.5 flex flex-wrap items-center justify-between gap-3" data-testid="today-executive-strip">
+        <div className="flex items-center gap-2.5">
+          <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+            <Clock3 size={15} />
+          </div>
+          <div>
+            <div className="text-xs font-semibold text-[var(--app-text)]">Today's Pulse · {new Intl.DateTimeFormat(undefined, { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' }).format(Date.now())}</div>
+            <p className="text-[10.5px] text-[var(--app-text-muted)]">
+              {todayStats.total === 0
+                ? 'No runs executed yet today.'
+                : `${todayStats.total} ${todayStats.total === 1 ? 'run' : 'runs'} executed today · ${todayStats.alerts === 0 && todayStats.blocked === 0 ? 'All systems clean' : `${todayStats.alerts + todayStats.blocked} item(s) require attention`}`}
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-success,rgba(16,185,129,0.3))]/40 bg-[var(--app-success,rgba(16,185,129,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-success)]">
+            ✓ {todayStats.clean} clean
+          </span>
+          {todayStats.deliverables > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
+              ★ {todayStats.deliverables} deliverable{todayStats.deliverables === 1 ? '' : 's'}
+            </span>
+          )}
+          {todayStats.alerts > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning,rgba(245,158,11,0.4))] bg-[var(--app-warning,rgba(245,158,11,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-warning)]">
+              ⚠ {todayStats.alerts} alert{todayStats.alerts === 1 ? '' : 's'}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-subtle)]">
+              0 alerts
+            </span>
+          )}
+        </div>
+      </div>
+    )}
     {progress && (
       <section aria-label="Run history & daily summaries" className="rounded-xl bg-[var(--app-bg-alt)] p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/40 pb-2">
@@ -790,38 +853,92 @@ export function AutomationV2RunFeed({
       data-testid="automation-run-feed"
       className="space-y-4"
     >
-      {dayGroups.map((group) => (
-        <section key={group.dayKey} aria-label={`Runs for ${group.label}`} className="space-y-2" data-testid="run-feed-day-group">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--app-surface)]/70 px-3 py-1.5 border border-[var(--app-border)]/50" data-testid="run-feed-day-header">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-[var(--app-text)]">{group.label}</span>
-              <span className="rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">
-                {group.stats.total} {group.stats.total === 1 ? 'run' : 'runs'}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 text-[10px]">
-              {group.stats.clean > 0 && (
-                <span className="font-medium text-[var(--app-success)]">✓ {group.stats.clean} clean</span>
-              )}
-              {group.stats.deliverables > 0 && (
-                <span className="font-medium text-[var(--app-primary)]">★ {group.stats.deliverables} deliverable{group.stats.deliverables === 1 ? '' : 's'}</span>
-              )}
-              {group.stats.alerts > 0 && (
-                <span className="font-medium text-[var(--app-warning)]">⚠ {group.stats.alerts} alert{group.stats.alerts === 1 ? '' : 's'}</span>
-              )}
-              {group.stats.blocked > 0 && (
-                <span className="font-medium text-[var(--app-danger)]">✕ {group.stats.blocked} blocked</span>
-              )}
-            </div>
-          </div>
-          <ul className="space-y-2">
-            {group.occurrences.map((o) => {
-              const timeStr = time(o.due_at)
-              const deliverables = extractOccurrenceDeliverables(o)
+      {dayGroups.map((group) => {
+        const isToday = group.label === 'Today'
+        return (
+          <details
+            key={group.dayKey}
+            open={isToday}
+            aria-label={`Runs for ${group.label}`}
+            className="group/day rounded-xl border border-[var(--app-border)]/60 bg-[var(--app-surface)]/80 overflow-hidden space-y-0 transition-all"
+            data-testid="run-feed-day-group"
+          >
+            <summary
+              className="flex flex-wrap items-center justify-between gap-2 p-2.5 px-3 bg-[var(--app-surface-subtle)]/70 hover:bg-[var(--app-surface-hover)] cursor-pointer list-none select-none transition-colors"
+              data-testid="run-feed-day-header"
+            >
+              <div className="flex items-center gap-2">
+                <ChevronRight size={13} className="shrink-0 text-[var(--app-text-subtle)] transition-transform group-open/day:rotate-90" />
+                <span className="text-xs font-semibold text-[var(--app-text)]">{group.label}</span>
+                <span className="rounded-full bg-[var(--app-bg-alt)] px-2 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">
+                  {group.stats.total} {group.stats.total === 1 ? 'run' : 'runs'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-[10px]">
+                {group.stats.clean > 0 && (
+                  <span className="font-medium text-[var(--app-success)]">✓ {group.stats.clean} clean</span>
+                )}
+                {group.stats.deliverables > 0 && (
+                  <span className="font-medium text-[var(--app-primary)]">★ {group.stats.deliverables} deliverable{group.stats.deliverables === 1 ? '' : 's'}</span>
+                )}
+                {group.stats.alerts > 0 && (
+                  <span className="font-medium text-[var(--app-warning)]">⚠ {group.stats.alerts} alert{group.stats.alerts === 1 ? '' : 's'}</span>
+                )}
+                {group.stats.blocked > 0 && (
+                  <span className="font-medium text-[var(--app-danger)]">✕ {group.stats.blocked} blocked</span>
+                )}
+                {!isToday && (
+                  <span className="text-[10px] text-[var(--app-text-subtle)] group-open/day:hidden">Click to expand</span>
+                )}
+              </div>
+            </summary>
+            <ul className="space-y-2 p-3 pt-2 border-t border-[var(--app-border)]/40">
+              {group.occurrences.map((o) => {
+                const timeStr = time(o.due_at)
+                const deliverables = extractOccurrenceDeliverables(o)
 
-              if (isOccurrenceAwaitingDocument(o)) {
+                if (isOccurrenceAwaitingDocument(o)) {
+                  return (
+                    <AwaitingDocumentRunCard
+                      key={o.id}
+                      occurrence={o}
+                      timeStr={timeStr}
+                      workspaceSlug={workspaceSlug}
+                      onOpenSession={onOpenSession}
+                      onChat={onChat}
+                    />
+                  )
+                }
+
+                if (isOccurrenceDeliverableReady(o) || deliverables.length > 0) {
+                  return (
+                    <DeliverableRunCard
+                      key={o.id}
+                      occurrence={o}
+                      deliverables={deliverables}
+                      timeStr={timeStr}
+                      workspaceSlug={workspaceSlug}
+                      onOpenSession={onOpenSession}
+                      onChat={onChat}
+                    />
+                  )
+                }
+
+                if (isOccurrenceRoutineClean(o)) {
+                  return (
+                    <CalmRunCard
+                      key={o.id}
+                      occurrence={o}
+                      timeStr={timeStr}
+                      workspaceSlug={workspaceSlug}
+                      onOpenSession={onOpenSession}
+                      onChat={onChat}
+                    />
+                  )
+                }
+
                 return (
-                  <AwaitingDocumentRunCard
+                  <StandardRunCard
                     key={o.id}
                     occurrence={o}
                     timeStr={timeStr}
@@ -830,49 +947,11 @@ export function AutomationV2RunFeed({
                     onChat={onChat}
                   />
                 )
-              }
-
-              if (isOccurrenceDeliverableReady(o) || deliverables.length > 0) {
-                return (
-                  <DeliverableRunCard
-                    key={o.id}
-                    occurrence={o}
-                    deliverables={deliverables}
-                    timeStr={timeStr}
-                    workspaceSlug={workspaceSlug}
-                    onOpenSession={onOpenSession}
-                    onChat={onChat}
-                  />
-                )
-              }
-
-              if (isOccurrenceRoutineClean(o)) {
-                return (
-                  <CalmRunCard
-                    key={o.id}
-                    occurrence={o}
-                    timeStr={timeStr}
-                    workspaceSlug={workspaceSlug}
-                    onOpenSession={onOpenSession}
-                    onChat={onChat}
-                  />
-                )
-              }
-
-              return (
-                <StandardRunCard
-                  key={o.id}
-                  occurrence={o}
-                  timeStr={timeStr}
-                  workspaceSlug={workspaceSlug}
-                  onOpenSession={onOpenSession}
-                  onChat={onChat}
-                />
-              )
-            })}
-          </ul>
-        </section>
-      ))}
+              })}
+            </ul>
+          </details>
+        )
+      })}
     </div>
   )
 }
