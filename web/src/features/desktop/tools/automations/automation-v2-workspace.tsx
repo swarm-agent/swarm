@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  Calendar,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -29,6 +30,7 @@ import {
   type AutomationV2Mutation,
   type AutomationV2Occurrence,
   type AutomationV2OccurrenceDeliverable,
+  type AutomationV2Settings,
 } from '../../state/desktop-automation-v2-api'
 import { archiveDesktopV3Sessions } from '../../session-v3/plan-execution-api'
 import { unarchiveDesktopV3ReviewSessions } from '../../session-v3/review-worktrees-api'
@@ -116,18 +118,409 @@ function TemplateIcon({ icon }: { icon: AutomationStarterTemplate['icon'] }) {
   }
 }
 
+export interface UpcomingAutomationEvent {
+  automationId: string
+  sessionId: string
+  title: string
+  dueAt: number
+  cadence: string
+  schedule?: AutomationV2Settings['schedule']
+}
+
+export function formatRelativeTime(ms: number, now: number = Date.now()): string {
+  const diffSec = Math.round((ms - now) / 1000)
+  if (diffSec <= 30) return 'due now'
+  if (diffSec < 60) return `in ${diffSec}s`
+  const diffMin = Math.round(diffSec / 60)
+  if (diffMin < 60) return `in ${diffMin}m`
+  const diffHours = Math.floor(diffMin / 60)
+  const remainingMin = diffMin % 60
+  if (diffHours < 24) {
+    return remainingMin > 0 ? `in ${diffHours}h ${remainingMin}m` : `in ${diffHours}h`
+  }
+  const diffDays = Math.round(diffHours / 24)
+  return `in ${diffDays}d`
+}
+
+export function computeUpcomingAutomationEvents(
+  records: AutomationV2Record[],
+  now: number = Date.now(),
+  horizonMs: number = 48 * 3600 * 1000,
+  maxItems: number = 12,
+): UpcomingAutomationEvent[] {
+  const events: UpcomingAutomationEvent[] = []
+  for (const record of records) {
+    if (!record.enabled || record.cancelled || record.archived) continue
+    const schedule = record.document?.automation_v2?.schedule
+    const cadence = schedule ? scheduleFrequency(schedule) : 'Scheduled'
+    const nextDue = record.next_due_at
+    if (typeof nextDue !== 'number' || nextDue <= now - 60000) continue
+
+    events.push({
+      automationId: record.automation_id,
+      sessionId: record.session_id,
+      title: record.document.title,
+      dueAt: nextDue,
+      cadence,
+      schedule,
+    })
+
+    // If interval schedule, project upcoming occurrences within horizon
+    if (schedule?.kind === 'interval' && typeof schedule.interval_seconds === 'number' && schedule.interval_seconds >= 60) {
+      const intervalMs = schedule.interval_seconds * 1000
+      let current = nextDue + intervalMs
+      let projectedCount = 1
+      while (current <= now + horizonMs && projectedCount < 4) {
+        events.push({
+          automationId: record.automation_id,
+          sessionId: record.session_id,
+          title: record.document.title,
+          dueAt: current,
+          cadence,
+          schedule,
+        })
+        current += intervalMs
+        projectedCount++
+      }
+    }
+  }
+
+  return events.sort((a, b) => a.dueAt - b.dueAt).slice(0, maxItems)
+}
+
+export function AutomationCardPulse({
+  workspaceId,
+  sessionId,
+  timezone,
+  enabled,
+  cancelled,
+  nextDueAt,
+}: {
+  workspaceId: string
+  sessionId: string
+  timezone?: string
+  enabled: boolean
+  cancelled: boolean
+  nextDueAt?: number
+}) {
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const input = useMemo(() => ({ action: 'progress' as const, workspace_id: workspaceId, session_id: sessionId, timezone: tz }), [workspaceId, sessionId, tz])
+  const page = useAutomationV2Page(input)
+  const progress = page?.data?.progress
+  const occurrences = progress?.occurrences
+
+  const stats = useMemo(() => {
+    if (!occurrences) return null
+    const todayKey = getOccurrenceDayKey(Date.now(), tz)
+    const todayOccurrences = occurrences.filter((o) => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey)
+    let clean = 0
+    let deliverables = 0
+    let alerts = 0
+    let blocked = 0
+    for (const o of todayOccurrences) {
+      if (isOccurrenceRoutineClean(o)) clean++
+      if (isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0) deliverables++
+      if (isOccurrenceAwaitingDocument(o)) {
+        if (o.closing_state === 'blocked' || o.state === 'blocked') blocked++
+        else alerts++
+      } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+        alerts++
+      }
+    }
+    return {
+      total: todayOccurrences.length,
+      clean,
+      deliverables,
+      alerts,
+      blocked,
+    }
+  }, [occurrences, tz])
+
+  if (!enabled || cancelled) {
+    return null
+  }
+
+  if (!stats || stats.total === 0) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-[var(--app-text-muted)]" data-testid="automation-card-pulse">
+        <span className="inline-flex items-center gap-1.5 rounded-md border border-[var(--app-border)]/60 bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[11px] text-[var(--app-text-muted)]">
+          <Clock3 size={11} className="text-[var(--app-text-subtle)]" />
+          <span>No runs yet today</span>
+        </span>
+        {nextDueAt && nextDueAt > Date.now() && (
+          <span className="text-[11px] text-[var(--app-text-subtle)]">
+            Next {formatRelativeTime(nextDueAt)}
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs" data-testid="automation-card-pulse">
+      <span className="text-[11px] font-medium text-[var(--app-text-muted)] mr-0.5">Today:</span>
+      <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-success-border,rgba(16,185,129,0.3))] bg-[var(--app-success-bg,rgba(16,185,129,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-success)]">
+        ✓ {stats.clean} clean
+      </span>
+      {stats.deliverables > 0 && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-primary)]">
+          ★ {stats.deliverables} deliverable{stats.deliverables === 1 ? '' : 's'}
+        </span>
+      )}
+      {stats.alerts > 0 && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-warning)]">
+          ⚠ {stats.alerts} alert{stats.alerts === 1 ? '' : 's'}
+        </span>
+      )}
+      {stats.blocked > 0 && (
+        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-danger-border,rgba(239,68,68,0.4))] bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-danger)]">
+          ✕ {stats.blocked} blocked
+        </span>
+      )}
+    </div>
+  )
+}
+
+export function AutomationUpcomingScheduleChart({
+  records,
+  timezone,
+  onOpenSession,
+  onChat,
+  workspaceSlug,
+}: {
+  records: AutomationV2Record[]
+  timezone: string
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+  workspaceSlug?: string
+}) {
+  const now = Date.now()
+  const upcomingEvents = useMemo(() => computeUpcomingAutomationEvents(records, now, 48 * 3600 * 1000, 8), [records, now])
+  const activeCount = useMemo(() => records.filter((r) => r.enabled && !r.cancelled && !r.archived).length, [records])
+
+  const timeFormatter = (ms: number) => {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: timezone,
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(ms)
+  }
+
+  const dayFormatter = (ms: number) => {
+    const todayStr = getOccurrenceDayKey(now, timezone)
+    const eventDayStr = getOccurrenceDayKey(ms, timezone)
+    if (todayStr === eventDayStr) return 'Today'
+    const tomorrowStr = getOccurrenceDayKey(now + 86400000, timezone)
+    if (eventDayStr === tomorrowStr) return 'Tomorrow'
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: timezone,
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    }).format(ms)
+  }
+
+  const dayBuckets = useMemo(() => {
+    const buckets = [
+      { id: 'night', label: 'Night', hours: '00:00 – 06:00', icon: '🌙', count: 0, titles: [] as string[] },
+      { id: 'morning', label: 'Morning', hours: '06:00 – 12:00', icon: '🌅', count: 0, titles: [] as string[] },
+      { id: 'afternoon', label: 'Afternoon', hours: '12:00 – 18:00', icon: '☀️', count: 0, titles: [] as string[] },
+      { id: 'evening', label: 'Evening', hours: '18:00 – 24:00', icon: '🌆', count: 0, titles: [] as string[] },
+    ]
+
+    for (const ev of upcomingEvents) {
+      try {
+        const hourStr = new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: 'numeric', hour12: false }).format(ev.dueAt)
+        const hour = parseInt(hourStr, 10) % 24
+        let bIndex = 0
+        if (hour >= 6 && hour < 12) bIndex = 1
+        else if (hour >= 12 && hour < 18) bIndex = 2
+        else if (hour >= 18 && hour < 24) bIndex = 3
+        buckets[bIndex].count++
+        if (!buckets[bIndex].titles.includes(ev.title)) {
+          buckets[bIndex].titles.push(ev.title)
+        }
+      } catch {
+        // fallback
+      }
+    }
+    return buckets
+  }, [upcomingEvents, timezone])
+
+  if (activeCount === 0) {
+    return (
+      <section
+        aria-label="Upcoming schedule and continuity"
+        data-testid="automations-schedule-continuity"
+        className="rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/40 p-4"
+      >
+        <div className="flex items-center gap-2.5 text-xs text-[var(--app-text-muted)]">
+          <Clock3 size={15} className="text-[var(--app-text-subtle)] shrink-0" />
+          <p>
+            No active schedules running. Enable a paused automation or create a new one to view upcoming schedule continuity.
+          </p>
+        </div>
+      </section>
+    )
+  }
+
+  return (
+    <section
+      aria-label="Upcoming schedule and continuity"
+      data-testid="automations-schedule-continuity"
+      className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 sm:p-5 space-y-4 shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]"
+    >
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)]/60 pb-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex size-7 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+            <Calendar size={15} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--app-text)]">Upcoming Schedule &amp; Continuity</h3>
+            <p className="text-[11px] text-[var(--app-text-muted)]">
+              Scheduled timeline across active workspace automations · {timezone}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-[var(--app-primary-border)]/60 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
+            {upcomingEvents.length} upcoming run{upcomingEvents.length === 1 ? '' : 's'}
+          </span>
+        </div>
+      </div>
+
+      {/* 24-Hour Horizon Visual Rhythm Bar */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-[11px] font-medium text-[var(--app-text-subtle)]">
+          <span>24-Hour Schedule Rhythm</span>
+          <span>{activeCount} active schedule{activeCount === 1 ? '' : 's'}</span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {dayBuckets.map((bucket) => {
+            const hasRuns = bucket.count > 0
+            return (
+              <div
+                key={bucket.id}
+                className={cn(
+                  "rounded-xl border p-2.5 transition-colors",
+                  hasRuns
+                    ? 'border-[var(--app-primary-border)]/60 bg-[var(--app-primary-soft)]/25'
+                    : 'border-[var(--app-border)]/50 bg-[var(--app-bg-alt)]/40'
+                )}
+                data-testid={`schedule-bucket-${bucket.id}`}
+              >
+                <div className="flex items-center justify-between gap-1 text-[11px]">
+                  <span className="font-semibold text-[var(--app-text)] flex items-center gap-1">
+                    <span>{bucket.icon}</span>
+                    <span>{bucket.label}</span>
+                  </span>
+                  <span className={cn(
+                    "text-[10px] font-mono px-1.5 py-0.5 rounded",
+                    hasRuns ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)] font-bold' : 'text-[var(--app-text-subtle)]'
+                  )}>
+                    {bucket.count} run{bucket.count === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="mt-1 text-[10px] text-[var(--app-text-subtle)] font-mono">
+                  {bucket.hours}
+                </div>
+                {hasRuns && bucket.titles.length > 0 && (
+                  <div className="mt-1.5 truncate text-[10px] text-[var(--app-text-muted)] font-medium" title={bucket.titles.join(', ')}>
+                    {bucket.titles.join(', ')}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Chronological Upcoming Queue */}
+      {upcomingEvents.length > 0 && (
+        <div className="space-y-2 pt-1">
+          <div className="text-[11px] font-medium text-[var(--app-text-subtle)]">
+            Upcoming Run Queue
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4" data-testid="upcoming-events-grid">
+            {upcomingEvents.map((ev, index) => {
+              const rel = formatRelativeTime(ev.dueAt, now)
+              const timeDisplay = timeFormatter(ev.dueAt)
+              const dayDisplay = dayFormatter(ev.dueAt)
+
+              return (
+                <div
+                  key={`${ev.sessionId}-${ev.dueAt}-${index}`}
+                  className="flex flex-col justify-between rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3 hover:border-[var(--app-primary-border)] hover:bg-[var(--app-surface-hover)] transition-all shadow-xs group"
+                  data-testid="upcoming-event-item"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="inline-flex items-center gap-1 rounded bg-[var(--app-primary-soft)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--app-primary)]">
+                        <span className="size-1.5 rounded-full bg-[var(--app-primary)] animate-pulse" />
+                        <span>{rel}</span>
+                      </span>
+                      <span className="text-[10px] font-mono text-[var(--app-text-muted)]">
+                        {dayDisplay} {timeDisplay}
+                      </span>
+                    </div>
+                    <h4 className="mt-2 text-xs font-semibold text-[var(--app-text)] truncate" title={ev.title}>
+                      {ev.title}
+                    </h4>
+                    <p className="mt-0.5 text-[10px] text-[var(--app-text-muted)] truncate">
+                      {ev.cadence}
+                    </p>
+                  </div>
+                  <div className="mt-2.5 flex items-center justify-between border-t border-[var(--app-border)]/40 pt-1.5 text-[10px]">
+                    <button
+                      type="button"
+                      className="text-[var(--app-primary)] hover:underline font-medium cursor-pointer"
+                      onClick={() => onChat?.(ev.sessionId)}
+                      title="Discuss this automation with Swarm"
+                    >
+                      Discuss
+                    </button>
+                    {workspaceSlug ? (
+                      <a
+                        href={`/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(ev.sessionId)}`}
+                        onClick={(e) => {
+                          if (onOpenSession) {
+                            e.preventDefault()
+                            onOpenSession(ev.sessionId)
+                          }
+                        }}
+                        className="text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:underline flex items-center gap-0.5"
+                        title="Open granular session"
+                      >
+                        <span>Session</span>
+                        <ExternalLink size={9} />
+                      </a>
+                    ) : null}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export function AutomationV2Workspace({
   workspaceId,
   workspacePath,
   workspaceName,
   workspaceSlug,
   initialSessionId,
+  onOpenSession,
 }: {
   workspaceId: string
   workspacePath: string
   workspaceName: string
   workspaceSlug?: string
   initialSessionId?: string
+  onOpenSession?: (id: string) => void
 }) {
   const [cursor, setCursor] = useState<string>()
   const [selected, setSelected] = useState(initialSessionId || '')
@@ -160,11 +553,8 @@ export function AutomationV2Workspace({
     if (initialSessionId) {
       setSelected(initialSessionId)
       setExpandedIds((prev) => ({ ...prev, [initialSessionId]: true }))
-    } else if (records.length === 1 && Object.keys(expandedIds).length === 0) {
-      setExpandedIds({ [records[0].session_id]: true })
-      setSelected(records[0].session_id)
     }
-  }, [initialSessionId, records])
+  }, [initialSessionId])
 
   const selectedRecord = useMemo(() => {
     if (!selected) return null
@@ -384,6 +774,17 @@ export function AutomationV2Workspace({
             </div>
           )}
 
+          {/* Upcoming Schedule & Continuity Timeline/Chart */}
+          {activeRecords.length > 0 && (
+            <AutomationUpcomingScheduleChart
+              records={activeRecords}
+              timezone={Intl.DateTimeFormat().resolvedOptions().timeZone}
+              onOpenSession={onOpenSession}
+              onChat={handleChatWithAutomation}
+              workspaceSlug={workspaceSlug}
+            />
+          )}
+
           {/* Search & Status Filter Controls */}
           {(activeRecords.length > 0 || archivedRecords.length > 0) && (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -455,7 +856,7 @@ export function AutomationV2Workspace({
             {filteredRecords.map((record) => {
               const schedule = record.document.automation_v2.schedule
               const isSelected = selected === record.session_id
-              const isExpanded = Boolean(expandedIds[record.session_id] || isSelected)
+              const isExpanded = Boolean(expandedIds[record.session_id])
               const isArchived = Boolean(record.archived)
               const statusText = isArchived ? 'Archived' : record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'
 
@@ -556,6 +957,17 @@ export function AutomationV2Workspace({
                     </span>
                   </div>
 
+                  {/* Today's Pulse Summary */}
+                  <div className="mt-3">
+                    <AutomationCardPulse
+                      workspaceId={workspaceId}
+                      sessionId={record.session_id}
+                      enabled={record.enabled}
+                      cancelled={record.cancelled}
+                      nextDueAt={record.next_due_at}
+                    />
+                  </div>
+
                   {/* Card Actions */}
                   <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[var(--app-border)]/60 pt-3">
                     <div className="flex flex-wrap items-center gap-2">
@@ -628,16 +1040,35 @@ export function AutomationV2Workspace({
                         </>
                       )}
                     </div>
-                    <Button
-                      size="sm"
-                      variant={isExpanded ? 'secondary' : 'outline'}
-                      className="h-8 gap-1.5 rounded-xl text-xs"
-                      onClick={() => toggleExpanded(record.session_id)}
-                      aria-expanded={isExpanded}
-                    >
-                      <span>{isExpanded ? 'Hide details' : 'View runs & details'}</span>
-                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {workspaceSlug ? (
+                        <a
+                          href={`/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(record.session_id)}`}
+                          onClick={(e) => {
+                            if (onOpenSession) {
+                              e.preventDefault()
+                              onOpenSession(record.session_id)
+                            }
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-primary-border)] hover:text-[var(--app-primary)] transition-colors"
+                          title="Open dedicated automation session for full run history and chat"
+                          data-testid="open-automation-session-link"
+                        >
+                          <span>Open session</span>
+                          <ExternalLink size={11} className="opacity-70" />
+                        </a>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant={isExpanded ? 'secondary' : 'outline'}
+                        className="h-8 gap-1.5 rounded-xl text-xs"
+                        onClick={() => toggleExpanded(record.session_id)}
+                        aria-expanded={isExpanded}
+                      >
+                        <span>{isExpanded ? 'Hide details' : 'View details'}</span>
+                        {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                      </Button>
+                    </div>
                   </div>
 
                   {/* In-place expanded detail */}

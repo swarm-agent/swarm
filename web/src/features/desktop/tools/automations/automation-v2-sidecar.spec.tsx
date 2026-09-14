@@ -3,7 +3,13 @@ import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
-import { AutomationV2Workspace } from './automation-v2-workspace'
+import {
+  AutomationV2Workspace,
+  AutomationUpcomingScheduleChart,
+  AutomationCardPulse,
+  computeUpcomingAutomationEvents,
+  formatRelativeTime,
+} from './automation-v2-workspace'
 import { dispatchDesktopV3Cache } from '../../state/desktop-v3-cache-store'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Record } from '../../state/desktop-automation-v2-api'
@@ -332,5 +338,116 @@ test('AutomationV2Sidecar supports switching to workspace-level discussion of al
   assert.match(markup, /Hourly Health Check/)
   assert.match(markup, /Daily Commit Digest/)
   assert.match(markup, />New<\/span>/)
+})
+
+test('computeUpcomingAutomationEvents and formatRelativeTime compute future slots and countdowns', () => {
+  const now = 1000000000
+  const recordA: AutomationV2Record = {
+    ...sampleRecord,
+    next_due_at: now + 1800000, // in 30 minutes
+    document: {
+      ...sampleRecord.document,
+      automation_v2: {
+        schema_version: 2,
+        schedule: { kind: 'interval', interval_seconds: 3600 },
+        missed: 'skip',
+        overlap: 'serialize',
+        activate_on_accept: true,
+        expiration: { kind: 'indefinite' },
+      },
+    },
+  }
+
+  const recordB: AutomationV2Record = {
+    ...sampleRecord2,
+    next_due_at: now + 7200000, // in 2 hours
+    enabled: true,
+  }
+
+  const events = computeUpcomingAutomationEvents([recordA, recordB], now)
+  assert.ok(events.length >= 2)
+  // First event should be recordA (in 30 mins)
+  assert.equal(events[0].title, 'Hourly Health Check')
+  assert.equal(events[0].dueAt, now + 1800000)
+  // Projected interval slot should also be present
+  assert.ok(events.some((e) => e.dueAt === now + 1800000 + 3600000))
+
+  // Relative time checks
+  assert.equal(formatRelativeTime(now + 20000, now), 'due now')
+  assert.equal(formatRelativeTime(now + 45000, now), 'in 45s')
+  assert.equal(formatRelativeTime(now + 1800000, now), 'in 30m')
+  assert.equal(formatRelativeTime(now + 7200000, now), 'in 2h')
+  assert.equal(formatRelativeTime(now + 90000000, now), 'in 1d')
+})
+
+test('AutomationUpcomingScheduleChart renders 24-hour rhythm chart and upcoming event queue', () => {
+  const now = Date.now()
+  const recordWithDue: AutomationV2Record = {
+    ...sampleRecord,
+    next_due_at: now + 1200000, // in 20 mins
+  }
+
+  const markup = renderToStaticMarkup(
+    <AutomationUpcomingScheduleChart
+      records={[recordWithDue]}
+      timezone="UTC"
+      workspaceSlug="test-ws"
+    />
+  )
+
+  // Verify container and header
+  assert.match(markup, /data-testid="automations-schedule-continuity"/)
+  assert.match(markup, /Upcoming Schedule &amp; Continuity/)
+  assert.match(markup, /24-Hour Schedule Rhythm/)
+
+  // Verify rhythm buckets
+  assert.match(markup, /data-testid="schedule-bucket-morning"/)
+  assert.match(markup, /data-testid="schedule-bucket-afternoon"/)
+  assert.match(markup, /data-testid="schedule-bucket-evening"/)
+  assert.match(markup, /data-testid="schedule-bucket-night"/)
+
+  // Verify upcoming events queue
+  assert.match(markup, /data-testid="upcoming-events-grid"/)
+  assert.match(markup, /data-testid="upcoming-event-item"/)
+  assert.match(markup, /Hourly Health Check/)
+})
+
+test('AutomationV2Workspace renders summary cards with pulse and open session links without inlining run feed', () => {
+  const listKey = automationV2PageKey({ action: 'list', workspace_id: 'ws-test' })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key: listKey,
+    input: { action: 'list', workspace_id: 'ws-test' },
+    requestId: 'req-list-overview',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: listKey,
+    requestId: 'req-list-overview',
+    generation: 0,
+    data: { records: [{ ...sampleRecord, next_due_at: Date.now() + 3600000 }] },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Workspace
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      workspaceName="Test Workspace"
+      workspaceSlug="test-slug"
+    />
+  )
+
+  // Verify overview card rendered with summary pulse and open session link
+  assert.match(markup, /data-testid="automation-overview-card"/)
+  assert.match(markup, /data-testid="automation-card-pulse"/)
+  assert.match(markup, /data-testid="open-automation-session-link"/)
+  assert.match(markup, />Open session<\/span>/)
+
+  // Verify Upcoming Schedule & Continuity section is rendered
+  assert.match(markup, /data-testid="automations-schedule-continuity"/)
+
+  // Crucially: verify that granular run feed is NOT inlined by default when opening the page
+  assert.doesNotMatch(markup, /data-testid="automation-run-feed"/)
+  assert.doesNotMatch(markup, /Run history &amp; upcoming times/)
 })
 
