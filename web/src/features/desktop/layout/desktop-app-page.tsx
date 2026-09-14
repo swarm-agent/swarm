@@ -70,7 +70,7 @@ import {
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
-import { AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
+import { AutomationSidebarCompactCard, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
 import { AutomationToolPage } from '../tools/pages/automation-tool-page'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -112,6 +112,7 @@ const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT = 5
+export const SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT = 6
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -1857,9 +1858,10 @@ interface SessionRowProps {
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
   onRename: (sessionId: string, title: string) => Promise<void>
+  onOpenAutomations?: () => void
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onOpenAutomations }: SessionRowProps) {
   const session = initialSession
   const automation = useDesktopV3CacheSelector(state => {
     const record = state.sessionsById[session.id]
@@ -1877,6 +1879,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
   const isPlanRow = !automation && !automationV2 && rowType === 'plan_session'
+  const isAutomationRow = Boolean(automationV2 || automation)
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -2135,10 +2138,18 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     onFocus: () => onPrefetch(session.id),
     className: cn(
       'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
-      isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
+      isAutomationRow
+        ? 'rounded-lg border-[var(--app-border)]/65 bg-[var(--app-surface-subtle)]/35 p-2.5 gap-1.5 shadow-xs hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'
+        : isPlanRow
+          ? 'gap-1.5 px-2.5 py-2'
+          : 'gap-1 px-2.5 py-1.5',
       active
-        ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
-        : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
+        ? isAutomationRow
+          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)]/50 ring-1 ring-[var(--app-border-accent)]'
+          : 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
+        : !isAutomationRow
+          ? 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]'
+          : null,
       pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
       isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
       isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
@@ -2194,8 +2205,20 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                   {renameError ? <span className="block truncate text-[9px] text-[var(--app-error)]">{renameError}</span> : null}
                 </form>
               ) : (
-                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
-                  {automationV2 === 'pending' ? 'Automation plan · ' : automationV2 || automation ? 'Automation · ' : ''}{rowTitle}
+                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)] flex items-center gap-1.5', isNestedSession ? 'text-[12px]' : isAutomationRow ? 'text-[12px] font-semibold tracking-[-0.01em]' : 'text-[13px]')}>
+                  {isAutomationRow ? (
+                    <RefreshCcw
+                      size={12}
+                      className={cn(
+                        'shrink-0',
+                        activeSession ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]',
+                      )}
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  <span className="min-w-0 truncate">
+                    {automationV2 === 'pending' ? 'Plan · ' : ''}{rowTitle}
+                  </span>
                 </span>
               )}
 
@@ -2259,6 +2282,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           now={now}
           needsApproval={hasPendingPermission}
           workspaceSlug={rowWorkspaceSlug}
+          onNavigateToAutomations={onOpenAutomations}
         />
       ) : (
         <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
@@ -2334,6 +2358,7 @@ interface RenderSidebarSessionGroupsInput {
   routeSessionId: string
   routeAutomationSessionId?: string
   now: number
+  workspaceId?: string
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
   agentSummaries: Map<string, SessionAgentSummary>
@@ -2415,12 +2440,22 @@ export function sidebarVisibleGroupNodes(
   group: SidebarSessionGroupID,
   overflowExpanded: boolean,
 ): SidebarSessionNode[] {
-  if (group !== 'needs_review' || overflowExpanded) return nodes
-  let visibleRoots = 0
-  return nodes.filter((node) => {
-    if (node.depth === 0) visibleRoots += 1
-    return visibleRoots <= SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
-  })
+  if (overflowExpanded) return nodes
+  if (group === 'needs_review') {
+    let visibleRoots = 0
+    return nodes.filter((node) => {
+      if (node.depth === 0) visibleRoots += 1
+      return visibleRoots <= SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    })
+  }
+  if (group === 'automation') {
+    let visibleRoots = 0
+    return nodes.filter((node) => {
+      if (node.depth === 0) visibleRoots += 1
+      return visibleRoots <= SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT
+    })
+  }
+  return nodes
 }
 
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
@@ -2442,9 +2477,11 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
     const collapsed = input.collapsedGroups[group.id]
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
     const rootCount = nodes.filter((node) => node.depth === 0).length
-    const hasOverflow = group.id === 'needs_review' && rootCount > SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const isAutomationGroup = group.id === 'automation'
+    const limit = isAutomationGroup ? SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT : SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && rootCount > limit
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
-    const hiddenRootCount = Math.max(0, rootCount - SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT)
+    const hiddenRootCount = Math.max(0, rootCount - limit)
     const collapseControl = (
       <button
         type="button"
@@ -2457,7 +2494,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
       </button>
     )
     const groupControls = (
-      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || isAutomationGroup || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
               <>
                 <button
@@ -2495,6 +2532,19 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
               </>
             ) : null}
+            {isAutomationGroup && input.onOpenAutomations ? (
+              <button
+                type="button"
+                className={input.presentation === 'mobile'
+                  ? 'inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
+                  : 'inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:border-[var(--app-border-strong)]'}
+                aria-label="Open top-down Automations view"
+                title="Open top-down Automations view"
+                onClick={input.onOpenAutomations}
+              >
+                <span>View</span>
+              </button>
+            ) : null}
       </div>
     )
     return [(
@@ -2529,75 +2579,88 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             {group.id === 'blocked' ? <span aria-hidden="true" className="text-[var(--app-warning)]">⊘</span> : null}
             <span>{group.label}</span>
             <span className="tabular-nums tracking-normal">{rootCount}</span>
-            {group.id === 'automation' && input.onOpenAutomations ? (
-              <button
-                type="button"
-                className={input.presentation === 'mobile'
-                  ? 'ml-auto inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
-                  : 'ml-auto inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] font-normal normal-case tracking-normal text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]'}
-                aria-label="Open top-down Automations view"
-                title="Open top-down Automations view"
-                onClick={input.onOpenAutomations}
-              >
-                <span>View</span>
-              </button>
-            ) : null}
             {groupControls}
           </div>
         )}
-        {!collapsed ? <div className="grid gap-1">
-          {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
-            const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
-            return (
-              <div
-                key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
-                data-sidebar-task-group={taskCallId || undefined}
-                className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
-              >
-                {taskGroup.map((node) => (
-                  <SessionRow
-                    key={node.session.id}
-                    active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && input.routeAutomationSessionId === node.session.id)}
-                    now={input.now}
-                    session={node.session}
-                    workspaceSlug={input.workspaceSlug}
-                    depth={node.depth}
-                    childLabel={node.label}
-                    childAssignmentLabel={node.assignmentLabel}
-                    childKind={node.kind}
-                    agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
-                    agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
-                    compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
-                    pendingAction={input.pendingActions[node.session.id] ?? null}
-                    selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
-                    selectionGroup={group.id}
-                    selected={input.selectedRootIDs.has(node.session.id)}
-                    onSelect={input.onSelect}
-                    onEnterSelectionMode={input.onEnterSelectionMode}
-                    onToggleSelected={input.onToggleSelected}
-                    onPrefetch={input.onPrefetch}
-                    onToggleAgents={input.onToggleAgents}
-                    onTogglePinned={input.onTogglePinned}
-                    onArchive={input.onArchive}
-                    onRename={input.onRename}
-                  />
-                ))}
+        {collapsed ? (
+          isAutomationGroup ? (
+            <AutomationSidebarCompactCard
+              workspaceId={input.workspaceId}
+              workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined}
+              rootCount={rootCount}
+              onExpand={() => input.onToggleGroupCollapsed(group.id)}
+              onOpenAutomations={input.onOpenAutomations}
+            />
+          ) : null
+        ) : (
+          <div className="grid gap-1">
+            {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
+              const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+              return (
+                <div
+                  key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                  data-sidebar-task-group={taskCallId || undefined}
+                  className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+                >
+                  {taskGroup.map((node) => (
+                    <SessionRow
+                      key={node.session.id}
+                      active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && input.routeAutomationSessionId === node.session.id)}
+                      now={input.now}
+                      session={node.session}
+                      workspaceSlug={input.workspaceSlug}
+                      depth={node.depth}
+                      childLabel={node.label}
+                      childAssignmentLabel={node.assignmentLabel}
+                      childKind={node.kind}
+                      agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                      agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                      compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                      pendingAction={input.pendingActions[node.session.id] ?? null}
+                      selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                      selectionGroup={group.id}
+                      selected={input.selectedRootIDs.has(node.session.id)}
+                      onSelect={input.onSelect}
+                      onEnterSelectionMode={input.onEnterSelectionMode}
+                      onToggleSelected={input.onToggleSelected}
+                      onPrefetch={input.onPrefetch}
+                      onToggleAgents={input.onToggleAgents}
+                      onTogglePinned={input.onTogglePinned}
+                      onArchive={input.onArchive}
+                      onRename={input.onRename}
+                      onOpenAutomations={input.onOpenAutomations}
+                    />
+                  ))}
+                </div>
+              )
+            })}
+            {hasOverflow ? (
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  className="flex flex-1 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  aria-label={overflowExpanded ? `Show fewer ${group.label} sessions` : `Show ${hiddenRootCount} more ${group.label} sessions`}
+                  aria-expanded={overflowExpanded}
+                  onClick={() => input.onToggleGroupOverflow(group.id)}
+                >
+                  <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
+                  <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+                </button>
+                {isAutomationGroup && input.onOpenAutomations ? (
+                  <button
+                    type="button"
+                    className="flex min-h-7 items-center justify-center gap-1 rounded border border-[var(--app-border)]/50 bg-[var(--app-surface-subtle)]/30 px-2 text-[10px] font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]"
+                    aria-label="Open top-down Automations view"
+                    title="Open top-down Automations view"
+                    onClick={input.onOpenAutomations}
+                  >
+                    <span>All ({rootCount}) →</span>
+                  </button>
+                ) : null}
               </div>
-            )
-          })}
-          {hasOverflow ? (
-            <button
-              type="button"
-              className="flex min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-              aria-label={overflowExpanded ? 'Show fewer Needs Review sessions' : `Show ${hiddenRootCount} more Needs Review sessions`}
-              aria-expanded={overflowExpanded}
-              onClick={() => input.onToggleGroupOverflow(group.id)}
-            >
-              <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
-              <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
-            </button>
-          ) : null}
-        </div> : null}
+            ) : null}
+          </div>
+        )}
       </section>
     )]
   })
@@ -4568,6 +4631,7 @@ export function DesktopAppPage() {
     routeSessionId,
     routeAutomationSessionId,
     now: sidebarNow,
+    workspaceId: topWorkspaceId,
     workspaceSlug: globalSessionWorkspaceSlug,
     expandedAgentSessions,
     agentSummaries: sidebarAgentSummaries,
@@ -5467,6 +5531,7 @@ export function DesktopAppPage() {
                     routeSessionId,
                     routeAutomationSessionId,
                     now: sidebarNow,
+                    workspaceId: topWorkspaceId,
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
                     agentSummaries: sidebarAgentSummaries,

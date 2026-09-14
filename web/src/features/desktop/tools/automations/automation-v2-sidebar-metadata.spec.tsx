@@ -10,7 +10,14 @@ import {
   automationSidebarStatus,
   selectAutomationSummaryCounts,
   AutomationSidebarSummaryBadge,
+  AutomationSidebarCompactCard,
+  AutomationSidebarCompactCardView,
 } from './automation-v2-sidebar-metadata'
+import {
+  sidebarVisibleGroupNodes,
+  SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT,
+} from '../../layout/desktop-app-page'
+import { dispatchDesktopV3Cache } from '../../state/desktop-v3-cache-store'
 
 // Requirement: the sidebar identifies cadence, active running, and scheduled automation state,
 // not generic session activity, and provides a clear top-down entry point to the Automations tool.
@@ -82,7 +89,7 @@ test('automation metadata row renders active running state and top-down entry po
     onNavigateToAutomations: () => { navigated = true },
   })
   assert.ok(rowElement)
-  const button = (rowElement as any).props.children[1]
+  const button = (rowElement as any).props.children[0].props.children[1]
   assert.equal(button.type, 'button')
   button.props.onClick({ preventDefault() {}, stopPropagation() {} })
   assert.equal(navigated, true)
@@ -236,4 +243,96 @@ test('sidebar summary badge displays calm high-level state and navigates on clic
   assert.equal((badgeElement as any).type, 'button')
   ;(badgeElement as any).props.onClick({ preventDefault() {}, stopPropagation() {} })
   assert.equal(navigated, true)
+})
+
+test('compact card renders overview, running pulse dot, stats, and expands on click or keypress', () => {
+  let expanded = false
+  let navigated = false
+
+  const compactMarkup = renderToStaticMarkup(
+    <AutomationSidebarCompactCardView
+      counts={{ running: 1, scheduled: 2, paused: 0, pending: 0, total: 3, runsToday: 4, upcoming: 2 }}
+      rootCount={8}
+      onExpand={() => { expanded = true }}
+      onOpenAutomations={() => { navigated = true }}
+    />
+  )
+  assert.match(compactMarkup, /data-testid="automation-sidebar-compact-card"/)
+  assert.match(compactMarkup, /Automations Overview/)
+  assert.match(compactMarkup, /\(8\)/)
+  assert.match(compactMarkup, /data-testid="compact-running-dot"/)
+  assert.match(compactMarkup, /1 running/)
+  assert.match(compactMarkup, /4 ran today · 2 upcoming/)
+  assert.match(compactMarkup, /Expand/)
+
+  // Direct element test for expand and view click handlers
+  const element = AutomationSidebarCompactCardView({
+    counts: { running: 0, scheduled: 5, paused: 0, pending: 0, total: 5, runsToday: 0, upcoming: 0 },
+    rootCount: 5,
+    onExpand: () => { expanded = true },
+    onOpenAutomations: () => { navigated = true },
+  })
+  assert.ok(element)
+  assert.equal((element as any).type, 'div')
+  ;(element as any).props.onClick()
+  assert.equal(expanded, true)
+
+  expanded = false
+  ;(element as any).props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  assert.equal(expanded, true)
+
+  expanded = false
+  ;(element as any).props.onKeyDown({ key: ' ', preventDefault() {} })
+  assert.equal(expanded, true)
+
+  // Find and trigger the View button
+  const bottomRow = (element as any).props.children[1]
+  const actionsContainer = bottomRow.props.children[1]
+  const viewButton = actionsContainer.props.children[0]
+  assert.ok(viewButton)
+  assert.equal(viewButton.type, 'button')
+  viewButton.props.onClick({ stopPropagation() {} })
+  assert.equal(navigated, true)
+})
+
+test('sidebarVisibleGroupNodes limits visible automation cards and supports overflow expansion for 50+ automations', () => {
+  const fakeNodes = Array.from({ length: 50 }, (_, i) => ({
+    session: { id: `session-${i}` } as any,
+    depth: 0,
+    label: `auto-${i}`,
+    assignmentLabel: null,
+    kind: 'root' as const,
+  }))
+
+  assert.equal(SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT, 6)
+
+  // When not expanded, only returns visible root limit
+  const bounded = sidebarVisibleGroupNodes(fakeNodes as any, 'automation', false)
+  assert.equal(bounded.length, 6)
+  assert.equal(bounded[0].session.id, 'session-0')
+  assert.equal(bounded[5].session.id, 'session-5')
+
+  // When overflow expanded, returns all 50 items
+  const expanded = sidebarVisibleGroupNodes(fakeNodes as any, 'automation', true)
+  assert.equal(expanded.length, 50)
+  assert.equal(expanded[49].session.id, 'session-49')
+})
+
+test('automation metadata multi-row card renders 3-row layout with distinct schedule and stats rows', () => {
+  const markup = renderToStaticMarkup(
+    <AutomationSidebarMetadataRow
+      schedule={{ kind: 'interval', interval_seconds: 3600 }}
+      status="Scheduled"
+      nextDueAt={1789400000000}
+      runsToday={5}
+      upcomingCount={3}
+      workspaceSlug="proj-1"
+    />
+  )
+  assert.match(markup, /Every hour/)
+  assert.match(markup, /Scheduled/)
+  assert.match(markup, /5 ran today · 3 upcoming/)
+  assert.match(markup, /Next:/)
+  // Verify clean separation into flex rows
+  assert.match(markup, /flex-col gap-1/)
 })

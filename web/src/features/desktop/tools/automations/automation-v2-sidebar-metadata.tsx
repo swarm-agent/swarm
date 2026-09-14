@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Clock3 } from 'lucide-react'
+import { Clock3, RefreshCcw } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
@@ -53,8 +53,12 @@ export function AutomationSidebarMetadataRow({
   const statusContent = (
     <span
       className={cn(
-        'shrink-0 inline-flex items-center gap-1',
-        isRunning ? 'font-medium text-[var(--app-success)]' : 'text-[var(--app-text-muted)]',
+        'shrink-0 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none',
+        isRunning
+          ? 'bg-[var(--app-success-bg,rgba(34,197,94,0.14))] text-[var(--app-success)]'
+          : status === 'Needs approval' || status === 'Awaiting acceptance'
+            ? 'bg-[var(--app-warning-bg)] text-[var(--app-warning)]'
+            : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
       )}
     >
       {isRunning && (
@@ -68,51 +72,78 @@ export function AutomationSidebarMetadataRow({
     </span>
   )
 
+  const statusAction = onNavigateToAutomations ? (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onNavigateToAutomations()
+      }}
+      aria-label="Open Automations view"
+      title="Open top-down Automations view"
+      className="inline-flex shrink-0 items-center gap-1 rounded hover:opacity-85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] cursor-pointer"
+    >
+      {statusContent}
+    </button>
+  ) : workspaceSlug ? (
+    <a
+      href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+      onClick={(e) => {
+        e.stopPropagation()
+      }}
+      aria-label="Open Automations view"
+      title="Open top-down Automations view"
+      className="inline-flex shrink-0 items-center gap-1 rounded hover:opacity-85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
+    >
+      {statusContent}
+    </a>
+  ) : (
+    statusContent
+  )
+
   return (
     <div
       aria-label="Automation metadata"
       title={details}
-      className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]"
+      className="mt-1 flex min-w-0 flex-col gap-1 text-[10px] leading-4 text-[var(--app-text-subtle)]"
     >
-      <span className="flex min-w-0 items-center gap-1.5">
-        <Clock3
-          size={11}
-          className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
-          aria-hidden="true"
-        />
-        <span className="min-w-0 truncate">
-          {cadence}{runMeta ? ` · ${runMeta}` : schedule?.timezone ? ` · ${schedule.timezone}` : ''}
+      {/* Row 2 of card: Cadence, timezone, and status pill */}
+      <div className="flex min-w-0 items-center justify-between gap-1.5">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <Clock3
+            size={11}
+            className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate font-medium text-[var(--app-text-muted)]">
+            {cadence}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}
+          </span>
         </span>
-      </span>
-      {onNavigateToAutomations ? (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            onNavigateToAutomations()
-          }}
-          aria-label="Open Automations view"
-          title="Open top-down Automations view"
-          className="inline-flex shrink-0 items-center gap-1 rounded hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] cursor-pointer"
-        >
-          {statusContent}
-        </button>
-      ) : workspaceSlug ? (
-        <a
-          href={`/${encodeURIComponent(workspaceSlug)}/automations`}
-          onClick={(e) => {
-            e.stopPropagation()
-          }}
-          aria-label="Open Automations view"
-          title="Open top-down Automations view"
-          className="inline-flex shrink-0 items-center gap-1 rounded hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
-        >
-          {statusContent}
-        </a>
-      ) : (
-        statusContent
-      )}
+        {statusAction}
+      </div>
+
+      {/* Row 3 of card: Activity stats (today/upcoming) and next run time or direct view prompt */}
+      <div className="flex min-w-0 items-center justify-between gap-1.5 text-[9px] text-[var(--app-text-muted)]">
+        <span className="flex min-w-0 items-center gap-1.5 truncate">
+          {runMeta ? (
+            <span className="truncate tabular-nums font-medium">{runMeta}</span>
+          ) : schedule ? (
+            <span className="truncate">{scheduleFrequency(schedule)}</span>
+          ) : (
+            <span className="truncate">{isRunning ? 'Running now' : status === 'Schedule unavailable' ? 'Status unavailable' : status}</span>
+          )}
+        </span>
+        {nextDueAt ? (
+          <span className="shrink-0 tabular-nums text-[var(--app-text-subtle)]" title={`Next scheduled: ${new Date(nextDueAt).toLocaleString()}`}>
+            Next: {new Date(nextDueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        ) : onNavigateToAutomations || workspaceSlug ? (
+          <span className="shrink-0 text-[var(--app-primary)] hover:underline">
+            View →
+          </span>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -530,3 +561,141 @@ export function AutomationV2SidebarSummaryIndicator({
 }
 
 export const AutomationSummaryIndicator = AutomationV2SidebarSummaryIndicator
+
+export function AutomationSidebarCompactCardView({
+  counts,
+  workspaceSlug,
+  rootCount,
+  onExpand,
+  onOpenAutomations,
+}: {
+  counts: AutomationSummaryCounts
+  workspaceSlug?: string
+  rootCount: number
+  onExpand: () => void
+  onOpenAutomations?: () => void
+}) {
+  const isRunning = counts.running > 0
+  const activeCount = rootCount || counts.total
+
+  const runMetaParts: string[] = []
+  if (counts.runsToday > 0) {
+    runMetaParts.push(`${counts.runsToday} ran today`)
+  }
+  if (counts.upcoming > 0) {
+    runMetaParts.push(`${counts.upcoming} upcoming`)
+  }
+  const runMeta = runMetaParts.join(' · ')
+
+  return (
+    <div
+      data-testid="automation-sidebar-compact-card"
+      role="button"
+      tabIndex={0}
+      aria-label={`Automations overview: ${activeCount} automations, ${isRunning ? `${counts.running} running` : 'none running'}. Click to expand list`}
+      onClick={onExpand}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onExpand()
+        }
+      }}
+      className="group relative flex flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/40 p-2.5 text-left transition-all hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] cursor-pointer"
+    >
+      <div className="flex min-w-0 items-center justify-between gap-1.5">
+        <span className="flex min-w-0 items-center gap-1.5">
+          <RefreshCcw
+            size={12}
+            className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
+            aria-hidden="true"
+          />
+          <span className="truncate text-[11px] font-semibold text-[var(--app-text)]">
+            Automations Overview
+          </span>
+          <span className="shrink-0 text-[10px] text-[var(--app-text-muted)] tabular-nums">
+            ({activeCount})
+          </span>
+        </span>
+        {isRunning ? (
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)]">
+            <span
+              data-testid="compact-running-dot"
+              className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
+              aria-hidden="true"
+            />
+            <span>{counts.running} running</span>
+          </span>
+        ) : counts.scheduled > 0 ? (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-muted)]">
+            {counts.scheduled} scheduled
+          </span>
+        ) : (
+          <span className="inline-flex shrink-0 items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)]">
+            Idle
+          </span>
+        )}
+      </div>
+
+      <div className="flex min-w-0 items-center justify-between gap-1 text-[9px] text-[var(--app-text-muted)]">
+        <span className="min-w-0 truncate">
+          {runMeta || (counts.scheduled > 0 ? `${counts.scheduled} scheduled on cadence` : 'Ready')}
+        </span>
+        <div className="flex items-center gap-2 shrink-0">
+          {onOpenAutomations ? (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenAutomations()
+              }}
+              title="Open top-down Automations view"
+              className="text-[9px] text-[var(--app-text-subtle)] hover:text-[var(--app-primary)] hover:underline"
+            >
+              View
+            </button>
+          ) : workspaceSlug ? (
+            <a
+              href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+              onClick={(e) => {
+                e.stopPropagation()
+              }}
+              title="Open top-down Automations view"
+              className="text-[9px] text-[var(--app-text-subtle)] hover:text-[var(--app-primary)] hover:underline"
+            >
+              View
+            </a>
+          ) : null}
+          <span className="inline-flex items-center gap-0.5 font-medium text-[var(--app-primary)] group-hover:underline">
+            <span>Expand</span>
+            <span aria-hidden="true">▾</span>
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function AutomationSidebarCompactCard({
+  workspaceId,
+  workspaceSlug,
+  rootCount,
+  onExpand,
+  onOpenAutomations,
+}: {
+  workspaceId?: string
+  workspaceSlug?: string
+  rootCount: number
+  onExpand: () => void
+  onOpenAutomations?: () => void
+}) {
+  const counts = useDesktopV3CacheSelector(state => selectAutomationSummaryCounts(state, workspaceId))
+  return (
+    <AutomationSidebarCompactCardView
+      counts={counts}
+      workspaceSlug={workspaceSlug}
+      rootCount={rootCount}
+      onExpand={onExpand}
+      onOpenAutomations={onOpenAutomations}
+    />
+  )
+}
