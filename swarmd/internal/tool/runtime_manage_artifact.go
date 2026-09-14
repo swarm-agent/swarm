@@ -1740,12 +1740,26 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 	if collectionDescription == "" {
 		collectionDescription = prompt
 	}
-	if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
-		collectionID = supplied
+	managedDestination := false
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+		managedDestination = true
+		if strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" {
+			return managedVideoArtifactResult{}, errors.New("manage_artifact trusted video destination is incomplete")
+		}
+		if strings.TrimSpace(asString(args["collection_id"])) != "" || strings.TrimSpace(asString(args["variant_id"])) != "" {
+			return managedVideoArtifactResult{}, errors.New("manage_artifact managed generate_video must omit collection_id and variant_id")
+		}
+		collectionID, variantID = strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
 		collectionName, collectionDescription = "", ""
 	}
-	if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
-		variantID = supplied
+	if !managedDestination {
+		if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
+			collectionID = supplied
+			collectionName, collectionDescription = "", ""
+		}
+		if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
+			variantID = supplied
+		}
 	}
 
 	var sourceRef *pebblestore.SessionArtifactSelectionReference
@@ -1794,7 +1808,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
-		if i > 0 {
+		if i > 0 && !managedDestination {
 			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
 		}
 		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
@@ -1830,6 +1844,22 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			filename = fmt.Sprintf("generated-video-%d.mp4", i+1)
 		}
 
+		iterationIndex := i + 1
+		iterationLabel := variantTitle
+		autoAccept := true
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			if run.IterationIndex > 0 {
+				iterationIndex = run.IterationIndex
+			}
+			if strings.TrimSpace(run.IterationLabel) != "" {
+				iterationLabel = strings.TrimSpace(run.IterationLabel)
+			}
+			if strings.TrimSpace(run.IterationTheme) != "" {
+				presentation.Description = strings.TrimSpace(run.IterationTheme)
+			}
+			autoAccept = run.AutoAccept
+		}
+
 		create := artifact.CreateInput{
 			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
 			CollectionID:          collectionID,
@@ -1840,10 +1870,10 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			MediaType:             "video/mp4",
 			Presentation:          presentation,
 			IterationID:           generated.InteractionID,
-			IterationIndex:        i + 1,
-			IterationLabel:        variantTitle,
+			IterationIndex:        iterationIndex,
+			IterationLabel:        iterationLabel,
 			Body:                  append([]byte(nil), generated.Bytes...),
-			AutoAccept:            true,
+			AutoAccept:            autoAccept,
 		}
 		if sourceRef != nil {
 			create.SourceSessionID = sourceRef.SessionID

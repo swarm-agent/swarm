@@ -299,6 +299,38 @@ func TestDirectImageSwarmRendersImageProgressWithoutSubagents(t *testing.T) {
 	}
 }
 
+func TestDirectVideoSwarmRendersVideoProgressWithoutSubagents(t *testing.T) {
+	presentation := presentTaskTool(ToolTimelineItem{Status: "completed"}, map[string]any{"mode": "swarm", "agent_type": "video"}, map[string]any{
+		"task_mode": "swarm", "execution_format": "direct_video_swarm", "video_count": float64(3),
+		"videos": []any{
+			map[string]any{"index": float64(1), "theme": "cinematic", "status": "ok"},
+			map[string]any{"index": float64(2), "theme": "action", "status": "ok"},
+			map[string]any{"index": float64(3), "theme": "neon", "status": "ok"},
+		},
+	})
+	if !presentation.TaskSwarm || presentation.TaskSwarmAgent != "video" || !strings.Contains(presentation.Summary, "Routing → Video generation") || !strings.Contains(presentation.Summary, "3 videos") || len(presentation.TaskRows) != 3 {
+		t.Fatalf("direct video swarm presentation = %#v", presentation)
+	}
+	for _, row := range presentation.TaskRows {
+		if row.Agent != "video" || row.Status != "done" || row.Tool != "Routing → Video generation" {
+			t.Fatalf("direct video row = %#v", row)
+		}
+	}
+
+	var live ToolTimelineItem
+	live.Name, live.Status = "task", "running"
+	if !applyTaskStreamPatch(&live, `{"tool":"task","path_id":"tool.task.video_swarm.stream.v1","execution_format":"direct_video_swarm","task_mode":"swarm","video_count":1,"video_key":"video:1","video":{"video_key":"video:1","index":1,"status":"running","theme":"cinematic","current_stage":"router","current_stage_label":"Routing","stage_history":["Routing"],"swarm_mode":true}}`) {
+		t.Fatal("direct video progress patch was not accepted")
+	}
+	if !applyTaskStreamPatch(&live, `{"tool":"task","path_id":"tool.task.video_swarm.stream.v1","execution_format":"direct_video_swarm","task_mode":"swarm","video_count":1,"video_key":"video:1","video":{"video_key":"video:1","index":1,"status":"running","title":"Cinematic video","current_stage":"video_model","current_stage_label":"Video generation","stage_history":["Routing","Video generation"],"swarm_mode":true}}`) {
+		t.Fatal("direct video generation patch was not accepted")
+	}
+	livePresentation := presentTaskTool(live, map[string]any{"mode": "swarm", "agent_type": "video"}, nil)
+	if len(livePresentation.TaskRows) != 1 || livePresentation.TaskRows[0].Status != "running" || livePresentation.TaskRows[0].Tool != "Routing → Video generation" || livePresentation.TaskRows[0].Agent != "video" {
+		t.Fatalf("live direct video presentation = %#v", livePresentation)
+	}
+}
+
 func TestTaskSwarmRendersHeightAwareMatrixWithoutChangingRegularTasks(t *testing.T) {
 	launches := make([]map[string]any, 0, 100)
 	for index := 1; index <= 100; index++ {

@@ -1041,6 +1041,70 @@ function testDirectImageSwarmLiveRowsRemainRunningThroughImageCreation(): void {
   assert(message?.taskRows.every((row) => !row.childSessionId), 'direct image progress must not invent child sessions');
 }
 
+function testDirectVideoSwarmSummaryDoesNotClaimAgentLaunches(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', agent_type: 'video', count: 3 }),
+    outputText: JSON.stringify({
+      tool: 'task',
+      task_mode: 'swarm',
+      execution_format: 'direct_video_swarm',
+      video_count: 3,
+      subagent_launch_count: 0,
+      status: 'ok',
+      description: 'campaign videos',
+      videos: [{ index: 1 }, { index: 2 }, { index: 3 }],
+    }),
+  });
+  assert(message?.summary.includes('3 direct videos') === true, `unexpected direct video summary: ${message?.summary}`);
+  assert(message?.summary.includes('launch') === false, `direct video summary must not claim launches: ${message?.summary}`);
+  assert(message?.taskRows.length === 3, 'completed direct videos must retain per-video rows');
+  assert(message?.taskRows.every((row) => row.agent === 'video'), 'direct video rows must not be labeled as subagents');
+  assert(message?.taskRows.every((row) => row.tool === 'Routing → Video generation'), 'completed direct video rows must show the full pipeline');
+}
+
+function testDirectVideoSwarmLiveRowsRemainRunningThroughVideoGeneration(): void {
+  const message = buildStructuredToolMessage({
+    tool: 'task',
+    argumentsText: JSON.stringify({ mode: 'swarm', agent_type: 'video', count: 2 }),
+    state: 'running',
+    taskStream: {
+      taskMode: 'swarm',
+      executionFormat: 'direct_video_swarm',
+      videoCount: 2,
+      launchOrder: ['video:1', 'video:2'],
+      launchesByKey: {
+        'video:1': {
+          launch_index: 1,
+          requested_subagent: 'video',
+          assignment_label: 'Cinematic',
+          status: 'running',
+          current_tool: 'Routing',
+          current_tool_display: 'Routing',
+          tool_order: ['Routing', 'Video generation'],
+          swarm_mode: true,
+        },
+        'video:2': {
+          launch_index: 2,
+          requested_subagent: 'video',
+          assignment_label: 'Action',
+          status: 'running',
+          current_tool: 'Video generation',
+          current_tool_display: 'Routing → Video generation',
+          tool_order: ['Routing', 'Video generation'],
+          swarm_mode: true,
+        },
+      },
+    },
+  });
+
+  assert(message?.taskRows.length === 2, 'live direct video progress must render one row per video');
+  assert(message?.taskRows.every((row) => row.status === 'running'), 'routing and video generation must both stay running');
+  assert(message?.taskRows[0]?.tool === 'Routing', `unexpected routing label: ${message?.taskRows[0]?.tool}`);
+  assert(message?.taskRows[1]?.tool === 'Routing → Video generation', `unexpected video generation pipeline: ${message?.taskRows[1]?.tool}`);
+  assert(message?.taskRows.every((row) => !row.childSessionId), 'direct video progress must not invent child sessions');
+}
+
 function testOrdinaryTaskDoesNotInferTaskProgramFromRows(): void {
   const message = buildStructuredToolMessage({
     tool: 'task',
@@ -1653,6 +1717,8 @@ function main(): void {
   testTaskProgramUsesLiveMetadataAndShowsDependentStageWaiting();
   testDirectImageSwarmSummaryDoesNotClaimAgentLaunches();
   testDirectImageSwarmLiveRowsRemainRunningThroughImageCreation();
+  testDirectVideoSwarmSummaryDoesNotClaimAgentLaunches();
+  testDirectVideoSwarmLiveRowsRemainRunningThroughVideoGeneration();
   testOrdinaryTaskDoesNotInferTaskProgramFromRows();
   testAssemblyTaskMetadataAndLegacyExploreCompatibility();
   testTaskRowsRenderFromNativeTaskStreamStateBeforeLegacyPayload();

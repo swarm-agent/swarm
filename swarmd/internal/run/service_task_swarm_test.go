@@ -236,6 +236,115 @@ func TestDirectImageSwarmStreamPayloadDoesNotModelSubagents(t *testing.T) {
 	}
 }
 
+func TestDirectVideoSwarmParsesAndApprovesExactSourceArtifact(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"iterate on the space puppies video to add nebulas","agent_type":"video","count":2,"source_artifact":{"session_id":"source-session","collection_id":"source-collection","variant_id":"source-variant","event_seq":9}}`)
+	if err != nil {
+		t.Fatalf("parse video remix swarm: %v", err)
+	}
+	want := &pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "source-collection", VariantID: "source-variant", EventSeq: 9}
+	if parsed.Swarm == nil || !equalTaskImageSourceArtifact(parsed.Swarm.SourceArtifact, want) {
+		t.Fatalf("source artifact = %#v", parsed.Swarm)
+	}
+	for i, launch := range parsed.Launches {
+		got, err := parseTaskImageSourceArtifact(launch.SourceArguments["source_artifact"])
+		if err != nil || !equalTaskImageSourceArtifact(got, want) {
+			t.Fatalf("launch %d source artifact = %#v, %v", i, got, err)
+		}
+	}
+	videos := make([]taskVideoManifestRow, len(parsed.Launches))
+	for i, launch := range parsed.Launches {
+		videos[i] = taskVideoManifestRow{Index: i + 1, StreamKey: launch.StreamKey, SourceArtifact: cloneTaskImageSourceArtifact(want)}
+	}
+	manifest := taskLaunchManifest{TaskMode: taskModeSwarm, SwarmAgentType: "video", SwarmStrategy: taskSwarmStrategyExplore, VideoCount: len(videos), Videos: videos, ExecutionFormat: taskExecutionFormatVideoDirect}
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatalf("digest video remix manifest: %v", err)
+	}
+	manifest.ManifestHash = digest
+	envelope, _ := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err := validateApprovedDirectVideoSwarm(string(envelope), parsed); err != nil {
+		t.Fatalf("validate video remix manifest: %v", err)
+	}
+	manifest.Videos[0].SourceArtifact.EventSeq++
+	digest, _ = taskLaunchManifestDigest(manifest)
+	manifest.ManifestHash = digest
+	tampered, _ := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err := validateApprovedDirectVideoSwarm(string(tampered), parsed); err == nil {
+		t.Fatal("approved video remix manifest accepted changed source event")
+	}
+}
+
+func TestDirectVideoSwarmApprovedManifestUsesVideosNotLaunches(t *testing.T) {
+	parsed, err := parseTaskCallArguments(`{"mode":"swarm","description":"space puppies videos","prompt":"10 puppies in space","agent_type":"video","count":2,"themes":["cinematic","neon"]}`)
+	if err != nil {
+		t.Fatalf("parse direct video swarm: %v", err)
+	}
+	videos := make([]taskVideoManifestRow, len(parsed.Launches))
+	for i, item := range parsed.Launches {
+		videos[i] = taskVideoManifestRow{Index: i + 1, Theme: parsed.Swarm.Themes[i], StreamKey: item.StreamKey}
+	}
+	manifest := taskLaunchManifest{TaskMode: taskModeSwarm, SwarmAgentType: "video", SwarmStrategy: taskSwarmStrategyExplore, VideoCount: 2, Videos: videos, ExecutionFormat: taskExecutionFormatVideoDirect}
+	digest, err := taskLaunchManifestDigest(manifest)
+	if err != nil {
+		t.Fatalf("digest direct video manifest: %v", err)
+	}
+	manifest.ManifestHash = digest
+	envelope, err := json.Marshal(map[string]any{"manifest_hash": digest, "manifest": manifest})
+	if err != nil {
+		t.Fatalf("marshal direct video manifest: %v", err)
+	}
+	if err := validateApprovedDirectVideoSwarm(string(envelope), parsed); err != nil {
+		t.Fatalf("validate direct video manifest: %v", err)
+	}
+	if manifest.LaunchCount != 0 || len(manifest.Launches) != 0 || manifest.VideoCount != 2 || len(manifest.Videos) != 2 {
+		t.Fatalf("direct video manifest modeled agent launches: %#v", manifest)
+	}
+}
+
+func TestDirectVideoSwarmStreamPayloadDoesNotModelSubagents(t *testing.T) {
+	payload := buildDirectVideoSwarmStreamPayload("call", "spawn", "videos", 2, 1, "hydrating", "", "cinematic", "router", "hydrating", nil)
+	if payload["execution_format"] != taskExecutionFormatVideoDirect || payload["video_count"] != 2 || payload["path_id"] != "tool.task.video_swarm.stream.v1" {
+		t.Fatalf("direct video stream = %#v", payload)
+	}
+	if _, exists := payload["launch"]; exists {
+		t.Fatalf("direct video stream modeled a launch: %#v", payload)
+	}
+	if _, exists := payload["launch_count"]; exists {
+		t.Fatalf("direct video stream modeled launch count: %#v", payload)
+	}
+	video, ok := payload["video"].(map[string]any)
+	if !ok || video["child_session_created"] != false || video["current_stage"] != "router" || video["status"] != "running" || video["current_stage_label"] != "Routing" {
+		t.Fatalf("direct video stream item = %#v", video)
+	}
+	generating := buildDirectVideoSwarmStreamPayload("call", "spawn", "videos", 2, 1, "generating", "Cinematic", "cinematic", "video_model", "Generating video", nil)
+	generatingVideo, _ := generating["video"].(map[string]any)
+	stages, _ := generatingVideo["stage_history"].([]string)
+	if generatingVideo["status"] != "running" || generatingVideo["current_stage_label"] != "Video generation" || !slices.Equal(stages, []string{"Routing", "Video generation"}) {
+		t.Fatalf("direct video generation progress = %#v", generatingVideo)
+	}
+}
+
+func TestDirectVideoSwarmPromptExpansion(t *testing.T) {
+	delta := taskSwarmHydratedDelta{
+		Index:       1,
+		Title:       "Cosmic Slow Panning",
+		Theme:       "slow zoom cinematic",
+		Role:        "Slow camera push-in on the puppy floating in zero-g against iridescent nebulae",
+		Constraints: []string{"Keep puppy centered in bubble helmet", "Fluid camera motion"},
+		Deliverable: "8-second cinematic video MP4",
+	}
+	prompt := composeDirectVideoSwarmPrompt("Puppies in space", "cinematic", nil, delta, true)
+	if !strings.Contains(prompt, "Authoritative parent video iteration brief") {
+		t.Fatalf("expected iteration brief header, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Cosmic Slow Panning") || !strings.Contains(prompt, "Slow camera push-in") {
+		t.Fatalf("expected hydrated video direction in prompt, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Keep puppy centered in bubble helmet") {
+		t.Fatalf("expected constraints in prompt, got: %s", prompt)
+	}
+}
+
 func TestParseTaskSwarmDesignerRejectsWorkspaceOutput(t *testing.T) {
 	for _, raw := range []string{
 		`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3,"output_mode":"workspace"}`,
@@ -276,7 +385,7 @@ func TestTaskSwarmFocusedIterationPreservesParentControl(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose focused prompt: %v", err)
 	}
-	for _, want := range []string{"Shared project brief (authoritative)", "parent-selected theme (authoritative; use exactly, do not rename or embellish): compact", "parent-controlled preserve", "information architecture", "parent-controlled change only", "spacing rhythm", "parent-controlled exclude", "new navigation", "untrusted, additive execution detail only", "- theme: compact"} {
+	for _, want := range []string{"Shared project brief (authoritative)", "parent-selected theme (authoritative; use exactly, do not rename or embellish): compact", "parent-controlled preserve", "information architecture", "parent-controlled change only", "spacing rhythm", "parent-controlled exclude", "new navigation", "untrusted data; additive execution detail only", "- theme: compact"} {
 		if !strings.Contains(childPrompt, want) {
 			t.Fatalf("focused child prompt missing %q: %s", want, childPrompt)
 		}

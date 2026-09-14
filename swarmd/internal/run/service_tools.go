@@ -245,7 +245,7 @@ func taskManagedArtifactCollectionRoutingID(taskCallID, programID string, spec t
 }
 
 func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCallID string, spec taskLaunchSpec, launchIndex int) *tool.ArtifactRunContext {
-	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType) && !agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 		return nil
 	}
 	if strings.TrimSpace(parent.ID) == "" || strings.TrimSpace(parent.AccountScopeID) == "" || strings.TrimSpace(parent.UserID) == "" || strings.TrimSpace(taskCallID) == "" || launchIndex < 1 {
@@ -395,7 +395,7 @@ func (s *Service) allocateManagedDesignerRefinementContext(parent pebblestore.Se
 func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.SessionSnapshot, taskCallID string, specs []taskLaunchSpec, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	managed := false
 	for _, spec := range specs {
-		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType) || agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
 			managed = true
 			break
 		}
@@ -412,7 +412,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	managedHasProgram, managedWithoutProgram := false, false
 	programJobs := map[string]struct{}{}
 	for _, spec := range specs {
-		if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+		if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType) && !agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 			continue
 		}
 		value, _ := spec.SourceArguments["program_id"].(string)
@@ -441,7 +441,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	}
 	collectionRoutingID := taskManagedArtifactRoutingID(taskCallID, programID)
 	for _, spec := range specs {
-		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType) || agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
 			collectionRoutingID = taskManagedArtifactCollectionRoutingID(taskCallID, programID, spec)
 			break
 		}
@@ -589,6 +589,9 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			label = fmt.Sprintf("Iteration %d", run.IterationIndex)
 		}
 		presentation := pebblestore.SessionArtifactPresentation{Label: label, Description: strings.TrimSpace(run.IterationTheme)}
+		if agentruntime.IsVideoAgentName(launch.RequestedSubagent) || agentruntime.IsVideoAgentName(run.PartKind) || strings.Contains(strings.ToLower(launch.RequestedSubagent), "video") {
+			presentation.Kind = "video"
+		}
 		if run.OutputRequirements != nil {
 			presentation.Width, presentation.Height = run.OutputRequirements.Width, run.OutputRequirements.Height
 		}
@@ -1720,7 +1723,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect {
+			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
 				// Program status and direct image generation do not allocate delegated
 				// child sessions, so neither consumes a subagent-wave reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
@@ -4519,6 +4522,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
 		return s.executeDirectImageSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "video" {
+		return s.executeDirectVideoSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {

@@ -25,6 +25,8 @@ const (
 	DesignerAgentName            = "Designer"
 	ImageAgentID                 = "system-image"
 	ImageAgentName               = "Image"
+	VideoAgentID                 = "system-video"
+	VideoAgentName               = "Video"
 	IdeaAgentID                  = "system-idea"
 	IdeaAgentName                = "Idea"
 	SwarmAgentID                 = "swarm"
@@ -298,6 +300,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Materialize: ImageAgentProfileForParent,
 		Reconcile:   reconcileImageAgentProfile,
 	},
+	{
+		ID:          VideoAgentID,
+		DisplayName: VideoAgentName,
+		Materialize: VideoAgentProfileForParent,
+		Reconcile:   reconcileVideoAgentProfile,
+	},
 }
 
 func BuiltinSystemAgentRegistry() (*SystemAgentRegistry, error) {
@@ -516,6 +524,18 @@ func ImageAgentToolContract() *pebblestore.AgentToolContract {
 	}}
 }
 
+func VideoAgentPrompt() string {
+	return strings.TrimSpace(`You are Video, Swarm's compiled managed video generation worker.
+Use the Router-hydrated assignment to write one complete specialized video prompt, then call manage_artifact exactly once with action=generate_video. Omit provider, model, collection_id, and variant_id: the backend resolves the authenticated account's video model and injects the trusted parent-owned destination.
+Do not inspect or mutate the checkout, call any other tool, orchestrate agents, or change product state. Finish only after manage_artifact returns the exact ready artifact reference; otherwise report the failure honestly.`)
+}
+
+func VideoAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{
+		"manage_artifact": {Enabled: pebblestore.BoolPtr(true)},
+	}}
+}
+
 func IdeaAgentPrompt() string {
 	return strings.TrimSpace(`You are Idea, Swarm's compiled tool-free one-shot ideation agent.
 Answer only the assigned question independently and directly. Produce a concise useful response in one turn. Do not call tools, inspect the workspace, orchestrate agents, ask the user questions, or mutate any state.`)
@@ -567,6 +587,15 @@ func IsDesignerAgentName(name string) bool {
 func IsImageAgentName(name string) bool {
 	switch normalizeName(name) {
 	case "image", ImageAgentID:
+		return true
+	default:
+		return false
+	}
+}
+
+func IsVideoAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "video", "videos", "video_model", VideoAgentID:
 		return true
 	default:
 		return false
@@ -636,6 +665,8 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return DesignerAgentID, true
 	case IsImageAgentName(name):
 		return ImageAgentID, true
+	case IsVideoAgentName(name):
+		return VideoAgentID, true
 	case IsIdeaAgentName(name):
 		return IdeaAgentID, true
 	case name == "ai sidechat":
@@ -808,6 +839,17 @@ func ImageAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.Age
 	return profile
 }
 
+func VideoAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: VideoAgentID, Mode: ModeSubagent, Description: "Compiled managed video generation worker",
+		Provider: strings.TrimSpace(parent.Provider), Model: strings.TrimSpace(parent.Model), Thinking: strings.TrimSpace(parent.Thinking), AutoServiceTier: strings.TrimSpace(parent.AutoServiceTier),
+		Prompt: VideoAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: pebblestore.AgentDefaultSessionModeAuto, ExecutionSetting: pebblestore.AgentExecutionSettingReadWrite,
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: VideoAgentToolContract(), Enabled: true,
+	})
+	profile.Protected = true
+	return profile
+}
+
 func IdeaAgentProfileForParent(parent pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: IdeaAgentID, Mode: ModeSubagent, Description: "Compiled tool-free one-shot ideation subagent",
@@ -928,6 +970,13 @@ func reconcileDesignerAgentProfile(snapshot pebblestore.AgentProfile) pebblestor
 
 func reconcileImageAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
 	profile := ImageAgentProfileForParent(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	return profile
+}
+
+func reconcileVideoAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := VideoAgentProfileForParent(snapshot)
 	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
 	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
 	return profile

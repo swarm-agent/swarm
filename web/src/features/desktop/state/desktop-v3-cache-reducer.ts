@@ -4345,34 +4345,37 @@ function applyTaskStreamPatch(
   if (!parsed || stringValue(parsed.tool) !== 'task') return false
   const pathId = stringValue(parsed.path_id)
   const directImageStream = pathId === 'tool.task.image_swarm.stream.v1'
-  if (pathId !== 'tool.task.stream.v2' && !directImageStream) return false
-  const launchPatch = recordValue(directImageStream ? parsed.image : parsed.launch)
-  const hasProgramMetadata = !directImageStream && Boolean(
+  const directVideoStream = pathId === 'tool.task.video_swarm.stream.v1'
+  const directMediaStream = directImageStream || directVideoStream
+  if (pathId !== 'tool.task.stream.v2' && !directMediaStream) return false
+  const launchPatch = recordValue(directMediaStream ? (directVideoStream ? parsed.video : parsed.image) : parsed.launch)
+  const hasProgramMetadata = !directMediaStream && Boolean(
     stringValue(parsed.program_id)
     || recordValue(parsed.program)
     || recordValue(parsed.program_status),
   )
   if (!launchPatch && !hasProgramMetadata) return false
-  const launchKey = stringValue(directImageStream ? parsed.image_key : parsed.launch_key)
+  const launchKey = stringValue(directMediaStream ? (directVideoStream ? parsed.video_key : parsed.image_key) : parsed.launch_key)
+    || stringValue(launchPatch?.video_key)
     || stringValue(launchPatch?.image_key)
     || stringValue(launchPatch?.launch_key)
     || stringValue(parsed.child_session_id)
     || stringValue(launchPatch?.child_session_id)
     || (numberValue(parsed.launch_index) > 0 ? `launch:${numberValue(parsed.launch_index)}` : '')
     || (numberValue(launchPatch?.launch_index) > 0 ? `launch:${numberValue(launchPatch?.launch_index)}` : '')
-    || (numberValue(launchPatch?.index) > 0 ? `image:${numberValue(launchPatch?.index)}` : '')
+    || (numberValue(launchPatch?.index) > 0 ? `${directVideoStream ? 'video' : 'image'}:${numberValue(launchPatch?.index)}` : '')
   if (!launchKey && launchPatch) return false
 
   const stream = tool.taskStream ?? {
     pathId,
-    streamVersion: directImageStream ? 1 : 2,
+    streamVersion: directMediaStream ? 1 : 2,
     updatedAt,
     launchesByKey: {},
     launchOrder: [],
   }
   const existing = launchKey ? stream.launchesByKey[launchKey] ?? {} : {}
   stream.pathId = pathId
-  stream.streamVersion = directImageStream ? 1 : 2
+  stream.streamVersion = directMediaStream ? 1 : 2
   stream.status = stringValue(parsed.status) || stream.status
   stream.phase = stringValue(parsed.phase) || stream.phase
   stream.action = stringValue(parsed.action) || stream.action
@@ -4382,6 +4385,7 @@ function applyTaskStreamPatch(
   stream.taskCallId = stringValue(parsed.task_call_id) || stream.taskCallId
   stream.launchCount = numberValue(parsed.launch_count) || stream.launchCount
   stream.imageCount = numberValue(parsed.image_count) || stream.imageCount
+  stream.videoCount = numberValue(parsed.video_count) || stream.videoCount
   stream.taskMode = stringValue(parsed.task_mode) || stream.taskMode
   stream.executionFormat = stringValue(parsed.execution_format) || stream.executionFormat
   stream.programId = stringValue(parsed.program_id) || stream.programId
@@ -4395,11 +4399,11 @@ function applyTaskStreamPatch(
   if (typeof parsed.integration_required === 'boolean') stream.integrationRequired = parsed.integration_required
   stream.updatedAt = updatedAt
   if (launchKey && launchPatch) {
-    const normalizedPatch = directImageStream ? {
+    const normalizedPatch = directMediaStream ? {
       ...launchPatch,
       launch_index: numberValue(launchPatch.index),
-      requested_subagent: 'image',
-      assignment_label: stringValue(launchPatch.title) || stringValue(launchPatch.theme) || `Image ${numberValue(launchPatch.index)}`,
+      requested_subagent: directVideoStream ? 'video' : 'image',
+      assignment_label: stringValue(launchPatch.title) || stringValue(launchPatch.theme) || `${directVideoStream ? 'Video' : 'Image'} ${numberValue(launchPatch.index)}`,
       current_tool: stringValue(launchPatch.current_stage_label) || stringValue(launchPatch.current_stage),
       current_tool_display: Array.isArray(launchPatch.stage_history)
         ? launchPatch.stage_history.filter((stage): stage is string => typeof stage === 'string' && Boolean(stage.trim())).join(' → ')

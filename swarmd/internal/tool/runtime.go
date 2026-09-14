@@ -580,6 +580,44 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 	return r.executeManageArtifact(ctx, scope, callID, args)
 }
 
+// GenerateManagedVideoArtifact is the trusted orchestration entrypoint for
+// direct video swarms. It reuses the canonical account video setting and
+// artifact finalization path without creating an AI worker session.
+func (r *Runtime) GenerateManagedVideoArtifact(ctx context.Context, scope WorkspaceScope, callID, prompt string, run ArtifactRunContext, source *pebblestore.SessionArtifactSelectionReference, outputRequirements *pebblestore.SessionArtifactOutputRequirements) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{
+		"action": "generate_video",
+		"prompt": strings.TrimSpace(prompt),
+	}
+	if strings.TrimSpace(run.IterationLabel) != "" {
+		args["title"] = strings.TrimSpace(run.IterationLabel)
+	}
+	if source != nil {
+		args["source_session_id"] = strings.TrimSpace(source.SessionID)
+		args["source_collection_id"] = strings.TrimSpace(source.CollectionID)
+		args["source_variant_id"] = strings.TrimSpace(source.VariantID)
+		args["source_event_seq"] = int(source.EventSeq)
+	}
+	if outputRequirements != nil {
+		if outputRequirements.AspectRatio != "" {
+			args["aspect_ratio"] = outputRequirements.AspectRatio
+		} else if outputRequirements.PresetID != "" {
+			args["aspect_ratio"] = outputRequirements.PresetID
+		} else if outputRequirements.Width > 0 && outputRequirements.Height > 0 {
+			if outputRequirements.Width >= outputRequirements.Height {
+				args["aspect_ratio"] = "16:9"
+			} else {
+				args["aspect_ratio"] = "9:16"
+			}
+		}
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
 	if r != nil {
 		r.artifactV2Video = service

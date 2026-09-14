@@ -424,7 +424,7 @@ func buildTaskSwarmHydrationRequest(parsed taskCallArguments, launchSpecs []task
 		if launch.RequestedSubagentType != request.AgentType || launch.SwarmStrategy != request.SwarmStrategy {
 			return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration launch %d identity mismatch", i+1)
 		}
-		if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
+		if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" || request.AgentType == "video" {
 			if launch.OutputMode != request.OutputMode {
 				return taskSwarmHydrationRequest{}, fmt.Errorf("task swarm hydration Designer launch %d output mode mismatch", i+1)
 			}
@@ -485,6 +485,9 @@ func taskSwarmWorkerExecutionModel(agentType string) string {
 	if strings.EqualFold(strings.TrimSpace(agentType), "image") {
 		return "direct_router_to_image_model_generation"
 	}
+	if strings.EqualFold(strings.TrimSpace(agentType), "video") {
+		return "direct_router_to_video_model_generation"
+	}
 	return "isolated_worktree_advisory_owned_scope_commit_clean_handoff"
 }
 
@@ -544,10 +547,10 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		b.WriteString("- owned scope: ")
 		b.WriteString(strings.Join(item.OwnedScope, ", "))
 		b.WriteString("\n")
-	} else if !agentruntime.IsDesignerAgentName(request.AgentType) && request.AgentType != "image" {
+	} else if !agentruntime.IsDesignerAgentName(request.AgentType) && request.AgentType != "image" && request.AgentType != "video" {
 		b.WriteString("- owned scope: entire isolated worktree\n")
 	}
-	if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" {
+	if agentruntime.IsDesignerAgentName(request.AgentType) || request.AgentType == "image" || request.AgentType == "video" {
 		if request.ArtifactV3Source != nil {
 			b.WriteString("- exact native Artifact V3 source (immutable server-authenticated Git identity and intent targets): ")
 			encoded, _ := json.Marshal(request.ArtifactV3Source)
@@ -606,6 +609,8 @@ func composeTaskSwarmChildPrompt(request taskSwarmHydrationRequest, item taskSwa
 		if request.OutputMode == taskOutputModeManaged {
 			if request.AgentType == "image" {
 				b.WriteString("- output mode: managed image; call manage_artifact exactly once with action=generate_image and a specialized image prompt. Omit provider, model, collection_id, variant_id, and output_requirements. The server resolves the account image model, performs one billed generation call, injects the immutable destination, and finalizes the ready image. Do not call create/create_package, write/edit, or mutate the checkout.\n")
+			} else if request.AgentType == "video" {
+				b.WriteString("- output mode: managed video; call manage_artifact exactly once with action=generate_video and a specialized video prompt. Omit provider, model, collection_id, variant_id. The server resolves the account video model, performs one generation call, injects the immutable destination, and finalizes the ready video. Do not call create/create_package, write/edit, or mutate the checkout.\n")
 			} else if request.ArtifactV2Source != nil && !request.FocusedParts {
 				b.WriteString("- output mode: managed Artifact V2 source revision; use the context-bound artifact_v2_author capability, request server build/validation, and submit_candidate only when ready. Never call manage_artifact or checkout write/edit.\n")
 			} else if !request.FocusedParts {
