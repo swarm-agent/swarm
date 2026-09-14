@@ -193,3 +193,105 @@ test('AutomationV2Sidecar displays running status badge and today/upcoming run c
   assert.match(markup, /2 today/)
   assert.match(markup, /2 upcoming/)
 })
+
+const sampleRecord2: AutomationV2Record = {
+  automation_id: 'auto-plan-2',
+  proposal_id: 'prop-2',
+  revision: 1,
+  digest: 'c'.repeat(64),
+  account_id: 'acct-1',
+  workspace_id: 'ws-test',
+  session_id: 'session-daily-digest',
+  generation: 1,
+  enabled: false,
+  cancelled: false,
+  accepted_at: 1500,
+  authorization: { kind: 'indefinite' },
+  document: {
+    title: 'Daily Commit Digest',
+    info: { goal: 'Summarize daily commits and PRs into markdown report' },
+    checkpoints: [
+      {
+        id: 'cp-digest-1',
+        title: 'Collect commits',
+        tasks: ['Inspect git log'],
+        acceptance_criteria: ['Deliver report'],
+      },
+    ],
+    automation_v2: {
+      schema_version: 2,
+      schedule: { kind: 'cron', cron: '0 18 * * *', timezone: 'UTC' },
+      missed: 'skip',
+      overlap: 'serialize',
+      activate_on_accept: true,
+      expiration: { kind: 'indefinite' },
+    },
+  },
+}
+
+test('AutomationV2Workspace renders flat overview of all workspace automations and summary strip', () => {
+  const listKey = automationV2PageKey({ action: 'list', workspace_id: 'ws-test' })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key: listKey,
+    input: { action: 'list', workspace_id: 'ws-test' },
+    requestId: 'req-list-multi',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: listKey,
+    requestId: 'req-list-multi',
+    generation: 0,
+    data: { records: [sampleRecord, sampleRecord2] },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Workspace
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      workspaceName="Test Workspace"
+    />
+  )
+
+  // Verify flat overview container and both automation cards rendered
+  assert.match(markup, /data-testid="automations-flat-overview"/)
+  assert.match(markup, /Hourly Health Check/)
+  assert.match(markup, /Daily Commit Digest/)
+  assert.match(markup, />Enabled<\/span>/)
+  assert.match(markup, />Paused<\/span>/)
+
+  // Verify executive summary metrics strip
+  assert.match(markup, /data-testid="automations-summary-strip"/)
+  assert.match(markup, /Total[\s\S]*?>2<\/div>/)
+  assert.match(markup, /Scheduled[\s\S]*?>1<\/div>/)
+  assert.match(markup, /Paused[\s\S]*?>1<\/div>/)
+
+  // Verify Discuss with Swarm action in header and on cards
+  assert.match(markup, /title="Discuss all automations with the assistant"/)
+  assert.match(markup, />Discuss with Swarm<\/span>/)
+
+  // Verify Consider adding new automations section with starter templates
+  assert.match(markup, /aria-label="Consider adding new automations"/)
+  assert.match(markup, /Repository Health Check/)
+  assert.match(markup, /Test &amp; Build Sentinel|Test & Build Sentinel/)
+  assert.match(markup, />Propose with Swarm →<\/span>/)
+})
+
+test('AutomationV2Sidecar supports switching to workspace-level discussion of all automations', () => {
+  const markup = renderToStaticMarkup(
+    <AutomationV2Sidecar
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      records={[sampleRecord, sampleRecord2]}
+    />
+  )
+
+  // When no single automation is selected, title defaults to Automations Assistant
+  assert.match(markup, /Automations Assistant/)
+  // Session switcher includes All workspace automations and records list
+  assert.match(markup, /All workspace automations/)
+  assert.match(markup, /Hourly Health Check/)
+  assert.match(markup, /Daily Commit Digest/)
+  assert.match(markup, />New<\/span>/)
+})
+

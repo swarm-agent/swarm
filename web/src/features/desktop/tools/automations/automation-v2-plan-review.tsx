@@ -130,7 +130,7 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
   const blocked = disabled || busy || !!accepted || rejected || stale
 
   useEffect(() => {
-    if (!dirty && (proposal.revision !== reviewed.revision || proposal.digest !== reviewed.digest)) {
+    if (!dirty && (proposal.revision > reviewed.revision || (proposal.revision === reviewed.revision && proposal.digest !== reviewed.digest))) {
       setReviewed(proposal)
       setDraft({
         ...proposal.document,
@@ -403,7 +403,7 @@ export function AutomationV2PlanReview({ proposal, onReject, disabled = false, m
         {settings.expiration.kind === 'at' && (
           <label className="block space-y-1 text-xs text-[var(--app-text-muted)]">
             <span>Expiration Date & Time (UTC)</span>
-            <input className={field} type="datetime-local" step="0.001" value={settings.expiration.expires_at ? new Date(settings.expiration.expires_at).toISOString().slice(0, -1) : ''} onChange={e => update({ expiration: { kind: 'at', expires_at: e.target.value ? Date.parse(e.target.value + 'Z') : undefined } })} />
+            <input aria-label="Expiration (UTC)" className={field} type="datetime-local" step="0.001" value={settings.expiration.expires_at ? new Date(settings.expiration.expires_at).toISOString().slice(0, -1) : ''} onChange={e => update({ expiration: { kind: 'at', expires_at: e.target.value ? Date.parse(e.target.value + 'Z') : undefined } })} />
           </label>
         )}
       </fieldset>

@@ -8,8 +8,13 @@ import {
   Clock3,
   ExternalLink,
   FileText,
+  GitBranch,
+  MessageSquare,
+  Pause,
   Plus,
   RefreshCcw,
+  Search,
+  Sparkles,
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
@@ -24,6 +29,84 @@ import {
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
 import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
+
+export interface AutomationStarterTemplate {
+  id: string
+  title: string
+  cadence: string
+  description: string
+  prompt: string
+  icon: 'git' | 'test' | 'digest' | 'security' | 'clean' | 'custom'
+}
+
+export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
+  {
+    id: 'repo-health',
+    title: 'Repository Health Check',
+    cadence: 'Daily at 09:00 UTC',
+    description: 'Inspect git status, branch tracking, and report routine_clean or alert on uncommitted drift.',
+    prompt: 'Help me create an automation: daily repository health check at 09:00 UTC that inspects git status and uncommitted drift without modifying files.',
+    icon: 'git',
+  },
+  {
+    id: 'test-sentinel',
+    title: 'Test & Build Sentinel',
+    cadence: 'Every 2 hours',
+    description: 'Run fast critical test suites regularly and alert immediately if any tests fail.',
+    prompt: 'Help me create an hourly automation that runs fast tests and reports routine_clean when passing or attention_alert when failing.',
+    icon: 'test',
+  },
+  {
+    id: 'daily-digest',
+    title: 'Daily Commit & PR Digest',
+    cadence: 'Daily at 18:00 UTC',
+    description: 'Summarize recent commits, PRs, and changes into an executive deliverable markdown report.',
+    prompt: 'Help me set up an automation at 18:00 UTC daily to summarize recent commits and PRs into a deliverable markdown report.',
+    icon: 'digest',
+  },
+  {
+    id: 'dependency-audit',
+    title: 'Dependency Security Audit',
+    cadence: 'Weekly (Mondays at 09:00 UTC)',
+    description: 'Audit project dependencies for security advisories and outdated packages.',
+    prompt: 'Propose a weekly automation every Monday at 09:00 UTC to audit dependencies for security advisories and outdated versions.',
+    icon: 'security',
+  },
+  {
+    id: 'worktree-clean',
+    title: 'Worktree Maintenance',
+    cadence: 'Daily at 02:00 UTC',
+    description: 'Check for dangling worktrees, stale temporary branches, and report cleanup status cleanly.',
+    prompt: 'Help me create a daily automation to inspect stale worktrees and temporary branches, reporting status cleanly.',
+    icon: 'clean',
+  },
+  {
+    id: 'custom-workflow',
+    title: 'Custom Recurring Routine',
+    cadence: 'Flexible interval / cron',
+    description: 'Describe any custom workflow, validation script, or recurring task to the assistant.',
+    prompt: 'I want to create a new automation. Help me design the schedule, tasks, and acceptance criteria.',
+    icon: 'custom',
+  },
+]
+
+function TemplateIcon({ icon }: { icon: AutomationStarterTemplate['icon'] }) {
+  switch (icon) {
+    case 'git':
+      return <GitBranch size={16} className="text-[var(--app-primary)]" />
+    case 'test':
+      return <CheckCircle2 size={16} className="text-[var(--app-success)]" />
+    case 'digest':
+      return <FileText size={16} className="text-[var(--app-primary)]" />
+    case 'security':
+      return <AlertTriangle size={16} className="text-[var(--app-warning)]" />
+    case 'clean':
+      return <RefreshCcw size={16} className="text-[var(--app-text-muted)]" />
+    case 'custom':
+    default:
+      return <Sparkles size={16} className="text-[var(--app-primary)]" />
+  }
+}
 
 export function AutomationV2Workspace({
   workspaceId,
@@ -40,35 +123,505 @@ export function AutomationV2Workspace({
 }) {
   const [cursor, setCursor] = useState<string>()
   const [selected, setSelected] = useState(initialSessionId || '')
+  const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>(() => {
+    if (initialSessionId) return { [initialSessionId]: true }
+    return {}
+  })
   const [session, setSession] = useState('')
   const [createRequest, setCreateRequest] = useState(0)
+  const [draftPrompt, setDraftPrompt] = useState<string | undefined>()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'paused'>('all')
+
   const input = { action: 'list' as const, workspace_id: workspaceId, cursor }
   const page = useAutomationV2Page(input)
   const records = page?.data?.records ?? []
-  const selectedRecord = useMemo(() => {
-    return records.find((r) => r.session_id === selected) ?? (records.length > 0 ? records[0] : null)
-  }, [records, selected])
 
   useEffect(() => {
     if (initialSessionId) {
       setSelected(initialSessionId)
-    } else if (!selected && records.length > 0) {
+      setExpandedIds((prev) => ({ ...prev, [initialSessionId]: true }))
+    } else if (records.length === 1 && Object.keys(expandedIds).length === 0) {
+      setExpandedIds({ [records[0].session_id]: true })
       setSelected(records[0].session_id)
     }
-  }, [initialSessionId, records, selected])
-  return <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
-    <header className="flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3"><div className="flex min-w-0 items-center gap-3"><RefreshCcw size={16} className="text-[var(--app-primary)]" /><h1 className="font-semibold">Automations</h1><span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span></div><Button size="sm" onClick={() => setCreateRequest(n => n + 1)}><Plus size={15} />Add automation</Button></header>
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden"><main className="min-w-0 flex-1 space-y-5 p-5 sm:p-8 overflow-y-auto">
-      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">Accepted recurring plans</h2><Button variant="ghost" size="sm" onClick={() => void desktopAutomationV2.refresh(input)}>Refresh automations</Button></div>
-      <p className="text-xs text-[var(--app-text-muted)]">Only explicitly accepted V2 plans appear here. Legacy records are retained but cannot execute.</p>
-      {(!page || page.loading || page.stale) && <p role="status">{page?.stale && page.data ? 'Updating automation state…' : 'Loading automations…'}</p>}
-      {page?.error && <p role="alert">{page.error}</p>}
-      <ul className="grid gap-3 sm:grid-cols-2">{records.map(record => <li key={record.automation_id}><button className={cn("flex w-full min-w-0 items-center gap-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left hover:bg-[var(--app-surface-hover)] transition-all", selected === record.session_id ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)] bg-[var(--app-surface-hover)]' : '')} onClick={() => setSelected(record.session_id)} aria-current={selected === record.session_id ? 'page' : undefined}><Clock3 className="shrink-0 text-[var(--app-primary)]" size={18} /><span className="min-w-0"><span className="block truncate font-medium">{record.document.title}</span><span className="text-xs text-[var(--app-text-muted)]">{record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'} · Automation · revision {record.revision}</span></span></button></li>)}</ul>
-      {page?.data && !page.loading && !page.stale && !records.length && <p className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center text-[var(--app-text-muted)]">No accepted automations on this page. Start a conversation to propose one.</p>}
-      <div className="flex gap-2">{cursor && <Button variant="outline" size="sm" onClick={() => setCursor(undefined)}>First page</Button>}{page?.data?.next_cursor && <Button variant="outline" size="sm" disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</Button>}</div>
-      {selected && <AutomationV2Detail key={selected} workspaceId={workspaceId} sessionId={selected} onChat={setSession} workspaceSlug={workspaceSlug} />}
-    </main><aside aria-label="Automations Assistant" className="flex h-full w-full min-h-[420px] flex-col border-t border-[var(--app-border)] bg-[var(--app-surface)] xl:w-[400px] xl:max-w-[400px] xl:shrink-0 xl:border-t-0 xl:border-l"><AutomationV2Sidecar workspaceId={workspaceId} workspacePath={workspacePath} selectedAutomation={selectedRecord} activeSessionId={session} onSelectSession={setSession} createRequest={createRequest} /></aside></div>
-  </div>
+  }, [initialSessionId, records])
+
+  const selectedRecord = useMemo(() => {
+    if (!selected) return null
+    return records.find((r) => r.session_id === selected) ?? null
+  }, [records, selected])
+
+  const toggleExpanded = (sessionId: string) => {
+    setExpandedIds((prev) => {
+      const next = !prev[sessionId]
+      if (next) {
+        setSelected(sessionId)
+      }
+      return { ...prev, [sessionId]: next }
+    })
+  }
+
+  const handleChatWithAutomation = (sessionId: string) => {
+    setSelected(sessionId)
+    setSession(sessionId)
+  }
+
+  const handleDiscussAll = () => {
+    setSelected('')
+    setSession('')
+  }
+
+  const handleUseTemplate = (prompt: string) => {
+    setDraftPrompt(prompt)
+    setSelected('')
+    setSession('')
+    setCreateRequest((n) => n + 1)
+  }
+
+  const handleControlRecord = async (record: AutomationV2Record, action: 'pause' | 'resume') => {
+    try {
+      await desktopAutomationV2.mutate({
+        workspace_id: workspaceId,
+        session_id: record.session_id,
+        generation: record.generation,
+        action,
+      } as AutomationV2Mutation)
+    } catch {
+      // Handled via cache update
+    }
+  }
+
+  const filteredRecords = useMemo(() => {
+    return records.filter((r) => {
+      if (statusFilter === 'enabled' && (!r.enabled || r.cancelled)) return false
+      if (statusFilter === 'paused' && (r.enabled || r.cancelled)) return false
+      if (searchQuery.trim()) {
+        const query = searchQuery.trim().toLowerCase()
+        const titleMatch = r.document.title.toLowerCase().includes(query)
+        const goalMatch = r.document.info.goal.toLowerCase().includes(query)
+        return titleMatch || goalMatch
+      }
+      return true
+    })
+  }, [records, statusFilter, searchQuery])
+
+  const enabledCount = useMemo(() => records.filter((r) => r.enabled && !r.cancelled).length, [records])
+  const pausedCount = useMemo(() => records.filter((r) => !r.enabled && !r.cancelled).length, [records])
+  const cancelledCount = useMemo(() => records.filter((r) => r.cancelled).length, [records])
+
+  const time = (ms: number) =>
+    new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
+
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
+      {/* Top Header */}
+      <header className="flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <RefreshCcw size={16} className="text-[var(--app-primary)]" />
+          <h1 className="font-semibold">Automations</h1>
+          <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5 text-xs rounded-xl"
+            onClick={handleDiscussAll}
+            title="Discuss all automations with the assistant"
+          >
+            <MessageSquare size={13} className="text-[var(--app-primary)]" />
+            <span>Discuss with Swarm</span>
+          </Button>
+          <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
+            <Plus size={15} />
+            Add automation
+          </Button>
+        </div>
+      </header>
+
+      {/* Main Body + Sidecar Layout */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden">
+        <main className="min-w-0 flex-1 space-y-6 p-5 sm:p-8 overflow-y-auto">
+          {/* Overview Heading & Refresh */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Accepted recurring plans</h2>
+              <p className="mt-0.5 text-xs text-[var(--app-text-muted)]">
+                Flat overview of all active and scheduled workspace automations.
+              </p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => void desktopAutomationV2.refresh(input)}>
+              <RefreshCcw size={13} />
+              Refresh automations
+            </Button>
+          </div>
+
+          {/* Status Messages */}
+          {(!page || page.loading || page.stale) && (
+            <p role="status" className="text-xs text-[var(--app-text-muted)]">
+              {page?.stale && page.data ? 'Updating automation state…' : 'Loading automations…'}
+            </p>
+          )}
+          {page?.error && <p role="alert" className="text-xs text-[var(--app-danger)]">{page.error}</p>}
+
+          {/* Executive Pulse / Metrics Strip */}
+          {records.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5" data-testid="automations-summary-strip">
+              <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Total</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--app-text)]">{records.length}</div>
+              </div>
+              <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Scheduled</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--app-success)]">{enabledCount}</div>
+              </div>
+              <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Paused</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--app-text-muted)]">{pausedCount}</div>
+              </div>
+              <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Status</div>
+                <div className="mt-1 text-xs font-medium text-[var(--app-text)]">
+                  {cancelledCount > 0
+                    ? `${cancelledCount} cancelled`
+                    : enabledCount > 0
+                    ? 'All active monitored'
+                    : 'None active'}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Search & Status Filter Controls */}
+          {records.length > 2 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <div className="relative min-w-[200px] flex-1 max-w-sm">
+                <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+                <input
+                  type="text"
+                  placeholder="Filter automations by title or goal…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-8 w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] pl-8 pr-3 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]"
+                />
+              </div>
+              <div className="flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs">
+                <button
+                  type="button"
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                    statusFilter === 'all'
+                      ? 'bg-[var(--app-surface-hover)] text-[var(--app-text)] font-semibold'
+                      : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                  )}
+                  onClick={() => setStatusFilter('all')}
+                >
+                  All ({records.length})
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                    statusFilter === 'enabled'
+                      ? 'bg-[var(--app-surface-hover)] text-[var(--app-text)] font-semibold'
+                      : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                  )}
+                  onClick={() => setStatusFilter('enabled')}
+                >
+                  Active ({enabledCount})
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                    statusFilter === 'paused'
+                      ? 'bg-[var(--app-surface-hover)] text-[var(--app-text)] font-semibold'
+                      : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                  )}
+                  onClick={() => setStatusFilter('paused')}
+                >
+                  Paused ({pausedCount})
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Flat Overview of All Automations */}
+          <div className="space-y-4" data-testid="automations-flat-overview">
+            {filteredRecords.map((record) => {
+              const schedule = record.document.automation_v2.schedule
+              const isSelected = selected === record.session_id
+              const isExpanded = Boolean(expandedIds[record.session_id] || isSelected)
+              const statusText = record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'
+
+              return (
+                <article
+                  key={record.automation_id}
+                  className={cn(
+                    "rounded-2xl border bg-[var(--app-surface)] p-5 transition-all shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
+                    isSelected
+                      ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)]/40'
+                      : 'border-[var(--app-border)]/80 hover:border-[var(--app-border-strong)]'
+                  )}
+                  data-testid="automation-overview-card"
+                  data-automation-id={record.automation_id}
+                >
+                  {/* Top row: Status pill, Cadence pill, Step count, and Next run */}
+                  <div className="flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold",
+                          record.cancelled
+                            ? 'bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] border border-[var(--app-danger-border,rgba(239,68,68,0.25))] text-[var(--app-danger)]'
+                            : record.enabled
+                            ? 'bg-[var(--app-success-bg,rgba(16,185,129,0.12))] border border-[var(--app-success-border,rgba(16,185,129,0.25))] text-[var(--app-success)]'
+                            : 'bg-[var(--app-surface-hover)] border border-[var(--app-border)] text-[var(--app-text-muted)]'
+                        )}
+                      >
+                        {record.cancelled ? (
+                          <AlertCircle size={12} />
+                        ) : record.enabled ? (
+                          <Clock3 size={12} />
+                        ) : (
+                          <Pause size={12} />
+                        )}
+                        <span>{statusText}</span>
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
+                        {scheduleFrequency(schedule)}
+                      </span>
+                      <span className="text-[11px] text-[var(--app-text-muted)]">
+                        {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'} · Rev {record.revision}
+                      </span>
+                    </div>
+                    <div className="text-xs font-medium text-[var(--app-text-muted)]">
+                      {record.enabled && !record.cancelled && record.next_due_at ? (
+                        <span>Next: {time(record.next_due_at)}</span>
+                      ) : (
+                        <span>No upcoming run</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Card Title & Expand trigger */}
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      className={cn(
+                        "flex w-full min-w-0 items-center justify-between gap-3 text-left transition-colors focus-visible:outline-none hover:text-[var(--app-primary)]",
+                        isSelected ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]'
+                      )}
+                      onClick={() => toggleExpanded(record.session_id)}
+                      aria-current={isSelected ? 'page' : undefined}
+                      aria-expanded={isExpanded}
+                      title="Click to view details and runs"
+                    >
+                      <div className="min-w-0">
+                        <span className="block truncate text-base font-semibold">{record.document.title}</span>
+                        <span className="sr-only"> · {statusText} · Automation · revision {record.revision}</span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1 text-xs text-[var(--app-text-muted)]">
+                        <span className="hidden sm:inline">{isExpanded ? 'Hide details' : 'View details'}</span>
+                        {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                      </div>
+                    </button>
+                    <p className="mt-1.5 text-xs leading-relaxed text-[var(--app-text-muted)] line-clamp-2">
+                      {record.document.info.goal}
+                    </p>
+                  </div>
+
+                  {/* Schedule Metadata */}
+                  <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+                    <span className="font-mono text-[var(--app-text)] font-medium rounded-md border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px]">
+                      {scheduleLabel(schedule)}
+                    </span>
+                    {schedule.timezone && <span>({schedule.timezone})</span>}
+                    <span>·</span>
+                    <span>
+                      {record.authorization.kind === 'indefinite'
+                        ? 'Repeats indefinitely'
+                        : `Ends ${time(record.authorization.expires_at!)}`}
+                    </span>
+                  </div>
+
+                  {/* Card Actions */}
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[var(--app-border)]/60 pt-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 gap-1.5 rounded-xl text-xs"
+                        onClick={() => handleChatWithAutomation(record.session_id)}
+                        title="Discuss or optimize this automation with Swarm"
+                      >
+                        <MessageSquare size={13} />
+                        <span>Discuss with Swarm</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-8 text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                        disabled={record.cancelled}
+                        onClick={() => void handleControlRecord(record, record.enabled ? 'pause' : 'resume')}
+                      >
+                        {record.enabled ? 'Pause' : 'Resume'}
+                      </Button>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant={isExpanded ? 'secondary' : 'outline'}
+                      className="h-8 gap-1.5 rounded-xl text-xs"
+                      onClick={() => toggleExpanded(record.session_id)}
+                      aria-expanded={isExpanded}
+                    >
+                      <span>{isExpanded ? 'Hide details' : 'View runs & details'}</span>
+                      {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                    </Button>
+                  </div>
+
+                  {/* In-place expanded detail */}
+                  {isExpanded && (
+                    <div className="mt-4 border-t border-[var(--app-border)]/70 pt-4">
+                      <AutomationV2Detail
+                        key={record.session_id}
+                        workspaceId={workspaceId}
+                        sessionId={record.session_id}
+                        onChat={handleChatWithAutomation}
+                        workspaceSlug={workspaceSlug}
+                      />
+                    </div>
+                  )}
+                </article>
+              )
+            })}
+          </div>
+
+          {/* Empty State */}
+          {page?.data && !page.loading && !page.stale && !records.length && (
+            <div className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center bg-[var(--app-surface)] space-y-3">
+              <div className="mx-auto flex size-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-primary)]">
+                <Clock3 size={24} />
+              </div>
+              <h3 className="text-base font-semibold text-[var(--app-text)]">No accepted automations on this page</h3>
+              <p className="mx-auto max-w-md text-xs text-[var(--app-text-muted)] leading-relaxed">
+                No accepted automations on this page. Start a conversation to propose one, or pick a starter template below.
+              </p>
+              <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
+                <Plus size={15} />
+                Add automation
+              </Button>
+            </div>
+          )}
+
+          {/* Pagination */}
+          <div className="flex gap-2">
+            {cursor && (
+              <Button variant="outline" size="sm" onClick={() => setCursor(undefined)}>
+                First page
+              </Button>
+            )}
+            {page?.data?.next_cursor && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={page.loading || page.stale}
+                onClick={() => setCursor(page.data?.next_cursor)}
+              >
+                More automations
+              </Button>
+            )}
+          </div>
+
+          {/* Consider Adding New Automations Section */}
+          <section aria-label="Consider adding new automations" className="mt-8 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/70 p-5 sm:p-6 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Sparkles size={16} className="text-[var(--app-primary)]" />
+                  <h2 className="text-sm font-semibold text-[var(--app-text)]">Consider adding new automations</h2>
+                </div>
+                <p className="mt-1 text-xs text-[var(--app-text-muted)]">
+                  Choose an automation routine below to draft with the assistant, or ask Swarm for any custom recurring plan.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-xs rounded-xl"
+                onClick={() => handleUseTemplate('Help me design a new custom recurring automation for this workspace.')}
+              >
+                <Plus size={13} />
+                <span>Custom automation</span>
+              </Button>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {AUTOMATION_STARTER_TEMPLATES.map((tpl) => (
+                <div
+                  key={tpl.id}
+                  className="flex flex-col justify-between rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-4 transition-all hover:border-[var(--app-border-strong)] hover:shadow-sm"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex size-7 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+                        <TemplateIcon icon={tpl.icon} />
+                      </div>
+                      <span className="rounded-md border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)] font-mono">
+                        {tpl.cadence}
+                      </span>
+                    </div>
+                    <h4 className="mt-3 text-xs font-semibold text-[var(--app-text)]">{tpl.title}</h4>
+                    <p className="mt-1 text-[11px] leading-relaxed text-[var(--app-text-muted)]">
+                      {tpl.description}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-3 h-7 w-full gap-1 text-[11px] font-medium hover:border-[var(--app-primary-border)] hover:bg-[var(--app-primary-soft)] hover:text-[var(--app-primary)]"
+                    onClick={() => handleUseTemplate(tpl.prompt)}
+                  >
+                    <Sparkles size={12} />
+                    <span>Propose with Swarm →</span>
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </section>
+        </main>
+
+        {/* Full-Height Right Aside: Automations Assistant */}
+        <aside
+          aria-label="Automations Assistant"
+          className="flex h-full w-full min-h-[420px] flex-col border-t border-[var(--app-border)] bg-[var(--app-surface)] xl:w-[400px] xl:max-w-[400px] xl:shrink-0 xl:border-t-0 xl:border-l"
+        >
+          <AutomationV2Sidecar
+            workspaceId={workspaceId}
+            workspacePath={workspacePath}
+            selectedAutomation={selectedRecord}
+            activeSessionId={session}
+            onSelectSession={(id) => {
+              setSession(id)
+              if (records.some((r) => r.session_id === id)) {
+                setSelected(id)
+              } else if (id === '') {
+                setSelected('')
+              }
+            }}
+            createRequest={createRequest}
+            records={records}
+            initialDraft={draftPrompt}
+            onClearSelectedAutomation={() => {
+              setSelected('')
+              setSession('')
+            }}
+          />
+        </aside>
+      </div>
+    </div>
+  )
 }
 // Persisted scheduling handoff survives permission removal, navigation and reload.
 export function AutomationV2ScheduleHandoff({ workspaceId, sessionId }: { workspaceId: string; sessionId: string }) {
@@ -140,8 +693,8 @@ export function AutomationV2Detail({
   }, [progress?.occurrences, timezone])
 
   return <section aria-label="Automation details" className="min-w-0 rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] font-sans text-xs shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)] [overflow-wrap:anywhere]">
-    <div className="space-y-3 p-4">
-    <header className="border-b border-[var(--app-border)]/60 pb-3">
+    <div className="space-y-2.5 p-3 sm:p-4">
+    <header className="border-b border-[var(--app-border)]/60 pb-2">
       <div className="flex items-center justify-between gap-2"><span className={`${eyebrow} text-[var(--app-primary)]`}>Automation</span><Button size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label="Refresh progress" title="Refresh progress" disabled={busy || page?.loading} onClick={() => void desktopAutomationV2.refresh(input)}><RefreshCcw size={12} /></Button></div>
       <h2 className="mt-1 line-clamp-2 break-words text-sm font-semibold leading-5" title={record?.document.title}>{record?.document.title ?? 'Loading automation…'}</h2>
       <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{record ? `${record.document.checkpoints.length} ${record.document.checkpoints.length === 1 ? 'step' : 'steps'} · Recurring plan` : 'Loading schedule'}</p>
@@ -149,50 +702,50 @@ export function AutomationV2Detail({
     {(page?.loading || page?.stale) && <p role="status" className="text-[11px] text-[var(--app-text-muted)]">Updating schedule…</p>}{(error || page?.error) && <p role="alert" className="text-[var(--app-danger)]">{error || page?.error}</p>}
     {record && schedule && <section aria-label="Automation schedule handoff">
       <div className="flex items-center justify-between gap-2"><h3 className={eyebrow}>Schedule</h3><span className={`text-[10px] font-semibold uppercase tracking-wider ${record.enabled && !record.cancelled ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]'}`}>{status}</span></div>
-      <div className="mt-2 rounded-xl border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-3 py-2.5"><p className="font-mono text-[13px] font-medium">{scheduleLabel(schedule)}</p><p className="mt-1 text-[11px] text-[var(--app-primary)]">{scheduleFrequency(schedule)}</p>{schedule.timezone && <p className="mt-1 text-[10px] text-[var(--app-text-muted)]">Schedule timezone · {schedule.timezone}</p>}</div>
-      <div className="mt-3 rounded-xl border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] p-3"><h3 className={eyebrow}>Next run</h3><p className="mt-1.5 font-medium">{record.enabled && !record.cancelled && record.next_due_at ? time(record.next_due_at) : 'No upcoming run'}</p><p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{timezone} · Scheduled time, not guaranteed start</p></div>
+      <div className="mt-1.5 rounded-xl border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-3 py-2"><p className="font-mono text-[13px] font-medium">{scheduleLabel(schedule)}</p><p className="mt-0.5 text-[11px] text-[var(--app-primary)]">{scheduleFrequency(schedule)}</p>{schedule.timezone && <p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Schedule timezone · {schedule.timezone}</p>}</div>
+      <div className="mt-2 rounded-xl border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] p-2.5"><h3 className={eyebrow}>Next run</h3><p className="mt-1 font-medium">{record.enabled && !record.cancelled && record.next_due_at ? time(record.next_due_at) : 'No upcoming run'}</p><p className="mt-0.5 text-[10px] text-[var(--app-text-subtle)]">{timezone} · Scheduled time, not guaranteed start</p></div>
     </section>}
     {record && <>
-      <div className="grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-9 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => setEditing(v => !v)} aria-expanded={editing}>Edit automation</Button><Button size="sm" variant="outline" className="h-9 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => void control(record.enabled ? 'pause' : 'resume')}>{record.enabled ? 'Pause schedule' : 'Resume schedule'}</Button></div>
+      <div className="grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => setEditing(v => !v)} aria-expanded={editing}>Edit automation</Button><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => void control(record.enabled ? 'pause' : 'resume')}>{record.enabled ? 'Pause schedule' : 'Resume schedule'}</Button></div>
       <p className="text-[11px] leading-4 text-[var(--app-text-subtle)]">{record.authorization.kind === 'indefinite' ? 'Repeats until stopped.' : `Ends ${time(record.authorization.expires_at!)}.`} Pausing leaves admitted work unchanged.</p>
       {editing && <AutomationV2Edit record={record} />}
-      <details className="rounded-xl bg-[var(--app-bg-alt)] p-3"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
+      <details className="rounded-xl bg-[var(--app-bg-alt)] p-2.5"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
     </>}
     {todayStats && (
-      <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3.5 flex flex-wrap items-center justify-between gap-3" data-testid="today-executive-strip">
-        <div className="flex items-center gap-2.5">
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
-            <Clock3 size={15} />
+      <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2.5 flex flex-wrap items-center justify-between gap-2" data-testid="today-executive-strip">
+        <div className="flex items-center gap-2">
+          <div className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+            <Clock3 size={14} />
           </div>
           <div>
             <div className="text-xs font-semibold text-[var(--app-text)]">Today's Pulse · {new Intl.DateTimeFormat(undefined, { timeZone: timezone, month: 'short', day: 'numeric', year: 'numeric' }).format(Date.now())}</div>
-            <p className="text-[10.5px] text-[var(--app-text-muted)]">
+            <p className="text-[10px] text-[var(--app-text-muted)]">
               {todayStats.total === 0
                 ? 'No runs executed yet today.'
                 : `${todayStats.total} ${todayStats.total === 1 ? 'run' : 'runs'} executed today · ${todayStats.alerts === 0 && todayStats.blocked === 0 ? 'All systems clean' : `${todayStats.alerts + todayStats.blocked} item(s) require attention`}`}
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-success-border,rgba(16,185,129,0.3))] bg-[var(--app-success-bg,rgba(16,185,129,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-success)]">
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-success-border,rgba(16,185,129,0.3))] bg-[var(--app-success-bg,rgba(16,185,129,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-success)]">
             ✓ {todayStats.clean} clean
           </span>
           {todayStats.deliverables > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-primary)]">
               ★ {todayStats.deliverables} deliverable{todayStats.deliverables === 1 ? '' : 's'}
             </span>
           )}
           {todayStats.alerts > 0 ? (
-            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-warning)]">
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-warning)]">
               ⚠ {todayStats.alerts} alert{todayStats.alerts === 1 ? '' : 's'}
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text-subtle)]">
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-text-subtle)]">
               0 alerts
             </span>
           )}
           {todayStats.blocked > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-danger-border,rgba(239,68,68,0.4))] bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] px-2 py-0.5 text-[11px] font-medium text-[var(--app-danger)]">
+            <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-danger-border,rgba(239,68,68,0.4))] bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-danger)]">
               ✕ {todayStats.blocked} blocked
             </span>
           )}
@@ -200,56 +753,59 @@ export function AutomationV2Detail({
       </div>
     )}
     {progress && (
-      <section aria-label="Run history & daily summaries" className="rounded-xl bg-[var(--app-bg-alt)] p-4 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/40 pb-2">
-          <div>
-            <h3 className={eyebrow}>Run history & upcoming times</h3>
-            <p className="text-[11px] text-[var(--app-text-muted)]">
-              {progress.occurrences.length} {progress.occurrences.length === 1 ? 'run' : 'runs'} observed · Times shown in {timezone}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="flex items-center gap-1.5 text-[11px]">
-              <span className="text-[var(--app-text-subtle)]">Timezone:</span>
-              <select className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>
-                {[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}
-              </select>
-            </label>
-          </div>
-        </div>
-        {progress.forecast && progress.forecast.length > 0 && (
-          <details className="rounded-lg bg-[var(--app-surface)]/60 p-2.5">
-            <summary className="cursor-pointer text-[11px] font-medium text-[var(--app-text-muted)]">
-              Upcoming schedule forecast ({progress.forecast.length} {progress.forecast.length === 1 ? 'time' : 'times'})
-            </summary>
-            <div className="mt-2 space-y-1">
-              {progress.no_next_reason && <p className="text-[11px] text-[var(--app-text-muted)]">{progress.no_next_reason.replace(/_/g, ' ')}</p>}
-              <ul className="space-y-1">{progress.forecast.map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)] font-mono">{time(ms)}</li>)}</ul>
+      <details className="rounded-xl bg-[var(--app-bg-alt)] p-3" aria-label="Run history & daily summaries">
+        <summary className={disclosure}>Run history & upcoming times</summary>
+        <div className="mt-3 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/40 pb-2">
+            <div>
+              <h3 className={eyebrow}>Upcoming times & history</h3>
+              <p className="text-[11px] text-[var(--app-text-muted)]">
+                {progress.occurrences.length} {progress.occurrences.length === 1 ? 'run' : 'runs'} observed · Times shown in {timezone}
+              </p>
             </div>
-          </details>
-        )}
-        <div className="space-y-3">
-          <AutomationV2RunFeed
-            occurrences={progress.occurrences}
-            timezone={timezone}
-            workspaceSlug={workspaceSlug}
-            onOpenSession={onOpenSession}
-            onChat={onChat}
-          />
-          {!progress.occurrences.length && (
-            <p className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-center text-[11px] text-[var(--app-text-muted)]">
-              No recorded runs yet.
-            </p>
+            <div className="flex items-center gap-2">
+              <label className="flex items-center gap-1.5 text-[11px]">
+                <span className="text-[var(--app-text-subtle)]">Timezone:</span>
+                <select className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>
+                  {[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}
+                </select>
+              </label>
+            </div>
+          </div>
+          {progress.forecast && progress.forecast.length > 0 && (
+            <details className="rounded-lg bg-[var(--app-surface)]/60 p-2.5">
+              <summary className="cursor-pointer text-[11px] font-medium text-[var(--app-text-muted)]">
+                Upcoming schedule forecast ({progress.forecast.length} {progress.forecast.length === 1 ? 'time' : 'times'})
+              </summary>
+              <div className="mt-2 space-y-1">
+                {progress.no_next_reason && <p className="text-[11px] text-[var(--app-text-muted)]">{progress.no_next_reason.replace(/_/g, ' ')}</p>}
+                <ul className="space-y-1">{progress.forecast.map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)] font-mono">{time(ms)}</li>)}</ul>
+              </div>
+            </details>
           )}
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--app-border)]/30">
-            <div className="flex gap-2">
-              {cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}
-              {progress.next_cursor && <Button size="sm" variant="outline" disabled={disabled} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}
+          <div className="space-y-3">
+            <AutomationV2RunFeed
+              occurrences={progress.occurrences}
+              timezone={timezone}
+              workspaceSlug={workspaceSlug}
+              onOpenSession={onOpenSession}
+              onChat={onChat}
+            />
+            {!progress.occurrences.length && (
+              <p className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-center text-[11px] text-[var(--app-text-muted)]">
+                No recorded runs yet.
+              </p>
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--app-border)]/30">
+              <div className="flex gap-2">
+                {cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}
+                {progress.next_cursor && <Button size="sm" variant="outline" disabled={disabled} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}
+              </div>
+              <p className="text-[10px] text-[var(--app-text-subtle)]">{progress.complete ? 'End of run history.' : 'More observations may be available.'}</p>
             </div>
-            <p className="text-[10px] text-[var(--app-text-subtle)]">{progress.complete ? 'End of run history.' : 'More observations may be available.'}</p>
           </div>
         </div>
-      </section>
+      </details>
     )}
     </div>
     {record && <div className="space-y-3 border-t border-[var(--app-border)]/60 p-3">

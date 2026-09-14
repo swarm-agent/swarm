@@ -39,6 +39,7 @@ interface DesktopPlanAgentSidecarProps {
   mobileInline?: boolean;
   modalInline?: boolean;
   displayMode?: "full" | "compact" | "thin";
+  initialDraft?: string;
 }
 
 interface SidechatState {
@@ -119,9 +120,19 @@ export function DesktopPlanAgentSidecar({
   mobileInline = false,
   modalInline = false,
   displayMode = "full",
+  initialDraft,
 }: DesktopPlanAgentSidecarProps) {
   const [sidechat, setSidechat] = useState<SidechatState>(EMPTY_SIDECHAT);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialDraft || "");
+
+  useEffect(() => {
+    if (initialDraft) {
+      setDraft(initialDraft);
+      if (textareaRef.current) {
+        resizeTextarea(textareaRef.current);
+      }
+    }
+  }, [initialDraft]);
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);

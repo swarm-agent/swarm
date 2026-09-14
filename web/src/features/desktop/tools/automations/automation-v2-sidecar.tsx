@@ -20,6 +20,9 @@ export interface AutomationV2SidecarProps {
   activeSessionId?: string
   onSelectSession?: (sessionId: string) => void
   createRequest?: number
+  records?: AutomationV2Record[]
+  initialDraft?: string
+  onClearSelectedAutomation?: () => void
 }
 
 export function AutomationV2Sidecar({
@@ -29,6 +32,9 @@ export function AutomationV2Sidecar({
   activeSessionId,
   onSelectSession,
   createRequest,
+  records,
+  initialDraft,
+  onClearSelectedAutomation,
 }: AutomationV2SidecarProps) {
   const [conversations, setConversations] = useState<SessionSnapshot[]>([])
   const [loading, setLoading] = useState(true)
@@ -116,6 +122,14 @@ export function AutomationV2Sidecar({
     if (value === '__bound__') {
       setDirectSessionId(undefined)
       if (selectedAutomation) onSelectSession?.(selectedAutomation.session_id)
+    } else if (value === '__all__') {
+      setDirectSessionId(undefined)
+      onClearSelectedAutomation?.()
+      onSelectSession?.('')
+    } else if (value.startsWith('automation:')) {
+      const targetSessionId = value.slice('automation:'.length)
+      setDirectSessionId(undefined)
+      onSelectSession?.(targetSessionId)
     } else {
       setDirectSessionId(value)
       onSelectSession?.(value)
@@ -205,12 +219,12 @@ export function AutomationV2Sidecar({
           {upcomingCount > 0 ? `${upcomingCount} upcoming` : ''}
         </span>
       )}
-      {(conversations.length > 0 || selectedAutomation) && (
+      {(conversations.length > 0 || selectedAutomation || (records && records.length > 0)) && (
         <label className="relative flex items-center" title="Switch or reopen automation sessions">
           <History size={12} className="pointer-events-none absolute left-2 text-[var(--app-text-muted)]" aria-hidden="true" />
           <select
             className="h-7 max-w-[150px] truncate rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] pl-6 pr-2 text-[11px] font-medium text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] sm:max-w-[180px]"
-            value={directSessionId ?? '__bound__'}
+            value={directSessionId ?? (selectedAutomation ? '__bound__' : '__all__')}
             onChange={(e) => handleSelectSession(e.target.value)}
             aria-label="Prior automation sessions"
           >
@@ -218,6 +232,20 @@ export function AutomationV2Sidecar({
               <option value="__bound__">
                 ⚡ {selectedAutomation.document.title}
               </option>
+            )}
+            <option value="__all__">
+              🌐 All workspace automations
+            </option>
+            {records && records.filter((r) => r.session_id !== selectedAutomation?.session_id).length > 0 && (
+              <optgroup label="Other automations">
+                {records
+                  .filter((r) => r.session_id !== selectedAutomation?.session_id)
+                  .map((r) => (
+                    <option key={r.session_id} value={`automation:${r.session_id}`}>
+                      ⚡ {r.document.title}
+                    </option>
+                  ))}
+              </optgroup>
             )}
             {conversations.length > 0 && (
               <optgroup label="Prior conversations">
@@ -248,7 +276,7 @@ export function AutomationV2Sidecar({
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-testid="automation-v2-sidecar-container">
       <DesktopPlanAgentSidecar
-        key={directSessionId ? `direct:${directSessionId}` : `bound:${selectedAutomation?.session_id ?? 'empty'}`}
+        key={directSessionId ? `direct:${directSessionId}` : `bound:${selectedAutomation?.session_id ?? 'overview'}`}
         directSessionId={directSessionId}
         parentSessionId={directSessionId ? undefined : selectedAutomation?.session_id}
         automation={
@@ -267,6 +295,7 @@ export function AutomationV2Sidecar({
         headerActions={headerActions}
         sidebarInline
         embedded
+        initialDraft={initialDraft}
       />
     </div>
   )
