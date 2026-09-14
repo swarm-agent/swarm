@@ -79,8 +79,8 @@ func TestAutomationExecutionPurposeDurabilityAndIsolation(t *testing.T) {
 		Metadata: map[string]any{
 			SessionPurposeMetadataKey:          SessionPurposeAutomationExecution,
 			SessionPurposeWorkspaceMetadataKey: "workspace",
-			"navigation_hidden":                 true,
-			"automation_v2_occurrence_id":       "occ-999",
+			"navigation_hidden":                true,
+			"automation_v2_occurrence_id":      "occ-999",
 		},
 		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: "workspace"}},
 	}
@@ -97,8 +97,8 @@ func TestAutomationExecutionPurposeDurabilityAndIsolation(t *testing.T) {
 	changed.Metadata = map[string]any{
 		SessionPurposeMetadataKey:          SessionPurposeAutomationExecution,
 		SessionPurposeWorkspaceMetadataKey: "other",
-		"navigation_hidden":                 true,
-		"automation_v2_occurrence_id":       "occ-999",
+		"navigation_hidden":                true,
+		"automation_v2_occurrence_id":      "occ-999",
 	}
 	in := V3SessionMutationInput{SessionID: original.ID, Session: &changed, Kind: V3SessionMutationUpdateMetadata}
 	if err := s.guardAutomationSessionMutation(&in); !errors.Is(err, ErrAutomationConflict) {

@@ -1688,3 +1688,8 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
 - **Validation:**
   - Added unit and component tests in `web/src/features/desktop/tools/automations/automation-v2-sidecar.spec.tsx`.
   - Updated unit tests in `swarmd/internal/store/pebble/session_purpose_test.go` and `web/src/features/desktop/state/desktop-v3-session-visibility.spec.ts`. All tests pass.
+
+### Automation store formatting sync (2026-09-14)
+
+- Formatted `swarmd/internal/store/pebble/automation_v2_execution.go` and `swarmd/internal/store/pebble/session_purpose_test.go` with standard `gofmt` to align struct tags and map literals in compliance with precommit checks.
+- Validation: `gofmt -l` clean, `check-precommit.sh` passed.
