@@ -23,7 +23,12 @@ import { compactDesktopV3Session } from "../../session-v3/compact-session-flow";
 import { formatContextWindow } from "../services/model-options";
 
 interface DesktopPlanAgentSidecarProps {
-  parentSessionId: string;
+  parentSessionId?: string;
+  directSessionId?: string;
+  title?: string;
+  headerActions?: React.ReactNode;
+  sidebarInline?: boolean;
+  onSessionResolved?: (sessionId: string) => void;
   permission?: DesktopPermissionRecord;
   document?: StructuredPlanDocument;
   automation?: { automation_id: string; automation_revision: number; workspace_id: string; automation_v2?: boolean };
@@ -46,6 +51,15 @@ interface SidechatState {
 }
 
 const EMPTY_SIDECHAT: SidechatState = { sessionId: "", messages: [], modelLabel: "", runtimeSwarmId: "", busy: false, error: null };
+
+const EMPTY_RENDERED_MESSAGES = {
+  committed: [],
+  pendingUser: [],
+  liveRuns: [],
+  runIntents: [],
+  currentRunIntent: null,
+  latestRunIntent: null,
+};
 
 type SpeechRecognitionLike = {
   continuous: boolean;
@@ -90,6 +104,11 @@ function pendingProposalRevision(permission: DesktopPermissionRecord, document: 
 
 export function DesktopPlanAgentSidecar({
   parentSessionId,
+  directSessionId,
+  title,
+  headerActions,
+  sidebarInline = false,
+  onSessionResolved,
   permission,
   document,
   automation,
@@ -115,7 +134,7 @@ export function DesktopPlanAgentSidecar({
     (state) => sidechat.sessionId ? state.messagesBySession[sidechat.sessionId]?.items ?? [] : [],
     (left, right) => left === right,
   );
-  const rendered = useDesktopV3CacheSelector((state) => selectRenderedSessionMessages(state, sidechat.sessionId));
+  const rendered = useDesktopV3CacheSelector((state) => sidechat.sessionId ? selectRenderedSessionMessages(state, sidechat.sessionId) : EMPTY_RENDERED_MESSAGES);
   const rawUsage = useDesktopV3CacheSelector((state) => sidechat.sessionId ? state.usageBySession[sidechat.sessionId] : undefined);
   const contextWindow = Number((rawUsage as Record<string, unknown> | undefined)?.context_window ?? (rawUsage as Record<string, unknown> | undefined)?.contextWindow ?? 0);
   const remainingTokens = Number((rawUsage as Record<string, unknown> | undefined)?.remaining_tokens ?? (rawUsage as Record<string, unknown> | undefined)?.remainingTokens ?? 0);
@@ -154,22 +173,35 @@ export function DesktopPlanAgentSidecar({
     }));
     void (async () => {
       try {
-        const result = await ensureSystemSidechat({
-          parentSessionId,
-          kind: "plan",
-          ...(automation ? { automation } : { permissionId: permission?.id, planId: document?.id || permission?.id, planRevision: proposalRevision }),
-        });
+        let activeSessionId = directSessionId;
+        let activeModel = modelLabel;
+        let activeRuntimeSwarmId = "";
+        if (!activeSessionId) {
+          if (!parentSessionId) {
+            if (!cancelled) setSidechat((current) => ({ ...current, busy: false }));
+            return;
+          }
+          const result = await ensureSystemSidechat({
+            parentSessionId,
+            kind: "plan",
+            ...(automation ? { automation } : { permissionId: permission?.id, planId: document?.id || permission?.id, planRevision: proposalRevision }),
+          });
+          activeSessionId = result.sessionId;
+          activeModel = result.model || modelLabel;
+          activeRuntimeSwarmId = result.runtimeSwarmId;
+          onSessionResolved?.(activeSessionId);
+        }
         if (cancelled) return;
-        setSidechat((current) => ({ ...current, sessionId: result.sessionId, modelLabel: result.model || modelLabel, runtimeSwarmId: result.runtimeSwarmId, busy: false, error: null }));
+        setSidechat((current) => ({ ...current, sessionId: activeSessionId, modelLabel: activeModel, runtimeSwarmId: activeRuntimeSwarmId, busy: false, error: null }));
         const controller = await requireDesktopV3RealtimeControllerReady();
-        await controller.ensureSessionConnected(result.sessionId);
-        await refresh(result.sessionId);
+        await controller.ensureSessionConnected(activeSessionId);
+        await refresh(activeSessionId);
       } catch (cause) {
         if (!cancelled) setSidechat((current) => ({ ...current, busy: false, error: cause instanceof Error ? cause.message : "Unable to open Plan." }));
       }
     })();
     return () => { cancelled = true; };
-  }, [document?.id, modelLabel, parentSessionId, permission?.id, proposalRevision, refresh, automationKey]);
+  }, [directSessionId, document?.id, modelLabel, parentSessionId, permission?.id, proposalRevision, refresh, automationKey, onSessionResolved]);
 
   const resizeTextarea = useCallback((textarea: HTMLTextAreaElement | null) => {
     if (!textarea) return;
@@ -243,7 +275,7 @@ export function DesktopPlanAgentSidecar({
     committed: rendered.committed.length > 0 ? rendered.committed : sidechat.messages.map(chatMessageToMessageSnapshot),
   }), [rendered, sidechat.messages]);
   const { scrollContainerRef, contentRef, isAtBottom, scrollToBottom } = useDesktopV3StickyBottomScroll({
-    resetKey: sidechat.sessionId || `plan:${parentSessionId}`,
+    resetKey: sidechat.sessionId || (directSessionId ? `direct:${directSessionId}` : `plan:${parentSessionId}`),
     itemCount: renderItems.length,
   });
 
@@ -301,7 +333,9 @@ export function DesktopPlanAgentSidecar({
 
   return (
     <div
-      className={embedded
+      className={sidebarInline
+        ? "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-surface)]"
+        : embedded
         ? modalInline
           ? "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-surface)]"
           : mobileInline
@@ -314,11 +348,13 @@ export function DesktopPlanAgentSidecar({
         : "fixed inset-0 z-50 bg-black/30 md:left-auto md:w-[28rem]"}
       id={mobileInline ? "mobile-plan-agent-panel" : undefined}
       data-testid="desktop-plan-agent-sidecar"
-      data-embedded={embedded ? "true" : "false"}
+      data-embedded={embedded || sidebarInline ? "true" : "false"}
       data-mobile-inline={mobileInline ? "true" : undefined}
       data-modal-inline={modalInline ? "true" : undefined}
     >
-      <aside className={embedded
+      <aside className={sidebarInline
+        ? "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-surface)]"
+        : embedded
         ? modalInline
           ? "flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-surface)]"
           : mobileInline
@@ -326,10 +362,12 @@ export function DesktopPlanAgentSidecar({
             : "absolute inset-x-0 bottom-0 flex h-[88dvh] max-h-[88dvh] min-h-0 min-w-0 flex-col overflow-hidden rounded-t-2xl bg-[var(--app-surface)] shadow-2xl min-[1300px]:static min-[1300px]:h-auto min-[1300px]:max-h-none min-[1300px]:flex-1 min-[1300px]:rounded-none min-[1300px]:shadow-none"
         : "absolute inset-x-0 bottom-0 flex max-h-[88vh] flex-col rounded-t-2xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-2xl md:inset-y-0 md:right-0 md:max-h-none md:w-[28rem] md:rounded-none md:rounded-l-2xl"}>
         <header className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] px-4 py-3 bg-[var(--app-surface)]">
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <span className="inline-block size-2 rounded-full bg-[var(--app-primary)]" />
-            <div className="font-semibold text-sm text-[var(--app-text)]">
-              {modalInline
+            <div className="truncate font-semibold text-sm text-[var(--app-text)]">
+              {title
+                ? title
+                : modalInline
                 ? "Swarm Plan AI Sidebar"
                 : automation?.automation_v2
                   ? "Talk to Swarm to help optimize this automation"
@@ -340,13 +378,16 @@ export function DesktopPlanAgentSidecar({
                       : "Plan"}
             </div>
           </div>
-          {modalInline ? (
-            <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)]">
-              Live Editing
-            </span>
-          ) : onClose ? (
-            <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button>
-          ) : null}
+          <div className="flex shrink-0 items-center gap-1.5">
+            {headerActions}
+            {modalInline ? (
+              <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)]">
+                Live Editing
+              </span>
+            ) : onClose ? (
+              <Button type="button" variant="ghost" size="sm" className={embedded ? "h-9 w-9 px-0 min-[1300px]:hidden" : "h-9 w-9 px-0"} aria-label="Close Plan" onClick={onClose}><X size={18} /></Button>
+            ) : null}
+          </div>
         </header>
         <div className="relative min-h-0 flex-1 overflow-hidden">
           <div ref={scrollContainerRef} className="h-full min-h-0 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain p-4 [-webkit-overflow-scrolling:touch] [scrollbar-gutter:stable]" data-testid="desktop-plan-agent-scroller" tabIndex={0}>
@@ -358,10 +399,12 @@ export function DesktopPlanAgentSidecar({
                     ? 'Discuss instructions, timing and recorded work here. Proposed changes do not alter the active schedule until you explicitly accept them; admitted runs retain their accepted instructions.'
                     : automation
                       ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.'
-                      : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}
+                      : directSessionId
+                        ? 'Talk to Swarm about automations. Propose instructions, timing, or ask about recurring tasks.'
+                        : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}
               </div>
               {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />Opening durable Plan sidechat…</div> : null}
-              <AutomationInstructionContext.Provider value={automation ? { ...automation, parentSessionId } : null}>
+              <AutomationInstructionContext.Provider value={automation && (parentSessionId || sidechat.sessionId) ? { ...automation, parentSessionId: parentSessionId || sidechat.sessionId } : null}>
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled index={index} />)}
               </AutomationInstructionContext.Provider>
               {sidechat.error ? <div role="alert" className="rounded-lg border border-[var(--app-danger)] p-3 text-sm text-[var(--app-danger)]">{sidechat.error}</div> : null}
@@ -384,7 +427,7 @@ export function DesktopPlanAgentSidecar({
                       resizeTextarea(event.target);
                     }}
                     onKeyDown={handleComposerKeyDown}
-                    placeholder={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation…' : automation?.automation_v2 ? 'Ask Swarm about this automation' : 'Talk to your plan'}
+                    placeholder={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation…' : automation?.automation_v2 ? 'Ask Swarm about this automation' : directSessionId ? 'Talk to Swarm about automations…' : 'Talk to your plan'}
                     aria-label={modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance' ? 'Ask Swarm to change this automation' : automation?.automation_v2 ? 'Automation optimization message' : 'Plan message'}
                     className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
                     rows={1}

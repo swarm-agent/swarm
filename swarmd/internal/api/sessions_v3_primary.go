@@ -918,6 +918,7 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		}
 		session.Metadata[pebblestore.SessionPurposeMetadataKey] = req.Purpose
 		session.Metadata[pebblestore.SessionPurposeWorkspaceMetadataKey] = binding.SourceWorkspaceID
+		session.Metadata["navigation_hidden"] = true
 	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)

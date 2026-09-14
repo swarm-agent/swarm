@@ -22,8 +22,7 @@ import {
   type AutomationV2OccurrenceDeliverable,
 } from '../../state/desktop-automation-v2-api'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
-import { AutomationConversations } from './automation-conversations'
-import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
+import { AutomationV2Sidecar } from './automation-v2-sidecar'
 import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
 
 export function AutomationV2Workspace({
@@ -46,6 +45,9 @@ export function AutomationV2Workspace({
   const input = { action: 'list' as const, workspace_id: workspaceId, cursor }
   const page = useAutomationV2Page(input)
   const records = page?.data?.records ?? []
+  const selectedRecord = useMemo(() => {
+    return records.find((r) => r.session_id === selected) ?? (records.length > 0 ? records[0] : null)
+  }, [records, selected])
 
   useEffect(() => {
     if (initialSessionId) {
@@ -54,9 +56,9 @@ export function AutomationV2Workspace({
       setSelected(records[0].session_id)
     }
   }, [initialSessionId, records, selected])
-  return <div className="flex min-h-full min-w-0 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
+  return <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
     <header className="flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3"><div className="flex min-w-0 items-center gap-3"><RefreshCcw size={16} className="text-[var(--app-primary)]" /><h1 className="font-semibold">Automations</h1><span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span></div><Button size="sm" onClick={() => setCreateRequest(n => n + 1)}><Plus size={15} />Add automation</Button></header>
-    <div className="flex min-w-0 flex-1 flex-col xl:flex-row"><main className="min-w-0 flex-1 space-y-5 p-5 sm:p-8">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden"><main className="min-w-0 flex-1 space-y-5 p-5 sm:p-8 overflow-y-auto">
       <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">Accepted recurring plans</h2><Button variant="ghost" size="sm" onClick={() => void desktopAutomationV2.refresh(input)}>Refresh automations</Button></div>
       <p className="text-xs text-[var(--app-text-muted)]">Only explicitly accepted V2 plans appear here. Legacy records are retained but cannot execute.</p>
       {(!page || page.loading || page.stale) && <p role="status">{page?.stale && page.data ? 'Updating automation state…' : 'Loading automations…'}</p>}
@@ -65,7 +67,7 @@ export function AutomationV2Workspace({
       {page?.data && !page.loading && !page.stale && !records.length && <p className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center text-[var(--app-text-muted)]">No accepted automations on this page. Start a conversation to propose one.</p>}
       <div className="flex gap-2">{cursor && <Button variant="outline" size="sm" onClick={() => setCursor(undefined)}>First page</Button>}{page?.data?.next_cursor && <Button variant="outline" size="sm" disabled={page.loading || page.stale} onClick={() => setCursor(page.data?.next_cursor)}>More automations</Button>}</div>
       {selected && <AutomationV2Detail key={selected} workspaceId={workspaceId} sessionId={selected} onChat={setSession} workspaceSlug={workspaceSlug} />}
-    </main><AutomationConversations workspaceId={workspaceId} workspacePath={workspacePath} selected={session} onSelect={setSession} createRequest={createRequest} /></div>
+    </main><aside aria-label="Automations Assistant" className="flex h-full w-full min-h-[420px] flex-col border-t border-[var(--app-border)] bg-[var(--app-surface)] xl:w-[400px] xl:max-w-[400px] xl:shrink-0 xl:border-t-0 xl:border-l"><AutomationV2Sidecar workspaceId={workspaceId} workspacePath={workspacePath} selectedAutomation={selectedRecord} activeSessionId={session} onSelectSession={setSession} createRequest={createRequest} /></aside></div>
   </div>
 }
 // Persisted scheduling handoff survives permission removal, navigation and reload.
@@ -91,7 +93,6 @@ export function AutomationV2Detail({
   const [timezone, setTimezone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cursor, setCursor] = useState<string>()
   const [editing, setEditing] = useState(false)
-  const [optimizing, setOptimizing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const lock = useRef(false)
@@ -252,8 +253,7 @@ export function AutomationV2Detail({
     )}
     </div>
     {record && <div className="space-y-3 border-t border-[var(--app-border)]/60 p-3">
-      <Button variant="outline" size="sm" className="h-9 w-full rounded-xl text-xs" disabled={disabled} onClick={() => setOptimizing(v => !v)} aria-expanded={optimizing}>Optimize with Swarm</Button>
-      {optimizing && <DesktopPlanAgentSidecar parentSessionId={sessionId} automation={{ automation_v2: true, automation_id: record.automation_id, automation_revision: record.revision, workspace_id: workspaceId }} embedded mobileInline onClose={() => setOptimizing(false)} />}
+      <Button variant="outline" size="sm" className="h-9 w-full rounded-xl text-xs" disabled={disabled} onClick={() => onChat?.(sessionId)}>Optimize with Swarm</Button>
       <details><summary className={disclosure}>More controls</summary><div className="mt-3 grid gap-2">
         {onChat && <Button size="sm" variant="ghost" onClick={() => onChat(sessionId)}>Open conversation</Button>}
         <Button size="sm" variant="outline" disabled={disabled || record.cancelled} onClick={() => void control('cancel_future')}>Cancel future runs</Button><Button size="sm" variant="outline" disabled={disabled} onClick={() => void control('cancel_all')}>Cancel future & in-flight work</Button>

@@ -20,6 +20,9 @@ func TestAutomationManagementPurposeDurabilityAndIsolation(t *testing.T) {
 	if err := s.CreateSession(original); err != nil {
 		t.Fatal(err)
 	}
+	if !V3SessionNavigationHidden(original) {
+		t.Fatal("expected V3SessionNavigationHidden true for management")
+	}
 	changed := original
 	changed.Metadata = map[string]any{SessionPurposeMetadataKey: SessionPurposeAutomationManagement, SessionPurposeWorkspaceMetadataKey: "other"}
 	in := V3SessionMutationInput{SessionID: original.ID, Session: &changed, Kind: V3SessionMutationUpdateMetadata}

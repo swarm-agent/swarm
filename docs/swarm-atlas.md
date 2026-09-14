@@ -1671,3 +1671,20 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
 - **Tool runtime integration (`tool/runtime.go`, `tool/runtime_manage_artifact.go`):** Extended `tool.Runtime` with `SetSVGRasterizer` and auto-wires the rasterizer when `SetHTMLCaptureRenderer` receives a compatible renderer. In `executeManageArtifact` for `generate_video`, SVG images resolved from workspace files, data URIs, or source artifacts are rasterized prior to dispatching provider calls.
 - **Daemon startup wiring (`runtime/daemon.go`):** Connected `htmlcapture.ChromedpRenderer` as the `SVGRasterizer` on both `toolRuntime` and `videogen.Service`.
 - **Validation:** Added unit tests in `swarmd/internal/htmlcapture/svg_test.go` (`TestChromedpRendererRasterizeSVGEmpty`, `TestChromedpRendererRasterizeSVGUnavailable`, `TestChromedpRendererRasterizeSVGWithSystemChrome`), `swarmd/internal/videogen/service_test.go` (`TestGenerateGoogleVeoVideoWithImageInput` auto-rasterization check with `fakeSVGRasterizer`), and `swarmd/internal/tool/runtime_manage_artifact_video_test.go` (`TestManageArtifactGenerateVideoWithSVGRasterizerAutoRasterizesToPNG`). All tests pass.
+
+### Full-Height Automation Plan Sidecar and Session Isolation (2026-09-14)
+
+- **Full-height plan sidecar in Automations workspace (`web/src/features/desktop/tools/automations/automation-v2-sidecar.tsx`, `automation-v2-workspace.tsx`):**
+  - Replaced legacy `AutomationConversations` with `AutomationV2Sidecar` rendering full-height `DesktopPlanAgentSidecar` (`sidebarInline`, `embedded`).
+  - Sidebar is immediately ready to chat by default with composer mounted and active (no click barrier or empty state).
+  - Removed awkward halfway-down inline sidecar from `AutomationV2Detail`; "Optimize with Swarm" routes directly to the persistent right plan sidecar.
+  - Added prior session switcher dropdown in sidecar header with "+ New" chat creation, allowing switching between current automation sidechat and prior conversations without leaving the view.
+  - Extended `DesktopPlanAgentSidecar` with `directSessionId`, `title`, `headerActions`, and `sidebarInline` support.
+- **Fail-closed navigation hiding across frontend and backend:**
+  - In `swarmd/internal/store/pebble/session_workset.go`, `V3SessionNavigationHidden` now recognizes `SessionPurposeAutomationManagement`, `automation_v2_optimization`, `automation_v2_parent_id`, and `automation_review_id`.
+  - In `swarmd/internal/store/pebble/session_recent_index.go`, general discovery queries (`AutomationManagementWorkspaceID == ""`) explicitly exclude automation management sessions from the left navigation sidebar.
+  - In `swarmd/internal/api/sessions_v3_primary.go`, session creation with purpose `automation_management` automatically sets `session.Metadata["navigation_hidden"] = true`.
+  - In `web/src/features/desktop/state/desktop-v3-session-visibility.ts`, `isDesktopV3NavigationHiddenSession` checks all automation purpose, sidechat, and optimization markers.
+- **Validation:**
+  - Added unit and component tests in `web/src/features/desktop/tools/automations/automation-v2-sidecar.spec.tsx`.
+  - Updated unit tests in `swarmd/internal/store/pebble/session_purpose_test.go` and `web/src/features/desktop/state/desktop-v3-session-visibility.spec.ts`. All tests pass.

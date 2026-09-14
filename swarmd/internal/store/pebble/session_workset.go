@@ -512,7 +512,16 @@ func V3SessionNavigationHidden(session SessionSnapshot) bool {
 	if strings.EqualFold(strings.TrimSpace(lineageKind), "system_sidechat") {
 		return true
 	}
-	if purpose, _ := session.Metadata[SessionPurposeMetadataKey].(string); strings.EqualFold(strings.TrimSpace(purpose), SessionPurposeAutomationExecution) {
+	if purpose, _ := session.Metadata[SessionPurposeMetadataKey].(string); strings.EqualFold(strings.TrimSpace(purpose), SessionPurposeAutomationExecution) || strings.EqualFold(strings.TrimSpace(purpose), SessionPurposeAutomationManagement) {
+		return true
+	}
+	if opt, ok := session.Metadata["automation_v2_optimization"].(bool); ok && opt {
+		return true
+	}
+	if parentID, _ := session.Metadata["automation_v2_parent_id"].(string); strings.TrimSpace(parentID) != "" {
+		return true
+	}
+	if reviewID, _ := session.Metadata["automation_review_id"].(string); strings.TrimSpace(reviewID) != "" {
 		return true
 	}
 	if occurrenceID, _ := session.Metadata["automation_v2_occurrence_id"].(string); strings.TrimSpace(occurrenceID) != "" {

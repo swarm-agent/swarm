@@ -541,7 +541,7 @@ export function selectDesktopToolActivities(
 }
 
 export function selectSessionRunIntents(state: DesktopV3CacheState, sessionId: string): V3SessionRunIntent[] {
-  return Object.values(state.runIntentsBySession[sessionId] ?? {}).sort((left, right) => {
+  return Object.values(state.runIntentsBySession?.[sessionId] ?? {}).sort((left, right) => {
     const leftSeq = typeof left.event_seq === 'number' ? left.event_seq : 0
     const rightSeq = typeof right.event_seq === 'number' ? right.event_seq : 0
     if (leftSeq !== rightSeq) return leftSeq - rightSeq
@@ -585,7 +585,7 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
     pendingUser: selectPendingUserMessages(state, sessionId),
     liveRuns: selectLiveRuns(state, sessionId),
     runIntents,
-    currentRunIntent: state.currentRunIntentBySession[sessionId],
+    currentRunIntent: state.currentRunIntentBySession?.[sessionId] ?? null,
     latestRunIntent: runIntents[runIntents.length - 1],
   }
 }

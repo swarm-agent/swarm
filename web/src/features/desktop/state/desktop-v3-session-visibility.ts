@@ -53,6 +53,9 @@ export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | un
     || metadataBoolean(metadata, 'system_sidechat')
     || metadataString(metadata, 'lineage_kind') === 'system_sidechat'
     || Boolean(metadataString(metadata, 'automation_v2_occurrence_id'))
+    || Boolean(metadataString(metadata, 'automation_v2_parent_id'))
+    || metadataBoolean(metadata, 'automation_v2_optimization')
+    || Boolean(metadataString(metadata, 'automation_review_id'))
 }
 
 export function isDesktopV3NavigationHiddenRecord(record: SessionCacheRecord | undefined): boolean {

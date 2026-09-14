@@ -93,7 +93,7 @@ export const desktopAutomationV2 = new DesktopAutomationV2Runtime()
 export function useAutomationV2Page(input: AutomationV2Read) {
   const key = automationV2PageKey(input)
   const stable = useMemo(() => input, [key])
-  const page = useDesktopV3CacheSelector(state => state.automationV2Pages[key])
+  const page = useDesktopV3CacheSelector(state => state.automationV2Pages?.[key])
   useEffect(() => desktopAutomationV2.acquire(stable).release, [stable])
   return page
 }
