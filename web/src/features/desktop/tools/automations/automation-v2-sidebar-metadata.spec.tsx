@@ -12,6 +12,8 @@ import {
   AutomationSidebarSummaryBadge,
   AutomationSidebarCompactCard,
   AutomationSidebarCompactCardView,
+  AutomationSidebarExpandedContainerView,
+  formatAutomationHeadline,
 } from './automation-v2-sidebar-metadata'
 import {
   sidebarVisibleGroupNodes,
@@ -258,8 +260,7 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
     />
   )
   assert.match(compactMarkup, /data-testid="automation-sidebar-compact-card"/)
-  assert.match(compactMarkup, /Automations Overview/)
-  assert.match(compactMarkup, /\(8\)/)
+  assert.match(compactMarkup, /4 automations today/)
   assert.match(compactMarkup, /data-testid="compact-running-dot"/)
   assert.match(compactMarkup, /1 running/)
   assert.match(compactMarkup, /4 ran today · 2 upcoming/)
@@ -327,6 +328,7 @@ test('compact card renders alert pill and warning icon when alerts are present',
   assert.match(alertMarkup, /2 alerts/)
   assert.match(alertMarkup, /bg-\[var\(--app-warning-bg\)\]/)
   assert.match(alertMarkup, /2 alerts · 3 ran today · 1 upcoming/)
+  assert.match(alertMarkup, /3 automations today/)
 
   const pendingMarkup = renderToStaticMarkup(
     <AutomationSidebarCompactCardView
@@ -378,4 +380,94 @@ test('automation metadata multi-row card renders 3-row layout with distinct sche
   assert.match(markup, /Next:/)
   // Verify clean separation into flex rows
   assert.match(markup, /flex-col gap-1/)
+})
+
+test('formatAutomationHeadline states running sessions, automations today, or total counts cleanly', () => {
+  // 150 running sessions
+  assert.equal(formatAutomationHeadline({ running: 150, scheduled: 0, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 running sessions')
+  assert.equal(formatAutomationHeadline({ running: 1, scheduled: 0, paused: 0, pending: 0, total: 1, runsToday: 0, upcoming: 0, alerts: 0 }, 1), '1 running session')
+
+  // 150 automations today
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 automations today')
+  assert.equal(formatAutomationHeadline({ running: 5, scheduled: 145, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 automations today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 1, paused: 0, pending: 0, total: 1, runsToday: 1, upcoming: 0, alerts: 0 }, 1), '1 automation today')
+
+  // Fallback to total / rootCount as automations today
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 automations today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 3), '3 automations today')
+
+  // Empty fallback
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 0), 'Automations')
+})
+
+test('expanded container holds automation sessions with collapse controls and headline', () => {
+  let collapsed = false
+  let navigated = false
+
+  const expandedMarkup = renderToStaticMarkup(
+    <AutomationSidebarExpandedContainerView
+      counts={{ running: 2, scheduled: 3, paused: 0, pending: 0, total: 5, runsToday: 5, upcoming: 1, alerts: 0 }}
+      rootCount={5}
+      onCollapse={() => { collapsed = true }}
+      onOpenAutomations={() => { navigated = true }}
+    >
+      <div data-testid="test-session-child">Session 1</div>
+      <div data-testid="test-session-child">Session 2</div>
+    </AutomationSidebarExpandedContainerView>
+  )
+
+  // Verifies container exists
+  assert.match(expandedMarkup, /data-testid="automation-sidebar-expanded-container"/)
+  // Verifies headline
+  assert.match(expandedMarkup, /5 automations today/)
+  // Verifies running indicator
+  assert.match(expandedMarkup, /2 running/)
+  assert.match(expandedMarkup, /data-testid="expanded-running-dot"/)
+  // Verifies top collapse button
+  assert.match(expandedMarkup, /data-testid="expanded-collapse-button"/)
+  assert.match(expandedMarkup, /Collapse/)
+  // Verifies bottom collapse button in footer
+  assert.match(expandedMarkup, /data-testid="expanded-bottom-collapse-button"/)
+  assert.match(expandedMarkup, /Collapse to summary/)
+  // Verifies View link/button
+  assert.match(expandedMarkup, /data-testid="expanded-view-button"/)
+  assert.match(expandedMarkup, /All automations \(5\) →/)
+  // Verifies children rendered inside container
+  assert.match(expandedMarkup, /Session 1/)
+  assert.match(expandedMarkup, /Session 2/)
+
+  // Direct element test: top collapse button click
+  const element = AutomationSidebarExpandedContainerView({
+    counts: { running: 0, scheduled: 3, paused: 0, pending: 0, total: 3, runsToday: 3, upcoming: 0, alerts: 0 },
+    rootCount: 3,
+    onCollapse: () => { collapsed = true },
+    onOpenAutomations: () => { navigated = true },
+    children: <div>Child</div>,
+  })
+  assert.ok(element)
+  assert.equal((element as any).type, 'div')
+
+  // Top header collapse button
+  collapsed = false
+  const header = (element as any).props.children[0]
+  const headerControls = header.props.children[1]
+  const topCollapseBtn = headerControls.props.children[3]
+  assert.equal(topCollapseBtn.props['data-testid'], 'expanded-collapse-button')
+  topCollapseBtn.props.onClick({ stopPropagation() {} })
+  assert.equal(collapsed, true)
+
+  // Footer bottom collapse button
+  collapsed = false
+  const footer = (element as any).props.children[2]
+  const bottomCollapseBtn = footer.props.children[0]
+  assert.equal(bottomCollapseBtn.props['data-testid'], 'expanded-bottom-collapse-button')
+  bottomCollapseBtn.props.onClick({ stopPropagation() {} })
+  assert.equal(collapsed, true)
+
+  // Top View button
+  navigated = false
+  const topViewBtn = headerControls.props.children[2]
+  assert.equal(topViewBtn.props['data-testid'], 'expanded-view-button')
+  topViewBtn.props.onClick({ stopPropagation() {} })
+  assert.equal(navigated, true)
 })

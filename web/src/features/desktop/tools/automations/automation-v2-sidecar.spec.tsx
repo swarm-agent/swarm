@@ -47,7 +47,7 @@ test('AutomationV2Sidecar renders plan-like sidebar ready to chat by default', (
   const markup = renderToStaticMarkup(
     <AutomationV2Sidecar
       workspaceId="ws-test"
-      workspacePath="/home/roy/work"
+      workspacePath="/path/to/work"
       selectedAutomation={sampleRecord}
     />
   )
@@ -76,7 +76,7 @@ test('AutomationV2Sidecar handles direct session selection cleanly', () => {
   const markup = renderToStaticMarkup(
     <AutomationV2Sidecar
       workspaceId="ws-test"
-      workspacePath="/home/roy/work"
+      workspacePath="/path/to/work"
       activeSessionId="custom-prior-session-1"
     />
   )
@@ -131,7 +131,7 @@ test('AutomationV2Workspace integrates full-height sidebar and eliminates halfwa
   const markup = renderToStaticMarkup(
     <AutomationV2Workspace
       workspaceId="ws-test"
-      workspacePath="/home/roy/work"
+      workspacePath="/path/to/work"
       workspaceName="Test Workspace"
       initialSessionId={sampleRecord.session_id}
     />
@@ -182,7 +182,7 @@ test('AutomationV2Sidecar displays running status badge and today/upcoming run c
   const markup = renderToStaticMarkup(
     <AutomationV2Sidecar
       workspaceId="ws-test"
-      workspacePath="/home/roy/work"
+      workspacePath="/path/to/work"
       selectedAutomation={sampleRecord}
     />
   )

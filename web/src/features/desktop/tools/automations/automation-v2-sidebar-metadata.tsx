@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, ChevronDown, Clock3, RefreshCcw } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronUp, Clock3, RefreshCcw } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
@@ -580,6 +580,26 @@ export function AutomationV2SidebarSummaryIndicator({
 
 export const AutomationSummaryIndicator = AutomationV2SidebarSummaryIndicator
 
+export function formatAutomationHeadline(counts: AutomationSummaryCounts, rootCount: number): string {
+  if (counts.running > 0 && counts.runsToday === 0) {
+    return `${counts.running} running session${counts.running === 1 ? '' : 's'}`
+  }
+  if (counts.runsToday > 0 && counts.running >= counts.runsToday) {
+    return `${counts.running} running session${counts.running === 1 ? '' : 's'}`
+  }
+  const todayCount = counts.runsToday > 0
+    ? counts.runsToday
+    : (counts.upcoming > 0 ? counts.upcoming : (counts.total || rootCount))
+  if (todayCount > 0) {
+    return `${todayCount} automation${todayCount === 1 ? '' : 's'} today`
+  }
+  const fallback = counts.total || rootCount
+  if (fallback > 0) {
+    return `${fallback} automation${fallback === 1 ? '' : 's'}`
+  }
+  return 'Automations'
+}
+
 export function AutomationSidebarCompactCardView({
   counts,
   workspaceSlug,
@@ -594,9 +614,9 @@ export function AutomationSidebarCompactCardView({
   onOpenAutomations?: () => void
 }) {
   const isRunning = counts.running > 0
-  const activeCount = rootCount || counts.total
   const alertCount = (counts.alerts ?? 0) + (counts.pending ?? 0)
   const hasAlerts = alertCount > 0
+  const headline = formatAutomationHeadline(counts, rootCount)
 
   const runMetaParts: string[] = []
   if (counts.alerts && counts.alerts > 0) {
@@ -623,7 +643,7 @@ export function AutomationSidebarCompactCardView({
       data-testid="automation-sidebar-compact-card"
       role="button"
       tabIndex={0}
-      aria-label={`Automations overview: ${activeCount} automations, ${
+      aria-label={`${headline}, ${
         hasAlerts
           ? `${alertCount} alert${alertCount === 1 ? '' : 's'}`
           : isRunning
@@ -655,10 +675,7 @@ export function AutomationSidebarCompactCardView({
             />
           )}
           <span className="truncate text-[11px] font-semibold text-[var(--app-text)]">
-            Automations Overview
-          </span>
-          <span className="shrink-0 text-[10px] text-[var(--app-text-muted)] tabular-nums">
-            ({activeCount})
+            {headline}
           </span>
         </span>
         <div className="flex items-center gap-1 shrink-0">
@@ -769,5 +786,175 @@ export function AutomationSidebarCompactCard({
       onExpand={onExpand}
       onOpenAutomations={onOpenAutomations}
     />
+  )
+}
+
+export function AutomationSidebarExpandedContainerView({
+  counts,
+  workspaceSlug,
+  rootCount,
+  onCollapse,
+  onOpenAutomations,
+  children,
+}: {
+  counts: AutomationSummaryCounts
+  workspaceSlug?: string
+  rootCount: number
+  onCollapse: () => void
+  onOpenAutomations?: () => void
+  children: React.ReactNode
+}) {
+  const isRunning = counts.running > 0
+  const alertCount = (counts.alerts ?? 0) + (counts.pending ?? 0)
+  const hasAlerts = alertCount > 0
+  const headline = formatAutomationHeadline(counts, rootCount)
+
+  return (
+    <div
+      data-testid="automation-sidebar-expanded-container"
+      className="flex flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/30 p-2 text-left"
+    >
+      {/* Container Header */}
+      <div className="flex min-w-0 items-center justify-between gap-1.5 pb-1.5 border-b border-[var(--app-border)]/40">
+        <span className="flex min-w-0 items-center gap-1.5">
+          {hasAlerts ? (
+            <AlertTriangle
+              size={12}
+              className="shrink-0 text-[var(--app-warning)]"
+              aria-hidden="true"
+            />
+          ) : (
+            <RefreshCcw
+              size={12}
+              className={cn('shrink-0', isRunning ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]')}
+              aria-hidden="true"
+            />
+          )}
+          <span className="truncate text-[11px] font-semibold text-[var(--app-text)]">
+            {headline}
+          </span>
+        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {counts.alerts > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)]">
+              <AlertTriangle size={8} aria-hidden="true" />
+              <span>{counts.alerts} alert{counts.alerts === 1 ? '' : 's'}</span>
+            </span>
+          )}
+          {isRunning && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)]">
+              <span
+                data-testid="expanded-running-dot"
+                className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
+                aria-hidden="true"
+              />
+              <span>{counts.running} running</span>
+            </span>
+          )}
+          {onOpenAutomations ? (
+            <button
+              type="button"
+              data-testid="expanded-view-button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenAutomations()
+              }}
+              title="Open top-down Automations view"
+              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
+            >
+              View →
+            </button>
+          ) : workspaceSlug ? (
+            <a
+              href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+              data-testid="expanded-view-link"
+              onClick={(e) => {
+                e.stopPropagation()
+              }}
+              title="Open top-down Automations view"
+              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline"
+            >
+              View →
+            </a>
+          ) : null}
+          <button
+            type="button"
+            data-testid="expanded-collapse-button"
+            onClick={(e) => {
+              e.stopPropagation()
+              onCollapse()
+            }}
+            aria-label="Collapse automations to summary card"
+            title="Collapse automations to summary card"
+            className="inline-flex items-center gap-0.5 rounded px-1 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
+          >
+            <span>Collapse</span>
+            <ChevronUp size={11} className="shrink-0" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      {/* Container Body holding session cards */}
+      <div className="flex flex-col gap-1">
+        {children}
+      </div>
+
+      {/* Container Footer with bottom collapse button */}
+      <div className="flex items-center justify-between pt-1 border-t border-[var(--app-border)]/40 text-[9px] text-[var(--app-text-muted)]">
+        <button
+          type="button"
+          data-testid="expanded-bottom-collapse-button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onCollapse()
+          }}
+          aria-label="Collapse automations section"
+          title="Collapse automations section"
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
+        >
+          <ChevronUp size={10} className="shrink-0" aria-hidden="true" />
+          <span>Collapse to summary</span>
+        </button>
+        {onOpenAutomations ? (
+          <button
+            type="button"
+            onClick={onOpenAutomations}
+            title="Open top-down Automations view"
+            className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
+          >
+            All automations ({rootCount}) →
+          </button>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+export function AutomationSidebarExpandedContainer({
+  workspaceId,
+  workspaceSlug,
+  rootCount,
+  onCollapse,
+  onOpenAutomations,
+  children,
+}: {
+  workspaceId?: string
+  workspaceSlug?: string
+  rootCount: number
+  onCollapse: () => void
+  onOpenAutomations?: () => void
+  children: React.ReactNode
+}) {
+  const counts = useDesktopV3CacheSelector(state => selectAutomationSummaryCounts(state, workspaceId))
+  return (
+    <AutomationSidebarExpandedContainerView
+      counts={counts}
+      workspaceSlug={workspaceSlug}
+      rootCount={rootCount}
+      onCollapse={onCollapse}
+      onOpenAutomations={onOpenAutomations}
+    >
+      {children}
+    </AutomationSidebarExpandedContainerView>
   )
 }

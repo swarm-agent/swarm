@@ -70,7 +70,7 @@ import {
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
-import { AutomationSidebarCompactCard, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
+import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
 import { AutomationToolPage } from '../tools/pages/automation-tool-page'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -2592,6 +2592,71 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
               onOpenAutomations={input.onOpenAutomations}
             />
           ) : null
+        ) : isAutomationGroup ? (
+          <AutomationSidebarExpandedContainer
+            workspaceId={input.workspaceId}
+            workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined}
+            rootCount={rootCount}
+            onCollapse={() => input.onToggleGroupCollapsed(group.id)}
+            onOpenAutomations={input.onOpenAutomations}
+          >
+            <div className="grid gap-1">
+              {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
+                const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+                return (
+                  <div
+                    key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                    data-sidebar-task-group={taskCallId || undefined}
+                    className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+                  >
+                    {taskGroup.map((node) => (
+                      <SessionRow
+                        key={node.session.id}
+                        active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && input.routeAutomationSessionId === node.session.id)}
+                        now={input.now}
+                        session={node.session}
+                        workspaceSlug={input.workspaceSlug}
+                        depth={node.depth}
+                        childLabel={node.label}
+                        childAssignmentLabel={node.assignmentLabel}
+                        childKind={node.kind}
+                        agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                        agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                        compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                        pendingAction={input.pendingActions[node.session.id] ?? null}
+                        selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                        selectionGroup={group.id}
+                        selected={input.selectedRootIDs.has(node.session.id)}
+                        onSelect={input.onSelect}
+                        onEnterSelectionMode={input.onEnterSelectionMode}
+                        onToggleSelected={input.onToggleSelected}
+                        onPrefetch={input.onPrefetch}
+                        onToggleAgents={input.onToggleAgents}
+                        onTogglePinned={input.onTogglePinned}
+                        onArchive={input.onArchive}
+                        onRename={input.onRename}
+                        onOpenAutomations={input.onOpenAutomations}
+                      />
+                    ))}
+                  </div>
+                )
+              })}
+              {hasOverflow ? (
+                <div className="flex items-center gap-1.5 pt-0.5">
+                  <button
+                    type="button"
+                    className="flex flex-1 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    aria-label={overflowExpanded ? `Show fewer ${group.label} sessions` : `Show ${hiddenRootCount} more ${group.label} sessions`}
+                    aria-expanded={overflowExpanded}
+                    onClick={() => input.onToggleGroupOverflow(group.id)}
+                  >
+                    <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
+                    <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </AutomationSidebarExpandedContainer>
         ) : (
           <div className="grid gap-1">
             {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
