@@ -439,6 +439,7 @@ function SidebarAudioSoundBar({
           : 'border-[var(--app-border)] bg-[var(--app-bg)] hover:border-[var(--app-border-hover)] hover:bg-[var(--app-surface-hover)]'
       )}
       data-artifact-sidebar-sound-bar
+      data-artifact-soundbar-index={index}
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <button
@@ -470,7 +471,15 @@ function SidebarAudioSoundBar({
               <span className={cn('w-0.5 rounded-full bg-[var(--app-primary)] transition-all delay-100', isPlaying ? 'h-2 animate-pulse' : 'h-1 opacity-40')} />
             </div>
             <span className="block truncate text-[9px] text-[var(--app-text-subtle)]">
-              {artifact.status === 'staging' ? 'Generating…' : isPlaying ? 'Playing' : 'Ready · Click to play'}
+              {artifact.status === 'staging'
+                ? 'Generating…'
+                : artifact.status === 'failed' || artifact.status === 'unavailable' || failed
+                  ? 'Playback unavailable'
+                  : isPlaying
+                    ? 'Playing'
+                    : grouped
+                      ? `Iteration ${artifact.lineage?.iterationIndex || index + 1} · Click to play`
+                      : 'Ready · Click to play'}
             </span>
           </div>
         </a>

@@ -1642,20 +1642,27 @@ function ChatAudioSoundBar({
             <span className={cn("w-0.5 rounded-full bg-[var(--app-primary)] transition-all delay-200", isPlaying ? "h-1.5 animate-pulse" : "h-1 opacity-30")} />
           </div>
 
-          {onOpenViewer ? (
-            <button
-              type="button"
+          {onOpenViewer || href ? (
+            <a
+              href={href || "#"}
               onClick={(e) => {
-                e.stopPropagation();
-                onSelect();
-                onOpenViewer();
+                if (onOpenViewer) {
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSelect();
+                  onOpenViewer();
+                } else {
+                  e.stopPropagation();
+                  onSelect();
+                }
               }}
               className="grid size-6 place-items-center rounded text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
               aria-label={`Open ${vLabel} in viewer`}
               title="Open in full viewer"
             >
               <ExternalLink size={12} />
-            </button>
+            </a>
           ) : null}
         </div>
       </div>
