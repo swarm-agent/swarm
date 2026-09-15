@@ -1440,14 +1440,10 @@ export function DesktopV3ArtifactGallery({
                         {selectedVariants.map((artifact, index) => {
                           const active = selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected)
                           const vTitle = variantDisplayLabel(artifact, index)
-                          const vDesc = (artifact.description || artifact.collectionDescription || '').trim()
-                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-start gap-2 rounded-lg border px-2.5 py-2 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
-                            <span className="grid size-5 shrink-0 place-items-center rounded border border-current/20 font-mono text-[9px] mt-0.5">{artifact.lineage?.iterationIndex || index + 1}</span>
-                            <div className="min-w-0 flex-1">
-                              <span className="block font-semibold text-[11px] leading-snug break-words text-[var(--app-text)]">{vTitle}</span>
-                              {vDesc && vDesc !== vTitle ? <span className="mt-0.5 block line-clamp-2 text-[9px] leading-snug text-[var(--app-text-muted)] break-words">{vDesc}</span> : null}
-                            </div>
-                            <span className="shrink-0 text-[9px] opacity-75 mt-0.5">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : active ? 'Viewing' : 'Ready'}</span>
+                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
+                            <span className="grid size-5 shrink-0 place-items-center rounded border border-current/20 font-mono text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span>
+                            <span className="min-w-0 flex-1 truncate font-semibold text-[11px] text-[var(--app-text)]">{vTitle}</span>
+                            <span className="shrink-0 text-[9px] opacity-75">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : active ? 'Viewing' : 'Ready'}</span>
                           </button>
                         })}
                       </div>
@@ -1543,13 +1539,20 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video key={`${previewURL}:${previewRetry}`} src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player onError={() => setPreviewError('The browser could not decode or load this video.')} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && (selected.mediaType.startsWith('audio/') || selected.kind === 'audio') && previewURL ? (
                     <div className="grid size-full min-h-0 place-items-center bg-[var(--app-surface)] p-6 sm:p-10 rounded-lg border border-[var(--app-border)] shadow-sm">
-                      <div className="flex w-full max-w-lg flex-col items-center gap-4 text-center">
+                      <div className="flex w-full max-w-xl flex-col items-center gap-5 text-center">
                         <div className="grid size-16 place-items-center rounded-2xl bg-[var(--app-primary-soft)] text-[var(--app-primary)] shadow-inner">
                           <Music className="size-8" aria-hidden="true" />
                         </div>
-                        <div className="min-w-0 max-w-full">
-                          <h3 className="truncate text-sm font-semibold">{selected.label || selected.filename || 'Audio clip'}</h3>
-                          {selected.description ? <p className="mt-1 line-clamp-2 text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}
+                        <div className="min-w-0 w-full">
+                          <h3 className="text-base font-semibold text-[var(--app-text)]">{selected.label || selected.filename || 'Audio clip'}</h3>
+                          {(selected.description || selected.collectionDescription) ? (
+                            <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 text-left shadow-2xs">
+                              <span className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)] mb-1.5">Prompt</span>
+                              <p className="text-xs leading-relaxed text-[var(--app-text)] select-text whitespace-pre-wrap break-words">
+                                {selected.description || selected.collectionDescription}
+                              </p>
+                            </div>
+                          ) : null}
                         </div>
                         <audio
                           key={`${previewURL}:${previewRetry}`}

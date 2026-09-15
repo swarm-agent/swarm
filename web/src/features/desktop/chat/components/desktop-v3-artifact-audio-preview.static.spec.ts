@@ -69,11 +69,12 @@ test('chat markdown ManageArtifactCard renders variations selector for multi-var
   assert.match(markdown, /isAudioGeneration \? <Music size=\{14\} \/> : <Sparkles size=\{14\} \/>/)
 })
 
-test('artifact gallery renders non-truncated iteration titles and descriptions in generation group', async () => {
+test('artifact gallery renders clean titles on left generation group and full readable prompt in center', async () => {
   const gallery = await readFile(galleryURL, 'utf8')
   assert.match(gallery, /data-artifact-generation-group/)
-  assert.match(gallery, /break-words text-\[11px\]/)
-  assert.match(gallery, /vDesc && vDesc !== vTitle/)
+  assert.match(gallery, /truncate font-semibold text-\[11px\]/)
+  assert.match(gallery, /selected\.description \|\| selected\.collectionDescription/)
+  assert.match(gallery, /data-artifact-audio-player/)
 })
 
 test('chat markdown ManageArtifactCard renders interactive sound bars with play controls', async () => {
