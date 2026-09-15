@@ -28,8 +28,9 @@ const (
 	defaultGoogleBaseURL     = "https://generativelanguage.googleapis.com"
 	defaultOpenRouterBaseURL = "https://openrouter.ai"
 
-	defaultPollInterval = 2 * time.Second
-	defaultPollTimeout  = 5 * time.Minute
+	defaultPollInterval  = 2 * time.Second
+	defaultPollTimeout   = 8 * time.Minute
+	default4kPollTimeout = 15 * time.Minute
 )
 
 type ModelCatalog interface {
@@ -183,11 +184,14 @@ func (s *Service) pollingInterval() time.Duration {
 	return defaultPollInterval
 }
 
-func (s *Service) pollingTimeout() time.Duration {
+func (s *Service) pollingTimeout(resolution string) time.Duration {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.pollTimeout > 0 {
 		return s.pollTimeout
+	}
+	if strings.EqualFold(strings.TrimSpace(resolution), "4k") {
+		return default4kPollTimeout
 	}
 	return defaultPollTimeout
 }

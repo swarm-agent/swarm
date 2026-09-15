@@ -133,11 +133,11 @@ func (s *Service) generateGoogleVeo(
 		return ManagedVideoResult{}, errors.New("google veo did not return an operation name")
 	}
 
-	return s.pollGoogleVeoOperation(ctx, apiKey, modelID, opResp.Name)
+	return s.pollGoogleVeoOperation(ctx, apiKey, modelID, opResp.Name, resolution)
 }
 
-func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, modelID, operationName string) (ManagedVideoResult, error) {
-	deadline := time.Now().Add(s.pollingTimeout())
+func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, modelID, operationName, resolution string) (ManagedVideoResult, error) {
+	deadline := time.Now().Add(s.pollingTimeout(resolution))
 	pollURL := fmt.Sprintf("%s/v1beta/%s?key=%s", s.googleURL(), strings.TrimPrefix(operationName, "/"), apiKey)
 
 	for time.Now().Before(deadline) {

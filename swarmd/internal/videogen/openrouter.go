@@ -117,11 +117,11 @@ func (s *Service) generateOpenRouter(
 		return ManagedVideoResult{}, errors.New("openrouter video did not return a job ID")
 	}
 
-	return s.pollOpenRouterJob(ctx, apiKey, modelID, jobResp.ID, jobResp.PollingURL)
+	return s.pollOpenRouterJob(ctx, apiKey, modelID, jobResp.ID, jobResp.PollingURL, resolution)
 }
 
-func (s *Service) pollOpenRouterJob(ctx context.Context, apiKey, modelID, jobID, pollingURL string) (ManagedVideoResult, error) {
-	deadline := time.Now().Add(s.pollingTimeout())
+func (s *Service) pollOpenRouterJob(ctx context.Context, apiKey, modelID, jobID, pollingURL, resolution string) (ManagedVideoResult, error) {
+	deadline := time.Now().Add(s.pollingTimeout(resolution))
 	pollEndpoint := fmt.Sprintf("%s/api/v1/videos/%s", s.openRouterURL(), jobID)
 	if pollingURL != "" && strings.HasPrefix(pollingURL, "http") {
 		pollEndpoint = pollingURL
