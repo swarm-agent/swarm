@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { History, Plus } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
+import { normalizeStructuredPlanDocument } from '../../chat/components/structured-plan-document'
 import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 import {
   createAutomationConversation,
@@ -8,7 +9,8 @@ import {
   loadAutomationConversations,
 } from '../../state/desktop-automation-conversations'
 import type { SessionSnapshot } from '../../state/desktop-v3-cache-types'
-import type { AutomationV2Record } from '../../state/desktop-automation-v2-api'
+import type { AutomationV2Proposal, AutomationV2Record } from '../../state/desktop-automation-v2-api'
+import { automationV2PermissionProposal } from '../../state/desktop-automation-v2-api'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import { getOccurrenceDayKey } from './automation-v2-workspace'
@@ -54,6 +56,7 @@ export interface AutomationV2SidecarProps {
   onSelectSession?: (sessionId: string) => void
   createRequest?: number
   records?: AutomationV2Record[]
+  pendingProposals?: AutomationV2Proposal[]
   initialDraft?: string
   onClearSelectedAutomation?: () => void
 }
@@ -67,6 +70,7 @@ export function AutomationV2Sidecar({
   onSelectSession,
   createRequest,
   records,
+  pendingProposals,
   initialDraft,
   onClearSelectedAutomation,
 }: AutomationV2SidecarProps) {
@@ -172,6 +176,10 @@ export function AutomationV2Sidecar({
     } else if (value === '__bound__') {
       setDirectSessionId(undefined)
       if (selectedAutomation) onSelectSession?.(selectedAutomation.session_id)
+    } else if (value.startsWith('pending:')) {
+      const targetSessionId = value.slice('pending:'.length)
+      setDirectSessionId(targetSessionId)
+      onSelectSession?.(targetSessionId)
     } else if (value.startsWith('automation:')) {
       const targetSessionId = value.slice('automation:'.length)
       setDirectSessionId(undefined)
@@ -254,7 +262,35 @@ export function AutomationV2Sidecar({
     return selectedAutomation?.next_due_at && selectedAutomation.next_due_at > now ? 1 : 0
   }, [forecast, selectedAutomation])
 
+  const currentPendingProposal = useMemo(() => {
+    const sId = directSessionId || (selectedAutomation ? selectedAutomation.session_id : undefined)
+    if (!sId) return null
+    return pendingProposals?.find((p) => p.session_id === sId) ?? null
+  }, [directSessionId, selectedAutomation, pendingProposals])
+
+  const activePendingPermission = useDesktopV3CacheSelector((state) => {
+    const sId = directSessionId || (selectedAutomation ? selectedAutomation.session_id : undefined)
+    if (!sId) return undefined
+    return state.permissionsBySession[sId]?.find((p) => p.status === 'pending' && p.requirement === 'automation_v2_acceptance')
+  })
+
+  const sidecarStructuredDoc = useMemo(() => {
+    if (currentPendingProposal?.document) {
+      return normalizeStructuredPlanDocument(currentPendingProposal.document)
+    }
+    if (activePendingPermission) {
+      const prop = automationV2PermissionProposal(activePendingPermission)
+      if (prop?.document) {
+        return normalizeStructuredPlanDocument(prop.document)
+      }
+    }
+    return undefined
+  }, [currentPendingProposal, activePendingPermission])
+
   const title = useMemo(() => {
+    if (currentPendingProposal) {
+      return `Review: ${currentPendingProposal.document.title}`
+    }
     if (selectedAutomation && !directSessionId) {
       return `Optimize: ${selectedAutomation.document.title}`
     }
@@ -298,7 +334,7 @@ export function AutomationV2Sidecar({
           {upcomingCount > 0 ? `${upcomingCount} upcoming` : ''}
         </span>
       )}
-      {(mergedConversations.length > 0 || selectedAutomation || (records && records.length > 0)) && (
+      {(mergedConversations.length > 0 || selectedAutomation || (records && records.length > 0) || (pendingProposals && pendingProposals.length > 0)) && (
         <label className="relative flex items-center" title="Switch or reopen automation sessions">
           <History size={12} className="pointer-events-none absolute left-2 text-[var(--app-text-muted)]" aria-hidden="true" />
           <select
@@ -307,9 +343,11 @@ export function AutomationV2Sidecar({
               selectedAutomation && !directSessionId
                 ? '__bound__'
                 : directSessionId
-                  ? currentEmptyConversation && directSessionId === currentEmptyConversation.id
-                    ? currentEmptyConversation.id
-                    : directSessionId
+                  ? currentPendingProposal && directSessionId === currentPendingProposal.session_id
+                    ? `pending:${directSessionId}`
+                    : currentEmptyConversation && directSessionId === currentEmptyConversation.id
+                      ? currentEmptyConversation.id
+                      : directSessionId
                   : '__new__'
             }
             onChange={(e) => handleSelectSession(e.target.value)}
@@ -321,10 +359,26 @@ export function AutomationV2Sidecar({
             <option value="__all__">
               🌐 All workspace automations
             </option>
+            {currentPendingProposal && (
+              <option value={`pending:${currentPendingProposal.session_id}`}>
+                ⏳ {currentPendingProposal.document.title} (Pending)
+              </option>
+            )}
             {selectedAutomation && (
               <option value="__bound__">
                 ⚡ {selectedAutomation.document.title}
               </option>
+            )}
+            {pendingProposals && pendingProposals.filter((p) => p.session_id !== (directSessionId || selectedAutomation?.session_id)).length > 0 && (
+              <optgroup label="Pending automation proposals">
+                {pendingProposals
+                  .filter((p) => p.session_id !== (directSessionId || selectedAutomation?.session_id))
+                  .map((p) => (
+                    <option key={p.session_id} value={`pending:${p.session_id}`}>
+                      ⏳ {p.document.title} (Pending)
+                    </option>
+                  ))}
+              </optgroup>
             )}
             {pastConversations.length > 0 && (
               <optgroup label="Recent automation chats">
@@ -388,6 +442,8 @@ export function AutomationV2Sidecar({
         headerActions={headerActions}
         sidebarInline
         embedded
+        permission={activePendingPermission}
+        document={sidecarStructuredDoc ?? undefined}
         initialDraft={initialDraft}
       />
     </div>

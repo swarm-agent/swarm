@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { validateAutomationV2, automationV2Review, type AutomationV2Settings } from './desktop-automation-v2-api'
-import { reduceAutomationV2Pages, automationV2PageKey, selectAutomationV2Identity, type AutomationV2Pages } from './desktop-automation-v2-state'
+import { reduceAutomationV2Pages, automationV2PageKey, selectAutomationV2Identity, selectPendingAutomationV2Proposals, type AutomationV2Pages } from './desktop-automation-v2-state'
 import { DesktopAutomationV2Runtime } from '../runtime/desktop-automation-v2'
 import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
 import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
@@ -51,6 +51,49 @@ test('V2 sidebar identity uses permission and accepted binding, never titles', (
   assert.equal(selectAutomationV2Identity(state, 's'), undefined)
   state.sessionsById.s = { kind: 'full', session: { id: 's', automation_v2: { automation_id: 'a', workspace_id: 'w', digest: 'd' } }, needsHydrate: false } as any
   assert.equal(selectAutomationV2Identity(state, 's'), 'accepted')
+})
+
+test('selectPendingAutomationV2Proposals selects pending proposals by workspace and deduplicates', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const propPayload = {
+    review_kind: 'automation_v2',
+    scope: { workspace_id: 'ws-1', account_id: 'acct-1' },
+    automation_review: { proposal_id: 'prop-1', revision: 1, digest: 'a'.repeat(64) },
+    document: {
+      title: 'Health Check',
+      info: { goal: 'Check repo status' },
+      checkpoints: [{ id: 'cp-1', title: 'Check git', acceptance_criteria: ['All clean'] }],
+      automation_v2: { schema_version: 2, schedule: { kind: 'interval', interval_seconds: 3600 }, expiration: { kind: 'indefinite' }, missed: 'skip', overlap: 'serialize', activate_on_accept: true },
+    },
+  }
+  const foreignPropPayload = {
+    ...propPayload,
+    scope: { workspace_id: 'ws-other', account_id: 'acct-1' },
+    automation_review: { proposal_id: 'prop-2', revision: 1, digest: 'b'.repeat(64) },
+  }
+
+  state.permissionsBySession.s1 = [
+    { id: 'perm-1', sessionId: 's1', status: 'pending', requirement: 'automation_v2_acceptance', toolArguments: JSON.stringify(propPayload) } as any,
+  ]
+  state.permissionsBySession.s2 = [
+    { id: 'perm-2', sessionId: 's2', status: 'pending', requirement: 'automation_v2_acceptance', toolArguments: JSON.stringify(foreignPropPayload) } as any,
+  ]
+  state.permissionsBySession.s3 = [
+    { id: 'perm-3', sessionId: 's3', status: 'approved', requirement: 'automation_v2_acceptance', toolArguments: JSON.stringify(propPayload) } as any,
+  ]
+
+  const ws1Props = selectPendingAutomationV2Proposals(state, 'ws-1')
+  assert.equal(ws1Props.length, 1)
+  assert.equal(ws1Props[0].proposal_id, 'prop-1')
+  assert.equal(ws1Props[0].session_id, 's1')
+  assert.equal(ws1Props[0].document.title, 'Health Check')
+
+  const wsOtherProps = selectPendingAutomationV2Proposals(state, 'ws-other')
+  assert.equal(wsOtherProps.length, 1)
+  assert.equal(wsOtherProps[0].proposal_id, 'prop-2')
+
+  const allProps = selectPendingAutomationV2Proposals(state)
+  assert.equal(allProps.length, 2)
 })
 
 // Requirement: progress embeds immutable accepted snapshots belonging to the

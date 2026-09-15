@@ -30,12 +30,15 @@ import {
   type AutomationV2Mutation,
   type AutomationV2Occurrence,
   type AutomationV2OccurrenceDeliverable,
+  type AutomationV2Proposal,
   type AutomationV2Settings,
 } from '../../state/desktop-automation-v2-api'
+import { selectPendingAutomationV2Proposals } from '../../state/desktop-automation-v2-state'
+import { resolveSessionV3Permission } from '../../session-v3/api'
 import { archiveDesktopV3Sessions } from '../../session-v3/plan-execution-api'
 import { unarchiveDesktopV3ReviewSessions } from '../../session-v3/review-worktrees-api'
 import { deleteDesktopSessions } from '../../session-search/session-search-api'
-import { getDesktopV3CacheSnapshot } from '../../state/desktop-v3-cache-store'
+import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
 import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
@@ -507,6 +510,234 @@ export function AutomationUpcomingScheduleChart({
   )
 }
 
+export function PendingAutomationCard({
+  proposal,
+  workspaceId,
+  isSelected,
+  isExpanded,
+  onToggleExpand,
+  onAskForChanges,
+  onOpenSession,
+  workspaceSlug,
+}: {
+  proposal: AutomationV2Proposal
+  workspaceId: string
+  isSelected: boolean
+  isExpanded: boolean
+  onToggleExpand: () => void
+  onAskForChanges: (sessionId: string) => void
+  onOpenSession?: (sessionId: string) => void
+  workspaceSlug?: string
+}) {
+  const [acceptBusy, setAcceptBusy] = useState(false)
+  const [acceptError, setAcceptError] = useState('')
+  const [accepted, setAccepted] = useState<AutomationV2Record | null>(null)
+
+  const schedule = proposal.document.automation_v2.schedule
+  const scheduleSettings = proposal.document.automation_v2
+
+  const time = (ms: number) =>
+    new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
+
+  const handleAccept = async () => {
+    if (acceptBusy || accepted) return
+    setAcceptBusy(true)
+    setAcceptError('')
+    try {
+      const response = await desktopAutomationV2.mutate({
+        action: 'accept_automation',
+        workspace_id: workspaceId || proposal.workspace_id,
+        session_id: proposal.session_id,
+        review: automationV2Review(proposal),
+      })
+      if (!response.record || response.record.digest !== proposal.digest || response.record.session_id !== proposal.session_id || !response.record.automation_id) {
+        throw new Error('Acceptance result unavailable. Refresh before retrying.')
+      }
+      setAccepted(response.record)
+      desktopAutomationV2.invalidate(proposal.workspace_id, proposal.session_id)
+    } catch (err) {
+      setAcceptError(err instanceof Error ? err.message : 'Acceptance failed')
+    } finally {
+      setAcceptBusy(false)
+    }
+  }
+
+  const handleReject = async () => {
+    try {
+      await resolveSessionV3Permission(proposal.session_id, 'permission_' + proposal.proposal_id, {
+        action: 'deny',
+        reason: 'Rejected by user',
+      })
+      desktopAutomationV2.invalidate(proposal.workspace_id, proposal.session_id)
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <article
+      className={cn(
+        "rounded-2xl border bg-[var(--app-surface)] p-5 transition-all shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)]",
+        isSelected
+          ? 'border-[var(--app-primary)] ring-1 ring-[var(--app-primary)]/40'
+          : 'border-[var(--app-warning-border,rgba(245,158,11,0.35))] hover:border-[var(--app-warning)]'
+      )}
+      data-testid="automation-overview-card"
+      data-pending-card="true"
+      data-automation-id={proposal.proposal_id}
+      data-session-id={proposal.session_id}
+    >
+      {/* Top row: Status pill, Cadence pill, Step count, and Next run / state */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-warning-border,rgba(245,158,11,0.3))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--app-warning)]"
+            data-testid="automation-status-pending"
+          >
+            <Clock3 size={12} />
+            <span>Pending</span>
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
+            {scheduleFrequency(schedule)}
+          </span>
+          <span className="text-[11px] text-[var(--app-text-muted)]">
+            {proposal.document.checkpoints.length} {proposal.document.checkpoints.length === 1 ? 'step' : 'steps'} · Rev {proposal.revision}
+          </span>
+        </div>
+        <div className="text-xs font-medium text-[var(--app-warning)]">
+          <span>Awaiting acceptance</span>
+        </div>
+      </div>
+
+      {/* Card Title & Expand trigger */}
+      <div className="mt-3">
+        <button
+          type="button"
+          className={cn(
+            "flex w-full min-w-0 items-center justify-between gap-3 text-left transition-colors focus-visible:outline-none hover:text-[var(--app-primary)]",
+            isSelected ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]'
+          )}
+          onClick={onToggleExpand}
+          aria-current={isSelected ? 'page' : undefined}
+          aria-expanded={isExpanded}
+          title="Click to view details and review"
+        >
+          <div className="min-w-0">
+            <span className="block truncate text-base font-semibold">{proposal.document.title}</span>
+            <span className="sr-only"> · Pending · Automation proposal · revision {proposal.revision}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-1 text-xs text-[var(--app-text-muted)]">
+            <span className="hidden sm:inline">{isExpanded ? 'Hide details' : 'View details'}</span>
+            {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          </div>
+        </button>
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--app-text-muted)] line-clamp-2">
+          {proposal.document.info.goal}
+        </p>
+      </div>
+
+      {/* Schedule Metadata */}
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
+        <span className="font-mono text-[var(--app-text)] font-medium rounded-md border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px]">
+          {scheduleLabel(schedule)}
+        </span>
+        {schedule.timezone && <span>({schedule.timezone})</span>}
+        <span>·</span>
+        <span>
+          {scheduleSettings.expiration?.kind === 'indefinite'
+            ? 'Repeats indefinitely'
+            : `Ends ${time(scheduleSettings.expiration?.expires_at!)}`}
+        </span>
+        <span>·</span>
+        <span className="text-[var(--app-warning)] font-medium">Not yet activated</span>
+      </div>
+
+      {acceptError && (
+        <div className="mt-2 text-xs text-[var(--app-danger)]" role="alert">
+          {acceptError}
+        </div>
+      )}
+
+      {accepted && (
+        <div className="mt-3 rounded-xl border border-[var(--app-success-border,rgba(16,185,129,0.3))] bg-[var(--app-success-bg,rgba(16,185,129,0.12))] p-3 text-xs text-[var(--app-success)]">
+          <p className="font-semibold">Automation accepted and activated!</p>
+          <p className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">
+            Schedule is now active. First execution will follow the schedule.
+          </p>
+        </div>
+      )}
+
+      {/* Card Actions */}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[var(--app-border)]/60 pt-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 rounded-xl text-xs"
+            onClick={() => onAskForChanges(proposal.session_id)}
+            title="Ask the automation agent to make adjustments to this plan"
+          >
+            <MessageSquare size={13} className="text-[var(--app-primary)]" />
+            <span>Ask the automation agent for any changes</span>
+          </Button>
+          {!accepted && (
+            <Button
+              size="sm"
+              className="h-8 gap-1.5 rounded-xl text-xs bg-[var(--app-primary)] text-white hover:bg-[var(--app-primary)]/90"
+              disabled={acceptBusy}
+              onClick={() => void handleAccept()}
+              title="Accept and activate this automation"
+            >
+              {acceptBusy ? <LoaderCircle size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+              <span>Accept automation</span>
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {workspaceSlug ? (
+            <a
+              href={`/${encodeURIComponent(workspaceSlug)}/${encodeURIComponent(proposal.session_id)}`}
+              onClick={(e) => {
+                if (onOpenSession) {
+                  e.preventDefault()
+                  onOpenSession(proposal.session_id)
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-primary-border)] hover:text-[var(--app-primary)] transition-colors"
+              title="Open automation session"
+            >
+              <span>Open session</span>
+              <ExternalLink size={11} className="opacity-70" />
+            </a>
+          ) : null}
+          <Button
+            size="sm"
+            variant={isExpanded ? 'secondary' : 'outline'}
+            className="h-8 gap-1.5 rounded-xl text-xs"
+            onClick={onToggleExpand}
+            aria-expanded={isExpanded}
+          >
+            <span>{isExpanded ? 'Hide details' : 'View details'}</span>
+            {isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </Button>
+        </div>
+      </div>
+
+      {/* In-place expanded detail */}
+      {isExpanded && (
+        <div className="mt-4 border-t border-[var(--app-border)]/70 pt-4" data-testid="automation-pending-expanded-detail">
+          <AutomationV2PlanReview
+            key={`${proposal.proposal_id}-${proposal.revision}`}
+            proposal={proposal}
+            onReject={handleReject}
+            onAskForChanges={() => onAskForChanges(proposal.session_id)}
+          />
+        </div>
+      )}
+    </article>
+  )
+}
+
 export function AutomationV2Workspace({
   workspaceId,
   workspacePath,
@@ -534,7 +765,7 @@ export function AutomationV2Workspace({
   const [createRequest, setCreateRequest] = useState(0)
   const [draftPrompt, setDraftPrompt] = useState<string | undefined>()
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'enabled' | 'paused' | 'archived'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'enabled' | 'paused' | 'archived'>('all')
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
   const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -550,6 +781,24 @@ export function AutomationV2Workspace({
 
   const page = isArchivedTab ? archivedPage : activePage
   const records = isArchivedTab ? archivedRecords : activeRecords
+
+  const pendingProposals = useDesktopV3CacheSelector((state) =>
+    selectPendingAutomationV2Proposals(state, workspaceId)
+  )
+
+  const pendingProposalBySessionId = useMemo(() => {
+    const map = new Map<string, AutomationV2Proposal>()
+    for (const p of pendingProposals) {
+      map.set(p.session_id, p)
+    }
+    return map
+  }, [pendingProposals])
+
+  const newPendingProposals = useMemo(() => {
+    return pendingProposals.filter((p) => !records.some((r) => r.session_id === p.session_id))
+  }, [pendingProposals, records])
+
+  const pendingCount = pendingProposals.length
 
   useEffect(() => {
     if (initialSessionId) {
@@ -581,6 +830,17 @@ export function AutomationV2Workspace({
   const handleDiscussAll = () => {
     setSelected('')
     setSession('')
+  }
+
+  const handleAskForChanges = (sessionId: string) => {
+    setSelected(sessionId)
+    setSession(sessionId)
+    setTimeout(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>('[data-testid="desktop-plan-composer"] textarea')
+      if (textarea) {
+        textarea.focus()
+      }
+    }, 50)
   }
 
   const handleUseTemplate = (prompt: string) => {
@@ -678,10 +938,26 @@ export function AutomationV2Workspace({
     }
   }
 
+  const filteredPendingProposals = useMemo(() => {
+    if (isArchivedTab || statusFilter === 'enabled' || statusFilter === 'paused') return []
+    return newPendingProposals.filter((p) => {
+      if (searchQuery.trim()) {
+        const query = searchQuery.trim().toLowerCase()
+        const titleMatch = (p.document.title || '').toLowerCase().includes(query)
+        const goalMatch = (p.document.info?.goal || '').toLowerCase().includes(query)
+        return titleMatch || goalMatch
+      }
+      return true
+    })
+  }, [isArchivedTab, statusFilter, newPendingProposals, searchQuery])
+
   const filteredRecords = useMemo(() => {
     const list = isArchivedTab ? archivedRecords : activeRecords
     return list.filter((r) => {
       if (!isArchivedTab) {
+        if (statusFilter === 'pending') {
+          return pendingProposalBySessionId.has(r.session_id)
+        }
         if (statusFilter === 'enabled' && (!r.enabled || r.cancelled)) return false
         if (statusFilter === 'paused' && (r.enabled || r.cancelled)) return false
       }
@@ -693,11 +969,31 @@ export function AutomationV2Workspace({
       }
       return true
     })
-  }, [isArchivedTab, archivedRecords, activeRecords, statusFilter, searchQuery])
+  }, [isArchivedTab, archivedRecords, activeRecords, statusFilter, searchQuery, pendingProposalBySessionId])
 
   const enabledCount = useMemo(() => activeRecords.filter((r) => r.enabled && !r.cancelled).length, [activeRecords])
   const pausedCount = useMemo(() => activeRecords.filter((r) => !r.enabled && !r.cancelled).length, [activeRecords])
   const archivedCount = useMemo(() => archivedRecords.length, [archivedRecords])
+
+  const headingTitle = statusFilter === 'pending'
+    ? 'Pending automation proposals'
+    : statusFilter === 'archived'
+      ? 'Archived automations'
+      : statusFilter === 'enabled'
+        ? 'Active recurring plans'
+        : statusFilter === 'paused'
+          ? 'Paused automations'
+          : pendingCount > 0
+            ? 'Workspace automations'
+            : 'Accepted recurring plans'
+
+  const headingSubtitle = statusFilter === 'pending'
+    ? 'Review and accept pending automation proposals, or ask the automation agent for changes.'
+    : statusFilter === 'archived'
+      ? 'Paused and archived automations for this workspace.'
+      : 'Flat overview of all active and scheduled workspace automations.'
+
+  const hasAnyItems = (filteredRecords.length + filteredPendingProposals.length) > 0
 
   const time = (ms: number) =>
     new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
@@ -735,9 +1031,9 @@ export function AutomationV2Workspace({
           {/* Overview Heading & Refresh */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold">Accepted recurring plans</h2>
+              <h2 className="text-lg font-semibold">{headingTitle}</h2>
               <p className="mt-0.5 text-xs text-[var(--app-text-muted)]">
-                Flat overview of all active and scheduled workspace automations.
+                {headingSubtitle}
               </p>
             </div>
             <Button variant="ghost" size="sm" onClick={() => { void desktopAutomationV2.refresh(activeInput); void desktopAutomationV2.refresh(archivedInput) }}>
@@ -755,12 +1051,18 @@ export function AutomationV2Workspace({
           {page?.error && <p role="alert" className="text-xs text-[var(--app-danger)]">{page.error}</p>}
 
           {/* Executive Pulse / Metrics Strip */}
-          {(activeRecords.length > 0 || archivedRecords.length > 0) && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5" data-testid="automations-summary-strip">
+          {(activeRecords.length > 0 || archivedRecords.length > 0 || pendingProposals.length > 0) && (
+            <div className={cn("grid gap-2.5", pendingCount > 0 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-4")} data-testid="automations-summary-strip">
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Total</div>
-                <div className="mt-1 text-lg font-semibold text-[var(--app-text)]">{activeRecords.length}</div>
+                <div className="mt-1 text-lg font-semibold text-[var(--app-text)]">{activeRecords.length + newPendingProposals.length}</div>
               </div>
+              {pendingCount > 0 && (
+                <div className="rounded-xl border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.08))] p-3" data-testid="summary-strip-pending">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-warning)]">Pending</div>
+                  <div className="mt-1 text-lg font-semibold text-[var(--app-warning)]">{pendingCount}</div>
+                </div>
+              )}
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Scheduled</div>
                 <div className="mt-1 text-lg font-semibold text-[var(--app-success)]">{enabledCount}</div>
@@ -788,7 +1090,7 @@ export function AutomationV2Workspace({
           )}
 
           {/* Search & Status Filter Controls */}
-          {(activeRecords.length > 0 || archivedRecords.length > 0) && (
+          {(activeRecords.length > 0 || archivedRecords.length > 0 || pendingProposals.length > 0) && (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <div className="relative min-w-[200px] flex-1 max-w-sm">
                 <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
@@ -811,8 +1113,23 @@ export function AutomationV2Workspace({
                   )}
                   onClick={() => setStatusFilter('all')}
                 >
-                  All ({activeRecords.length})
+                  All ({activeRecords.length + newPendingProposals.length})
                 </button>
+                {pendingCount > 0 && (
+                  <button
+                    type="button"
+                    data-testid="filter-pending"
+                    className={cn(
+                      "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                      statusFilter === 'pending'
+                        ? 'bg-[var(--app-surface-hover)] text-[var(--app-warning)] font-semibold'
+                        : 'text-[var(--app-warning)] hover:text-[var(--app-warning)]/80'
+                    )}
+                    onClick={() => setStatusFilter('pending')}
+                  >
+                    Pending ({pendingCount})
+                  </button>
+                )}
                 <button
                   type="button"
                   className={cn(
@@ -855,12 +1172,39 @@ export function AutomationV2Workspace({
 
           {/* Flat Overview of All Automations */}
           <div className="space-y-4" data-testid="automations-flat-overview">
+            {filteredPendingProposals.map((proposal) => {
+              const isSelected = selected === proposal.session_id
+              const isExpanded = Boolean(expandedIds[proposal.session_id])
+              return (
+                <PendingAutomationCard
+                  key={`pending-${proposal.proposal_id}-${proposal.revision}`}
+                  proposal={proposal}
+                  workspaceId={workspaceId}
+                  isSelected={isSelected}
+                  isExpanded={isExpanded}
+                  onToggleExpand={() => toggleExpanded(proposal.session_id)}
+                  onAskForChanges={handleAskForChanges}
+                  onOpenSession={onOpenSession}
+                  workspaceSlug={workspaceSlug}
+                />
+              )
+            })}
             {filteredRecords.map((record) => {
               const schedule = record.document.automation_v2.schedule
               const isSelected = selected === record.session_id
               const isExpanded = Boolean(expandedIds[record.session_id])
               const isArchived = Boolean(record.archived)
-              const statusText = isArchived ? 'Archived' : record.cancelled ? 'Cancelled' : record.enabled ? 'Enabled' : 'Paused'
+              const pendingProposal = pendingProposalBySessionId.get(record.session_id)
+              const hasPendingReview = Boolean(pendingProposal)
+              const statusText = isArchived
+                ? 'Archived'
+                : record.cancelled
+                  ? 'Cancelled'
+                  : hasPendingReview
+                    ? 'Pending review'
+                    : record.enabled
+                      ? 'Enabled'
+                      : 'Paused'
 
               return (
                 <article
@@ -884,6 +1228,8 @@ export function AutomationV2Workspace({
                             ? 'bg-[var(--app-surface-hover)] border border-[var(--app-border)] text-[var(--app-text-muted)]'
                             : record.cancelled
                             ? 'bg-[var(--app-danger-bg,rgba(239,68,68,0.12))] border border-[var(--app-danger-border,rgba(239,68,68,0.25))] text-[var(--app-danger)]'
+                            : hasPendingReview
+                            ? 'bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] border border-[var(--app-warning-border,rgba(245,158,11,0.25))] text-[var(--app-warning)]'
                             : record.enabled
                             ? 'bg-[var(--app-success-bg,rgba(16,185,129,0.12))] border border-[var(--app-success-border,rgba(16,185,129,0.25))] text-[var(--app-success)]'
                             : 'bg-[var(--app-surface-hover)] border border-[var(--app-border)] text-[var(--app-text-muted)]'
@@ -893,6 +1239,8 @@ export function AutomationV2Workspace({
                           <Archive size={12} />
                         ) : record.cancelled ? (
                           <AlertCircle size={12} />
+                        ) : hasPendingReview ? (
+                          <Clock3 size={12} />
                         ) : record.enabled ? (
                           <Clock3 size={12} />
                         ) : (
@@ -900,6 +1248,11 @@ export function AutomationV2Workspace({
                         )}
                         <span>{statusText}</span>
                       </span>
+                      {pendingProposal && (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning-border,rgba(245,158,11,0.3))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-warning)]">
+                          Revision {pendingProposal.revision} pending approval
+                        </span>
+                      )}
                       <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
                         {scheduleFrequency(schedule)}
                       </span>
@@ -999,16 +1352,29 @@ export function AutomationV2Workspace({
                         </>
                       ) : (
                         <>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-8 gap-1.5 rounded-xl text-xs"
-                            onClick={() => handleChatWithAutomation(record.session_id)}
-                            title="Discuss or optimize this automation with Swarm"
-                          >
-                            <MessageSquare size={13} />
-                            <span>Discuss with Swarm</span>
-                          </Button>
+                          {hasPendingReview ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 gap-1.5 rounded-xl text-xs text-[var(--app-warning)] border-[var(--app-warning-border)] hover:bg-[var(--app-warning-soft)]"
+                              onClick={() => handleAskForChanges(record.session_id)}
+                              title="Ask the automation agent to make adjustments to this revision"
+                            >
+                              <MessageSquare size={13} />
+                              <span>Ask the automation agent for any changes</span>
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8 gap-1.5 rounded-xl text-xs"
+                              onClick={() => handleChatWithAutomation(record.session_id)}
+                              title="Discuss or optimize this automation with Swarm"
+                            >
+                              <MessageSquare size={13} />
+                              <span>Discuss with Swarm</span>
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1075,7 +1441,25 @@ export function AutomationV2Workspace({
 
                   {/* In-place expanded detail */}
                   {isExpanded && (
-                    <div className="mt-4 border-t border-[var(--app-border)]/70 pt-4">
+                    <div className="mt-4 border-t border-[var(--app-border)]/70 pt-4 space-y-4">
+                      {pendingProposal && (
+                        <div className="rounded-xl border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.06))] p-4">
+                          <div className="flex items-center justify-between gap-2 mb-3">
+                            <div className="flex items-center gap-2">
+                              <Clock3 size={15} className="text-[var(--app-warning)]" />
+                              <span className="text-xs font-semibold text-[var(--app-text)]">
+                                Pending Revision {pendingProposal.revision} Review
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-[var(--app-text-muted)]">Awaiting your approval</span>
+                          </div>
+                          <AutomationV2PlanReview
+                            key={`${pendingProposal.proposal_id}-${pendingProposal.revision}`}
+                            proposal={pendingProposal}
+                            onAskForChanges={() => handleAskForChanges(record.session_id)}
+                          />
+                        </div>
+                      )}
                       <AutomationV2Detail
                         key={record.session_id}
                         workspaceId={workspaceId}
@@ -1091,18 +1475,24 @@ export function AutomationV2Workspace({
           </div>
 
           {/* Empty State */}
-          {page?.data && !page.loading && !page.stale && !filteredRecords.length && (
+          {page?.data && !page.loading && !page.stale && !hasAnyItems && (
             <div className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center bg-[var(--app-surface)] space-y-3">
               <div className="mx-auto flex size-12 items-center justify-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-[var(--app-primary)]">
                 {isArchivedTab ? <Archive size={24} /> : <Clock3 size={24} />}
               </div>
               <h3 className="text-base font-semibold text-[var(--app-text)]">
-                {isArchivedTab ? 'No archived automations' : 'No accepted automations on this page'}
+                {isArchivedTab
+                  ? 'No archived automations'
+                  : statusFilter === 'pending'
+                    ? 'No pending automation proposals'
+                    : 'No accepted automations on this page'}
               </h3>
               <p className="mx-auto max-w-md text-xs text-[var(--app-text-muted)] leading-relaxed">
                 {isArchivedTab
                   ? 'Archived automations will appear here. Archiving an automation pauses its schedule and moves it out of your active workspace views.'
-                  : 'No accepted automations on this page. Start a conversation to propose one, or pick a starter template below.'}
+                  : statusFilter === 'pending'
+                    ? 'No automation proposals are currently awaiting review. Ask the assistant in the sidebar to design one, or pick a starter template below.'
+                    : 'No accepted automations on this page. Start a conversation to propose one, or pick a starter template below.'}
               </p>
               {!isArchivedTab && (
                 <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
@@ -1203,14 +1593,11 @@ export function AutomationV2Workspace({
             activeSessionId={session}
             onSelectSession={(id) => {
               setSession(id)
-              if (records.some((r) => r.session_id === id)) {
-                setSelected(id)
-              } else {
-                setSelected('')
-              }
+              setSelected(id)
             }}
             createRequest={createRequest}
             records={records}
+            pendingProposals={pendingProposals}
             initialDraft={draftPrompt}
             onClearSelectedAutomation={() => {
               setSelected('')

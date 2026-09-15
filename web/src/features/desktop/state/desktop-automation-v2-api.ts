@@ -1,4 +1,5 @@
 import { requestJson } from '../../../app/api'
+import type { DesktopPermissionRecord } from '../types/realtime'
 
 export interface AutomationV2Settings {
   schema_version: 2
@@ -80,6 +81,16 @@ export type AutomationV2Mutation = { workspace_id: string; session_id: string } 
 export function automationV2Review(value: AutomationV2Review): AutomationV2Review {
   if (!value?.proposal_id || !Number.isSafeInteger(value.revision) || value.revision < 1 || !/^[a-f0-9]{64}$/.test(value.digest)) throw new Error('Exact automation review unavailable. Refresh the proposal.')
   return { proposal_id: value.proposal_id, revision: value.revision, digest: value.digest }
+}
+
+export function automationV2PermissionProposal(permission: DesktopPermissionRecord): AutomationV2Proposal | null {
+  if (permission.requirement !== 'automation_v2_acceptance') return null
+  try {
+    const payload = JSON.parse(permission.toolArguments)
+    const review = automationV2Review(payload.automation_review)
+    if (payload.review_kind !== 'automation_v2' || !payload.scope?.workspace_id || !payload.scope?.account_id || !payload.document?.automation_v2 || !payload.document?.checkpoints?.length) return null
+    return { ...review, workspace_id: payload.scope.workspace_id, account_id: payload.scope.account_id, session_id: permission.sessionId, document: payload.document }
+  } catch { return null }
 }
 export function validateAutomationV2(settings: AutomationV2Settings, now = Date.now()): void {
   if (settings.schema_version !== 2 || settings.activate_on_accept !== true || !['skip', 'coalesce'].includes(settings.missed) || !['serialize', 'independent'].includes(settings.overlap)) throw new Error('Unsupported automation policy.')
