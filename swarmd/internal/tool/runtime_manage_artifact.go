@@ -259,7 +259,16 @@ func manageArtifactDefinition() Definition {
 			"properties": map[string]any{
 				"artifact_id":      map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
 				"resume_draft":     map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_audio", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). For image-to-video, pass image (or image_path) with a workspace image path, data URI, or artifact reference alongside prompt. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
+				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). Pass chain_from (or source_* with chain=true) to automatically extract the last keyframe and generate seamless continuous chained video. extract_video_frame extracts a PNG keyframe (frame: last, first, or timestamp_ms) from a video artifact. chain_video concatenates multiple video artifacts and optionally overrides or mixes continuous soundtrack audio (audio_mode: override, mix_ducked, or native) into a master video artifact. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
+				"chain_from":       map[string]any{"description": "For generate_video: video artifact reference or workspace path from which the last keyframe is automatically extracted to seed continuous image-to-video generation."},
+				"chain":            map[string]any{"type": "boolean", "description": "For generate_video with source_* pointing to a video: when true, extracts last keyframe and chains via image-to-video instead of conversational editing."},
+				"videos":           map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "description": "Ordered array of video artifact references or workspace paths for chain_video."},
+				"audio":            map[string]any{"description": "Optional audio artifact reference or workspace path for chain_video continuous soundtrack."},
+				"audio_mode":       map[string]any{"type": "string", "enum": []string{"override", "mix_ducked", "native"}, "description": "Audio mode for chain_video: override (replaces all video audio with soundtrack), mix_ducked (duck native Foley at 35%, overlay soundtrack at 100%), or native (preserves video audio)."},
+				"foley_volume":     map[string]any{"type": "number", "minimum": 0, "maximum": 2, "description": "Optional volume multiplier (0.0 to 2.0, default 0.35) for native audio in mix_ducked mode."},
+				"transition":       map[string]any{"type": "string", "enum": []string{"cut", "crossfade"}, "description": "Optional transition for chain_video: cut (lossless concat, default) or crossfade."},
+				"frame":            map[string]any{"type": "string", "description": "For extract_video_frame: 'last' (default), 'first', or milliseconds timestamp."},
+				"timestamp_ms":     map[string]any{"type": "integer", "minimum": 0, "description": "Optional timestamp in milliseconds for extract_video_frame."},
 				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image, generate_video, and generate_audio. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
 				"prompts":          map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes}, "description": "Optional array of prompts for generating multiple audio variations in one call."},
 				"image":            map[string]any{"description": "Optional image input for generate_video or generate_audio (image inspiration). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
@@ -517,6 +526,25 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["references"] = videoResult.References
 		if videoResult.HasImageInput {
 			response["has_image_input"] = true
+		}
+	case "extract_video_frame":
+		variant, err := r.extractVideoFrame(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	case "chain_video":
+		variant, details, err := r.chainVideo(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+		for k, v := range details {
+			response[k] = v
 		}
 	case "generate_audio":
 		audioResult, err := r.generateManagedAudioArtifact(ctx, scope, principal, callID, requestID, args)
@@ -2004,7 +2032,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path":
+			"image", "image_path", "chain_from", "chain":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -2113,15 +2141,42 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 				return managedVideoArtifactResult{}, errors.New("video iteration source is empty")
 			}
 			sourceRef = &ref
-			interactionID := strings.TrimSpace(variant.Lineage.IterationID)
-			source = &videogen.ManagedVideoSource{
-				Bytes:         append([]byte(nil), body...),
-				MediaType:     "video/mp4",
-				InteractionID: interactionID,
+			if chainVal, ok := args["chain"].(bool); ok && chainVal {
+				keyframeBytes, err := extractLastKeyframeBytes(ctx, body)
+				if err != nil {
+					return managedVideoArtifactResult{}, fmt.Errorf("extract last keyframe for video chaining: %w", err)
+				}
+				videoImage = &videogen.ManagedVideoImage{
+					Bytes:     keyframeBytes,
+					MediaType: "image/png",
+				}
+			} else {
+				interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+				source = &videogen.ManagedVideoSource{
+					Bytes:         append([]byte(nil), body...),
+					MediaType:     "video/mp4",
+					InteractionID: interactionID,
+				}
 			}
 		} else {
 			return managedVideoArtifactResult{}, errors.New("video iteration source is empty or not a supported ready video/mp4 or image")
 		}
+	}
+
+	if chainFromRaw := args["chain_from"]; chainFromRaw != nil && videoImage == nil {
+		body, ref, _, err := r.resolveVideoSourceBytes(ctx, scope, principal, chainFromRaw)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("resolve chain_from video: %w", err)
+		}
+		keyframeBytes, err := extractLastKeyframeBytes(ctx, body)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("extract last keyframe from chain_from video: %w", err)
+		}
+		videoImage = &videogen.ManagedVideoImage{
+			Bytes:     keyframeBytes,
+			MediaType: "image/png",
+		}
+		sourceRef = ref
 	}
 
 	rawImage := args["image"]

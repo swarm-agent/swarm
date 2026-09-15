@@ -300,6 +300,21 @@ func TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting(t *testi
 	}
 }
 
+func TestMasterHarnessPromptGuidesVideoChainingAndAudioOverride(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"For multi-part video generation, chaining, and audio continuity across multiple clips:",
+		"chain_from with the previous video's exact ready reference",
+		"manage_artifact action=chain_video",
+		"audio_mode ('mix_ducked' to layer continuous music at 100% with ducked native Foley sound effects at 35%, or 'override' for pure music replacement)",
+		"manage_artifact action=extract_video_frame with frame='last' or 'first'",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing video chaining guidance %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsProjectsExactTypedPart(t *testing.T) {
 	selection := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41, Action: "use", PartID: "hero", Part: &pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "spatial", X: .1, Y: .2, Width: .7, Height: .5}}
 	got := AttachedArtifactSelectionsForProvider([]pebblestore.SessionArtifactSelectionReference{selection})
