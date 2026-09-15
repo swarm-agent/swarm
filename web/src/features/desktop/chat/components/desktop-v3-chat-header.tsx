@@ -137,7 +137,7 @@ export function DesktopV3ChatHeader({
   ) : <span className="truncate" title={displayTitle}>{displayTitle}</span>
 
   return (
-    <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:min-h-[60px] sm:h-auto sm:px-4 sm:py-1.5">
+    <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
       <div className="flex h-full min-w-0 items-center gap-1.5 sm:gap-2">
         {onOpenChats ? (
           <button
@@ -177,17 +177,18 @@ export function DesktopV3ChatHeader({
                 <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:text-[11px]" title={displayWorkspace}>{displayWorkspace}</span>
               )}
             </div>
+            {resolvedModelLabel ? (
+              <>
+                <span aria-hidden="true" className="hidden shrink-0 text-[var(--app-text-subtle)] sm:inline">·</span>
+                <span className="hidden truncate sm:inline" data-testid="desktop-v3-resolved-model" title={resolvedModelLabel}>{resolvedModelLabel}</span>
+              </>
+            ) : null}
             {mobileRunTimerLabel ? (
               <span className="shrink-0 justify-self-end text-[10px] tabular-nums text-[var(--app-text)] sm:hidden" title={runStatus?.label}>
                 {mobileRunTimerLabel}
               </span>
             ) : null}
           </div>
-          {resolvedModelLabel ? (
-            <div className="mt-0.5 hidden max-w-full items-center overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)] sm:flex" title={resolvedModelLabel}>
-              <span className="truncate" data-testid="desktop-v3-resolved-model">{resolvedModelLabel}</span>
-            </div>
-          ) : null}
         </div>
         <div className="hidden sm:block">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />

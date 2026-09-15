@@ -49,7 +49,7 @@ test('resolved header shows the Git branch and canonical model without a mode la
   assert.doesNotMatch(markup, /desktop-v3-plan-mode-badge/)
 })
 
-test('header places branch and workspaces on the second row and provider model on the bottom row', () => {
+test('header places branch, workspaces, and provider model on the second row together', () => {
   const markup = renderToStaticMarkup(
     <DesktopV3ChatHeader
       title="Header layout conversation"
@@ -66,7 +66,7 @@ test('header places branch and workspaces on the second row and provider model o
   assert.ok(workspaceIndex !== -1, 'workspace exists')
   assert.ok(modelIndex !== -1, 'model exists')
   assert.ok(branchIndex < workspaceIndex, 'branch comes before workspace on row 2')
-  assert.ok(workspaceIndex < modelIndex, 'workspace comes before model (model on bottom row)')
+  assert.ok(workspaceIndex < modelIndex, 'workspace comes before model on row 2')
 })
 
 test('video session header exposes a bidirectional Studio switch', () => {
