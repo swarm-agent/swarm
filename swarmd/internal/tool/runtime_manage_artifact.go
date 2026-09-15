@@ -2275,7 +2275,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 ) (managedAudioArtifactResult, error) {
 	for key := range args {
 		switch key {
-		case "action", "prompt", "prompts", "title", "duration_seconds", "count",
+		case "action", "prompt", "prompts", "title", "label", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
 			"image", "image_path":
@@ -3179,6 +3179,9 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
 	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "progress": v.Progress, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	if v.Lineage != (pebblestore.SessionArtifactLineage{}) {
+		result["lineage"] = v.Lineage
+	}
 	if v.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && v.Composition != nil {
 		result["artifact_chain_id"] = v.ArtifactChainID
 		result["part_definitions"] = v.PartDefinitions

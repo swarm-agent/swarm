@@ -520,3 +520,78 @@ func TestManageArtifactGenerateAudioValidationErrors(t *testing.T) {
 		t.Fatalf("expected prompt character limit error, got: %v", err)
 	}
 }
+
+func TestManageArtifactGenerateAudioAcceptsLabelArgument(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-label-test",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_audio",
+			"prompt": "Funky groove",
+			"label": "Custom Funky Groove Label"
+		}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_audio with label: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["title"] != "Custom Funky Groove Label" {
+		t.Fatalf("expected title Custom Funky Groove Label, got %v", res["title"])
+	}
+	if authority.created.Presentation.Label != "Custom Funky Groove Label" {
+		t.Fatalf("expected presentation label Custom Funky Groove Label, got %q", authority.created.Presentation.Label)
+	}
+}
+
+func TestManageArtifactGenerateAudioVariantIncludesLineageInVariantPayload(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-lineage-test",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_audio",
+			"prompt": "Deep house bassline"
+		}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_audio: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+
+	artifactMap, ok := res["artifact"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected artifact map in response, got %T", res["artifact"])
+	}
+	lineageMap, ok := artifactMap["lineage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected lineage in artifact variant, got: %+v", artifactMap)
+	}
+	if lineageMap["iteration_id"] != "interaction-1" {
+		t.Fatalf("expected iteration_id interaction-1 in lineage, got %v", lineageMap["iteration_id"])
+	}
+}

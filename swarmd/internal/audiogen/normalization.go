@@ -118,7 +118,7 @@ func ProbeAudioDurationMs(ctx context.Context, runner CommandRunner, audioBytes 
 		return 0, err
 	}
 
-	inFile, err := os.CreateTemp("", "swarm-audioprobe-*.mp3")
+	inFile, err := os.CreateTemp(os.TempDir(), "swarm-audioprobe-*.mp3")
 	if err != nil {
 		return 0, err
 	}

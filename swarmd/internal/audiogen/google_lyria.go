@@ -153,8 +153,12 @@ func (s *Service) generateGoogleLyria(
 
 	// Check if trimming / exact duration normalization is requested
 	targetSec := req.TargetDurationSeconds
-	if targetSec <= 0 && req.DurationSeconds > 0 && req.DurationSeconds < ClipDurationLimitSeconds && strings.Contains(strings.ToLower(modelID), "clip") {
-		targetSec = float64(req.DurationSeconds)
+	if targetSec <= 0 && req.DurationSeconds > 0 {
+		if strings.Contains(strings.ToLower(modelID), "clip") && req.DurationSeconds < ClipDurationLimitSeconds {
+			targetSec = float64(req.DurationSeconds)
+		} else if (strings.Contains(strings.ToLower(modelID), "3.5") || strings.Contains(strings.ToLower(modelID), "song")) && req.DurationSeconds < DefaultSongDurationSeconds {
+			targetSec = float64(req.DurationSeconds)
+		}
 	}
 
 	var trimmed bool

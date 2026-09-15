@@ -804,3 +804,106 @@ func TestGenerateManagedAudio_Errors(t *testing.T) {
 		}
 	})
 }
+
+func TestGenerateManagedAudio_SongTrimmingWithCommandRunner(t *testing.T) {
+	fakeRawSong := []byte("fake-full-song-raw-bytes")
+	encoded := base64.StdEncoding.EncodeToString(fakeRawSong)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(lyriaInteractionResponse{
+			ID:     "inter_song_trim_1",
+			Status: "completed",
+			Model:  ModelLyriaSong,
+			Steps: []lyriaStep{
+				{
+					Type: "model_output",
+					Content: []lyriaContent{
+						{
+							Type:     "audio",
+							MIMEType: "audio/mp3",
+							Data:     encoded,
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	svc := NewService(authStore, nil, nil)
+	svc.SetBaseURL(server.URL)
+
+	runner := &fakeCommandRunner{}
+	svc.SetCommandRunner(runner)
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	res, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "make a 45 sound clip",
+		DurationSeconds: 45,
+		FadeOutSeconds:  0.5,
+		Principal:       principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedAudio failed: %v", err)
+	}
+
+	if runner.lastCmd != "ffmpeg" {
+		t.Errorf("runner.lastCmd = %q, want ffmpeg", runner.lastCmd)
+	}
+	argsJoined := strings.Join(runner.lastArgs, " ")
+	if !strings.Contains(argsJoined, "-t 45.000") {
+		t.Errorf("expected -t 45.000 in ffmpeg args: %s", argsJoined)
+	}
+	if !strings.Contains(argsJoined, "afade=t=out:st=44.500:d=0.500") {
+		t.Errorf("expected afade in ffmpeg args: %s", argsJoined)
+	}
+	if !res.Metadata.Trimmed {
+		t.Error("expected Metadata.Trimmed to be true")
+	}
+	if res.DurationMs != 45000 {
+		t.Errorf("res.DurationMs = %d, want 45000", res.DurationMs)
+	}
+	if res.Metadata.TargetDurationSeconds != 45.0 {
+		t.Errorf("res.Metadata.TargetDurationSeconds = %f, want 45.0", res.Metadata.TargetDurationSeconds)
+	}
+}
+
+func TestProbeAudioDurationMs(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty bytes returns error", func(t *testing.T) {
+		runner := &fakeCommandRunner{}
+		_, err := ProbeAudioDurationMs(ctx, runner, nil)
+		if err == nil {
+			t.Fatal("expected error for nil audio bytes")
+		}
+	})
+
+	t.Run("missing ffprobe returns error", func(t *testing.T) {
+		runner := &fakeCommandRunner{lookPathErr: errors.New("ffprobe not found")}
+		_, err := ProbeAudioDurationMs(ctx, runner, []byte("audio-bytes"))
+		if err == nil || !strings.Contains(err.Error(), "ffprobe not found") {
+			t.Fatalf("expected ffprobe not found error, got: %v", err)
+		}
+	})
+
+	t.Run("parses ffprobe duration output", func(t *testing.T) {
+		runner := &fakeCommandRunner{
+			runHook: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				if name != "ffprobe" {
+					return nil, fmt.Errorf("unexpected command: %s", name)
+				}
+				return []byte("28.500000\n"), nil
+			},
+		}
+		durationMs, err := ProbeAudioDurationMs(ctx, runner, []byte("fake-audio-bytes"))
+		if err != nil {
+			t.Fatalf("ProbeAudioDurationMs failed: %v", err)
+		}
+		if durationMs != 28500 {
+			t.Errorf("ProbeAudioDurationMs = %d, want 28500", durationMs)
+		}
+	})
+}
