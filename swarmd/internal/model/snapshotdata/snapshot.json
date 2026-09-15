@@ -2,10 +2,10 @@
   "schema_version": "2026-08-14.2",
   "api_version": "v1",
   "snapshot_schema_version": "2026-08-14.2",
-  "snapshot_id": "swarm-models-v1-a7320a03eec9e612",
-  "snapshot_version": "a7320a03eec9e612",
-  "generated_at": "2026-09-11T07:33:16.263Z",
-  "model_count": 733,
+  "snapshot_id": "swarm-models-v1-509b5ba697355d46",
+  "snapshot_version": "509b5ba697355d46",
+  "generated_at": "2026-09-14T09:43:11.045Z",
+  "model_count": 734,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "definitions": {
@@ -580,6 +580,12 @@
           ],
           "unknown_semantics": "Every Google image-output row has an explicit settings profile. status=unknown means clients must not advertise synthesized nil/default controls.",
           "managed_tool_semantics": "provider_specific.google.image_generation.managed_image_tool records whether Swarm's current managed image tool accepts the exact model ID; supported_values remain model-specific."
+        },
+        "music_generation_settings": {
+          "explicit_profile_model_ids": [
+            "lyria-3.5"
+          ],
+          "unknown_semantics": "Documented output formats are not verified request enums. Prompt-based music controls do not imply exact numeric duration settings or voice/TTS support."
         },
         "video_generation_settings": {
           "explicit_profile_model_ids": [
@@ -1200,8 +1206,8 @@
         "fast": "off"
       },
       "auto": {
-        "model": "gpt-6-astra",
-        "thinking": "medium",
+        "model": "gpt-5.6-sol",
+        "thinking": "high",
         "fast": "off"
       },
       "utility": {
@@ -1217,8 +1223,8 @@
         "fast": "off"
       },
       "auto": {
-        "model": "gpt-6-astra",
-        "thinking": "medium",
+        "model": "gpt-5.6-sol",
+        "thinking": "high",
         "fast": "off"
       },
       "utility": {
@@ -1304,8 +1310,8 @@
         "fast": "off"
       },
       "auto": {
-        "model": "gpt-6-astra",
-        "thinking": "medium",
+        "model": "gpt-5.6-sol",
+        "thinking": "high",
         "fast": "off"
       },
       "utility": {
@@ -1324,8 +1330,8 @@
         "fast": "off"
       },
       "coder": {
-        "model": "gpt-6-astra",
-        "thinking": "low",
+        "model": "gpt-5.6-sol",
+        "thinking": "medium",
         "fast": "off"
       },
       "designer": {
@@ -1346,8 +1352,8 @@
         "fast": "off"
       },
       "auto": {
-        "model": "gpt-6-astra",
-        "thinking": "medium",
+        "model": "gpt-5.6-sol",
+        "thinking": "high",
         "fast": "off"
       },
       "utility": {
@@ -1366,8 +1372,8 @@
         "fast": "off"
       },
       "coder": {
-        "model": "gpt-6-astra",
-        "thinking": "low",
+        "model": "gpt-5.6-sol",
+        "thinking": "medium",
         "fast": "off"
       },
       "designer": {
@@ -1482,7 +1488,7 @@
         "fast": "off"
       },
       "compact": {
-        "model": "accounts/fireworks/models/glm-5p2",
+        "model": "accounts/fireworks/models/glm-5p3-flash",
         "thinking": "high",
         "fast": "off"
       },
@@ -1698,8 +1704,8 @@
           "fast": "off"
         },
         "auto": {
-          "model": "gpt-6-astra",
-          "thinking": "medium",
+          "model": "gpt-5.6-sol",
+          "thinking": "high",
           "fast": "off"
         },
         "utility": {
@@ -1718,8 +1724,8 @@
           "fast": "off"
         },
         "coder": {
-          "model": "gpt-6-astra",
-          "thinking": "low",
+          "model": "gpt-5.6-sol",
+          "thinking": "medium",
           "fast": "off"
         },
         "designer": {
@@ -1818,7 +1824,7 @@
           "fast": "off"
         },
         "compact": {
-          "model": "accounts/fireworks/models/glm-5p2",
+          "model": "accounts/fireworks/models/glm-5p3-flash",
           "thinking": "high",
           "fast": "off"
         },
@@ -1957,7 +1963,7 @@
           "fast": "off"
         }
       },
-      "model_count": 50,
+      "model_count": 51,
       "sources": [
         {
           "source_id": "google_gemini_models_api",
@@ -2065,6 +2071,13 @@
           "auth_required": false
         },
         {
+          "source_id": "google_gemini_music_generation_docs",
+          "kind": "official_docs",
+          "url": "https://ai.google.dev/gemini-api/docs/music-generation",
+          "method": "GET",
+          "auth_required": false
+        },
+        {
           "source_id": "google_gemini_veo_docs",
           "kind": "official_docs",
           "url": "https://ai.google.dev/gemini-api/docs/veo",
@@ -2127,8 +2140,8 @@
           "fast": "off"
         },
         "auto": {
-          "model": "gpt-6-astra",
-          "thinking": "medium",
+          "model": "gpt-5.6-sol",
+          "thinking": "high",
           "fast": "off"
         },
         "utility": {
@@ -2147,8 +2160,8 @@
           "fast": "off"
         },
         "coder": {
-          "model": "gpt-6-astra",
-          "thinking": "low",
+          "model": "gpt-5.6-sol",
+          "thinking": "medium",
           "fast": "off"
         },
         "designer": {
@@ -2321,7 +2334,7 @@
       "provider_id": "google",
       "provider_display_name": "Google Gemini",
       "source_url": "https://generativelanguage.googleapis.com/v1beta/models",
-      "model_count": 50,
+      "model_count": 51,
       "path": "/v1/models/google.json"
     },
     {
@@ -3393,7 +3406,7 @@
           "source_id": "anthropic_fable_5_1_docs",
           "source_url": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
           "source_kind": "official_docs",
-          "fetched_at": "2026-09-11T07:33:16.263Z",
+          "fetched_at": "2026-09-14T09:43:11.045Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -3819,7 +3832,7 @@
         "reviewed_at": null,
         "notes": "Anthropic entry hydrated from first-party model docs pending Models API visibility verification. Claude API service-tier metadata is mapped for Swarm off/fast/batch where documented; provider Fast Mode is represented separately as serving.fast_mode; and Claude thinking controls and token pricing are mapped from first-party docs."
       },
-      "updated_at": "2026-09-11T07:33:16.263Z",
+      "updated_at": "2026-09-14T09:43:11.045Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -45423,7 +45436,7 @@
         "supports_video_output": true,
         "supports_file_input": false,
         "supports_pdf_input": false,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": false,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -46097,7 +46110,7 @@
         "supports_image_output": false,
         "supports_audio_input": false,
         "supports_audio_output": true,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": null,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -48952,7 +48965,7 @@
         "supports_image_output": false,
         "supports_audio_input": false,
         "supports_audio_output": true,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": null,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -49361,7 +49374,7 @@
         "supports_image_output": false,
         "supports_audio_input": false,
         "supports_audio_output": true,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": null,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -49725,6 +49738,485 @@
     },
     {
       "schema_version": "2026-08-14.2",
+      "catalog_id": "google/lyria-3.5",
+      "provider_id": "google",
+      "provider_display_name": "Google Gemini",
+      "model_id": "lyria-3.5",
+      "display_name": "Lyria 3.5",
+      "description": "Google Lyria 3.5 flagship full-length music generation model with text and image input and stereo audio plus lyrics output.",
+      "family": "lyria",
+      "external_ids": {
+        "provider_canonical_slug": "models/lyria-3.5",
+        "hugging_face_id": null,
+        "upstream_model_id": "lyria-3.5"
+      },
+      "lifecycle": {
+        "created_at": null,
+        "created_at_unix_seconds": null,
+        "release_date": "2026-09-03",
+        "knowledge_cutoff": null,
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "preview",
+      "architecture": {
+        "source_modality": "image+text->audio+text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": null,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "image",
+          "text"
+        ],
+        "output": [
+          "audio",
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": true,
+        "supports_video_input": false,
+        "supports_video_output": false,
+        "supports_file_input": false,
+        "supports_pdf_input": false,
+        "supports_voice": false,
+        "supports_tools": false,
+        "supports_parallel_tool_calls": null,
+        "supports_structured_outputs": false,
+        "supports_json_mode": false,
+        "supports_reasoning": false,
+        "supports_embeddings": false,
+        "supports_batch": false,
+        "supports_fine_tuning": null,
+        "supports_caching": false
+      },
+      "thinking": {
+        "supported": false,
+        "control_kind": "unknown",
+        "supported_swarm_settings": [],
+        "default_swarm_setting": null,
+        "provider_parameter": null,
+        "provider_supported_values": [],
+        "provider_default_value": null,
+        "can_disable": null,
+        "supports_budget_tokens": null,
+        "supports_effort_levels": null,
+        "supports_reasoning_content": null,
+        "swarm_setting_mappings": [],
+        "unsupported_swarm_settings": [],
+        "source_ids": [],
+        "notes": null
+      },
+      "limits": {
+        "context_window_tokens": 131072,
+        "max_input_tokens": 131072,
+        "max_output_tokens": null,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": null,
+        "output_price_per_million_tokens": null,
+        "cached_input_price_per_million_tokens": null,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "billing": {
+          "status": "verified",
+          "lines": [
+            {
+              "kind": "billing_rate",
+              "billable": "song",
+              "unit": "song",
+              "price_usd": 0.08,
+              "variant": "full_song",
+              "conditions": {
+                "tier": "paid",
+                "service_tier": "standard"
+              },
+              "source_ids": [
+                "google_gemini_pricing_docs"
+              ]
+            }
+          ],
+          "notes": "Lyria 3.5 full-song generation costs $0.08 per song on the paid tier. No free tier is available; success-only charging is not specified in this model's pricing row."
+        },
+        "is_free": false
+      },
+      "parameters": {
+        "supported_parameters": [],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "google",
+        "upstream_provider_ids": [
+          "google"
+        ],
+        "top_provider_context_window_tokens": 131072,
+        "top_provider_max_output_tokens": null,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3.5",
+        "docs_url": "https://ai.google.dev/gemini-api/docs/models",
+        "pricing_url": "https://ai.google.dev/gemini-api/docs/pricing",
+        "endpoint_url": "https://generativelanguage.googleapis.com/v1beta/models"
+      },
+      "sources": [
+        {
+          "source_id": "google_gemini_lyria_35_model_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3.5",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "availability_status",
+            "catalog_id",
+            "description",
+            "display_name",
+            "family",
+            "limits",
+            "model_id",
+            "parameters",
+            "parameters.supported_parameters",
+            "provider_id",
+            "provider_specific.google"
+          ]
+        },
+        {
+          "source_id": "google_gemini_lyria_35_model_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3.5",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture.source_modality",
+            "capabilities",
+            "modalities",
+            "provider_specific.google.multimodal"
+          ]
+        },
+        {
+          "source_id": "google_gemini_image_understanding_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/generate-content/image-understanding",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.google.multimodal.image"
+          ]
+        },
+        {
+          "source_id": "google_gemini_document_processing_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/generate-content/document-processing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.google.multimodal.pdf"
+          ]
+        },
+        {
+          "source_id": "google_gemini_file_input_methods_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/file-input-methods",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "capabilities.supports_file_input",
+            "capabilities.supports_pdf_input",
+            "provider_specific.google.multimodal.pdf",
+            "provider_specific.google.multimodal.transport"
+          ]
+        },
+        {
+          "source_id": "google_gemini_thinking_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/thinking",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "limits.max_reasoning_tokens",
+            "parameters.supported_parameters",
+            "provider_specific.google.supported_thinking_controls",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "google_gemini_changelog_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/changelog",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "availability_status",
+            "lifecycle.expiration_date",
+            "lifecycle.release_date"
+          ]
+        },
+        {
+          "source_id": "google_gemini_music_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/music-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "partially_verified",
+          "fields": [
+            "provider_specific.google.model_api_surface",
+            "provider_specific.google.music_generation"
+          ]
+        },
+        {
+          "source_id": "google_gemini_pricing_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "pricing"
+          ]
+        },
+        {
+          "source_id": "google_gemini_priority_inference_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/priority-inference",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "partially_verified",
+          "fields": [
+            "parameters.supported_parameters",
+            "provider_specific.google.serving",
+            "provider_specific.google.serving.tiers.priority"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "google": {
+          "api_surface": "gemini_developer_api",
+          "api_visibility_verified": false,
+          "model_api_surface": "interactions_api",
+          "multimodal": {
+            "native_input_modalities": [
+              "image",
+              "text"
+            ],
+            "native_output_modalities": [
+              "audio",
+              "text"
+            ],
+            "image": {
+              "input": true,
+              "contract_inheritance": null,
+              "model_overrides": {
+                "status": "unsupported",
+                "reason": "This model uses a different API surface, so the generateContent image contract does not apply."
+              },
+              "notes": "No generateContent image-input contract is inherited."
+            },
+            "pdf": {
+              "input": false,
+              "generic_file_support": false,
+              "contract_inheritance": null,
+              "model_overrides": {
+                "status": "unsupported",
+                "reason": "This model uses a different API surface, so the generateContent PDF contract does not apply."
+              },
+              "notes": "The cited exact-model data-type table does not list PDF or generic files."
+            },
+            "transport": {
+              "files_api_is_capability_evidence": false,
+              "notes": "The Files API and inline/URI transport can carry model-supported media, but transport acceptance does not establish a model capability or arbitrary-file support."
+            },
+            "output_semantics": "Generated 44.1kHz stereo music plus lyrics text; MP3 default and documented WAV output, not voice/TTS."
+          },
+          "multimodal_evidence": {
+            "source_id": "google_gemini_lyria_35_model_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3.5",
+            "status": "verified",
+            "exact_model": true,
+            "notes": "The exact Lyria 3.5 page verifies text/image input and audio/lyrics output; the music-generation guide verifies the Interactions API surface."
+          },
+          "resource_name": "models/lyria-3.5",
+          "base_model_id": "lyria-3.5",
+          "version": null,
+          "supported_generation_methods": [],
+          "thinking": false,
+          "supported_thinking_controls": null,
+          "temperature": null,
+          "max_temperature": null,
+          "top_p": null,
+          "top_k": null,
+          "serving": {
+            "supported": false,
+            "supported_tiers": [
+              "standard"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": null,
+            "tiers": {
+              "standard": {
+                "tier": "standard",
+                "swarm_setting": "off",
+                "provider_parameter": "service_tier",
+                "provider_value": null,
+                "api_surface": "generate_content",
+                "interface": "synchronous",
+                "pricing": {
+                  "relative_to_standard": "standard",
+                  "multiplier_min": 1,
+                  "multiplier_max": 1,
+                  "discount_percent": null,
+                  "notes": "Full standard Gemini API token price."
+                },
+                "latency": "Seconds to minutes",
+                "reliability": "High / medium-high",
+                "notes": "Default Gemini API inference tier when service_tier is omitted."
+              },
+              "priority": null,
+              "flex": null,
+              "batch": null
+            },
+            "source_ids": [],
+            "notes": "No Google Priority serving-tier support is documented for this model in the current Gemini serving-tier sources."
+          },
+          "image_generation": null,
+          "video_generation": null,
+          "music_generation": {
+            "status": "partially_verified",
+            "api_surface": "interactions_api",
+            "documented_generation_method": "interactions.create",
+            "settings": {
+              "format": {
+                "status": "unknown",
+                "client_parameter": "format",
+                "provider_parameter": "response_format",
+                "supported_values": [],
+                "provider_documented_values": [
+                  "mp3",
+                  "wav"
+                ],
+                "default_value": "mp3",
+                "notes": "The guide documents MP3 by default and WAV via response_format, but its example only sets type=audio. An exact MP3/WAV selector mapping is unverified; do not send mp3 or wav as response_format.type."
+              }
+            },
+            "features": {
+              "image_to_music": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "input",
+                "provider_parameter": "input",
+                "max_inputs": 10,
+                "notes": "Accepts up to 10 images alongside text in the Interactions input list to inspire music."
+              },
+              "custom_lyrics": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Include custom lyrics with [Verse], [Chorus], and [Bridge] section tags in the prompt."
+              },
+              "timed_structure": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Use timestamps such as [0:00 - 0:30] in the prompt to guide arrangement progression."
+              },
+              "instrumental": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Prompt with Instrumental only, no vocals for music without singing."
+              },
+              "duration_control": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Full-length songs last a couple of minutes. Prompt descriptions or timestamps influence duration; no exact numeric duration parameter or guaranteed range is published."
+              }
+            },
+            "output": {
+              "sample_rate_hz": 44100,
+              "channels": 2,
+              "default_format": "mp3",
+              "includes_lyrics_text": true
+            },
+            "source_id": "google_gemini_music_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/music-generation",
+            "notes": "Exact Lyria 3.5 Interactions API documentation backs music generation, not voice/TTS. Single-turn generation only; generated audio includes a SynthID watermark. Selectable format mapping remains unverified."
+          },
+          "docs_enrichment_status": "official_model_docs_verified",
+          "pricing_enrichment_status": "official_gemini_pricing_docs",
+          "note": "First-party exact-model, music-generation, and pricing docs verify Lyria 3.5 preview music generation through the Interactions API. Models API visibility and API-returned generation methods remain unverified; no output-token limit is published. Format selector mapping remains unverified."
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": false,
+          "best_for_fast_chat": null,
+          "best_for_vision": null,
+          "best_for_voice": null,
+          "best_for_image_generation": null,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Google documentation-only entry is included from exact first-party evidence while Models API visibility remains unverified."
+      },
+      "updated_at": "2026-07-26T06:08:43.862Z",
+      "media": {
+        "input_understanding": {
+          "audio": false,
+          "image": true,
+          "video": false
+        },
+        "output_generation": {
+          "audio": true,
+          "image": false,
+          "video": false
+        },
+        "categories": [
+          "audio_generation",
+          "image_understanding"
+        ]
+      }
+    },
+    {
+      "schema_version": "2026-08-14.2",
       "catalog_id": "google/lyria-realtime-exp",
       "provider_id": "google",
       "provider_display_name": "Google Gemini",
@@ -49772,7 +50264,7 @@
         "supports_video_output": false,
         "supports_file_input": false,
         "supports_pdf_input": false,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": false,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -50587,7 +51079,7 @@
         "supports_image_output": false,
         "supports_audio_input": false,
         "supports_audio_output": true,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": false,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -51310,7 +51802,7 @@
         "supports_image_output": false,
         "supports_audio_input": false,
         "supports_audio_output": true,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": false,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
@@ -52033,7 +52525,7 @@
         "supports_image_output": false,
         "supports_audio_input": false,
         "supports_audio_output": true,
-        "supports_voice": true,
+        "supports_voice": false,
         "supports_tools": false,
         "supports_parallel_tool_calls": null,
         "supports_structured_outputs": null,
