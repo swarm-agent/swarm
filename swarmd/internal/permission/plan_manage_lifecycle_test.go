@@ -18,8 +18,8 @@ func TestPlanManageLifecycleRequirementIsTyped(t *testing.T) {
 		args string
 		want string
 	}{
-		{name: "followup", args: `{"action":"request_followup_checkpoint","change_request":"add a review note"}`, want: "plan_followup_request"},
-		{name: "request changes alias", args: `{"action":"request_changes","change_request":"add a review note"}`, want: "plan_followup_request"},
+		{name: "followup", args: `{"action":"request_followup_checkpoint","change_request":"add a review note"}`, want: "plan_followup_retired"},
+		{name: "request changes alias", args: `{"action":"request_changes","change_request":"add a review note"}`, want: "plan_followup_retired"},
 		{name: "amendment", args: `{"action":"amend_plan","plan_id":"plan_1","base_revision":2,"replace_from_checkpoint_id":"cp-2","document":{"id":"plan_1","title":"Plan","checkpoints":[{"id":"cp-2","status":"pending"}]}}`, want: "plan_amendment_request"},
 		{name: "new plan", args: `{"action":"request_new_plan","title":"New direction"}`, want: "plan_new_request"},
 		{name: "legacy save existing", args: `{"action":"save","plan_id":"plan_1","document":{"info":{"goal":"update"}}}`, want: "plan_revision_request"},
@@ -39,45 +39,17 @@ func TestPlanManageLifecycleRequirementIsTyped(t *testing.T) {
 	}
 }
 
-func TestAuthorizeToolCallResolvesFollowupPolicyBeforeCreatePending(t *testing.T) {
-	cases := []struct {
-		name          string
-		globalDefault string
-		planOverride  string
-		toolPolicy    string
-		wantDecision  AuthorizationDecision
-	}{
-		{name: "ask default creates permission", globalDefault: sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, wantDecision: AuthorizationPending},
-		{name: "auto default approves without permission", globalDefault: sessionruntime.PlanFollowupCheckpointPolicyAutoStart, wantDecision: AuthorizationApprove},
-		{name: "plan auto override beats ask default", globalDefault: sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, planOverride: sessionruntime.PlanFollowupCheckpointPolicyAutoStart, wantDecision: AuthorizationApprove},
-		{name: "plan ask override beats auto default", globalDefault: sessionruntime.PlanFollowupCheckpointPolicyAutoStart, planOverride: sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, wantDecision: AuthorizationPending},
-		{name: "caller supplied policy is ignored", globalDefault: sessionruntime.PlanFollowupCheckpointPolicyRequireApproval, toolPolicy: sessionruntime.PlanFollowupCheckpointPolicyAutoStart, wantDecision: AuthorizationPending},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			svc, sessionID, planID, cleanup := newPermissionLifecycleTestService(t, tc.planOverride)
-			defer cleanup()
-			svc.SetFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) { return tc.globalDefault, nil })
+func TestAuthorizeToolCallFollowupCheckpointIsRetired(t *testing.T) {
+	svc, sessionID, planID, cleanup := newPermissionLifecycleTestService(t, "")
+	defer cleanup()
 
-			args := fmt.Sprintf(`{"action":"request_followup_checkpoint","plan_id":%q,"change_request":"add a review note"`, planID)
-			if tc.toolPolicy != "" {
-				args += fmt.Sprintf(`,"followup_checkpoint_policy":%q,"policy":%q`, tc.toolPolicy, tc.toolPolicy)
-			}
-			args += `}`
-			auth, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run-1", CallID: "call-1", ToolName: "plan_manage", ToolArguments: args, Mode: sessionruntime.ModeAuto})
-			if err != nil {
-				t.Fatalf("authorize tool call: %v", err)
-			}
-			if auth.Decision != tc.wantDecision {
-				t.Fatalf("decision = %q, want %q (record=%v reason=%q source=%q)", auth.Decision, tc.wantDecision, auth.Record != nil, auth.Reason, auth.Source)
-			}
-			if tc.wantDecision == AuthorizationPending && auth.Record == nil {
-				t.Fatalf("pending decision should include permission record")
-			}
-			if tc.wantDecision == AuthorizationApprove && auth.Record != nil {
-				t.Fatalf("approved dynamic policy should not create permission record")
-			}
-		})
+	args := fmt.Sprintf(`{"action":"request_followup_checkpoint","plan_id":%q,"change_request":"add a review note"}`, planID)
+	auth, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run-1", CallID: "call-1", ToolName: "plan_manage", ToolArguments: args, Mode: sessionruntime.ModeAuto})
+	if err != nil {
+		t.Fatalf("authorize tool call: %v", err)
+	}
+	if auth.Decision != AuthorizationDeny || auth.Requirement != "plan_followup_retired" || auth.Source != "retired_action_lockout" {
+		t.Fatalf("expected retired lockout denial, got %+v", auth)
 	}
 }
 
@@ -104,7 +76,7 @@ func TestAuthorizeToolCallNoActivePlanUsesAtomicSessionCheckpointPath(t *testing
 
 	auth, err := svc.AuthorizeToolCall(AuthorizationInput{
 		SessionID: session.ID, AccountScopeID: "account-lifecycle", RunID: "run-no-plan", CallID: "call-no-plan",
-		ToolName: "plan_manage", ToolArguments: `{"action":"request_followup_checkpoint","change_request":"wait ten seconds"}`, Mode: sessionruntime.ModeAuto,
+		ToolName: "plan_manage", ToolArguments: `{"action":"start_session_checkpoint","change_request":"wait ten seconds"}`, Mode: sessionruntime.ModeAuto,
 	})
 	if err != nil {
 		t.Fatalf("authorize no-plan checkpoint request: %v", err)
@@ -114,30 +86,6 @@ func TestAuthorizeToolCallNoActivePlanUsesAtomicSessionCheckpointPath(t *testing
 	}
 }
 
-func TestAuthorizeToolCallResolvesFollowupPolicyEveryTime(t *testing.T) {
-	svc, sessionID, planID, cleanup := newPermissionLifecycleTestService(t, "")
-	defer cleanup()
-	globalDefault := sessionruntime.PlanFollowupCheckpointPolicyAutoStart
-	svc.SetFollowupCheckpointPolicyResolver(func(accountScopeID string) (string, error) { return globalDefault, nil })
-	args := fmt.Sprintf(`{"action":"request_followup_checkpoint","plan_id":%q,"change_request":"add a review note"}`, planID)
-
-	auth, err := svc.AuthorizeToolCall(AuthorizationInput{SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run-1", CallID: "call-1", ToolName: "plan_manage", ToolArguments: args, Mode: sessionruntime.ModeAuto})
-	if err != nil {
-		t.Fatalf("authorize auto default: %v", err)
-	}
-	if auth.Decision != AuthorizationApprove {
-		t.Fatalf("auto default decision = %q, want approved", auth.Decision)
-	}
-
-	globalDefault = sessionruntime.PlanFollowupCheckpointPolicyRequireApproval
-	auth, err = svc.AuthorizeToolCall(AuthorizationInput{SessionID: sessionID, AccountScopeID: "account-lifecycle", RunID: "run-2", CallID: "call-2", ToolName: "plan_manage", ToolArguments: args, Mode: sessionruntime.ModeAuto})
-	if err != nil {
-		t.Fatalf("authorize ask default: %v", err)
-	}
-	if auth.Decision != AuthorizationPending || auth.Record == nil {
-		t.Fatalf("ask default authorization = %+v, want pending record", auth)
-	}
-}
 
 func TestPlanAcceptanceAlwaysAllowPreservesCanonicalPendingArguments(t *testing.T) {
 	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")

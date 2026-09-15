@@ -509,14 +509,14 @@ func TestManageArtifactGenerateAudioValidationErrors(t *testing.T) {
 	}
 
 	// Prompt exceeds character limit
-	longPrompt := strings.Repeat("A", 4001)
+	longPrompt := strings.Repeat("A", manageArtifactMaxPromptRunes+1)
 	call5 := Call{
 		CallID:    "long-prompt",
 		Name:      "manage_artifact",
 		Arguments: fmt.Sprintf(`{"action":"generate_audio","prompt":%q}`, longPrompt),
 	}
 	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call5)
-	if err == nil || !strings.Contains(err.Error(), "exceeds 4000 characters") {
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("exceeds %d characters", manageArtifactMaxPromptRunes)) {
 		t.Fatalf("expected prompt character limit error, got: %v", err)
 	}
 }
