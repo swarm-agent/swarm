@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ const (
 	maxStreamEventBytes      = 8 << 20
 	maxInlineRequestBytes    = 20 << 20
 	maxInlineImageBytes      = 14 << 20
+
+	googleServiceUnavailableMaxRetries = 3
+	googleServiceUnavailableBaseDelay  = 500 * time.Millisecond
 )
 
 var googleInlineImageMIMETypes = []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}
@@ -42,6 +46,7 @@ var googleAPIKeyQueryPattern = regexp.MustCompile(`(?i)([?&]key=)[^&#\s]+`)
 type Runner struct {
 	authStore  *pebblestore.AuthStore
 	httpClient *http.Client
+	retryDelay func(attempt int) time.Duration
 }
 
 type googleAuth struct {
@@ -217,39 +222,55 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 	}
 
 	endpoint := fmt.Sprintf(generateContentURL, url.PathEscape(modelID))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
-	if err != nil {
-		return provideriface.Response{}, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
+	var (
+		resp *http.Response
+		body []byte
+	)
+	for attempt := 0; attempt <= googleServiceUnavailableMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := r.retryWait(attempt, resp)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return provideriface.Response{}, err
+			}
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
-	providerdiagnostics.LogRequest("google", "generateContent", httpReq, raw)
-	resp, err := r.httpClient.Do(httpReq)
-	if err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
-		return provideriface.Response{}, sanitizeGoogleError("google generateContent request failed", err)
-	}
-	defer resp.Body.Close()
+		providerdiagnostics.LogRequest("google", "generateContent", httpReq, raw)
+		resp, err = r.httpClient.Do(httpReq)
+		if err != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
+			return provideriface.Response{}, sanitizeGoogleError("google generateContent request failed", err)
+		}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-	providerdiagnostics.LogResponse("google", "generateContent", resp, body)
-	if err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
-		return provideriface.Response{}, sanitizeGoogleError("read google generateContent response", err)
-	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		return provideriface.Response{}, googleStatusError("google generateContent failed", resp.StatusCode, body)
-	}
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+		resp.Body.Close()
+		providerdiagnostics.LogResponse("google", "generateContent", resp, body)
+		if err != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
+			return provideriface.Response{}, sanitizeGoogleError("read google generateContent response", err)
+		}
+		if resp.StatusCode == http.StatusServiceUnavailable && attempt < googleServiceUnavailableMaxRetries {
+			continue
+		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			return provideriface.Response{}, googleStatusError("google generateContent failed", resp.StatusCode, body)
+		}
 
-	var decoded googleResponse
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		return provideriface.Response{}, sanitizeGoogleError("decode google response", err)
+		var decoded googleResponse
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return provideriface.Response{}, sanitizeGoogleError("decode google response", err)
+		}
+		result := parseGoogleResponse(decoded)
+		annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, resp.Header.Get("x-gemini-service-tier"))
+		result.Model = modelID
+		return result, nil
 	}
-	result := parseGoogleResponse(decoded)
-	annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, resp.Header.Get("x-gemini-service-tier"))
-	result.Model = modelID
-	return result, nil
+	return provideriface.Response{}, googleStatusError("google generateContent failed", http.StatusServiceUnavailable, body)
 }
 
 func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -278,56 +299,77 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 	}
 
 	endpoint := fmt.Sprintf(streamGenerateContentURL, url.PathEscape(modelID))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
-	if err != nil {
-		return provideriface.Response{}, err
-	}
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("Content-Type", "application/json")
-	query := httpReq.URL.Query()
-	query.Set("alt", "sse")
-	httpReq.URL.RawQuery = query.Encode()
-	httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
-
-	providerdiagnostics.LogRequest("google", "streamGenerateContent", httpReq, raw)
-	resp, err := r.httpClient.Do(httpReq)
-	if err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
-		return provideriface.Response{}, sanitizeGoogleError("google streamGenerateContent request failed", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
-		providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
-		if readErr != nil {
-			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", readErr)
-			return provideriface.Response{}, sanitizeGoogleError("read google streamGenerateContent error response", readErr)
+	var (
+		resp *http.Response
+		body []byte
+	)
+	for attempt := 0; attempt <= googleServiceUnavailableMaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := r.retryWait(attempt, resp)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return provideriface.Response{}, err
+			}
 		}
-		return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
-	}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+		if err != nil {
+			return provideriface.Response{}, err
+		}
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("Content-Type", "application/json")
+		query := httpReq.URL.Query()
+		query.Set("alt", "sse")
+		httpReq.URL.RawQuery = query.Encode()
+		httpReq.Header.Set(googleAPIKeyHeader, auth.APIKey)
 
-	providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
-	headerServiceTier := resp.Header.Get("x-gemini-service-tier")
-	accumulator := newGoogleStreamAccumulator(modelID)
-	if err := parseGoogleEventStream(resp.Body, func(payload string) error {
-		providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
-		return accumulator.applyPayload(payload, onEvent)
-	}); err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
-		return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
+		providerdiagnostics.LogRequest("google", "streamGenerateContent", httpReq, raw)
+		resp, err = r.httpClient.Do(httpReq)
+		if err != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
+			return provideriface.Response{}, sanitizeGoogleError("google streamGenerateContent request failed", err)
+		}
+
+		if resp.StatusCode == http.StatusServiceUnavailable && attempt < googleServiceUnavailableMaxRetries {
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+			resp.Body.Close()
+			providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
+			continue
+		}
+
+		if resp.StatusCode >= http.StatusBadRequest {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+			resp.Body.Close()
+			providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
+			if readErr != nil {
+				providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", readErr)
+				return provideriface.Response{}, sanitizeGoogleError("read google streamGenerateContent error response", readErr)
+			}
+			return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
+		}
+
+		defer resp.Body.Close()
+		providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
+		headerServiceTier := resp.Header.Get("x-gemini-service-tier")
+		accumulator := newGoogleStreamAccumulator(modelID)
+		if err := parseGoogleEventStream(resp.Body, func(payload string) error {
+			providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
+			return accumulator.applyPayload(payload, onEvent)
+		}); err != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
+			return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
+		}
+		if !accumulator.finished {
+			return provideriface.Response{}, errors.New("google stream ended without a finish reason")
+		}
+		servedTier, err := reconcileGoogleServiceTierSignals(headerServiceTier, accumulator.serviceTier)
+		if err != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
+			return provideriface.Response{}, err
+		}
+		result := accumulator.response()
+		annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, servedTier)
+		return result, nil
 	}
-	if !accumulator.finished {
-		return provideriface.Response{}, errors.New("google stream ended without a finish reason")
-	}
-	servedTier, err := reconcileGoogleServiceTierSignals(headerServiceTier, accumulator.serviceTier)
-	if err != nil {
-		providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
-		return provideriface.Response{}, err
-	}
-	result := accumulator.response()
-	annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, servedTier)
-	return result, nil
+	return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", http.StatusServiceUnavailable, body)
 }
 
 func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
@@ -1229,6 +1271,38 @@ func sanitizeGoogleText(raw string) string {
 	sanitized := privacy.SanitizeText(raw)
 	sanitized = googleAPIKeyQueryPattern.ReplaceAllString(sanitized, `${1}[redacted]`)
 	return strings.TrimSpace(sanitized)
+}
+
+func (r *Runner) retryWait(attempt int, resp *http.Response) time.Duration {
+	if r != nil && r.retryDelay != nil {
+		return r.retryDelay(attempt)
+	}
+	if resp != nil {
+		if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+			if secs, err := strconv.Atoi(strings.TrimSpace(retryAfter)); err == nil && secs > 0 && secs <= 30 {
+				return time.Duration(secs) * time.Second
+			}
+		}
+	}
+	multiplier := 1 << uint(attempt-1)
+	if multiplier <= 0 || multiplier > 16 {
+		multiplier = 16
+	}
+	return googleServiceUnavailableBaseDelay * time.Duration(multiplier)
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) error {

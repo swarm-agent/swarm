@@ -1848,3 +1848,42 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
     - `desktop-v3-artifact-preview-thumbnail.tsx`: Audio artifacts use `aspect-auto` with compact padding and animated sound wave bars rather than forced `aspect-video` 16:9 dimensions.
   - **AI Multi-Sound-Clip Prompt Authority (`run/service_prompt.go`):** Added explicit harness prompt guidance confirming and instructing the AI that it can generate multiple sound clips or variations in ONE tool call via `manage_artifact action=generate_audio` with `prompts: [...]` (up to 8 clips) or `count: N` (1 to 8), specifying duration and optional multimodal image inspiration, with Desktop interactive selector controls and audio iteration support. Added unit test `TestMasterHarnessPromptGuidesAudioGenerationAndMultipleSoundClips`.
   - **Validation:** Added comprehensive unit and integration tests in `swarmd/internal/tool/runtime_manage_artifact_video_chain_test.go` (`TestManageArtifactExtractVideoFrameRequiresVideoSource`, `TestManageArtifactChainVideoRequiresAtLeastTwoVideos`, `TestManageArtifactVideoChainingRealFFmpeg`, `TestManageArtifactGenerateVideoWithChainFrom`), `swarmd/internal/tool/runtime_manage_artifact_video_story_test.go` (`TestManageArtifactGenerateVideoStoryValidation`, `TestManageArtifactGenerateVideoStoryEndToEndOneCall`, `TestManageArtifactGenerateVideoAliasRoutesToStory`), `swarmd/internal/run/service_prompt_artifact_test.go` (`TestMasterHarnessPromptGuidesVideoChainingAndAudioOverride`, `TestMasterHarnessPromptGuidesAudioGenerationAndMultipleSoundClips`), `web/src/features/desktop/chat/components/desktop-v3-artifact-audio-preview.static.spec.ts`, and `swarmd/internal/provider/google/tool_enum_schema_test.go` (`TestGoogleToolCatalogArraysHaveItemsOnWire` verifying all tool array definitions specify items schemas and fallback protection against Google API missing items 400 rejection). All tests pass.
+
+### Google provider error handling: HTTP 503 retry and token overflow compaction (2026-09-15)
+
+- **HTTP 503 Service Unavailable retries (`provider/google/runner.go`):**
+  - Added bounded retry logic for Google `generateContent` and `streamGenerateContent` endpoints when receiving HTTP 503 Service Unavailable (due to Google model overload/high demand).
+  - Retries up to 3 times (total 4 attempts) with exponential backoff (500ms base, 1s, 2s) and parses `Retry-After` header when provided.
+  - Aborts immediately on context cancellation via `sleepWithContext`.
+  - In streaming mode, HTTP 503 errors occur before response streaming starts; response bodies are drained and closed cleanly on each retry attempt to prevent socket leaks.
+  - If retries are exhausted, the sanitized 503 status error is returned.
+
+- **Google token count overflow recognition and 85% context utilization compaction (`api/sessions_v3_executor.go`, `api/sessions_v3_diagnostics.go`, `run/service.go`):**
+  - Google Gemini returns HTTP 400 with `INVALID_ARGUMENT` and message `The input token count exceeds the maximum number of tokens allowed <limit>.` when context exceeds the model's limit (e.g. 1,048,576 tokens).
+  - Added `sessionV3IsGoogleTokenOverflowDiagnostic` and `isGoogleTokenOverflowDiagnostic` pattern matching Google's input token overflow error messages (`input token count exceeds`, `exceeds the maximum number of tokens allowed`, `maximum number of tokens allowed`).
+  - Added `parseSessionV3GoogleMaxAllowedTokens` and `parseGoogleMaxAllowedTokens` extracting the model token ceiling directly from the error message when not otherwise resolved.
+  - Added `sessionV3ContextUtilizationPercent` and `runContextUtilizationPercent` determining context window utilization percentage against the model's context window from recorded `SessionUsageSummary` or estimated message token counts (approx 4 chars/token).
+  - In `sessions_v3_executor.go:shouldTriggerContextOverflowCompaction` and `run/service.go:tryContextOverflowCompaction`, when Google token overflow is detected, context window utilization is checked:
+    - If utilization >= 85.0%, context compaction triggers with the Compact agent to summarize previous turns into a checkpoint, creates a continuation epoch, and resumes with Gemini on the compacted context.
+    - If utilization < 85.0%, compaction is not triggered, preventing improper compaction loops and returning the error cleanly.
+    - Generic `context_length_exceeded` / `context window exceeded` diagnostics continue to trigger compaction unconditionally for backward compatibility.
+  - Diagnostic logging in `recordSessionV3ContextOverflowDecision` includes `google_token_overflow_matched` and `context_utilization_percent`.
+
+- **Validation:**
+  - `swarmd/internal/provider/google/runner_test.go`:
+    - `TestGoogleServiceUnavailableRetrySuccessUnary` (recovers on 3rd attempt after two 503s)
+    - `TestGoogleServiceUnavailableRetryExhaustedUnary` (returns 503 after 3 retries / 4 total attempts)
+    - `TestGoogleServiceUnavailableRetrySuccessStreaming` (streams after two 503s)
+    - `TestGoogleServiceUnavailableRetryExhaustedStreaming` (returns 503 after 3 retries on stream endpoint)
+    - `TestGoogleServiceUnavailableRetryRespectsContextCancellation` (aborts sleep on context cancel)
+  - `swarmd/internal/api/sessions_v3_google_overflow_test.go`:
+    - `TestGoogleTokenOverflowDiagnosticMatching` (positive and negative pattern matching and token limit parsing)
+    - `TestShouldTriggerContextOverflowCompactionAt85Percent` (verifies generic errors, <85% refusal, and >=85% compaction trigger)
+    - `TestShouldTriggerContextOverflowCompactionEstimatedFromMessages` (verifies message token estimation when usage summary is absent)
+  - `swarmd/internal/run/service_google_overflow_test.go`:
+    - `TestRunIsGoogleTokenOverflowDiagnostic`
+    - `TestRunContextUtilizationPercent`
+    - `TestRunTurnGoogleOverflowCompactionSuccessAt85Percent` (full RunTurn flow with 400 overflow, Compact agent execution, and Gemini continuation)
+    - `TestRunTurnGoogleOverflowRefusesCompactionUnder85Percent` (full RunTurn flow verifying no compaction when under 85%)
+  - All package tests pass.
+

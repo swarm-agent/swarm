@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -241,6 +243,193 @@ func TestGooglePriorityTransportMarksMissingServedTierUnconfirmed(t *testing.T) 
 	}
 	if _, claimed := usage.APIUsageRaw["service_tier"]; claimed || usage.APIUsageRaw["requested_service_tier"] != "priority" || usage.APIUsageRaw["service_tier_status"] != "unconfirmed" {
 		t.Fatalf("missing header must remain explicitly unconfirmed: %#v", usage.APIUsageRaw)
+	}
+}
+
+func TestGoogleServiceUnavailableRetrySuccessUnary(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google generateContent must retry HTTP 503 Service Unavailable up to 3 times and succeed when service recovers.
+	// - Threat/regression: High-demand 503 errors abort non-streaming requests immediately instead of retrying.
+	// - Boundary/authority: Runner.createResponse, Runner.retryWait, sleepWithContext in provider/google/runner.go.
+	// - Narrowest test layer: Runner round-trip transport asserting call count and successful response after retries.
+	calls := 0
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls < 3 {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}`)),
+				Request:    req,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"recovered response"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}`)),
+			Request:    req,
+		}, nil
+	}))
+	runner.retryDelay = func(attempt int) time.Duration { return 0 }
+
+	resp, err := runner.CreateResponse(ctx, provideriface.Request{
+		Model: "gemini-test",
+		Input: []map[string]any{{"role": "user", "content": "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("createResponse failed unexpectedly: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3 (2 retries + 1 success)", calls)
+	}
+	if resp.Text != "recovered response" {
+		t.Fatalf("resp.Text = %q, want 'recovered response'", resp.Text)
+	}
+}
+
+func TestGoogleServiceUnavailableRetryExhaustedUnary(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google generateContent must stop after googleServiceUnavailableMaxRetries (3 retries) and return 503 error.
+	// - Threat/regression: Infinite retries hang caller, or retries terminate too early.
+	// - Boundary/authority: Runner.createResponse, googleServiceUnavailableMaxRetries in provider/google/runner.go.
+	// - Narrowest test layer: Runner round-trip transport asserting exactly 4 attempts and 503 error returned.
+	calls := 0
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}`)),
+			Request:    req,
+		}, nil
+	}))
+	runner.retryDelay = func(attempt int) time.Duration { return 0 }
+
+	_, err := runner.CreateResponse(ctx, provideriface.Request{
+		Model: "gemini-test",
+		Input: []map[string]any{{"role": "user", "content": "hello"}},
+	})
+	if err == nil {
+		t.Fatal("createResponse succeeded, want 503 error")
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4 (1 initial + 3 retries)", calls)
+	}
+	if !strings.Contains(err.Error(), "status=503") {
+		t.Fatalf("err = %v, want status=503", err)
+	}
+}
+
+func TestGoogleServiceUnavailableRetrySuccessStreaming(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google streamGenerateContent must retry HTTP 503 before streaming begins and stream normally once recovered.
+	// - Threat/regression: High-demand 503 kills streaming runs before any chunks stream.
+	// - Boundary/authority: Runner.createStreamingResponse, Runner.retryWait in provider/google/runner.go.
+	// - Narrowest test layer: Streaming transport round-trip verifying 3 attempts, no duplicate stream events, and correct final response.
+	calls := 0
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if calls < 3 {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}`)),
+				Request:    req,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"streaming recovered\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":10,\"totalTokenCount\":15}}\n\n")),
+			Request:    req,
+		}, nil
+	}))
+	runner.retryDelay = func(attempt int) time.Duration { return 0 }
+
+	var streamedEvents []provideriface.StreamEvent
+	resp, err := runner.CreateResponseStreaming(ctx, provideriface.Request{
+		Model: "gemini-test",
+		Input: []map[string]any{{"role": "user", "content": "hello"}},
+	}, func(event provideriface.StreamEvent) {
+		streamedEvents = append(streamedEvents, event)
+	})
+	if err != nil {
+		t.Fatalf("createStreamingResponse failed: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("calls = %d, want 3 (2 retries + 1 success)", calls)
+	}
+	if resp.Text != "streaming recovered" {
+		t.Fatalf("resp.Text = %q, want 'streaming recovered'", resp.Text)
+	}
+}
+
+func TestGoogleServiceUnavailableRetryExhaustedStreaming(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google streamGenerateContent must stop after 3 retries on continuous 503 and return error.
+	// - Threat/regression: Streaming retry loop hangs or fails to return sanitized 503 error.
+	// - Boundary/authority: Runner.createStreamingResponse in provider/google/runner.go.
+	// - Narrowest test layer: Streaming transport round-trip verifying exactly 4 attempts and 503 status error.
+	calls := 0
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":503,"message":"The model is overloaded. Please try again later.","status":"UNAVAILABLE"}}`)),
+			Request:    req,
+		}, nil
+	}))
+	runner.retryDelay = func(attempt int) time.Duration { return 0 }
+
+	_, err := runner.CreateResponseStreaming(ctx, provideriface.Request{
+		Model: "gemini-test",
+		Input: []map[string]any{{"role": "user", "content": "hello"}},
+	}, nil)
+	if err == nil {
+		t.Fatal("createStreamingResponse succeeded, want 503 error")
+	}
+	if calls != 4 {
+		t.Fatalf("calls = %d, want 4 (1 initial + 3 retries)", calls)
+	}
+	if !strings.Contains(err.Error(), "status=503") {
+		t.Fatalf("err = %v, want status=503", err)
+	}
+}
+
+func TestGoogleServiceUnavailableRetryRespectsContextCancellation(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google retry loop must abort when context is canceled.
+	// - Threat/regression: Canceled requests block in retry sleep.
+	// - Boundary/authority: sleepWithContext, Runner.createResponse in provider/google/runner.go.
+	// - Narrowest test layer: Transport round-trip with canceled context during retry delay.
+	calls := 0
+	var cancel context.CancelFunc
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		calls++
+		if cancel != nil {
+			cancel() // Cancel on first 503
+		}
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":503,"message":"The model is overloaded."}}`)),
+			Request:    req,
+		}, nil
+	}))
+	var cancelCtx context.Context
+	cancelCtx, cancel = context.WithCancel(ctx)
+	runner.retryDelay = func(attempt int) time.Duration { return 10 * time.Second }
+
+	_, err := runner.CreateResponse(cancelCtx, provideriface.Request{
+		Model: "gemini-test",
+		Input: []map[string]any{{"role": "user", "content": "hello"}},
+	})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 before cancel", calls)
 	}
 }
 
