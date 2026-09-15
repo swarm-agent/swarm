@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowUp,
   Check,
+  ChevronDown,
   ChevronRight,
   FileAudio,
   Film,
@@ -14,10 +16,10 @@ import {
   Sparkles,
   Video,
 } from 'lucide-react'
+import { cn } from '../../../../../lib/cn'
 import { Button } from '../../../../../components/ui/button'
 import { Card } from '../../../../../components/ui/card'
 import { Input } from '../../../../../components/ui/input'
-import { Select } from '../../../../../components/ui/select'
 import { Textarea } from '../../../../../components/ui/textarea'
 import { browseWorkspacePath } from '../../../../workspaces/launcher/queries/browse-workspace-path'
 import { listWorkspaces } from '../../../../workspaces/launcher/queries/list-workspaces'
@@ -128,10 +130,6 @@ export function pricingLabel(pricing: unknown): string {
   return parts.length ? `${parts.join(' · ')}${input !== null || output !== null ? ' / 1M tokens' : ''}` : ''
 }
 
-function optionLabel(option: MediaCatalogModelOption): string {
-  const pricing = pricingLabel(option.pricing)
-  return pricing ? `${option.display_name} — ${pricing}` : option.display_name
-}
 
 function parentMediaRelativePath(path: string): string {
   const normalized = path.trim().replace(/\\/g, '/')
@@ -147,21 +145,233 @@ function providerLabel(provider: string): string {
   return provider.replace(/(^|[-_\s])([a-z])/g, (_match, prefix: string, char: string) => `${prefix}${char.toUpperCase()}`)
 }
 
-function ModelSelect({ models, value, disabled, onChange }: { models: MediaCatalogModelOption[]; value: string; disabled: boolean; onChange: (value: string) => void }) {
+export function ModelSelect({
+  models,
+  value,
+  disabled,
+  placeholder = 'Choose a model',
+  onChange,
+  ariaLabel,
+}: {
+  models: MediaCatalogModelOption[]
+  value: string
+  disabled: boolean
+  placeholder?: string
+  onChange: (value: string) => void
+  ariaLabel?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const dropdownRef = useRef<HTMLDivElement | null>(null)
+  const [position, setPosition] = useState<{
+    top?: number
+    bottom?: number
+    left: number
+    width: number
+    maxHeight: number
+  } | null>(null)
+
+  const selectedModel = useMemo(
+    () => models.find((model) => model.id === value) ?? null,
+    [models, value],
+  )
+
   const groups = useMemo(() => {
     const result = new Map<string, MediaCatalogModelOption[]>()
-    for (const model of models) result.set(model.provider, [...(result.get(model.provider) ?? []), model])
+    for (const model of models) {
+      result.set(model.provider, [...(result.get(model.provider) ?? []), model])
+    }
     return Array.from(result.entries())
   }, [models])
+
+  const updatePosition = useCallback(() => {
+    if (!triggerRef.current || typeof window === 'undefined') {
+      setPosition(null)
+      return
+    }
+    const rect = triggerRef.current.getBoundingClientRect()
+    const viewportHeight = window.innerHeight
+    const viewportWidth = window.innerWidth
+    const spaceBelow = viewportHeight - rect.bottom
+    const spaceAbove = rect.top
+    const openUpward = spaceBelow < 240 && spaceAbove > spaceBelow
+
+    const width = rect.width
+    const left = Math.max(8, Math.min(rect.left, viewportWidth - width - 8))
+    const maxHeight = Math.max(140, Math.min(320, openUpward ? spaceAbove - 16 : spaceBelow - 16))
+
+    if (openUpward) {
+      setPosition({
+        bottom: viewportHeight - rect.top + 6,
+        left,
+        width,
+        maxHeight,
+      })
+    } else {
+      setPosition({
+        top: rect.bottom + 6,
+        left,
+        width,
+        maxHeight,
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!open) {
+      setPosition(null)
+      return
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [open, updatePosition])
+
+  useEffect(() => {
+    if (!open) return
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node | null
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target) &&
+        !triggerRef.current?.contains(target)
+      ) {
+        setOpen(false)
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  const dropdownStyle: React.CSSProperties = position
+    ? {
+        left: position.left,
+        width: position.width,
+        maxHeight: position.maxHeight,
+        ...(position.top !== undefined ? { top: position.top } : {}),
+        ...(position.bottom !== undefined ? { bottom: position.bottom } : {}),
+      }
+    : {}
+
   return (
-    <Select value={value} disabled={disabled || models.length === 0} onChange={(event) => onChange(event.target.value)}>
-      {!value ? <option value="" disabled>Choose a model</option> : null}
-      {groups.map(([provider, options]) => (
-        <optgroup key={provider} label={providerLabel(provider)}>
-          {options.map((option) => <option key={option.id} value={option.id} disabled={!option.ready}>{optionLabel(option)}</option>)}
-        </optgroup>
-      ))}
-    </Select>
+    <div className="relative w-full">
+      <button
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label={ariaLabel}
+        disabled={disabled || models.length === 0}
+        onClick={() => setOpen((current) => !current)}
+        className={cn(
+          'flex min-h-10 w-full items-center justify-between gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-3 py-2 text-left text-sm text-[var(--app-text)] outline-none transition',
+          'hover:border-[var(--app-border-strong)] focus-visible:border-[var(--app-border-accent)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]',
+          'disabled:cursor-not-allowed disabled:bg-[var(--app-bg-inset)] disabled:opacity-50',
+          open && 'border-[var(--app-border-accent)] ring-1 ring-[var(--app-border-accent)]',
+        )}
+      >
+        <span className={cn('truncate font-medium', !selectedModel && 'font-normal text-[var(--app-text-muted)]')}>
+          {selectedModel ? selectedModel.display_name : placeholder}
+        </span>
+        <ChevronDown
+          size={16}
+          className={cn(
+            'shrink-0 text-[var(--app-text-muted)] transition-transform duration-200',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+
+      {open && position && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              ref={dropdownRef}
+              role="listbox"
+              aria-label={ariaLabel}
+              className="fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-elevated)] shadow-[var(--shadow-panel)] animate-in fade-in zoom-in-95 duration-150"
+              style={dropdownStyle}
+            >
+              <div
+                className="overflow-y-auto p-1.5 space-y-1"
+                style={{ maxHeight: position.maxHeight }}
+              >
+                {groups.map(([provider, options]) => (
+                  <div key={provider} className="space-y-0.5">
+                    <div className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)]">
+                      {providerLabel(provider)}
+                    </div>
+                    {options.map((option) => {
+                      const pricing = pricingLabel(option.pricing)
+                      const isSelected = option.id === value
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          disabled={!option.ready}
+                          onClick={() => {
+                            onChange(option.id)
+                            setOpen(false)
+                          }}
+                          className={cn(
+                            'group flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left transition outline-none',
+                            isSelected
+                              ? 'border border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_12%,var(--app-surface-subtle))]'
+                              : 'border border-transparent hover:bg-[var(--app-surface-hover)]',
+                            !option.ready && 'cursor-not-allowed opacity-50',
+                          )}
+                        >
+                          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                            {/* Top section: model name */}
+                            <div className="flex items-center gap-2">
+                              <span className="truncate text-sm font-medium text-[var(--app-text)]">
+                                {option.display_name}
+                              </span>
+                              {!option.ready ? (
+                                <span className="shrink-0 rounded bg-[var(--app-surface)] px-1.5 py-0.5 text-[10px] text-[var(--app-warning)]">
+                                  Auth needed
+                                </span>
+                              ) : null}
+                            </div>
+                            {/* Bottom section: meta data for the info */}
+                            <span
+                              className="truncate text-xs text-[var(--app-text-muted)]"
+                              title={pricing ? `${pricing}${option.model ? ` · ${option.model}` : ''}` : option.model}
+                            >
+                              {pricing || option.model || 'Standard tier'}
+                            </span>
+                          </div>
+                          {isSelected ? (
+                            <Check size={16} className="shrink-0 text-[var(--app-primary)]" />
+                          ) : null}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
   )
 }
 
@@ -516,10 +726,10 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 {settingsQuery.isPending || catalogQuery.isPending ? (
                   <p className="text-sm text-[var(--app-text-muted)]">Loading image models…</p>
                 ) : (
-                  <label className="block space-y-1.5">
+                  <div className="space-y-1.5">
                     <span className="text-xs font-medium text-[var(--app-text)]">Default image model</span>
-                    <ModelSelect models={imageModels} value={selectedImage} disabled={imageSave.isPending} onChange={(value) => imageSave.mutate(value)} />
-                  </label>
+                    <ModelSelect ariaLabel="Default image model" models={imageModels} value={selectedImage} disabled={imageSave.isPending} onChange={(value) => imageSave.mutate(value)} />
+                  </div>
                 )}
                 {selectedImageOption && !selectedImageOption.ready ? (
                   <p className="text-xs text-[var(--app-warning)]">
@@ -543,10 +753,10 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 <p className="text-xs text-[var(--app-text-muted)]">
                   Used when generating new video clips from text prompts or still images (e.g. Veo 3.1).
                 </p>
-                <label className="block space-y-1.5">
+                <div className="space-y-1.5">
                   <span className="text-xs font-medium text-[var(--app-text)]">Base video generation model</span>
-                  <ModelSelect models={videoGenerationModels} value={selectedVideoDefault} disabled={videoDefaultSave.isPending} onChange={(value) => videoDefaultSave.mutate(value)} />
-                </label>
+                  <ModelSelect ariaLabel="Base video generation model" models={videoGenerationModels} value={selectedVideoDefault} disabled={videoDefaultSave.isPending} onChange={(value) => videoDefaultSave.mutate(value)} />
+                </div>
                 {selectedVideoDefaultOption && !selectedVideoDefaultOption.ready ? (
                   <p className="text-xs text-[var(--app-warning)]">
                     {selectedVideoDefaultOption.reason || `${providerLabel(selectedVideoDefaultOption.provider)} needs authentication before it can generate videos.`}
@@ -569,10 +779,10 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 <p className="text-xs text-[var(--app-text-muted)]">
                   Used when modifying or refining existing video clips while preserving scene consistency.
                 </p>
-                <label className="block space-y-1.5">
+                <div className="space-y-1.5">
                   <span className="text-xs font-medium text-[var(--app-text)]">Video iteration model</span>
-                  <ModelSelect models={videoIterationModels} value={selectedVideoIteration} disabled={videoIterationSave.isPending} onChange={(value) => videoIterationSave.mutate(value)} />
-                </label>
+                  <ModelSelect ariaLabel="Video iteration model" models={videoIterationModels} value={selectedVideoIteration} disabled={videoIterationSave.isPending} onChange={(value) => videoIterationSave.mutate(value)} />
+                </div>
                 {selectedVideoIterationOption && !selectedVideoIterationOption.ready ? (
                   <p className="text-xs text-[var(--app-warning)]">
                     {selectedVideoIterationOption.reason || `${providerLabel(selectedVideoIterationOption.provider)} needs authentication before it can edit videos.`}
@@ -607,10 +817,10 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
                 {catalogQuery.isPending ? (
                   <p className="text-sm text-[var(--app-text-muted)]">Loading qualified Google models…</p>
                 ) : transcriptionModels.length ? (
-                  <label className="block space-y-1.5">
+                  <div className="space-y-1.5">
                     <span className="text-xs font-medium text-[var(--app-text)]">Transcription model</span>
-                    <ModelSelect models={transcriptionModels} value={selectedTranscription} disabled={transcriptionSave.isPending} onChange={(value) => transcriptionSave.mutate(value)} />
-                  </label>
+                    <ModelSelect ariaLabel="Transcription model" models={transcriptionModels} value={selectedTranscription} disabled={transcriptionSave.isPending} onChange={(value) => transcriptionSave.mutate(value)} />
+                  </div>
                 ) : (
                   <p className="text-sm text-[var(--app-text-muted)]">No catalog models currently qualify for video-to-text understanding.</p>
                 )}
