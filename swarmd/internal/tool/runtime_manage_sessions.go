@@ -43,6 +43,9 @@ func manageSessionsDefinition() Definition {
 			"prompt":          map[string]any{"type": "string", "description": "Prompt for create, or message prompt for send_message."},
 			"title":           map[string]any{"type": "string", "description": "Session title for create."},
 			"agent":           map[string]any{"type": "string", "description": "Saved enabled primary or subagent profile for create; omitted uses the active primary."},
+			"provider":        map[string]any{"type": "string", "description": "Optional model provider (e.g. google, codex, anthropic) for create."},
+			"model":           map[string]any{"type": "string", "description": "Optional model name for create."},
+			"thinking":        map[string]any{"type": "string", "description": "Optional thinking level (e.g. low, medium, high) for create."},
 			"wait_seconds":    map[string]any{"type": "integer", "description": "Optional wait duration in seconds (up to 120s) for send_message or create to wait for assistant response."},
 			"reason":          map[string]any{"type": "string", "description": "Optional reason for stop/pause."},
 			"trigger_run":     map[string]any{"type": "boolean", "description": "Optional boolean for send_message indicating whether to trigger an execution run (default true)."},
@@ -530,6 +533,16 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 	}
 	if s.Mode != "" {
 		rec["mode"] = s.Mode
+	}
+	if s.Preference.Provider != "" || s.Preference.Model != "" {
+		rec["preference"] = map[string]any{
+			"provider": s.Preference.Provider,
+			"model":    s.Preference.Model,
+			"thinking": s.Preference.Thinking,
+		}
+	}
+	if agentName := stringValue(s.Metadata["agent_name"]); agentName != "" {
+		rec["agent"] = agentName
 	}
 	if s.WorktreeEnabled {
 		rec["worktree"] = map[string]any{
@@ -1600,9 +1613,40 @@ func (r *Runtime) manageSessionsCreate(ctx context.Context, scope WorkspaceScope
 	now := time.Now().UnixMilli()
 
 	var pref pebblestore.ModelPreference
+	var modelProfile *pebblestore.SessionModelProfileSnapshot
+	var cur pebblestore.SessionSnapshot
+	hasCur := false
 	if scope.SessionID != "" {
-		if cur, ok, _ := r.sessions.GetSession(scope.SessionID); ok {
+		if s, ok, _ := r.sessions.GetSession(scope.SessionID); ok {
+			cur = s
+			hasCur = true
 			pref = cur.Preference
+			if cur.ModelProfile != nil {
+				modelProfile = pebblestore.CloneSessionModelProfileSnapshot(cur.ModelProfile)
+			}
+		}
+	}
+	reqProvider := strings.TrimSpace(stringValue(args["provider"]))
+	reqModel := strings.TrimSpace(stringValue(args["model"]))
+	reqThinking := strings.TrimSpace(stringValue(args["thinking"]))
+	if reqProvider != "" {
+		pref.Provider = reqProvider
+	}
+	if reqModel != "" {
+		pref.Model = reqModel
+	}
+	if reqThinking != "" {
+		pref.Thinking = reqThinking
+	}
+	if modelProfile != nil && (reqProvider != "" || reqModel != "") {
+		if reqProvider != "" {
+			modelProfile.Action.Provider = reqProvider
+		}
+		if reqModel != "" {
+			modelProfile.Action.Model = reqModel
+		}
+		if reqThinking != "" {
+			modelProfile.Action.Thinking = reqThinking
 		}
 	}
 
@@ -1612,8 +1656,55 @@ func (r *Runtime) manageSessionsCreate(ctx context.Context, scope WorkspaceScope
 	if scope.SessionID != "" {
 		metadata["creator_session_id"] = scope.SessionID
 	}
+	if hasCur && cur.Metadata != nil {
+		for _, key := range []string{
+			"agent_name", "resolved_agent_name", "agent_mode", "runtime_mode",
+			"default_session_mode", "exit_plan_mode_enabled", "agent_profile",
+			"tool_contract_preset",
+		} {
+			if val, exists := cur.Metadata[key]; exists && val != nil {
+				metadata[key] = val
+			}
+		}
+	}
 	if agent != "" {
 		metadata["agent_name"] = agent
+	}
+	if (metadata["agent_profile"] == nil || agent != "") && r.agents != nil {
+		targetAgent := agent
+		if targetAgent == "" {
+			targetAgent = "swarm"
+		}
+		var profile pebblestore.AgentProfile
+		var found bool
+		if scope.Principal.AccountScopeID != "" {
+			profile, found, _ = r.agents.GetProfileForAccount(scope.Principal.AccountScopeID, targetAgent)
+		}
+		if !found {
+			profile, found, _ = r.agents.GetProfile(targetAgent)
+		}
+		if !found && targetAgent != "swarm" {
+			if scope.Principal.AccountScopeID != "" {
+				profile, found, _ = r.agents.GetProfileForAccount(scope.Principal.AccountScopeID, "swarm")
+			}
+			if !found {
+				profile, found, _ = r.agents.GetProfile("swarm")
+			}
+		}
+		if found {
+			metadata["agent_name"] = profile.Name
+			metadata["resolved_agent_name"] = profile.Name
+			metadata["agent_mode"] = profile.Mode
+			metadata["runtime_mode"] = profile.RuntimeMode
+			metadata["default_session_mode"] = pebblestore.AgentProfileDefaultSessionMode(profile)
+			if profile.ExitPlanModeEnabled != nil {
+				metadata["exit_plan_mode_enabled"] = *profile.ExitPlanModeEnabled
+			}
+			metadata["agent_profile"] = profile
+			if profile.ToolContract != nil && profile.ToolContract.Preset != "" {
+				metadata["tool_contract_preset"] = profile.ToolContract.Preset
+			}
+		}
 	}
 
 	avail := true
@@ -1629,6 +1720,7 @@ func (r *Runtime) manageSessionsCreate(ctx context.Context, scope WorkspaceScope
 		Title:           title,
 		Mode:            mode,
 		Preference:      pref,
+		ModelProfile:    modelProfile,
 		Metadata:        metadata,
 		WorkspaceGrants: grants,
 		WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(grants),
@@ -1672,12 +1764,11 @@ func (r *Runtime) manageSessionsCreate(ctx context.Context, scope WorkspaceScope
 		waitSeconds := boundedInt(args["wait_seconds"], 0, 120)
 		msgRes, msgErr := r.sendSessionMessageInternal(ctx, scope, sessionID, prompt, "user", true, waitSeconds)
 		if msgErr != nil {
-			out["initial_message_error"] = msgErr.Error()
-		} else {
-			for k, v := range msgRes {
-				if k != "action" && k != "session_id" {
-					out[k] = v
-				}
+			return "", fmt.Errorf("session created (%s) but failed to start initial run: %w", sessionID, msgErr)
+		}
+		for k, v := range msgRes {
+			if k != "action" && k != "session_id" {
+				out[k] = v
 			}
 		}
 	}
@@ -1863,8 +1954,13 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 	if r.publishSessionOutbox != nil && res.RealtimeOutbox != nil {
 		_ = r.publishSessionOutbox(*res.RealtimeOutbox)
 	}
-	if triggerRun && r.sessionController != nil {
-		r.sessionController.EnqueueSessionRun(scope.Principal, sessionID, runID, scope.SessionID)
+	if triggerRun {
+		if r.sessionController == nil {
+			return nil, errors.New("session execution controller is not configured")
+		}
+		if !r.sessionController.EnqueueSessionRun(scope.Principal, sessionID, runID, scope.SessionID) {
+			return nil, fmt.Errorf("failed to enqueue run %s for session %s", runID, sessionID)
+		}
 	}
 
 	out := map[string]any{
@@ -1879,6 +1975,21 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 	}
 	out["run_id"] = runID
 	out["status"] = "queued"
+
+	if triggerRun {
+		// Preflight check: poll briefly to detect immediate startup/dispatch failures (e.g. invalid profile, quota, executor rejection)
+		preflightDeadline := time.Now().Add(350 * time.Millisecond)
+		for time.Now().Before(preflightDeadline) {
+			time.Sleep(50 * time.Millisecond)
+			if runState, ok, _ := r.getSessionRunState(sessionID); ok && !runState.Active && (runState.Status == "failed" || runState.Status == "cancelled") {
+				reason := runState.BlockedReason
+				if reason == "" {
+					reason = runState.Status
+				}
+				return nil, fmt.Errorf("session run failed to deploy: %s (status: %s)", reason, runState.Status)
+			}
+		}
+	}
 
 	if waitSeconds > 0 {
 		deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
@@ -1913,9 +2024,11 @@ func (r *Runtime) sendSessionMessageInternal(ctx context.Context, scope Workspac
 				return out, nil
 			}
 			if ok && !runState.Active && (runState.Status == "failed" || runState.Status == "cancelled") {
-				out["status"] = runState.Status
-				out["reason"] = runState.BlockedReason
-				return out, nil
+				reason := runState.BlockedReason
+				if reason == "" {
+					reason = runState.Status
+				}
+				return nil, fmt.Errorf("session run failed to deploy: %s (status: %s)", reason, runState.Status)
 			}
 		}
 		out["status"] = "running"

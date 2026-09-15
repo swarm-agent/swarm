@@ -311,11 +311,12 @@ func (s *gitManageSessionService) ApplySessionMutation(input pebblestore.V3Sessi
 }
 
 type mockSessionController struct {
-	cancelCalls   []string
-	enqueueCalls  []string
-	compactCalls  []string
-	cancelResult  bool
-	compactResult map[string]any
+	cancelCalls    []string
+	enqueueCalls   []string
+	compactCalls   []string
+	cancelResult   bool
+	enqueueRefused bool
+	compactResult  map[string]any
 }
 
 func (m *mockSessionController) CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error) {
@@ -324,6 +325,9 @@ func (m *mockSessionController) CancelSessionRun(principal identity.Principal, s
 }
 
 func (m *mockSessionController) EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool {
+	if m.enqueueRefused {
+		return false
+	}
 	m.enqueueCalls = append(m.enqueueCalls, sessionID+":"+runID)
 	return true
 }
@@ -1270,5 +1274,208 @@ func TestManageSessionsCompactSession(t *testing.T) {
 	})
 	if errRunning == nil || !strings.Contains(errRunning.Error(), "currently running") {
 		t.Fatalf("expected running error, got %v", errRunning)
+	}
+}
+
+func TestManageSessionsCreateSessionFailsWhenInitialRunFailsToDeploy(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	workDir := t.TempDir()
+	service := &gitManageSessionService{
+		sessions:  make(map[string]pebblestore.SessionSnapshot),
+		messages:  make(map[string][]pebblestore.MessageSnapshot),
+		runStates: make(map[string]pebblestore.V3SessionRunState),
+	}
+
+	// First test enqueue failure
+	failedController := &mockSessionController{enqueueRefused: true}
+	runtimeFailed := &Runtime{sessions: service, sessionController: failedController}
+	_, errEnqueue := runtimeFailed.executeManageSessions(context.Background(), WorkspaceScope{
+		Principal:   principal,
+		PrimaryPath: workDir,
+		Roots:       []string{workDir},
+	}, map[string]any{
+		"action":         "create",
+		"title":          "Failing Session",
+		"workspace_path": workDir,
+		"prompt":         "Analyze layout",
+	})
+	if errEnqueue == nil || !strings.Contains(errEnqueue.Error(), "failed to enqueue run") {
+		t.Fatalf("expected enqueue failure, got %v", errEnqueue)
+	}
+
+	// Next test immediate run failure detection (e.g. missing profile / quota failure)
+	// We configure the mock session service to report a failed run state
+	serviceWithFailure := &gitManageSessionService{
+		sessions:  make(map[string]pebblestore.SessionSnapshot),
+		messages:  make(map[string][]pebblestore.MessageSnapshot),
+		runStates: map[string]pebblestore.V3SessionRunState{
+			// any newly created session will see this failure
+		},
+	}
+	// Custom controller that sets failed run state on enqueue
+	failingRunController := &immediateFailController{service: serviceWithFailure, reason: "v3 session is missing stored agent profile"}
+	runtimeRunFail := &Runtime{sessions: serviceWithFailure, sessionController: failingRunController}
+	_, errRunFail := runtimeRunFail.executeManageSessions(context.Background(), WorkspaceScope{
+		Principal:   principal,
+		PrimaryPath: workDir,
+		Roots:       []string{workDir},
+	}, map[string]any{
+		"action":         "create",
+		"title":          "Failing Run Session",
+		"workspace_path": workDir,
+		"prompt":         "Analyze layout",
+	})
+	if errRunFail == nil || !strings.Contains(errRunFail.Error(), "session run failed to deploy") {
+		t.Fatalf("expected deploy failure error, got %v", errRunFail)
+	}
+}
+
+type immediateFailController struct {
+	mockSessionController
+	service *gitManageSessionService
+	reason  string
+}
+
+func (c *immediateFailController) EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool {
+	c.mockSessionController.EnqueueSessionRun(principal, sessionID, runID, parentSessionID)
+	if c.service != nil {
+		c.service.runStates[sessionID] = pebblestore.V3SessionRunState{
+			Active:        false,
+			RunID:         runID,
+			Status:        "failed",
+			BlockedReason: c.reason,
+		}
+	}
+	return true
+}
+
+func TestManageSessionsSendMessageFailsWhenRunFailsToDeploy(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"failing-target": {
+				ID:             "failing-target",
+				Title:          "Target Session",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/main",
+			},
+		},
+		messages:  make(map[string][]pebblestore.MessageSnapshot),
+		runStates: make(map[string]pebblestore.V3SessionRunState),
+	}
+	failingRunController := &immediateFailController{service: service, reason: "codex quota limit reached"}
+	runtime := &Runtime{sessions: service, sessionController: failingRunController}
+
+	_, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":      "send_message",
+		"session_id":  "failing-target",
+		"prompt":      "Hello failing",
+		"trigger_run": true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "session run failed to deploy") || !strings.Contains(err.Error(), "codex quota limit reached") {
+		t.Fatalf("expected deploy failure error containing quota reason, got %v", err)
+	}
+}
+
+func TestManageSessionsCreateInheritsPreferencesAndAgentProfile(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	workDir := t.TempDir()
+	creatorSession := pebblestore.SessionSnapshot{
+		ID:             "creator-session",
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		Preference: pebblestore.ModelPreference{
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Thinking: "high",
+		},
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{
+			Action: pebblestore.ModelProfileSelection{
+				Provider: "google",
+				Model:    "gemini-3.8-flash",
+				Thinking: "high",
+			},
+		},
+		Metadata: map[string]any{
+			"agent_name":             "swarm",
+			"resolved_agent_name":    "swarm",
+			"agent_mode":             "primary",
+			"runtime_mode":           "plan_auto",
+			"exit_plan_mode_enabled": true,
+			"agent_profile": pebblestore.AgentProfile{
+				Name:        "swarm",
+				Mode:        "primary",
+				RuntimeMode: pebblestore.AgentRuntimeModePlanAuto,
+			},
+		},
+	}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"creator-session": creatorSession,
+		},
+		messages: make(map[string][]pebblestore.MessageSnapshot),
+	}
+	controller := &mockSessionController{}
+	runtime := &Runtime{sessions: service, sessionController: controller}
+
+	// 1. Inherit from current session
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{
+		Principal:   principal,
+		SessionID:   "creator-session",
+		PrimaryPath: workDir,
+		Roots:       []string{workDir},
+	}, map[string]any{
+		"action":         "create",
+		"title":          "Inherited Session",
+		"workspace_path": workDir,
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	createdID := res["session_id"].(string)
+	createdSnap := service.sessions[createdID]
+	if createdSnap.Preference.Provider != "google" || createdSnap.Preference.Model != "gemini-3.8-flash" {
+		t.Fatalf("expected inherited preference google/gemini-3.8-flash, got %+v", createdSnap.Preference)
+	}
+	if createdSnap.ModelProfile == nil || createdSnap.ModelProfile.Action.Provider != "google" {
+		t.Fatalf("expected inherited model profile, got %+v", createdSnap.ModelProfile)
+	}
+	if createdSnap.Metadata["agent_profile"] == nil {
+		t.Fatalf("expected agent_profile in metadata, got %+v", createdSnap.Metadata)
+	}
+
+	// 2. Explicit provider/model override
+	outputOverride, errOverride := runtime.executeManageSessions(context.Background(), WorkspaceScope{
+		Principal:   principal,
+		SessionID:   "creator-session",
+		PrimaryPath: workDir,
+		Roots:       []string{workDir},
+	}, map[string]any{
+		"action":         "create",
+		"title":          "Anthropic Session",
+		"workspace_path": workDir,
+		"provider":       "anthropic",
+		"model":          "claude-sonnet-4",
+		"thinking":       "medium",
+	})
+	if errOverride != nil {
+		t.Fatalf("override create failed: %v", errOverride)
+	}
+	var resOverride map[string]any
+	if err := json.Unmarshal([]byte(outputOverride), &resOverride); err != nil {
+		t.Fatalf("decode override: %v", err)
+	}
+	overrideID := resOverride["session_id"].(string)
+	overrideSnap := service.sessions[overrideID]
+	if overrideSnap.Preference.Provider != "anthropic" || overrideSnap.Preference.Model != "claude-sonnet-4" {
+		t.Fatalf("expected overridden preference anthropic/claude-sonnet-4, got %+v", overrideSnap.Preference)
+	}
+	if overrideSnap.ModelProfile.Action.Provider != "anthropic" || overrideSnap.ModelProfile.Action.Model != "claude-sonnet-4" {
+		t.Fatalf("expected overridden model profile action, got %+v", overrideSnap.ModelProfile)
 	}
 }

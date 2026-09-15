@@ -1749,3 +1749,17 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
 - **Validation:**
   - Authored focused unit tests in `swarmd/internal/tool/runtime_manage_sessions_test.go`: `TestManageSessionsCreateSessionWithPromptAndNavigation`, `TestManageSessionsStopActiveRun`, `TestManageSessionsSendMessageAndResponseWait`, `TestManageSessionsCompactSession`.
   - All 31 manage-sessions tool tests and all 6 Pebble session search tests pass.
+
+### Manage-Sessions Deployment Failure Detection and Model Inheritance (2026-09-15)
+
+- **Failure Detection on Run Deployment:**
+  - In `swarmd/internal/tool/runtime_manage_sessions.go`, both `create` (with prompt) and `send_message` (with `trigger_run`) now detect dispatch and preflight failures (such as quota limit reached, missing agent profile, enqueue rejection, or executor abort) and return concrete errors rather than reporting `queued` or swallowing the error into `status: created`.
+  - Added preflight polling window in `sendSessionMessageInternal` to detect immediate startup failures even when `wait_seconds` is 0.
+  - In `sendSessionMessageInternal` when `wait_seconds > 0`, non-active terminal failures (`status == "failed" || status == "cancelled"`) return an error containing `BlockedReason` instead of a 200 OK tool response.
+- **Model Preference and Agent Profile Inheritance:**
+  - In `manageSessionsCreate`, new sessions inherit the creator session's `ModelPreference`, `ModelProfile` snapshot, and `agent_profile` metadata, preventing newly created sessions from falling back to stale account default models.
+  - Added schema properties `provider`, `model`, and `thinking` to `manage-sessions create` to allow explicit model specification.
+  - Added `preference` and `agent` fields to `manage-sessions get` output.
+- **Validation:**
+  - Added unit tests: `TestManageSessionsCreateSessionFailsWhenInitialRunFailsToDeploy`, `TestManageSessionsSendMessageFailsWhenRunFailsToDeploy`, `TestManageSessionsCreateInheritsPreferencesAndAgentProfile`.
+  - All 34 manage-sessions tool tests pass.
