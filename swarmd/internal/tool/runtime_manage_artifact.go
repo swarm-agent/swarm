@@ -262,7 +262,29 @@ func manageArtifactDefinition() Definition {
 				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). Pass chain_from (or source_* with chain=true) to automatically extract the last keyframe and generate seamless continuous chained video. extract_video_frame extracts a PNG keyframe (frame: last, first, or timestamp_ms) from a video artifact. chain_video concatenates multiple video artifacts and optionally overrides or mixes continuous soundtrack audio (audio_mode: override, mix_ducked, or native) into a master video artifact. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
 				"chain_from":       map[string]any{"description": "For generate_video: video artifact reference or workspace path from which the last keyframe is automatically extracted to seed continuous image-to-video generation."},
 				"chain":            map[string]any{"type": "boolean", "description": "For generate_video with source_* pointing to a video: when true, extracts last keyframe and chains via image-to-video instead of conversational editing."},
-				"videos":           map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "description": "Ordered array of video artifact references or workspace paths for chain_video."},
+				"videos":           map[string]any{
+					"type":        "array",
+					"minItems":    2,
+					"maxItems":    16,
+					"description": "Ordered array of video artifact references or workspace paths for chain_video.",
+					"items": map[string]any{
+						"anyOf": []any{
+							reference,
+							map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"path": map[string]any{"type": "string", "description": "Clean workspace-relative or absolute video file path."},
+								},
+								"required":             []string{"path"},
+								"additionalProperties": false,
+							},
+							map[string]any{
+								"type":        "string",
+								"description": "Clean workspace-relative or absolute video file path.",
+							},
+						},
+					},
+				},
 				"audio":            map[string]any{"description": "Optional audio artifact reference or workspace path for chain_video continuous soundtrack."},
 				"audio_mode":       map[string]any{"type": "string", "enum": []string{"override", "mix_ducked", "native"}, "description": "Audio mode for chain_video: override (replaces all video audio with soundtrack), mix_ducked (duck native Foley at 35%, overlay soundtrack at 100%), or native (preserves video audio)."},
 				"foley_volume":     map[string]any{"type": "number", "minimum": 0, "maximum": 2, "description": "Optional volume multiplier (0.0 to 2.0, default 0.35) for native audio in mix_ducked mode."},

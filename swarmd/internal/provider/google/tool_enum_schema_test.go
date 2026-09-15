@@ -2,7 +2,9 @@ package google
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -154,5 +156,66 @@ func TestGoogleToolCatalogEnumsOnWire(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Fatal("request construction mutated canonical tool definitions")
+	}
+}
+
+// Purpose: verify that all tools on the Google wire protocol have valid "items"
+// defined for every schema of type "array", preventing Google API 400 rejection:
+// "GenerateContentRequest.tools[0].function_declarations[...].parameters.properties[...].items: missing field."
+func TestGoogleToolCatalogArraysHaveItemsOnWire(t *testing.T) {
+	var tools []provideriface.ToolDefinition
+	for _, d := range toolruntime.NewRuntime(1).Definitions() {
+		tools = append(tools, provideriface.ToolDefinition{Type: d.Type, Name: d.Name, Description: d.Description, Parameters: d.Parameters})
+	}
+	request, err := buildGoogleRequest(provideriface.Request{Input: []map[string]any{{"role": "user", "content": "hello"}}, Tools: tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire any
+	if err = json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+
+	arrayCount := 0
+	var checkArrays func(v any, path string)
+	checkArrays = func(v any, path string) {
+		switch x := v.(type) {
+		case map[string]any:
+			if typ, ok := x["type"].(string); ok && strings.EqualFold(typ, "array") {
+				arrayCount++
+				items, hasItems := x["items"]
+				if !hasItems || items == nil {
+					t.Fatalf("schema at %s of type array is missing 'items'", path)
+				}
+			}
+			for k, child := range x {
+				checkArrays(child, path+"."+k)
+			}
+		case []any:
+			for i, child := range x {
+				checkArrays(child, fmt.Sprintf("%s[%d]", path, i))
+			}
+		}
+	}
+	checkArrays(wire, "request")
+	if arrayCount == 0 {
+		t.Fatal("no array schemas found on wire")
+	}
+
+	// Verify fallback when array items are explicitly omitted in raw schema
+	rawParam := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"naked_array": map[string]any{"type": "array"},
+		},
+	}
+	sanitized := sanitizeGoogleToolParameters(rawParam)
+	nakedProps := sanitized["properties"].(map[string]any)["naked_array"].(map[string]any)
+	if nakedProps["items"] == nil {
+		t.Fatalf("expected fallback items populated for naked array, got: %#v", nakedProps)
 	}
 }

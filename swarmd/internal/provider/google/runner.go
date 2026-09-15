@@ -654,6 +654,12 @@ func sanitizeGoogleToolSchemaMap(schema map[string]any, inheritedProperties map[
 		}
 	}
 
+	if typ, ok := out["type"].(string); ok && strings.EqualFold(typ, "array") {
+		if _, hasItems := out["items"]; !hasItems || out["items"] == nil {
+			out["items"] = map[string]any{"type": "string"}
+		}
+	}
+
 	required := googleToolSchemaRequiredNames(out["required"])
 	if len(required) == 0 {
 		return out
@@ -1266,6 +1272,9 @@ func parseGoogleEventStream(reader io.Reader, onPayload func(string) error) erro
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return errors.New("google stream event byte limit exceeded")
+		}
 		return sanitizeGoogleError("scan google event stream", err)
 	}
 	return flush()
