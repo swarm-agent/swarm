@@ -21,7 +21,6 @@ function SwarmMark({ className = 'size-7' }: { className?: string }) {
       <rect x="60" y="60" width="280" height="280" rx="65" ry="65" fill="currentColor" opacity="0.35" />
       <rect x="100" y="100" width="200" height="200" rx="45" ry="45" fill="currentColor" opacity="0.60" />
       <rect x="140" y="140" width="120" height="120" rx="25" ry="25" fill="currentColor" opacity="0.85" />
-      <rect x="180" y="180" width="40" height="40" rx="10" ry="10" fill="currentColor" />
     </svg>
   )
 }
