@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Music, Pause, Play, Search, Sparkles, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Music, Pause, Play, Search, Sparkles, Volume2, VolumeX, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -1529,9 +1529,17 @@ function ReviewWorktreeRow({ item }: { item: ManageSessionCardItem }) {
   );
 }
 
+function formatTime(seconds: number): string {
+  if (!seconds || isNaN(seconds)) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
+
 function ChatAudioSoundBar({
   artifact,
   index,
+  promptText,
   isSelected,
   onSelect,
   href,
@@ -1539,6 +1547,7 @@ function ChatAudioSoundBar({
 }: {
   artifact: DesktopV3ArtifactCatalogEntry;
   index: number;
+  promptText?: string;
   isSelected: boolean;
   onSelect: () => void;
   href?: string;
@@ -1546,8 +1555,12 @@ function ChatAudioSoundBar({
 }) {
   const [previewURL, setPreviewURL] = useState<string>("");
   const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(30);
+  const [isMuted, setIsMuted] = useState(false);
   const [failed, setFailed] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressBarRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -1584,64 +1597,93 @@ function ChatAudioSoundBar({
     }
   };
 
+  const handleSeek = (e: MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const bar = progressBarRef.current;
+    const audio = audioRef.current;
+    if (!bar || !audio) return;
+    const rect = bar.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, clickX / rect.width));
+    const targetTime = pct * (duration || 30);
+    audio.currentTime = targetTime;
+    setCurrentTime(targetTime);
+  };
+
+  const handleToggleMute = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.muted = !isMuted;
+    setIsMuted(!isMuted);
+  };
+
   const vLabel = artifact.label || `Sound Clip ${index + 1}`;
-  const vDesc = artifact.description;
+  const fullPrompt = promptText || artifact.description || "";
+  const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
 
   return (
     <div
       className={cn(
-        "group flex flex-col gap-2 rounded-xl border p-2.5 transition",
+        "group flex flex-col gap-2 rounded-xl border p-3 transition",
         isSelected
           ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] shadow-2xs"
           : "border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-hover)] hover:bg-[var(--app-surface-hover)]"
       )}
       data-testid="audio-sound-bar"
       data-artifact-soundbar-index={index}
+      onClick={onSelect}
     >
-      <div className="flex min-w-0 items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2.5">
+      {/* Top row: Play button + Title + Duration + Actions */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
           <button
             type="button"
             onClick={handleTogglePlay}
-            className="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--app-primary)] text-white shadow-xs transition hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]"
+            className="grid size-9 shrink-0 place-items-center rounded-full bg-[var(--app-primary)] text-white shadow-xs transition hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] mt-0.5"
             aria-label={isPlaying ? `Pause ${vLabel}` : `Play ${vLabel}`}
             title={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? (
-              <Pause size={13} fill="currentColor" />
+              <Pause size={14} fill="currentColor" />
             ) : (
-              <Play size={13} fill="currentColor" className="ml-0.5" />
+              <Play size={14} fill="currentColor" className="ml-0.5" />
             )}
           </button>
 
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="truncate text-[11px] font-semibold text-[var(--app-text)] break-words">
+              <span className="text-xs font-semibold text-[var(--app-text)] break-words">
                 {vLabel}
+              </span>
+              <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[9px] text-[var(--app-text-muted)]">
+                {formatTime(duration || 30)}
               </span>
               {isSelected ? (
                 <span className="shrink-0 rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[9px] font-medium text-white">
                   Active
                 </span>
               ) : null}
+              {isPlaying ? (
+                <div className="flex items-center gap-0.5 h-3 px-1" aria-hidden="true">
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-3 animate-pulse" />
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-2 animate-pulse delay-75" />
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-3.5 animate-pulse delay-150" />
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-2 animate-pulse delay-100" />
+                </div>
+              ) : null}
             </div>
-            {vDesc && vDesc !== vLabel ? (
-              <p className="mt-0.5 line-clamp-1 text-[9px] leading-snug text-[var(--app-text-muted)] break-words">
-                {vDesc}
+
+            {/* The entire prompt - fully readable, no line clamp */}
+            {fullPrompt ? (
+              <p className="mt-1.5 text-xs leading-relaxed text-[var(--app-text)] select-text whitespace-pre-wrap break-words">
+                {fullPrompt}
               </p>
             ) : null}
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
-          <div className="flex items-center gap-0.5 h-3.5 px-1" aria-hidden="true">
-            <span className={cn("w-0.5 rounded-full bg-[var(--app-primary)] transition-all", isPlaying ? "h-3.5 animate-pulse" : "h-1 opacity-30")} />
-            <span className={cn("w-0.5 rounded-full bg-[var(--app-primary)] transition-all delay-75", isPlaying ? "h-2 animate-pulse" : "h-2 opacity-30")} />
-            <span className={cn("w-0.5 rounded-full bg-[var(--app-primary)] transition-all delay-150", isPlaying ? "h-3.5 animate-pulse" : "h-1.5 opacity-30")} />
-            <span className={cn("w-0.5 rounded-full bg-[var(--app-primary)] transition-all delay-100", isPlaying ? "h-2.5 animate-pulse" : "h-2 opacity-30")} />
-            <span className={cn("w-0.5 rounded-full bg-[var(--app-primary)] transition-all delay-200", isPlaying ? "h-1.5 animate-pulse" : "h-1 opacity-30")} />
-          </div>
-
+        <div className="flex shrink-0 items-center gap-1">
           {onOpenViewer || href ? (
             <a
               href={href || "#"}
@@ -1657,24 +1699,90 @@ function ChatAudioSoundBar({
                   onSelect();
                 }
               }}
-              className="grid size-6 place-items-center rounded text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              className="grid size-7 place-items-center rounded-lg text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
               aria-label={`Open ${vLabel} in viewer`}
               title="Open in full viewer"
             >
-              <ExternalLink size={12} />
+              <ExternalLink size={13} />
             </a>
           ) : null}
         </div>
+      </div>
+
+      {/* The play bar inside this song row */}
+      <div
+        className="flex items-center gap-2.5 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 border border-[var(--app-border)]/60 mt-1"
+        data-testid="soundbar-play-bar"
+      >
+        <button
+          type="button"
+          onClick={handleTogglePlay}
+          className="text-[var(--app-primary)] hover:opacity-80 transition p-0.5 shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] rounded"
+          aria-label={isPlaying ? `Pause ${vLabel}` : `Play ${vLabel}`}
+          title={isPlaying ? "Pause" : "Play"}
+        >
+          {isPlaying ? (
+            <Pause size={13} fill="currentColor" />
+          ) : (
+            <Play size={13} fill="currentColor" className="ml-0.5" />
+          )}
+        </button>
+
+        <span className="font-mono text-[10px] text-[var(--app-text-subtle)] w-8 shrink-0 text-right select-none">
+          {formatTime(currentTime)}
+        </span>
+
+        {/* Interactive scrubber bar */}
+        <div
+          ref={progressBarRef}
+          onClick={handleSeek}
+          className="relative h-2 flex-1 cursor-pointer rounded-full bg-[var(--app-border)] overflow-hidden"
+          role="slider"
+          aria-label={`Seek ${vLabel}`}
+          aria-valuenow={currentTime}
+          aria-valuemin={0}
+          aria-valuemax={duration || 30}
+        >
+          <div
+            className="h-full rounded-full bg-[var(--app-primary)] transition-[width] duration-100"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        <span className="font-mono text-[10px] text-[var(--app-text-subtle)] w-8 shrink-0 select-none">
+          {formatTime(duration || 30)}
+        </span>
+
+        <button
+          type="button"
+          onClick={handleToggleMute}
+          className="text-[var(--app-text-subtle)] hover:text-[var(--app-text)] transition p-0.5 shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] rounded"
+          aria-label={isMuted ? "Unmute" : "Mute"}
+          title={isMuted ? "Unmute" : "Mute"}
+        >
+          {isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+        </button>
       </div>
 
       {previewURL ? (
         <audio
           ref={audioRef}
           src={previewURL}
-          controls
           preload="metadata"
-          className="w-full h-8 max-w-full"
           data-artifact-audio-preview
+          onTimeUpdate={() => {
+            if (audioRef.current) {
+              setCurrentTime(audioRef.current.currentTime);
+              if (audioRef.current.duration && !isNaN(audioRef.current.duration)) {
+                setDuration(audioRef.current.duration);
+              }
+            }
+          }}
+          onLoadedMetadata={() => {
+            if (audioRef.current && audioRef.current.duration && !isNaN(audioRef.current.duration)) {
+              setDuration(audioRef.current.duration);
+            }
+          }}
           onPlay={() => {
             document.querySelectorAll("audio").forEach((el) => {
               if (el !== audioRef.current && !el.paused) el.pause();
@@ -1682,13 +1790,16 @@ function ChatAudioSoundBar({
             setIsPlaying(true);
           }}
           onPause={() => setIsPlaying(false)}
-          onEnded={() => setIsPlaying(false)}
+          onEnded={() => {
+            setIsPlaying(false);
+            setCurrentTime(0);
+          }}
           onError={() => setFailed(true)}
         />
       ) : failed ? (
-        <div className="text-[10px] text-[var(--app-danger)]">Audio preview unavailable</div>
+        <div className="text-[10px] text-[var(--app-danger)] mt-1">Audio preview unavailable</div>
       ) : (
-        <div className="flex items-center gap-1.5 text-[10px] text-[var(--app-text-muted)]">
+        <div className="flex items-center gap-1.5 text-[10px] text-[var(--app-text-muted)] mt-1">
           <LoaderCircle size={11} className="animate-spin text-[var(--app-primary)]" />
           <span>Preparing audio stream…</span>
         </div>
@@ -1822,6 +1933,11 @@ export function ManageArtifactCard({
           : isAudioGeneration
             ? isRunning ? "Generating audio…" : status === "ready" ? (rawVariants.length > 1 ? `${rawVariants.length} clips ready` : "Audio ready") : status || "Created"
             : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
+
+  const isAudio = isAudioGeneration
+    || Boolean(artifact?.mediaType?.startsWith("audio/"))
+    || artifact?.kind === "audio"
+    || rawVariants.some((v) => Boolean(v.mediaType?.startsWith("audio/")) || v.kind === "audio");
 
   const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
 
@@ -1985,17 +2101,19 @@ export function ManageArtifactCard({
                 {isAudioGeneration ? "Click any clip to play" : "Select to preview & play"}
               </span>
             </div>
-            <div className="grid gap-1.5">
+            <div className="grid gap-2">
               {rawVariants.map((variantItem, idx) => {
                 const isSelected = idx === selectedVariantIndex;
-                const vLabel = variantItem.label || `Variation ${idx + 1}`;
-                const vDesc = variantItem.description;
                 if (isAudioGeneration) {
+                  const promptFromArgs = (Array.isArray(args?.prompts) && typeof args.prompts[idx] === "string" && args.prompts[idx])
+                    ? args.prompts[idx]
+                    : (typeof args?.prompt === "string" ? args.prompt : "");
                   return (
                     <ChatAudioSoundBar
                       key={variantItem.artifactId || idx}
                       artifact={variantItem}
                       index={idx}
+                      promptText={variantItem.description || promptFromArgs || undefined}
                       isSelected={isSelected}
                       onSelect={() => setSelectedVariantIndex(idx)}
                       href={artifactHref ? artifactHref(variantItem) : undefined}
@@ -2003,6 +2121,8 @@ export function ManageArtifactCard({
                     />
                   );
                 }
+                const vLabel = variantItem.label || `Variation ${idx + 1}`;
+                const vDesc = variantItem.description;
                 return (
                   <button
                     key={variantItem.artifactId || idx}
@@ -2044,11 +2164,12 @@ export function ManageArtifactCard({
           </div>
         ) : null}
 
-        {artifact && status === "ready" && isAudioGeneration && rawVariants.length <= 1 ? (
+        {artifact && status === "ready" && isAudio && rawVariants.length <= 1 ? (
           <div className="mt-3">
             <ChatAudioSoundBar
               artifact={artifact}
               index={0}
+              promptText={artifact.description || prompt || undefined}
               isSelected={true}
               onSelect={() => setSelectedVariantIndex(0)}
               href={href}
@@ -2057,7 +2178,7 @@ export function ManageArtifactCard({
           </div>
         ) : null}
 
-        {artifact && status === "ready" && !isAudioGeneration ? (
+        {artifact && status === "ready" && !isAudio ? (
           href ? (
             <a
               href={href}
