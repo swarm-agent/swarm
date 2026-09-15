@@ -1764,6 +1764,21 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Added unit tests: `TestManageSessionsCreateSessionFailsWhenInitialRunFailsToDeploy`, `TestManageSessionsSendMessageFailsWhenRunFailsToDeploy`, `TestManageSessionsCreateInheritsPreferencesAndAgentProfile`.
   - All 34 manage-sessions tool tests pass.
 
+### AI Video Prompting Sound Design and Native Audio Direction (2026-09-15)
+
+- **AI Video Generation Sound Direction (`swarmd/internal/run/service_prompt.go`):**
+  - Updated primary agent video generation instructions to explicitly direct the soundscape alongside visual cinematography for models like Veo 3.1 that generate synchronized video and audio in one pass.
+  - Specified concrete sound effect (SFX) cues tied to physical actions and materials, ambient soundscapes/room tone, and musical score mood (`Music: ...` or `Music: none`).
+  - Added speech avoidance guidance: models interpret quotation marks in prompts as lip-synced speech, so quotation marks must be avoided unless dialogue is explicitly intended.
+  - Added silent video direction: when silent or sound-free video is requested, prompts must specify both visual constraints (`purely visual, zero text...`) and acoustic constraints (`Ambient noise: near-total silence, dead room tone, no background music, no dialogue`) to prevent hallucinated audio tracks.
+- **Router Video Swarm Prompt Hydration (`swarmd/internal/run/service_task_swarm.go`, `service_task_video_swarm.go`):**
+  - Updated `taskSwarmRouterSystemPrompt` for `agent_type: "video"` so Router delta roles specify synchronized sound direction (SFX, ambient soundscape/room tone, musical mood) and silence constraints.
+  - Updated `composeDirectVideoSwarmPrompt` delta header to `Visual composition, camera motion, scene and sound direction:`.
+- **Validation:**
+  - Added unit test `TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting` in `swarmd/internal/run/service_prompt_artifact_test.go`.
+  - Added unit test `TestTaskSwarmRouterSystemPromptVideoIncludesAudioDirection` in `swarmd/internal/run/service_task_swarm_test.go`.
+  - Verified with `go test -v -run 'TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting|TestTaskSwarmRouterSystemPromptVideoIncludesAudioDirection|TestDirectVideoSwarm' ./internal/run`.
+
 ### Multi-Session Worktree Promotion, Commit Fallback, and Integration Guidance (2026-09-15)
 
 - **Multi-Session Worktree Promotion (`swarmd/internal/tool/runtime.go`):**

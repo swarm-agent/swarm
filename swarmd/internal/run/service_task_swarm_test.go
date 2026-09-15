@@ -345,6 +345,26 @@ func TestDirectVideoSwarmPromptExpansion(t *testing.T) {
 	}
 }
 
+func TestTaskSwarmRouterSystemPromptVideoIncludesAudioDirection(t *testing.T) {
+	request := taskSwarmHydrationRequest{
+		AgentType: "video",
+	}
+	systemPrompt := taskSwarmRouterSystemPrompt(request)
+	for _, want := range []string{
+		"visual cinematography and native audio design",
+		"video models generate synchronized video and audio in one pass",
+		"SFX (materials, impacts, movement sounds)",
+		"ambient soundscape/room tone",
+		"musical score mood (or Music: none)",
+		"avoid quotation marks unless spoken dialogue is explicitly intended",
+		"direct the audio into near-total silence with no music and no dialogue",
+	} {
+		if !strings.Contains(systemPrompt, want) {
+			t.Fatalf("video router prompt missing %q: %s", want, systemPrompt)
+		}
+	}
+}
+
 func TestParseTaskSwarmDesignerRejectsWorkspaceOutput(t *testing.T) {
 	for _, raw := range []string{
 		`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3,"output_mode":"workspace"}`,
