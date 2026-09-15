@@ -1215,3 +1215,48 @@ func TestSessionsV3VideoArtifactRangeServingAndVisualCategory(t *testing.T) {
 		t.Fatalf("range body mismatch")
 	}
 }
+
+func TestSessionsV3LargeVideoArtifactServing(t *testing.T) {
+	server, sessionSvc, registry, plan, checkpoint, _, _ := newArtifactSessionFixture(t, "note.txt", "fixture")
+	principal := testPrincipal()
+	authority := artifact.NewAuthority(registry, sessionSvc)
+
+	// Create a video artifact larger than sessionsV3ArtifactMaxBytes (32MB), e.g. 33MB
+	mp4Header := []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00isommp42")
+	largeContent := append(mp4Header, bytes.Repeat([]byte{0x77}, 33<<20)...)
+	created, err := authority.Create(context.Background(), artifact.Principal{
+		SessionID:      plan.SessionID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		RunID:          checkpoint.RunID,
+		PlanID:         plan.ID,
+		CheckpointID:   checkpoint.ID,
+		AttemptID:      checkpoint.AttemptID,
+	}, artifact.CreateInput{
+		RequestID:      "req-large-video",
+		CollectionID:   "large-video-col",
+		CollectionName: "Large 4K Clip",
+		VariantID:      "large-video-var",
+		Filename:       "large-4k.mp4",
+		MediaType:      "video/mp4",
+		Presentation:   pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Large 4K Clip"},
+		Body:           largeContent,
+	})
+	if err != nil {
+		t.Fatalf("create large video artifact: %v", err)
+	}
+
+	// Request artifact preview/serving via handleSessionV3Artifact
+	getReq := httptest.NewRequest("GET", "/v3/sessions/"+plan.SessionID+"/artifacts/"+created.ID, nil)
+	getRec := httptest.NewRecorder()
+	server.handleSessionV3Artifact(getRec, getReq, principal, plan.SessionID, created.ID)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get large video artifact status = %d (want 200 OK): %s", getRec.Code, getRec.Body.String())
+	}
+	if getRec.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("Content-Type = %q, want video/mp4", getRec.Header().Get("Content-Type"))
+	}
+	if getRec.Body.Len() != len(largeContent) {
+		t.Fatalf("body length = %d, want %d", getRec.Body.Len(), len(largeContent))
+	}
+}

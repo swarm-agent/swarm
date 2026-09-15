@@ -2002,7 +2002,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq == 0 {
 			return managedVideoArtifactResult{}, errors.New("manage_artifact video iteration requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
 		}
-		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, 100<<20)
+		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, 512<<20)
 		if readErr != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("resolve video iteration source: %w", readErr)
 		}
