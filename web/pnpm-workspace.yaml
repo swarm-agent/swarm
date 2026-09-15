@@ -1,3 +1,4 @@
+confirmModulesPurge: false
 minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
