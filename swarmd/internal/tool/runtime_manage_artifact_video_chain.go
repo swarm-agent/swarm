@@ -415,7 +415,7 @@ func (r *Runtime) extractVideoFrame(
 		return pebblestore.SessionArtifactVariant{}, errors.New("extract_video_frame requires video artifact reference or video_path")
 	}
 
-	videoBytes, sourceRef, originalFilename, err := r.resolveVideoSourceBytes(ctx, scope, principal, videoRaw)
+	videoBytes, _, originalFilename, err := r.resolveVideoSourceBytes(ctx, scope, principal, videoRaw)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("resolve video for extraction: %w", err)
 	}
@@ -469,12 +469,6 @@ func (r *Runtime) extractVideoFrame(
 		Presentation:          presentation,
 		Body:                  pngBytes,
 		AutoAccept:            true,
-	}
-	if sourceRef != nil {
-		create.SourceSessionID = sourceRef.SessionID
-		create.SourceCollectionID = sourceRef.CollectionID
-		create.SourceVariantID = sourceRef.VariantID
-		create.SourceEventSeq = sourceRef.EventSeq
 	}
 
 	published, err := r.artifactAuthority.Create(ctx, principal, create)
@@ -728,22 +722,16 @@ func (r *Runtime) chainVideo(
 		AutoAccept:            true,
 	}
 
-	if len(sourceRefs) > 0 {
-		create.SourceSessionID = sourceRefs[0].SessionID
-		create.SourceCollectionID = sourceRefs[0].CollectionID
-		create.SourceVariantID = sourceRefs[0].VariantID
-		create.SourceEventSeq = sourceRefs[0].EventSeq
-	}
-
 	published, err := r.artifactAuthority.Create(ctx, principal, create)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("publish chained video artifact: %w", err)
 	}
 
 	details := map[string]any{
-		"parts_count": len(videoPaths),
-		"audio_mode":  audioMode,
-		"transition":  transition,
+		"parts_count":      len(videoPaths),
+		"audio_mode":       audioMode,
+		"transition":       transition,
+		"video_references": sourceRefs,
 	}
 	if probeErr == nil {
 		details["duration_seconds"] = probe.DurationSeconds
