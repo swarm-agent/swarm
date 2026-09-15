@@ -38,6 +38,7 @@ import { resolveSessionV3Permission } from '../../session-v3/api'
 import { archiveDesktopV3Sessions } from '../../session-v3/plan-execution-api'
 import { unarchiveDesktopV3ReviewSessions } from '../../session-v3/review-worktrees-api'
 import { deleteDesktopSessions } from '../../session-search/session-search-api'
+import { loadAutomationConversations } from '../../state/desktop-automation-conversations'
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
@@ -800,6 +801,74 @@ export function AutomationV2Workspace({
 
   const pendingCount = pendingProposals.length
 
+  // Reconcile any unhydrated sessions in this workspace with pending approvals
+  const unhydratedPendingSessionIds = useDesktopV3CacheSelector((state) => {
+    const ids: string[] = []
+    for (const [id, summary] of Object.entries(state.permissionSummaryBySessionId ?? {})) {
+      if ((summary?.pendingApprovalCount ?? 0) <= 0) continue
+      const perms = state.permissionsBySession[id]
+      if (perms !== undefined && perms.length > 0) continue
+      const rec = state.sessionsById[id]
+      if (rec?.kind === 'full') {
+        const belongs =
+          rec.session.automation_v2?.workspace_id === workspaceId ||
+          rec.session.automation?.workspace_id === workspaceId ||
+          rec.session.workspace_grants?.some((g) => g.workspace_id === workspaceId) ||
+          rec.session.metadata?.swarm_v3_purpose_workspace_id === workspaceId ||
+          rec.session.metadata?.swarm_v3_session_purpose === 'automation_management' ||
+          (Boolean(workspacePath) && rec.session.workspace_path === workspacePath)
+        if (belongs) {
+          ids.push(id)
+        }
+      } else {
+        ids.push(id)
+      }
+    }
+    for (const r of activeRecords) {
+      if ((state.permissionSummaryBySessionId[r.session_id]?.pendingApprovalCount ?? 0) > 0) {
+        if (!state.permissionsBySession[r.session_id] && !ids.includes(r.session_id)) {
+          ids.push(r.session_id)
+        }
+      }
+    }
+    for (const r of archivedRecords) {
+      if ((state.permissionSummaryBySessionId[r.session_id]?.pendingApprovalCount ?? 0) > 0) {
+        if (!state.permissionsBySession[r.session_id] && !ids.includes(r.session_id)) {
+          ids.push(r.session_id)
+        }
+      }
+    }
+    return ids
+  })
+
+  useEffect(() => {
+    for (const id of unhydratedPendingSessionIds) {
+      void desktopAutomationV2.reconcileSession(id).catch(() => {})
+    }
+  }, [unhydratedPendingSessionIds])
+
+  // Discover and reconcile automation management conversations
+  useEffect(() => {
+    let cancelled = false
+    void loadAutomationConversations(workspaceId, workspacePath).then((page) => {
+      if (cancelled) return
+      for (const id of page.session_order) {
+        const snapshot = getDesktopV3CacheSnapshot()
+        const perms = snapshot.permissionsBySession[id]
+        if (!perms || perms.length === 0) {
+          const summary = snapshot.permissionSummaryBySessionId[id]
+          const session = page.sessions_by_id[id]
+          if ((summary?.pendingApprovalCount ?? 0) > 0 || session?.metadata?.swarm_v3_session_purpose === 'automation_management') {
+            void desktopAutomationV2.reconcileSession(id).catch(() => {})
+          }
+        }
+      }
+    }).catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceId, workspacePath])
+
   useEffect(() => {
     if (initialSessionId) {
       setSelected(initialSessionId)
@@ -1036,7 +1105,22 @@ export function AutomationV2Workspace({
                 {headingSubtitle}
               </p>
             </div>
-            <Button variant="ghost" size="sm" onClick={() => { void desktopAutomationV2.refresh(activeInput); void desktopAutomationV2.refresh(archivedInput) }}>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                void desktopAutomationV2.refresh(activeInput)
+                void desktopAutomationV2.refresh(archivedInput)
+                for (const id of unhydratedPendingSessionIds) {
+                  void desktopAutomationV2.reconcileSession(id).catch(() => {})
+                }
+                void loadAutomationConversations(workspaceId, workspacePath).then((p) => {
+                  for (const id of p.session_order) {
+                    void desktopAutomationV2.reconcileSession(id).catch(() => {})
+                  }
+                }).catch(() => {})
+              }}
+            >
               <RefreshCcw size={13} />
               Refresh automations
             </Button>
@@ -1052,17 +1136,26 @@ export function AutomationV2Workspace({
 
           {/* Executive Pulse / Metrics Strip */}
           {(activeRecords.length > 0 || archivedRecords.length > 0 || pendingProposals.length > 0) && (
-            <div className={cn("grid gap-2.5", pendingCount > 0 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-4")} data-testid="automations-summary-strip">
+            <div className="grid gap-2.5 grid-cols-2 sm:grid-cols-5" data-testid="automations-summary-strip">
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Total</div>
                 <div className="mt-1 text-lg font-semibold text-[var(--app-text)]">{activeRecords.length + newPendingProposals.length}</div>
               </div>
-              {pendingCount > 0 && (
-                <div className="rounded-xl border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.08))] p-3" data-testid="summary-strip-pending">
-                  <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-warning)]">Pending</div>
-                  <div className="mt-1 text-lg font-semibold text-[var(--app-warning)]">{pendingCount}</div>
-                </div>
-              )}
+              <div className={cn(
+                "rounded-xl border p-3",
+                pendingCount > 0
+                  ? "border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.08))]"
+                  : "border-[var(--app-border)]/70 bg-[var(--app-surface)]"
+              )} data-testid="summary-strip-pending">
+                <div className={cn(
+                  "text-[10px] font-semibold uppercase tracking-wider",
+                  pendingCount > 0 ? "text-[var(--app-warning)]" : "text-[var(--app-text-muted)]"
+                )}>Pending</div>
+                <div className={cn(
+                  "mt-1 text-lg font-semibold",
+                  pendingCount > 0 ? "text-[var(--app-warning)]" : "text-[var(--app-text)]"
+                )}>{pendingCount}</div>
+              </div>
               <div className="rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3">
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">Scheduled</div>
                 <div className="mt-1 text-lg font-semibold text-[var(--app-success)]">{enabledCount}</div>
@@ -1105,6 +1198,7 @@ export function AutomationV2Workspace({
               <div className="flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs">
                 <button
                   type="button"
+                  data-testid="filter-all"
                   className={cn(
                     "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
                     statusFilter === 'all'
@@ -1115,23 +1209,24 @@ export function AutomationV2Workspace({
                 >
                   All ({activeRecords.length + newPendingProposals.length})
                 </button>
-                {pendingCount > 0 && (
-                  <button
-                    type="button"
-                    data-testid="filter-pending"
-                    className={cn(
-                      "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
-                      statusFilter === 'pending'
-                        ? 'bg-[var(--app-surface-hover)] text-[var(--app-warning)] font-semibold'
-                        : 'text-[var(--app-warning)] hover:text-[var(--app-warning)]/80'
-                    )}
-                    onClick={() => setStatusFilter('pending')}
-                  >
-                    Pending ({pendingCount})
-                  </button>
-                )}
                 <button
                   type="button"
+                  data-testid="filter-pending"
+                  className={cn(
+                    "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
+                    statusFilter === 'pending'
+                      ? 'bg-[var(--app-surface-hover)] text-[var(--app-warning)] font-semibold'
+                      : pendingCount > 0
+                        ? 'text-[var(--app-warning)] hover:text-[var(--app-warning)]/80'
+                        : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                  )}
+                  onClick={() => setStatusFilter('pending')}
+                >
+                  Pending ({pendingCount})
+                </button>
+                <button
+                  type="button"
+                  data-testid="filter-enabled"
                   className={cn(
                     "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
                     statusFilter === 'enabled'
@@ -1144,6 +1239,7 @@ export function AutomationV2Workspace({
                 </button>
                 <button
                   type="button"
+                  data-testid="filter-paused"
                   className={cn(
                     "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
                     statusFilter === 'paused'
@@ -1156,6 +1252,7 @@ export function AutomationV2Workspace({
                 </button>
                 <button
                   type="button"
+                  data-testid="filter-archived"
                   className={cn(
                     "px-2.5 py-1 rounded-md text-xs font-medium transition-colors",
                     statusFilter === 'archived'

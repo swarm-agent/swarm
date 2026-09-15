@@ -303,3 +303,71 @@ test('AutomationV2Sidecar integrates pending proposals into switcher dropdown', 
   assert.match(markup, /Pending automation proposals/)
   assert.match(markup, /Daily Health Audit \(Pending\)/)
 })
+
+test('AutomationV2Workspace always includes Pending in the filter row even when pendingCount is 0', () => {
+  const archivedRecord: AutomationV2Record = {
+    ...sampleProposal,
+    automation_id: 'auto-archived-1',
+    generation: 1,
+    enabled: false,
+    cancelled: false,
+    archived: true,
+    accepted_at: 1000,
+    authorization: { kind: 'indefinite' },
+    session_id: 'session-archived-1',
+  }
+  const listKey = automationV2PageKey({ action: 'list', workspace_id: 'ws-pending-empty-test' })
+  const archivedKey = automationV2PageKey({ action: 'list', workspace_id: 'ws-pending-empty-test', archived_mode: 'only' })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key: listKey,
+    input: { action: 'list', workspace_id: 'ws-pending-empty-test' },
+    requestId: 'req-list-empty',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: listKey,
+    requestId: 'req-list-empty',
+    generation: 0,
+    data: { records: [] },
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.begin',
+    key: archivedKey,
+    input: { action: 'list', workspace_id: 'ws-pending-empty-test', archived_mode: 'only' },
+    requestId: 'req-archived-1',
+  })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: archivedKey,
+    requestId: 'req-archived-1',
+    generation: 0,
+    data: { records: [archivedRecord] },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Workspace
+      workspaceId="ws-pending-empty-test"
+      workspacePath="/path/to/work"
+      workspaceName="Empty Pending Workspace"
+      workspaceSlug="empty-pending-slug"
+    />
+  )
+
+  // Filter row includes All, Pending, Active, Paused, Archived unconditionally
+  assert.match(markup, /data-testid="filter-all"/)
+  assert.match(markup, /All \(0\)/)
+  assert.match(markup, /data-testid="filter-pending"/)
+  assert.match(markup, /Pending \(0\)/)
+  assert.match(markup, /data-testid="filter-enabled"/)
+  assert.match(markup, /Active \(0\)/)
+  assert.match(markup, /data-testid="filter-paused"/)
+  assert.match(markup, /Paused \(0\)/)
+  assert.match(markup, /data-testid="filter-archived"/)
+  assert.match(markup, /Archived \(1\)/)
+
+  // Summary strip has 5 columns including Pending
+  assert.match(markup, /data-testid="automations-summary-strip"/)
+  assert.match(markup, /data-testid="summary-strip-pending"/)
+  assert.match(markup, /<div class="mt-1 text-lg font-semibold text-\[var\(--app-text\)\]">0<\/div>/)
+})

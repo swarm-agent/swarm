@@ -1872,8 +1872,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   useEffect(() => {
     // Sidebar bootstrap carries permission summaries, not every review payload.
     // Hydrate once when pending identity is unknown; no timer or title inference.
-    if (session.pendingPermissionCount > 0 && !session.pendingPermissions.length && !automationV2) void desktopAutomationV2.reconcileSession(session.id).catch(() => { /* Canonical sidebar retains its pending/error state; explicit refresh can retry. */ })
-  }, [session.id, session.pendingPermissionCount, session.pendingPermissions.length, automationV2])
+    if (session.pendingPermissionCount > 0 && !session.pendingPermissions.length) void desktopAutomationV2.reconcileSession(session.id).catch(() => { /* Canonical sidebar retains its pending/error state; explicit refresh can retry. */ })
+  }, [session.id, session.pendingPermissionCount, session.pendingPermissions.length])
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
   const backgroundInfo = sessionBackgroundInfo(session)

@@ -84,12 +84,18 @@ export function automationV2Review(value: AutomationV2Review): AutomationV2Revie
 }
 
 export function automationV2PermissionProposal(permission: DesktopPermissionRecord): AutomationV2Proposal | null {
-  if (permission.requirement !== 'automation_v2_acceptance') return null
+  const req = String(permission.requirement || '').toLowerCase()
+  if (req !== 'automation_v2_acceptance') return null
   try {
-    const payload = JSON.parse(permission.toolArguments)
+    const rawArgs = permission.toolArguments || (permission as any).tool_arguments || ''
+    const payload = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs
     const review = automationV2Review(payload.automation_review)
-    if (payload.review_kind !== 'automation_v2' || !payload.scope?.workspace_id || !payload.scope?.account_id || !payload.document?.automation_v2 || !payload.document?.checkpoints?.length) return null
-    return { ...review, workspace_id: payload.scope.workspace_id, account_id: payload.scope.account_id, session_id: permission.sessionId, document: payload.document }
+    const workspaceId = payload.scope?.workspace_id || payload.workspace_id || (permission as any).workspaceId || (permission as any).workspace_id
+    const accountId = payload.scope?.account_id || payload.account_id || (permission as any).accountScopeId || (permission as any).account_scope_id || 'default'
+    const sessionId = permission.sessionId || (permission as any).session_id
+    const isAutomationV2 = payload.review_kind === 'automation_v2' || Boolean(payload.document?.automation_v2)
+    if (!isAutomationV2 || !workspaceId || !payload.document?.automation_v2 || !payload.document?.checkpoints?.length) return null
+    return { ...review, workspace_id: workspaceId, account_id: accountId, session_id: sessionId, document: payload.document }
   } catch { return null }
 }
 export function validateAutomationV2(settings: AutomationV2Settings, now = Date.now()): void {

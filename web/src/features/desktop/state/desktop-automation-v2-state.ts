@@ -22,7 +22,7 @@ export function selectAutomationV2Identity(state: DesktopV3CacheState, sessionId
   const record = state.sessionsById[sessionId]
   if (record?.kind === 'full' && record.session.automation_v2) return 'accepted'
   const permissions = state.permissionsBySession[sessionId]
-  if (permissions?.some(p => p.status === 'pending' && p.requirement === 'automation_v2_acceptance')) return 'pending'
+  if (permissions?.some(p => String(p.status).toLowerCase() === 'pending' && String(p.requirement).toLowerCase() === 'automation_v2_acceptance')) return 'pending'
   for (const page of Object.values(state.automationV2Pages)) if (page.data?.records?.some(r => r.session_id === sessionId) || page.data?.record?.session_id === sessionId) return 'accepted'
   return undefined
 }
@@ -34,10 +34,20 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
   for (const permissions of Object.values(state.permissionsBySession ?? {})) {
     if (!permissions) continue
     for (const permission of permissions) {
-      if (permission.status !== 'pending' || permission.requirement !== 'automation_v2_acceptance') continue
+      const status = String(permission.status || '').toLowerCase()
+      const req = String(permission.requirement || '').toLowerCase()
+      if (status !== 'pending' || req !== 'automation_v2_acceptance') continue
       const proposal = automationV2PermissionProposal(permission)
       if (!proposal) continue
-      if (workspaceId && proposal.workspace_id !== workspaceId) continue
+      const sessionRec = state.sessionsById[proposal.session_id]
+      const sessionWorkspaceId = sessionRec?.kind === 'full'
+        ? (sessionRec.session.automation_v2?.workspace_id ||
+           sessionRec.session.automation?.workspace_id ||
+           sessionRec.session.workspace_grants?.find((g) => g.workspace_id)?.workspace_id ||
+           sessionRec.session.metadata?.swarm_v3_purpose_workspace_id)
+        : undefined
+      const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
+      if (workspaceId && effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) continue
       if (seenProposalIds.has(proposal.proposal_id)) continue
       seenProposalIds.add(proposal.proposal_id)
       proposals.push(proposal)
@@ -47,9 +57,16 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
   for (const page of Object.values(state.automationV2Pages ?? {})) {
     if (page.input.action === 'review' && page.data?.proposal) {
       const proposal = page.data.proposal
-      if (workspaceId && proposal.workspace_id !== workspaceId) continue
-      if (seenProposalIds.has(proposal.proposal_id)) continue
       const sessionRec = state.sessionsById[proposal.session_id]
+      const sessionWorkspaceId = sessionRec?.kind === 'full'
+        ? (sessionRec.session.automation_v2?.workspace_id ||
+           sessionRec.session.automation?.workspace_id ||
+           sessionRec.session.workspace_grants?.find((g) => g.workspace_id)?.workspace_id ||
+           sessionRec.session.metadata?.swarm_v3_purpose_workspace_id)
+        : undefined
+      const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
+      if (workspaceId && effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) continue
+      if (seenProposalIds.has(proposal.proposal_id)) continue
       const isAccepted = Object.values(state.automationV2Pages ?? {}).some(
         p => p.data?.records?.some(r => r.session_id === proposal.session_id) || p.data?.record?.session_id === proposal.session_id
       ) || (sessionRec?.kind === 'full' && Boolean(sessionRec.session.automation_v2))

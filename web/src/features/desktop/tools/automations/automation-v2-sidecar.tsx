@@ -11,7 +11,8 @@ import {
 import type { SessionSnapshot } from '../../state/desktop-v3-cache-types'
 import type { AutomationV2Proposal, AutomationV2Record } from '../../state/desktop-automation-v2-api'
 import { automationV2PermissionProposal } from '../../state/desktop-automation-v2-api'
-import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
+import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
+import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import { getOccurrenceDayKey } from './automation-v2-workspace'
 
@@ -99,6 +100,16 @@ export function AutomationV2Sidecar({
         .map((id) => page.sessions_by_id[id])
         .filter((session): session is SessionSnapshot => Boolean(session) && isAutomationManagementSession(session, workspaceId))
       setConversations(list)
+      for (const session of list) {
+        const cached = getDesktopV3CacheSnapshot()
+        const perms = cached.permissionsBySession[session.id]
+        if (!perms || perms.length === 0) {
+          const summary = cached.permissionSummaryBySessionId[session.id]
+          if ((summary?.pendingApprovalCount ?? 0) > 0 || session.metadata?.swarm_v3_session_purpose === 'automation_management') {
+            void desktopAutomationV2.reconcileSession(session.id).catch(() => {})
+          }
+        }
+      }
       return list
     } catch {
       // Bounded failure handling; conversations remain empty
@@ -271,7 +282,7 @@ export function AutomationV2Sidecar({
   const activePendingPermission = useDesktopV3CacheSelector((state) => {
     const sId = directSessionId || (selectedAutomation ? selectedAutomation.session_id : undefined)
     if (!sId) return undefined
-    return state.permissionsBySession[sId]?.find((p) => p.status === 'pending' && p.requirement === 'automation_v2_acceptance')
+    return state.permissionsBySession[sId]?.find((p) => String(p.status).toLowerCase() === 'pending' && String(p.requirement).toLowerCase() === 'automation_v2_acceptance')
   })
 
   const sidecarStructuredDoc = useMemo(() => {

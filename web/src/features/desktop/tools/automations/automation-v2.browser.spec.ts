@@ -28,7 +28,7 @@ test('V2 card edits exact snapshots and reconciles accepted discovery without re
     b.onResolve({ filter: /automation-v2-sidecar$/ }, args => ({ path: args.path, namespace: 'fixture-sidecar' }))
     b.onLoad({ filter: /.*/, namespace: 'fixture-sidecar' }, () => ({ resolveDir: process.cwd(), loader: 'tsx', contents: 'export function AutomationV2Sidecar(){return null}' }))
     b.onResolve({ filter: /automation-conversations$/ }, args => ({ path: args.path, namespace: 'fixture' }))
-    b.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ loader: 'tsx', contents: 'export function AutomationConversations(){return null}' }))
+    b.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ loader: 'tsx', contents: 'export function AutomationConversations(){return null}; export async function loadAutomationConversations(){return {sessions_by_id:{},session_order:[],pagination:{}}}' }))
   } }] })
   const { compile } = requireCSS('@tailwindcss/node')
   const { Scanner } = requireCSS('@tailwindcss/oxide')
