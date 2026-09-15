@@ -3383,7 +3383,10 @@ export function DesktopAppPage() {
   )
   const activeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
   const repositoryInventory = useSessionRepositories(routeSessionId || '')
-  const selectedRepository = repositoryInventory.items.find(row => repositoryKey(row) === repositoryInventory.selectedKey)
+  const selectedRepository = useMemo(
+    () => repositoryInventory.items.find(row => repositoryKey(row) === repositoryInventory.selectedKey),
+    [repositoryInventory.items, repositoryInventory.selectedKey],
+  )
   const currentGitWorkspacePath = activeGitSession?.worktreeEnabled
     ? activeGitSession.worktreeRootPath?.trim() || ''
     : activeGitSession
@@ -3391,9 +3394,13 @@ export function DesktopAppPage() {
       : ''
   const selectedGitSessionId = selectedRepository?.session_id || ''
   const selectedGitWorkspacePath = selectedRepository?.workspace_path || ''
+  const repositoryStaleOrError = Boolean(
+    repositoryInventory.error ||
+    (!selectedRepository && (repositoryInventory.stale || repositoryInventory.loading))
+  )
   const selectedRepositoryMutable = repositoryMutationSupported(selectedRepository, {
     id: activeGitSession?.id || '', path: currentGitWorkspacePath, worktree: Boolean(activeGitSession?.worktreeEnabled), branch: activeGitSession?.worktreeEnabled ? activeGitSession.worktreeBranch : undefined,
-  }, repositoryInventory.stale || repositoryInventory.loading)
+  }, repositoryStaleOrError)
   const [gitDockExpanded, setGitDockExpanded] = useState(false)
   useEffect(() => setGitDockExpanded(false), [routeSessionId])
   const [gitPageActive, setGitPageActive] = useState(() => document.visibilityState !== 'hidden')
@@ -3402,15 +3409,19 @@ export function DesktopAppPage() {
     queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
     queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId, pageSignal), signal),
     enabled: gitPageActive && selectedRepositoryMutable,
-    staleTime: 0,
-    refetchOnWindowFocus: true,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   })
   const gitSnapshot = selectedRepository?.availability === 'available'
     ? (selectedRepositoryMutable && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ? gitStatusQuery.data.status : selectedRepository.status ?? null)
     : null
   const activeSessionWorktree = Boolean(selectedRepositoryMutable && activeGitSession?.worktreeEnabled)
-  const selectedRepositoryActionsEnabled = selectedRepositoryMutable && !gitStatusQuery.isError && !gitStatusQuery.isFetching
-    && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath
+  const selectedRepositoryActionsEnabled = Boolean(
+    selectedRepositoryMutable &&
+    !gitStatusQuery.isError &&
+    (gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ||
+      selectedRepository?.status?.workspace_path === selectedGitWorkspacePath)
+  )
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
   const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId, workspacePathById) : ''
@@ -3427,7 +3438,21 @@ export function DesktopAppPage() {
   const activeSessionReviewCandidate = activeSessionWorktree
     ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
     : null
-  const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && !gitReviewQuery.isFetching && activeSessionReviewCandidate?.integrate_eligible)
+  const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && activeSessionReviewCandidate?.integrate_eligible)
+
+  const [quickCommitIntegrateConfirming, setQuickCommitIntegrateConfirming] = useState(false)
+  const [quickCommitIntegrateBusy, setQuickCommitIntegrateBusy] = useState(false)
+  const [quickCommitIntegratePhase, setQuickCommitIntegratePhase] = useState<string | null>(null)
+  const [quickCommitIntegrateError, setQuickCommitIntegrateError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setQuickCommitIntegrateConfirming(false)
+    setQuickCommitIntegrateError(null)
+  }, [routeSessionId])
+
+  useEffect(() => {
+    if (gitDockExpanded) setQuickCommitIntegrateConfirming(false)
+  }, [gitDockExpanded])
 
   useEffect(() => {
     if (!selectedRepositoryMutable || !selectedRepository?.status) return
@@ -5072,6 +5097,93 @@ export function DesktopAppPage() {
     }
   }
 
+  const handleQuickCommitAndIntegrate = async () => {
+    if (quickCommitIntegrateBusy || !selectedGitWorkspacePath || !selectedGitSessionId || !activeSessionTargetWorkspacePath) return
+    setQuickCommitIntegrateBusy(true)
+    setQuickCommitIntegrateError(null)
+    setQuickCommitIntegrateConfirming(false)
+
+    const isDirty = Boolean(gitSnapshot?.has_git && gitSnapshot.dirty_count > 0)
+    let commitMessage = ''
+    let commitSucceeded = false
+    if (isDirty) {
+      setQuickCommitIntegratePhase('Generating commit message…')
+      try {
+        const suggestion = await suggestWorkspaceCommitMessage({
+          workspacePath: selectedGitWorkspacePath,
+          sessionId: selectedGitSessionId,
+        })
+        commitMessage = suggestion.message?.trim() || ''
+      } catch {
+        // Fallback below
+      }
+      if (!commitMessage) {
+        commitMessage = `Update ${activeGitSession?.worktreeBranch?.trim() || gitSnapshot?.branch || 'session changes'}`
+      }
+
+      setQuickCommitIntegratePhase('Committing changes…')
+      try {
+        await commitWorkspaceChanges({
+          workspacePath: selectedGitWorkspacePath,
+          sessionId: selectedGitSessionId,
+          message: commitMessage,
+          all: true,
+        })
+        commitSucceeded = true
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'], refetchType: 'none' }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'], refetchType: 'none' }),
+        ])
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setQuickCommitIntegrateError(`Commit failed: ${msg}`)
+        setQuickCommitIntegrateBusy(false)
+        setQuickCommitIntegratePhase(null)
+        return
+      }
+    }
+
+    const integrationTarget: GitIntegrateModalState = {
+      sessionId: selectedGitSessionId,
+      workspacePath: activeSessionTargetWorkspacePath,
+      worktreeBranch: activeGitSession?.worktreeBranch?.trim() || gitSnapshot?.branch || 'worktree',
+      targetBranch: activeSessionReviewCandidate?.target_branch || activeSessionTargetBranch,
+      presentation: 'sidebar-popout',
+    }
+
+    setQuickCommitIntegratePhase(`Integrating into ${integrationTarget.targetBranch}…`)
+    try {
+      await integrateSessionWorktree(integrationTarget)
+      setDesktopToast({
+        message: isDirty
+          ? `Changes committed (“${commitMessage}”) and integrated into ${integrationTarget.targetBranch}.`
+          : `Worktree integrated into ${integrationTarget.targetBranch}.`,
+        tone: 'success',
+      })
+      setQuickCommitIntegrateError(null)
+      setGitIntegrateError(null)
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        repositoryInventory.refresh(),
+      ])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setQuickCommitIntegrateError(msg)
+      setGitIntegrateModal(integrationTarget)
+      setGitIntegrateError(msg)
+      if (commitSucceeded) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        ])
+      }
+    } finally {
+      setQuickCommitIntegrateBusy(false)
+      setQuickCommitIntegratePhase(null)
+    }
+  }
+
   const handleAskSwarmForGitIntegrationHelp = async () => {
     const modal = gitIntegrateModal
     const integrationError = gitIntegrateError
@@ -5178,6 +5290,14 @@ export function DesktopAppPage() {
     }
   }, [closeGitSidebarIntegratePopout, gitIntegrateModal?.presentation])
 
+  const unexpandedCommitIntegrateVisible = Boolean(
+    !gitDockExpanded &&
+    activeSessionWorktree &&
+    activeSessionTargetWorkspacePath &&
+    selectedRepositoryActionsEnabled &&
+    ((gitSnapshot?.has_git && gitSnapshot.dirty_count > 0) || quickCommitIntegrateError)
+  )
+
   const planSidebarGitPanel = routeSessionId ? (
     <>
     <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-git-expanded={gitDockExpanded} data-plan-git-layout="expandable-dock" data-plan-section-treatment="inset-card">
@@ -5190,9 +5310,52 @@ export function DesktopAppPage() {
       </div>
       <div className="shrink-0 truncate text-[11px] text-[var(--app-text-muted)]" title={selectedRepository?.workspace_name}>{selectedRepository?.workspace_name || 'Session repository'} · {gitSnapshot?.branch || selectedRepository?.branch || 'Loading branch…'}{activeSessionWorktree ? ` → ${activeSessionTargetBranch}` : ''}</div>
       <div className="shrink-0 py-1 text-xs" role="status">
-        {repositoryInventory.stale || repositoryInventory.error || gitStatusQuery.isError ? 'Status unavailable · refresh before making changes' : gitSnapshot?.has_git ? `${gitSnapshot.dirty_count} uncommitted file${gitSnapshot.dirty_count === 1 ? '' : 's'}` : repositoryInventory.loading ? 'Loading changes…' : 'Git status unavailable'}
-        <span className="block text-[var(--app-text-muted)]">{repositoryInventory.stale || gitStatusQuery.isError || gitReviewQuery.isError ? 'Integration comparison unavailable' : gitReviewQuery.isFetching ? 'Checking integration…' : activeSessionReviewCandidate?.reason === 'commits_missing_from_target' ? `${activeSessionReviewCandidate.missing_commit_count ?? 0} commit${activeSessionReviewCandidate.missing_commit_count === 1 ? '' : 's'} not in ${activeSessionTargetBranch}` : activeSessionReviewCandidate?.reason === 'clean_and_integrated' ? `Integrated into ${activeSessionTargetBranch}` : activeSessionIntegrateEligible ? `Ready to integrate into ${activeSessionTargetBranch}` : activeSessionWorktree ? 'Integration not yet verified' : selectedRepository?.kind === 'source' ? 'Source checkout · no session integration' : 'Select this session’s branch to integrate'}</span>
+        {gitSnapshot?.has_git ? `${gitSnapshot.dirty_count} uncommitted file${gitSnapshot.dirty_count === 1 ? '' : 's'}` : repositoryInventory.error || gitStatusQuery.isError || (repositoryInventory.stale && !repositoryInventory.loading) ? 'Status unavailable · refresh before making changes' : repositoryInventory.loading ? 'Loading changes…' : 'Git status unavailable'}
+        <span className="block text-[var(--app-text-muted)]">{repositoryInventory.error || gitStatusQuery.isError || gitReviewQuery.isError ? 'Integration comparison unavailable' : !activeSessionReviewCandidate && gitReviewQuery.isFetching ? 'Checking integration…' : activeSessionReviewCandidate?.reason === 'commits_missing_from_target' ? `${activeSessionReviewCandidate.missing_commit_count ?? 0} commit${activeSessionReviewCandidate.missing_commit_count === 1 ? '' : 's'} not in ${activeSessionTargetBranch}` : activeSessionReviewCandidate?.reason === 'clean_and_integrated' ? `Integrated into ${activeSessionTargetBranch}` : activeSessionIntegrateEligible ? `Ready to integrate into ${activeSessionTargetBranch}` : activeSessionWorktree ? 'Integration not yet verified' : selectedRepository?.kind === 'source' ? 'Source checkout · no session integration' : 'Select this session’s branch to integrate'}</span>
       </div>
+      {unexpandedCommitIntegrateVisible ? (
+        <div className="mt-1 shrink-0" data-plan-git-unexpanded-commit-integrate>
+          {quickCommitIntegrateError ? (
+            <div className="mb-1 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-xs text-[var(--app-danger)]" role="alert">
+              <p className="break-words">{quickCommitIntegrateError}</p>
+            </div>
+          ) : null}
+          {quickCommitIntegrateError ? <button type="button" className="mb-1 inline-flex min-h-8 w-full items-center justify-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={quickCommitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => { void handleAskSwarmForGitIntegrationHelp(); setQuickCommitIntegrateError(null) }}>{gitIntegrateHelpBusy ? <LoaderCircle size={12} className="animate-spin" /> : <Bot size={12} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button> : null}
+          {quickCommitIntegrateConfirming ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary-text,white)] hover:opacity-90 disabled:opacity-50"
+                disabled={quickCommitIntegrateBusy}
+                onClick={() => void handleQuickCommitAndIntegrate()}
+                aria-label={`Confirm commit and integrate into ${activeSessionTargetBranch}`}
+              >
+                {quickCommitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
+                <span>{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : 'Confirm commit & integrate'}</span>
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border)] px-2 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"
+                disabled={quickCommitIntegrateBusy}
+                onClick={() => setQuickCommitIntegrateConfirming(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50"
+              disabled={quickCommitIntegrateBusy || gitCommitBusy || gitIntegrateBusy}
+              onClick={() => setQuickCommitIntegrateConfirming(true)}
+              aria-label={quickCommitIntegrateError ? `Retry commit and integrate into ${activeSessionTargetBranch}` : `Commit and integrate into ${activeSessionTargetBranch}`}
+            >
+              {quickCommitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
+              <span>{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : quickCommitIntegrateError ? `Retry commit & integrate into ${activeSessionTargetBranch}` : `Commit & integrate into ${activeSessionTargetBranch}`}</span>
+            </button>
+          )}
+        </div>
+      ) : null}
       <div id="session-git-dock-details" hidden={!gitDockExpanded} className={gitDockExpanded ? 'min-h-0 max-h-[60vh] flex-1 overflow-y-auto overscroll-contain pr-1' : 'hidden'}>
       <details className="my-2 text-xs"><summary className="cursor-pointer py-2 text-[var(--app-text-muted)]">Branches &amp; repositories</summary>
       <SessionRepositoryPicker inventory={repositoryInventory} onSelect={repositoryInventory.select} onRefresh={() => { void repositoryInventory.refresh() }} onLoadMore={() => { void repositoryInventory.loadMore() }} />

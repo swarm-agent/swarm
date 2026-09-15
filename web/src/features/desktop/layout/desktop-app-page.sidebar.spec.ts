@@ -278,6 +278,43 @@ test('plan Git sidebar renders session commits and drafts integration help in th
   assert.doesNotMatch(helpHandlerSource + draftHandlerSource + reviewHandlerSource, /launchDesktopRepairSession|startNewDesktopV3Session|createDesktopV3ExistingMessageOperation|continueDesktopV3Conversation|setGitIntegrateError|handleGitIntegrate|integrateSessionWorktree|archiveIntegratedSession|archiveDesktopV3Sessions/)
 })
 
+test('plan Git unexpanded changes box supports 1-step commit and integrate with click-to-confirm and failure help', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  assert.match(source, /unexpandedCommitIntegrateVisible = Boolean\(\s*!gitDockExpanded/)
+  assert.match(source, /const handleQuickCommitAndIntegrate = async \(\) =>/)
+  assert.match(source, /suggestWorkspaceCommitMessage\(\{[\s\S]*workspacePath: selectedGitWorkspacePath[\s\S]*sessionId: selectedGitSessionId/)
+  assert.match(source, /commitWorkspaceChanges\(\{[\s\S]*workspacePath: selectedGitWorkspacePath[\s\S]*sessionId: selectedGitSessionId/)
+  assert.match(source, /integrateSessionWorktree\(integrationTarget\)/)
+  assert.match(panelSource, /data-plan-git-unexpanded-commit-integrate/)
+  assert.match(panelSource, /quickCommitIntegrateConfirming \?/)
+  assert.match(panelSource, /handleQuickCommitAndIntegrate\(\)/)
+  assert.match(panelSource, /quickCommitIntegrateError[\s\S]*handleAskSwarmForGitIntegrationHelp/)
+  assert.match(panelSource, /Retry commit & integrate into/)
+})
+
+test('session changes box preserves loaded status and actions during background reads without jitter', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  // Queries do not jitter on window focus or rapid refetch
+  assert.match(source, /gitStatusQuery = useQuery\(\{[\s\S]*staleTime: 15_000[\s\S]*refetchOnWindowFocus: false/)
+  // Action buttons do not unmount during background refetches
+  assert.match(source, /selectedRepositoryActionsEnabled = Boolean\(\s*selectedRepositoryMutable\s*&&\s*!gitStatusQuery\.isError/)
+  assert.doesNotMatch(source, /selectedRepositoryActionsEnabled[^\n]*!gitStatusQuery\.isFetching/)
+  assert.doesNotMatch(source, /activeSessionIntegrateEligible[^\n]*!gitReviewQuery\.isFetching/)
+  // Loaded status does not flash unavailable on background inventory invalidation
+  assert.match(panelSource, /gitSnapshot\?\.has_git \? `\$\{gitSnapshot\.dirty_count\} uncommitted file/)
+  assert.match(panelSource, /!activeSessionReviewCandidate && gitReviewQuery\.isFetching \? 'Checking integration…'/)
+})
+
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const layoutStart = source.indexOf('data-testid="desktop-workspace-sidebar"')

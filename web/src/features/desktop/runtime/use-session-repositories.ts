@@ -20,5 +20,8 @@ export function useSessionRepositories(sessionId: string) {
       document.removeEventListener('visibilitychange', scheduler.visibilityChanged)
     }
   }, [inventory, sessionId])
-  return { ...state, refresh: inventory.refresh, loadMore: inventory.loadMore, select: inventory.select }
+  return useMemo(
+    () => ({ ...state, refresh: inventory.refresh, loadMore: inventory.loadMore, select: inventory.select }),
+    [state, inventory],
+  )
 }
