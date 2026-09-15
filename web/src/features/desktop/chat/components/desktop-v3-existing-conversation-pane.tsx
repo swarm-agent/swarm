@@ -1165,6 +1165,17 @@ export function isDesktopV3ManualCompactionAckMessage(
     .startsWith("Manual context compact complete (Compact #");
 }
 
+export function isDesktopV3CompactionContinuationMessage(
+  message: MessageSnapshot,
+): boolean {
+  if ((message.role || "").trim().toLowerCase() !== "user") return false;
+  const metadataSource =
+    typeof message.metadata?.source === "string"
+      ? message.metadata.source.trim().toLowerCase()
+      : "";
+  return metadataSource === "context_compaction_continuation";
+}
+
 export function isDesktopV3PlanExecutionBreakMessage(
   message: MessageSnapshot,
 ): boolean {
@@ -1498,6 +1509,7 @@ export function buildDesktopV3ConversationRenderItems(
   const committedMessages = renderedMessages.committed.filter(
     (message) =>
       !isDesktopV3ManualCompactionAckMessage(message) &&
+      !isDesktopV3CompactionContinuationMessage(message) &&
       !pendingMessageIds.has(message.id),
   );
   const finalHandoffKeys = new Set(

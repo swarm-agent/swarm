@@ -399,6 +399,7 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 	if err != nil {
 		return googleRequest{}, err
 	}
+	contents = normalizeGoogleContentsForRequest(contents)
 	out := googleRequest{Contents: contents, ServiceTier: googleServiceTierForRequest(req)}
 	if strings.TrimSpace(req.Instructions) != "" {
 		out.SystemInstruction = &googleContent{
@@ -875,6 +876,56 @@ func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 		contents = append(contents, googleContent{Role: googleRole, Parts: parts})
 	}
 	return contents, nil
+}
+
+// normalizeGoogleContentsForRequest enforces Google Gemini conversation turn requirements:
+// 1. Roles must alternate between "user" and "model" (consecutive turns of the same role are merged).
+// 2. The first turn must be a "user" turn (if leading with "model", a user continuation turn is prepended).
+// 3. Requests must not end with a "model" turn ("Requests ending with a model turn are not supported.").
+// If contents ends with "model", a user continuation turn ("Continue") is appended.
+func normalizeGoogleContentsForRequest(contents []googleContent) []googleContent {
+	if len(contents) == 0 {
+		return []googleContent{
+			{
+				Role:  "user",
+				Parts: []googlePart{{Text: "Continue"}},
+			},
+		}
+	}
+	out := make([]googleContent, 0, len(contents)+1)
+	for _, c := range contents {
+		if len(c.Parts) == 0 {
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].Role == c.Role {
+			out[len(out)-1].Parts = append(out[len(out)-1].Parts, c.Parts...)
+		} else {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return []googleContent{
+			{
+				Role:  "user",
+				Parts: []googlePart{{Text: "Continue"}},
+			},
+		}
+	}
+	if out[0].Role == "model" {
+		out = append([]googleContent{
+			{
+				Role:  "user",
+				Parts: []googlePart{{Text: "Continue"}},
+			},
+		}, out...)
+	}
+	if out[len(out)-1].Role == "model" {
+		out = append(out, googleContent{
+			Role:  "user",
+			Parts: []googlePart{{Text: "Continue"}},
+		})
+	}
+	return out
 }
 
 func googleMessageParts(req provideriface.Request, content any, sourceRole string, mediaCounts map[string]int) ([]googlePart, error) {

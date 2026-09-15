@@ -219,3 +219,194 @@ func TestShouldTriggerContextOverflowCompactionEstimatedFromMessages(t *testing.
 		t.Fatalf("util = %v ok = %v, want >= 90.0", util, ok)
 	}
 }
+
+func TestIsManualCompactionAcknowledgement(t *testing.T) {
+	// Purpose:
+	// - Requirement: Compaction acknowledgements must be identified so they do not leak as trailing assistant turns in provider input.
+	// - Boundary/authority: isManualCompactionAcknowledgement in api/sessions_v3_executor.go.
+	ackWithMetadata := pebblestore.MessageSnapshot{
+		Role:     "assistant",
+		Content:  "Manual context compact complete (Compact #8).\n\nCompacted recap:\nsome recap",
+		Metadata: map[string]any{"source": "manual_context_compaction_ack"},
+	}
+	if !isManualCompactionAcknowledgement(ackWithMetadata) {
+		t.Fatal("isManualCompactionAcknowledgement(ackWithMetadata) = false, want true")
+	}
+
+	ackPrefixOnly := pebblestore.MessageSnapshot{
+		Role:    "assistant",
+		Content: "Manual context compact complete (Compact #3).",
+	}
+	if !isManualCompactionAcknowledgement(ackPrefixOnly) {
+		t.Fatal("isManualCompactionAcknowledgement(ackPrefixOnly) = false, want true")
+	}
+
+	normalAssistant := pebblestore.MessageSnapshot{
+		Role:    "assistant",
+		Content: "I have reviewed your files and found no bugs.",
+	}
+	if isManualCompactionAcknowledgement(normalAssistant) {
+		t.Fatal("isManualCompactionAcknowledgement(normalAssistant) = true, want false")
+	}
+
+	userMsg := pebblestore.MessageSnapshot{
+		Role:    "user",
+		Content: "continue",
+	}
+	if isManualCompactionAcknowledgement(userMsg) {
+		t.Fatal("isManualCompactionAcknowledgement(userMsg) = true, want false")
+	}
+}
+
+func TestSessionV3ProviderResumeContextMessagesHardCompactionBoundary(t *testing.T) {
+	// Purpose:
+	// - Requirement: Compaction epochs are hard provider boundaries; resume context must NOT load parent messages when epoch is context_compaction_*.
+	// - Threat/regression: Replaying overflowing parent messages after compaction re-inflates full context and crashes provider again.
+	// - Boundary/authority: sessionV3ProviderResumeContextMessages in api/sessions_v3_executor.go.
+	dir := t.TempDir()
+	db, err := pebblestore.Open(filepath.Join(dir, "compaction-boundary.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sessionStore := pebblestore.NewSessionStore(db)
+	eventLog, _ := pebblestore.NewEventLog(db)
+	sessionSvc := sessionruntime.NewService(sessionStore, eventLog)
+	server := &Server{sessions: sessionSvc}
+	exec := &sessionV3Executor{server: server}
+
+	sessionID := "sess-compaction-boundary"
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+		Title:          "Boundary Test",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Create parent epoch messages (overflowing context).
+	for i := 0; i < 5; i++ {
+		if _, _, _, err := sessionSvc.AppendMessage(sessionID, "user", "overflowing parent message", nil); err != nil {
+			t.Fatalf("append parent message: %v", err)
+		}
+	}
+
+	epochMessages := []pebblestore.MessageSnapshot{
+		{Role: "system", Content: "[context-compact] index=2 origin=overflow\n\nrecap"},
+		{Role: "user", Content: "Continue the task from the compacted recap."},
+	}
+
+	overflowEpoch := pebblestore.ExecutionEpoch{
+		EpochID:       "epoch-2",
+		ParentEpochID: "epoch-1",
+		Boundary: pebblestore.ExecutionEpochBoundary{
+			Reason: "context_compaction_overflow",
+		},
+	}
+	result, err := exec.sessionV3ProviderResumeContextMessages(sessionID, overflowEpoch, epochMessages)
+	if err != nil {
+		t.Fatalf("sessionV3ProviderResumeContextMessages failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2 (parent messages must not be loaded across compaction boundary)", len(result))
+	}
+	if result[0].Content != epochMessages[0].Content || result[1].Content != epochMessages[1].Content {
+		t.Fatalf("result content mismatch: %+v", result)
+	}
+
+	thresholdEpoch := pebblestore.ExecutionEpoch{
+		EpochID:       "epoch-3",
+		ParentEpochID: "epoch-2",
+		Boundary: pebblestore.ExecutionEpochBoundary{
+			Reason: "context_compaction_threshold",
+		},
+	}
+	resultThreshold, err := exec.sessionV3ProviderResumeContextMessages(sessionID, thresholdEpoch, epochMessages)
+	if err != nil {
+		t.Fatalf("sessionV3ProviderResumeContextMessages(threshold) failed: %v", err)
+	}
+	if len(resultThreshold) != 2 {
+		t.Fatalf("len(resultThreshold) = %d, want 2", len(resultThreshold))
+	}
+}
+
+func TestSessionsV3ProviderInputExcludesCompactionAcknowledgement(t *testing.T) {
+	// Purpose:
+	// - Requirement: sessionsV3ProviderInput must exclude compaction ack messages so provider input does not end with an assistant turn.
+	// - Boundary/authority: sessionsV3ProviderInputWithOptions, isManualCompactionAcknowledgement in api/sessions_v3_executor.go.
+	messages := []pebblestore.MessageSnapshot{
+		{Role: "system", Content: "[context-compact] index=8 origin=overflow\n\nRecap text"},
+		{Role: "assistant", Content: "Manual context compact complete (Compact #8).\n\nCompacted recap:\nRecap text", Metadata: map[string]any{"source": "manual_context_compaction_ack"}},
+	}
+	input := sessionsV3ProviderInput(messages)
+	if len(input) != 1 {
+		t.Fatalf("len(input) = %d, want 1 (ack should be excluded)", len(input))
+	}
+	if role, _ := input[0]["role"].(string); role != "user" {
+		t.Fatalf("input[0].role = %q, want user", role)
+	}
+}
+
+func TestRecordSessionV3CompactionContinuationUserMessage(t *testing.T) {
+	// Purpose:
+	// - Requirement: recordSessionV3CompactionContinuationUserMessage records a synthetic user message for seamless continuation.
+	// - Boundary/authority: recordSessionV3CompactionContinuationUserMessage in api/sessions_v3_executor.go.
+	dir := t.TempDir()
+	db, err := pebblestore.Open(filepath.Join(dir, "continuation-user.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sessionStore := pebblestore.NewSessionStore(db)
+	eventLog, _ := pebblestore.NewEventLog(db)
+	sessionSvc := sessionruntime.NewService(sessionStore, eventLog)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-1", AccountScopeID: "account-1"}
+	server := &Server{sessions: sessionSvc}
+	exec := &sessionV3Executor{server: server}
+
+	sessionID := "sess-continuation-msg"
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		Title:          "Continuation Test",
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	job := sessionV3ExecutorJob{
+		Principal: principal,
+		SessionID: sessionID,
+		RunID:     "run-cont-test",
+		EpochID:   "epoch-cont",
+	}
+
+	if err := exec.recordSessionV3CompactionContinuationUserMessage(job, "Continue the task from the compacted recap."); err != nil {
+		t.Fatalf("recordSessionV3CompactionContinuationUserMessage failed: %v", err)
+	}
+
+	msgs, err := sessionSvc.ListSessionMessages(sessionID, 0, 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1", len(msgs))
+	}
+	contMsg := msgs[0]
+	if contMsg.Role != "user" {
+		t.Fatalf("contMsg.Role = %q, want user", contMsg.Role)
+	}
+	if contMsg.Content != "Continue the task from the compacted recap." {
+		t.Fatalf("contMsg.Content = %q", contMsg.Content)
+	}
+	if contMsg.Metadata["source"] != "context_compaction_continuation" {
+		t.Fatalf("contMsg metadata source = %v, want context_compaction_continuation", contMsg.Metadata["source"])
+	}
+	if contMsg.Metadata["synthetic"] != true {
+		t.Fatalf("contMsg metadata synthetic = %v, want true", contMsg.Metadata["synthetic"])
+	}
+	if contMsg.Metadata["visible"] != false {
+		t.Fatalf("contMsg metadata visible = %v, want false", contMsg.Metadata["visible"])
+	}
+}

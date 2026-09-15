@@ -1869,6 +1869,20 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
     - Generic `context_length_exceeded` / `context window exceeded` diagnostics continue to trigger compaction unconditionally for backward compatibility.
   - Diagnostic logging in `recordSessionV3ContextOverflowDecision` includes `google_token_overflow_matched` and `context_utilization_percent`.
 
+- **Post-compaction session continuation and Google multi-turn conversation turn normalization (`provider/google/runner.go`, `api/sessions_v3_executor.go`, `api/sessions_v3_stale_recovery.go`, `web/src/features/desktop/chat/components/desktop-v3-existing-conversation-pane.tsx`):**
+  - Google Gemini API strictly requires that multi-turn chat requests do not end with a model turn (`"Requests ending with a model turn are not supported."`), start with a user turn, and alternate between user and model.
+  - Added `normalizeGoogleContentsForRequest` in `provider/google/runner.go`:
+    - Merges consecutive turns with the same role into a single turn with combined parts so roles strictly alternate.
+    - If `contents` leads with a `model` turn, prepends a user `Continue` turn.
+    - If `contents` ends with a `model` turn, appends a user `Continue` turn so Gemini requests never fail with the 400 model turn error.
+    - If `contents` is empty, supplies a default user `Continue` turn.
+  - In `sessions_v3_executor.go`:
+    - `sessionsV3ProviderInputWithOptions` excludes `isManualCompactionAcknowledgement` messages so compaction acknowledgement records (`Manual context compact complete (Compact #...)`) do not leak into model context as trailing assistant turns.
+    - `sessionV3ProviderResumeContextMessages` treats `context_compaction_*` epoch boundaries as hard provider boundaries and does not re-attach parent epoch messages that overflowed.
+    - `contextOverflowCompactedAssistantResponse` and `staleCompactedAssistantResponse` invoke `recordSessionV3CompactionContinuationUserMessage` to record a synthetic user continuation message (`Continue the task from the compacted recap.`) with `source: context_compaction_continuation` and `visible: false`, cleanly restarting the session after compaction.
+  - In `web/src/features/desktop/chat/components/desktop-v3-existing-conversation-pane.tsx`:
+    - `isDesktopV3CompactionContinuationMessage` filters synthetic compaction continuation messages from the committed message list so the desktop chat transcript remains clean.
+
 - **Validation:**
   - `swarmd/internal/provider/google/runner_test.go`:
     - `TestGoogleServiceUnavailableRetrySuccessUnary` (recovers on 3rd attempt after two 503s)
@@ -1876,10 +1890,18 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
     - `TestGoogleServiceUnavailableRetrySuccessStreaming` (streams after two 503s)
     - `TestGoogleServiceUnavailableRetryExhaustedStreaming` (returns 503 after 3 retries on stream endpoint)
     - `TestGoogleServiceUnavailableRetryRespectsContextCancellation` (aborts sleep on context cancel)
+    - `TestNormalizeGoogleContentsForRequest` (verifies empty, leading model, trailing model, and consecutive turn normalization)
+    - `TestBuildGoogleRequestNormalizesTrailingModelTurn` (verifies buildGoogleRequest produces contents ending in user turn)
+    - `TestGoogleTrailingModelTurnRecoversStreaming` (verifies streamGenerateContent normalizes trailing assistant turn to user Continue)
+    - `TestGoogleTrailingModelTurnRecoversUnary` (verifies generateContent normalizes trailing assistant turn to user Continue)
   - `swarmd/internal/api/sessions_v3_google_overflow_test.go`:
     - `TestGoogleTokenOverflowDiagnosticMatching` (positive and negative pattern matching and token limit parsing)
     - `TestShouldTriggerContextOverflowCompactionAt85Percent` (verifies generic errors, <85% refusal, and >=85% compaction trigger)
     - `TestShouldTriggerContextOverflowCompactionEstimatedFromMessages` (verifies message token estimation when usage summary is absent)
+    - `TestIsManualCompactionAcknowledgement` (verifies compaction ack detection and exclusion)
+    - `TestSessionV3ProviderResumeContextMessagesHardCompactionBoundary` (verifies compaction epochs do not re-attach overflowing parent messages)
+    - `TestSessionsV3ProviderInputExcludesCompactionAcknowledgement` (verifies provider input does not end with assistant ack)
+    - `TestRecordSessionV3CompactionContinuationUserMessage` (verifies synthetic continuation user message persistence)
   - `swarmd/internal/run/service_google_overflow_test.go`:
     - `TestRunIsGoogleTokenOverflowDiagnostic`
     - `TestRunContextUtilizationPercent`

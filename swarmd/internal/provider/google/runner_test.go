@@ -1086,3 +1086,189 @@ func TestGoogleStreamPreservesLateThoughtSignatureForFunctionCall(t *testing.T) 
 		t.Fatalf("function call metadata = %+v, want late thought signature", response.FunctionCalls[0].Metadata)
 	}
 }
+
+func TestNormalizeGoogleContentsForRequest(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google Gemini requests must not end with a model turn, must not start with a model turn, and consecutive same-role turns must be merged.
+	// - Threat/regression: Multi-turn requests ending with a model turn return HTTP 400 "Requests ending with a model turn are not supported."
+	// - Boundary/authority: normalizeGoogleContentsForRequest in provider/google/runner.go.
+	// - Narrowest test layer: Unit test covering empty contents, trailing model turn, leading model turn, and consecutive turn merging.
+
+	// Case 1: Empty contents -> 1 user turn.
+	emptyResult := normalizeGoogleContentsForRequest(nil)
+	if len(emptyResult) != 1 || emptyResult[0].Role != "user" || len(emptyResult[0].Parts) != 1 || emptyResult[0].Parts[0].Text != "Continue" {
+		t.Fatalf("emptyResult = %+v, want 1 user turn with Continue", emptyResult)
+	}
+
+	// Case 2: Trailing model turn -> appends user turn.
+	trailingModel := []googleContent{
+		{Role: "user", Parts: []googlePart{{Text: "Hello"}}},
+		{Role: "model", Parts: []googlePart{{Text: "I completed compaction."}}},
+	}
+	normalizedTrailing := normalizeGoogleContentsForRequest(trailingModel)
+	if len(normalizedTrailing) != 3 {
+		t.Fatalf("len(normalizedTrailing) = %d, want 3", len(normalizedTrailing))
+	}
+	if normalizedTrailing[0].Role != "user" || normalizedTrailing[1].Role != "model" || normalizedTrailing[2].Role != "user" {
+		t.Fatalf("roles = [%s, %s, %s], want [user, model, user]", normalizedTrailing[0].Role, normalizedTrailing[1].Role, normalizedTrailing[2].Role)
+	}
+	if normalizedTrailing[2].Parts[0].Text != "Continue" {
+		t.Fatalf("trailing turn part = %q, want Continue", normalizedTrailing[2].Parts[0].Text)
+	}
+
+	// Case 3: Leading model turn -> prepends user turn.
+	leadingModel := []googleContent{
+		{Role: "model", Parts: []googlePart{{Text: "Assistant text"}}},
+		{Role: "user", Parts: []googlePart{{Text: "User follow up"}}},
+	}
+	normalizedLeading := normalizeGoogleContentsForRequest(leadingModel)
+	if len(normalizedLeading) != 3 {
+		t.Fatalf("len(normalizedLeading) = %d, want 3", len(normalizedLeading))
+	}
+	if normalizedLeading[0].Role != "user" || normalizedLeading[1].Role != "model" || normalizedLeading[2].Role != "user" {
+		t.Fatalf("roles = [%s, %s, %s], want [user, model, user]", normalizedLeading[0].Role, normalizedLeading[1].Role, normalizedLeading[2].Role)
+	}
+
+	// Case 4: Consecutive same-role turns -> merged into alternating turns.
+	consecutiveUser := []googleContent{
+		{Role: "user", Parts: []googlePart{{Text: "First instruction"}}},
+		{Role: "user", Parts: []googlePart{{Text: "Second prompt"}}},
+	}
+	normalizedConsecutive := normalizeGoogleContentsForRequest(consecutiveUser)
+	if len(normalizedConsecutive) != 1 {
+		t.Fatalf("len(normalizedConsecutive) = %d, want 1", len(normalizedConsecutive))
+	}
+	if len(normalizedConsecutive[0].Parts) != 2 {
+		t.Fatalf("len(parts) = %d, want 2 merged parts", len(normalizedConsecutive[0].Parts))
+	}
+
+	// Case 5: Single model turn -> padded to user, model, user.
+	onlyModel := []googleContent{
+		{Role: "model", Parts: []googlePart{{Text: "Solo model"}}},
+	}
+	normalizedSolo := normalizeGoogleContentsForRequest(onlyModel)
+	if len(normalizedSolo) != 3 || normalizedSolo[0].Role != "user" || normalizedSolo[1].Role != "model" || normalizedSolo[2].Role != "user" {
+		t.Fatalf("normalizedSolo = %+v, want [user, model, user]", normalizedSolo)
+	}
+}
+
+func TestBuildGoogleRequestNormalizesTrailingModelTurn(t *testing.T) {
+	// Purpose:
+	// - Requirement: buildGoogleRequest must produce Contents that never ends with a model turn.
+	// - Boundary/authority: buildGoogleRequest in provider/google/runner.go.
+	req := provideriface.Request{
+		Model: "gemini-3.8-flash",
+		Input: []map[string]any{
+			{"role": "user", "content": "hello"},
+			{"role": "assistant", "content": "Manual context compact complete (Compact #8)."},
+		},
+	}
+	built, err := buildGoogleRequest(req)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest error: %v", err)
+	}
+	if len(built.Contents) == 0 {
+		t.Fatal("Contents is empty")
+	}
+	last := built.Contents[len(built.Contents)-1]
+	if last.Role != "user" {
+		t.Fatalf("last turn role = %q, want user", last.Role)
+	}
+	if len(last.Parts) == 0 || last.Parts[0].Text != "Continue" {
+		t.Fatalf("last turn part = %+v, want Continue text part", last.Parts)
+	}
+}
+
+func TestGoogleTrailingModelTurnRecoversStreaming(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google streaming requests ending with a model turn are normalized to end with a user turn before sending over wire.
+	// - Threat/regression: Post-compaction continuation ending with an assistant message causes Google streamGenerateContent 400.
+	// - Boundary/authority: Runner.createStreamingResponse, normalizeGoogleContentsForRequest in provider/google/runner.go.
+	var receivedContents []googleContent
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		var parsed googleRequest
+		if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+			return nil, err
+		}
+		receivedContents = parsed.Contents
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"continuation success\"}]}}]}\n\n")),
+			Request:    req,
+		}, nil
+	}))
+
+	resp, err := runner.CreateResponseStreaming(ctx, provideriface.Request{
+		Model: "gemini-3.8-flash",
+		Input: []map[string]any{
+			{"role": "user", "content": "run task"},
+			{"role": "assistant", "content": "Manual context compact complete (Compact #1)."},
+		},
+	}, func(event provideriface.StreamEvent) {})
+	if err != nil {
+		t.Fatalf("CreateResponseStreaming failed: %v", err)
+	}
+	if resp.Text != "continuation success" {
+		t.Fatalf("resp.Text = %q, want 'continuation success'", resp.Text)
+	}
+	if len(receivedContents) == 0 {
+		t.Fatal("receivedContents is empty")
+	}
+	lastTurn := receivedContents[len(receivedContents)-1]
+	if lastTurn.Role != "user" {
+		t.Fatalf("receivedContents last turn role = %q, want user", lastTurn.Role)
+	}
+	if len(lastTurn.Parts) == 0 || lastTurn.Parts[0].Text != "Continue" {
+		t.Fatalf("receivedContents last turn parts = %+v, want Continue", lastTurn.Parts)
+	}
+}
+
+func TestGoogleTrailingModelTurnRecoversUnary(t *testing.T) {
+	// Purpose:
+	// - Requirement: Google unary requests ending with a model turn are normalized to end with a user turn before sending over wire.
+	// - Boundary/authority: Runner.CreateResponse, normalizeGoogleContentsForRequest in provider/google/runner.go.
+	var receivedContents []googleContent
+	runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		var parsed googleRequest
+		if err := json.Unmarshal(bodyBytes, &parsed); err != nil {
+			return nil, err
+		}
+		receivedContents = parsed.Contents
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader("{\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"unary continuation success\"}]}}]}")),
+			Request:    req,
+		}, nil
+	}))
+
+	resp, err := runner.CreateResponse(ctx, provideriface.Request{
+		Model: "gemini-3.8-flash",
+		Input: []map[string]any{
+			{"role": "user", "content": "run task"},
+			{"role": "assistant", "content": "Manual context compact complete (Compact #1)."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateResponse failed: %v", err)
+	}
+	if resp.Text != "unary continuation success" {
+		t.Fatalf("resp.Text = %q, want 'unary continuation success'", resp.Text)
+	}
+	if len(receivedContents) == 0 {
+		t.Fatal("receivedContents is empty")
+	}
+	lastTurn := receivedContents[len(receivedContents)-1]
+	if lastTurn.Role != "user" {
+		t.Fatalf("receivedContents last turn role = %q, want user", lastTurn.Role)
+	}
+}

@@ -1680,6 +1680,9 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact created unexpected continuation epoch %q", activeEpoch.EpochID)
 	}
 	job.EpochID = activeEpoch.EpochID
+	if err := e.recordSessionV3CompactionContinuationUserMessage(job, "Continue the task from the compacted recap."); err != nil {
+		log.Printf("warning: v3 context overflow compact continuation message record failed for session %q run %q: %v", job.SessionID, job.RunID, err)
+	}
 	resolved, err := e.resolveSessionV3Runtime(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact continuation runtime resolve failed: %w", err)
@@ -3756,10 +3759,11 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if parentEpochID == "" {
 		return messages, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") {
-		// A final handoff deliberately starts a fresh provider-context epoch. The
-		// canonical handoff is already injected above, so replaying this epoch's
-		// parent would cross the boundary and duplicate that handoff.
+	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") ||
+		strings.HasPrefix(strings.TrimSpace(epoch.Boundary.Reason), "context_compaction_") {
+		// Compaction checkpoints and final handoffs deliberately start fresh
+		// provider-context epochs. Replaying this epoch's parent would cross
+		// the hard boundary and re-introduce overflowing or duplicated history.
 		return messages, nil
 	}
 	_, parentMessages, err := e.server.sessions.ListExecutionEpochMessages(sessionID, parentEpochID, 0)
@@ -4380,6 +4384,9 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 			content = sessionsV3ProviderUserText(message)
 		}
 		if content == "" {
+			continue
+		}
+		if isManualCompactionAcknowledgement(message) {
 			continue
 		}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
@@ -5259,6 +5266,70 @@ func sessionV3AssistantMessageID(sessionID, runID string) string {
 func sessionV3RunFailureMessageID(sessionID, runID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00run_failure"))
 	return "v3msg_system_failure_" + hex.EncodeToString(sum[:16])
+}
+
+func sessionV3RunContinuationMessageID(sessionID, runID, epochID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00" + strings.TrimSpace(epochID) + "\x00compaction_continuation"))
+	return "v3msg_user_continuation_" + hex.EncodeToString(sum[:16])
+}
+
+func isManualCompactionAcknowledgement(message pebblestore.MessageSnapshot) bool {
+	if strings.ToLower(strings.TrimSpace(message.Role)) != "assistant" {
+		return false
+	}
+	if source := strings.ToLower(strings.TrimSpace(sessionV3MetadataString(message.Metadata, "source"))); source == "manual_context_compaction_ack" {
+		return true
+	}
+	content := strings.TrimSpace(message.Content)
+	if content == "" || !strings.HasPrefix(content, "Manual context compact complete (Compact #") {
+		return false
+	}
+	return !strings.Contains(content, "Compacted recap:")
+}
+
+func (e *sessionV3Executor) recordSessionV3CompactionContinuationUserMessage(job sessionV3ExecutorJob, promptText string) error {
+	if e == nil || e.server == nil {
+		return nil
+	}
+	promptText = strings.TrimSpace(promptText)
+	if promptText == "" {
+		promptText = "Continue the task from the compacted recap."
+	}
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{
+		ID:             sessionV3RunContinuationMessageID(job.SessionID, job.RunID, job.EpochID),
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		Role:           "user",
+		Content:        promptText,
+		CreatedAt:      now,
+		Metadata: map[string]any{
+			"source":    "context_compaction_continuation",
+			"synthetic": true,
+			"visible":   false,
+			"run_id":    strings.TrimSpace(job.RunID),
+		},
+	}
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", "session.message.appended", "continuation:"+promptText)
+	if err != nil {
+		return err
+	}
+	clientRequestID := sessionV3ExecutorClientRequestID("session.compaction_continuation:"+job.EpochID, job.RunID)
+	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	})
+	return err
 }
 
 func sessionV3AssistantSegmentMessageID(sessionID, runID string, step int) string {
