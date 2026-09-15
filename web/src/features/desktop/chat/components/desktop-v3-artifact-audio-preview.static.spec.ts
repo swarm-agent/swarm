@@ -76,3 +76,29 @@ test('artifact gallery renders non-truncated iteration titles and descriptions i
   assert.match(gallery, /vDesc && vDesc !== vTitle/)
 })
 
+test('chat markdown ManageArtifactCard renders interactive sound bars with play controls', async () => {
+  const markdown = await readFile(markdownURL, 'utf8')
+  assert.match(markdown, /function ChatAudioSoundBar/)
+  assert.match(markdown, /data-testid="audio-sound-bar"/)
+  assert.match(markdown, /data-artifact-soundbar-index/)
+  assert.match(markdown, /<Pause size=\{13\} fill="currentColor" \/>/)
+  assert.match(markdown, /<Play size=\{13\} fill="currentColor"/)
+  assert.match(markdown, /document\.querySelectorAll\("audio"\)/)
+})
+
+test('sidebar renders interactive sound bars for audio entries with direct play button', async () => {
+  const sidebar = await readFile(sidebarURL, 'utf8')
+  assert.match(sidebar, /function SidebarAudioSoundBar/)
+  assert.match(sidebar, /data-artifact-sidebar-sound-bar/)
+  assert.match(sidebar, /isAudioGroup && 'grid-cols-1 gap-1\.5'/)
+  assert.match(sidebar, /<Pause size=\{11\} fill="currentColor" \/>/)
+  assert.match(sidebar, /<Play size=\{11\} fill="currentColor"/)
+  assert.match(sidebar, /document\.querySelectorAll\('audio'\)/)
+})
+
+test('preview thumbnail renders audio with aspect-auto sound bar layout', async () => {
+  const thumbnail = await readFile(thumbnailURL, 'utf8')
+  assert.match(thumbnail, /isAudio && '!aspect-auto'/)
+})
+
+

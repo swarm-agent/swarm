@@ -184,6 +184,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const hasAudioPreview = previewActive && (artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio') && Boolean(previewURL)
   const hasPDFPreview = previewActive && artifact.mediaType === 'application/pdf' && Boolean(previewURL)
   const hasTextPreview = previewActive && (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
+  const isAudio = artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio'
 
   const isWide = presentation === 'wide' && (artifact.mediaType.startsWith('image/') || artifact.mediaType.startsWith('video/') || artifact.kind === 'video')
   const previewAspectRatio = isWide && artifact.outputRequirements
@@ -195,6 +196,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
       ref={previewRef}
       className={cn(
         'relative aspect-video w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)]',
+        isAudio && '!aspect-auto',
         isWide ? 'max-w-3xl' : 'max-w-sm',
         className,
       )}
@@ -243,9 +245,19 @@ export function DesktopV3ArtifactPreviewThumbnail({
       ) : null}
       {!loading && hasAudioPreview ? (
         <div className="flex size-full flex-col items-center justify-center gap-2 bg-[var(--app-surface)] p-3" data-artifact-audio-container>
-          <div className="flex items-center gap-2 text-[var(--app-primary)]">
-            <Music className="size-4 shrink-0" aria-hidden="true" />
-            <span className="max-w-44 truncate text-[11px] font-medium text-[var(--app-text)]">{artifact.label || 'Audio track'}</span>
+          <div className="flex w-full items-center justify-between gap-2 text-[var(--app-primary)]">
+            <div className="flex items-center gap-2 min-w-0">
+              <Music className="size-4 shrink-0" aria-hidden="true" />
+              <span className="max-w-44 truncate text-[11px] font-medium text-[var(--app-text)]">{artifact.label || 'Audio track'}</span>
+            </div>
+            <div className="flex items-center gap-0.5 h-3 shrink-0" aria-hidden="true">
+              <span className="w-0.5 h-2 rounded-full bg-[var(--app-primary)] opacity-50" />
+              <span className="w-0.5 h-3 rounded-full bg-[var(--app-primary)] opacity-80" />
+              <span className="w-0.5 h-1.5 rounded-full bg-[var(--app-primary)] opacity-40" />
+              <span className="w-0.5 h-2.5 rounded-full bg-[var(--app-primary)] opacity-70" />
+              <span className="w-0.5 h-3.5 rounded-full bg-[var(--app-primary)]" />
+              <span className="w-0.5 h-2 rounded-full bg-[var(--app-primary)] opacity-60" />
+            </div>
           </div>
           <audio
             src={previewURL}
