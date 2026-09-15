@@ -67,6 +67,14 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
       const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
       if (workspaceId && effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) continue
       if (seenProposalIds.has(proposal.proposal_id)) continue
+      const permRecord = (state.permissionsBySession?.[proposal.session_id] ?? []).find(
+        p => p.id === 'permission_' + proposal.proposal_id ||
+             (String(p.requirement || '').toLowerCase() === 'automation_v2_acceptance' &&
+              (p.toolArguments?.includes(proposal.proposal_id) || (p as any).tool_arguments?.includes(proposal.proposal_id)))
+      )
+      if (permRecord && String(permRecord.status || '').toLowerCase() !== 'pending') {
+        continue
+      }
       const isAccepted = Object.values(state.automationV2Pages ?? {}).some(
         p => p.data?.records?.some(r => r.session_id === proposal.session_id) || p.data?.record?.session_id === proposal.session_id
       ) || (sessionRec?.kind === 'full' && Boolean(sessionRec.session.automation_v2))

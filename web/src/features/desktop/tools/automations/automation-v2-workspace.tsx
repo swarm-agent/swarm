@@ -20,6 +20,7 @@ import {
   Search,
   Sparkles,
   Trash2,
+  XCircle,
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
@@ -34,6 +35,8 @@ import {
   type AutomationV2Settings,
 } from '../../state/desktop-automation-v2-api'
 import { selectPendingAutomationV2Proposals } from '../../state/desktop-automation-v2-state'
+import { dispatchDesktopV3Cache } from '../../state/desktop-v3-cache-store'
+import { normalizeDesktopPermission } from '../../permissions/services/desktop-permission-normalization'
 import { resolveSessionV3Permission } from '../../session-v3/api'
 import { archiveDesktopV3Sessions } from '../../session-v3/plan-execution-api'
 import { unarchiveDesktopV3ReviewSessions } from '../../session-v3/review-worktrees-api'
@@ -531,8 +534,10 @@ export function PendingAutomationCard({
   workspaceSlug?: string
 }) {
   const [acceptBusy, setAcceptBusy] = useState(false)
+  const [declineBusy, setDeclineBusy] = useState(false)
   const [acceptError, setAcceptError] = useState('')
   const [accepted, setAccepted] = useState<AutomationV2Record | null>(null)
+  const [declined, setDeclined] = useState(false)
 
   const schedule = proposal.document.automation_v2.schedule
   const scheduleSettings = proposal.document.automation_v2
@@ -541,7 +546,7 @@ export function PendingAutomationCard({
     new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
 
   const handleAccept = async () => {
-    if (acceptBusy || accepted) return
+    if (acceptBusy || declineBusy || accepted || declined) return
     setAcceptBusy(true)
     setAcceptError('')
     try {
@@ -563,16 +568,43 @@ export function PendingAutomationCard({
     }
   }
 
-  const handleReject = async () => {
+  const handleDecline = async () => {
+    if (declineBusy || acceptBusy || accepted || declined) return
+    setDeclineBusy(true)
+    setAcceptError('')
     try {
-      await resolveSessionV3Permission(proposal.session_id, 'permission_' + proposal.proposal_id, {
-        action: 'deny',
-        reason: 'Rejected by user',
+      await desktopAutomationV2.mutate({
+        action: 'decline_automation',
+        workspace_id: workspaceId || proposal.workspace_id,
+        session_id: proposal.session_id,
+        review: automationV2Review(proposal),
       })
+      try {
+        const resolved = await resolveSessionV3Permission(proposal.session_id, 'permission_' + proposal.proposal_id, {
+          action: 'deny',
+          reason: 'Declined by user',
+        })
+        const permRecord = normalizeDesktopPermission(resolved?.permission, proposal.session_id)
+        dispatchDesktopV3Cache({
+          type: 'permission.resolveResult',
+          sessionId: proposal.session_id,
+          permissionId: 'permission_' + proposal.proposal_id,
+          permission: permRecord,
+        })
+      } catch {
+        // Permission might already be resolved
+      }
+      setDeclined(true)
       desktopAutomationV2.invalidate(proposal.workspace_id, proposal.session_id)
-    } catch {
-      // ignore
+    } catch (err) {
+      setAcceptError(err instanceof Error ? err.message : 'Decline failed')
+    } finally {
+      setDeclineBusy(false)
     }
+  }
+
+  const handleReject = async () => {
+    await handleDecline()
   }
 
   return (
@@ -668,6 +700,15 @@ export function PendingAutomationCard({
         </div>
       )}
 
+      {declined && (
+        <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-hover)] p-3 text-xs text-[var(--app-text-muted)]" data-testid="automation-declined-message">
+          <p className="font-semibold text-[var(--app-text)]">Automation proposal declined</p>
+          <p className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">
+            This pending automation has been declined and will not be scheduled.
+          </p>
+        </div>
+      )}
+
       {/* Card Actions */}
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2.5 border-t border-[var(--app-border)]/60 pt-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -681,17 +722,32 @@ export function PendingAutomationCard({
             <MessageSquare size={13} className="text-[var(--app-primary)]" />
             <span>Ask the automation agent for any changes</span>
           </Button>
-          {!accepted && (
-            <Button
-              size="sm"
-              className="h-8 gap-1.5 rounded-xl text-xs bg-[var(--app-primary)] text-white hover:bg-[var(--app-primary)]/90"
-              disabled={acceptBusy}
-              onClick={() => void handleAccept()}
-              title="Accept and activate this automation"
-            >
-              {acceptBusy ? <LoaderCircle size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
-              <span>Accept automation</span>
-            </Button>
+          {!accepted && !declined && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 rounded-xl text-xs text-[var(--app-text-muted)] hover:border-[var(--app-danger-border,rgba(239,68,68,0.4))] hover:bg-[var(--app-danger-bg,rgba(239,68,68,0.08))] hover:text-[var(--app-danger)]"
+                disabled={declineBusy || acceptBusy}
+                onClick={() => void handleDecline()}
+                title="Decline this automation proposal"
+                data-testid="decline-automation-button"
+              >
+                {declineBusy ? <LoaderCircle size={13} className="animate-spin" /> : <XCircle size={13} />}
+                <span>Decline</span>
+              </Button>
+              <Button
+                size="sm"
+                className="h-8 gap-1.5 rounded-xl text-xs bg-[var(--app-primary)] text-white hover:bg-[var(--app-primary)]/90"
+                disabled={acceptBusy || declineBusy}
+                onClick={() => void handleAccept()}
+                title="Accept and activate this automation"
+                data-testid="accept-automation-button"
+              >
+                {acceptBusy ? <LoaderCircle size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+                <span>Accept automation</span>
+              </Button>
+            </>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -731,6 +787,7 @@ export function PendingAutomationCard({
             key={`${proposal.proposal_id}-${proposal.revision}`}
             proposal={proposal}
             onReject={handleReject}
+            rejectLabel="Decline"
             onAskForChanges={() => onAskForChanges(proposal.session_id)}
           />
         </div>

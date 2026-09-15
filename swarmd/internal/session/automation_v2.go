@@ -87,6 +87,17 @@ func (s *Service) AcceptAutomationV2(account, user, workspace, id string, review
 	}
 	return s.store.AcceptAutomationV2(account, user, workspace, id, review, validateAutomationV2Proposal)
 }
+
+func (s *Service) DeclineAutomationV2(account, user, workspace, id string, review pebblestore.AutomationV2Review) error {
+	p, ok, err := s.store.GetAutomationV2Proposal(account, user, workspace, id)
+	if err != nil {
+		return err
+	}
+	if !ok || p.AutomationV2Review != review {
+		return pebblestore.ErrAutomationV2Conflict
+	}
+	return s.store.DeclineAutomationV2(account, user, workspace, id, review)
+}
 func (s *Service) GetAutomationV2Record(account, user, workspace, id string) (pebblestore.AutomationV2Record, bool, error) {
 	return s.store.GetAutomationV2Record(account, user, workspace, id)
 }

@@ -192,6 +192,7 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(AutomationsV2Path+"/proposal", s.handleAutomationsV2)
 	mux.HandleFunc(AutomationsV2Path+"/review", s.handleAutomationsV2)
 	mux.HandleFunc(AutomationsV2Path+"/accept", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/decline", s.handleAutomationsV2)
 	mux.HandleFunc(AutomationsV2Path+"/control", s.handleAutomationsV2)
 	mux.HandleFunc(AutomationsV2Path+"/progress", s.handleAutomationsV2)
 	mux.HandleFunc(AutomationsPath, s.handleAutomations)

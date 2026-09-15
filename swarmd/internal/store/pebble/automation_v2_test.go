@@ -420,6 +420,91 @@ func TestAutomationV2ArchivedAndDeletedSessionLifecycle(t *testing.T) {
 	}
 }
 
+func TestAutomationV2Decline(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	available := true
+	if err := s.CreateSession(SessionSnapshot{ID: "decline-session", AccountScopeID: "account", UserID: "owner", WorkspacePath: workspace.Path, WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspace.WorkspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := SessionPlanDocument{
+		Title: "Pending to decline",
+		Info:  SessionPlanInfo{Goal: "Goal"},
+		AutomationV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         AutomationV2Schedule{Kind: "interval", IntervalSeconds: 120},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{ID: "cp-1", Title: "Task", Objective: "Run", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Done"}}},
+	}
+
+	proposal, err := s.ProposeAutomationV2("account", "owner", workspace.WorkspaceID, "decline-session", doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stale review decline fails with conflict
+	staleReview := AutomationV2Review{ProposalID: proposal.ProposalID, Revision: proposal.Revision + 1, Digest: "deadbeef"}
+	if err := s.DeclineAutomationV2("account", "owner", workspace.WorkspaceID, "decline-session", staleReview); !errors.Is(err, ErrAutomationV2Conflict) {
+		t.Fatalf("expected conflict for stale decline, got: %v", err)
+	}
+
+	// Foreign user decline fails
+	if err := s.DeclineAutomationV2("account", "foreign", workspace.WorkspaceID, "decline-session", proposal.AutomationV2Review); err == nil {
+		t.Fatal("expected error for foreign decline")
+	}
+
+	// Valid decline
+	if err := s.DeclineAutomationV2("account", "owner", workspace.WorkspaceID, "decline-session", proposal.AutomationV2Review); err != nil {
+		t.Fatalf("decline failed: %v", err)
+	}
+
+	// Proposal is deleted
+	if _, found, err := s.GetAutomationV2Proposal("account", "owner", workspace.WorkspaceID, "decline-session"); err != nil || found {
+		t.Fatalf("expected proposal not found: found=%v err=%v", found, err)
+	}
+
+	// Permission is denied
+	ps := NewPermissionStore(db)
+	perm, found, err := ps.GetPermission("decline-session", AutomationV2PermissionID(proposal.ProposalID))
+	if err != nil || !found || perm.Status != PermissionStatusDenied || perm.Decision != "decline_automation" {
+		t.Fatalf("expected permission denied: found=%v, perm=%+v, err=%v", found, perm, err)
+	}
+
+	// Plan snapshot is declined
+	plan, found, err := s.GetPlan("decline-session", proposal.ProposalID)
+	if err != nil || !found || plan.Status != "declined" || plan.ApprovalState != "declined" {
+		t.Fatalf("expected plan declined: found=%v, plan=%+v, err=%v", found, plan, err)
+	}
+
+	// Subsequent acceptance fails
+	if _, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "decline-session", proposal.AutomationV2Review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+		t.Fatalf("expected conflict on accepting declined proposal, got: %v", err)
+	}
+}
+
 // Store tests inject a bounded fixture validator; API/session tests exercise the
 // canonical executable validator. This is not a production alternate validator.
 func fixtureAutomationV2Validator(doc *SessionPlanDocument) error {

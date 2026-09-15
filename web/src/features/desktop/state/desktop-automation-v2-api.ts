@@ -76,6 +76,7 @@ export interface AutomationV2Response { records?: AutomationV2Record[]; next_cur
 export type AutomationV2Mutation = { workspace_id: string; session_id: string } & (
   | { action: 'propose_automation'; document: AutomationV2Document; review: AutomationV2Review }
   | { action: 'accept_automation'; review: AutomationV2Review }
+  | { action: 'decline_automation'; review: AutomationV2Review }
   | { action: 'pause' | 'resume' | 'cancel_future' | 'cancel_all'; generation: number }
 )
 export function automationV2Review(value: AutomationV2Review): AutomationV2Review {
@@ -131,6 +132,6 @@ export async function readAutomationV2(input: AutomationV2Read): Promise<Automat
 export function mutateAutomationV2(input: AutomationV2Mutation): Promise<AutomationV2Response> {
   if (input.action === 'propose_automation') validateAutomationV2(input.document.automation_v2)
   if ('review' in input) automationV2Review(input.review)
-  const path = input.action === 'propose_automation' ? 'proposal' : input.action === 'accept_automation' ? 'accept' : 'control'
+  const path = input.action === 'propose_automation' ? 'proposal' : input.action === 'accept_automation' ? 'accept' : input.action === 'decline_automation' ? 'decline' : 'control'
   return requestJson(`/v3/automations/v2/${path}`, { method: 'POST', body: JSON.stringify(input) })
 }

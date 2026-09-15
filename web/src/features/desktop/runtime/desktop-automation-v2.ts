@@ -78,13 +78,13 @@ export class DesktopAutomationV2Runtime {
     if (frame.kind === 'event' && type.startsWith('session.automation_v2.')) {
       const id = String(event?.session_id ?? frame.session_id ?? '')
       this.invalidate(undefined, id || undefined)
-      if (id && (type.endsWith('.proposed') || type.endsWith('.accepted'))) void this.reconcileSession(id).catch(() => this.invalidate())
+      if (id && (type.endsWith('.proposed') || type.endsWith('.accepted') || type.endsWith('.declined'))) void this.reconcileSession(id).catch(() => this.invalidate())
     }
   }
   async mutate(input: AutomationV2Mutation) {
     try {
       const result = await this.deps.mutate(input)
-      if (input.action === 'accept_automation' || input.action === 'propose_automation') await this.reconcileSession(input.session_id)
+      if (input.action === 'accept_automation' || input.action === 'propose_automation' || input.action === 'decline_automation') await this.reconcileSession(input.session_id)
       return result
     } finally { this.invalidate(input.workspace_id, input.session_id) }
   }

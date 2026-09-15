@@ -109,6 +109,7 @@ const field = 'w-full min-w-0 rounded-lg border border-[var(--app-border)] bg-[v
 export function AutomationV2PlanReview({
   proposal,
   onReject,
+  rejectLabel,
   onAskForChanges,
   askForChangesLabel,
   disabled = false,
@@ -116,6 +117,7 @@ export function AutomationV2PlanReview({
 }: {
   proposal: AutomationV2Proposal
   onReject?: () => Promise<void>
+  rejectLabel?: string
   onAskForChanges?: () => void
   askForChangesLabel?: string
   disabled?: boolean
@@ -484,8 +486,19 @@ export function AutomationV2PlanReview({
         </Button>
       ) : <div />}
       <div className="flex flex-wrap items-center gap-2">
-        {onReject && <Button variant="outline" size="sm" className="h-8 rounded-xl text-xs" disabled={blocked} onClick={() => void run('reject')}>Reject</Button>}
-        {dirty ? <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('review')}>{busy ? 'Saving changes…' : 'Save schedule changes'}</Button> : <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('accept')}>{accepted ? 'Automation accepted' : rejected ? 'Proposal rejected' : busy ? 'Accepting…' : 'Accept automation'}</Button>}
+        {onReject && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 rounded-xl text-xs text-[var(--app-text-muted)] hover:border-[var(--app-danger-border,rgba(239,68,68,0.4))] hover:bg-[var(--app-danger-bg,rgba(239,68,68,0.08))] hover:text-[var(--app-danger)]"
+            disabled={blocked}
+            onClick={() => void run('reject')}
+            data-testid="reject-automation-button"
+          >
+            {rejectLabel || 'Reject'}
+          </Button>
+        )}
+        {dirty ? <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('review')}>{busy ? 'Saving changes…' : 'Save schedule changes'}</Button> : <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('accept')}>{accepted ? 'Automation accepted' : rejected ? (rejectLabel?.toLowerCase().includes('decline') ? 'Proposal declined' : 'Proposal rejected') : busy ? 'Accepting…' : 'Accept automation'}</Button>}
       </div>
     </footer>
   </section>

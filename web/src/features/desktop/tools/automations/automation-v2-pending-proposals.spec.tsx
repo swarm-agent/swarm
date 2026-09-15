@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { AutomationV2Proposal, AutomationV2Record } from '../../state/desktop-automation-v2-api'
-import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
+import { automationV2PageKey, selectPendingAutomationV2Proposals } from '../../state/desktop-automation-v2-state'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../../state/desktop-v3-cache-store'
 import {
   AutomationV2Workspace,
@@ -79,6 +79,9 @@ test('PendingAutomationCard renders base details on the outside in a pending sta
 
   // 3. Action buttons
   assert.match(markup, /Ask the automation agent for any changes/)
+  assert.match(markup, /data-testid="decline-automation-button"/)
+  assert.match(markup, />Decline<\/span>/)
+  assert.match(markup, /data-testid="accept-automation-button"/)
   assert.match(markup, /Accept automation/)
   assert.match(markup, /View details/)
 
@@ -114,9 +117,11 @@ test('PendingAutomationCard expands to open it up with full plan review and acce
   assert.match(markup, /Closing States &amp; Alert Conditions/)
   assert.match(markup, /Execution Schedule/)
 
-  // Both ways to act inside expanded review: Accept and Ask for changes
+  // Both ways to act inside expanded review: Accept and Ask for changes, plus Decline
   assert.match(markup, /data-testid="ask-for-changes-button"/)
   assert.match(markup, /Ask the automation agent for any changes/)
+  assert.match(markup, /data-testid="reject-automation-button"/)
+  assert.match(markup, />Decline<\/button>/)
   assert.match(markup, />Accept automation<\/button>/)
 })
 
@@ -370,4 +375,55 @@ test('AutomationV2Workspace always includes Pending in the filter row even when 
   assert.match(markup, /data-testid="automations-summary-strip"/)
   assert.match(markup, /data-testid="summary-strip-pending"/)
   assert.match(markup, /<div class="mt-1 text-lg font-semibold text-\[var\(--app-text\)\]">0<\/div>/)
+})
+
+test('selectPendingAutomationV2Proposals excludes proposals whose permission is denied', () => {
+  const cacheState = getDesktopV3CacheSnapshot()
+  const deniedPermission = {
+    id: 'permission_prop-denied-1',
+    sessionId: 'session-denied-1',
+    toolName: 'plan_manage',
+    toolArguments: JSON.stringify({
+      review_kind: 'automation_v2',
+      document: sampleProposal.document,
+      automation_review: {
+        proposal_id: 'prop-denied-1',
+        revision: 1,
+        digest: 'c'.repeat(64),
+      },
+      scope: { workspace_id: 'ws-denied-test' },
+    }),
+    proposalRevision: 1,
+    requirement: 'automation_v2_acceptance',
+    mode: 'plan',
+    status: 'denied',
+    executionStatus: 'completed',
+    createdAt: 1000,
+    updatedAt: 2000,
+  }
+
+  cacheState.permissionsBySession['session-denied-1'] = [deniedPermission as any]
+
+  // Add review page in automationV2Pages as well
+  const reviewKey = automationV2PageKey({ action: 'review', workspace_id: 'ws-denied-test', session_id: 'session-denied-1' })
+  cacheState.automationV2Pages[reviewKey] = {
+    input: { action: 'review', workspace_id: 'ws-denied-test', session_id: 'session-denied-1' },
+    generation: 1,
+    loading: false,
+    stale: false,
+    data: {
+      proposal: {
+        proposal_id: 'prop-denied-1',
+        revision: 1,
+        digest: 'c'.repeat(64),
+        account_id: 'acct-1',
+        workspace_id: 'ws-denied-test',
+        session_id: 'session-denied-1',
+        document: sampleProposal.document,
+      },
+    },
+  }
+
+  const proposals = selectPendingAutomationV2Proposals(cacheState, 'ws-denied-test')
+  assert.equal(proposals.some(p => p.proposal_id === 'prop-denied-1'), false)
 })

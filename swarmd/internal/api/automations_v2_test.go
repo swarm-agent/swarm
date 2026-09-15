@@ -277,3 +277,152 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: DeclineAutomationV2 must delete the pending proposal, resolve the
+// pending permission to denied, reject subsequent acceptance, and emit a
+// realtime outbox event.
+func TestAutomationV2RegisteredReviewDecline(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
+	h := s.apiMux()
+	call := func(method, path, body, user string, agent bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		if user != "" {
+			p := identity.Principal{Type: "user", UserID: user, AccountScopeID: "account"}
+			ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+			if agent {
+				var err error
+				ctx, err = automation.BindRuntimeIdentity(ctx, p, "agent", "child")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			r = r.WithContext(ctx)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	doc := &store.SessionPlanDocument{
+		Title: "To Decline",
+		Info:  store.SessionPlanInfo{Goal: "Work"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 300},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Title: "Task", Objective: "Run", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Done"}}},
+	}
+	req := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: doc}
+	w := call(http.MethodPost, "/proposal", encode(req), "owner", false)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var proposal struct {
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &proposal); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify proposal exists
+	if _, found, err := ss.GetAutomationV2Proposal("account", "owner", workspaceID, "conversation"); err != nil || !found {
+		t.Fatal("proposal missing", found, err)
+	}
+	ps := store.NewPermissionStore(db)
+	perm, found, err := ps.GetPermission("conversation", store.AutomationV2PermissionID(proposal.Proposal.ProposalID))
+	if err != nil || !found || perm.Status != store.PermissionStatusPending {
+		t.Fatal("permission missing or not pending", found, perm.Status, err)
+	}
+
+	decline := automationV2Request{
+		Action:      "decline_automation",
+		WorkspaceID: workspaceID,
+		SessionID:   "conversation",
+		Review:      proposal.Proposal.AutomationV2Review,
+	}
+
+	// Reject decline by unauthorized / foreign user or agent
+	for _, tc := range []struct {
+		user  string
+		agent bool
+	}{
+		{"", false},
+		{"foreign", false},
+		{"owner", true},
+	} {
+		w = call(http.MethodPost, "/decline", encode(decline), tc.user, tc.agent)
+		if w.Code < 400 {
+			t.Fatalf("unauthorized decline succeeded for user=%q agent=%v", tc.user, tc.agent)
+		}
+	}
+
+	// Valid decline call
+	w = call(http.MethodPost, "/decline", encode(decline), "owner", false)
+	if w.Code != 200 {
+		t.Fatalf("decline failed: code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// Verify proposal is gone
+	if _, found, err := ss.GetAutomationV2Proposal("account", "owner", workspaceID, "conversation"); err != nil || found {
+		t.Fatal("proposal still found after decline", found, err)
+	}
+
+	// Verify GET /review returns 404
+	w = call(http.MethodGet, "/review?workspace_id="+workspaceID+"&session_id=conversation", "", "owner", false)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for declined review, got %d", w.Code)
+	}
+
+	// Verify permission status is denied
+	perm, found, err = ps.GetPermission("conversation", store.AutomationV2PermissionID(proposal.Proposal.ProposalID))
+	if err != nil || !found || perm.Status != store.PermissionStatusDenied || perm.Decision != "decline_automation" {
+		t.Fatalf("permission not denied: found=%v status=%s decision=%s", found, perm.Status, perm.Decision)
+	}
+
+	// Verify accept fails after decline
+	accept := automationV2Request{
+		Action:      "accept_automation",
+		WorkspaceID: workspaceID,
+		SessionID:   "conversation",
+		Review:      proposal.Proposal.AutomationV2Review,
+	}
+	w = call(http.MethodPost, "/accept", encode(accept), "owner", false)
+	if w.Code < 400 {
+		t.Fatal("accept succeeded on declined proposal")
+	}
+}

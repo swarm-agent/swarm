@@ -161,6 +161,7 @@ type automationV2Mutation struct {
 	proposal AutomationV2Proposal
 	expected AutomationV2Review
 	accept   bool
+	decline  bool
 	record   AutomationV2Record
 	// The canonical session validator is injected to avoid a store/session import cycle.
 	// It is required and invoked against the exact bytes inside the session lock.
@@ -241,6 +242,12 @@ func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id stri
 	if ok {
 		if err := validateAutomationV2Integrity(p, account, user, workspace, id); err != nil {
 			return AutomationV2Proposal{}, false, err
+		}
+		ps := NewPermissionStore(s.store)
+		if perm, found, err := ps.GetPermission(id, AutomationV2PermissionID(p.ProposalID)); err == nil && found {
+			if perm.Status == PermissionStatusDenied || perm.Status == PermissionStatusCancelled {
+				return AutomationV2Proposal{}, false, nil
+			}
 		}
 	}
 	return p, ok, err
@@ -354,6 +361,19 @@ func (s *SessionStore) AcceptAutomationV2(account, user, workspace, id string, r
 	}
 	return r, err
 }
+func (s *SessionStore) DeclineAutomationV2(account, user, workspace, id string, review AutomationV2Review) error {
+	p, ok, err := s.GetAutomationV2Proposal(account, user, workspace, id)
+	if err != nil {
+		return err
+	}
+	if !ok || p.AutomationV2Review != review {
+		return ErrAutomationV2Conflict
+	}
+	m := &automationV2Mutation{proposal: p, expected: review, decline: true}
+	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: id, AccountScopeID: account, UserID: user, Kind: V3SessionMutationUpdateMetadata, EventType: "session.automation_v2.declined", ClientRequestID: fmt.Sprintf("av2:decline:%s:%d", review.ProposalID, review.Revision), PayloadHash: review.Digest, automationV2: m})
+	return err
+}
+
 func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 	m := in.automationV2
 	if m == nil {
@@ -363,6 +383,24 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 		return s.prepareAutomationV2Execution(in)
 	}
 	p := m.proposal
+	if m.decline {
+		if run, ok, err := s.GetV3SessionActiveRunIntent(in.SessionID); err != nil {
+			return err
+		} else if ok && (run.Status == V3RunIntentRunning || run.Status == V3RunIntentPendingExecutor) {
+			return ErrAutomationV2Conflict
+		}
+		var prior AutomationV2Proposal
+		found, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior)
+		if err != nil {
+			return err
+		}
+		if !found || prior.AutomationV2Review != m.expected {
+			return ErrAutomationV2Conflict
+		}
+		payload, err := json.Marshal(map[string]any{"proposal_id": p.ProposalID, "revision": p.Revision, "digest": p.Digest, "declined": true})
+		in.EventPayload = payload
+		return err
+	}
 	if m.validate == nil {
 		return errors.New("canonical executable validator required")
 	}
@@ -451,6 +489,16 @@ func (s *SessionStore) setAutomationV2InBatch(batch *pebble.Batch, in V3SessionM
 		return s.setAutomationV2ExecutionInBatch(batch, in)
 	}
 	p := m.proposal
+	if m.decline {
+		if err := batch.Delete([]byte(automationV2Key("proposal", p.AccountID, p.SessionID)), nil); err != nil {
+			return err
+		}
+		plan := SessionPlanSnapshot{ID: p.ProposalID, SessionID: p.SessionID, AccountScopeID: p.AccountID, UserID: p.UserID, Title: p.Document.Title, Status: "declined", ApprovalState: "declined", Version: int(p.Revision), Document: &p.Document, CreatedAt: p.CreatedAt, UpdatedAt: time.Now().UnixMilli()}
+		if err := setPlanAcceptancePlanInBatch(batch, plan, nil); err != nil {
+			return err
+		}
+		return s.setAutomationV2PermissionInBatch(batch, m)
+	}
 	var value any = p
 	kind := "proposal"
 	if m.accept {

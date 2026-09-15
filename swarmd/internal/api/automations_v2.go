@@ -134,7 +134,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/control" {
+	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" {
 		http.NotFound(w, r)
 		return
 	}
@@ -165,6 +165,16 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		response = map[string]any{"record": record}
+	} else if r.URL.Path == AutomationsV2Path+"/decline" {
+		if req.Action != "decline_automation" || req.Document != nil || req.Review.ProposalID == "" || req.Review.Revision == 0 || req.Review.Digest == "" {
+			automationV2Error(w, errors.New("exact decline required"))
+			return
+		}
+		if err := s.sessions.DeclineAutomationV2(p.AccountScopeID, p.UserID, req.WorkspaceID, req.SessionID, req.Review); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		response = map[string]any{"ok": true, "declined": true}
 	} else if r.URL.Path == AutomationsV2Path+"/proposal" {
 		if req.Action != "propose_automation" || req.Document == nil {
 			automationV2Error(w, errors.New("proposal required"))

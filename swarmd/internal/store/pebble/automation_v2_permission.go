@@ -3,6 +3,8 @@ package pebblestore
 import (
 	"encoding/json"
 	"errors"
+	"time"
+
 	"github.com/cockroachdb/pebble"
 )
 
@@ -38,7 +40,7 @@ func (s *SessionStore) setAutomationV2PermissionInBatch(batch *pebble.Batch, m *
 	var prior *PermissionRecord
 	if found {
 		prior = &previous
-		if previous.Requirement != "automation_v2_acceptance" || (previous.Status != PermissionStatusPending && (m.accept || previous.Status != PermissionStatusApproved || int64(p.Revision) <= previous.ProposalRevision)) {
+		if previous.Requirement != "automation_v2_acceptance" || (previous.Status != PermissionStatusPending && (m.accept || m.decline || previous.Status != PermissionStatusApproved || int64(p.Revision) <= previous.ProposalRevision)) {
 			return ErrAutomationV2Conflict
 		}
 		record.CreatedAt = previous.CreatedAt
@@ -50,6 +52,14 @@ func (s *SessionStore) setAutomationV2PermissionInBatch(batch *pebble.Batch, m *
 		}
 		record.Status, record.Decision, record.ExecutionStatus = PermissionStatusApproved, "accept_automation", PermissionExecCompleted
 		record.ResolvedAt, record.CompletedAt, record.UpdatedAt = m.record.AcceptedAt, m.record.AcceptedAt, m.record.AcceptedAt
+	}
+	if m.decline {
+		if !found || previous.ProposalRevision != int64(p.Revision) {
+			return ErrAutomationV2Conflict
+		}
+		now := time.Now().UnixMilli()
+		record.Status, record.Decision, record.ExecutionStatus = PermissionStatusDenied, "decline_automation", PermissionExecCompleted
+		record.ResolvedAt, record.CompletedAt, record.UpdatedAt = now, now, now
 	}
 	pending, err := ps.ListPendingPermissions(p.SessionID, 1001)
 	if err != nil {

@@ -99,4 +99,3 @@ func TestShouldGenerateSessionV3TitlePermitsDefaultAndAutomationTitles(t *testin
 		}
 	}
 }
-
