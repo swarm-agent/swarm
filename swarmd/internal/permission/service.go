@@ -1570,7 +1570,7 @@ func ShouldApproveManageArtifactGenerateImage(toolArguments string) bool {
 
 func ShouldApproveManageArtifactGenerateVideo(toolArguments string) bool {
 	action := manageAction(toolArguments)
-	return action == "generate_video" || action == "chain_video"
+	return action == "generate_video" || action == "chain_video" || action == "generate_video_story"
 }
 
 func ShouldApproveManageArtifactGenerateAudio(toolArguments string) bool {
