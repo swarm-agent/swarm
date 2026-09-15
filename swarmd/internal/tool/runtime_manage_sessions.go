@@ -39,6 +39,7 @@ func manageSessionsDefinition() Definition {
 			"action":     map[string]any{"type": "string", "description": "inspect|list|list_by_state|review_worktrees|search|get|read_messages|git_status|commit|archive|unarchive|deploy. Use list_by_state with state to auto-page up to 200 matching sessions in one call. Use review_worktrees for one-call classification of needs-review managed branches against current HEAD. Archive and unarchive are approval-gated and support up to 50 sessions; deploy also always asks the user and supports up to 8 proposals. Allow-more only selects additional proposals in the current batch."},
 			"commits":    map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxBatch, "description": "For commit, one ordered entry per needs-review session. File paths are never accepted; the server derives them from durable terminal-checkpoint changed_files.", "items": map[string]any{"type": "object", "required": []string{"session_id", "message"}, "additionalProperties": false, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}}},
 			"proposals":  map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxDeployBatch, "description": "For deploy, bounded session proposals. The first proposal is selected by default; extras require explicit current-batch selection. Every selected Git-backed deployment receives mandatory session-owned managed worktree isolation.", "items": map[string]any{"type": "object", "required": []string{"prompt"}, "additionalProperties": false, "properties": map[string]any{"title": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}, "mode": map[string]any{"type": "string", "enum": []string{"auto"}, "description": "Always auto at deployment. Users may switch to Plan manually after creation."}, "agent": map[string]any{"type": "string", "description": "Saved enabled primary or subagent profile; omitted uses the active primary."}, "workspace_path": map[string]any{"type": "string", "description": "Workspace suggestion resolved against account-owned bindings by the server."}, "worktree_name": map[string]any{"type": "string", "description": "Short Swarm-authored worktree/branch name seed. The server canonicalizes it, applies the configured branch prefix, and resolves allocation collisions; no path is accepted."}}}},
+			"role":       map[string]any{"type": "string", "description": "Optional message role filter (e.g. user, assistant, tool, system) for read_messages or session-scoped search."},
 			"session_id": map[string]any{"type": "string"}, "session_ids": map[string]any{"type": "array", "maxItems": manageSessionsMaxMutationBatch, "description": "For archive or unarchive, pass up to 50 session IDs together instead of requesting one at a time.", "items": map[string]any{"type": "string"}},
 			"query": map[string]any{"type": "string", "description": "Compact lexical search query."}, "queries": map[string]any{"type": "array", "description": "A small batch of alternate lexical queries for the same user request; do not relist results with another call.", "items": map[string]any{"type": "string"}},
 			"search_mode": map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}, "description": "Search source. Omitted defaults to visible. durable_log is technical, requires session_id, and may be used only after an explicit user request for raw database, durable-log, event, diagnostic, or API-level inspection; never auto-upgrade."},
@@ -95,6 +96,10 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 func (r *Runtime) manageSessionsSearch(scope WorkspaceScope, args map[string]any) (string, error) {
 	action := strings.ToLower(strings.TrimSpace(stringValue(args["action"])))
 	bulkByState := action == "list_by_state"
+	sessionID := strings.TrimSpace(stringValue(args["session_id"]))
+	if sessionID != "" && !bulkByState {
+		return r.manageSessionScopedSearch(scope, sessionID, args)
+	}
 	limit := boundedInt(args["limit"], 20, manageSessionsMaxLimit)
 	if bulkByState {
 		limit = boundedInt(args["limit"], manageSessionsMaxStateBulk, manageSessionsMaxStateBulk)
@@ -470,9 +475,12 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 	if err != nil {
 		return "", err
 	}
-	state, err := r.manageSessionAuthoritativeState(s)
-	if err != nil {
-		return "", err
+	state := "archived"
+	if !archived {
+		state, err = r.manageSessionAuthoritativeState(s)
+		if err != nil {
+			return "", err
+		}
 	}
 	version := s.UpdatedAt
 	if archived {
@@ -486,10 +494,154 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 		version = tombstone.UpdatedAt
 	}
 	slug := manageSessionWorkspaceSlug(s.WorkspaceName, s.WorkspacePath, nil)
-	if archived {
-		state = "archived"
+	isRunning := state == "in_progress" || state == "running"
+
+	rec := map[string]any{
+		"action":          "get",
+		"id":              s.ID,
+		"title":           s.Title,
+		"updated_at":      version,
+		"created_at":      s.CreatedAt,
+		"archived":        archived,
+		"state":           state,
+		"is_running":      isRunning,
+		"workspace_path":  s.WorkspacePath,
+		"workspace_name":  s.WorkspaceName,
+		"message_count":   s.MessageCount,
+		"last_message_at": s.LastMessageAt,
+		"navigation":      manageSessionNavigation(s.ID, s.WorkspacePath, s.WorkspaceName, slug),
+		"content_trust":   "untrusted",
 	}
-	rec := map[string]any{"action": "get", "id": s.ID, "title": s.Title, "updated_at": version, "archived": archived, "state": state, "workspace_path": s.WorkspacePath, "workspace_name": s.WorkspaceName, "worktree_branch": s.WorktreeBranch, "navigation": manageSessionNavigation(s.ID, s.WorkspacePath, s.WorkspaceName, slug), "content_trust": "untrusted"}
+	if s.Mode != "" {
+		rec["mode"] = s.Mode
+	}
+	if s.WorktreeEnabled {
+		rec["worktree"] = map[string]any{
+			"enabled":     true,
+			"branch":      s.WorktreeBranch,
+			"base_branch": s.WorktreeBaseBranch,
+			"root_path":   s.WorktreeRootPath,
+		}
+	}
+
+	if runState, ok, stateErr := r.getSessionRunState(s.ID); stateErr == nil && ok {
+		rec["run_state"] = map[string]any{
+			"active":                 runState.Active,
+			"status":                 runState.Status,
+			"run_id":                 runState.RunID,
+			"epoch_id":               runState.EpochID,
+			"checkpoint_id":          runState.CheckpointID,
+			"attempt_id":             runState.AttemptID,
+			"started_at":             runState.StartedAt,
+			"completed_at":           runState.CompletedAt,
+			"duration_ms":            runState.DurationMs,
+			"cumulative_duration_ms": runState.CumulativeDurationMs,
+			"blocked_reason":         runState.BlockedReason,
+		}
+		if runState.Active {
+			rec["is_running"] = true
+		}
+	}
+
+	if !archived {
+		if plan, ok, planErr := r.sessions.GetActivePlan(s.ID); planErr == nil && ok && plan.Document != nil {
+			planSummary := map[string]any{
+				"id":     plan.ID,
+				"title":  plan.Title,
+				"status": plan.Status,
+			}
+			if plan.Document.ActiveCheckpointID != "" {
+				planSummary["active_checkpoint_id"] = plan.Document.ActiveCheckpointID
+			}
+			if plan.Document.ExecutionState != nil {
+				planSummary["execution_status"] = plan.Document.ExecutionState.Status
+				planSummary["last_outcome"] = plan.Document.ExecutionState.LastOutcome
+			}
+			checkpoints := make([]map[string]any, 0, len(plan.Document.Checkpoints))
+			for _, cp := range plan.Document.Checkpoints {
+				cpSummary := map[string]any{
+					"id":     cp.ID,
+					"title":  cp.Title,
+					"status": cp.Status,
+					"order":  cp.Order,
+				}
+				if len(cp.Subtasks) > 0 {
+					completed := 0
+					for _, st := range cp.Subtasks {
+						if st.Status == "completed" {
+							completed++
+						}
+					}
+					cpSummary["subtasks_completed"] = completed
+					cpSummary["subtasks_total"] = len(cp.Subtasks)
+				}
+				if strings.TrimSpace(cp.ID) == strings.TrimSpace(plan.Document.ActiveCheckpointID) {
+					activeCp := map[string]any{
+						"id":                  cp.ID,
+						"title":               cp.Title,
+						"status":              cp.Status,
+						"objective":           cp.Objective,
+						"tasks":               cp.Tasks,
+						"acceptance_criteria": cp.AcceptanceCriteria,
+						"active_subtask_id":   cp.ActiveSubtaskID,
+					}
+					for _, st := range cp.Subtasks {
+						if strings.TrimSpace(st.ID) == strings.TrimSpace(cp.ActiveSubtaskID) {
+							activeCp["current_subtask"] = st.Title
+							break
+						}
+					}
+					planSummary["active_checkpoint"] = activeCp
+				}
+				checkpoints = append(checkpoints, cpSummary)
+			}
+			planSummary["checkpoints"] = checkpoints
+			rec["active_plan"] = planSummary
+		}
+	}
+
+	if permissions, permErr := r.listSessionPermissions(s.ID, 50); permErr == nil && len(permissions) > 0 {
+		pending := make([]map[string]any, 0)
+		for _, p := range permissions {
+			pStatus := strings.ToLower(strings.TrimSpace(p.Status))
+			if pStatus == "pending" || pStatus == "waiting_approval" || pStatus == "needs_approval" || pStatus == "waiting_review" {
+				pending = append(pending, map[string]any{
+					"id":                   p.ID,
+					"tool_name":            p.ToolName,
+					"requirement":          p.Requirement,
+					"status":               p.Status,
+					"created_at":           p.CreatedAt,
+					"permission_requested": p.PermissionRequested,
+				})
+			}
+		}
+		if len(pending) > 0 {
+			rec["pending_permissions"] = pending
+		}
+	}
+
+	if usage, ok, usageErr := r.getUsageSummary(s.ID); usageErr == nil && ok {
+		rec["usage"] = map[string]any{
+			"input_tokens":       usage.InputTokens,
+			"output_tokens":      usage.OutputTokens,
+			"cache_read_tokens":  usage.CacheReadTokens,
+			"cache_write_tokens": usage.CacheWriteTokens,
+			"total_tokens":       usage.TotalTokens,
+			"estimated_cost_usd": usage.EstimatedCostUSD,
+		}
+	}
+
+	if msgs, msgErr := r.listSessionMessageTail(s.ID, 1); msgErr == nil && len(msgs) > 0 {
+		m := msgs[len(msgs)-1]
+		rec["last_message"] = map[string]any{
+			"id":         m.ID,
+			"seq":        m.GlobalSeq,
+			"role":       m.Role,
+			"content":    truncateUTF8Bytes(m.Content, 500),
+			"created_at": m.CreatedAt,
+		}
+	}
+
 	if videoContext := manageSessionVideoContext(s.Metadata); videoContext != nil {
 		rec["video_context"] = videoContext
 	}
@@ -532,22 +684,23 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	}
 	limit := boundedInt(args["limit"], 30, manageSessionsMaxRead)
 	mode := strings.ToLower(strings.TrimSpace(stringValue(args["mode"])))
+	roleFilter := strings.ToLower(strings.TrimSpace(stringValue(args["role"])))
 	var msgs []pebblestore.MessageSnapshot
 	switch mode {
 	case "before":
-		msgs, err = r.sessions.ListSessionMessagesBefore(id, uint64Value(args["before_seq"]), limit)
+		msgs, err = r.listSessionMessagesBefore(id, uint64Value(args["before_seq"]), limit)
 	case "after":
-		msgs, err = r.sessions.ListMessages(id, uint64Value(args["after_seq"]), limit)
+		msgs, err = r.listSessionMessages(id, uint64Value(args["after_seq"]), limit)
 	case "around":
 		anchor := uint64Value(args["around_seq"])
 		before := limit / 2
-		msgs, err = r.sessions.ListSessionMessagesBefore(id, anchor, before)
+		msgs, err = r.listSessionMessagesBefore(id, anchor, before)
 		if err == nil {
-			after, _ := r.sessions.ListMessages(id, anchor-1, limit-len(msgs))
+			after, _ := r.listSessionMessages(id, anchor-1, limit-len(msgs))
 			msgs = append(msgs, after...)
 		}
 	default:
-		msgs, err = r.sessions.ListSessionMessageTail(id, limit)
+		msgs, err = r.listSessionMessageTail(id, limit)
 	}
 	if err != nil {
 		return "", err
@@ -556,6 +709,9 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	out := make([]any, 0, len(msgs))
 	used := 0
 	for _, m := range msgs {
+		if roleFilter != "" && !strings.EqualFold(m.Role, roleFilter) {
+			continue
+		}
 		text := m.Content
 		remain := budget - used
 		if remain <= 0 {
@@ -867,6 +1023,9 @@ func (r *Runtime) manageSessionAuthoritativeState(session pebblestore.SessionSna
 	}
 	plan, ok, err := r.sessions.GetActivePlan(session.ID)
 	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return lifecycleState, nil
+		}
 		return "", err
 	}
 	if !ok || plan.Document == nil {
@@ -901,7 +1060,48 @@ func (r *Runtime) manageSessionAuthoritativeState(session pebblestore.SessionSna
 }
 
 func manageSessionRecord(i pebblestore.V3SessionSearchItem, state, workspaceSlug string) map[string]any {
-	return map[string]any{"id": i.ID, "title": i.Title, "created_at": i.CreatedAt, "updated_at": i.UpdatedAt, "message_count": i.MessageCount, "archived": i.Archived, "state": state, "workspace_path": i.WorkspacePath, "workspace_name": i.WorkspaceName, "worktree_enabled": i.WorktreeEnabled, "worktree_branch": i.WorktreeBranch, "snippets": i.Snippets, "navigation": manageSessionNavigation(i.ID, i.WorkspacePath, i.WorkspaceName, workspaceSlug)}
+	isRunning := state == "in_progress" || state == "running" || i.Attention.State == "in_progress" || i.Attention.State == "running"
+	record := map[string]any{
+		"id":               i.ID,
+		"title":            i.Title,
+		"created_at":       i.CreatedAt,
+		"updated_at":       i.UpdatedAt,
+		"message_count":    i.MessageCount,
+		"archived":         i.Archived,
+		"state":            state,
+		"is_running":       isRunning,
+		"workspace_path":   i.WorkspacePath,
+		"workspace_name":   i.WorkspaceName,
+		"worktree_enabled": i.WorktreeEnabled,
+		"worktree_branch":  i.WorktreeBranch,
+		"snippets":         i.Snippets,
+		"navigation":       manageSessionNavigation(i.ID, i.WorkspacePath, i.WorkspaceName, workspaceSlug),
+	}
+	if i.Mode != "" {
+		record["mode"] = i.Mode
+	}
+	if i.LastMessageAt > 0 {
+		record["last_message_at"] = i.LastMessageAt
+	}
+	if i.Attention.State != "" || i.Attention.PlanID != "" || i.Attention.CheckpointID != "" {
+		att := map[string]any{"state": i.Attention.State}
+		if i.Attention.PlanID != "" {
+			att["plan_id"] = i.Attention.PlanID
+			att["plan_status"] = i.Attention.PlanStatus
+		}
+		if i.Attention.CheckpointID != "" {
+			att["checkpoint_id"] = i.Attention.CheckpointID
+			att["checkpoint_status"] = i.Attention.CheckpointStatus
+		}
+		if i.Attention.ExecutionStatus != "" {
+			att["execution_status"] = i.Attention.ExecutionStatus
+		}
+		if i.Attention.LastOutcome != "" {
+			att["last_outcome"] = i.Attention.LastOutcome
+		}
+		record["attention"] = att
+	}
+	return record
 }
 
 func manageSessionNavigation(sessionID, workspacePath, workspaceName, workspaceSlug string) map[string]any {
@@ -1117,4 +1317,236 @@ func lastMessageSeq(m []pebblestore.MessageSnapshot) uint64 {
 		return 0
 	}
 	return m[len(m)-1].GlobalSeq
+}
+
+func (r *Runtime) manageSessionScopedSearch(scope WorkspaceScope, sessionID string, args map[string]any) (string, error) {
+	session, archived, err := r.ownedManageSession(scope, sessionID)
+	if err != nil {
+		return "", err
+	}
+	rawQueries := append([]string{stringValue(args["query"])}, stringSliceValue(args["queries"])...)
+	needles := make([]string, 0, len(rawQueries))
+	for _, q := range rawQueries {
+		q = strings.ToLower(strings.TrimSpace(q))
+		if q != "" {
+			needles = append(needles, q)
+		}
+	}
+	if len(needles) == 0 {
+		return "", errors.New("search requires query or queries")
+	}
+	roleFilter := strings.ToLower(strings.TrimSpace(stringValue(args["role"])))
+	limit := boundedInt(args["limit"], 20, manageSessionsMaxLimit)
+	budget := boundedInt(args["max_chars"], 12000, manageSessionsMaxChars)
+	beforeSeq := uint64Value(args["before_seq"])
+
+	scanLimit := 500
+	var msgs []pebblestore.MessageSnapshot
+	if beforeSeq > 0 {
+		msgs, err = r.listSessionMessagesBefore(session.ID, beforeSeq, scanLimit)
+	} else {
+		msgs, err = r.listSessionMessageTail(session.ID, scanLimit)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	type matchRecord struct {
+		ID        string `json:"id"`
+		Seq       uint64 `json:"seq"`
+		Role      string `json:"role"`
+		Snippet   string `json:"snippet"`
+		CreatedAt int64  `json:"created_at"`
+	}
+
+	matches := make([]matchRecord, 0, limit)
+	characters := 0
+	characterTruncated := false
+	resultTruncated := false
+	nextBeforeSeq := uint64(0)
+	scanned := 0
+
+	for _, m := range msgs {
+		scanned++
+		if roleFilter != "" && !strings.EqualFold(m.Role, roleFilter) {
+			nextBeforeSeq = m.GlobalSeq
+			continue
+		}
+		contentLower := strings.ToLower(m.Content)
+		matched := false
+		var matchedNeedle string
+		for _, needle := range needles {
+			tokens := pebblestore.V3SessionSearchTokens(needle)
+			if len(tokens) == 0 {
+				if strings.Contains(contentLower, needle) {
+					matched = true
+					matchedNeedle = needle
+					break
+				}
+				continue
+			}
+			allMatch := true
+			for _, t := range tokens {
+				if !strings.Contains(contentLower, t) {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				matched = true
+				matchedNeedle = tokens[0]
+				break
+			}
+		}
+		if !matched {
+			nextBeforeSeq = m.GlobalSeq
+			continue
+		}
+
+		if len(matches) >= limit {
+			resultTruncated = true
+			nextBeforeSeq = m.GlobalSeq + 1
+			break
+		}
+
+		snippet := pebblestore.MatchCenteredV3SessionSearchSnippet(m.Content, matchedNeedle)
+		if characters+len(snippet) > budget {
+			characterTruncated = true
+			nextBeforeSeq = m.GlobalSeq + 1
+			break
+		}
+
+		matches = append(matches, matchRecord{
+			ID:        m.ID,
+			Seq:       m.GlobalSeq,
+			Role:      m.Role,
+			Snippet:   snippet,
+			CreatedAt: m.CreatedAt,
+		})
+		characters += len(snippet)
+		nextBeforeSeq = m.GlobalSeq
+	}
+
+	hasMore := characterTruncated || resultTruncated || (scanned >= scanLimit && len(msgs) >= scanLimit)
+	if !hasMore {
+		nextBeforeSeq = 0
+	}
+
+	return marshalManageSessions(map[string]any{
+		"action":              "search",
+		"search_mode":         "session",
+		"session_id":          session.ID,
+		"title":               session.Title,
+		"archived":            archived,
+		"matches":             matches,
+		"match_count":         len(matches),
+		"scanned_messages":    scanned,
+		"characters":          characters,
+		"character_limit":     budget,
+		"result_truncated":    resultTruncated,
+		"character_truncated": characterTruncated,
+		"has_more":            hasMore,
+		"next_before_seq":     nextBeforeSeq,
+		"content_trust":       "untrusted",
+		"continuation":        "use read_messages with mode=around and around_seq to inspect full context around any matched seq",
+	})
+}
+
+func (r *Runtime) listSessionMessageTail(sessionID string, limit int) (res []pebblestore.MessageSnapshot, err error) {
+	if r == nil || r.sessions == nil {
+		return nil, nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = nil
+		}
+	}()
+	return r.sessions.ListSessionMessageTail(sessionID, limit)
+}
+
+func (r *Runtime) listSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) (res []pebblestore.MessageSnapshot, err error) {
+	if r == nil || r.sessions == nil {
+		return nil, nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = nil
+		}
+	}()
+	return r.sessions.ListSessionMessagesBefore(sessionID, beforeSeq, limit)
+}
+
+func (r *Runtime) listSessionMessages(sessionID string, afterSeq uint64, limit int) (res []pebblestore.MessageSnapshot, err error) {
+	if r == nil || r.sessions == nil {
+		return nil, nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = nil
+		}
+	}()
+	if lister, ok := r.sessions.(interface {
+		ListSessionMessages(string, uint64, int) ([]pebblestore.MessageSnapshot, error)
+	}); ok {
+		return lister.ListSessionMessages(sessionID, afterSeq, limit)
+	}
+	return r.sessions.ListMessages(sessionID, afterSeq, limit)
+}
+
+func (r *Runtime) getSessionRunState(sessionID string) (res pebblestore.V3SessionRunState, ok bool, err error) {
+	if r == nil || r.sessions == nil {
+		return pebblestore.V3SessionRunState{}, false, nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = pebblestore.V3SessionRunState{}
+			ok = false
+		}
+	}()
+	if getter, ok := r.sessions.(interface {
+		GetSessionRunState(string) (pebblestore.V3SessionRunState, bool, error)
+	}); ok {
+		return getter.GetSessionRunState(sessionID)
+	}
+	return pebblestore.V3SessionRunState{}, false, nil
+}
+
+func (r *Runtime) getUsageSummary(sessionID string) (res pebblestore.SessionUsageSummary, ok bool, err error) {
+	if r == nil || r.sessions == nil {
+		return pebblestore.SessionUsageSummary{}, false, nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = pebblestore.SessionUsageSummary{}
+			ok = false
+		}
+	}()
+	if getter, ok := r.sessions.(interface {
+		GetUsageSummary(string) (pebblestore.SessionUsageSummary, bool, error)
+	}); ok {
+		return getter.GetUsageSummary(sessionID)
+	}
+	return pebblestore.SessionUsageSummary{}, false, nil
+}
+
+func (r *Runtime) listSessionPermissions(sessionID string, limit int) (res []pebblestore.PermissionRecord, err error) {
+	if r == nil {
+		return nil, nil
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			res = nil
+		}
+	}()
+	if lister, ok := r.orchestration.(interface {
+		ListPermissions(string, int) ([]pebblestore.PermissionRecord, error)
+	}); ok {
+		return lister.ListPermissions(sessionID, limit)
+	}
+	if lister, ok := r.sessions.(interface {
+		ListPermissions(string, int) ([]pebblestore.PermissionRecord, error)
+	}); ok {
+		return lister.ListPermissions(sessionID, limit)
+	}
+	return nil, nil
 }

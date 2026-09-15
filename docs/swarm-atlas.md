@@ -1712,3 +1712,23 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Passed `workspace_binding_id` from workspace entry metadata through `AutomationToolPage` and `AutomationV2Workspace` down to `createAutomationConversation`.
   - Removed forbidden top-level `navigation_hidden`, protected `swarm_v3_session_purpose` in client-authored metadata (which is exclusively server-owned), and unnecessary `worktree_mode: 'on'` from sidecar session creation.
   - Added regression tests in `desktop-automation-conversations.spec.ts`.
+
+### Manage-Sessions Overwatch, Live State, and Smart Search Enhancement (2026-09-15)
+
+- **Archived session `get` and message forward-paging fix:**
+  - In `swarmd/internal/session/service.go`, `GetActivePlan` now inspects `GetV3SessionTombstone(sessionID)` when an active session is not found, preventing erroneous "session not found" failures when inspecting archived sessions.
+  - In `swarmd/internal/store/pebble/session_store.go`, `ListMessages` and `listLatestMessages` prefer V3 message storage (`ListV3SessionMessages`, `ListV3SessionMessageTail`) rather than falling back to the legacy V1/V2 `session_message/` key prefix.
+  - In `swarmd/internal/tool/runtime.go`, added `ListSessionMessages` to `manageSessionService`.
+  - In `swarmd/internal/tool/runtime_manage_sessions.go`, `manageSessionsRead` now routes forward-paging (`mode: "after"` and `mode: "around"`) through `r.listSessionMessages` to read canonical V3 messages.
+  - In `swarmd/internal/gitstatus/gitstatus.go`, corrected submodule field index parsing in `parseOrdinary` and `parseRename` from `fields[3]` (file mode) to `fields[2]` (`<sub>`), unblocking manage-sessions commit workflows.
+- **Session overwatch & live execution state inspection:**
+  - Enhanced `manageSessionsGet` to return comprehensive session overwatch state: `is_running`, `run_state` (active flag, status, run ID, attempt, timing, blocked reason), `active_plan` (summary of plan, active checkpoint, subtasks progress, checkpoint list), `pending_permissions` (tool name, requirement, status), `usage` (token counts and cost summary), `worktree` details, `mode`, and `last_message` snippet.
+  - Enhanced `manageSessionRecord` in session list/search to include `is_running`, `mode`, `last_message_at`, and structured `attention` summary (state, plan/checkpoint IDs, status, outcome).
+- **Session-scoped search and smart AI tokenization:**
+  - Added session-scoped search to `manage-sessions action=search`: providing `session_id` searches message content within that specific session and returns matching sequence anchors (`seq`) and centered snippets.
+  - Added smart stop-word filtering in `swarmd/internal/store/pebble/session_search.go` and quorum token matching for multi-token conversational queries, allowing natural language queries without failing on conversational filler words.
+  - Added optional `role` filtering for `read_messages` and session-scoped `search`.
+- **Validation:**
+  - Authored focused unit tests in `swarmd/internal/tool/runtime_manage_sessions_test.go`: `TestManageSessionsGetArchivedSessionSucceeds`, `TestManageSessionsGetEnrichesOverwatchDetails`, `TestManageSessionsReadMessagesModeAfterUsesV3Store`, `TestManageSessionsSearchSessionScoped`.
+  - Authored `TestSearchV3SessionsSmartStopWords` in `swarmd/internal/store/pebble/session_search_test.go`.
+  - All 25 manage-sessions tool tests and all 6 Pebble session search tests pass.

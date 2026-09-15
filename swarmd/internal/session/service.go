@@ -2110,7 +2110,12 @@ func (s *Service) GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapsh
 	if _, ok, err := s.store.GetSession(sessionID); err != nil {
 		return pebblestore.SessionPlanSnapshot{}, false, err
 	} else if !ok {
-		return pebblestore.SessionPlanSnapshot{}, false, fmt.Errorf("session %q not found", sessionID)
+		tombstone, tombstoneOK, tombstoneErr := s.store.GetV3SessionTombstone(sessionID)
+		if tombstoneErr != nil {
+			return pebblestore.SessionPlanSnapshot{}, false, tombstoneErr
+		} else if !tombstoneOK || tombstone.Deleted || !tombstone.Archived {
+			return pebblestore.SessionPlanSnapshot{}, false, fmt.Errorf("session %q not found", sessionID)
+		}
 	}
 	active, ok, err := s.store.GetActivePlan(sessionID)
 	if err != nil || !ok {

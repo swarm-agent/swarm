@@ -1908,6 +1908,9 @@ func (s *SessionStore) ListMessages(sessionID string, afterGlobalSeq uint64, lim
 	if limit <= 0 {
 		limit = 500
 	}
+	if v3Messages, err := s.ListV3SessionMessages(sessionID, afterGlobalSeq, limit); err == nil && len(v3Messages) > 0 {
+		return v3Messages, nil
+	}
 	if afterGlobalSeq == 0 {
 		return s.listLatestMessages(sessionID, limit)
 	}
@@ -1932,6 +1935,9 @@ func (s *SessionStore) ListMessages(sessionID string, afterGlobalSeq uint64, lim
 }
 
 func (s *SessionStore) listLatestMessages(sessionID string, limit int) ([]MessageSnapshot, error) {
+	if v3Messages, err := s.ListV3SessionMessageTail(sessionID, limit); err == nil && len(v3Messages) > 0 {
+		return v3Messages, nil
+	}
 	prefix := MessagePrefix(sessionID)
 	iter, err := s.store.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte(prefix),

@@ -310,8 +310,8 @@ func parseOrdinary(record []byte) FileStatus {
 		file.XY = fields[1]
 		applyXY(&file, file.XY)
 	}
-	if len(fields) >= 4 {
-		file.Submodule = fields[3]
+	if len(fields) >= 3 {
+		file.Submodule = fields[2]
 	}
 	if len(fields) >= 9 {
 		file.Path = strings.Join(fields[8:], " ")
@@ -327,8 +327,8 @@ func parseRename(record []byte) FileStatus {
 		file.XY = fields[1]
 		applyXY(&file, file.XY)
 	}
-	if len(fields) >= 4 {
-		file.Submodule = fields[3]
+	if len(fields) >= 3 {
+		file.Submodule = fields[2]
 	}
 	if len(fields) >= 10 {
 		file.Path = strings.Join(fields[9:], " ")

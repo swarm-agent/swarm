@@ -206,10 +206,95 @@ func TestManageSessionWorkspaceSlugMatchesDesktopCollisionContract(t *testing.T)
 type gitManageSessionService struct {
 	manageSessionService
 	sessions    map[string]pebblestore.SessionSnapshot
+	tombstones  map[string]pebblestore.V3SessionTombstone
 	plans       map[string]pebblestore.SessionPlanSnapshot
+	runStates   map[string]pebblestore.V3SessionRunState
+	usages      map[string]pebblestore.SessionUsageSummary
+	permissions map[string][]pebblestore.PermissionRecord
+	messages    map[string][]pebblestore.MessageSnapshot
 	searchItems []pebblestore.V3SessionSearchItem
 	events      []pebblestore.V3SessionEvent
 	searchCalls int
+}
+
+func (s *gitManageSessionService) GetSessionTombstone(id string) (pebblestore.V3SessionTombstone, bool, error) {
+	if s.tombstones == nil {
+		return pebblestore.V3SessionTombstone{}, false, nil
+	}
+	t, ok := s.tombstones[id]
+	return t, ok, nil
+}
+
+func (s *gitManageSessionService) GetSessionRunState(id string) (pebblestore.V3SessionRunState, bool, error) {
+	if s.runStates == nil {
+		return pebblestore.V3SessionRunState{}, false, nil
+	}
+	st, ok := s.runStates[id]
+	return st, ok, nil
+}
+
+func (s *gitManageSessionService) GetUsageSummary(id string) (pebblestore.SessionUsageSummary, bool, error) {
+	if s.usages == nil {
+		return pebblestore.SessionUsageSummary{}, false, nil
+	}
+	u, ok := s.usages[id]
+	return u, ok, nil
+}
+
+func (s *gitManageSessionService) ListPermissions(id string, limit int) ([]pebblestore.PermissionRecord, error) {
+	if s.permissions == nil {
+		return nil, nil
+	}
+	p := s.permissions[id]
+	if len(p) > limit {
+		p = p[:limit]
+	}
+	return p, nil
+}
+
+func (s *gitManageSessionService) ListSessionMessages(id string, afterSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error) {
+	if s.messages == nil {
+		return nil, nil
+	}
+	var out []pebblestore.MessageSnapshot
+	for _, m := range s.messages[id] {
+		if m.GlobalSeq > afterSeq {
+			out = append(out, m)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *gitManageSessionService) ListSessionMessagesBefore(id string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error) {
+	if s.messages == nil {
+		return nil, nil
+	}
+	var out []pebblestore.MessageSnapshot
+	msgs := s.messages[id]
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if beforeSeq == 0 || m.GlobalSeq < beforeSeq {
+			out = append(out, m)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *gitManageSessionService) ListSessionMessageTail(id string, limit int) ([]pebblestore.MessageSnapshot, error) {
+	if s.messages == nil {
+		return nil, nil
+	}
+	msgs := s.messages[id]
+	if len(msgs) > limit {
+		msgs = msgs[len(msgs)-limit:]
+	}
+	return msgs, nil
 }
 
 func (s *gitManageSessionService) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
@@ -330,6 +415,11 @@ func TestManageSessionsReviewWorktreesClassifiesIntegratedMissingAndDirtyWork(t 
 	runManageSessionsGitCommand(t, integratedWorktree, "add", "integrated.txt")
 	runManageSessionsGitCommand(t, integratedWorktree, "commit", "-m", "integrated change")
 	integratedCommit := strings.TrimSpace(runManageSessionsGitOutput(t, integratedWorktree, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(repo, "master.txt"), []byte("master\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManageSessionsGitCommand(t, repo, "add", "master.txt")
+	runManageSessionsGitCommand(t, repo, "commit", "-m", "master progress")
 	runManageSessionsGitCommand(t, repo, "cherry-pick", integratedCommit)
 
 	missingWorktree := filepath.Join(t.TempDir(), "missing")
@@ -560,5 +650,282 @@ func TestManageSessionWorkspaceSlugMatchesDesktopUTF16Hash(t *testing.T) {
 	got := manageSessionWorkspaceSlug("Project", "/work/😀", items)
 	if got != "project-"+manageSessionPathHash("/work/😀")[:6] {
 		t.Fatalf("slug = %q", got)
+	}
+}
+
+func TestManageSessionsGetArchivedSessionSucceeds(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		tombstones: map[string]pebblestore.V3SessionTombstone{
+			"archived-1": {
+				SessionID: "archived-1",
+				Archived:  true,
+				UpdatedAt: 5000,
+				Session: pebblestore.SessionSnapshot{
+					ID:             "archived-1",
+					Title:          "Old Archived Work",
+					AccountScopeID: principal.AccountScopeID,
+					UserID:         principal.UserID,
+					WorkspacePath:  "/work/archived",
+					WorkspaceName:  "archived",
+					UpdatedAt:      4000,
+				},
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "get",
+		"session_id": "archived-1",
+	})
+	if err != nil {
+		t.Fatalf("get archived session failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res["id"] != "archived-1" || res["archived"] != true || res["state"] != "archived" {
+		t.Fatalf("unexpected response: %s", output)
+	}
+	if res["title"] != "Old Archived Work" {
+		t.Fatalf("expected title 'Old Archived Work', got %v", res["title"])
+	}
+}
+
+func TestManageSessionsGetEnrichesOverwatchDetails(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"session-overwatch": {
+				ID:             "session-overwatch",
+				Title:          "Build Feature X",
+				Mode:           "auto",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/feature",
+				WorkspaceName:  "feature",
+				CreatedAt:      1000,
+				UpdatedAt:      2000,
+				MessageCount:   42,
+				LastMessageAt:  1900,
+			},
+		},
+		runStates: map[string]pebblestore.V3SessionRunState{
+			"session-overwatch": {
+				SessionID:    "session-overwatch",
+				RunID:        "run-123",
+				Active:       true,
+				Status:       "running",
+				CheckpointID: "cp-2",
+				AttemptID:    "cp-2:attempt-1",
+				StartedAt:    1500,
+			},
+		},
+		plans: map[string]pebblestore.SessionPlanSnapshot{
+			"session-overwatch": {
+				ID:        "plan-1",
+				SessionID: "session-overwatch",
+				Title:     "Feature Plan",
+				Status:    "approved",
+				Document: &pebblestore.SessionPlanDocument{
+					ActiveCheckpointID: "cp-2",
+					ExecutionState: &pebblestore.SessionPlanExecutionState{
+						Status: "in_progress",
+					},
+					Checkpoints: []pebblestore.SessionPlanCheckpoint{
+						{
+							ID:     "cp-1",
+							Title:  "Setup",
+							Status: "completed",
+							Order:  1,
+						},
+						{
+							ID:        "cp-2",
+							Title:     "Implementation",
+							Status:    "in_progress",
+							Order:     2,
+							Objective: "Implement feature logic",
+							Subtasks: []pebblestore.SessionPlanSubtask{
+								{ID: "sub-1", Title: "Subtask 1", Status: "completed"},
+								{ID: "sub-2", Title: "Subtask 2", Status: "in_progress"},
+							},
+							ActiveSubtaskID: "sub-2",
+						},
+					},
+				},
+			},
+		},
+		usages: map[string]pebblestore.SessionUsageSummary{
+			"session-overwatch": {
+				SessionID:        "session-overwatch",
+				TotalTokens:      15000,
+				InputTokens:      10000,
+				OutputTokens:     5000,
+				EstimatedCostUSD: 0.05,
+			},
+		},
+		permissions: map[string][]pebblestore.PermissionRecord{
+			"session-overwatch": {
+				{
+					ID:          "perm-1",
+					ToolName:    "bash",
+					Requirement: "run_build",
+					Status:      "pending",
+					CreatedAt:   1600,
+				},
+			},
+		},
+		messages: map[string][]pebblestore.MessageSnapshot{
+			"session-overwatch": {
+				{
+					ID:        "msg-last",
+					GlobalSeq: 42,
+					Role:      "assistant",
+					Content:   "Finished step 1, awaiting permission for build.",
+					CreatedAt: 1900,
+				},
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service, orchestration: manageAgentOrchestrationPolicyStub{}}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "get",
+		"session_id": "session-overwatch",
+	})
+	if err != nil {
+		t.Fatalf("get overwatch details: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res["is_running"] != true {
+		t.Fatalf("expected is_running=true, got %v", res["is_running"])
+	}
+	runState, ok := res["run_state"].(map[string]any)
+	if !ok || runState["active"] != true || runState["run_id"] != "run-123" {
+		t.Fatalf("expected active run_state, got %v", res["run_state"])
+	}
+	activePlan, ok := res["active_plan"].(map[string]any)
+	if !ok || activePlan["title"] != "Feature Plan" || activePlan["active_checkpoint_id"] != "cp-2" {
+		t.Fatalf("expected active_plan with cp-2, got %v", res["active_plan"])
+	}
+	activeCp, ok := activePlan["active_checkpoint"].(map[string]any)
+	if !ok || activeCp["title"] != "Implementation" || activeCp["current_subtask"] != "Subtask 2" {
+		t.Fatalf("expected active_checkpoint with current_subtask 'Subtask 2', got %v", activePlan["active_checkpoint"])
+	}
+	perms, ok := res["pending_permissions"].([]any)
+	if !ok || len(perms) != 1 {
+		t.Fatalf("expected 1 pending permission, got %v", res["pending_permissions"])
+	}
+	usage, ok := res["usage"].(map[string]any)
+	if !ok || usage["total_tokens"] != float64(15000) {
+		t.Fatalf("expected usage summary, got %v", res["usage"])
+	}
+	lastMsg, ok := res["last_message"].(map[string]any)
+	if !ok || lastMsg["role"] != "assistant" || lastMsg["seq"] != float64(42) {
+		t.Fatalf("expected last message, got %v", res["last_message"])
+	}
+}
+
+func TestManageSessionsReadMessagesModeAfterUsesV3Store(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"v3-session": {
+				ID:             "v3-session",
+				Title:          "V3 Session",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/v3",
+			},
+		},
+		messages: map[string][]pebblestore.MessageSnapshot{
+			"v3-session": {
+				{ID: "m1", GlobalSeq: 1, Role: "user", Content: "hello"},
+				{ID: "m2", GlobalSeq: 2, Role: "assistant", Content: "world"},
+				{ID: "m3", GlobalSeq: 3, Role: "user", Content: "continue"},
+				{ID: "m4", GlobalSeq: 4, Role: "assistant", Content: "done"},
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "read_messages",
+		"session_id": "v3-session",
+		"mode":       "after",
+		"after_seq":  2,
+		"limit":      10,
+	})
+	if err != nil {
+		t.Fatalf("read_messages mode=after failed: %v", err)
+	}
+	var res struct {
+		Messages []struct {
+			ID  string `json:"id"`
+			Seq uint64 `json:"seq"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(res.Messages) != 2 || res.Messages[0].ID != "m3" || res.Messages[1].ID != "m4" {
+		t.Fatalf("expected m3 and m4, got %v", res.Messages)
+	}
+}
+
+func TestManageSessionsSearchSessionScoped(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"target-session": {
+				ID:             "target-session",
+				Title:          "Debugging Crash",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/debug",
+			},
+		},
+		messages: map[string][]pebblestore.MessageSnapshot{
+			"target-session": {
+				{ID: "m1", GlobalSeq: 10, Role: "user", Content: "There is a severe memory leak in pebble store"},
+				{ID: "m2", GlobalSeq: 20, Role: "assistant", Content: "I checked the code and identified where memory leak happens"},
+				{ID: "m3", GlobalSeq: 30, Role: "tool", Content: "test results: 0 failures"},
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "search",
+		"session_id": "target-session",
+		"query":      "memory leak",
+	})
+	if err != nil {
+		t.Fatalf("session-scoped search failed: %v", err)
+	}
+	var res struct {
+		Action     string `json:"action"`
+		SearchMode string `json:"search_mode"`
+		SessionID  string `json:"session_id"`
+		MatchCount int    `json:"match_count"`
+		Matches    []struct {
+			ID      string `json:"id"`
+			Seq     uint64 `json:"seq"`
+			Role    string `json:"role"`
+			Snippet string `json:"snippet"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.SearchMode != "session" || res.SessionID != "target-session" {
+		t.Fatalf("unexpected search response: %s", output)
+	}
+	if res.MatchCount != 2 || len(res.Matches) != 2 {
+		t.Fatalf("expected 2 matches for 'memory leak', got %d", res.MatchCount)
+	}
+	if res.Matches[0].Seq != 10 && res.Matches[1].Seq != 20 {
+		t.Fatalf("unexpected matches: %v", res.Matches)
 	}
 }
