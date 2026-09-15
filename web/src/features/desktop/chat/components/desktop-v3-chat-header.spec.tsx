@@ -43,9 +43,30 @@ test('resolved header shows the Git branch and canonical model without a mode la
 
   assert.match(markup, /data-testid="desktop-v3-git-branch"/)
   assert.match(markup, /agent\/fix-header/)
+  assert.doesNotMatch(markup, /Runtime:/)
   assert.match(markup, /data-testid="desktop-v3-resolved-model"/)
   assert.match(markup, /GPT-5.6 Codex/)
   assert.doesNotMatch(markup, /desktop-v3-plan-mode-badge/)
+})
+
+test('header places branch and workspaces on the second row and provider model on the bottom row', () => {
+  const markup = renderToStaticMarkup(
+    <DesktopV3ChatHeader
+      title="Header layout conversation"
+      workspaceName="Frontend Workspace"
+      branchName="agent/header-workspaces-layout"
+      modelLabel="Google Gemini 3.8 Flash"
+    />,
+  )
+  assert.doesNotMatch(markup, /Runtime:/)
+  const branchIndex = markup.indexOf('data-testid="desktop-v3-git-branch"')
+  const workspaceIndex = markup.indexOf('data-testid="session-workspace-row"')
+  const modelIndex = markup.indexOf('data-testid="desktop-v3-resolved-model"')
+  assert.ok(branchIndex !== -1, 'branch exists')
+  assert.ok(workspaceIndex !== -1, 'workspace exists')
+  assert.ok(modelIndex !== -1, 'model exists')
+  assert.ok(branchIndex < workspaceIndex, 'branch comes before workspace on row 2')
+  assert.ok(workspaceIndex < modelIndex, 'workspace comes before model (model on bottom row)')
 })
 
 test('video session header exposes a bidirectional Studio switch', () => {
@@ -96,5 +117,5 @@ test('session workspace row contains one attachment control without runtime meta
   assert.doesNotMatch(button, /Working on|Runtime:|agent\/header-fix|Example model/)
   assert.equal((markup.match(/aria-haspopup="dialog"/g) ?? []).length, 1)
   assert.ok(markup.indexOf('</h1>') < markup.indexOf('data-testid="session-workspace-row"'))
-  assert.match(markup, /data-testid="desktop-v3-git-branch">Runtime: agent\/header-fix/)
+  assert.match(markup, /data-testid="desktop-v3-git-branch">agent\/header-fix/)
 })

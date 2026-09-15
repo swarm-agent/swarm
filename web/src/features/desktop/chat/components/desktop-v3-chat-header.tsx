@@ -62,7 +62,6 @@ export function DesktopV3ChatHeader({
   const displayWorkspace = sessionId ? 'Session workspaces' : normalizeWorkspaceName(workspaceName)
   const displayBranch = normalizeBranchName(branchName)
   const resolvedModelLabel = modelLabel?.trim() ?? ''
-  const resolvedHeaderDetails = [displayBranch ? `Runtime: ${displayBranch}` : '', resolvedModelLabel].filter(Boolean).join(' · ')
   const [liveRunStatusNow, setLiveRunStatusNow] = useState(() => Date.now())
   const runStatusNow = controlledRunStatusNow ?? liveRunStatusNow
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
@@ -138,7 +137,7 @@ export function DesktopV3ChatHeader({
   ) : <span className="truncate" title={displayTitle}>{displayTitle}</span>
 
   return (
-    <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
+    <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:min-h-[60px] sm:h-auto sm:px-4 sm:py-1.5">
       <div className="flex h-full min-w-0 items-center gap-1.5 sm:gap-2">
         {onOpenChats ? (
           <button
@@ -152,7 +151,7 @@ export function DesktopV3ChatHeader({
           </button>
         ) : null}
 
-        <div className="min-w-0 flex-1 sm:contents">
+        <div className="min-w-0 flex-1">
           {!hideMobileIdentity ? (
             <div className="sm:hidden">
               <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
@@ -161,36 +160,34 @@ export function DesktopV3ChatHeader({
             </div>
           ) : null}
 
-          <div className="hidden min-w-0 sm:block sm:flex-1">
+          <div className="hidden min-w-0 sm:block">
             <h1 className="flex items-center gap-2 overflow-hidden text-sm font-semibold text-[var(--app-text)]">
               {editableTitle}
-              {!sessionId ? <>
-                <span className="shrink-0 font-normal text-[var(--app-text-subtle)]">/</span>
-                <span className="truncate font-normal text-[var(--app-text-muted)]" title={displayWorkspace}>{displayWorkspace}</span>
-              </> : null}
             </h1>
-            {resolvedHeaderDetails ? (
-              <div className="mt-1 flex max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]" title={resolvedHeaderDetails}>
-                {displayBranch ? (
-                  <span className="truncate" data-testid="desktop-v3-git-branch">Runtime: {displayBranch}</span>
-                ) : null}
-                {displayBranch && resolvedModelLabel ? <span aria-hidden="true">·</span> : null}
-                {resolvedModelLabel ? (
-                  <span className="truncate" data-testid="desktop-v3-resolved-model">{resolvedModelLabel}</span>
-                ) : null}
-              </div>
-            ) : null}
           </div>
-          <div className={`${hideMobileIdentity ? 'hidden sm:contents' : 'mt-1 grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 sm:contents'}`} data-testid="session-workspace-row">
-            {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} /> : (
-              <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:hidden" title={displayWorkspace}>{displayWorkspace}</span>
-            )}
+          <div className={`${hideMobileIdentity ? 'hidden sm:flex' : 'mt-1 flex'} min-w-0 max-w-full items-center gap-1.5 overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)]`}>
+            {displayBranch ? (
+              <>
+                <span className="hidden truncate sm:inline" data-testid="desktop-v3-git-branch">{displayBranch}</span>
+                <span aria-hidden="true" className="hidden shrink-0 text-[var(--app-text-subtle)] sm:inline">·</span>
+              </>
+            ) : null}
+            <div data-testid="session-workspace-row" className="min-w-0 flex items-center">
+              {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} /> : (
+                <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:text-[11px]" title={displayWorkspace}>{displayWorkspace}</span>
+              )}
+            </div>
             {mobileRunTimerLabel ? (
               <span className="shrink-0 justify-self-end text-[10px] tabular-nums text-[var(--app-text)] sm:hidden" title={runStatus?.label}>
                 {mobileRunTimerLabel}
               </span>
             ) : null}
           </div>
+          {resolvedModelLabel ? (
+            <div className="mt-0.5 hidden max-w-full items-center overflow-hidden text-[11px] font-medium text-[var(--app-text-muted)] sm:flex" title={resolvedModelLabel}>
+              <span className="truncate" data-testid="desktop-v3-resolved-model">{resolvedModelLabel}</span>
+            </div>
+          ) : null}
         </div>
         <div className="hidden sm:block">
           <DesktopV3RunStatusPill model={runStatus} now={runStatusNow} />
