@@ -46,7 +46,7 @@ filter_allowed() {
   # - launcher.go intentionally resolves legacy user/XDG locations only for read-only stop diagnostics.
   # - lib-lane.sh still exposes lane metadata helpers for CLI/harness compatibility; daemon roots below in the same file are system paths.
   # - appstorage.go intentionally resolves XDG_DATA_HOME/UserHomeDir only for user-owned git worktree checkout storage.
-  # - runtime_bash_execution.go and runtime.go use os.MkdirTemp("", ...) for disposable per-command scratch; Go honors TMPDIR when present and selects the platform temp root otherwise, independent of the service manager.
+  # - runtime_bash_execution.go, runtime.go, and runtime_manage_artifact_video_chain.go use os.MkdirTemp("", ...) for disposable per-command scratch; Go honors TMPDIR when present and selects the platform temp root otherwise, independent of the service manager.
   # - local deploy workspace strings are mount targets or API route names, not Swarm-owned daemon storage roots.
   # - Go imports of the canonical workspace package are package identities, not filesystem storage defaults.
   # - ArtifactV3AuthorService.Rename renames a validated project file within one private turn;
@@ -70,6 +70,7 @@ filter_allowed() {
     -e '^swarmd/internal/worktree/service\.go:.*(workspaceruntime|migrateLegacyConfig|MigrateLegacyGlobalConfig)' \
     -e '^swarmd/internal/tool/runtime\.go:.*(workspaceruntime|os\.MkdirTemp\("", "swarm-git-"\))' \
     -e '^swarmd/internal/tool/runtime_bash_execution\.go:.*os\.MkdirTemp\("", "swarm-command-"\)' \
+    -e '^swarmd/internal/tool/runtime_manage_artifact_video_chain\.go:.*os\.MkdirTemp\("", "swarm-video-(extract|chain)-"\)' \
     -e '^swarmd/internal/run/service(_workspace_manage)?\.go:.*workspaceruntime' \
     -e '^internal/launcher/managed_dev_update\.go:.*(/v1/swarm/topology/workspace-bindings|source_workspace_path)' \
     -e '^swarmd/internal/store/pebble/(keys|auth_store|auth_vault|worktree_store)\.go:.*(legacy|migrat|Migrate)' \

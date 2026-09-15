@@ -13,10 +13,10 @@ import (
 )
 
 type lyriaInteractionRequest struct {
-	Model                 string                `json:"model"`
-	Input                 any                   `json:"input"`
-	PreviousInteractionID string                `json:"previous_interaction_id,omitempty"`
-	ResponseFormat        *lyriaResponseFormat  `json:"response_format,omitempty"`
+	Model                 string               `json:"model"`
+	Input                 any                  `json:"input"`
+	PreviousInteractionID string               `json:"previous_interaction_id,omitempty"`
+	ResponseFormat        *lyriaResponseFormat `json:"response_format,omitempty"`
 }
 
 type lyriaResponseFormat struct {

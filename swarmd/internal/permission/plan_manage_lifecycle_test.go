@@ -86,7 +86,6 @@ func TestAuthorizeToolCallNoActivePlanUsesAtomicSessionCheckpointPath(t *testing
 	}
 }
 
-
 func TestPlanAcceptanceAlwaysAllowPreservesCanonicalPendingArguments(t *testing.T) {
 	svc, sessionID, _, cleanup := newPermissionLifecycleTestService(t, "")
 	defer cleanup()
