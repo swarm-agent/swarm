@@ -283,6 +283,23 @@ func TestMasterHarnessPromptGuidesDeterministicHTMLAnimationExport(t *testing.T)
 	}
 }
 
+func TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"video models like Veo 3.1 natively generate audio and video in one pass; leaving sound unprompted causes hallucinated audio",
+		"Always direct the soundscape:",
+		"concrete action-tied sound effects (e.g. SFX: heavy metallic latch engaging, boots crunching on gravel)",
+		"ambient acoustic scale and room tone (e.g. Ambient noise: deep subterranean rumble, wet cavern drips)",
+		"musical score mood (e.g. Music: dark ambient synth with driving sub-bass or Music: none)",
+		"Never use quotation marks in video prompts unless spoken dialogue is explicitly requested",
+		"Ambient noise: near-total silence, dead room tone, no background music, no dialogue",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing video audio guidance %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsProjectsExactTypedPart(t *testing.T) {
 	selection := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41, Action: "use", PartID: "hero", Part: &pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "spatial", X: .1, Y: .2, Width: .7, Height: .5}}
 	got := AttachedArtifactSelectionsForProvider([]pebblestore.SessionArtifactSelectionReference{selection})

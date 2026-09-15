@@ -92,7 +92,7 @@ func composeDirectVideoSwarmPrompt(parentPrompt, baseTheme string, controls *tas
 	b.WriteString(strings.TrimSpace(delta.Title))
 	b.WriteString("\nSpecialized theme: ")
 	b.WriteString(strings.TrimSpace(delta.Theme))
-	b.WriteString("\nVisual composition, camera motion, and scene direction: ")
+	b.WriteString("\nVisual composition, camera motion, scene and sound direction: ")
 	b.WriteString(strings.TrimSpace(delta.Role))
 	if len(delta.Constraints) > 0 {
 		b.WriteString("\nConstraints:")
