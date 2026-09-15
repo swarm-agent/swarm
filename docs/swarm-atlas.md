@@ -1763,3 +1763,20 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
 - **Validation:**
   - Added unit tests: `TestManageSessionsCreateSessionFailsWhenInitialRunFailsToDeploy`, `TestManageSessionsSendMessageFailsWhenRunFailsToDeploy`, `TestManageSessionsCreateInheritsPreferencesAndAgentProfile`.
   - All 34 manage-sessions tool tests pass.
+
+### Multi-Session Worktree Promotion, Commit Fallback, and Integration Guidance (2026-09-15)
+
+- **Multi-Session Worktree Promotion (`swarmd/internal/tool/runtime.go`):**
+  - Extended `manage-worktree action=promote` to support promoting multiple session branches into the captured repository checkout branch in a single atomic call via `source_session_ids: [...]` or `sources: [...]` alongside existing single-session `source_session_id`.
+  - Added smart parameter defaults: `source_branch`, `source_head`, `target_workspace_path`, `target_branch`, and `target_head` are auto-resolved from session worktree metadata and clean worktree state when omitted, while still validating explicit CAS head OIDs when provided.
+  - Multi-session integration preflights the complete stack of integration children through `PrepareTaskIntegration` before applying, ensuring atomic promotion without leaving the target repository checkout dirty or partially updated.
+- **Session Worktree Commit Fallback (`swarmd/internal/tool/runtime_manage_sessions_commit.go`):**
+  - Updated `resolveManageSessionsCommitCandidate` so that isolated session-owned worktrees (`session.WorktreeEnabled`) automatically fall back to all attributable dirty worktree files when the terminal plan checkpoint omits `changed_files` or no active plan is attached, preventing commit failures on uncheckpointed work.
+- **Harness Prompt Integration Guidance (`swarmd/internal/run/service_prompt.go`):**
+  - Added comprehensive instructions in the master harness prompt directing the AI on how to land session work into the user's repository (`dev`/`main`): first batch-commit with `manage-sessions action=commit`, then batch-promote into the target branch with `manage-worktree action=promote`.
+  - Added concrete usage examples for single-session and multi-session `manage-sessions commit` and `manage-worktree promote`.
+- **Validation:**
+  - Added unit tests in `swarmd/internal/tool/runtime_manage_worktree_test.go`: `TestManageWorktreePromoteMultiSession` and `TestManageWorktreePromoteAutoResolvesCleanLineageWhenOmitted`.
+  - Added unit test in `swarmd/internal/tool/runtime_manage_sessions_commit_test.go`: `TestManageSessionsCommitWorktreeFallbackWhenCheckpointFilesEmpty`.
+  - Added unit test in `swarmd/internal/run/service_prompt_tool_schema_test.go`: `TestMasterHarnessPromptGuidesSessionCommitAndWorktreePromotion`.
+  - Verified `scripts/check-atlas-sync.sh`, `scripts/run-critical-tests.sh fast`, `deep`, and `agents`.

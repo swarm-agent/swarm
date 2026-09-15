@@ -248,6 +248,16 @@ func (r *Runtime) resolveManageSessionsCommitCandidate(ctx context.Context, scop
 		return manageSessionsCommitCandidate{}, fmt.Errorf("repository %s has conflicts", repo)
 	}
 	changedFiles, err := r.sessionTerminalChangedFiles(session.ID)
+	if err != nil && session.WorktreeEnabled {
+		for _, file := range snapshot.Files {
+			if !file.Staged && !file.Conflict && strings.TrimSpace(file.Path) != "" {
+				changedFiles = append(changedFiles, file.Path)
+			}
+		}
+		if len(changedFiles) > 0 {
+			err = nil
+		}
+	}
 	if err != nil {
 		return manageSessionsCommitCandidate{}, err
 	}

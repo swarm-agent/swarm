@@ -1414,7 +1414,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote an owned session lane into its captured checkout. Internal integrate never advances dev or another captured checkout. Promote is a separately permissioned operation bound to exact source session/branch/full HEAD and a clean exact target branch/full HEAD. Use the source head_oid returned by manage-sessions git_status and the full target git rev-parse HEAD; abbreviated OIDs and dirty targets are rejected with current-state diagnostics. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
+			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote one or multiple owned session lanes into their captured checkout. Internal integrate never advances dev or another captured checkout. Promote can promote a single session (via source_session_id) or multiple sessions at once (via source_session_ids or sources) into the target checkout branch (e.g. dev or main). Parameters source_branch, source_head, target_workspace_path, target_branch, and target_head are auto-resolved from session and target worktree state when omitted, or verified against exact OIDs when supplied. Abbreviated OIDs and dirty targets are rejected with current-state diagnostics. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1425,12 +1425,14 @@ func (r *Runtime) Definitions() []Definition {
 					"expected_digest":       map[string]any{"type": "string", "description": "Exact inspected source digest required by retain_source"},
 					"task_call_id":          map[string]any{"type": "string", "description": "Durable parent task call to recall or integrate as one complete Coder wave; mutually exclusive with session_ids for integrate"},
 					"workspace_path":        map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
-					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: exact owned session lane source session id"},
-					"source_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected source lane branch"},
-					"source_head":           map[string]any{"type": "string", "description": "Promote only: full exact source lane head_oid returned by manage-sessions git_status; abbreviated OIDs are rejected"},
-					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: captured checkout path to advance"},
-					"target_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected captured target branch"},
-					"target_head":           map[string]any{"type": "string", "description": "Promote only: full exact git rev-parse HEAD of the clean captured target checkout; dirty targets and abbreviated OIDs are rejected"},
+					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: exact owned session lane source session id (or use source_session_ids/sources for multi-session promotion)"},
+					"source_session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Promote only: explicit owned session lane IDs to batch-promote into the captured checkout"},
+					"sources":               map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Promote only: explicit list of source candidates to promote, each with source_session_id (or session_id), and optional source_branch and source_head"},
+					"source_branch":         map[string]any{"type": "string", "description": "Promote only: expected source lane branch; omitted defaults to session worktree branch"},
+					"source_head":           map[string]any{"type": "string", "description": "Promote only: full exact source lane head_oid returned by manage-sessions git_status; omitted defaults to clean source lane HEAD"},
+					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: captured checkout path to advance; omitted defaults to session captured source workspace"},
+					"target_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected captured target branch; omitted defaults to session worktree base branch (e.g. dev or main)"},
+					"target_head":           map[string]any{"type": "string", "description": "Promote only: full exact git rev-parse HEAD of the clean captured target checkout; omitted defaults to clean target checkout HEAD"},
 					"branch_name":           map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
 					"limit":                 map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
 					"cursor":                map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
@@ -6654,76 +6656,176 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	if r == nil || r.sessions == nil || r.worktrees == nil {
 		return "", errors.New("manage-worktree promote requires session and worktree services")
 	}
-	sourceSessionID := strings.TrimSpace(asString(args["source_session_id"]))
-	sourceBranch := strings.TrimSpace(asString(args["source_branch"]))
-	sourceHead := strings.TrimSpace(asString(args["source_head"]))
+
+	type promoteSourceCandidate struct {
+		sessionID string
+		branch    string
+		head      string
+	}
+	var candidates []promoteSourceCandidate
+
+	if sourcesRaw, ok := args["sources"].([]any); ok && len(sourcesRaw) > 0 {
+		for i, raw := range sourcesRaw {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("sources[%d] must be an object", i)
+			}
+			id := strings.TrimSpace(firstNonEmptyString(asString(m["source_session_id"]), asString(m["session_id"])))
+			if id == "" {
+				return "", fmt.Errorf("sources[%d] requires source_session_id", i)
+			}
+			branch := strings.TrimSpace(firstNonEmptyString(asString(m["source_branch"]), asString(m["branch"])))
+			head := strings.TrimSpace(firstNonEmptyString(asString(m["source_head"]), asString(m["head"])))
+			candidates = append(candidates, promoteSourceCandidate{sessionID: id, branch: branch, head: head})
+		}
+	} else if rawIDs := asStringSlice(args["source_session_ids"]); len(rawIDs) > 0 {
+		for _, id := range rawIDs {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				candidates = append(candidates, promoteSourceCandidate{sessionID: id})
+			}
+		}
+	} else if singleID := strings.TrimSpace(asString(args["source_session_id"])); singleID != "" {
+		branch := strings.TrimSpace(asString(args["source_branch"]))
+		head := strings.TrimSpace(asString(args["source_head"]))
+		candidates = append(candidates, promoteSourceCandidate{sessionID: singleID, branch: branch, head: head})
+	}
+
+	if len(candidates) == 0 {
+		return "", errors.New("promote requires source_session_id, source_session_ids, or sources")
+	}
+
+	seenSessions := map[string]bool{}
+	for _, c := range candidates {
+		if seenSessions[c.sessionID] {
+			return "", fmt.Errorf("promote contains duplicate source session %s", c.sessionID)
+		}
+		seenSessions[c.sessionID] = true
+	}
+
 	targetWorkspacePath := strings.TrimSpace(asString(args["target_workspace_path"]))
 	targetBranch := strings.TrimSpace(asString(args["target_branch"]))
 	targetHead := strings.TrimSpace(asString(args["target_head"]))
-	if sourceSessionID == "" || sourceBranch == "" || sourceHead == "" || targetWorkspacePath == "" || targetBranch == "" || targetHead == "" {
-		return "", errors.New("promote requires exact source_session_id, source_branch, source_head, target_workspace_path, target_branch, and target_head")
-	}
-	source, found, err := r.sessions.GetSession(sourceSessionID)
-	if err != nil {
-		return "", err
-	}
-	if !found || source.AccountScopeID != scope.Principal.AccountScopeID || source.UserID != scope.Principal.UserID {
-		return "", errors.New("promotion source is not an owned session")
-	}
-	sourcePath := strings.TrimSpace(source.WorktreeRootPath)
-	capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
-	capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
-	if sourceBranch != source.WorktreeBranch {
-		lane, laneErr := r.selectedRepositoryLane(scope, source, targetWorkspacePath, sourceBranch)
-		if laneErr != nil {
-			return "", fmt.Errorf("select promotion repository lane: %w", laneErr)
+
+	var primaryResolvedTarget string
+	var primaryTargetBranch string
+	var children []worktreeruntime.TaskIntegrationChild
+	resolvedBranches := make([]string, 0, len(candidates))
+
+	for _, c := range candidates {
+		source, found, err := r.sessions.GetSession(c.sessionID)
+		if err != nil {
+			return "", err
 		}
-		sourcePath, capturedPath, capturedHead = lane.WorkspacePath, lane.SourcePath, lane.BaseCommit
-	} else if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
-		return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+		if !found || source.AccountScopeID != scope.Principal.AccountScopeID || source.UserID != scope.Principal.UserID {
+			return "", errors.New("promotion source is not an owned session")
+		}
+		sourcePath := strings.TrimSpace(source.WorktreeRootPath)
+		capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
+		capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
+
+		branch := c.branch
+		if branch == "" {
+			branch = strings.TrimSpace(source.WorktreeBranch)
+		}
+		expectedTargetBranch := targetBranch
+		if expectedTargetBranch == "" {
+			expectedTargetBranch = strings.TrimSpace(source.WorktreeBaseBranch)
+		}
+		expectedTargetWorkspace := targetWorkspacePath
+		if expectedTargetWorkspace == "" {
+			expectedTargetWorkspace = capturedPath
+		}
+
+		if branch != source.WorktreeBranch {
+			lane, laneErr := r.selectedRepositoryLane(scope, source, expectedTargetWorkspace, branch)
+			if laneErr != nil {
+				return "", fmt.Errorf("select promotion repository lane: %w", laneErr)
+			}
+			sourcePath, capturedPath, capturedHead = lane.WorkspacePath, lane.SourcePath, lane.BaseCommit
+		} else if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBaseBranch != expectedTargetBranch || capturedPath == "" || capturedHead == "" {
+			return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+		}
+		if branch == expectedTargetBranch {
+			return "", errors.New("promotion source must be distinct from the target branch")
+		}
+		resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, expectedTargetWorkspace, capturedPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve promotion target: %w", err)
+		}
+		if primaryResolvedTarget == "" {
+			primaryResolvedTarget = resolvedTarget
+			primaryTargetBranch = expectedTargetBranch
+		} else {
+			if resolvedTarget != primaryResolvedTarget {
+				return "", fmt.Errorf("all promotion sources must target the same workspace (%q != %q)", resolvedTarget, primaryResolvedTarget)
+			}
+			if expectedTargetBranch != primaryTargetBranch {
+				return "", fmt.Errorf("all promotion sources must target the same branch (%q != %q)", expectedTargetBranch, primaryTargetBranch)
+			}
+		}
+
+		sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
+		if err != nil {
+			return "", fmt.Errorf("inspect promotion source lane: %w", err)
+		}
+		if !sourceState.Clean {
+			return "", errors.New("promotion source lane is dirty; commit the intended source changes, then refresh exact lineage before retrying")
+		}
+		if sourceState.BranchName != branch || (c.head != "" && sourceState.HeadCommit != c.head) {
+			return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", branch, c.head, sourceState.BranchName, sourceState.HeadCommit)
+		}
+
+		children = append(children, worktreeruntime.TaskIntegrationChild{
+			SessionID:  c.sessionID,
+			BaseCommit: capturedHead,
+			HeadCommit: sourceState.HeadCommit,
+		})
+		resolvedBranches = append(resolvedBranches, branch)
 	}
-	if sourceBranch == targetBranch {
-		return "", errors.New("promotion source must be distinct from the target branch")
-	}
-	resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, targetWorkspacePath, capturedPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve promotion target: %w", err)
-	}
-	sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
-	if err != nil {
-		return "", fmt.Errorf("inspect promotion source lane: %w", err)
-	}
-	if !sourceState.Clean {
-		return "", errors.New("promotion source lane is dirty; commit the intended source changes, then refresh exact lineage before retrying")
-	}
-	if sourceState.BranchName != sourceBranch || sourceState.HeadCommit != sourceHead {
-		return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", sourceBranch, sourceHead, sourceState.BranchName, sourceState.HeadCommit)
-	}
-	targetState, err := r.worktrees.InspectTaskWorkspace(resolvedTarget)
+
+	targetState, err := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
 	if err != nil {
 		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
 	}
 	if !targetState.Clean {
 		return "", fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
 	}
-	if targetState.BranchName != targetBranch || targetState.HeadCommit != targetHead {
-		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", targetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
+	if (primaryTargetBranch != "" && targetState.BranchName != primaryTargetBranch) || (targetHead != "" && targetState.HeadCommit != targetHead) {
+		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
 	}
-	plan, err := r.worktrees.PrepareTaskIntegration(resolvedTarget, targetBranch, targetHead, []worktreeruntime.TaskIntegrationChild{{SessionID: sourceSessionID, BaseCommit: capturedHead, HeadCommit: sourceHead}})
+	targetBranchName := targetState.BranchName
+	resolvedTargetHead := targetState.HeadCommit
+
+	plan, err := r.worktrees.PrepareTaskIntegration(primaryResolvedTarget, targetBranchName, resolvedTargetHead, children)
 	if err != nil {
 		return "", err
 	}
-	result, err := r.worktrees.ApplyTaskIntegration(resolvedTarget, plan)
+	result, err := r.worktrees.ApplyTaskIntegration(primaryResolvedTarget, plan)
 	if err != nil {
 		return "", err
 	}
-	encoded, err := json.Marshal(map[string]any{
-		"status": "ok", "action": "promote", "source_session_id": sourceSessionID,
-		"source_branch": sourceBranch, "source_head": sourceHead, "target_workspace_path": resolvedTarget,
-		"target_branch": targetBranch, "previous_target_head": targetHead,
-		"resulting_target_head": result.ResultingParentHead, "promotion": result,
-		"path_id": toolPathID("manage-worktree"),
-	})
+	sourceSessionIDs := make([]string, len(children))
+	for i, ch := range children {
+		sourceSessionIDs[i] = ch.SessionID
+	}
+	resp := map[string]any{
+		"status":                "ok",
+		"action":                "promote",
+		"source_session_ids":    sourceSessionIDs,
+		"target_workspace_path": primaryResolvedTarget,
+		"target_branch":         targetBranchName,
+		"previous_target_head":  resolvedTargetHead,
+		"resulting_target_head": result.ResultingParentHead,
+		"promotion":             result,
+		"path_id":               toolPathID("manage-worktree"),
+	}
+	if len(children) == 1 {
+		resp["source_session_id"] = children[0].SessionID
+		resp["source_branch"] = resolvedBranches[0]
+		resp["source_head"] = children[0].HeadCommit
+	}
+	encoded, err := json.Marshal(resp)
 	if err != nil {
 		return "", err
 	}

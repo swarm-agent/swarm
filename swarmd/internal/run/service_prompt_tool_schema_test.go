@@ -59,6 +59,25 @@ func TestMasterHarnessPromptRequiresTopLevelTaskPrompt(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptGuidesSessionCommitAndWorktreePromotion(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Integrating and landing session work into the user's workspace repository (e.g. dev or main branch):",
+		"`manage-sessions action=commit`",
+		"The commit tool accepts up to 10 sessions in one call (`commits: [...]`)",
+		"`manage-worktree action=promote`",
+		"single sessions (`source_session_id`) or multiple sessions at once (`source_session_ids:",
+		`manage-sessions (commit single session): {"action":"commit","commits":[{"session_id":`,
+		`manage-sessions (commit multiple sessions at once): {"action":"commit","commits":[{"session_id":"sess_1"`,
+		`manage-worktree (promote/integrate single session into dev/main): {"action":"promote","source_session_id":`,
+		`manage-worktree (multi-session promote/integrate into dev/main): {"action":"promote","source_session_ids":["sess_1","sess_2"]`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing commit/promote guidance %q", want)
+		}
+	}
+}
+
 func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	definitions := tool.NewRuntime(1).Definitions()
 	var properties map[string]any
