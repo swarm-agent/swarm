@@ -2623,7 +2623,16 @@ func (r *Runtime) generateManagedAudioArtifact(
 
 		variantTitle := title
 		if count > 1 {
-			variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+			if len(prompts) > 1 && i < len(prompts) && prompts[i] != "" {
+				derived := deriveAudioTitle(prompts[i])
+				if derived != "" && !strings.EqualFold(derived, "Generated audio") {
+					variantTitle = fmt.Sprintf("%d. %s", i+1, derived)
+				} else {
+					variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+				}
+			} else {
+				variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+			}
 		}
 
 		presentation := requestedPresentation

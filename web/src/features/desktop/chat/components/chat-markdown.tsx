@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Music, Search, Sparkles, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -1547,10 +1547,38 @@ export function ManageArtifactCard({
   const action = (toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create").trim().toLowerCase();
   const isImageCapabilities = action === "image_capabilities";
   const isImageGeneration = action === "generate_image";
-  const isVideoGeneration = action === "generate_video";
+  const isVideoStory = action === "generate_video_story";
+  const isVideoGeneration = action === "generate_video" || isVideoStory || action === "chain_video";
+  const isAudioGeneration = action === "generate_audio";
   const isVideoIteration = isVideoGeneration && (Boolean(toolJsonString(args, "source_variant_id")) || Boolean(toolJsonString(args, "source_session_id")));
   const isInspection = ["get", "read", "list"].includes(action);
-  const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
+
+  const outputVariants = Array.isArray(output?.variants)
+    ? (output.variants as Array<Record<string, unknown>>)
+    : [];
+  const rawVariants: DesktopV3ArtifactCatalogEntry[] = useMemo(() => {
+    if (outputVariants.length > 0) {
+      return outputVariants
+        .map((v) => (v && typeof v === "object" ? normalizeDesktopV3ArtifactCatalogEntry(v) : null))
+        .filter((v): v is DesktopV3ArtifactCatalogEntry => Boolean(v))
+        .map((v) => {
+          const matched = artifactCatalog.find((entry) => (
+            entry.artifactId === v.artifactId
+            && entry.sessionId === v.sessionId
+            && entry.collectionId === v.collectionId
+            && entry.eventSeq === v.eventSeq
+          ));
+          return matched ?? v;
+        });
+    }
+    return [];
+  }, [outputVariants, artifactCatalog]);
+
+  const [selectedVariantIndex, setSelectedVariantIndex] = useState(0);
+
+  const rawArtifact = (rawVariants.length > 0 && rawVariants[selectedVariantIndex])
+    ? rawVariants[selectedVariantIndex]
+    : (toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null));
 
   const matchedCatalogEntry = rawArtifact
     ? artifactCatalog.find((entry) => (
@@ -1605,14 +1633,16 @@ export function ManageArtifactCard({
       : isVideoIteration
         ? "Video iteration"
         : isVideoGeneration
-          ? "Video generation"
-          : action === "create_package"
-            ? "Artifact package"
-            : action === "list"
-              ? "Artifact list"
-              : action === "get" || action === "read"
-                ? "Artifact read"
-                : "Artifact";
+          ? isVideoStory ? "Video story" : "Video generation"
+          : isAudioGeneration
+            ? rawVariants.length > 1 ? `Audio generation (${rawVariants.length} clips)` : "Audio generation"
+            : action === "create_package"
+              ? "Artifact package"
+              : action === "list"
+                ? "Artifact list"
+                : action === "get" || action === "read"
+                  ? "Artifact read"
+                  : "Artifact";
   const statusLabel = isError
     ? "Failed"
     : isImageCapabilities
@@ -1621,7 +1651,9 @@ export function ManageArtifactCard({
         ? isRunning ? "Generating…" : status === "ready" ? "Image ready" : status || "Created"
         : isVideoGeneration
           ? isRunning ? "Generating video…" : status === "ready" ? "Video ready" : status || "Created"
-          : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
+          : isAudioGeneration
+            ? isRunning ? "Generating audio…" : status === "ready" ? (rawVariants.length > 1 ? `${rawVariants.length} clips ready` : "Audio ready") : status || "Created"
+            : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
 
   const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
 
@@ -1690,7 +1722,7 @@ export function ManageArtifactCard({
         <div className="flex min-w-0 items-center justify-between gap-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-accent)_15%,transparent)] text-[var(--app-accent)]">
-              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : isVideoGeneration ? <Film size={14} /> : <Sparkles size={14} />}
+              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : isVideoGeneration ? <Film size={14} /> : isAudioGeneration ? <Music size={14} /> : <Sparkles size={14} />}
             </span>
             <div className="min-w-0">
               <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{actionTitle}</span>
@@ -1770,6 +1802,61 @@ export function ManageArtifactCard({
               <div className="mt-3.5 h-1.5 w-48 overflow-hidden rounded-full bg-white/10">
                 <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-indigo-500 via-[var(--app-primary)] to-pink-500 motion-safe:animate-[pulse_1.5s_ease-in-out_infinite]" />
               </div>
+            </div>
+          </div>
+        ) : null}
+
+        {rawVariants.length > 1 ? (
+          <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" data-testid="artifact-variants-selector">
+            <div className="mb-2 flex items-center justify-between px-1 text-[10px] font-semibold text-[var(--app-text-subtle)]">
+              <span className="flex items-center gap-1.5 uppercase tracking-wider">
+                {isAudioGeneration ? <Music size={12} className="text-[var(--app-primary)]" /> : <Sparkles size={12} className="text-[var(--app-primary)]" />}
+                {isAudioGeneration ? `Sound Clips (${rawVariants.length})` : `Variations (${rawVariants.length})`}
+              </span>
+              <span className="text-[9px] font-normal text-[var(--app-text-muted)]">Select to preview & play</span>
+            </div>
+            <div className="grid gap-1.5">
+              {rawVariants.map((variantItem, idx) => {
+                const isSelected = idx === selectedVariantIndex;
+                const vLabel = variantItem.label || `Variation ${idx + 1}`;
+                const vDesc = variantItem.description;
+                return (
+                  <button
+                    key={variantItem.artifactId || idx}
+                    type="button"
+                    onClick={() => setSelectedVariantIndex(idx)}
+                    className={cn(
+                      "flex min-w-0 items-start gap-2.5 rounded-lg border p-2 text-left transition",
+                      isSelected
+                        ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)] shadow-2xs"
+                        : "border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-hover)] hover:bg-[var(--app-surface-hover)]"
+                    )}
+                    aria-pressed={isSelected}
+                  >
+                    <span className={cn(
+                      "grid size-5 shrink-0 place-items-center rounded border font-mono text-[9px] font-bold mt-0.5",
+                      isSelected ? "border-current bg-[var(--app-surface)]" : "border-[var(--app-border)] bg-[var(--app-bg-alt)]"
+                    )}>
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-semibold leading-tight text-[var(--app-text)] break-words">
+                        {vLabel}
+                      </div>
+                      {vDesc && vDesc !== vLabel ? (
+                        <p className="mt-0.5 line-clamp-2 text-[9px] leading-snug text-[var(--app-text-muted)] break-words">
+                          {vDesc}
+                        </p>
+                      ) : null}
+                    </div>
+                    {isSelected ? (
+                      <span className="shrink-0 rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[9px] font-medium text-white">
+                        Active
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}

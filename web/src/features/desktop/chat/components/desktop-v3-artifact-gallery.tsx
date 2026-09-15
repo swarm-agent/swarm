@@ -1436,13 +1436,18 @@ export function DesktopV3ArtifactGallery({
                   {studioModeActive && !previewFullscreen ? <aside className="absolute inset-y-0 left-0 z-10 hidden w-72 overflow-x-hidden overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:w-80 md:block" aria-label="Artifact Studio steps" data-artifact-studio-step-sidebar data-artifact-studio-unified-iterations>
                     {selectedIsWaveGroup && selectedGroup && selectedVariants.length > 1 ? <section className="sticky top-0 z-20 mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 shadow-sm" aria-label="Generation group" data-artifact-generation-group>
                       <div className="flex min-w-0 items-start justify-between gap-2 px-1 pb-1.5"><span className="min-w-0"><span className="block truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Generation group</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-muted)]">{collectionDisplayLabel(selectedGroup)}</span></span><span className="shrink-0 rounded-full bg-[var(--app-primary-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-primary)]">{selectedVariants.length} iterations</span></div>
-                      <div className="grid max-h-44 gap-1 overflow-y-auto pr-1" aria-label="Generation group iterations">
+                      <div className="grid max-h-80 gap-1.5 overflow-y-auto pr-1" aria-label="Generation group iterations">
                         {selectedVariants.map((artifact, index) => {
                           const active = selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected)
-                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
-                            <span className="grid size-5 shrink-0 place-items-center rounded border border-current/20 font-mono text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span>
-                            <span className="min-w-0 flex-1 truncate font-semibold">{variantDisplayLabel(artifact, index)}</span>
-                            <span className="shrink-0 text-[9px] opacity-75">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : active ? 'Viewing' : 'Ready'}</span>
+                          const vTitle = variantDisplayLabel(artifact, index)
+                          const vDesc = (artifact.description || artifact.collectionDescription || '').trim()
+                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-start gap-2 rounded-lg border px-2.5 py-2 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
+                            <span className="grid size-5 shrink-0 place-items-center rounded border border-current/20 font-mono text-[9px] mt-0.5">{artifact.lineage?.iterationIndex || index + 1}</span>
+                            <div className="min-w-0 flex-1">
+                              <span className="block font-semibold text-[11px] leading-snug break-words text-[var(--app-text)]">{vTitle}</span>
+                              {vDesc && vDesc !== vTitle ? <span className="mt-0.5 block line-clamp-2 text-[9px] leading-snug text-[var(--app-text-muted)] break-words">{vDesc}</span> : null}
+                            </div>
+                            <span className="shrink-0 text-[9px] opacity-75 mt-0.5">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : active ? 'Viewing' : 'Ready'}</span>
                           </button>
                         })}
                       </div>
