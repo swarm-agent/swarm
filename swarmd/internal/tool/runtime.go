@@ -30,6 +30,7 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
@@ -185,6 +186,7 @@ type Runtime struct {
 	animationJobs         map[string]context.CancelFunc
 	imageGeneration       ManagedImageGenerationService
 	videoGeneration       ManagedVideoGenerationService
+	audioGeneration       ManagedAudioGenerationService
 	video                 manageVideoService
 	videoSources          *videosource.Service
 	videoProjects         manageVideoProjectService
@@ -340,6 +342,10 @@ type ManagedImageGenerationService interface {
 
 type ManagedVideoGenerationService interface {
 	GenerateManagedVideo(context.Context, videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error)
+}
+
+type ManagedAudioGenerationService interface {
+	GenerateManagedAudio(context.Context, audiogen.ManagedAudioRequest) (audiogen.ManagedAudioResult, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -680,6 +686,12 @@ func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGeneratio
 func (r *Runtime) SetManagedVideoGenerationService(service ManagedVideoGenerationService) {
 	if r != nil {
 		r.videoGeneration = service
+	}
+}
+
+func (r *Runtime) SetManagedAudioGenerationService(service ManagedAudioGenerationService) {
+	if r != nil {
+		r.audioGeneration = service
 	}
 }
 

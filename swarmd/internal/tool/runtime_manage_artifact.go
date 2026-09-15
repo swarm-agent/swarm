@@ -26,6 +26,7 @@ import (
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -258,15 +259,16 @@ func manageArtifactDefinition() Definition {
 			"properties": map[string]any{
 				"artifact_id":      map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
 				"resume_draft":     map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). For image-to-video, pass image (or image_path) with a workspace image path, data URI, or artifact reference alongside prompt."},
-				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image and generate_video. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
-				"image":            map[string]any{"description": "Optional image input for generate_video (image-to-video). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
-				"image_path":       map[string]any{"type": "string", "description": "Optional workspace file path to an image for generate_video (image-to-video)."},
-				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated video (e.g. 'Tokyo Rain Flyover'). If omitted, a descriptive title is automatically derived from the prompt."},
+				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_audio", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). For image-to-video, pass image (or image_path) with a workspace image path, data URI, or artifact reference alongside prompt. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
+				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image, generate_video, and generate_audio. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
+				"prompts":          map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes}, "description": "Optional array of prompts for generating multiple audio variations in one call."},
+				"image":            map[string]any{"description": "Optional image input for generate_video or generate_audio (image inspiration). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
+				"image_path":       map[string]any{"type": "string", "description": "Optional workspace file path to an image for generate_video or generate_audio."},
+				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated media (video or audio). If omitted, a descriptive title is automatically derived from the prompt."},
 				"aspect_ratio":     map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
 				"resolution":       map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, or 360p."},
-				"duration_seconds": map[string]any{"type": "integer", "description": "Optional video duration in seconds: 4, 6, or 8 (default 8)."},
-				"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional number of video variants to generate (1 to 8)."},
+				"duration_seconds": map[string]any{"type": "integer", "description": "Optional media duration in seconds for video (4, 6, 8) or audio (e.g. 15, 28, 30, 60, 120)."},
+				"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional number of media variants to generate (1 to 8)."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
 					"size":         map[string]any{"type": "string", "maxLength": 64, "description": "Optional portable output size, for example auto, 1024x1024, 1536x1024, or 1024x1536. The backend adapts it to the configured image provider."},
@@ -514,6 +516,35 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["variants"] = videoResult.Variants
 		response["references"] = videoResult.References
 		if videoResult.HasImageInput {
+			response["has_image_input"] = true
+		}
+	case "generate_audio":
+		audioResult, err := r.generateManagedAudioArtifact(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["title"] = audioResult.Title
+		response["prompt"] = audioResult.Prompt
+		if len(audioResult.Prompts) > 0 {
+			response["prompts"] = audioResult.Prompts
+		}
+		response["model"] = audioResult.Model
+		response["provider"] = audioResult.Provider
+		response["duration_seconds"] = audioResult.DurationSeconds
+		response["duration_ms"] = audioResult.DurationMs
+		if audioResult.Lyrics != "" {
+			response["lyrics"] = audioResult.Lyrics
+		}
+		response["estimated_cost_usd"] = audioResult.TotalEstimatedCostUSD
+		response["cost_per_audio_usd"] = audioResult.CostPerAudioUSD
+		response["pricing_summary"] = audioResult.PricingSummary
+		response["artifact"] = managedArtifactVariant(audioResult.LastVariant)
+		response["reference"] = managedArtifactReferenceWithSession(audioResult.LastVariant.SessionID, audioResult.LastVariant.CollectionID, audioResult.LastVariant.ID, audioResult.LastVariant.EventSeq)
+		response["variants"] = audioResult.Variants
+		response["references"] = audioResult.References
+		response["metadata"] = audioResult.Metadata
+		if audioResult.HasImageInput {
 			response["has_image_input"] = true
 		}
 	case "create":
@@ -1654,6 +1685,25 @@ type managedVideoArtifactResult struct {
 	HasImageInput         bool `json:"has_image_input,omitempty"`
 }
 
+type managedAudioArtifactResult struct {
+	LastVariant           pebblestore.SessionArtifactVariant
+	Variants              []map[string]any
+	References            []map[string]any
+	Title                 string
+	Prompt                string
+	Prompts               []string
+	Model                 string
+	Provider              string
+	DurationSeconds       int
+	DurationMs            int
+	Lyrics                string
+	CostPerAudioUSD       float64
+	TotalEstimatedCostUSD float64
+	PricingSummary        string
+	HasImageInput         bool `json:"has_image_input,omitempty"`
+	Metadata              audiogen.AudioMetadata
+}
+
 func deriveVideoTitle(prompt string) string {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
@@ -1688,6 +1738,49 @@ func deriveVideoTitle(prompt string) string {
 	clean = strings.TrimRight(clean, ".,;:-! ")
 	if clean == "" {
 		return "Generated video"
+	}
+	r := []rune(clean)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+func deriveAudioTitle(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "Generated audio"
+	}
+	clean := prompt
+	for _, prefix := range []string{
+		"generate an audio clip of ", "generate audio clip of ", "generate an audio of ",
+		"generate audio of ", "generate music for ", "generate music of ",
+		"create an audio clip of ", "create audio clip of ", "create music for ",
+		"create a song about ", "generate a song about ", "a song about ",
+		"audio clip of ", "music for ", "sound clip of ", "clip of ",
+		"please generate audio of ", "please create music for ",
+	} {
+		if strings.HasPrefix(strings.ToLower(clean), prefix) {
+			clean = clean[len(prefix):]
+			break
+		}
+	}
+	clean = strings.TrimLeft(clean, "\"'`# ")
+	for _, sep := range []string{". ", "! ", "? ", "; ", "\n"} {
+		if idx := strings.Index(clean, sep); idx > 0 {
+			clean = clean[:idx]
+			break
+		}
+	}
+	runes := []rune(clean)
+	if len(runes) > 50 {
+		cut := string(runes[:50])
+		if lastSpace := strings.LastIndex(cut, " "); lastSpace > 20 {
+			cut = cut[:lastSpace]
+		}
+		clean = strings.TrimSpace(cut)
+	}
+	clean = strings.TrimRight(clean, ".,;:-! ")
+	if clean == "" {
+		return "Generated audio"
 	}
 	r := []rune(clean)
 	r[0] = unicode.ToUpper(r[0])
@@ -2170,6 +2263,340 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		TotalEstimatedCostUSD: totalCost,
 		PricingSummary:        pricingSummary,
 		HasImageInput:         videoImage != nil,
+	}, nil
+}
+
+func (r *Runtime) generateManagedAudioArtifact(
+	ctx context.Context,
+	scope WorkspaceScope,
+	principal artifact.Principal,
+	callID, requestID string,
+	args map[string]any,
+) (managedAudioArtifactResult, error) {
+	for key := range args {
+		switch key {
+		case "action", "prompt", "prompts", "title", "duration_seconds", "count",
+			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
+			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
+			"image", "image_path":
+		default:
+			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact generate_audio contains unsupported field %q", key)
+		}
+	}
+	if r.audioGeneration == nil {
+		return managedAudioArtifactResult{}, errors.New("manage_artifact audio generation is not configured")
+	}
+
+	var prompts []string
+	if rawPrompts, exists := args["prompts"]; exists {
+		switch v := rawPrompts.(type) {
+		case []any:
+			if len(v) > 8 {
+				return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio prompts exceeds maximum of 8")
+			}
+			for _, item := range v {
+				s := strings.TrimSpace(asString(item))
+				if s != "" {
+					prompts = append(prompts, s)
+				}
+			}
+		case []string:
+			if len(v) > 8 {
+				return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio prompts exceeds maximum of 8")
+			}
+			for _, item := range v {
+				s := strings.TrimSpace(item)
+				if s != "" {
+					prompts = append(prompts, s)
+				}
+			}
+		default:
+			return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio prompts must be an array of strings")
+		}
+	}
+
+	prompt := strings.TrimSpace(asString(args["prompt"]))
+	if prompt == "" && len(prompts) > 0 {
+		prompt = prompts[0]
+	}
+	if prompt == "" {
+		return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio requires prompt")
+	}
+	if len([]rune(prompt)) > manageArtifactMaxPromptRunes {
+		return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact audio prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+	}
+	for _, p := range prompts {
+		if len([]rune(p)) > manageArtifactMaxPromptRunes {
+			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact audio prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+		}
+	}
+
+	count := int(asUint64(args["count"]))
+	if count <= 0 {
+		if len(prompts) > 0 {
+			count = len(prompts)
+		} else {
+			count = 1
+		}
+	}
+	if count > 8 {
+		return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio count exceeds maximum of 8")
+	}
+
+	durationSeconds := int(asUint64(args["duration_seconds"]))
+
+	requestedPresentation, err := parseArtifactPresentation(args["presentation"])
+	if err != nil {
+		return managedAudioArtifactResult{}, err
+	}
+
+	rawTitle := strings.TrimSpace(firstNonEmptyString(asString(args["title"]), asString(args["collection_name"]), asString(args["label"])))
+	if rawTitle == "" || strings.EqualFold(rawTitle, "Generated audio") {
+		rawTitle = deriveAudioTitle(prompt)
+	}
+	title := rawTitle
+
+	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
+	collectionName := title
+	collectionDescription := strings.TrimSpace(asString(args["collection_description"]))
+	if collectionDescription == "" {
+		collectionDescription = prompt
+	}
+	managedDestination := false
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+		managedDestination = true
+		if strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact trusted audio destination is incomplete")
+		}
+		if strings.TrimSpace(asString(args["collection_id"])) != "" || strings.TrimSpace(asString(args["variant_id"])) != "" {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact managed generate_audio must omit collection_id and variant_id")
+		}
+		collectionID, variantID = strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
+		collectionName, collectionDescription = "", ""
+	}
+	if !managedDestination {
+		if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
+			collectionID = supplied
+			collectionName, collectionDescription = "", ""
+		}
+		if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
+			variantID = supplied
+		}
+	}
+
+	var sourceRef *pebblestore.SessionArtifactSelectionReference
+	var source *audiogen.ManagedAudioSource
+	var audioImage *audiogen.ManagedAudioImage
+
+	sourceFields := 0
+	for _, key := range []string{"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq"} {
+		if _, supplied := args[key]; supplied {
+			sourceFields++
+		}
+	}
+	if sourceFields != 0 {
+		if sourceFields != 4 {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact audio iteration requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
+		}
+		sourceEventSeq := asUint64(args["source_event_seq"])
+		ref := pebblestore.SessionArtifactSelectionReference{
+			SessionID:    strings.TrimSpace(asString(args["source_session_id"])),
+			CollectionID: strings.TrimSpace(asString(args["source_collection_id"])),
+			VariantID:    strings.TrimSpace(asString(args["source_variant_id"])),
+			EventSeq:     sourceEventSeq,
+		}
+		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq == 0 {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact audio iteration requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
+		}
+		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, 512<<20)
+		if readErr != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("resolve audio iteration source: %w", readErr)
+		}
+		if strings.HasPrefix(variant.MediaType, "image/") {
+			if len(body) == 0 {
+				return managedAudioArtifactResult{}, errors.New("image source artifact is empty")
+			}
+			audioImage = &audiogen.ManagedAudioImage{
+				Bytes:     append([]byte(nil), body...),
+				MediaType: canonicalArtifactMediaType(variant.MediaType),
+			}
+			sourceRef = &ref
+		} else if strings.HasPrefix(variant.MediaType, "audio/") || variant.MediaType == "audio/mp3" || variant.MediaType == "audio/mpeg" {
+			if len(body) == 0 {
+				return managedAudioArtifactResult{}, errors.New("audio iteration source is empty")
+			}
+			sourceRef = &ref
+			interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+			source = &audiogen.ManagedAudioSource{
+				Bytes:         append([]byte(nil), body...),
+				MediaType:     canonicalArtifactMediaType(variant.MediaType),
+				InteractionID: interactionID,
+			}
+		} else {
+			return managedAudioArtifactResult{}, errors.New("audio iteration source is empty or not a supported ready audio (audio/mp3) or image")
+		}
+	}
+
+	rawImage := args["image"]
+	if rawImage == nil {
+		rawImage = args["image_path"]
+	}
+	if rawImage != nil {
+		img, imgRef, err := r.resolveVideoImageInput(ctx, scope, principal, rawImage)
+		if err != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("resolve image input: %w", err)
+		}
+		if img != nil {
+			audioImage = &audiogen.ManagedAudioImage{
+				Bytes:     img.Bytes,
+				MediaType: img.MediaType,
+			}
+		}
+		if imgRef != nil && sourceRef == nil {
+			sourceRef = imgRef
+		}
+	}
+
+	if audioImage != nil {
+		isSVG := audioImage.MediaType == "image/svg+xml" || (len(audioImage.Bytes) > 4 && strings.Contains(string(audioImage.Bytes[:min(len(audioImage.Bytes), 256)]), "<svg"))
+		if isSVG && r.svgRasterizer != nil {
+			pngBytes, err := r.svgRasterizer.RasterizeSVG(ctx, audioImage.Bytes)
+			if err != nil {
+				return managedAudioArtifactResult{}, fmt.Errorf("rasterize SVG image to PNG: %w", err)
+			}
+			audioImage.Bytes = pngBytes
+			audioImage.MediaType = "image/png"
+		}
+	}
+
+	var lastVariant pebblestore.SessionArtifactVariant
+	var allVariants []map[string]any
+	var allReferences []map[string]any
+	var costPerAudio, totalCost float64
+	var pricingSummary, lastModel, lastProvider, lastLyrics string
+	var lastDurationMs int
+	var lastMetadata audiogen.AudioMetadata
+
+	for i := 0; i < count; i++ {
+		currentVariantID := variantID
+		if i > 0 && !managedDestination {
+			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
+		}
+
+		currentPrompt := prompt
+		if i < len(prompts) && prompts[i] != "" {
+			currentPrompt = prompts[i]
+		}
+
+		generated, err := r.audioGeneration.GenerateManagedAudio(identity.ContextWithPrincipal(ctx, scope.Principal), audiogen.ManagedAudioRequest{
+			Prompt:          currentPrompt,
+			DurationSeconds: durationSeconds,
+			Principal:       scope.Principal,
+			Source:          source,
+			Image:           audioImage,
+		})
+		if err != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("generate managed audio: %w", err)
+		}
+		if len(generated.Bytes) == 0 {
+			return managedAudioArtifactResult{}, errors.New("generated audio output is empty")
+		}
+
+		variantTitle := title
+		if count > 1 {
+			variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+		}
+
+		presentation := requestedPresentation
+		presentation.Kind, presentation.Previewable = "audio", true
+		presentation.Label = variantTitle
+		presentation.Description = currentPrompt
+
+		filename := strings.TrimSpace(asString(args["filename"]))
+		if filename == "" {
+			filename = "generated-audio.mp3"
+		}
+		if i > 0 && !strings.Contains(filename, fmt.Sprintf("-%d", i+1)) {
+			filename = fmt.Sprintf("generated-audio-%d.mp3", i+1)
+		}
+
+		iterationIndex := i + 1
+		iterationLabel := variantTitle
+		autoAccept := true
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			if run.IterationIndex > 0 {
+				iterationIndex = run.IterationIndex
+			}
+			if strings.TrimSpace(run.IterationLabel) != "" {
+				iterationLabel = strings.TrimSpace(run.IterationLabel)
+			}
+			if strings.TrimSpace(run.IterationTheme) != "" {
+				presentation.Description = strings.TrimSpace(run.IterationTheme)
+			}
+			autoAccept = run.AutoAccept
+		}
+
+		mediaType := strings.TrimSpace(generated.MediaType)
+		if mediaType == "" {
+			mediaType = audiogen.DefaultAudioMIMEType
+		}
+
+		create := artifact.CreateInput{
+			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
+			CollectionID:          collectionID,
+			CollectionName:        collectionName,
+			CollectionDescription: collectionDescription,
+			VariantID:             currentVariantID,
+			Filename:              filename,
+			MediaType:             mediaType,
+			Presentation:          presentation,
+			IterationID:           generated.InteractionID,
+			IterationIndex:        iterationIndex,
+			IterationLabel:        iterationLabel,
+			Body:                  append([]byte(nil), generated.Bytes...),
+			AutoAccept:            autoAccept,
+		}
+		if sourceRef != nil {
+			create.SourceSessionID = sourceRef.SessionID
+			create.SourceCollectionID = sourceRef.CollectionID
+			create.SourceVariantID = sourceRef.VariantID
+			create.SourceEventSeq = sourceRef.EventSeq
+		}
+
+		published, err := r.artifactAuthority.Create(ctx, principal, create)
+		if err != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("publish audio artifact: %w", err)
+		}
+		lastVariant = published
+		allVariants = append(allVariants, managedArtifactVariant(published))
+		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
+		costPerAudio = generated.EstimatedCostUSD
+		totalCost += generated.EstimatedCostUSD
+		pricingSummary = generated.PricingSummary
+		lastModel = generated.Model
+		lastProvider = generated.Provider
+		lastLyrics = generated.Lyrics
+		lastDurationMs = generated.DurationMs
+		lastMetadata = generated.Metadata
+	}
+
+	return managedAudioArtifactResult{
+		LastVariant:           lastVariant,
+		Variants:              allVariants,
+		References:            allReferences,
+		Title:                 title,
+		Prompt:                prompt,
+		Prompts:               prompts,
+		Model:                 lastModel,
+		Provider:              lastProvider,
+		DurationSeconds:       durationSeconds,
+		DurationMs:            lastDurationMs,
+		Lyrics:                lastLyrics,
+		CostPerAudioUSD:       costPerAudio,
+		TotalEstimatedCostUSD: totalCost,
+		PricingSummary:        pricingSummary,
+		HasImageInput:         audioImage != nil,
+		Metadata:              lastMetadata,
 	}, nil
 }
 

@@ -1520,6 +1520,9 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		if ShouldApproveManageArtifactGenerateVideo(toolArguments) && !bypass {
 			return "manage_artifact_generate_video"
 		}
+		if ShouldApproveManageArtifactGenerateAudio(toolArguments) && !bypass {
+			return "manage_artifact_generate_audio"
+		}
 		return "manage_artifact"
 	case "manage_workspace":
 		identity, _ := manageWorkspacePolicyIdentity(toolArguments)
@@ -1567,6 +1570,10 @@ func ShouldApproveManageArtifactGenerateImage(toolArguments string) bool {
 
 func ShouldApproveManageArtifactGenerateVideo(toolArguments string) bool {
 	return manageAction(toolArguments) == "generate_video"
+}
+
+func ShouldApproveManageArtifactGenerateAudio(toolArguments string) bool {
+	return manageAction(toolArguments) == "generate_audio"
 }
 
 // ShouldApproveManageWorktreePromotion identifies the distinct authority that

@@ -26,6 +26,7 @@ import (
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/artifactv3video"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
@@ -711,6 +712,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		videoGenSvc.SetSVGRasterizer(htmlRenderer)
 	}
 	toolRuntime.SetManagedVideoGenerationService(videoGenSvc)
+	audioGenSvc := audiogen.NewService(authStore, uiSettingsSvc, modelSvc)
+	toolRuntime.SetManagedAudioGenerationService(audioGenSvc)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)

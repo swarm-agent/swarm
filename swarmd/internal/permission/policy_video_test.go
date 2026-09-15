@@ -42,4 +42,10 @@ func TestManageVideoDefaultPreservesExplicitRestrictions(t *testing.T) {
 	if got := ExplainPolicy("auto", "manage_artifact", `{"action":"generate_video"}`, DefaultPolicy()); got.Decision != PolicyDecisionAsk {
 		t.Fatalf("video generation approval changed: %s", got.Decision)
 	}
+	if got := ExplainPolicy("auto", "manage_artifact", `{"action":"generate_audio"}`, DefaultPolicy()); got.Decision != PolicyDecisionAsk {
+		t.Fatalf("audio generation approval changed: %s", got.Decision)
+	}
+	if requirement := authorizationRequirement("auto", "manage_artifact", `{"action":"generate_audio"}`); requirement != "manage_artifact_generate_audio" {
+		t.Fatalf("audio generation requirement = %q, want manage_artifact_generate_audio", requirement)
+	}
 }
