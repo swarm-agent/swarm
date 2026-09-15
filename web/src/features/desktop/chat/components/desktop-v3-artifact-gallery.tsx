@@ -16,6 +16,7 @@ import {
   Maximize2,
   MessageSquarePlus,
   Minimize2,
+  Music,
   Pause,
   Play,
   Search,
@@ -1424,7 +1425,7 @@ export function DesktopV3ArtifactGallery({
                   }}
                   className={cn(
                     'relative h-full min-h-0 min-w-0',
-                    selected.mediaType.startsWith('image/') || selected.mediaType.startsWith('video/') || selected.kind === 'video' || selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'overflow-hidden' : 'overflow-auto',
+                    selected.mediaType.startsWith('image/') || selected.mediaType.startsWith('video/') || selected.kind === 'video' || selected.mediaType.startsWith('audio/') || selected.kind === 'audio' || selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'overflow-hidden' : 'overflow-auto',
                     selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'p-0' : 'p-3 sm:p-4',
                     studioModeActive && !previewFullscreen && 'overflow-x-hidden md:pl-72 xl:pl-80',
                     previewFullscreen && 'h-[100dvh] w-[100dvw] flex-none bg-[var(--app-bg-alt)]',
@@ -1535,6 +1536,29 @@ export function DesktopV3ArtifactGallery({
                   {!previewLoading && !previewError && !selected.previewable && selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img key={`${previewURL}:${previewRetry}`} src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" onError={() => setPreviewError('The browser could not decode or load this image.')} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video key={`${previewURL}:${previewRetry}`} src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player onError={() => setPreviewError('The browser could not decode or load this video.')} /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && (selected.mediaType.startsWith('audio/') || selected.kind === 'audio') && previewURL ? (
+                    <div className="grid size-full min-h-0 place-items-center bg-[var(--app-surface)] p-6 sm:p-10 rounded-lg border border-[var(--app-border)] shadow-sm">
+                      <div className="flex w-full max-w-lg flex-col items-center gap-4 text-center">
+                        <div className="grid size-16 place-items-center rounded-2xl bg-[var(--app-primary-soft)] text-[var(--app-primary)] shadow-inner">
+                          <Music className="size-8" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0 max-w-full">
+                          <h3 className="truncate text-sm font-semibold">{selected.label || selected.filename || 'Audio clip'}</h3>
+                          {selected.description ? <p className="mt-1 line-clamp-2 text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}
+                        </div>
+                        <audio
+                          key={`${previewURL}:${previewRetry}`}
+                          src={previewURL}
+                          controls
+                          autoPlay={false}
+                          preload="metadata"
+                          className="w-full"
+                          data-artifact-audio-player
+                          onError={() => setPreviewError('The browser could not decode or load this audio.')}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? <iframe ref={animationFrameRef} key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onLoad={() => requestIterationDescription(artifactSelectionKey(selected))} onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} /> : null}
                   {iterationDescriptor && !previewLoading && !previewError && !previewFullscreen ? <button type="button" className="absolute bottom-3 left-1/2 z-20 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-white/20 bg-black/75 px-4 text-xs font-semibold text-white shadow-lg backdrop-blur hover:bg-black/90 md:left-[calc(50%+9rem)] xl:left-[calc(50%+10rem)]" aria-label={iterationPlaying ? 'Pause animated artifact' : `Play animated artifact from ${iterationSection?.label || 'current position'}`} onClick={playIterationSection} data-artifact-primary-playback>{iterationPlaying ? <Pause size={15} /> : <Play size={15} />}{iterationPlaying ? 'Pause' : iterationTimeMs > 0 ? `Play from ${iterationSection?.label || 'here'}` : 'Play animation'}</button> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onError={() => setPreviewError('The browser could not load this PDF.')} /> : null}

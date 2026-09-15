@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState, type FocusEvent, type MouseEvent } from 'react'
-import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, TriangleAlert } from 'lucide-react'
+import { FileText, GalleryHorizontal, Loader2, Maximize2, MessageSquarePlus, Music, TriangleAlert } from 'lucide-react'
 
 import { cn } from '../../../../lib/cn'
 import {
@@ -188,13 +188,17 @@ const DesktopV3ArtifactThumbnail = memo(function DesktopV3ArtifactThumbnail({ ar
     return () => controller.abort()
   }, [artifact.animationProfile, artifact.artifactId, artifact.mediaType, artifact.previewable, artifact.sessionId, artifact.status, previewEnabled])
 
-  let thumbnail = <FileText className="size-5 text-[var(--app-text-muted)]" aria-hidden="true" />
+  const isAudio = artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio'
+  let thumbnail = isAudio
+    ? <Music className="size-5 text-[var(--app-text-muted)]" aria-label="Audio artifact" data-artifact-audio-indicator />
+    : <FileText className="size-5 text-[var(--app-text-muted)]" aria-hidden="true" />
   if (artifact.status === 'staging') thumbnail = <Loader2 className="size-5 motion-safe:animate-spin motion-reduce:animate-none text-[var(--app-primary)]" aria-label="Generating artifact" />
   else if (artifact.status === 'failed' || artifact.status === 'unavailable' || failed) thumbnail = <TriangleAlert className="size-5 text-[var(--app-danger)]" aria-label="Artifact unavailable" />
   else if (previewEnabled && artifact.mediaType.startsWith('image/') && previewURL) thumbnail = <img src={previewURL} alt="" className="size-full object-contain" onError={() => { setFailed(true); setPreviewURL('') }} />
   else if (previewEnabled && (!artifact.animationProfile || artifact.animationProfile.profileId === 'final_render') && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && previewURL) thumbnail = <video src={previewURL} muted playsInline preload="metadata" className="size-full object-contain bg-black" onError={() => { setFailed(true); setPreviewURL('') }} />
   else if (previewEnabled && artifact.mediaType === 'text/html' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none absolute left-0 top-0 size-[400%] origin-top-left scale-25 border-0 bg-white" onError={() => { setFailed(true); setPreviewURL('') }} />
   else if (previewEnabled && artifact.mediaType === 'application/pdf' && previewURL) thumbnail = <iframe title={`${artifact.label} thumbnail`} src={previewURL} sandbox="" referrerPolicy="no-referrer" tabIndex={-1} className="pointer-events-none size-full border-0 bg-white" onError={() => { setFailed(true); setPreviewURL('') }} />
+  else if (isAudio) thumbnail = <Music className="size-5 text-[var(--app-text-muted)]" aria-label="Audio artifact" data-artifact-audio-indicator />
 
   return <span ref={previewRef} className="relative grid size-full place-items-center overflow-hidden" data-artifact-live-preview={previewEnabled && exclusive ? true : undefined} data-artifact-preview-visible={previewEnabled || undefined} data-artifact-animation-profile={artifact.animationProfile?.profileId} data-artifact-animation-active={previewEnabled && Boolean(artifact.animationProfile) || undefined}>{thumbnail}</span>
 }, sidebarArtifactThumbnailEqual)
@@ -505,7 +509,18 @@ export function DesktopV3ArtifactSidebar({
                 </a>
                 {iterationGroup ? <button type="button" className="flex w-full items-center justify-between gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-3 py-2 text-left text-[10px] hover:bg-[var(--app-surface-hover)]" onClick={() => onOpenArtifact(iterationGroup.target, iterationGroup.partId, group.key)} data-artifact-sidebar-iteration-group={group.key}><span className="min-w-0 truncate font-semibold">{iterationGroup.partLabel ? `${iterationGroup.partLabel} iterations` : 'Initial iterations'}</span><span className="shrink-0 text-[var(--app-text-subtle)]">{iterationGroup.iterationCount} grouped</span></button> : compactRows ? <details className="border-b border-[var(--app-border)]" open={group.section === 'documents'} data-artifact-sidebar-compact-group={group.section}>
                   <summary className="cursor-pointer px-3 py-1.5 text-[10px] font-semibold text-[var(--app-text-muted)]">{group.section === 'supporting' ? 'Show supporting render assets' : 'Session documents'}</summary>
-                  <div className="grid divide-y divide-[var(--app-border)]">{group.entries.map((artifact) => <a key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} href={artifactHref(artifact)} className="flex min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} data-artifact-sidebar-document-row={group.section === 'documents' || undefined} data-artifact-sidebar-supporting-row={group.section === 'supporting' || undefined}><FileText className="size-3.5 shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" /><span className="min-w-0 flex-1"><span className="block truncate text-[10px] font-semibold">{artifact.filename || artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.label !== artifact.filename ? artifact.label : artifact.mediaType}</span></span></a>)}</div>
+                  <div className="grid divide-y divide-[var(--app-border)]">{group.entries.map((artifact) => {
+                    const isAudio = artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio'
+                    return (
+                      <a key={`${artifact.sessionId}:${artifact.collectionId ?? ''}:${artifact.artifactId}`} href={artifactHref(artifact)} className="flex min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={(event: MouseEvent<HTMLAnchorElement>) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenArtifact(artifact) }} data-artifact-sidebar-document-row={group.section === 'documents' || undefined} data-artifact-sidebar-supporting-row={group.section === 'supporting' || undefined}>
+                        {isAudio ? <Music className="size-3.5 shrink-0 text-[var(--app-text-muted)]" aria-label="Audio artifact" data-artifact-audio-indicator /> : <FileText className="size-3.5 shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />}
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[10px] font-semibold">{artifact.filename || artifact.label}</span>
+                          <span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.label !== artifact.filename ? artifact.label : artifact.mediaType}</span>
+                        </span>
+                      </a>
+                    )
+                  })}</div>
                 </details> : iterationGroup ? null : storyboard ? <div className="grid gap-2 border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" aria-label="Storyboard proposal" data-artifact-sidebar-storyboard>
                   <section className="overflow-hidden rounded-lg border border-[var(--app-primary)] bg-[var(--app-surface)]">
                     <button type="button" className="flex w-full items-center justify-between gap-2 px-2 py-1.5 text-left hover:bg-[var(--app-surface-hover)]" onClick={() => onOpenArtifact(openTarget, openPartId)}>
@@ -574,7 +589,7 @@ export function DesktopV3ArtifactSidebar({
                         <span className="relative grid h-20 place-items-center overflow-hidden"><DesktopV3ArtifactThumbnail artifact={artifact} live={sidebarArtifactPreviewKey(artifact) === livePreviewKey} /></span>
                         <span className="block min-w-0 px-2 py-1.5"><span className="block truncate text-[10px] font-semibold">{artifact.lineage?.iterationIndex ? `${artifact.lineage.iterationIndex}. ${artifact.lineage.iterationLabel || artifact.lineage.iterationTheme || artifact.label}` : artifact.label}</span><span className="block truncate text-[9px] text-[var(--app-text-subtle)]">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : grouped ? `Iteration ${artifact.lineage?.iterationIndex || index + 1}` : artifact.kind || artifact.mediaType}</span></span>
                       </a>
-                      {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Attach ${artifact.label} for chat changes`} title={artifact.mediaType.startsWith('image/') ? 'Attach to chat for remixing' : (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') ? 'Attach video to chat for swarming/iteration' : 'Attach to chat'} onClick={() => onAddToChat([desktopV3ArtifactMessageSelection(artifact, 'select')])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
+                      {onAddToChat && artifact.status === 'ready' && artifact.collectionId && (artifact.eventSeq ?? 0) > 0 ? <button type="button" className="absolute right-1 top-1 grid size-7 place-items-center rounded-md bg-[var(--app-primary)] text-white opacity-0 shadow-md transition hover:opacity-90 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white" aria-label={`Attach ${artifact.label} for chat changes`} title={artifact.mediaType.startsWith('image/') ? 'Attach to chat for remixing' : (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') ? 'Attach video to chat for swarming/iteration' : (artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio') ? 'Attach audio to chat' : 'Attach to chat'} onClick={() => onAddToChat([desktopV3ArtifactMessageSelection(artifact, 'select')])}><MessageSquarePlus size={13} aria-hidden="true" /></button> : null}
                     </div>
                   ))}
                 </div>}

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { FileText, Loader2 } from 'lucide-react'
+import { FileText, Loader2, Music } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import {
   fetchDesktopV3ArtifactPreviewAccess,
@@ -131,6 +131,8 @@ export function DesktopV3ArtifactPreviewThumbnail({
     || artifact.mediaType === 'image/svg+xml'
     || artifact.mediaType.startsWith('video/')
     || artifact.kind === 'video'
+    || artifact.mediaType.startsWith('audio/')
+    || artifact.kind === 'audio'
   const animationCanvasStyle = artifact.animationProfile
     ? { maxWidth: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels), maxHeight: Math.sqrt(artifact.animationProfile.budgets.maxCanvasPixels) }
     : undefined
@@ -179,6 +181,7 @@ export function DesktopV3ArtifactPreviewThumbnail({
   const hasImagePreview = previewActive && artifact.mediaType.startsWith('image/') && Boolean(previewURL)
   const videoProfileCompatible = !artifact.animationProfile || artifact.animationProfile.profileId === 'final_render'
   const hasVideoPreview = previewActive && videoProfileCompatible && (artifact.mediaType.startsWith('video/') || artifact.kind === 'video') && Boolean(previewURL)
+  const hasAudioPreview = previewActive && (artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio') && Boolean(previewURL)
   const hasPDFPreview = previewActive && artifact.mediaType === 'application/pdf' && Boolean(previewURL)
   const hasTextPreview = previewActive && (artifact.mediaType === 'text/markdown' || artifact.mediaType === 'text/plain') && Boolean(previewText)
 
@@ -238,6 +241,22 @@ export function DesktopV3ArtifactPreviewThumbnail({
           onError={() => { setFailed(true); setPreviewURL('') }}
         />
       ) : null}
+      {!loading && hasAudioPreview ? (
+        <div className="flex size-full flex-col items-center justify-center gap-2 bg-[var(--app-surface)] p-3" data-artifact-audio-container>
+          <div className="flex items-center gap-2 text-[var(--app-primary)]">
+            <Music className="size-4 shrink-0" aria-hidden="true" />
+            <span className="max-w-44 truncate text-[11px] font-medium text-[var(--app-text)]">{artifact.label || 'Audio track'}</span>
+          </div>
+          <audio
+            src={previewURL}
+            controls
+            preload="metadata"
+            className="w-full max-w-full"
+            data-artifact-audio-preview
+            onError={() => { setFailed(true); setPreviewURL('') }}
+          />
+        </div>
+      ) : null}
       {!loading && hasPDFPreview ? (
         <iframe
           title={`${artifact.label} preview`}
@@ -255,10 +274,14 @@ export function DesktopV3ArtifactPreviewThumbnail({
           {previewText}
         </pre>
       ) : null}
-      {!loading && !hasHTMLPreview && !hasImagePreview && !hasVideoPreview && !hasPDFPreview && !hasTextPreview ? (
+      {!loading && !hasHTMLPreview && !hasImagePreview && !hasVideoPreview && !hasAudioPreview && !hasPDFPreview && !hasTextPreview ? (
         <div className="grid size-full place-items-center text-center text-[var(--app-text-muted)]">
           <div>
-            <FileText className="mx-auto size-6" aria-hidden="true" />
+            {(artifact.mediaType.startsWith('audio/') || artifact.kind === 'audio') ? (
+              <Music className="mx-auto size-6 text-[var(--app-text-muted)]" aria-hidden="true" />
+            ) : (
+              <FileText className="mx-auto size-6" aria-hidden="true" />
+            )}
             <div className="mt-2 text-[10px]">{failed ? 'Preview unavailable' : artifact.mediaType || 'Artifact'}</div>
           </div>
         </div>

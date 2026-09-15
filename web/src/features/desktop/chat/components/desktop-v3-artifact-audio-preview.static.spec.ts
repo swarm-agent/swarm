@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import test from 'node:test'
+
+const galleryURL = new URL('./desktop-v3-artifact-gallery.tsx', import.meta.url)
+const thumbnailURL = new URL('./desktop-v3-artifact-preview-thumbnail.tsx', import.meta.url)
+const sidebarURL = new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url)
+
+test('gallery renders native HTML5 audio controls for audio/* media types', async () => {
+  const gallery = await readFile(galleryURL, 'utf8')
+
+  // Verifies Lucide Music icon is imported
+  assert.match(gallery, /import\s*\{[\s\S]*?\bMusic\b[\s\S]*?\}\s*from\s*'lucide-react'/)
+
+  // Verifies audio media type or kind checks
+  assert.match(gallery, /selected\.mediaType\.startsWith\('audio\/'\)\s*\|\|\s*selected\.kind\s*===\s*'audio'/)
+
+  // Verifies HTML5 <audio controls> with key, src, preload, and data attribute
+  assert.match(gallery, /<audio\s+key=\{`\$\{previewURL\}:\$\{previewRetry\}`\}\s+src=\{previewURL\}\s+controls\s+autoPlay=\{false\}\s+preload="metadata"\s+className="w-full"\s+data-artifact-audio-player/)
+
+  // Verifies error handling
+  assert.match(gallery, /onError=\{\(\)\s*=>\s*setPreviewError\('The browser could not decode or load this audio\.'\)\}/)
+})
+
+test('preview thumbnail renders audio controls and interactive preview for audio/* media types', async () => {
+  const thumbnail = await readFile(thumbnailURL, 'utf8')
+
+  // Verifies Lucide Music icon is imported
+  assert.match(thumbnail, /import\s*\{[\s\S]*?\bMusic\b[\s\S]*?\}\s*from\s*'lucide-react'/)
+
+  // Verifies interactivePreview marks audio as interactive
+  assert.match(thumbnail, /artifact\.mediaType\.startsWith\('audio\/'\)\s*\|\|\s*artifact\.kind\s*===\s*'audio'/)
+
+  // Verifies hasAudioPreview checks previewActive and previewURL
+  assert.match(thumbnail, /const hasAudioPreview\s*=\s*previewActive\s*&&\s*\(artifact\.mediaType\.startsWith\('audio\/'\)\s*\|\|\s*artifact\.kind\s*===\s*'audio'\)\s*&&\s*Boolean\(previewURL\)/)
+
+  // Verifies HTML5 <audio controls> with preload and data attribute
+  assert.match(thumbnail, /<audio\s+src=\{previewURL\}\s+controls\s+preload="metadata"\s+className="w-full max-w-full"\s+data-artifact-audio-preview/)
+
+  // Verifies Music icon is shown in audio container and fallback
+  assert.match(thumbnail, /data-artifact-audio-container/)
+  assert.match(thumbnail, /<Music\s+className="size-4 shrink-0"\s+aria-hidden="true"\s*\/>/)
+})
+
+test('sidebar renders Music icon indicators for audio/* media types', async () => {
+  const sidebar = await readFile(sidebarURL, 'utf8')
+
+  // Verifies Lucide Music icon is imported
+  assert.match(sidebar, /import\s*\{[\s\S]*?\bMusic\b[\s\S]*?\}\s*from\s*'lucide-react'/)
+
+  // Verifies thumbnail shows Music icon indicator
+  assert.match(sidebar, /const isAudio\s*=\s*artifact\.mediaType\.startsWith\('audio\/'\)\s*\|\|\s*artifact\.kind\s*===\s*'audio'/)
+  assert.match(sidebar, /<Music\s+className="size-5 text-\[var\(--app-text-muted\)\]"\s+aria-label="Audio artifact"\s+data-artifact-audio-indicator\s*\/>/)
+
+  // Verifies compact document rows show Music icon indicator for audio
+  assert.match(sidebar, /<Music\s+className="size-3\.5 shrink-0 text-\[var\(--app-text-muted\)\]"\s+aria-label="Audio artifact"\s+data-artifact-audio-indicator\s*\/>/)
+
+  // Verifies attach tooltip distinguishes audio
+  assert.match(sidebar, /Attach audio to chat/)
+})
