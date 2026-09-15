@@ -154,6 +154,45 @@ func (s *Server) EnqueueSessionDeployRun(principal identity.Principal, sessionID
 	return s.v3SessionExecutor.EnqueueRun(sessionV3DeployExecutorJob(principal, sessionID, runID, parentSessionID))
 }
 
+func (s *Server) EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool {
+	if s == nil || s.v3SessionExecutor == nil {
+		return false
+	}
+	return s.v3SessionExecutor.EnqueueRun(sessionV3DeployExecutorJob(principal, sessionID, runID, parentSessionID))
+}
+
+func (s *Server) CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error) {
+	if s == nil || s.v3SessionExecutor == nil {
+		return false, errors.New("sessions v3 executor is not configured")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if runID == "" && s.sessions != nil {
+		if active, ok, err := s.sessions.GetSessionActiveRunIntent(sessionID); err == nil && ok && (active.Status == pebblestore.V3RunIntentRunning || active.Status == pebblestore.V3RunIntentPendingExecutor) {
+			runID = strings.TrimSpace(active.RunID)
+		}
+	}
+	if runID == "" {
+		return false, nil
+	}
+	if reason == "" {
+		reason = "stopped by manage-sessions"
+	}
+	result, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{
+		Principal: principal,
+		SessionID: sessionID,
+		RunID:     runID,
+	}, reason)
+	if err != nil {
+		return false, err
+	}
+	if s.perm != nil {
+		_, _ = s.perm.CancelRunPending(sessionID, runID, reason)
+	}
+	_ = result
+	return cancelled, nil
+}
+
 func sessionV3DeployExecutorJob(principal identity.Principal, sessionID, runID, parentSessionID string) sessionV3ExecutorJob {
 	return sessionV3ExecutorJob{
 		Principal:       principal,

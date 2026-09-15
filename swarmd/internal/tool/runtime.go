@@ -192,6 +192,13 @@ type Runtime struct {
 	searchCoordinator     *SearchCoordinator
 	focusedPartMu         sync.Mutex
 	focusedPartProtocols  map[string]focusedPartProtocolState
+	sessionController     manageSessionController
+}
+
+type manageSessionController interface {
+	CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error)
+	EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool
+	CompactSession(ctx context.Context, principal identity.Principal, sessionID, note string) (map[string]any, error)
 }
 
 type ExaRuntimeConfig struct {
@@ -722,6 +729,12 @@ func (r *Runtime) SetManageSessionService(sessions manageSessionService) {
 func (r *Runtime) SetManageSessionRealtimePublisher(publish func(pebblestore.V3RealtimeOutboxRecord) error) {
 	if r != nil {
 		r.publishSessionOutbox = publish
+	}
+}
+
+func (r *Runtime) SetManageSessionController(controller manageSessionController) {
+	if r != nil {
+		r.sessionController = controller
 	}
 }
 

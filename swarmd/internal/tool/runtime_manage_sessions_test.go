@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -266,6 +267,73 @@ func (s *gitManageSessionService) ListSessionMessages(id string, afterSeq uint64
 		}
 	}
 	return out, nil
+}
+
+func (s *gitManageSessionService) ApplySessionMutation(input pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	if s.sessions == nil {
+		s.sessions = make(map[string]pebblestore.SessionSnapshot)
+	}
+	if s.messages == nil {
+		s.messages = make(map[string][]pebblestore.MessageSnapshot)
+	}
+	if s.runStates == nil {
+		s.runStates = make(map[string]pebblestore.V3SessionRunState)
+	}
+	switch input.Kind {
+	case pebblestore.V3SessionMutationCreateSession:
+		if input.Session != nil {
+			s.sessions[input.SessionID] = *input.Session
+		}
+		return pebblestore.V3SessionMutationResult{SessionID: input.SessionID, Session: input.Session}, nil
+	case pebblestore.V3SessionMutationAppendMessage:
+		if input.Message != nil {
+			s.messages[input.SessionID] = append(s.messages[input.SessionID], *input.Message)
+		}
+		if input.RunIntent != nil {
+			s.runStates[input.SessionID] = pebblestore.V3SessionRunState{
+				Active: input.RunIntent.Status == pebblestore.V3RunIntentRunning || input.RunIntent.Status == pebblestore.V3RunIntentPendingExecutor,
+				RunID:  input.RunIntent.RunID,
+				Status: input.RunIntent.Status,
+			}
+		}
+		return pebblestore.V3SessionMutationResult{SessionID: input.SessionID, Message: input.Message, RunIntent: input.RunIntent}, nil
+	case pebblestore.V3SessionMutationRecordRunIntent:
+		if input.RunIntent != nil {
+			s.runStates[input.SessionID] = pebblestore.V3SessionRunState{
+				Active: input.RunIntent.Status == pebblestore.V3RunIntentRunning || input.RunIntent.Status == pebblestore.V3RunIntentPendingExecutor,
+				RunID:  input.RunIntent.RunID,
+				Status: input.RunIntent.Status,
+			}
+		}
+		return pebblestore.V3SessionMutationResult{SessionID: input.SessionID, RunIntent: input.RunIntent}, nil
+	}
+	return pebblestore.V3SessionMutationResult{SessionID: input.SessionID}, nil
+}
+
+type mockSessionController struct {
+	cancelCalls   []string
+	enqueueCalls  []string
+	compactCalls  []string
+	cancelResult  bool
+	compactResult map[string]any
+}
+
+func (m *mockSessionController) CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error) {
+	m.cancelCalls = append(m.cancelCalls, sessionID+":"+runID+":"+reason)
+	return m.cancelResult, nil
+}
+
+func (m *mockSessionController) EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool {
+	m.enqueueCalls = append(m.enqueueCalls, sessionID+":"+runID)
+	return true
+}
+
+func (m *mockSessionController) CompactSession(ctx context.Context, principal identity.Principal, sessionID, note string) (map[string]any, error) {
+	m.compactCalls = append(m.compactCalls, sessionID+":"+note)
+	if m.compactResult != nil {
+		return m.compactResult, nil
+	}
+	return map[string]any{"compacted": true, "session_id": sessionID}, nil
 }
 
 func (s *gitManageSessionService) ListSessionMessagesBefore(id string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error) {
@@ -927,5 +995,280 @@ func TestManageSessionsSearchSessionScoped(t *testing.T) {
 	}
 	if res.Matches[0].Seq != 10 && res.Matches[1].Seq != 20 {
 		t.Fatalf("unexpected matches: %v", res.Matches)
+	}
+}
+
+func TestManageSessionsCreateSessionWithPromptAndNavigation(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	workDir := t.TempDir()
+	service := &gitManageSessionService{
+		sessions: make(map[string]pebblestore.SessionSnapshot),
+		messages: make(map[string][]pebblestore.MessageSnapshot),
+	}
+	controller := &mockSessionController{}
+	runtime := &Runtime{sessions: service, sessionController: controller}
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{
+		Principal:   principal,
+		PrimaryPath: workDir,
+		Roots:       []string{workDir},
+	}, map[string]any{
+		"action":         "create",
+		"title":          "Worker Session",
+		"workspace_path": workDir,
+		"prompt":         "Analyze repository layout",
+	})
+	if err != nil {
+		t.Fatalf("create session failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if res["action"] != "create" || res["status"] != "queued" {
+		t.Fatalf("unexpected create response: %v", res)
+	}
+	sessionID, ok := res["session_id"].(string)
+	if !ok || sessionID == "" {
+		t.Fatalf("missing session_id in create response: %v", res)
+	}
+	if res["title"] != "Worker Session" || res["workspace_path"] != workDir {
+		t.Fatalf("unexpected metadata in create response: %v", res)
+	}
+	nav, ok := res["navigation"].(map[string]any)
+	if !ok || nav["kind"] != "session" || nav["session_id"] != sessionID {
+		t.Fatalf("unexpected navigation in create response: %v", res)
+	}
+	// Verify session was stored
+	stored, exists := service.sessions[sessionID]
+	if !exists || stored.Title != "Worker Session" {
+		t.Fatalf("session was not saved in store: %+v", stored)
+	}
+	// Verify prompt message was stored
+	msgs := service.messages[sessionID]
+	if len(msgs) != 1 || msgs[0].Content != "Analyze repository layout" || msgs[0].Role != "user" {
+		t.Fatalf("initial message was not stored: %+v", msgs)
+	}
+	// Verify run was enqueued
+	if len(controller.enqueueCalls) != 1 {
+		t.Fatalf("expected 1 enqueue call, got %d", len(controller.enqueueCalls))
+	}
+}
+
+func TestManageSessionsStopActiveRun(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"target": {
+				ID:             "target",
+				Title:          "Running Session",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/main",
+			},
+		},
+		runStates: map[string]pebblestore.V3SessionRunState{
+			"target": {
+				Active: true,
+				RunID:  "run-target-1",
+				Status: "running",
+			},
+		},
+	}
+	controller := &mockSessionController{cancelResult: true}
+	runtime := &Runtime{sessions: service, sessionController: controller}
+	// Stop via action: "stop"
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "stop",
+		"session_id": "target",
+		"reason":     "operator pause",
+	})
+	if err != nil {
+		t.Fatalf("stop failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res["status"] != "cancelled" || res["run_id"] != "run-target-1" {
+		t.Fatalf("unexpected stop response: %v", res)
+	}
+	if len(controller.cancelCalls) != 1 || controller.cancelCalls[0] != "target:run-target-1:operator pause" {
+		t.Fatalf("unexpected cancel calls: %v", controller.cancelCalls)
+	}
+
+	// Test pause alias
+	outputPause, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "pause",
+		"session_id": "target",
+	})
+	if err != nil {
+		t.Fatalf("pause alias failed: %v", err)
+	}
+	var resPause map[string]any
+	if err := json.Unmarshal([]byte(outputPause), &resPause); err != nil {
+		t.Fatalf("decode pause: %v", err)
+	}
+	if resPause["status"] != "cancelled" {
+		t.Fatalf("unexpected pause response: %v", resPause)
+	}
+
+	// Test stopping session without active run
+	delete(service.runStates, "target")
+	outputInactive, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "stop",
+		"session_id": "target",
+	})
+	if err != nil {
+		t.Fatalf("stop inactive failed: %v", err)
+	}
+	var resInactive map[string]any
+	if err := json.Unmarshal([]byte(outputInactive), &resInactive); err != nil {
+		t.Fatalf("decode inactive: %v", err)
+	}
+	if resInactive["status"] != "not_running" {
+		t.Fatalf("expected status=not_running, got %v", resInactive)
+	}
+}
+
+func TestManageSessionsSendMessageAndResponseWait(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"worker-session": {
+				ID:             "worker-session",
+				Title:          "Worker",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/main",
+			},
+		},
+		messages: make(map[string][]pebblestore.MessageSnapshot),
+	}
+	controller := &mockSessionController{}
+	runtime := &Runtime{sessions: service, sessionController: controller}
+
+	// 1. Immediate send_message (wait_seconds: 0)
+	output1, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "send_message",
+		"session_id": "worker-session",
+		"prompt":     "Hello worker",
+	})
+	if err != nil {
+		t.Fatalf("send_message failed: %v", err)
+	}
+	var res1 map[string]any
+	if err := json.Unmarshal([]byte(output1), &res1); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res1["status"] != "queued" || res1["action"] != "send_message" {
+		t.Fatalf("unexpected queued response: %v", res1)
+	}
+	if len(service.messages["worker-session"]) != 1 {
+		t.Fatalf("message was not stored: %v", service.messages["worker-session"])
+	}
+
+	// 2. Reject sending message while session is already running
+	service.runStates = map[string]pebblestore.V3SessionRunState{
+		"worker-session": {Active: true, RunID: "run-busy", Status: "running"},
+	}
+	_, errBusy := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "send_message",
+		"session_id": "worker-session",
+		"prompt":     "another message",
+	})
+	if errBusy == nil || !strings.Contains(errBusy.Error(), "currently running") {
+		t.Fatalf("expected busy error, got %v", errBusy)
+	}
+
+	// 3. Send message with wait_seconds > 0 that completes
+	delete(service.runStates, "worker-session")
+	// simulate background assistant response
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		service.messages["worker-session"] = append(service.messages["worker-session"], pebblestore.MessageSnapshot{
+			ID:        "msg-assistant-1",
+			SessionID: "worker-session",
+			Role:      "assistant",
+			Content:   "I have completed the task!",
+			CreatedAt: time.Now().UnixMilli() + 10,
+		})
+		service.runStates["worker-session"] = pebblestore.V3SessionRunState{
+			Active: false,
+			Status: "completed",
+		}
+	}()
+
+	outputWait, errWait := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":       "send_message",
+		"session_id":   "worker-session",
+		"prompt":       "Please execute tests",
+		"wait_seconds": 2,
+	})
+	if errWait != nil {
+		t.Fatalf("send_message with wait failed: %v", errWait)
+	}
+	var resWait map[string]any
+	if err := json.Unmarshal([]byte(outputWait), &resWait); err != nil {
+		t.Fatalf("decode wait: %v", err)
+	}
+	if resWait["status"] != "completed" || resWait["response"] != "I have completed the task!" {
+		t.Fatalf("expected completed response with assistant output, got %v", resWait)
+	}
+}
+
+func TestManageSessionsCompactSession(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"compact-session": {
+				ID:             "compact-session",
+				Title:          "Long Conversation",
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				WorkspacePath:  "/work/main",
+			},
+		},
+	}
+	controller := &mockSessionController{
+		compactResult: map[string]any{
+			"summary":       "Summarized 50 messages",
+			"compact_index": 2,
+		},
+	}
+	runtime := &Runtime{sessions: service, sessionController: controller}
+
+	output, err := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":          "compact",
+		"session_id":      "compact-session",
+		"compact_handoff": "Retain key facts and decisions",
+	})
+	if err != nil {
+		t.Fatalf("compact failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res["status"] != "completed" || res["action"] != "compact" {
+		t.Fatalf("unexpected compact response: %v", res)
+	}
+	compaction, ok := res["compaction"].(map[string]any)
+	if !ok || compaction["summary"] != "Summarized 50 messages" {
+		t.Fatalf("unexpected compaction payload: %v", res["compaction"])
+	}
+	if len(controller.compactCalls) != 1 || controller.compactCalls[0] != "compact-session:Retain key facts and decisions" {
+		t.Fatalf("unexpected compact calls: %v", controller.compactCalls)
+	}
+
+	// Reject compact on running session
+	service.runStates = map[string]pebblestore.V3SessionRunState{
+		"compact-session": {Active: true, RunID: "run-active", Status: "running"},
+	}
+	_, errRunning := runtime.executeManageSessions(context.Background(), WorkspaceScope{Principal: principal}, map[string]any{
+		"action":     "compact",
+		"session_id": "compact-session",
+	})
+	if errRunning == nil || !strings.Contains(errRunning.Error(), "currently running") {
+		t.Fatalf("expected running error, got %v", errRunning)
 	}
 }

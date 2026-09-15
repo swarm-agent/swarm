@@ -1732,3 +1732,20 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Authored focused unit tests in `swarmd/internal/tool/runtime_manage_sessions_test.go`: `TestManageSessionsGetArchivedSessionSucceeds`, `TestManageSessionsGetEnrichesOverwatchDetails`, `TestManageSessionsReadMessagesModeAfterUsesV3Store`, `TestManageSessionsSearchSessionScoped`.
   - Authored `TestSearchV3SessionsSmartStopWords` in `swarmd/internal/store/pebble/session_search_test.go`.
   - All 25 manage-sessions tool tests and all 6 Pebble session search tests pass.
+
+### Manage-Sessions Autonomous Control: Create, Stop, Send Message, and Compact (2026-09-15)
+
+- **Session Control in `manage-sessions` Tool:**
+  - Extended `manage-sessions` action set with `create`, `stop`/`pause`, `send_message`, and `compact`.
+  - Added schema properties: `prompt`, `title`, `agent`, `wait_seconds`, `reason`, `trigger_run`, and `compact_handoff`.
+  - In `swarmd/internal/tool/runtime.go`, added `manageSessionController` interface (`CancelSessionRun`, `EnqueueSessionRun`, `CompactSession`) and wired it in `swarmd/internal/runtime/daemon.go` with `apiServer`.
+  - `create`: creates a new durable V3 session within authorized workspace scopes via `V3SessionMutationCreateSession` without forcing manual UI modals, and optionally sends an initial message and triggers execution.
+  - `stop` / `pause`: safely halts active execution runs on the target session via `sessionV3Executor.CancelRun` (or durable `V3SessionMutationRecordRunIntent` fallback), cancelling in-flight context and reconciling plan state.
+  - `send_message`: posts a user message to another session via `V3SessionMutationAppendMessage` and enqueues a run with `trigger_run: true`. Supports bounded polling with `wait_seconds` (up to 120s) to wait for the assistant response while handling long-running provider calls or tools, returning immediately if wait expires.
+  - `compact`: triggers canonical manual session compaction on an idle session via `Server.CompactSession` / `RunManualCompaction`.
+- **API Server & Runner Enhancements:**
+  - Added `Server.EnqueueSessionRun` and `Server.CancelSessionRun` in `swarmd/internal/api/sessions_v3_deploy_bridge.go`.
+  - Added `Server.CompactSession` in `swarmd/internal/api/sessions_v3_compact.go`.
+- **Validation:**
+  - Authored focused unit tests in `swarmd/internal/tool/runtime_manage_sessions_test.go`: `TestManageSessionsCreateSessionWithPromptAndNavigation`, `TestManageSessionsStopActiveRun`, `TestManageSessionsSendMessageAndResponseWait`, `TestManageSessionsCompactSession`.
+  - All 31 manage-sessions tool tests and all 6 Pebble session search tests pass.
