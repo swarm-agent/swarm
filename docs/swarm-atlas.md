@@ -1944,3 +1944,13 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Added unit test `TestWorkerV2ProviderDispatch` in `swarmd/internal/run/automation_v2_tools_test.go` verifying end-to-end `worker_v2` plan dispatch, `manage_workers` review execution, and schema validation.
   - Updated `swarmd/internal/agent/automation_test.go` asserting compiled `manage_workers` capability.
   - Verified with `(cd swarmd && go test ./internal/run -run 'TestAutomationV2|TestWorkerV2')`, `(cd swarmd && go test ./internal/agent -run TestAutomationPrimaryCapability)`, `(cd swarmd && go test ./internal/tool -run Automation)`, `bash scripts/run-critical-tests.sh fast`, `bash scripts/run-critical-tests.sh agents`, `(cd web && node ./node_modules/typescript/bin/tsc -b)`, `npm --prefix web run build`, and 53 web component unit specs.
+
+### Legacy Automation V2 Document Digest Compatibility Fix (2026-09-16)
+
+- **Digest Stability and Dual-Schema Integrity (`store/pebble/automation_v2.go`):**
+  - Corrected `AutomationV2DocumentDigest` to hash documents as-is without mutating `WorkerV2` / `AutomationV2` in place. Mutating `WorkerV2 = AutomationV2` altered the serialized JSON of pre-existing automations stored in Pebble, causing recalculation of document digests (`p.Digest`) during `ListAutomationV2Records` and background `Sweep` (`GetAutomationV2Record`) to produce mismatched hashes and throw `ErrAutomationV2Conflict` ("automation v2 ownership or review conflict").
+  - In `validateAutomationV2Integrity`, added backward-compatibility fallback checking if the stored digest was generated on a legacy document (where `worker_v2` was omitted) or worker-only document, preventing historical accepted records from breaking listing and scheduling sweeps across the workspace.
+  - In `ProposeAutomationV2`, preserved documents byte-exact when `AutomationV2` is provided, preventing `WorkerV2` injection from changing caller documents.
+- **Validation:**
+  - Added regression test `TestAutomationV2LegacyDocumentDigestCompatibility` in `swarmd/internal/store/pebble/automation_v2_test.go` verifying legacy documents retain valid digests and pass integrity checks through `ListAutomationV2Records` and `AcceptAutomationV2`.
+  - Verified `bash scripts/run-critical-tests.sh fast`, `deep`, and `agents`.

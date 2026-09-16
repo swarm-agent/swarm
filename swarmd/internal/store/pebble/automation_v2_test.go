@@ -513,3 +513,76 @@ func fixtureAutomationV2Validator(doc *SessionPlanDocument) error {
 	}
 	return nil
 }
+
+// Purpose: legacy Automation V2 records created before WorkerV2 support must retain valid
+// document digests and pass integrity checks during ListAutomationV2Records and GetAutomationV2Record.
+func TestAutomationV2LegacyDocumentDigestCompatibility(t *testing.T) {
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	if err = s.CreateSession(SessionSnapshot{ID: "legacy-session", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: w.Path, WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create legacy document where WorkerV2 is nil and digest was computed strictly without WorkerV2.
+	legacyDoc := SessionPlanDocument{
+		Title: "Legacy Automation",
+		Info:  SessionPlanInfo{Goal: "Do legacy work"},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID: "cp-1", Title: "Legacy Checkpoint", Objective: "Run check", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Done"},
+		}},
+		AutomationV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         AutomationV2Schedule{Kind: "interval", IntervalSeconds: 300},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+	}
+	p, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, "legacy-session", legacyDoc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("ProposeAutomationV2 failed for legacy proposal: %v", err)
+	}
+
+	accepted, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, "legacy-session", p.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("AcceptAutomationV2 failed for legacy proposal: %v", err)
+	}
+	if accepted.AutomationID == "" {
+		t.Fatal("empty automation_id on accepted record")
+	}
+
+	// ListAutomationV2Records must succeed and return the record without conflict error
+	records, _, err := s.ListAutomationV2Records("account", "owner", w.WorkspaceID, "", 20)
+	if err != nil {
+		t.Fatalf("ListAutomationV2Records failed with legacy record: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].SessionID != "legacy-session" {
+		t.Fatalf("unexpected record session_id: %s", records[0].SessionID)
+	}
+}

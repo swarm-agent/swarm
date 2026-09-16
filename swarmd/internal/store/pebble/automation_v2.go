@@ -146,12 +146,6 @@ func automationV2ID() (string, error) {
 	return fmt.Sprintf("av2_%x", b), nil
 }
 func AutomationV2DocumentDigest(doc SessionPlanDocument) (string, error) {
-	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
-		doc.AutomationV2 = doc.WorkerV2
-	}
-	if doc.WorkerV2 == nil && doc.AutomationV2 != nil {
-		doc.WorkerV2 = doc.AutomationV2
-	}
 	b, err := json.Marshal(doc)
 	if err != nil {
 		return "", err
@@ -285,9 +279,6 @@ func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, worksp
 	if p.Document.AutomationV2 == nil && p.Document.WorkerV2 != nil {
 		p.Document.AutomationV2 = p.Document.WorkerV2
 	}
-	if p.Document.WorkerV2 == nil && p.Document.AutomationV2 != nil {
-		p.Document.WorkerV2 = p.Document.AutomationV2
-	}
 	if p.AccountID != account || p.UserID != user || p.WorkspaceID != workspace || p.SessionID != id || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil {
 		return ErrAutomationV2Conflict
 	}
@@ -296,7 +287,30 @@ func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, worksp
 		return err
 	}
 	if digest != p.Digest {
+		if p.Document.WorkerV2 != nil {
+			legacyDoc := p.Document
+			legacyDoc.WorkerV2 = nil
+			if legacyDigest, legErr := AutomationV2DocumentDigest(legacyDoc); legErr == nil && legacyDigest == p.Digest {
+				if p.Document.WorkerV2 == nil && p.Document.AutomationV2 != nil {
+					p.Document.WorkerV2 = p.Document.AutomationV2
+				}
+				return nil
+			}
+		}
+		if p.Document.AutomationV2 != nil {
+			workerOnlyDoc := p.Document
+			workerOnlyDoc.AutomationV2 = nil
+			if workerDigest, wErr := AutomationV2DocumentDigest(workerOnlyDoc); wErr == nil && workerDigest == p.Digest {
+				if p.Document.AutomationV2 == nil && p.Document.WorkerV2 != nil {
+					p.Document.AutomationV2 = p.Document.WorkerV2
+				}
+				return nil
+			}
+		}
 		return ErrAutomationV2Conflict
+	}
+	if p.Document.WorkerV2 == nil && p.Document.AutomationV2 != nil {
+		p.Document.WorkerV2 = p.Document.AutomationV2
 	}
 	return nil
 }
@@ -309,9 +323,6 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 	}
 	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
 		doc.AutomationV2 = doc.WorkerV2
-	}
-	if doc.WorkerV2 == nil && doc.AutomationV2 != nil {
-		doc.WorkerV2 = doc.AutomationV2
 	}
 	if doc.AutomationV2 == nil || doc.Automation != nil {
 		return AutomationV2Proposal{}, ErrAutomationV2Conflict
