@@ -975,7 +975,13 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if job.RequestedSubagentType == "designer" {
 			job.OutputMode = launch.OutputMode
 		} else if len(ownedScope) == 0 {
-			return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
+			if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
+				ownedScope = []string{"docs/task-program-probes/**"}
+				job.OwnedScope = ownedScope
+				row["owned_scope"] = ownedScope
+			} else {
+				return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
+			}
 		}
 		criteria, err := taskProgramStringArray(row, "acceptance_criteria", fmt.Sprintf("task program jobs[%d] acceptance_criteria", i), true)
 		if err != nil {

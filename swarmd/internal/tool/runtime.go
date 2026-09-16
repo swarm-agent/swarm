@@ -1785,7 +1785,7 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 					"owned_scope":            map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs. " + taskscope.Guidance + " Workspace Designers require concrete paths without wildcard suffixes; program jobs cannot use whole-workspace sentinels."},
 					"acceptance_criteria":    map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
 					"dependency_evidence":    map[string]any{"type": "string", "minLength": 1},
-				}, "required": []string{"id", "stage_id", "agent_type", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": false},
+				}, "required": []string{"id", "stage_id", "agent_type", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence", "owned_scope"}, "additionalProperties": false},
 			},
 		},
 		"required":             []string{"id", "stages", "jobs"},
