@@ -5325,17 +5325,18 @@ export function DesktopAppPage() {
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                className="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary-text,white)] hover:opacity-90 disabled:opacity-50"
+                className="inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-2 text-xs font-semibold text-[var(--app-primary-text,white)] hover:opacity-90 disabled:opacity-50"
                 disabled={quickCommitIntegrateBusy}
                 onClick={() => void handleQuickCommitAndIntegrate()}
                 aria-label={`Confirm commit and integrate into ${activeSessionTargetBranch}`}
+                title={`Confirm commit and integrate into ${activeSessionTargetBranch}`}
               >
                 {quickCommitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
-                <span>{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : 'Confirm commit & integrate'}</span>
+                <span className="truncate">{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : 'Confirm'}</span>
               </button>
               <button
                 type="button"
-                className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border)] px-2 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"
+                className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border)] px-2.5 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"
                 disabled={quickCommitIntegrateBusy}
                 onClick={() => setQuickCommitIntegrateConfirming(false)}
               >
@@ -5345,13 +5346,14 @@ export function DesktopAppPage() {
           ) : (
             <button
               type="button"
-              className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 py-1.5 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50"
+              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50"
               disabled={quickCommitIntegrateBusy || gitCommitBusy || gitIntegrateBusy}
               onClick={() => setQuickCommitIntegrateConfirming(true)}
               aria-label={quickCommitIntegrateError ? `Retry commit and integrate into ${activeSessionTargetBranch}` : `Commit and integrate into ${activeSessionTargetBranch}`}
+              title={quickCommitIntegrateError ? `Retry commit and integrate into ${activeSessionTargetBranch}` : `Commit and integrate into ${activeSessionTargetBranch}`}
             >
               {quickCommitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
-              <span>{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : quickCommitIntegrateError ? `Retry commit & integrate into ${activeSessionTargetBranch}` : `Commit & integrate into ${activeSessionTargetBranch}`}</span>
+              <span className="truncate">{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : quickCommitIntegrateError ? `Retry commit & integrate into ${activeSessionTargetBranch}` : `Commit & integrate into ${activeSessionTargetBranch}`}</span>
             </button>
           )}
         </div>
