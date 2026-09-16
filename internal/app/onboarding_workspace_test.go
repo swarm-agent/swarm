@@ -1,7 +1,11 @@
 package app
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"swarm-refactor/swarmtui/internal/client"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -11,7 +15,7 @@ import (
 )
 
 // Requirement: entering the workspace step after provider setup must re-read the
-// launch repository from disk before enforcing managed-worktree readiness.
+// launch repository through authenticated daemon inspection, not local disk.
 // Threat: identity bootstrap initially builds a model before local auth exists, so
 // stale unknown readiness can leave a committed launch repository permanently
 // blocked in the locked TUI onboarding flow. This app/UI boundary is the narrowest
@@ -31,23 +35,34 @@ func TestRefreshOnboardingWorkspaceGitReadinessUsesCurrentLaunchRepository(t *te
 	}
 	home := ui.NewHomePage(homeModel)
 	home.ShowOnboardingProvider("Provider ready")
-	app := &App{startupCWD: repo, home: home, homeModel: homeModel}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workspace/repository" || r.URL.Query().Get("path") != repo {
+			t.Error("wrong inspection")
+		}
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "repository": client.OnboardingRepository{Path: repo, State: "ready", HeadCommit: "verified", ContentReady: true}})
+	}))
+	defer server.Close()
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	api := client.New(server.URL)
+	api.SetToken("fixture")
+	app := &App{startupCWD: repo, home: home, homeModel: homeModel, api: api}
 
 	app.refreshOnboardingWorkspaceGitReadiness()
 	home.ShowOnboardingWorkspace("Confirm workspace")
 	home.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
 
-	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessReady || !app.homeModel.WorkspaceSetupHasGit {
-		t.Fatalf("refreshed app readiness = %q, hasGit=%v", app.homeModel.WorkspaceSetupGitReadiness, app.homeModel.WorkspaceSetupHasGit)
+	// A stale terminal-local model is not rewritten into daemon authority.
+	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessUnknown {
+		t.Fatal("local readiness promoted")
 	}
 	action, ok := home.PopHomeAction()
 	if !ok || action.Kind != ui.HomeActionCreateOnboardingWorkspace || action.WorkspacePath != repo {
-		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
+		t.Fatalf("verified repository must advance to canonical admission: %+v, ok=%v", action, ok)
 	}
 }
 
 // Requirement: the final workspace confirmation must revalidate the launch
-// repository at the moment Enter is handled, because a queued home reload can
+// repository through daemon inspection rather than a local Enter recheck; a reload can
 // replace the provider-transition refresh with a stale pre-auth model.
 // Threat: a valid committed repository remains blocked despite a correct earlier
 // refresh. The app key-dispatch boundary is the narrowest layer that proves stale
@@ -84,11 +99,11 @@ func TestOnboardingWorkspaceSubmitRevalidatesStaleReadiness(t *testing.T) {
 	app.home.SetModel(staleModel)
 	app.home.HandleKey(event)
 
-	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessReady || !app.homeModel.WorkspaceSetupHasGit {
-		t.Fatalf("submit-time app readiness = %q, hasGit=%v", app.homeModel.WorkspaceSetupGitReadiness, app.homeModel.WorkspaceSetupHasGit)
+	if app.homeModel.WorkspaceSetupGitReadiness != model.GitReadinessUnknown {
+		t.Fatal("local readiness promoted")
 	}
 	action, ok := home.PopHomeAction()
-	if !ok || action.Kind != ui.HomeActionCreateOnboardingWorkspace || action.WorkspacePath != repo {
+	if !ok || action.Kind != ui.HomeActionInspectOnboardingRepository || action.WorkspacePath != repo {
 		t.Fatalf("workspace action = %+v, ok=%v", action, ok)
 	}
 }

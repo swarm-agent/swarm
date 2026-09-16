@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./features/desktop/memory/memory-page.css";
 
 :root {
   color-scheme: dark;

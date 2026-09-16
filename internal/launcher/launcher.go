@@ -1598,17 +1598,11 @@ func RunDevUpdate(profile Profile, relaunchArgs []string) (err error) {
 	if err := buildSwarmTUIForUpdate(profile); err != nil {
 		return err
 	}
-	webNeedsRebuild, err := devFrontendAssetsNeedRebuildForUpdate(profile)
-	if err != nil {
+	// An explicit dev rebuild includes Desktop, like rebuild s; freshness checks
+	// belong to ordinary startup, not a user-requested full rebuild.
+	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Rebuilding desktop web assets.", "")
+	if err := buildAndInstallWebAssetsForUpdate(profile); err != nil {
 		return err
-	}
-	if webNeedsRebuild {
-		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Building desktop web assets after frontend source changes.", "")
-		if err := buildAndInstallWebAssetsForUpdate(profile); err != nil {
-			return err
-		}
-	} else {
-		_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Desktop web assets are current.", "")
 	}
 	_ = writeLauncherUpdateJobStatus(profile, updateKindDev, updateJobStatusRunning, "Installing Swarm launchers.", "")
 	if _, err := installLaunchersForUpdate(profile.Root); err != nil {

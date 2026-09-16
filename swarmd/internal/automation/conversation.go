@@ -1,0 +1,122 @@
+package automation
+
+import (
+	"context"
+	"fmt"
+
+	store "swarm/packages/swarmd/internal/store/pebble"
+)
+
+// CheckConversationRead authorizes empty-state discovery without inventing an
+// automation record or exposing a second persistence authority.
+func (s *Service) CheckConversationRead(ctx context.Context, p Principal, scope store.AutomationScope) error {
+	if err := s.authorize(ctx, p, scope, "read"); err != nil {
+		return err
+	}
+	actual, err := RuntimePrincipal(ctx)
+	if err != nil || actual != p || p.Role != "agent" {
+		return ErrDenied
+	}
+	return s.access.PlanSession(ctx, p, scope, p.SubjectID)
+}
+
+// PrepareConversationDefinition resolves a deliberately omitted plan from the
+// authenticated conversation once, then pins exact bytes. It neither saves nor
+// approves anything. Existing definitions keep their canonical execution session.
+func (s *Service) PrepareConversationDefinition(ctx context.Context, p Principal, scope store.AutomationScope, current *store.AutomationDefinition, d store.AutomationDefinition) (store.AutomationDefinition, error) {
+	if err := s.authorize(ctx, p, scope, "manage"); err != nil {
+		return d, err
+	}
+	actual, err := RuntimePrincipal(ctx)
+	if err != nil || actual != p || p.Role != "agent" {
+		return d, ErrDenied
+	}
+	if d.Enabled || d.Authorization.Mode != "approval_required" || d.Authorization.ApprovalReference != "" {
+		return d, ErrDenied
+	}
+	if current != nil {
+		if d.SessionID != "" && d.SessionID != current.SessionID {
+			return d, ErrDenied
+		}
+		d.SessionID = current.SessionID
+		if len(d.Plans) == 0 {
+			d.Plans = append([]store.AutomationPlanBinding(nil), current.Plans...)
+		}
+	} else {
+		if d.SessionID != "" && d.SessionID != p.SubjectID {
+			return d, ErrDenied
+		}
+		d.SessionID = p.SubjectID
+	}
+	if d.SessionID != "" {
+		if err := s.access.PlanSession(ctx, p, scope, d.SessionID); err != nil {
+			return d, err
+		}
+	}
+	if len(d.Plans) == 0 {
+		plans, ok := s.plans.(interface {
+			GetActivePlan(string) (store.SessionPlanSnapshot, bool, error)
+		})
+		if !ok {
+			return d, ErrInvalid
+		}
+		if err := s.access.PlanSession(ctx, p, scope, p.SubjectID); err != nil {
+			return d, err
+		}
+		plan, found, err := plans.GetActivePlan(p.SubjectID)
+		if err != nil {
+			return d, err
+		}
+		if !found || plan.Version <= 0 {
+			return d, fmt.Errorf("%w: create a complete structured executable plan in this conversation and obtain approval before proposing automation save", ErrNotFound)
+		}
+		if plan.ApprovalState != "approved" {
+			return d, fmt.Errorf("%w: the current executable plan requires explicit user approval before automation save", ErrDenied)
+		}
+		d.Plans = []store.AutomationPlanBinding{{ID: "primary", Plan: store.AutomationPlanReference{SessionID: p.SubjectID, PlanID: plan.ID, Revision: uint64(plan.Version)}}}
+	}
+	if err := store.ValidateAutomationBindings(d.Plans); err != nil {
+		return d, err
+	}
+	d.Plans = append([]store.AutomationPlanBinding(nil), d.Plans...)
+	for i := range d.Plans {
+		if err := s.plan(ctx, p, scope, &d.Plans[i].Plan); err != nil {
+			return d, err
+		}
+	}
+	d.Schedule, err = NormalizeSchedule(d.Schedule)
+	if err != nil {
+		return d, err
+	}
+	if d.Authorization.ExpiresAt <= s.now().UnixMilli() {
+		return d, fmt.Errorf("%w: authorization.expires_at must be a future Unix timestamp in milliseconds, not seconds", ErrInvalid)
+	}
+	return d, nil
+}
+
+// ConversationState is bounded evidence. It does not confer authority and never
+// copies another session's transcript into a management conversation.
+type ConversationState struct {
+	Context     ContextBundle            `json:"context"`
+	Definition  store.AutomationRecord   `json:"definition"`
+	Occurrences []store.AutomationRecord `json:"occurrences"`
+	NextCursor  string                   `json:"next_cursor,omitempty"`
+}
+
+func (s *Service) ConversationState(ctx context.Context, p Principal, scope store.AutomationScope, id string) (ConversationState, error) {
+	var b ConversationState
+	rows, _, err := s.History(ctx, p, scope, id, "definition", id, 0, 1)
+	if err != nil {
+		return b, err
+	}
+	if len(rows) != 1 || rows[0].Definition == nil {
+		return b, ErrNotFound
+	}
+	b.Definition = rows[0]
+	b.Context, err = s.Context(ctx, p, scope, id)
+	if err != nil {
+		return b, err
+	}
+	b.Occurrences, b.NextCursor, err = s.Search(ctx, p, store.AutomationSearch{Scope: scope, AutomationID: id, Kind: "occurrence", Limit: 10})
+	return b, err
+}

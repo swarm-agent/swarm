@@ -201,6 +201,42 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(data['counts'], {'pass': 2, 'fail': 0, 'not-run': 0})
         self.assert_dead(int(marker.read_text()))
 
+    def test_unobserved_exited_adopted_child_is_reaped(self):
+        # Requirement: /proc sampling must not turn an already-dead helper into
+        # a live escape. Pause the supervisor until a double-fork has exited;
+        # its empty zombie environment cannot carry the suite label anymore.
+        marker = self.root/'fast-pid'
+        body = (f'import os,signal,time\n'
+                f'supervisor=os.getppid()\nos.kill(supervisor,signal.SIGSTOP)\n'
+                f'middle=os.fork()\n'
+                f'if middle == 0:\n'
+                f' child=os.fork()\n'
+                f' if child == 0:\n  open({str(marker)!r},"w").write(str(os.getpid()))\n  os._exit(0)\n'
+                f' os._exit(0)\n'
+                f'os.waitpid(middle,0)\ntime.sleep(.2)\nos.kill(supervisor,signal.SIGCONT)\ntime.sleep(.3)')
+        p = self.start([command('fast', body), command('sibling', 'import time; time.sleep(.8)')])
+        data, _ = self.result(p)
+        self.assertEqual(data['counts'], {'pass': 2, 'fail': 0, 'not-run': 0})
+        self.assert_dead(int(marker.read_text()))
+
+    def test_live_unlabelled_adopted_child_still_fails_closed(self):
+        # Negative counterpart: an executing child with lost attribution still
+        # fails the aggregate and is killed, even if the owning command exits 0.
+        marker = self.root/'unlabelled-pid'
+        child = f'import os,time; open({str(marker)!r},"w").write(str(os.getpid())); time.sleep(60)'
+        body = (f'import os,signal,time,sys\n'
+                f'supervisor=os.getppid()\nos.kill(supervisor,signal.SIGSTOP)\n'
+                f'middle=os.fork()\n'
+                f'if middle == 0:\n'
+                f' if os.fork() == 0: os.execve(sys.executable,[sys.executable,"-c",{child!r}],{{}})\n'
+                f' os._exit(0)\n'
+                f'os.waitpid(middle,0)\ntime.sleep(.2)\nos.kill(supervisor,signal.SIGCONT)\ntime.sleep(.5)')
+        p = self.start([command('unlabelled', body)], jobs=1)
+        data, _ = self.result(p)
+        self.assertEqual(data['results'][0]['reason'], 'unattributed_descendant')
+        self.assertEqual(data['results'][0]['outcome'], 'fail')
+        self.assert_dead(int(marker.read_text()))
+
     def test_orphan_cannot_report_success(self):
         marker = self.root/'pid'
         child = f'import os,time; open({str(marker)!r},"w").write(str(os.getpid())); time.sleep(60)'

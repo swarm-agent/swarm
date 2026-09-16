@@ -5,7 +5,7 @@ export interface MediaCatalogModelOption {
   provider: string
   model: string
   display_name: string
-  kind: 'image_generation' | 'video_understanding'
+  kind: 'image_generation' | 'video_understanding' | 'video_generation' | 'video_iteration'
   ready: boolean
   reason?: string
   pricing?: unknown
@@ -14,6 +14,9 @@ export interface MediaCatalogModelOption {
 export interface MediaSettingsCatalog {
   image_models: MediaCatalogModelOption[]
   transcription_models: MediaCatalogModelOption[]
+  video_generation_models: MediaCatalogModelOption[]
+  video_iteration_models: MediaCatalogModelOption[]
+  video_models: MediaCatalogModelOption[]
   video_ready: boolean
   video_status: string
 }

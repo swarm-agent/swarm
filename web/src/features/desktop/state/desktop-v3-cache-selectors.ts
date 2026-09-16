@@ -1,13 +1,14 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
+import { selectAutomationV2Identity } from './desktop-automation-v2-state'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioRecord, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
-export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'QUEUED'
-export type DesktopV3SidebarGroupId = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+export type DesktopV3SidebarPlanStatusLabel = 'RUNNING' | 'REVIEW' | 'BLOCKED' | 'FAILED' | 'QUEUED'
+export type DesktopV3SidebarGroupId = 'blocked' | 'automation' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
 
 export interface DesktopV3SidebarCheckpointProgress {
   activeCheckpointId: string
@@ -302,7 +303,7 @@ function buildDesktopV3SidebarRows(
       pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
       ...planState,
       rowType: planState.planExecution ? 'plan_session' : 'single_chat',
-      sidebarGroup: desktopSidebarGroupForRow({
+      sidebarGroup: selectAutomationV2Identity(state, sessionId) ? 'automation' : desktopSidebarGroupForRow({
         hasActivePlan: planState.hasActivePlan,
         planExecution: planState.planExecution,
         hasActiveRun: hasActiveRunIntent(state.currentRunIntentBySession[sessionId]),
@@ -328,6 +329,8 @@ export function selectDesktopVideoStudioRows(state: DesktopV3CacheState, scopeId
 
 export function selectDesktopSidebarGroupedRows(state: DesktopV3CacheState, scopeId = state.desktopSidebarBootstrap.scopeId): Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> {
   const grouped: Record<DesktopV3SidebarGroupId, DesktopV3SidebarRow[]> = {
+    blocked: [],
+    automation: [],
     needs_review: [],
     in_progress: [],
     active_chats: [],
@@ -450,8 +453,9 @@ function desktopSidebarCheckpointProgress(document: DesktopSessionPlanDocument, 
 }
 
 function desktopPlanStatusLabel(input: { normalizedStatus: string; checkpointStatus: string; reviewRequired: boolean; blocked: boolean; failed: boolean; completed: boolean }): DesktopV3SidebarPlanStatusLabel {
+  if (input.blocked) return 'BLOCKED'
+  if (input.failed) return 'FAILED'
   if (input.reviewRequired) return 'REVIEW'
-  if (input.blocked || input.failed) return 'BLOCKED'
   if (input.completed) return 'QUEUED'
   if (input.normalizedStatus === 'queued' || input.normalizedStatus === 'pending' || input.checkpointStatus === 'pending') return 'QUEUED'
   return 'RUNNING'
@@ -459,6 +463,7 @@ function desktopPlanStatusLabel(input: { normalizedStatus: string; checkpointSta
 
 function desktopSidebarGroupForRow(input: { hasActivePlan: boolean; planExecution?: DesktopV3SidebarPlanExecution; hasActiveRun: boolean; pendingPermissionCount: number; tombstoned: boolean }): DesktopV3SidebarGroupId {
   if (input.tombstoned) return 'archived'
+  if (input.planExecution?.blocked) return 'blocked'
   if (input.planExecution?.reviewRequired) return 'needs_review'
   if (input.planExecution && !input.planExecution.completed) return 'in_progress'
   if (input.pendingPermissionCount > 0 || input.hasActiveRun || input.hasActivePlan) return 'active_chats'
@@ -536,7 +541,7 @@ export function selectDesktopToolActivities(
 }
 
 export function selectSessionRunIntents(state: DesktopV3CacheState, sessionId: string): V3SessionRunIntent[] {
-  return Object.values(state.runIntentsBySession[sessionId] ?? {}).sort((left, right) => {
+  return Object.values(state.runIntentsBySession?.[sessionId] ?? {}).sort((left, right) => {
     const leftSeq = typeof left.event_seq === 'number' ? left.event_seq : 0
     const rightSeq = typeof right.event_seq === 'number' ? right.event_seq : 0
     if (leftSeq !== rightSeq) return leftSeq - rightSeq
@@ -580,7 +585,7 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
     pendingUser: selectPendingUserMessages(state, sessionId),
     liveRuns: selectLiveRuns(state, sessionId),
     runIntents,
-    currentRunIntent: state.currentRunIntentBySession[sessionId],
+    currentRunIntent: state.currentRunIntentBySession?.[sessionId],
     latestRunIntent: runIntents[runIntents.length - 1],
   }
 }

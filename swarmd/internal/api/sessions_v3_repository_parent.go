@@ -3,9 +3,10 @@ package api
 import (
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Resolve only an authenticated immediate parent and its exact current lane.
+// Resolve only an authenticated immediate parent and its exact recorded lane.
 // This is read-only provenance, never a grant or guessed path-ancestry fallback.
 func (s *Server) resolveRepositoryParentIdentity(principal identity.Principal, item sessionRepositoryItem) sessionRepositoryItem {
 	owner, ok, err := s.sessions.GetSession(item.SessionID)
@@ -59,14 +60,39 @@ func (s *Server) resolveRepositoryParentIdentity(principal identity.Principal, i
 			}
 		}
 	}
+	// Adoption must not relabel workers or integration lanes captured against an
+	// older parent lane. Resolve exact durable evidence, never path ancestry.
+	candidate := item.SourcePath
+	if item.Kind == "lane" {
+		candidate = item.WorkspacePath
+	}
+	if candidate != parent.WorktreeRootPath {
+		page, err := s.sessions.ExactRepositoryHistory(pebblestore.RepositoryHistoryQuery{
+			AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+			ParentSessionID: parent.ID, Limit: 1,
+		}, candidate)
+		if err == nil {
+			for _, row := range page.Sessions {
+				if row.Session.ID == parent.ID && row.Session.WorktreeEnabled && row.Session.WorktreeRootPath == candidate {
+					parent = row.Session
+					break
+				}
+			}
+		}
+	}
 	source := sessionsV3MetadataString(parent.Metadata, "swarm_v3_source_workspace_path")
 	if source == "" {
 		return item
 	}
 	if item.SourcePath == parent.WorktreeRootPath {
 		item.SourcePath = source
-		item.WorkspaceID = ""
+		item.WorkspaceID = sessionsV3MetadataString(parent.Metadata, "swarm_v3_source_workspace_id")
 		item.WorkspaceGeneration = 0
+		for _, grant := range parent.WorkspaceGrants {
+			if grant.Path == source && grant.WorkspaceID == item.WorkspaceID {
+				item.WorkspaceGeneration = grant.WorkspaceGeneration
+			}
+		}
 	}
 	if item.WorkspacePath == parent.WorktreeRootPath && item.SourcePath == source {
 		item.laneOwnerID = parent.ID

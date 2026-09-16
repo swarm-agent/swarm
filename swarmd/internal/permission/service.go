@@ -697,6 +697,10 @@ func (s *Service) EditPendingPlanProposal(input PendingPlanProposalEditInput) (P
 		s.mu.Unlock()
 		return PendingPlanProposalEditResult{}, errors.New("permission is not a recognized pending plan proposal")
 	}
+	if record.Requirement == "automation_v2_acceptance" || input.Document.AutomationV2 != nil {
+		s.mu.Unlock()
+		return PendingPlanProposalEditResult{}, errors.New("Automation V2 edits require the exact canonical automation review, not ordinary plan editing")
+	}
 	currentRevision := record.ProposalRevision
 	if currentRevision <= 0 {
 		currentRevision = 1
@@ -1513,6 +1517,12 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
 			return "manage_artifact_generate_image"
 		}
+		if ShouldApproveManageArtifactGenerateVideo(toolArguments) && !bypass {
+			return "manage_artifact_generate_video"
+		}
+		if ShouldApproveManageArtifactGenerateAudio(toolArguments) && !bypass {
+			return "manage_artifact_generate_audio"
+		}
 		return "manage_artifact"
 	case "manage_workspace":
 		identity, _ := manageWorkspacePolicyIdentity(toolArguments)
@@ -1556,6 +1566,15 @@ func nativeArtifactApprovalIdentity(arguments string) string {
 
 func ShouldApproveManageArtifactGenerateImage(toolArguments string) bool {
 	return manageAction(toolArguments) == "generate_image"
+}
+
+func ShouldApproveManageArtifactGenerateVideo(toolArguments string) bool {
+	action := manageAction(toolArguments)
+	return action == "generate_video" || action == "chain_video" || action == "generate_video_story"
+}
+
+func ShouldApproveManageArtifactGenerateAudio(toolArguments string) bool {
+	return manageAction(toolArguments) == "generate_audio"
 }
 
 // ShouldApproveManageWorktreePromotion identifies the distinct authority that
@@ -1823,6 +1842,14 @@ func isPendingPlanProposalRecord(record pebblestore.PermissionRecord) bool {
 }
 
 func approvedArgumentsForResolution(record pebblestore.PermissionRecord, action, clientArguments string) (string, error) {
+	// Recurring proposals require the dedicated revision-bound user acceptance;
+	// generic approval must never release them into one-shot tool execution.
+	if actionIsAllow(action) {
+		payload := parsePermissionJSONMap(record.ToolArguments)
+		if document, ok := payload["document"].(map[string]any); ok && document["automation_v2"] != nil {
+			return "", errors.New("automation v2 requires explicit accept_automation")
+		}
+	}
 	if !actionIsAllow(action) || !isPendingPlanProposalRecord(record) {
 		return sanitizeApprovedArguments(record.ToolName, action, clientArguments, record.ToolArguments), nil
 	}

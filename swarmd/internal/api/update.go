@@ -133,6 +133,17 @@ func (s *Server) handleUpdateRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errServiceNotConfigured("update service"))
 		return
 	}
+	if roots, present := r.URL.Query()["expected_dev_root"]; present {
+		if len(roots) != 1 {
+			writeError(w, http.StatusBadRequest, errors.New("exactly one expected dev checkout is required"))
+			return
+		}
+		ctx = context.WithValue(ctx, expectedDevRootKey{}, roots[0])
+		if err := s.validateExpectedDevRoot(roots[0]); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	switch r.Method {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "job": publicDesktopUpdateJob(defaultUpdateJobRunner.StatusForAccount(principal.AccountScopeID, s))})
@@ -192,10 +203,16 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 	if err != nil {
 		return desktopUpdateJob{}, err
 	}
+	if _, guarded := ctx.Value(expectedDevRootKey{}).(string); guarded && kind != updateKindDev {
+		return desktopUpdateJob{}, errors.New("integration rebuild requires dev mode")
+	}
 	principal, _ := identity.PrincipalFromContext(ctx)
 	accountScopeID := strings.TrimSpace(principal.AccountScopeID)
 	statusSnapshot := r.StatusForAccount(accountScopeID, s)
 	if statusSnapshot.Status == updateJobStatusRunning {
+		if _, guarded := ctx.Value(expectedDevRootKey{}).(string); guarded {
+			return desktopUpdateJob{}, errors.New("another update is already running; integration rebuild was not started")
+		}
 		if updateJobKindMatches(statusSnapshot.Kind, kind) {
 			return statusSnapshot, nil
 		}
@@ -209,6 +226,9 @@ func (r *updateJobRunner) Start(ctx context.Context, s *Server) (desktopUpdateJo
 		} else {
 			job := r.current
 			r.mu.Unlock()
+			if _, guarded := ctx.Value(expectedDevRootKey{}).(string); guarded {
+				return desktopUpdateJob{}, errors.New("another update is already running; integration rebuild was not started")
+			}
 			if updateJobKindMatches(job.Kind, kind) {
 				return job, nil
 			}
@@ -327,6 +347,13 @@ func (s *Server) startDetachedUpdateCommand(ctx context.Context, kind, jobID str
 		devRoot, err := s.configuredDevRoot()
 		if err != nil {
 			return updateLaunchDetails{}, err
+		}
+		if expected, guarded := ctx.Value(expectedDevRootKey{}).(string); guarded {
+			resolved, resolveErr := filepath.EvalSymlinks(devRoot)
+			wanted, expectedErr := filepath.EvalSymlinks(expected)
+			if resolveErr != nil || expectedErr != nil || resolved != wanted {
+				return updateLaunchDetails{}, errors.New("configured dev checkout changed before launch")
+			}
 		}
 		toolchainEnv, err := devUpdateToolchainEnv(devRoot)
 		if err != nil {
@@ -675,6 +702,32 @@ func (s *Server) desktopUpdateKind() (string, error) {
 		return updateKindDev, nil
 	}
 	return updateKindRelease, nil
+}
+
+type expectedDevRootKey struct{}
+
+// validateExpectedDevRoot binds an integration rebuild to the configured checkout.
+// Resolve symlinks on both sides; a different worktree of the same repo is not equal.
+func (s *Server) validateExpectedDevRoot(expected string) error {
+	if !filepath.IsAbs(expected) || strings.TrimSpace(expected) == "" {
+		return errors.New("an absolute expected dev checkout is required")
+	}
+	root, err := s.configuredDevRoot()
+	if err != nil {
+		return err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	candidate, err := filepath.EvalSymlinks(expected)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(candidate) != filepath.Clean(root) {
+		return errors.New("integration target is not the configured Swarm dev checkout")
+	}
+	return nil
 }
 
 func (s *Server) configuredDevRoot() (string, error) {

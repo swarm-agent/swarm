@@ -112,7 +112,9 @@ test('selecting a session only classifies that needs-review worktree for Git int
   assert.match(querySource, /refetchOnWindowFocus: false/)
 })
 
-test('plan Git panel keeps changed files compact and expandable so integration remains visible', async () => {
+// Purpose: the expandable dock owns bounded scrolling; integration remains outside
+// that scroll region. This wiring assertion complements rendered picker tests.
+test('plan Git panel bounds the expanded dock and keeps integration outside scrolling', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const panelStart = source.indexOf('const planSidebarGitPanel =')
   const panelEnd = source.indexOf('const sidebarContent =', panelStart)
@@ -120,10 +122,11 @@ test('plan Git panel keeps changed files compact and expandable so integration r
 
   assert.ok(panelStart >= 0 && panelEnd > panelStart)
   assert.match(panelSource, /desktop-plan-git-sidebar[^\n]*flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden/)
-  assert.match(panelSource, /flex min-h-0 flex-1 flex-col overflow-hidden[^\n]*data-plan-git-scroll-region/)
+  assert.match(panelSource, /id="session-git-dock-details"[^\n]*max-h-\[60vh\][^\n]*overflow-y-auto/)
   assert.match(panelSource, /<details[^\n]*data-plan-git-file-details>/)
   assert.match(panelSource, /gitSnapshot\.files\.length\} file\{gitSnapshot\.files\.length === 1 \? '' : 's'\} changed/)
-  assert.match(panelSource, /max-h-40 overflow-y-auto[^\n]*data-plan-git-file-list[^\n]*data-plan-git-scroll="inside-disclosure"/)
+  assert.match(panelSource, /data-plan-git-file-list data-plan-git-scroll="dock"/)
+  assert.match(panelSource, /<\/div>\s*\{activeSessionIntegrateEligible[^\n]*data-plan-git-integrate-anchor/)
   assert.match(panelSource, /shrink-0[^\n]*data-plan-git-commit|data-plan-git-commit[^\n]*shrink-0/)
   assert.match(panelSource, /data-plan-git-integrate-anchor/)
   assert.doesNotMatch(panelSource, /data-plan-git-scroll="at-sidebar-edge"/)
@@ -141,7 +144,8 @@ test('plan Git commit form submits on Enter through the shared commit handler an
 
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   assert.match(handlerSource, /await commitWorkspaceChanges/)
-  assert.match(handlerSource, /setDesktopToast\(\{ message: 'Changes committed successfully\.', tone: 'success' \}\)/)
+  assert.match(handlerSource, /let completionMessage = 'Changes committed successfully\.'/)
+  assert.match(handlerSource, /setDesktopToast\(\{ message: completionMessage, tone: 'success' \}\)/)
   assert.match(handlerSource, /const archiveAfterCommit = !modal\.worktree && Boolean\(modal\.sessionId\) && gitCommitArchive/)
   assert.match(handlerSource, /await archiveDesktopV3Sessions\(\[modal\.sessionId\]\)/)
   assert.match(handlerSource, /Changes committed and session archived\./)
@@ -274,6 +278,43 @@ test('plan Git sidebar renders session commits and drafts integration help in th
   assert.doesNotMatch(helpHandlerSource + draftHandlerSource + reviewHandlerSource, /launchDesktopRepairSession|startNewDesktopV3Session|createDesktopV3ExistingMessageOperation|continueDesktopV3Conversation|setGitIntegrateError|handleGitIntegrate|integrateSessionWorktree|archiveIntegratedSession|archiveDesktopV3Sessions/)
 })
 
+test('plan Git unexpanded changes box supports 1-step commit and integrate with click-to-confirm and failure help', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  assert.match(source, /unexpandedCommitIntegrateVisible = Boolean\(\s*!gitDockExpanded/)
+  assert.match(source, /const handleQuickCommitAndIntegrate = async \(\) =>/)
+  assert.match(source, /suggestWorkspaceCommitMessage\(\{[\s\S]*workspacePath: selectedGitWorkspacePath[\s\S]*sessionId: selectedGitSessionId/)
+  assert.match(source, /commitWorkspaceChanges\(\{[\s\S]*workspacePath: selectedGitWorkspacePath[\s\S]*sessionId: selectedGitSessionId/)
+  assert.match(source, /integrateSessionWorktree\(integrationTarget\)/)
+  assert.match(panelSource, /data-plan-git-unexpanded-commit-integrate/)
+  assert.match(panelSource, /quickCommitIntegrateConfirming \?/)
+  assert.match(panelSource, /handleQuickCommitAndIntegrate\(\)/)
+  assert.match(panelSource, /quickCommitIntegrateError[\s\S]*handleAskSwarmForGitIntegrationHelp/)
+  assert.match(panelSource, /Retry commit & integrate into/)
+})
+
+test('session changes box preserves loaded status and actions during background reads without jitter', async () => {
+  const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
+  const panelStart = source.indexOf('const planSidebarGitPanel =')
+  const panelEnd = source.indexOf('const focusedSidebarContent =', panelStart)
+  const panelSource = source.slice(panelStart, panelEnd)
+
+  assert.ok(panelStart >= 0 && panelEnd > panelStart)
+  // Queries do not jitter on window focus or rapid refetch
+  assert.match(source, /gitStatusQuery = useQuery\(\{[\s\S]*staleTime: 15_000[\s\S]*refetchOnWindowFocus: false/)
+  // Action buttons do not unmount during background refetches
+  assert.match(source, /selectedRepositoryActionsEnabled = Boolean\(\s*selectedRepositoryMutable\s*&&\s*!gitStatusQuery\.isError/)
+  assert.doesNotMatch(source, /selectedRepositoryActionsEnabled[^\n]*!gitStatusQuery\.isFetching/)
+  assert.doesNotMatch(source, /activeSessionIntegrateEligible[^\n]*!gitReviewQuery\.isFetching/)
+  // Loaded status does not flash unavailable on background inventory invalidation
+  assert.match(panelSource, /gitSnapshot\?\.has_git \? `\$\{gitSnapshot\.dirty_count\} uncommitted file/)
+  assert.match(panelSource, /!activeSessionReviewCandidate && gitReviewQuery\.isFetching \? 'Checking integration…'/)
+})
+
 test('main sidebar focus mode stays collapsed without adding a top bar or touching the plan sidebar', async () => {
   const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
   const layoutStart = source.indexOf('data-testid="desktop-workspace-sidebar"')
@@ -342,7 +383,9 @@ test('sidebar keeps review controls first and opens session-independent main-wor
   assert.match(overlaySource, /topWorkspaceGitStatusQuery\.isFetching/)
   assert.match(overlaySource, /topWorkspaceGitStatusQuery\.error/)
   assert.doesNotMatch(overlaySource, /selectedGitSessionId|gitRealtimeErrors|gitStatusQuery\.error/)
-  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 2).map((group) => group.id), ['needs_review', 'in_progress'])
+  // Requirement: Automation sits immediately above Needs Review in the shared
+  // desktop/mobile group catalog, without moving Blocked out of first place.
+  assert.deepEqual(SIDEBAR_SESSION_GROUPS.slice(0, 4).map((group) => group.id), ['blocked', 'automation', 'needs_review', 'in_progress'])
 })
 
 test('sidebar shows an accessible current-workspace dropdown before chat and worktree actions', async () => {
@@ -784,6 +827,7 @@ test('sidebar review action is limited to Needs Review outside archive selection
 
 test('sidebar renders contextual controls for active groups without an Archived section', () => {
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.map((group) => group.id), [
+    'blocked',
     'needs_review',
     'in_progress',
     'pinned',

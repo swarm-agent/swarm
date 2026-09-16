@@ -98,6 +98,11 @@ type UIToolImageSettingsRecord struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
 
+type UIToolVideoSettingsRecord struct {
+	DefaultModel   string `json:"default_model,omitempty"`
+	IterationModel string `json:"iteration_model,omitempty"`
+}
+
 type UIMediaSettingsRecord struct {
 	TranscriptionModel string `json:"transcription_model,omitempty"`
 }
@@ -108,6 +113,7 @@ type UIArtifactSettingsRecord struct {
 
 type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
+	Video UIToolVideoSettingsRecord `json:"video,omitempty"`
 }
 
 type UISettingsRecord struct {
@@ -321,6 +327,8 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	}
 	record.Swarm.RemoteSSHTargets = normalizeRemoteSSHTargets(record.Swarm.RemoteSSHTargets)
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
+	record.Tools.Video.DefaultModel = strings.TrimSpace(record.Tools.Video.DefaultModel)
+	record.Tools.Video.IterationModel = strings.TrimSpace(record.Tools.Video.IterationModel)
 	return record
 }
 

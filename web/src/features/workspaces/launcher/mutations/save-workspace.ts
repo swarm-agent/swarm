@@ -7,12 +7,13 @@ import {
 import type { WorkspaceResolution, WorkspaceResolutionWire } from '../types/workspace'
 import { mapWorkspaceResolution } from '../types/workspace'
 
-export async function saveWorkspace(path: string, name: string, themeId: string, makeCurrent: boolean): Promise<WorkspaceResolution> {
+export async function saveWorkspace(path: string, name: string, themeId: string, makeCurrent: boolean, confirmCommittedOnly = false): Promise<WorkspaceResolution> {
   const trimmedThemeId = themeId.trim()
   const body: Record<string, unknown> = {
     path,
     name,
     make_current: makeCurrent,
+    confirm_committed_only: confirmCommittedOnly,
   }
   if (trimmedThemeId !== '') {
     body.theme_id = trimmedThemeId
@@ -40,7 +41,7 @@ export async function saveWorkspace(path: string, name: string, themeId: string,
     }
   })()
   if (!response.ok) {
-    if (payload?.code === 'workspace_repository_not_ready' && payload.repository) {
+    if ((payload?.code === 'workspace_repository_not_ready' || payload?.code === 'workspace_content_review_required') && payload.repository) {
       throw new WorkspaceRepositoryPrerequisiteError(mapWorkspaceRepositoryState(payload.repository), payload.error)
     }
     throw new Error(payload?.error?.trim() || raw.trim() || `Request failed with status ${response.status}`)

@@ -1,0 +1,163 @@
+package automation
+
+import (
+	"context"
+	"reflect"
+	"testing"
+	"time"
+
+	"swarm/packages/swarmd/internal/identity"
+	store "swarm/packages/swarmd/internal/store/pebble"
+)
+
+// Purpose: PrepareConversationDefinition must pin approved canonical bytes and
+// preserve execution ownership without granting approval or writing state. This
+// domain test isolates foreign identity, changed bytes and cross-session edits.
+func TestConversationDefinition(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	plans := &conversationPlans{plan: store.SessionPlanSnapshot{ID: "plan", SessionID: "chat", AccountScopeID: "account", Version: 1, ApprovalState: "approved", Document: &store.SessionPlanDocument{}}}
+	now := time.Unix(1789238436, 0)
+	svc, err := New(db, plans, conversationAccess{}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "chat")
+	p, _ := RuntimePrincipal(ctx)
+	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
+	draft := store.AutomationDefinition{Name: "daily", Schedule: store.AutomationSchedulePolicy{Kind: "manual"}, Authorization: store.AutomationAuthorizationPolicy{Mode: "approval_required", ExpiresAt: now.Add(30 * 24 * time.Hour).UnixMilli()}}
+	got, err := svc.PrepareConversationDefinition(ctx, p, scope, nil, draft)
+	if err != nil || got.SessionID != "chat" || len(got.Plans) != 1 || got.Plans[0].Plan.DocumentSHA256 == "" || got.Enabled || got.Authorization.Mode != "approval_required" {
+		t.Fatalf("bad proposal: %+v %v", got, err)
+	}
+	existing := got
+	existing.SessionID = "canonical"
+	revised, err := svc.PrepareConversationDefinition(ctx, p, scope, &existing, draft)
+	if err != nil || revised.SessionID != "canonical" {
+		t.Fatalf("management moved session: %+v %v", revised, err)
+	}
+	// Existing edits must not resolve the caller's active plan a second time.
+	// They retain exact pins and do not alias or mutate the saved definition.
+	if plans.activeReads != 1 {
+		t.Fatalf("existing edit resolved another active plan: %d", plans.activeReads)
+	}
+	if !reflect.DeepEqual(revised.Plans, existing.Plans) || revised.Enabled || revised.Authorization.ApprovalReference != "" {
+		t.Fatalf("edit replaced pins or inherited approval: %+v", revised)
+	}
+	revised.Plans[0].ID = "edited"
+	if existing.Plans[0].ID == "edited" {
+		t.Fatal("proposal aliased saved plan bindings")
+	}
+	for _, scenario := range []string{"foreign-account", "foreign-session", "unapproved", "changed-bytes", "enabled", "seconds-expiry", "expired"} {
+		t.Run(scenario, func(t *testing.T) {
+			d := got
+			principal := p
+			switch scenario {
+			case "foreign-account":
+				principal.AccountID = "foreign"
+			case "foreign-session":
+				d.SessionID = "foreign"
+			case "unapproved":
+				plans.plan.ApprovalState = "pending"
+				defer func() { plans.plan.ApprovalState = "approved" }()
+			case "changed-bytes":
+				d.Plans = append([]store.AutomationPlanBinding(nil), got.Plans...)
+				d.Plans[0].Plan.DocumentSHA256 = "wrong"
+			case "enabled":
+				d.Enabled = true
+			case "seconds-expiry":
+				d.Authorization.ExpiresAt = 1791830436
+			case "expired":
+				d.Authorization.ExpiresAt = now.UnixMilli()
+			}
+			if _, err := svc.PrepareConversationDefinition(ctx, principal, scope, nil, d); err == nil {
+				t.Fatal("accepted invalid proposal")
+			}
+		})
+	}
+	rows, _, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "definition", Limit: 10})
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("proposal wrote state: %v %v", rows, err)
+	}
+}
+
+type conversationPlans struct {
+	plan        store.SessionPlanSnapshot
+	activeReads int
+}
+
+func (p *conversationPlans) GetActivePlan(string) (store.SessionPlanSnapshot, bool, error) {
+	p.activeReads++
+	return p.plan, true, nil
+}
+func (p *conversationPlans) GetPlanRevision(string, string, int) (store.SessionPlanSnapshot, bool, error) {
+	return p.plan, true, nil
+}
+
+type conversationAccess struct{}
+
+func (conversationAccess) Workspace(_ context.Context, p Principal, s store.AutomationScope, _ string) error {
+	if p.AccountID != s.AccountID {
+		return ErrDenied
+	}
+	return nil
+}
+func (conversationAccess) PlanSession(_ context.Context, _ Principal, _ store.AutomationScope, id string) error {
+	if id != "chat" && id != "canonical" {
+		return ErrDenied
+	}
+	return nil
+}
+func (conversationAccess) OccurrenceSession(context.Context, Principal, store.AutomationScope, string) error {
+	return ErrDenied
+}
+func (conversationAccess) Execution(context.Context, Principal, store.AutomationScope, store.AutomationDefinition, string) error {
+	return ErrDenied
+}
+
+// Purpose: empty-state discovery must retain runtime identity and session access
+// checks even when there is no definition to authorize. The domain fixture is
+// the narrowest layer for forged principals and denied conversation access.
+func TestConversationReadAuthorization(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc, err := New(db, &conversationPlans{}, conversationAccess{}, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := store.AutomationScope{AccountID: "account", WorkspaceID: "workspace"}
+	ctx, err := BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := RuntimePrincipal(ctx)
+	if err := svc.CheckConversationRead(ctx, p, scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.CheckConversationRead(context.Background(), p, scope); err == nil {
+		t.Fatal("unbound runtime accepted")
+	}
+	foreign := p
+	foreign.AccountID = "other"
+	if err := svc.CheckConversationRead(ctx, foreign, scope); err == nil {
+		t.Fatal("foreign principal accepted")
+	}
+	deniedCtx, err := BindRuntimeIdentity(context.Background(), identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}, "agent", "denied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied, _ := RuntimePrincipal(deniedCtx)
+	if err := svc.CheckConversationRead(deniedCtx, denied, scope); err == nil {
+		t.Fatal("inaccessible session accepted")
+	}
+	rows, _, err := db.SearchAutomationRecords(store.AutomationSearch{Scope: scope, Kind: "definition", Limit: 10})
+	if err != nil || len(rows) != 0 {
+		t.Fatal("read created state", err)
+	}
+}

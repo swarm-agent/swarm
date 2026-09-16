@@ -14,10 +14,19 @@ export interface SessionAttachmentsViewProps {
   onMore: () => void
 }
 
+export function formatWorkingWorkspaceNames(workspaces: AttachmentRepository[]): string {
+  if (workspaces.length === 0) return ''
+  if (workspaces.length <= 2) {
+    return workspaces.map(item => item.workspace_name || item.workspace_id).join(', ')
+  }
+  return `${workspaces.length} workspaces`
+}
+
 export function SessionAttachmentsView({ items, workingSources = [], loading, stale, error, more, onRefresh, onMore }: SessionAttachmentsViewProps) {
   const dialog = useRef<HTMLDialogElement>(null)
   const workingWorkspaces = selectWorkingWorkspaces(items, workingSources)
-  const workspaceNames = workingWorkspaces.map(item => item.workspace_name || item.workspace_id).join(', ')
+  const workspaceList = workingWorkspaces.length ? workingWorkspaces : items
+  const workspaceNames = formatWorkingWorkspaceNames(workspaceList)
   const workingLabel = workspaceNames || (error ? 'Workspaces unavailable' : loading ? 'Loading workspaces' : more ? 'Workspaces loading incomplete' : 'No working workspace reported')
   const stateLabel = error ? (items.length ? 'Workspace list stale' : 'Workspaces unavailable') : loading && !items.length ? 'Loading workspaces' : more ? `${items.length}+ workspaces` : `${items.length} workspaces`
   // Identity owns a stable header slot. Cache invalidation is not a user-facing
@@ -25,10 +34,10 @@ export function SessionAttachmentsView({ items, workingSources = [], loading, st
   // rather than appending text that resizes the title on every repository event.
   return <>
     <button type="button" aria-haspopup="dialog" aria-label={`Workspaces: ${workingLabel}${error ? ' — unable to update' : ''}`} title={`${workingLabel}${error ? ' — unable to update; open workspaces to retry' : stale ? ' — workspace information may be stale' : ''}`}
-      className="relative block h-5 min-w-0 w-full max-w-full rounded pr-3 text-left text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:h-7 sm:w-40 sm:shrink-0 sm:pl-2 sm:pr-5 sm:text-xs sm:font-normal lg:w-56"
+      className="relative inline-flex min-w-0 max-w-full items-center gap-1 rounded text-left text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] sm:h-auto sm:w-auto sm:px-1 sm:py-0.5 sm:text-[11px]"
       onClick={() => dialog.current?.showModal()}>
-      <span className="block truncate">{workspaceNames || 'Workspaces'}</span>
-      {error ? <span aria-hidden="true" className="absolute right-1 top-1/2 -translate-y-1/2 text-[var(--app-danger)]">!</span> : null}
+      <span className="truncate">{workspaceNames || 'Workspaces'}</span>
+      {error ? <span aria-hidden="true" className="shrink-0 text-[var(--app-danger)]">!</span> : null}
     </button>
     <dialog ref={dialog} aria-label="Session workspaces" className="fixed m-auto max-h-[80dvh] w-[min(36rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm text-[var(--app-text)] backdrop:bg-black/40">
       <div className="flex items-center justify-between gap-2"><h2 className="font-semibold">Session workspaces</h2><button type="button" onClick={() => dialog.current?.close()} aria-label="Close workspaces">Close</button></div>

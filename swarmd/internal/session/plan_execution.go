@@ -62,6 +62,8 @@ type PlanExecutionSummary struct {
 	PlanComplete         bool   `json:"plan_complete"`
 	AutoAdvanceAllowed   bool   `json:"auto_advance_allowed"`
 	StopReason           string `json:"stop_reason,omitempty"`
+	WaitingReason        string `json:"waiting_reason,omitempty"`
+	ResolutionAction     string `json:"resolution_action,omitempty"`
 }
 
 type PlanCheckpointStartOptions struct {
@@ -100,6 +102,9 @@ type PlanCheckpointOutcomeOptions struct {
 	Artifacts       []pebblestore.SessionPlanArtifactReference
 	Recommendation  *pebblestore.SessionPlanCheckpointRecommendation
 	Handoff         *pebblestore.SessionPlanCheckpointHandoff
+	ClosingState    string
+	Summary         string
+	AlertConditions string
 	StartedAt       int64
 	CompletedAt     int64
 }
@@ -779,6 +784,13 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 				summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 				summary.NextCheckpointStatus = status
 				summary.Blocked = true
+				summary.AutoAdvanceAllowed = false
+				if checkpoint.Handoff != nil {
+					summary.WaitingReason = checkpoint.Handoff.Overview
+				}
+				if checkpoint.Recommendation != nil {
+					summary.ResolutionAction = checkpoint.Recommendation.Action
+				}
 				summary.StopReason = PlanCheckpointStatusBlocked
 				return summary
 			case PlanCheckpointStatusFailed:
@@ -826,6 +838,13 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 			summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
 			summary.NextCheckpointStatus = status
 			summary.Blocked = true
+			summary.AutoAdvanceAllowed = false
+			if checkpoint.Handoff != nil {
+				summary.WaitingReason = checkpoint.Handoff.Overview
+			}
+			if checkpoint.Recommendation != nil {
+				summary.ResolutionAction = checkpoint.Recommendation.Action
+			}
 			summary.StopReason = PlanCheckpointStatusBlocked
 			return summary
 		case PlanCheckpointStatusFailed:
@@ -1161,6 +1180,15 @@ func ApplyPlanCheckpointOutcome(doc *pebblestore.SessionPlanDocument, options Pl
 			return PlanCheckpointOutcomeDecision{}, err
 		}
 		checkpoint.Handoff = &handoff
+	}
+	if closingState := strings.TrimSpace(options.ClosingState); closingState != "" {
+		checkpoint.ClosingState = closingState
+	}
+	if summary := strings.TrimSpace(options.Summary); summary != "" {
+		checkpoint.Summary = summary
+	}
+	if alertConditions := strings.TrimSpace(options.AlertConditions); alertConditions != "" {
+		checkpoint.AlertConditions = alertConditions
 	}
 	if options.StartedAt > 0 && checkpoint.StartedAt == 0 {
 		checkpoint.StartedAt = options.StartedAt

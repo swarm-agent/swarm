@@ -44,6 +44,12 @@ client="$root/scripts/testbench-container-deploy.sh"
 source "$root/scripts/lib-testbench-e2e.sh"
 swarm_testbench_load_env "$root" || exit 1
 swarm_testbench_validate_env || exit 1
+if [[ "$SWARM_TESTBENCH_TARGET" == local ]]; then
+  [[ "${SWARM_TESTBENCH_GENERATION:-}" =~ ^[0-9a-f]{64}$ ]] || fail 'local attachment requires SWARM_TESTBENCH_GENERATION from explicit deployment'
+  exec sudo -- /usr/bin/python3 "$root/scripts/local_testbench_codex.py" "$action" \
+    --env-file "${SWARM_TESTBENCH_ENV_FILE:-$root/.env}" --worktree "$root" \
+    --generation "$SWARM_TESTBENCH_GENERATION" -- "$@"
+fi
 
 require_clean_checkout() {
   git -C "$root" diff --quiet --ignore-submodules -- || fail 'candidate testing requires committed changes only'

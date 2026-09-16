@@ -6,6 +6,8 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dial
 import { ModalCloseButton } from '../../../components/ui/modal-close-button'
 import { updateSessionV3Title } from '../session-v3/api'
 import { unarchiveDesktopV3ReviewSessions } from '../session-v3/review-worktrees-api'
+import { getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
+import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { activateSearchSession } from './search-session-activation'
 import {
   deleteDesktopSessions,
@@ -198,10 +200,16 @@ export function SearchChatsModal({ open, onOpenChange, onOpenSession }: SearchCh
   const renderResult = (item: DesktopSessionSearchItem, child = false) => {
     const snippet = item.snippets?.[0]
     const tag = child ? lineageTag(item) : ''
+    const isAutomation = Boolean(
+      item.metadata?.automation_v2 ||
+      item.metadata?.automation_v2_authoring_session_id ||
+      item.metadata?.automation_v2_occurrence_id ||
+      selectAutomationV2Identity(getDesktopV3CacheSnapshot(), item.id)
+    )
     return <div key={item.id} className={child ? 'ml-6 border-l border-[var(--app-border)] pl-3' : ''}>
       <div className="grid gap-2 px-4 py-3 hover:bg-[var(--app-surface-hover)] sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">
         <button type="button" disabled={Boolean(openingSessionId || pendingUnarchive)} onClick={() => void openItem(item)} className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)] disabled:cursor-wait disabled:opacity-60">
-          <div className="flex min-w-0 items-center gap-2">{openingSessionId === item.id ? <LoaderCircle size={14} className="shrink-0 animate-spin text-[var(--app-text-subtle)]" /> : <MessageSquare size={14} className="shrink-0 text-[var(--app-text-subtle)]" />}<span className="truncate text-sm font-semibold">{sessionTitle(item)}</span>{tag ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">{tag}</span> : null}{item.archived ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase text-[var(--app-text-subtle)]">Archived</span> : null}</div>
+          <div className="flex min-w-0 items-center gap-2">{openingSessionId === item.id ? <LoaderCircle size={14} className="shrink-0 animate-spin text-[var(--app-text-subtle)]" /> : <MessageSquare size={14} className="shrink-0 text-[var(--app-text-subtle)]" />}<span className="truncate text-sm font-semibold">{sessionTitle(item)}</span>{tag ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--app-text-subtle)]">{tag}</span> : null}{isAutomation ? <span className="rounded-full border border-[var(--app-primary-border)]/60 bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] uppercase tracking-wide font-semibold text-[var(--app-primary)]">Automation</span> : null}{item.archived ? <span className="rounded-full border border-[var(--app-border)] px-2 py-0.5 text-[10px] uppercase text-[var(--app-text-subtle)]">Archived</span> : null}</div>
           <div className="mt-1 truncate text-xs text-[var(--app-text-subtle)]">{item.workspace_name || item.workspace_path || 'Unknown workspace'}</div>
           {snippet?.text ? <div className="mt-2 line-clamp-2 text-sm leading-5 text-[var(--app-text-muted)]">{snippet.text}</div> : null}
         </button>

@@ -58,10 +58,35 @@ func (r *Runtime) manageWorktreeInspectionPaths(scope WorkspaceScope, requested 
 	if err != nil {
 		return "", "", err
 	}
-	// Exact source selection permits inspection outside execution roots without
-	// granting those roots to ordinary tools or allowing a different repository.
-	if filepath.Clean(absolute) != filepath.Clean(resolved) || (filepath.Clean(absolute) != filepath.Clean(source) && filepath.Clean(absolute) != filepath.Clean(lane)) {
-		return "", "", errors.New("inspection path is not the session lane or its exact saved workspace")
+	if filepath.Clean(absolute) != filepath.Clean(resolved) {
+		return "", "", errors.New("inspection requires a canonical workspace path")
 	}
-	return absolute, source, nil
+	// The default lane and its source remain exact aliases. Explicit secondary
+	// targets do not change that default or grant general filesystem access.
+	if absolute == filepath.Clean(source) || absolute == filepath.Clean(lane) {
+		return absolute, source, nil
+	}
+	for _, root := range scope.Roots {
+		if absolute != filepath.Clean(root) {
+			continue
+		}
+		if _, err := resolveWorkspacePath(scope, absolute); err != nil {
+			return "", "", err
+		}
+		saved, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, absolute)
+		if err != nil {
+			return "", "", err
+		}
+		if !saved.Matched || saved.WorkspacePath != absolute || saved.ResolvedPath != absolute {
+			return "", "", errors.New("inspection target is not an exact account-owned saved workspace")
+		}
+		return absolute, absolute, nil
+	}
+	// A previously allocated program lane is selectable only through its durable
+	// owner record and independent Git validation, never a caller-supplied root.
+	selected, err := r.selectedRepositoryLane(scope, parent, absolute, "")
+	if err != nil {
+		return "", "", err
+	}
+	return absolute, selected.SourcePath, nil
 }

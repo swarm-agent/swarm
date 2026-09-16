@@ -458,7 +458,7 @@ func canonicalManageWorkspaceAction(raw any) (string, bool) {
 		action = "delete"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
 		return action, true
 	default:
 		return "", false
@@ -506,7 +506,11 @@ func manageWorkspacePolicyIdentity(arguments string) (string, string) {
 		return policyToolWorkspaceInvalid, "manage_workspace action must be a supported non-empty string"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+	case "reclaim_worktree", "cancel_worktree_recovery":
+		return "workspace_reclaim", ""
+	case "copy_worktree":
+		return "workspace_copy", ""
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
 		return "manage_workspace", ""
 	case "create":
 		return policyToolWorkspaceCreate, ""
@@ -545,6 +549,9 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 		toolName = "plan_acceptance"
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
+	}
+	if toolName == "manage_automation" {
+		toolName = automationPolicyIdentity(toolArguments)
 	}
 	if toolName == "manage_actions" && shouldApproveManageActionsMutation(toolArguments) {
 		toolName = "action_change"
@@ -1341,6 +1348,14 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
+	case "manage_memory":
+		var args struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(toolArguments), &args) == nil && args.Action == "inspect" {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
 	case "manage_worktree":
 		// Internal integration is constrained to clean, committed children recorded
 		// in the current parent's durable lineage and may advance only that parent's
@@ -1351,7 +1366,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// catalog. The control-plane handler independently enforces primary-agent,
 		// principal, ownership, generation, path, and dirty-worktree boundaries.
 		return PolicyDecisionAllow
-	case policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
+	case "workspace_reclaim", "workspace_copy", policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
 		// Catalog and account-map mutations are independent approval identities.
 		// A persistent rule for one action cannot authorize another action or
 		// broaden into the safe inspection/selection surface.
@@ -1377,7 +1392,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow
 		// through the already-approved task manifest and permission-session scope.
-		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+		if (ShouldApproveManageArtifactGenerateImage(toolArguments) || ShouldApproveManageArtifactGenerateVideo(toolArguments) || ShouldApproveManageArtifactGenerateAudio(toolArguments)) && !bypass {
 			return PolicyDecisionAsk
 		}
 		// Other managed artifact operations remain inside the authenticated session
@@ -1387,6 +1402,10 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAllow
 	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
 		return PolicyDecisionAllow
+	case "automation_read":
+		return PolicyDecisionAllow
+	case "automation_change", "automation_run", "automation_cancel":
+		return PolicyDecisionAsk
 	case "action_change":
 		if bypass {
 			return PolicyDecisionAllow

@@ -75,6 +75,23 @@ func TestPlanDocumentPatchFromArgsPreservesPartialInfoFieldPresence(t *testing.T
 	}
 }
 
+func TestPlanDocumentPatchFromArgsParsesClosingStateAndSummary(t *testing.T) {
+	patch, err := planDocumentPatchFromArgs(map[string]any{
+		"action":        "complete_checkpoint",
+		"checkpoint_id": "cp-1",
+		"closing_state": "routine_clean",
+		"summary":       "All 3 tasks verified cleanly",
+		"report":        "full report",
+		"result":        "done",
+	})
+	if err != nil {
+		t.Fatalf("parse complete_checkpoint patch: %v", err)
+	}
+	if patch == nil || patch.ClosingState != "routine_clean" || patch.Summary != "All 3 tasks verified cleanly" {
+		t.Fatalf("patch closing state mismatch: %#v", patch)
+	}
+}
+
 func TestPlanDocumentFromArgsRejectsInvalidJSONString(t *testing.T) {
 	_, err := planDocumentFromArgsForTool(map[string]any{"document": "not json"}, "exit_plan_mode")
 	if err == nil || !strings.Contains(err.Error(), "exit_plan_mode document invalid") {

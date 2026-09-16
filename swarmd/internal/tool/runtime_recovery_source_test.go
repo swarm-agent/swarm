@@ -206,6 +206,10 @@ type recoverySourceMutationFailure struct {
 	conflict bool
 }
 
+func (s recoverySourceMutationFailure) GetSessionActiveRunIntent(id string) (pebblestore.V3SessionRunIntent, bool, error) {
+	return s.fixture.sessions.GetSessionActiveRunIntent(id)
+}
+
 func (s recoverySourceMutationFailure) GetLifecycle(id string) (pebblestore.SessionLifecycleSnapshot, bool, error) {
 	return s.fixture.sessions.GetLifecycle(id)
 }
@@ -253,6 +257,136 @@ func TestRecoverySourcePublicationFailure(t *testing.T) {
 			body, err := os.ReadFile(filepath.Join(f.dirtyPath, "change.txt"))
 			if err != nil || string(body) != "recovery-dirty" || recoveryGit(t, f.dirtyPath, "rev-parse", "HEAD") != f.base {
 				t.Fatal("publication failure mutated source")
+			}
+		})
+	}
+}
+
+// Purpose: recoverySourceIdentity must distinguish a blocked program job from
+// its ended producer. Real Git and read-only canonical program lookup prove
+// omitted/explicit call selection, preserved integrated siblings, and rejection
+// without source, lifecycle, program or parent mutation at the runtime boundary.
+func TestRecoverySourceBlockedProgram(t *testing.T) {
+	for _, mode := range []string{"blocked", "completed", "errored", "interrupted", "active", "active-intent", "unended", "wrong-run", "foreign-call", "foreign-parent", "foreign-account", "foreign-job", "integrated-job", "stale"} {
+		t.Run(mode, func(t *testing.T) {
+			f, req := recoverySourceFixture(t)
+			child, _, _ := f.sessions.GetSession(req.ChildSessionID)
+			child.Metadata["task_program_id"] = "blocked-program"
+			child.Metadata["task_program_job_id"] = "dirty"
+			child.Metadata["parent_task_call_id"] = "program-call"
+			if mode == "foreign-parent" {
+				child.Metadata["parent_session_id"] = "another-parent"
+			}
+			if mode == "foreign-job" {
+				child.Metadata["task_program_job_id"] = "good"
+			}
+			if _, _, err := recoveryMetadata(f.sessions, child.ID, child.Metadata); err != nil {
+				t.Fatal(err)
+			}
+			program := pebblestore.TaskProgramRecord{ParentSessionID: f.scope.SessionID, ProgramID: "blocked-program", ReservationCallID: "program-call", DefinitionHash: "blocked-fixture", State: pebblestore.TaskProgramStateBlocked,
+				Definition: pebblestore.TaskProgramDefinition{Stages: []pebblestore.TaskProgramStageSpec{{ID: "build"}}, Jobs: []pebblestore.TaskProgramJobSpec{{ID: "dirty", StageID: "build", AgentType: "coder", OwnedScope: []string{"change.txt"}}, {ID: "good", StageID: "build", AgentType: "coder", OwnedScope: []string{"good.txt"}}}},
+				Jobs:       []pebblestore.TaskProgramJobRecord{{JobID: "dirty", StageID: "build", State: pebblestore.TaskProgramJobBlocked, ChildSessionID: child.ID, CurrentSessionID: child.ID, CurrentRunID: "producer", WorkspacePath: child.WorktreeRootPath, WorktreeBranch: child.WorktreeBranch, ImmutableStageBase: f.base}, {JobID: "good", StageID: "build", State: pebblestore.TaskProgramJobIntegrated, ChildSessionID: "recovery-good", ChildHead: f.head}}}
+			if mode == "integrated-job" {
+				program.Jobs[0].State = pebblestore.TaskProgramJobIntegrated
+			}
+			if _, _, err := f.sessions.CreateTaskProgram(program); err != nil {
+				t.Fatal(err)
+			}
+			lifecycle := pebblestore.SessionLifecycleSnapshot{SessionID: child.ID, RunID: "producer", Phase: "completed", EndedAt: 10, Generation: 2}
+			switch mode {
+			case "blocked", "errored", "interrupted":
+				lifecycle.Phase = mode
+			case "active":
+				lifecycle.Active = true
+				lifecycle.Phase = "blocked"
+			case "unended":
+				lifecycle.EndedAt = 0
+			case "wrong-run":
+				lifecycle.RunID = "another-run"
+			}
+			if err := f.sessions.UpsertLifecycle(lifecycle); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "active-intent" {
+				_, err := f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: child.ID, UserID: child.UserID, AccountScopeID: child.AccountScopeID, Kind: pebblestore.V3SessionMutationRecordRunIntent, RunIntent: &pebblestore.V3SessionRunIntent{RunID: "new-producer", Status: pebblestore.V3RunIntentPendingExecutor}, IdempotencyKey: "active-producer", RequestHash: "active-producer"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			req.TaskCallID = ""
+			scope := f.scope
+			if mode == "foreign-call" {
+				req.TaskCallID = "mixed-wave"
+			}
+			if mode == "foreign-account" {
+				scope.Principal.AccountScopeID = "another-account"
+			}
+			beforeParent, _, _ := f.sessions.GetSession(f.scope.SessionID)
+			beforeProgram, _, _ := f.sessions.InspectTaskProgram(f.scope.SessionID, program.ProgramID)
+			beforeLifecycle, _, _ := f.sessions.GetLifecycle(child.ID)
+			index := recoveryGit(t, f.dirtyPath, "ls-files", "--stage")
+			goodHead := recoveryGit(t, f.goodPath, "rev-parse", "HEAD")
+			source, err := f.runtime.InspectRecoverySource(scope, req)
+			rejected := mode == "integrated-job" || mode == "active" || mode == "active-intent" || mode == "unended" || strings.HasPrefix(mode, "foreign-") || mode == "wrong-run"
+			if rejected {
+				if err == nil {
+					t.Fatal("unsafe producer accepted")
+				}
+				req.ExpectedDigest = strings.Repeat("0", 64)
+				if _, err := f.runtime.RetainRecoverySource(scope, req); err == nil {
+					t.Fatal("unsafe retain accepted")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if source.TaskCallID != "program-call" || source.Files[0].Content != "recovery-dirty" {
+					t.Fatalf("wrong canonical source: %+v", source)
+				}
+				req.TaskCallID = "program-call"
+				explicit, err := f.runtime.InspectRecoverySource(scope, req)
+				if err != nil || explicit.Digest() != source.Digest() {
+					t.Fatalf("selector identity differs: %v", err)
+				}
+				req.ExpectedDigest = source.Digest()
+				if mode == "stale" {
+					if err := os.WriteFile(filepath.Join(f.dirtyPath, "change.txt"), []byte("changed"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.runtime.RetainRecoverySource(scope, req); err == nil {
+						t.Fatal("stale source accepted")
+					}
+				} else {
+					if _, err := f.runtime.RetainRecoverySource(scope, req); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := f.runtime.ReadRecoverySource(scope, req.ExpectedDigest); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			afterProgram, _, _ := f.sessions.InspectTaskProgram(f.scope.SessionID, program.ProgramID)
+			afterLifecycle, _, _ := f.sessions.GetLifecycle(child.ID)
+			a, _ := json.Marshal(beforeProgram)
+			b, _ := json.Marshal(afterProgram)
+			if string(a) != string(b) || beforeLifecycle != afterLifecycle || index != recoveryGit(t, f.dirtyPath, "ls-files", "--stage") || goodHead != recoveryGit(t, f.goodPath, "rev-parse", "HEAD") || f.base != recoveryGit(t, f.dirtyPath, "rev-parse", "HEAD") {
+				t.Fatal("recovery mutated producer or integrated sibling")
+			}
+			body, err := os.ReadFile(filepath.Join(f.dirtyPath, "change.txt"))
+			want := "recovery-dirty"
+			if mode == "stale" {
+				want = "changed"
+			}
+			if err != nil || string(body) != want {
+				t.Fatal("source bytes mutated")
+			}
+			if rejected || mode == "stale" {
+				afterParent, _, _ := f.sessions.GetSession(f.scope.SessionID)
+				a, _ := json.Marshal(beforeParent)
+				b, _ := json.Marshal(afterParent)
+				if string(a) != string(b) {
+					t.Fatal("rejection mutated parent")
+				}
 			}
 		})
 	}

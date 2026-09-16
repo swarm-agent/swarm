@@ -29,6 +29,7 @@ type Client struct {
 }
 
 type chatCompletionRequest struct {
+	MaxTokens         int                  `json:"max_tokens,omitempty"`
 	Model             string               `json:"model"`
 	Messages          []map[string]any     `json:"messages"`
 	Tools             []chatCompletionTool `json:"tools,omitempty"`

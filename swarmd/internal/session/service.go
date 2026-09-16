@@ -873,9 +873,7 @@ func (s *Service) ListTopSessionsByWorkspace(workspacePaths []string, perWorkspa
 		return nil, err
 	}
 	for i := range groups {
-		for j := range groups[i].Sessions {
-			groups[i].Sessions[j].Mode = NormalizeMode(groups[i].Sessions[j].Mode)
-		}
+		groups[i].Sessions = normalizeVisibleSessionList(groups[i].Sessions)
 	}
 	return groups, nil
 }
@@ -2112,7 +2110,12 @@ func (s *Service) GetActivePlan(sessionID string) (pebblestore.SessionPlanSnapsh
 	if _, ok, err := s.store.GetSession(sessionID); err != nil {
 		return pebblestore.SessionPlanSnapshot{}, false, err
 	} else if !ok {
-		return pebblestore.SessionPlanSnapshot{}, false, fmt.Errorf("session %q not found", sessionID)
+		tombstone, tombstoneOK, tombstoneErr := s.store.GetV3SessionTombstone(sessionID)
+		if tombstoneErr != nil {
+			return pebblestore.SessionPlanSnapshot{}, false, tombstoneErr
+		} else if !tombstoneOK || tombstone.Deleted || !tombstone.Archived {
+			return pebblestore.SessionPlanSnapshot{}, false, fmt.Errorf("session %q not found", sessionID)
+		}
 	}
 	active, ok, err := s.store.GetActivePlan(sessionID)
 	if err != nil || !ok {

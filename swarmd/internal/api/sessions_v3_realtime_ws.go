@@ -596,7 +596,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		advanced.LastSentEndpointSeq = record.EndpointSeq
 		return advanced, true, true
 	}
-	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType {
+	if record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType {
 		// Catalog membership is account-wide, independent of the selected session.
 		if len(worksets) == 0 {
 			return advanced, true, false
@@ -607,7 +607,7 @@ func (s *Server) v3RealtimeProcessOutboxRecord(conn *transportws.Conn, principal
 		}
 		if err := s.sendV3RealtimeMessage(conn, V3RealtimeMessage{
 			Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion,
-			Kind: V3RealtimeKindWorkspaceCatalog, EndpointCursor: cursor,
+			Kind: record.Event.EventType, EndpointCursor: cursor,
 		}); err != nil {
 			return advanced, false, false
 		}
@@ -1277,7 +1277,7 @@ func v3RealtimeRecordVisibleToPrincipal(principal identity.Principal, record ses
 		payload, ok := sessionsV3AITaskLifecyclePayloadFromRecord(record)
 		return ok && payload.UserID == strings.TrimSpace(principal.UserID)
 	}
-	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || record.Event.EventType == pebblestore.WorkspaceCatalogEventType {
+	if strings.TrimSpace(record.Event.EventType) == v3AuthResourceEventType || (record.Event.EventType == pebblestore.WorkspaceCatalogEventType || record.Event.EventType == pebblestore.AutomationChangedEventType) {
 		return true
 	}
 	if strings.TrimSpace(record.UserID) == "" || strings.TrimSpace(record.UserID) != strings.TrimSpace(principal.UserID) {

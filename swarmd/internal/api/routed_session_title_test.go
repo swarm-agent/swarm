@@ -74,3 +74,28 @@ func TestRouterOwnedTitleSuppressesAPITitleGenerationForBoolAndStringMetadata(t 
 func testSessionSnapshot(title string, metadata map[string]any) pebblestore.SessionSnapshot {
 	return pebblestore.SessionSnapshot{Title: title, Metadata: metadata}
 }
+
+func TestShouldGenerateSessionV3TitlePermitsDefaultAndAutomationTitles(t *testing.T) {
+	cases := []struct {
+		title    string
+		metadata map[string]any
+		expected bool
+	}{
+		{"", nil, true},
+		{sessionV3TitleDefault, nil, true},
+		{"Automation conversation", nil, true},
+		{"Automation session", nil, true},
+		{"automation CONVERSATION", nil, true},
+		{"automation SESSION", nil, true},
+		{"Custom Session Title", nil, false},
+		{"", map[string]any{"title_locked": true}, false},
+		{sessionV3TitleDefault, map[string]any{"title_locked": true}, false},
+		{"Automation conversation", map[string]any{"title_locked": true}, false},
+	}
+	for _, tc := range cases {
+		got := shouldGenerateSessionV3Title(testSessionSnapshot(tc.title, tc.metadata))
+		if got != tc.expected {
+			t.Errorf("shouldGenerateSessionV3Title(%q, %#v) = %v, want %v", tc.title, tc.metadata, got, tc.expected)
+		}
+	}
+}

@@ -26,7 +26,9 @@ import (
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/artifactv3video"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/auth"
+	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -37,6 +39,7 @@ import (
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/mediastaging"
+	"swarm/packages/swarmd/internal/memory"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
@@ -63,6 +66,7 @@ import (
 	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/uisettings"
 	update "swarm/packages/swarmd/internal/update"
+	"swarm/packages/swarmd/internal/videogen"
 	"swarm/packages/swarmd/internal/videoproject"
 	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videosource"
@@ -125,6 +129,12 @@ func newWorkspaceMapService(store *pebblestore.Store) *pebblestore.WorkspaceMapS
 }
 
 type Daemon struct {
+	automationMu              sync.Mutex
+	automationClosed          bool
+	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
+	automationLoop            *automationLoop
+	automationExecution       *automation.ExecutionService
+	automationApproval        *automation.PolicyApproval
 	cfg                       config.Config
 	lock                      *lock.FileLock
 	store                     *pebblestore.Store
@@ -152,6 +162,7 @@ type Daemon struct {
 	longSessionDiagnostics    *longsessiondiag.Recorder
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
+	memoryDone                <-chan struct{}
 	copilot                   *copilot.Manager
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
@@ -274,9 +285,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	authSvc := auth.NewService(authStore, events)
 	codexClient := codex.NewClient(authStore)
 	toolRuntime := tool.NewRuntime(8)
+	var htmlRenderer *htmlcapture.ChromedpRenderer
 	cacheRoot, cacheRootErr := storagecontract.ResolveRoot(storagecontract.RootCache, storagecontract.Options{})
 	if cacheRootErr == nil {
-		toolRuntime.SetHTMLCaptureRenderer(htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency()))
+		htmlRenderer = htmlcapture.NewChromedpRendererWithConcurrency(htmlcapture.SystemChromePath, filepath.Join(cacheRoot, "html-capture"), htmlCaptureConcurrency())
+		toolRuntime.SetHTMLCaptureRenderer(htmlRenderer)
 	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), events)
 	if err := agentSvc.EnsureSystemAgentRegistry(); err != nil {
@@ -465,6 +478,21 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
+	automationApproval, err := automation.NewPolicyApproval(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc, sessions: sessionSvc, members: pebblestore.NewIdentityStore(store)}, automation.RuntimeApprovalIdentity(), time.Now)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automation approval: %w", err)
+	}
+	automationSvc, err := composeConversationAutomation(store, sessionSvc, automationApproval, time.Now)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automations: %w", err)
+	}
+	// V1 tool creation/execution is retired; existing records remain readable.
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
@@ -601,7 +629,18 @@ func New(cfg config.Config) (*Daemon, error) {
 		return err
 	})
 	modelSvc.StartCatalogAutoRefresh(bgCtx)
+	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store)})
+	memoryDone := make(chan struct{})
+	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	// Automation mutations always commit through canonical V3 authority before
+	// waking realtime. Wake failures cannot turn a committed execution into retry.
+	apiServer.ConfigureAutomationRealtime(store)
+	// Keep the legacy catalog read-only. Do not install V1 approval, dispatch,
+	// tool execution, or run-context authorities alongside plan-native V2.
+	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
+
+	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -626,6 +665,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	runSvc.SetSessionDeployCanonicalizer(apiServer.CanonicalizeSessionDeploy)
 	runSvc.SetSessionDeployEnqueuer(apiServer.EnqueueSessionDeployRun)
+	automationV2Host, err := run.NewAutomationV2ExecutionHost(runSvc, sessionSvc.Store(), worktreeSvc, sessionSvc.ApplySessionMutation, apiServer.EnqueueAutomationRun)
+	if err != nil {
+		bgCancel()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("compose automation v2 execution: %w", err)
+	}
 	runSvc.SetAITaskBinder(todoSvc)
 	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)
 	if err != nil {
@@ -637,6 +684,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	apiServer.SetAITaskEnqueuer(aiTaskDispatcher)
 	toolRuntime.SetManageSessionRealtimePublisher(apiServer.PublishCommittedV3RealtimeOutbox)
+	toolRuntime.SetManageSessionController(apiServer)
 	artifactMetadata.SetPublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
 	apiServer.SetWebPushService(webPushSvc)
@@ -659,6 +707,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManagedImageGenerationService(imageGenSvc)
 	apiServer.SetImageGenerationService(imageGenSvc)
 	apiServer.SetImageThreadStore(imageThreadStore)
+	videoGenSvc := videogen.NewService(authStore, uiSettingsSvc, modelSvc)
+	if htmlRenderer != nil {
+		videoGenSvc.SetSVGRasterizer(htmlRenderer)
+	}
+	toolRuntime.SetManagedVideoGenerationService(videoGenSvc)
+	audioGenSvc := audiogen.NewService(authStore, uiSettingsSvc, modelSvc)
+	toolRuntime.SetManagedAudioGenerationService(audioGenSvc)
 	apiServer.SetTodoService(todoSvc)
 	apiServer.SetActionService(actionSvc)
 	apiServer.SetIntegrationService(integrationSvc)
@@ -692,16 +747,17 @@ func New(cfg config.Config) (*Daemon, error) {
 	localTransportRuntimeName := ""
 
 	d := &Daemon{
-		cfg:                       cfg,
-		lock:                      lk,
-		store:                     store,
-		secretStore:               secretStore,
-		events:                    events,
-		hub:                       hub,
-		apiServer:                 apiServer,
-		notificationService:       notificationSvc,
-		bgCtx:                     bgCtx,
-		bgCancel:                  bgCancel,
+		cfg:                 cfg,
+		lock:                lk,
+		store:               store,
+		secretStore:         secretStore,
+		events:              events,
+		hub:                 hub,
+		apiServer:           apiServer,
+		notificationService: notificationSvc,
+		bgCtx:               bgCtx,
+		bgCancel:            bgCancel,
+		// V1 scheduling/approval authorities are intentionally not installed.
 		stopCh:                    make(chan string, 1),
 		copilot:                   copilotManager,
 		toolRuntime:               toolRuntime,
@@ -773,6 +829,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = d.cleanup()
 		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
 	}
+	d.automationV2Scheduler = sessionruntime.NewAutomationV2Scheduler(sessionSvc, automationV2Host)
 	d.longSessionDiagnostics = diagnostics
 	if diagnostics != nil {
 		codexClient.SetLongSessionDiagnostics(diagnostics)
@@ -791,6 +848,11 @@ func New(cfg config.Config) (*Daemon, error) {
 	startArtifactMaintenance(bgCtx, artifactRegistry)
 	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 	startMintReport(bgCtx, swarmSvc)
+	d.memoryDone = memoryDone
+	go func() {
+		defer close(memoryDone)
+		memorySvc.RunScheduler(bgCtx, pebblestore.NewIdentityStore(store), func(error) { log.Print("memory scheduler operation failed; inspect memory job status") })
+	}()
 	return d, nil
 }
 
@@ -838,9 +900,20 @@ func (d *Daemon) cleanup() error {
 
 	d.cleanupOnce.Do(func() {
 		var errs []error
+		d.automationMu.Lock()
+		d.automationClosed = true
+		if d.automationLoop != nil {
+			d.automationLoop.Close()
+			d.automationLoop = nil
+		}
+		d.automationMu.Unlock()
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.memoryDone != nil {
+			<-d.memoryDone
+			d.memoryDone = nil
 		}
 		if d.longSessionDiagnostics != nil {
 			if err := d.longSessionDiagnostics.Close(); err != nil {
@@ -1015,6 +1088,12 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
+	// Start only V2, after listeners succeed; never migrate or execute V1 records.
+	if d.automationV2Scheduler != nil {
+		if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {
+			return err
+		}
+	}
 	return d.waitForShutdown()
 }
 
@@ -1035,6 +1114,13 @@ func (d *Daemon) waitForShutdown() error {
 		reason = "requested"
 	}
 	var errs []error
+	d.automationMu.Lock()
+	if d.automationLoop != nil {
+		d.automationLoop.Close()
+		d.automationLoop = nil
+	}
+	d.automationClosed = true
+	d.automationMu.Unlock()
 	if d.apiServer != nil {
 		d.apiServer.BeginShutdown()
 		d.apiServer.CancelInFlightRuns()

@@ -30,6 +30,8 @@ import (
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/audiogen"
+	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
@@ -41,6 +43,7 @@ import (
 	todoruntime "swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool/searchipc"
 	uisettings "swarm/packages/swarmd/internal/uisettings"
+	"swarm/packages/swarmd/internal/videogen"
 	"swarm/packages/swarmd/internal/videosource"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -162,6 +165,9 @@ type Runtime struct {
 	agents                manageAgentService
 	orchestration         manageOrchestrationPolicyService
 	todos                 manageTodoService
+	automations           *automation.Service
+	automationExecution   *automation.ExecutionService
+	automationPolicy      *automation.PolicyApproval
 	actions               manageActionService
 	uiSettings            manageThemeUISettingsService
 	themeWorkspace        manageThemeWorkspaceService
@@ -175,9 +181,12 @@ type Runtime struct {
 	artifactV3Video       ArtifactV3VideoConversionService
 	htmlCapture           htmlcapture.Renderer
 	htmlAnimationCapture  htmlcapture.AnimationRenderer
+	svgRasterizer         videogen.SVGRasterizer
 	animationJobsMu       sync.Mutex
 	animationJobs         map[string]context.CancelFunc
 	imageGeneration       ManagedImageGenerationService
+	videoGeneration       ManagedVideoGenerationService
+	audioGeneration       ManagedAudioGenerationService
 	video                 manageVideoService
 	videoSources          *videosource.Service
 	videoProjects         manageVideoProjectService
@@ -185,6 +194,13 @@ type Runtime struct {
 	searchCoordinator     *SearchCoordinator
 	focusedPartMu         sync.Mutex
 	focusedPartProtocols  map[string]focusedPartProtocolState
+	sessionController     manageSessionController
+}
+
+type manageSessionController interface {
+	CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error)
+	EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool
+	CompactSession(ctx context.Context, principal identity.Principal, sessionID, note string) (map[string]any, error)
 }
 
 type ExaRuntimeConfig struct {
@@ -231,10 +247,12 @@ type manageSessionService interface {
 	GetSessionTombstone(sessionID string) (pebblestore.V3SessionTombstone, bool, error)
 	ListSessionMessageTail(sessionID string, limit int) ([]pebblestore.MessageSnapshot, error)
 	ListSessionMessagesBefore(sessionID string, beforeSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
+	ListSessionMessages(sessionID string, afterSeq uint64, limit int) ([]pebblestore.MessageSnapshot, error)
 	ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error)
 	ReactivateArchivedSessionsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) error
 	CurrentRealtimeOutboxRevision() (uint64, error)
 	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
+	ReadSessionMediaAsset(accountScopeID, sessionID, assetID string) (pebblestore.SessionMediaAsset, []byte, error)
 }
 
 type manageWorktreeWorkspaceService interface {
@@ -320,6 +338,14 @@ type manageTodoService interface {
 type ManagedImageGenerationService interface {
 	ManagedImageCapabilities(selectionID string) (imagegen.ManagedImageCapabilities, error)
 	GenerateManagedImage(context.Context, imagegen.ManagedGenerateRequest) (imagegen.ManagedImage, error)
+}
+
+type ManagedVideoGenerationService interface {
+	GenerateManagedVideo(context.Context, videogen.ManagedVideoRequest) (videogen.ManagedVideoResult, error)
+}
+
+type ManagedAudioGenerationService interface {
+	GenerateManagedAudio(context.Context, audiogen.ManagedAudioRequest) (audiogen.ManagedAudioResult, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -522,7 +548,23 @@ func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {
 		if animationRenderer, ok := renderer.(htmlcapture.AnimationRenderer); ok {
 			r.htmlAnimationCapture = animationRenderer
 		}
+		if rasterizer, ok := renderer.(videogen.SVGRasterizer); ok {
+			r.svgRasterizer = rasterizer
+		}
 	}
+}
+
+func (r *Runtime) SetSVGRasterizer(rasterizer videogen.SVGRasterizer) {
+	if r != nil {
+		r.svgRasterizer = rasterizer
+	}
+}
+
+func (r *Runtime) SVGRasterizer() videogen.SVGRasterizer {
+	if r == nil {
+		return nil
+	}
+	return r.svgRasterizer
 }
 
 func (r *Runtime) SetHTMLAnimationRenderer(renderer htmlcapture.AnimationRenderer) {
@@ -570,6 +612,44 @@ func (r *Runtime) GenerateManagedImageArtifact(ctx context.Context, scope Worksp
 	return r.executeManageArtifact(ctx, scope, callID, args)
 }
 
+// GenerateManagedVideoArtifact is the trusted orchestration entrypoint for
+// direct video swarms. It reuses the canonical account video setting and
+// artifact finalization path without creating an AI worker session.
+func (r *Runtime) GenerateManagedVideoArtifact(ctx context.Context, scope WorkspaceScope, callID, prompt string, run ArtifactRunContext, source *pebblestore.SessionArtifactSelectionReference, outputRequirements *pebblestore.SessionArtifactOutputRequirements) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{
+		"action": "generate_video",
+		"prompt": strings.TrimSpace(prompt),
+	}
+	if strings.TrimSpace(run.IterationLabel) != "" {
+		args["title"] = strings.TrimSpace(run.IterationLabel)
+	}
+	if source != nil {
+		args["source_session_id"] = strings.TrimSpace(source.SessionID)
+		args["source_collection_id"] = strings.TrimSpace(source.CollectionID)
+		args["source_variant_id"] = strings.TrimSpace(source.VariantID)
+		args["source_event_seq"] = int(source.EventSeq)
+	}
+	if outputRequirements != nil {
+		if outputRequirements.AspectRatio != "" {
+			args["aspect_ratio"] = outputRequirements.AspectRatio
+		} else if outputRequirements.PresetID != "" {
+			args["aspect_ratio"] = outputRequirements.PresetID
+		} else if outputRequirements.Width > 0 && outputRequirements.Height > 0 {
+			if outputRequirements.Width >= outputRequirements.Height {
+				args["aspect_ratio"] = "16:9"
+			} else {
+				args["aspect_ratio"] = "9:16"
+			}
+		}
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
 	if r != nil {
 		r.artifactV2Video = service
@@ -600,6 +680,18 @@ func (r *Runtime) SetArtifactV3VideoConversionService(service ArtifactV3VideoCon
 func (r *Runtime) SetManagedImageGenerationService(service ManagedImageGenerationService) {
 	if r != nil {
 		r.imageGeneration = service
+	}
+}
+
+func (r *Runtime) SetManagedVideoGenerationService(service ManagedVideoGenerationService) {
+	if r != nil {
+		r.videoGeneration = service
+	}
+}
+
+func (r *Runtime) SetManagedAudioGenerationService(service ManagedAudioGenerationService) {
+	if r != nil {
+		r.audioGeneration = service
 	}
 }
 
@@ -649,6 +741,12 @@ func (r *Runtime) SetManageSessionService(sessions manageSessionService) {
 func (r *Runtime) SetManageSessionRealtimePublisher(publish func(pebblestore.V3RealtimeOutboxRecord) error) {
 	if r != nil {
 		r.publishSessionOutbox = publish
+	}
+}
+
+func (r *Runtime) SetManageSessionController(controller manageSessionController) {
+	if r != nil {
+		r.sessionController = controller
 	}
 }
 
@@ -718,12 +816,13 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "edit_pending_plan",
-			Description: "Edit the pending plan proposal bound to the reserved Plan sidechat using optimistic concurrency. Pass document as a native structured JSON object, never as serialized/quoted JSON text. Start from the authoritative attached document and preserve its current title unless the user explicitly requests a rename.",
+			Description: "Edit the exact pending canonical plan bound to the reserved Plan sidechat. Pass complete native document and expected_revision; for Automation V2 also pass the complete automation_review from attached context. Preserve unrelated instructions/settings. Editing never accepts, enables or runs the plan; V1 automation save/pin workflows are retired.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
-					"document":          map[string]any{"type": "object", "description": "Complete replacement structured plan supplied directly as a native JSON object; do not pass JSON text, quoted/stringified JSON, markdown, or a wrapper string. Copy the current title from the authoritative attached document unless the user explicitly requests a rename"},
+					"document":          sessionExecutablePlanDocumentToolSchema(),
+					"automation_review": automationV2ReviewSchema(),
 				},
 				"required":             []string{"expected_revision", "document"},
 				"additionalProperties": false,
@@ -1290,6 +1389,7 @@ func (r *Runtime) Definitions() []Definition {
 				"additionalProperties": false,
 			},
 		},
+		manageMemoryDefinition(),
 		manageSessionsDefinition(),
 		{
 			Type:        "function",
@@ -1298,7 +1398,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree"}},
+					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"}},
 					"workspace_id":           map[string]any{"type": "string", "description": "Stable target workspace identity. Required with workspace_generation for update/delete; also used by selection actions."},
 					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1, "description": "Expected target generation. Required for update/delete; stale generations fail before mutation."},
 					"workspace_path":         map[string]any{"type": "string", "description": "create: existing directory to save. update: optional existing replacement directory; no files are moved or created."},
@@ -1309,8 +1409,14 @@ func (r *Runtime) Definitions() []Definition {
 					"content":                map[string]any{"type": "string", "maxLength": 32768, "description": "update_map only: complete replacement Markdown document. It must begin with '# Workspace Map'."},
 					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact flat attachment set for set_session (maximum 64). Omit to preserve attachments. Removal requires an explicit replacement default if the current default is removed; historical worktree ownership is retained."},
 					"primary_workspace_id":   map[string]any{"type": "string", "description": "Explicit session default identity, independent of attachment order; added to workspace_ids when omitted there. Git default changes select an owned isolated lane or fail without relabeling history."},
+					"owner_session_id":       map[string]any{"type": "string", "description": "Recovery: exact authorized inventory owner."},
+					"ownership_revision":     map[string]any{"type": "integer", "minimum": 1},
+					"head":                   map[string]any{"type": "string", "description": "Recovery: exact inventory HEAD."},
+					"fingerprint":            map[string]any{"type": "string", "description": "Recovery: exact inventory fingerprint."},
+					"operation_id":           map[string]any{"type": "string", "description": "Recovery: unique operation ID, at most 128 characters."},
+					"files":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "copy_worktree requires explicit exact relative files; commits and patches are unsupported."},
 					"worktree_name":          map[string]any{"type": "string", "description": "adopt_worktree only: short requested name used to allocate a new managed worktree for this same session."},
-					"worktree_path":          map[string]any{"type": "string", "description": "adopt_worktree only: exact prior managed worktree path already recorded as owned by this same session."},
+					"worktree_path":          map[string]any{"type": "string", "description": "discover_worktrees: optional exact clean absolute registered path, selected before ownership/content inspection; omit for a bounded 100-registration inventory with explicit truncated and continuation diagnostics. Missing or foreign ownership is excluded. Exact prior managed path for adoption, or exact authorized discovery path for reclaim_worktree/copy_worktree. Recovery requires workspace_id/generation, owner_session_id, ownership_revision, head, fingerprint and operation_id; copy additionally requires files. Sources are preserved; failed publication retains reservation and a durably journaled destination. cancel_worktree_recovery releases only the exact claimant reservation using discovery revision, operation_id and reservation fingerprint; it never deletes resources or switches the session. Host processes are not fenced by Git fingerprints."},
 					"expected_worktree_path": map[string]any{"type": "string", "description": "adopt_worktree only: optional stale-reference guard for the session's current worktree path; use an empty omission for the first adoption."},
 				},
 				"required":             []string{"action"},
@@ -1320,7 +1426,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote an owned session lane into its captured checkout. Internal integrate never advances dev or another captured checkout. Promote is a separately permissioned operation bound to exact source session/branch/full HEAD and a clean exact target branch/full HEAD. Use the source head_oid returned by manage-sessions git_status and the full target git rev-parse HEAD; abbreviated OIDs and dirty targets are rejected with current-state diagnostics. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
+			Description: "Recall durable Coder child lineage, atomically integrate a committed child batch into the authenticated parent session lane, or explicitly promote one or multiple owned session lanes into their captured checkout. Internal integrate never advances dev or another captured checkout. Promote can promote a single session (via source_session_id) or multiple sessions at once (via source_session_ids or sources) into the target checkout branch (e.g. dev or main). Parameters source_branch, source_head, target_workspace_path, target_branch, and target_head are auto-resolved from session and target worktree state when omitted, or verified against exact OIDs when supplied. Abbreviated OIDs and dirty targets are rejected with current-state diagnostics. The tool validates and preflights complete ordered changes and propagates errors without partial mutation.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1331,12 +1437,14 @@ func (r *Runtime) Definitions() []Definition {
 					"expected_digest":       map[string]any{"type": "string", "description": "Exact inspected source digest required by retain_source"},
 					"task_call_id":          map[string]any{"type": "string", "description": "Durable parent task call to recall or integrate as one complete Coder wave; mutually exclusive with session_ids for integrate"},
 					"workspace_path":        map[string]any{"type": "string", "description": "Optional workspace path; defaults to current/active workspace scope"},
-					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: exact owned session lane source session id"},
-					"source_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected source lane branch"},
-					"source_head":           map[string]any{"type": "string", "description": "Promote only: full exact source lane head_oid returned by manage-sessions git_status; abbreviated OIDs are rejected"},
-					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: captured checkout path to advance"},
-					"target_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected captured target branch"},
-					"target_head":           map[string]any{"type": "string", "description": "Promote only: full exact git rev-parse HEAD of the clean captured target checkout; dirty targets and abbreviated OIDs are rejected"},
+					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: exact owned session lane source session id (or use source_session_ids/sources for multi-session promotion)"},
+					"source_session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Promote only: explicit owned session lane IDs to batch-promote into the captured checkout"},
+					"sources":               map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Promote only: explicit list of source candidates to promote, each with source_session_id (or session_id), and optional source_branch and source_head"},
+					"source_branch":         map[string]any{"type": "string", "description": "Promote only: expected source lane branch; omitted defaults to session worktree branch"},
+					"source_head":           map[string]any{"type": "string", "description": "Promote only: full exact source lane head_oid returned by manage-sessions git_status; omitted defaults to clean source lane HEAD"},
+					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: captured checkout path to advance; omitted defaults to session captured source workspace"},
+					"target_branch":         map[string]any{"type": "string", "description": "Promote only: exact expected captured target branch; omitted defaults to session worktree base branch (e.g. dev or main)"},
+					"target_head":           map[string]any{"type": "string", "description": "Promote only: full exact git rev-parse HEAD of the clean captured target checkout; omitted defaults to clean target checkout HEAD"},
 					"branch_name":           map[string]any{"type": "string", "description": "Optional worktree branch family/prefix override such as agent or foo"},
 					"limit":                 map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
 					"cursor":                map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
@@ -1346,6 +1454,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
@@ -1419,6 +1528,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"title":                  map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
 					"plan":                   map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
+					"automation_review":      automationV2ReviewSchema(),
 					"document":               sessionExecutablePlanDocumentToolSchema(),
 					"plan_id":                map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
 					"id":                     map[string]any{"type": "string", "description": "Alias for plan_id."},
@@ -1463,6 +1573,7 @@ func (r *Runtime) Definitions() []Definition {
 					"amend_future_checkpoints":   map[string]any{"type": "boolean", "description": "For amend_plan: allow replacing pending future checkpoints; when replace_from_checkpoint_id is omitted, the first pending future checkpoint is used."},
 					"override_stale":             map[string]any{"type": "boolean", "description": "For amend_plan only: explicitly allow amendment when base_revision is missing or stale."},
 					"checkpoint":                 map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
+					"automation_review":          automationV2ReviewSchema(),
 					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument. For approval-bearing actions (request_new_plan and amend_plan), an explicit object with title, info.goal, and at least one complete ordered pending checkpoint is required; markdown-only and partial documents are rejected. Draft mutation actions retain the looser document shape."},
 					"document_patch":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
 					"document_operation":         map[string]any{"type": "string", "description": "Structured document operation alias, such as update_info, update_checkpoint, upsert_checkpoint, start_checkpoint, continue_checkpoint, complete_checkpoint, checkpoint_outcome, accept_checkpoint_review, restart_checkpoint, rewind_to_checkpoint, reorder_checkpoints, or set_active_checkpoint."},
@@ -1499,6 +1610,9 @@ func (r *Runtime) Definitions() []Definition {
 					"copyable_code_blocks":       map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "language": map[string]any{"type": "string"}, "code": map[string]any{"type": "string"}}, "required": []string{"code"}, "additionalProperties": false}, "description": "Up to three optional display-only code or command blocks for final and blocked handoffs. Use when the user needs exact text to copy, such as a run command. label and language are optional; code is required. Clients expose a copy affordance and never execute the text automatically."},
 					"suggested_prompts":          map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}}, "required": []string{"label", "prompt"}, "additionalProperties": false}, "description": "Up to three inert next-step label/prompt objects that clients may send only as ordinary V3 user chat messages. Useful for final and blocked handoffs, including a resume prompt after the blocker is resolved."},
 					"pull_request_url":           map[string]any{"type": "string", "description": "Optional public GitHub pull-request URL for a final handoff. Must exactly use https://github.com/<owner>/<repository>/pull/<number>; clients may expose it as a safe external link and must omit the action when absent or invalid."},
+					"closing_state":              map[string]any{"type": "string", "enum": []string{"routine_clean", "deliverable_ready", "attention_alert", "blocked"}, "description": "Structured run closing state for automation execution handoffs: routine_clean (routine check or maintenance completed with no anomalies or required action; renders as a calm minimal status), deliverable_ready (run produced new or updated deliverables/artifacts for review), attention_alert (run detected actionable warnings, drift, threshold exceedances, or issues needing attention), or blocked (run cannot proceed due to missing dependency/permission)."},
+					"summary":                    map[string]any{"type": "string", "description": "Concise one-line summary of the run outcome (e.g. for calm display or quick alert scanning)."},
+					"alert_conditions":           map[string]any{"type": "string", "description": "Alert conditions or triggers for automation execution: conditions that distinguish routine clean completion from an attention alert or failure."},
 					"activate":                   map[string]any{"type": "boolean", "description": "Whether the saved/new plan becomes the active plan (default true)."},
 					"override":                   map[string]any{"type": "boolean", "description": "Legacy action=new field. Replacement is rejected; use request_new_plan with the current plan_id and a complete structured document."},
 				},
@@ -1522,7 +1636,7 @@ func (r *Runtime) Definitions() []Definition {
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
-					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "idea"}, "description": "Required for mode=swarm. image independently Router-hydrates the parent brief plus each base theme and dispatches directly to the account image model without agent sessions. Idea is tool-free and available only in swarm mode."},
+					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "video", "idea"}, "description": "Required for mode=swarm. image and video independently Router-hydrate the parent brief plus each base theme and dispatch directly to the account image or video model without agent sessions. Idea is tool-free and available only in swarm mode."},
 					"count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
 					"themes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
 					"groups":     map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"name": map[string]any{"type": "string"}, "count": map[string]any{"type": "integer", "minimum": 1}, "instructions": map[string]any{"type": "string"}}, "required": []string{"name", "count"}, "additionalProperties": false}, "description": "Optional Coder/Designer groups. Group counts must total count and Router uses them to specialize prompts."},
@@ -1683,12 +1797,13 @@ func sessionPlanDocumentToolSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":          map[string]any{"type": "string"},
-			"title":       map[string]any{"type": "string"},
-			"status":      map[string]any{"type": "string"},
-			"info":        sessionPlanInfoToolSchema(),
-			"artifacts":   map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
-			"checkpoints": map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
+			"id":            map[string]any{"type": "string"},
+			"title":         map[string]any{"type": "string"},
+			"status":        map[string]any{"type": "string"},
+			"info":          sessionPlanInfoToolSchema(),
+			"automation_v2": sessionPlanAutomationV2ToolSchema(),
+			"artifacts":     map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
+			"checkpoints":   map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
 		},
 		"additionalProperties": true,
 	}
@@ -1946,6 +2061,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workspace must be handled by run-service control-plane")
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
+	case "manage-automation", "manage_automation":
+		return "", errors.New("manage_automation V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
 	case "artifact-v2-author", "artifact_v2_author":
@@ -6551,76 +6668,176 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	if r == nil || r.sessions == nil || r.worktrees == nil {
 		return "", errors.New("manage-worktree promote requires session and worktree services")
 	}
-	sourceSessionID := strings.TrimSpace(asString(args["source_session_id"]))
-	sourceBranch := strings.TrimSpace(asString(args["source_branch"]))
-	sourceHead := strings.TrimSpace(asString(args["source_head"]))
+
+	type promoteSourceCandidate struct {
+		sessionID string
+		branch    string
+		head      string
+	}
+	var candidates []promoteSourceCandidate
+
+	if sourcesRaw, ok := args["sources"].([]any); ok && len(sourcesRaw) > 0 {
+		for i, raw := range sourcesRaw {
+			m, ok := raw.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("sources[%d] must be an object", i)
+			}
+			id := strings.TrimSpace(firstNonEmptyString(asString(m["source_session_id"]), asString(m["session_id"])))
+			if id == "" {
+				return "", fmt.Errorf("sources[%d] requires source_session_id", i)
+			}
+			branch := strings.TrimSpace(firstNonEmptyString(asString(m["source_branch"]), asString(m["branch"])))
+			head := strings.TrimSpace(firstNonEmptyString(asString(m["source_head"]), asString(m["head"])))
+			candidates = append(candidates, promoteSourceCandidate{sessionID: id, branch: branch, head: head})
+		}
+	} else if rawIDs := asStringSlice(args["source_session_ids"]); len(rawIDs) > 0 {
+		for _, id := range rawIDs {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				candidates = append(candidates, promoteSourceCandidate{sessionID: id})
+			}
+		}
+	} else if singleID := strings.TrimSpace(asString(args["source_session_id"])); singleID != "" {
+		branch := strings.TrimSpace(asString(args["source_branch"]))
+		head := strings.TrimSpace(asString(args["source_head"]))
+		candidates = append(candidates, promoteSourceCandidate{sessionID: singleID, branch: branch, head: head})
+	}
+
+	if len(candidates) == 0 {
+		return "", errors.New("promote requires source_session_id, source_session_ids, or sources")
+	}
+
+	seenSessions := map[string]bool{}
+	for _, c := range candidates {
+		if seenSessions[c.sessionID] {
+			return "", fmt.Errorf("promote contains duplicate source session %s", c.sessionID)
+		}
+		seenSessions[c.sessionID] = true
+	}
+
 	targetWorkspacePath := strings.TrimSpace(asString(args["target_workspace_path"]))
 	targetBranch := strings.TrimSpace(asString(args["target_branch"]))
 	targetHead := strings.TrimSpace(asString(args["target_head"]))
-	if sourceSessionID == "" || sourceBranch == "" || sourceHead == "" || targetWorkspacePath == "" || targetBranch == "" || targetHead == "" {
-		return "", errors.New("promote requires exact source_session_id, source_branch, source_head, target_workspace_path, target_branch, and target_head")
-	}
-	source, found, err := r.sessions.GetSession(sourceSessionID)
-	if err != nil {
-		return "", err
-	}
-	if !found || source.AccountScopeID != scope.Principal.AccountScopeID || source.UserID != scope.Principal.UserID {
-		return "", errors.New("promotion source is not an owned session")
-	}
-	sourcePath := strings.TrimSpace(source.WorktreeRootPath)
-	capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
-	capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
-	if sourceBranch != source.WorktreeBranch {
-		lane, laneErr := r.selectedRepositoryLane(scope, source, targetWorkspacePath, sourceBranch)
-		if laneErr != nil {
-			return "", fmt.Errorf("select promotion repository lane: %w", laneErr)
+
+	var primaryResolvedTarget string
+	var primaryTargetBranch string
+	var children []worktreeruntime.TaskIntegrationChild
+	resolvedBranches := make([]string, 0, len(candidates))
+
+	for _, c := range candidates {
+		source, found, err := r.sessions.GetSession(c.sessionID)
+		if err != nil {
+			return "", err
 		}
-		sourcePath, capturedPath, capturedHead = lane.WorkspacePath, lane.SourcePath, lane.BaseCommit
-	} else if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBaseBranch != targetBranch || capturedPath == "" || capturedHead == "" {
-		return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+		if !found || source.AccountScopeID != scope.Principal.AccountScopeID || source.UserID != scope.Principal.UserID {
+			return "", errors.New("promotion source is not an owned session")
+		}
+		sourcePath := strings.TrimSpace(source.WorktreeRootPath)
+		capturedPath := strings.TrimSpace(asString(source.Metadata["swarm_v3_source_workspace_path"]))
+		capturedHead := strings.TrimSpace(asString(source.Metadata["base_commit"]))
+
+		branch := c.branch
+		if branch == "" {
+			branch = strings.TrimSpace(source.WorktreeBranch)
+		}
+		expectedTargetBranch := targetBranch
+		if expectedTargetBranch == "" {
+			expectedTargetBranch = strings.TrimSpace(source.WorktreeBaseBranch)
+		}
+		expectedTargetWorkspace := targetWorkspacePath
+		if expectedTargetWorkspace == "" {
+			expectedTargetWorkspace = capturedPath
+		}
+
+		if branch != source.WorktreeBranch {
+			lane, laneErr := r.selectedRepositoryLane(scope, source, expectedTargetWorkspace, branch)
+			if laneErr != nil {
+				return "", fmt.Errorf("select promotion repository lane: %w", laneErr)
+			}
+			sourcePath, capturedPath, capturedHead = lane.WorkspacePath, lane.SourcePath, lane.BaseCommit
+		} else if !source.WorktreeEnabled || sourcePath == "" || source.WorktreeBaseBranch != expectedTargetBranch || capturedPath == "" || capturedHead == "" {
+			return "", errors.New("promotion source is not a complete session-owned lane with captured lineage")
+		}
+		if branch == expectedTargetBranch {
+			return "", errors.New("promotion source must be distinct from the target branch")
+		}
+		resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, expectedTargetWorkspace, capturedPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve promotion target: %w", err)
+		}
+		if primaryResolvedTarget == "" {
+			primaryResolvedTarget = resolvedTarget
+			primaryTargetBranch = expectedTargetBranch
+		} else {
+			if resolvedTarget != primaryResolvedTarget {
+				return "", fmt.Errorf("all promotion sources must target the same workspace (%q != %q)", resolvedTarget, primaryResolvedTarget)
+			}
+			if expectedTargetBranch != primaryTargetBranch {
+				return "", fmt.Errorf("all promotion sources must target the same branch (%q != %q)", expectedTargetBranch, primaryTargetBranch)
+			}
+		}
+
+		sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
+		if err != nil {
+			return "", fmt.Errorf("inspect promotion source lane: %w", err)
+		}
+		if !sourceState.Clean {
+			return "", errors.New("promotion source lane is dirty; commit the intended source changes, then refresh exact lineage before retrying")
+		}
+		if sourceState.BranchName != branch || (c.head != "" && sourceState.HeadCommit != c.head) {
+			return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", branch, c.head, sourceState.BranchName, sourceState.HeadCommit)
+		}
+
+		children = append(children, worktreeruntime.TaskIntegrationChild{
+			SessionID:  c.sessionID,
+			BaseCommit: capturedHead,
+			HeadCommit: sourceState.HeadCommit,
+		})
+		resolvedBranches = append(resolvedBranches, branch)
 	}
-	if sourceBranch == targetBranch {
-		return "", errors.New("promotion source must be distinct from the target branch")
-	}
-	resolvedTarget, err := r.manageWorktreeResolvePromotionTarget(scope, targetWorkspacePath, capturedPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve promotion target: %w", err)
-	}
-	sourceState, err := r.worktrees.InspectTaskWorkspace(sourcePath)
-	if err != nil {
-		return "", fmt.Errorf("inspect promotion source lane: %w", err)
-	}
-	if !sourceState.Clean {
-		return "", errors.New("promotion source lane is dirty; commit the intended source changes, then refresh exact lineage before retrying")
-	}
-	if sourceState.BranchName != sourceBranch || sourceState.HeadCommit != sourceHead {
-		return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", sourceBranch, sourceHead, sourceState.BranchName, sourceState.HeadCommit)
-	}
-	targetState, err := r.worktrees.InspectTaskWorkspace(resolvedTarget)
+
+	targetState, err := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
 	if err != nil {
 		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
 	}
 	if !targetState.Clean {
 		return "", fmt.Errorf("promotion target checkout is dirty at branch %q full HEAD %q; preserve or finish those changes before promotion, then refresh target_branch and target_head", targetState.BranchName, targetState.HeadCommit)
 	}
-	if targetState.BranchName != targetBranch || targetState.HeadCommit != targetHead {
-		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", targetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
+	if (primaryTargetBranch != "" && targetState.BranchName != primaryTargetBranch) || (targetHead != "" && targetState.HeadCommit != targetHead) {
+		return "", fmt.Errorf("promotion target branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; refresh both values from the captured checkout before retrying", primaryTargetBranch, targetHead, targetState.BranchName, targetState.HeadCommit)
 	}
-	plan, err := r.worktrees.PrepareTaskIntegration(resolvedTarget, targetBranch, targetHead, []worktreeruntime.TaskIntegrationChild{{SessionID: sourceSessionID, BaseCommit: capturedHead, HeadCommit: sourceHead}})
+	targetBranchName := targetState.BranchName
+	resolvedTargetHead := targetState.HeadCommit
+
+	plan, err := r.worktrees.PrepareTaskIntegration(primaryResolvedTarget, targetBranchName, resolvedTargetHead, children)
 	if err != nil {
 		return "", err
 	}
-	result, err := r.worktrees.ApplyTaskIntegration(resolvedTarget, plan)
+	result, err := r.worktrees.ApplyTaskIntegration(primaryResolvedTarget, plan)
 	if err != nil {
 		return "", err
 	}
-	encoded, err := json.Marshal(map[string]any{
-		"status": "ok", "action": "promote", "source_session_id": sourceSessionID,
-		"source_branch": sourceBranch, "source_head": sourceHead, "target_workspace_path": resolvedTarget,
-		"target_branch": targetBranch, "previous_target_head": targetHead,
-		"resulting_target_head": result.ResultingParentHead, "promotion": result,
-		"path_id": toolPathID("manage-worktree"),
-	})
+	sourceSessionIDs := make([]string, len(children))
+	for i, ch := range children {
+		sourceSessionIDs[i] = ch.SessionID
+	}
+	resp := map[string]any{
+		"status":                "ok",
+		"action":                "promote",
+		"source_session_ids":    sourceSessionIDs,
+		"target_workspace_path": primaryResolvedTarget,
+		"target_branch":         targetBranchName,
+		"previous_target_head":  resolvedTargetHead,
+		"resulting_target_head": result.ResultingParentHead,
+		"promotion":             result,
+		"path_id":               toolPathID("manage-worktree"),
+	}
+	if len(children) == 1 {
+		resp["source_session_id"] = children[0].SessionID
+		resp["source_branch"] = resolvedBranches[0]
+		resp["source_head"] = children[0].HeadCommit
+	}
+	encoded, err := json.Marshal(resp)
 	if err != nil {
 		return "", err
 	}
@@ -6641,10 +6858,6 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 	}
 	if !parent.WorktreeEnabled || strings.TrimSpace(parent.WorktreeRootPath) == "" || strings.TrimSpace(parent.WorktreeBranch) == "" {
 		return "", errors.New("manage-worktree integrate requires an authenticated session-owned parent lane; use promote for a captured checkout")
-	}
-	parentPath, err := r.manageWorktreeResolveWorkspacePath(scope, "")
-	if err != nil {
-		return "", err
 	}
 	selected := asStringSlice(args["session_ids"])
 	selectedTaskCallID := strings.TrimSpace(asString(args["task_call_id"]))
@@ -6736,9 +6949,32 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 		}
 		return candidates[i].index < candidates[j].index
 	})
-	integrationParentPath := parentPath
-	if len(candidates) > 0 {
-		integrationParentPath = candidates[0].parentPath
+	integrationParentPath := candidates[0].parentPath
+	// workspace_path is an assertion about the selected durable destination, not
+	// a request to retarget children or an ignored hint to use the default lane.
+	if requested := strings.TrimSpace(asString(args["workspace_path"])); requested != "" {
+		absolute, resolved, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, requested)
+		if err != nil {
+			return "", err
+		}
+		if absolute != resolved {
+			return "", errors.New("integration selector must be a canonical workspace path")
+		}
+		if absolute != integrationParentPath {
+			if integrationParentPath == parent.WorktreeRootPath {
+				if absolute != asString(parent.Metadata["swarm_v3_source_workspace_path"]) {
+					return "", errors.New("integration selector does not match the selected child destination")
+				}
+			} else {
+				lane, err := r.selectedRepositoryLane(scope, parent, absolute, "")
+				if err != nil {
+					return "", err
+				}
+				if lane.WorkspacePath != integrationParentPath {
+					return "", errors.New("integration selector does not match the selected child destination")
+				}
+			}
+		}
 	}
 	children := make([]worktreeruntime.TaskIntegrationChild, 0, len(candidates))
 	for _, item := range candidates {
@@ -8979,6 +9215,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-workspace", "manage_workspace":
 		return "manage_workspace"
+	case "manage-automation", "manage_automation":
+		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-artifact", "manage_artifact":
@@ -9564,6 +9802,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_worktree"
 	case "manage-workspace", "manage_workspace":
 		return "manage_workspace"
+	case "manage-automation", "manage_automation":
+		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
 	case "manage-artifact", "manage_artifact":
@@ -10027,6 +10267,8 @@ func toolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
+	case "manage-automation", "manage_automation":
+		return "tool.manage-automation.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
 	case "manage-artifact", "manage_artifact":

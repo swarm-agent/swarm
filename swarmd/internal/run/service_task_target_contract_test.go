@@ -162,6 +162,9 @@ func TestTaskTargetRuntimePreflightAndRegularChildren(t *testing.T) {
 		parsed.Program.Jobs = append(parsed.Program.Jobs, taskProgramJob{ID: jobID, StageID: "build", RequestedSubagentType: "coder", TargetWorkspacePath: target, MetaPrompt: "Implement source.txt", AssignmentLabel: jobID, Deliverable: "commit", OwnedScope: []string{"source.txt"}, AcceptanceCriteria: []string{"done"}, DependencyEvidence: "ready"})
 		parsed.Launches = append(parsed.Launches, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: target, OwnedScope: []string{"source.txt"}})
 	}
+	if err := svc.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	before, err := svc.sessions.ListSessionsForAccountUser(parent.AccountScopeID, parent.UserID, 100)
 	if err != nil {
 		t.Fatal(err)

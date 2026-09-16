@@ -86,6 +86,13 @@ test('sidebar animates every visible governed preview while isolating arbitrary 
   assert.match(source, /sidebarArtifactAnimationProfileKey\(left\) === sidebarArtifactAnimationProfileKey\(right\)/)
 })
 
+test('sidebar shows Music icon indicators for audio artifacts', async () => {
+  const source = await readFile(new URL('./desktop-v3-artifact-sidebar.tsx', import.meta.url), 'utf8')
+  assert.match(source, /data-artifact-audio-indicator/)
+  assert.match(source, /aria-label="Audio artifact"/)
+  assert.match(source, /Attach audio to chat/)
+})
+
 test('session artifact sidebar includes native and delegated artifacts only for the active session', () => {
   const catalog = [
     artifact('session-a', 'native'),

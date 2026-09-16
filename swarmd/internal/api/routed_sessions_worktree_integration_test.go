@@ -16,6 +16,7 @@ func (f *fakeWorktreeService) RollbackAllocation(_ worktreeruntime.Allocation) e
 
 type routedWorktreeServiceStub struct {
 	fakeWorktreeService
+	repositoryFixture  *testing.T
 	allocationErrs     []error
 	allocationCalls    int
 	allocationBranches []string
@@ -44,6 +45,11 @@ func (s *routedWorktreeServiceStub) AllocateDetachedWorkspaceRequested(workspace
 		allocation.BaseBranch = baseBranch
 	}
 	allocation.BranchName = branchName
+	if s.repositoryFixture != nil {
+		// Preserve real source/lane Git authority for deployment identity checks.
+		runGitCommitTestCommand(s.repositoryFixture, workspacePath, "worktree", "add", "-b", branchName, allocation.WorkspacePath, "HEAD")
+		allocation.BaseCommit = strings.TrimSpace(runGitCommitTestCommand(s.repositoryFixture, workspacePath, "rev-parse", "HEAD"))
+	}
 	return allocation, nil
 }
 

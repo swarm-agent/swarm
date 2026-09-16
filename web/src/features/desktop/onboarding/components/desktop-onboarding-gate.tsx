@@ -29,6 +29,8 @@ import {
   type WorkspaceRepositoryState,
 } from '../../../workspaces/launcher/services/workspace-repository'
 import { applyDesktopV3RoutedStartResponse } from '../../session-v3/new-session-flow'
+import { inspectRepository } from '../../../workspaces/launcher/services/repository-review'
+import { RepositoryReviewPanel } from './repository-review-panel'
 import { WorkspaceOnboardingAssistant } from './workspace-onboarding-assistant'
 
 type OnboardingStep = 'identity' | 'provider' | 'workspace'
@@ -80,7 +82,7 @@ const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: strin
   workspace: {
     stepLabel: 'Step 3 of 3 · Workspace',
     title: 'Choose your first workspace.',
-    subtitle: 'Open a saved workspace, add a discovered folder, browse to another folder, or create a new one before entering Swarm.',
+    subtitle: 'Use your home folder or create a new project folder (recommended). A separate folder keeps project work apart from your personal files.',
   },
 }
 
@@ -271,7 +273,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [status, setStatus] = useState(initialStatus)
   const [step, setStep] = useState<OnboardingStep>(() => (restart ? 'identity' : deriveInitialStep(initialStatus)))
   const [view, setView] = useState<OnboardingView>(() => (restart ? 'identity' : deriveInitialStep(initialStatus)))
-  const [pendingAction, setPendingAction] = useState<PendingAction>(null)
+  const [pendingAction, updatePendingAction] = useState<PendingAction>(null)
+  const pendingActionRef = useRef<PendingAction>(null)
+  const setPendingAction = (action: PendingAction) => {
+    pendingActionRef.current = action
+    updatePendingAction(action)
+  }
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [panelVisible, setPanelVisible] = useState(true)
@@ -298,8 +305,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
   const [callbackInput, setCallbackInput] = useState('')
   const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [namingProject, setNamingProject] = useState(false)
+  const [projectName, setProjectName] = useState('')
+  const [projectParent, setProjectParent] = useState('')
+  const projectDestination = projectName.trim() ? `${projectParent.trim().replace(/\/$/, '')}/${projectName.trim()}` : ''
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
+  const [reviewPath, setReviewPath] = useState<string | null>(null)
   const [workspaceRepositoryState, setWorkspaceRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
   const [pendingFolder, setPendingFolder] = useState<Pick<WorkspaceDiscoverEntry, 'path' | 'name'> | null>(null)
   const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
@@ -344,7 +356,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const showProviderSetupChoices = providerSetupOptionCount > 1
   const showCredentialSection = (providerSetupMode === 'api' || (!showProviderSetupChoices && Boolean(selectedManualMethod))) && Boolean(selectedManualMethod)
   const showOAuthSection = providerSetupMode === 'oauth-device' || providerSetupMode === 'oauth-browser' || providerSetupMode === 'oauth-manual'
-  const submitting = pendingAction !== null
+  const submitting = pendingAction !== null || !panelVisible
   const progress = pendingMessage(pendingAction)
   const mustUseOnboardingProviderAPI = status.heuristics.credentialCount === 0 && status.heuristics.agentCount === 0
   const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
@@ -450,37 +462,44 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }, [providerReloadNonce, step, status.identity.bootstrapped])
 
   useEffect(() => {
-    if ((codexOAuthMode !== 'browser' && codexOAuthMode !== 'device') || !oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
+    if (step !== 'provider' || (codexOAuthMode !== 'browser' && codexOAuthMode !== 'device') || !oauthSession?.sessionID || oauthSession.status === 'success' || oauthSession.status === 'error') {
       return
     }
 
+    let cancelled = false
+    let inFlight = false
     const timer = window.setInterval(() => {
+      if (inFlight || pendingActionRef.current !== null) return
+      inFlight = true
       void getCodexOAuthStatus(oauthSession.sessionID)
-        .then((next) => {
-          setOAuthSession(next)
+        .then(async (next) => {
+          if (cancelled) return
+          if (next.status !== 'success') setOAuthSession(next)
           if (next.status === 'error') {
             setError(next.error || 'Codex sign-in failed. Choose a fallback below if device authorization is unavailable.')
           }
           if (next.status === 'success') {
             setError(null)
-            void reloadStatus()
-              .then(() => refreshAuthDependentQueries())
-              .then(() => {
-                setNotice('Provider connected. Choose your workspace when you’re ready.')
-                transitionToStep('workspace')
-              })
-              .catch((err) => setError(err instanceof Error ? err.message : 'Provider connected, but failed to refresh status.'))
+            await reloadStatus()
+            if (cancelled) return
+            await refreshAuthDependentQueries()
+            if (cancelled) return
+            setOAuthSession(next)
+            setNotice('Provider connected. Choose your workspace when you’re ready.')
+            transitionToStep('workspace')
           }
         })
         .catch((err) => {
-          setError(err instanceof Error ? err.message : 'Failed to refresh OAuth status')
+          if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to refresh OAuth status')
         })
+        .finally(() => { inFlight = false })
     }, 1500)
 
     return () => {
+      cancelled = true
       window.clearInterval(timer)
     }
-  }, [codexOAuthMode, oauthSession])
+  }, [codexOAuthMode, oauthSession, step])
 
   const clearStepTransition = () => {
     if (transitionTimerRef.current !== null) {
@@ -563,8 +582,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     if (!normalizedName) {
       throw new Error('Swarm name is required.')
     }
+    // A previous request can succeed even if its response was lost.
+    const current = await onReload()
+    setStatus(current)
     await patchDesktopOnboarding({
-      username: status.identity.bootstrapped ? undefined : normalizedUsername,
+      username: current.identity.bootstrapped ? undefined : normalizedUsername,
       swarmName: normalizedName,
       desktopOnboardingComplete: false,
     })
@@ -575,9 +597,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return refreshed
   }
 
-  const finalizeOnboarding = async () => {
-    setPendingAction('finalize')
-    transitionToSetup()
+  const finalizeOnboarding = async (preserveReview = false) => {
+    if (!preserveReview) { setPendingAction('finalize'); transitionToSetup() }
     const [, next] = await Promise.all([
       waitForOnboardingReadyHold(),
       patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
@@ -586,12 +607,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return next
   }
 
-  const saveAndOpenReadyWorkspace = async (path: string, name: string): Promise<WorkspaceResolution> => {
+  const saveAndOpenReadyWorkspace = async (path: string, name: string, confirmCommittedOnly = false): Promise<WorkspaceResolution> => {
     await saveWorkspace({
       path,
       name: name || fallbackWorkspaceNameFromPath(path),
       themeId: 'inherit',
       makeCurrent: true,
+      confirmCommittedOnly,
     })
     await refreshWorkspaces()
     return openWorkspace(path)
@@ -613,8 +635,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
-  const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string) => {
-    const next = await finalizeOnboarding()
+  const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string, preserveReview = false) => {
+    const next = await finalizeOnboarding(preserveReview)
     await refreshAuthDependentQueries()
     if (next.needsOnboarding) {
       throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
@@ -629,16 +651,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const handleProviderContinue = () => {
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     setError(null)
     setNotice(null)
+    setCredentialValue('')
+    setCallbackInput('')
+    setOAuthSession(null)
     transitionToStep('workspace')
   }
 
   const handleOpenWorkspace = (path: string) => {
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     setPendingFolder(null)
@@ -667,7 +692,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const handleSaveAndOpenFolder = (entry: Pick<WorkspaceDiscoverEntry, 'path' | 'name'>) => {
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     setPendingFolder(entry)
@@ -677,8 +702,12 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setWorkspaceError(null)
       setWorkspaceExplorerOpen(false)
       setWorkspaceRepositoryState(null)
-      transitionToSetup()
       try {
+        const repository = await inspectRepository(entry.path)
+        if (repository.state !== 'ready' || repository.needsReview) {
+          setWorkspaceRepositoryState(repository)
+          return
+        }
         const selectedResolution = await saveAndOpenReadyWorkspace(
           entry.path,
           entry.name || fallbackWorkspaceNameFromPath(entry.path),
@@ -700,8 +729,8 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const initializeOnboardingRepository = async () => {
     const repository = workspaceRepositoryState
-    if (submitting || repositoryHelpBusy || !repository?.path || !repository.canSetup) return
-    if (!window.confirm(`Initialize Git in ${repository.path} and create an empty first commit? No existing files will be staged or committed. Swarm will then add this workspace.`)) return
+    if (submitting || pendingActionRef.current !== null || repositoryHelpBusy || !repository?.path || (!repository.canSetup && repository.state !== 'directory_missing')) return
+    if (!window.confirm(`Create ${repository.path} if needed, initialize Git with only an empty starting commit, and open it? No existing files will be staged or committed; they stay outside managed worktrees.`)) return
     setPendingAction('workspace')
     setWorkspaceError(null)
     try {
@@ -711,6 +740,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       const selectedResolution = await saveAndOpenReadyWorkspace(
         ready.path,
         fallbackWorkspaceNameFromPath(ready.path),
+        true,
       )
       await finishWithWorkspace(selectedResolution, ready.path)
     } catch (error) {
@@ -724,6 +754,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const askSwarmForOnboardingRepositoryHelp = async () => {
+    if (pendingActionRef.current !== null || repositoryHelpBusy) return
     const repository = workspaceRepositoryState
     if (!repository || repository.state !== 'needs_assisted_setup') {
       setWorkspaceError('Onboarding Swarm is available only for an unsaved folder containing existing files that still needs repository setup.')
@@ -733,6 +764,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setWorkspaceError('Connect a provider in the previous onboarding step before starting Onboarding Swarm.')
       return
     }
+    setPendingAction('workspace')
     setRepositoryHelpBusy(true)
     setWorkspaceError(null)
     try {
@@ -757,12 +789,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setWorkspaceError(error instanceof Error ? `${error.message} Fix the folder manually or retry.` : 'Could not start Onboarding Swarm. Fix the folder manually or retry.')
     } finally {
       setRepositoryHelpBusy(false)
+      setPendingAction(null)
     }
   }
 
   const recheckOnboardingRepository = async () => {
     const assistant = onboardingAssistant
-    if (!assistant) return
+    if (!assistant || pendingActionRef.current !== null || repositoryRecheckBusy) return
+    setPendingAction('workspace')
     setRepositoryRecheckBusy(true)
     setRepositoryRecheckError(null)
     try {
@@ -785,6 +819,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       }
     } finally {
       setRepositoryRecheckBusy(false)
+      setPendingAction(null)
     }
   }
 
@@ -799,13 +834,20 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const handleIdentitySubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     void handleIdentityContinue()
   }
 
   const handleIdentityContinue = async () => {
+    if (pendingActionRef.current !== null) return
+    const invalid = !status.identity.bootstrapped && !username.trim() ? 'desktop-onboarding-username' : !swarmName.trim() ? 'desktop-onboarding-swarm-name' : null
+    if (invalid) {
+      setError(invalid === 'desktop-onboarding-username' ? 'Your name is required.' : 'Swarm name is required.')
+      document.getElementById(invalid)?.focus()
+      return
+    }
     setPendingAction('identity')
     setError(null)
     setNotice(null)
@@ -821,7 +863,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const handleProviderSave = async () => {
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     setPendingAction('provider-save')
@@ -887,7 +929,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const handleStartOAuth = async (method: CodexOAuthMode) => {
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     if (!selectedProvider) {
@@ -931,7 +973,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   }
 
   const handleCompleteOAuth = async () => {
-    if (submitting) {
+    if (submitting || pendingActionRef.current !== null) {
       return
     }
     if (!oauthSession?.sessionID) {
@@ -1005,13 +1047,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                 <form className="grid h-full content-start gap-6" onSubmit={handleIdentitySubmit}>
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-username">
-                      Your username.
+                      Your name.
                     </label>
                     <Input
                       id="desktop-onboarding-username"
-                      autoFocus={!status.identity.bootstrapped}
+                      autoFocus={!status.identity.username}
                       value={username}
                       onChange={(event) => setUsername(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                        event.preventDefault()
+                        if (username.trim()) document.getElementById('desktop-onboarding-swarm-name')?.focus()
+                        else setError('Your name is required.')
+                      }}
                       placeholder="Username"
                       autoComplete="username"
                       disabled={status.identity.bootstrapped || submitting}
@@ -1025,11 +1073,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-swarm-name">
-                      Name this device.
+                      Name your Swarm.
                     </label>
                     <Input
                       id="desktop-onboarding-swarm-name"
-                      autoFocus={status.identity.bootstrapped}
+                      autoFocus={Boolean(status.identity.username)}
                       value={swarmName}
                       onChange={(event) => setSwarmName(event.target.value)}
                       placeholder="Studio MacBook"
@@ -1075,7 +1123,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       <div className="grid gap-3">
                         <div>
                           <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Choose provider</h2>
-                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Pick a provider to reveal setup options.</p>
+                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Pick a provider to connect, or use a connected provider and open workspace setup.</p>
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                           {providerOptions.map((provider) => {
@@ -1086,7 +1134,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 key={provider.id}
                                 type="button"
                                 onClick={() => {
+                                  if (pendingActionRef.current !== null) return
                                   setProviderID(provider.id)
+                                  if (connected) transitionToStep('workspace')
                                   setError(null)
                                   setNotice(null)
                                 }}
@@ -1334,6 +1384,20 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
               {view === 'workspace' ? (
                 <div className="grid h-full min-h-0 content-start gap-5">
                   <div className="grid min-h-0 content-start gap-5">
+                    {status.workspaceGuidance ? <section className="grid gap-2 text-sm" aria-label="Runtime identity">
+                      <p>Work runs as Linux account {status.workspaceGuidance.runtime_username || status.workspaceGuidance.runtime_uid}. This account already exists; Swarm sign-in and project access are separate prerequisites.</p>
+                      <p>Administrative changes use the installation terminal and OS authentication, never passwords in this form. Access or trust failures do not authorize permission or Git-trust changes.</p>
+                      {status.workspaceGuidance.home_path ? <Button type="button" disabled={submitting} onClick={() => { setNamingProject(false); handleSaveAndOpenFolder({path: status.workspaceGuidance!.home_path, name: 'Home'}) }}>Use home folder</Button> : null}
+                      <Button type="button" disabled={submitting} onClick={() => { setProjectParent(current => current || status.workspaceGuidance!.home_path || ''); setNamingProject(true); setWorkspaceRepositoryState(null); setPendingFolder(null) }}>Create a new project folder (recommended)</Button>
+                      <p>Git setup creates only an empty starting commit. Existing home files are never automatically staged or committed.</p>
+                    </section> : null}
+                    {namingProject ? <section aria-label="New project folder" className="grid gap-3" onKeyDown={event => { if (event.key === 'Escape' && !submitting) { event.stopPropagation(); setNamingProject(false) } }}>
+                      <label>Project name<Input value={projectName} onChange={event => setProjectName(event.target.value)} disabled={submitting} autoFocus /></label>
+                      <label>Parent location<Input value={projectParent} onChange={event => setProjectParent(event.target.value)} disabled={submitting} /></label>
+                      <p className="break-all">Destination: {projectDestination || 'Enter a project name'}</p>
+                      <Button type="button" disabled={submitting || !projectName.trim() || ['.', '..'].includes(projectName.trim()) || projectName.includes('/') || projectName.includes('\\') || !projectParent.trim().startsWith('/')} onClick={() => { setNamingProject(false); handleSaveAndOpenFolder({path: projectDestination, name: projectName.trim()}) }}>Continue to setup confirmation</Button>
+                      <Button type="button" variant="outline" disabled={submitting} onClick={() => setNamingProject(false)}>Back (keep draft)</Button>
+                    </section> : null}
                     {workspaceStatusError ? (
                       <WorkspaceStatus
                         kind="error"
@@ -1344,11 +1408,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       />
                     ) : null}
 
-                    {pendingFolder && (!workspaceRepositoryState || workspaceRepositoryState.state === 'ready') ? <div className="grid gap-2">
+                    {workspaceError && pendingFolder && (!workspaceRepositoryState || workspaceRepositoryState.state === 'ready') ? <div className="grid gap-2">
                       <p className="break-all text-sm">Selected folder: {pendingFolder.path}</p>
                       <Button type="button" disabled={submitting} onClick={() => handleSaveAndOpenFolder(pendingFolder)}>Retry adding this folder</Button>
                     </div> : null}
-                    {workspaceRepositoryState && workspaceRepositoryState.state !== 'ready' ? (
+                    {workspaceRepositoryState ? (
                       <section className="grid gap-3 rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4" role="alert" aria-live="polite">
                         <div className="flex items-start gap-3">
                           <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
@@ -1358,14 +1422,15 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             <p className="text-sm leading-6 text-[var(--app-text-muted)]">Swarm isolates agent work in managed worktrees. {workspaceRepositoryState.message}</p>
                           </div>
                         </div>
-                        {workspaceRepositoryState.canSetup ? (
+                        {workspaceRepositoryState.needsReview ? <Button type="button" disabled={submitting} onClick={() => setReviewPath(workspaceRepositoryState.path)}>Review and select content — no provider required</Button> : null}
+                        {(workspaceRepositoryState.canSetup && !workspaceRepositoryState.needsReview) || workspaceRepositoryState.state === 'directory_missing' ? (
                           <Button type="button" onClick={() => void initializeOnboardingRepository()} disabled={submitting || repositoryHelpBusy}>
                             <GitBranch size={15} />
-                            Initialize Git repository and add workspace
+                            Set up folder + empty starting commit + open
                           </Button>
                         ) : workspaceRepositoryState.state === 'git_unavailable' ? (
                           <div className="grid gap-2 text-sm text-[var(--app-warning)]">
-                            <p className="font-medium">Git is a mandatory Swarm runtime prerequisite. Repair or reinstall Swarm, then retry this folder.</p>
+                            <p className="font-medium">Git is unavailable to the daemon. Ask the installation administrator to repair the runtime prerequisite, then use Recheck below. Your identity and workspace setup are preserved.</p>
                           </div>
                         ) : (
                           <div className="grid gap-3">
@@ -1379,7 +1444,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                               </Button> : null}
                             </div>
                             {!canUseOnboardingAssistant && workspaceRepositoryState.state === 'needs_assisted_setup' ? (
-                              <p className="text-sm font-medium text-[var(--app-warning)]">Connect a provider in the previous step to use Onboarding Swarm. You can still run git init, review .gitignore, stage only intended files, create the first commit, and retry.</p>
+                              <p className="text-sm font-medium text-[var(--app-warning)]">AI assistance is optional. Use Review and select content above to prepare this folder without a provider.</p>
                             ) : (
                               <p className="text-xs leading-5 text-[var(--app-text-muted)]">Manual requirements: this selected folder must be the repository root and HEAD must resolve to an initial commit.</p>
                             )}
@@ -1390,6 +1455,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       </section>
                     ) : null}
 
+                    {reviewPath ? <RepositoryReviewPanel key={reviewPath} path={reviewPath} onCancel={() => setReviewPath(null)} onReady={async (path, committedOnly) => {
+                      if (pendingActionRef.current !== null) throw new Error('Another onboarding action is running.')
+                      setPendingAction('workspace')
+                      try {
+                        const resolution = await saveAndOpenReadyWorkspace(path, fallbackWorkspaceNameFromPath(path), committedOnly)
+                        await finishWithWorkspace(resolution, path, true)
+                      } finally { setPendingAction(null) }
+                    }} /> : null}
                     <section className="grid gap-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                         <div>

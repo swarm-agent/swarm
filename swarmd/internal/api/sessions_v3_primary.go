@@ -14,6 +14,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -35,6 +36,7 @@ const (
 // V3 primary write handlers delegate through the ApplySessionMutation boundary.
 
 type sessionsV3CreateRequest struct {
+	Purpose                        string                        `json:"purpose,omitempty"`
 	SessionID                      string                        `json:"session_id,omitempty"`
 	ClientRequestID                string                        `json:"client_request_id,omitempty"`
 	IdempotencyKey                 string                        `json:"idempotency_key,omitempty"`
@@ -42,6 +44,7 @@ type sessionsV3CreateRequest struct {
 	WorkspacePath                  string                        `json:"workspace_path"`
 	WorkspaceName                  string                        `json:"workspace_name,omitempty"`
 	WorkspaceBindingID             string                        `json:"workspace_binding_id,omitempty"`
+	WorkspaceID                    string                        `json:"workspace_id,omitempty"`
 	SwarmID                        string                        `json:"swarm_id,omitempty"`
 	TargetKind                     string                        `json:"target_kind,omitempty"`
 	TargetRelationship             string                        `json:"target_relationship,omitempty"`
@@ -584,9 +587,13 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req struct {
-		PermissionID string `json:"permission_id"`
-		PlanID       string `json:"plan_id"`
-		PlanRevision int64  `json:"plan_revision"`
+		AutomationV2       bool   `json:"automation_v2"`
+		AutomationID       string `json:"automation_id"`
+		AutomationRevision uint64 `json:"automation_revision"`
+		WorkspaceID        string `json:"workspace_id"`
+		PermissionID       string `json:"permission_id"`
+		PlanID             string `json:"plan_id"`
+		PlanRevision       int64  `json:"plan_revision"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -598,16 +605,60 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		return
 	}
 	req.PermissionID, req.PlanID = strings.TrimSpace(req.PermissionID), strings.TrimSpace(req.PlanID)
-	if kind == "plan" && (req.PermissionID == "" || req.PlanID == "" || req.PlanRevision <= 0) {
+	if req.AutomationV2 {
+		if kind != "plan" || parent.AutomationV2 == nil || req.AutomationID != parent.AutomationV2.AutomationID || req.WorkspaceID != parent.AutomationV2.WorkspaceID || req.PermissionID != "" || req.PlanID != "" || req.PlanRevision != 0 {
+			automationV2Error(w, pebblestore.ErrAutomationV2Conflict)
+			return
+		}
+		record, found, readErr := s.sessions.GetAutomationV2Record(principal.AccountScopeID, principal.UserID, req.WorkspaceID, parentSessionID)
+		if readErr != nil || !found || record.Revision != req.AutomationRevision {
+			automationV2Error(w, pebblestore.ErrAutomationV2Conflict)
+			return
+		}
+		proposal, found, readErr := s.sessions.GetAutomationV2Proposal(principal.AccountScopeID, principal.UserID, req.WorkspaceID, parentSessionID)
+		if readErr != nil || !found {
+			automationV2Error(w, pebblestore.ErrAutomationV2Conflict)
+			return
+		}
+		req.PermissionID = pebblestore.AutomationV2PermissionID(proposal.ProposalID)
+		req.PlanID, req.PlanRevision = proposal.ProposalID, int64(proposal.Revision)
+	}
+	automationReview := req.AutomationID != "" && !req.AutomationV2
+	var automationRecord pebblestore.AutomationRecord
+	if automationReview {
+		if kind != "plan" || req.PermissionID != "" || req.PlanID != "" || req.PlanRevision != 0 || s.automations == nil || s.automations.domain == nil {
+			writeError(w, http.StatusBadRequest, errors.New("automation review requires an exclusive exact automation reference"))
+			return
+		}
+		p := automation.Principal{AccountID: principal.AccountScopeID, SubjectID: principal.UserID, Role: "user"}
+		if existing, err := automation.RuntimePrincipal(r.Context()); err == nil && existing != p {
+			automationHTTPError(w, automation.ErrDenied)
+			return
+		}
+		ctx, err := automation.BindRuntimeIdentity(r.Context(), principal, "user", "")
+		if err != nil {
+			automationHTTPError(w, err)
+			return
+		}
+		automationRecord, err = s.automations.domain.ReviewContext(ctx, p, pebblestore.AutomationScope{AccountID: principal.AccountScopeID, WorkspaceID: req.WorkspaceID}, req.AutomationID, req.AutomationRevision, parentSessionID)
+		if err != nil {
+			automationHTTPError(w, err)
+			return
+		}
+	}
+	if kind == "plan" && !automationReview && (req.PermissionID == "" || req.PlanID == "" || req.PlanRevision <= 0) {
 		writeError(w, http.StatusBadRequest, errors.New("permission_id, plan_id, and positive plan_revision are required for Plan"))
 		return
 	}
-	permissions, err := s.perm.ListPermissions(parentSessionID, 1000)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	var permissions []pebblestore.PermissionRecord
+	if !automationReview {
+		permissions, err = s.perm.ListPermissions(parentSessionID, 1000)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 	}
-	bound := kind == "ai"
+	bound := kind == "ai" || automationReview
 	var planPermission pebblestore.PermissionRecord
 	for _, record := range permissions {
 		toolName := strings.TrimSpace(record.ToolName)
@@ -625,7 +676,10 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	// The permission projection is authoritative until approval. Never attach
 	// client-supplied plan JSON to the reserved agent prompt.
 	var planContext map[string]any
-	if kind == "plan" {
+	if automationReview {
+		planContext = map[string]any{"context_source": "automation_definition", "automation": automationRecord}
+	}
+	if kind == "plan" && !automationReview {
 		if err := json.Unmarshal([]byte(planPermission.ToolArguments), &planContext); err != nil {
 			writeError(w, http.StatusConflict, fmt.Errorf("pending plan proposal payload is invalid: %w", err))
 			return
@@ -672,6 +726,9 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			return
 		}
 		profile.Prompt = agentruntime.PlanSidechatAgentPromptWithContext(string(contextJSON))
+		if req.AutomationV2 {
+			profile.Prompt += "\nYou are Swarm helping optimize this bound Automation. Read manage_automation context/progress for current review and recorded work. Propose instruction and timing changes only through edit_pending_plan with the exact automation_review. Conversation belongs only here, never in the main automation or occurrence chat. Acceptance is exclusively the user's action; do not execute the automation."
+		}
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)
 	metadata := sessionsV3SystemSidechatMetadata(parentSessionID, kind, profile)
@@ -681,6 +738,16 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		metadata = sessionsV3ModelProfileMetadata(metadata, modelProfile)
 		metadata["plan_permission_id"], metadata["plan_id"], metadata["plan_revision"] = req.PermissionID, req.PlanID, req.PlanRevision
 		metadata["plan_context_source"] = "permission_projection"
+		if automationReview {
+			metadata["plan_context_source"] = "automation_definition"
+			metadata["automation_review_id"] = req.AutomationID
+			metadata["automation_review_revision"] = strconv.FormatUint(req.AutomationRevision, 10)
+			metadata["automation_review_workspace_id"] = req.WorkspaceID
+		}
+	}
+	if req.AutomationV2 {
+		metadata["automation_v2_optimization"] = true
+		metadata["automation_v2_parent_id"] = parentSessionID
 	}
 	metadata["originating_agent_name"] = firstNonEmpty(sessionsV3MetadataString(parent.Metadata, "resolved_agent_name"), sessionsV3MetadataString(parent.Metadata, "agent_name"), parentProfile.Name)
 	metadata["originating_provider"], metadata["originating_model"] = profile.Provider, profile.Model
@@ -716,7 +783,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			return
 		}
 		priorHash := sha256.Sum256(priorJSON)
-		updateKey := fmt.Sprintf("system-sidechat-bind:%s:%s:%d:%x", kind, req.PermissionID, req.PlanRevision, priorHash[:])
+		updateKey := fmt.Sprintf("system-sidechat-bind:%s:%s:%d:%s:%d:%x", kind, req.PermissionID, req.PlanRevision, req.AutomationID, req.AutomationRevision, priorHash[:])
 		updateKind := sessionruntime.SessionMutationUpdateMetadata
 		if kind == "plan" {
 			updateKind = sessionruntime.SessionMutationUpdateModelProfile
@@ -736,7 +803,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusBadRequest, updateErr)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "automation_id": req.AutomationID, "automation_revision": req.AutomationRevision, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": updateResult.Replayed})
 		return
 	}
 	sidecar := pebblestore.SessionSnapshot{ID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, Title: title, Mode: sessionruntime.ModeAuto, Preference: preference, ModelProfile: pebblestore.CloneSessionModelProfileSnapshot(modelProfile), Metadata: metadata, CreatedAt: now, UpdatedAt: now}
@@ -744,7 +811,9 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	payload, _ := json.Marshal(struct {
 		Parent, Permission, Plan string
 		Revision                 int64
-	}{parentSessionID, req.PermissionID, req.PlanID, req.PlanRevision})
+		Automation               string
+		AutomationRevision       uint64
+	}{parentSessionID, req.PermissionID, req.PlanID, req.PlanRevision, req.AutomationID, req.AutomationRevision})
 	payloadSum := sha256.Sum256(payload)
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: sidecarID, UserID: principal.UserID, AccountScopeID: principal.AccountScopeID, ClientRequestID: clientRequestID, IdempotencyKey: clientRequestID, PayloadHash: hex.EncodeToString(payloadSum[:]), RequestHash: hex.EncodeToString(payloadSum[:]), Kind: sessionruntime.SessionMutationCreateSession, Session: &sidecar, NowUnixMs: now})
 	if err != nil {
@@ -755,13 +824,17 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "originating_agent_name": metadata["originating_agent_name"], "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": result.Replayed})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kind, "session_id": sidecarID, "parent_session_id": parentSessionID, "automation_id": req.AutomationID, "automation_revision": req.AutomationRevision, "permission_id": req.PermissionID, "plan_id": req.PlanID, "plan_revision": req.PlanRevision, "originating_agent_name": metadata["originating_agent_name"], "provider": profile.Provider, "model": profile.Model, "runtime_swarm_id": sessionsV3MetadataString(parent.Metadata, "swarm_v3_runtime_swarm_id"), "replayed": result.Replayed})
 }
 
 func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Request, principal identity.Principal) {
 	var req sessionsV3CreateRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Purpose != "" && req.Purpose != pebblestore.SessionPurposeAutomationManagement {
+		writeError(w, http.StatusBadRequest, errors.New("unsupported session purpose"))
 		return
 	}
 	sessionID := strings.TrimSpace(req.SessionID)
@@ -839,6 +912,15 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	if req.Purpose == pebblestore.SessionPurposeAutomationManagement {
+		if binding.SourceWorkspaceID == "" || resolvedAgent.Name != agentruntime.SwarmAgentID {
+			writeError(w, http.StatusBadRequest, errors.New("automation management requires Swarm and a saved workspace"))
+			return
+		}
+		session.Metadata[pebblestore.SessionPurposeMetadataKey] = req.Purpose
+		session.Metadata[pebblestore.SessionPurposeWorkspaceMetadataKey] = binding.SourceWorkspaceID
+		session.Metadata["navigation_hidden"] = true
+	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
 	}
@@ -874,17 +956,23 @@ func (s *Server) handleSessionsV3PrimaryCreate(w http.ResponseWriter, r *http.Re
 	} else {
 		session.WorktreeBranch = sessionruntime.DetectCurrentBranch(session.WorkspacePath)
 	}
+	admission, err := sessionsV3AllocatedLaneAdmission(session)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	result, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          principal.UserID,
-		AccountScopeID:  principal.AccountScopeID,
-		ClientRequestID: clientRequestID,
-		IdempotencyKey:  clientRequestID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationCreateSession,
-		Session:         &session,
-		NowUnixMs:       now,
+		WorktreeAdmission: admission,
+		SessionID:         sessionID,
+		UserID:            principal.UserID,
+		AccountScopeID:    principal.AccountScopeID,
+		ClientRequestID:   clientRequestID,
+		IdempotencyKey:    clientRequestID,
+		PayloadHash:       payloadHash,
+		RequestHash:       payloadHash,
+		Kind:              sessionruntime.SessionMutationCreateSession,
+		Session:           &session,
+		NowUnixMs:         now,
 	})
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
@@ -2187,7 +2275,7 @@ func (s *Server) handleSessionV3PrimaryActivePlan(w http.ResponseWriter, r *http
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": false, "active_plan": nil})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": plan})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "has_active": true, "active_plan": plan, "document_sha256": sessionPlanDocumentDigest(plan.Document)})
 		return
 	}
 	var req struct {
@@ -2293,7 +2381,7 @@ func (s *Server) handleSessionV3PrimaryPlans(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": prepared.Plan, "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": prepared.Plan, "document_sha256": sessionPlanDocumentDigest(prepared.Plan.Document), "mutation": sessionV3MutationResultResponse(result), "realtime_outbox": result.RealtimeOutbox})
 }
 
 func (s *Server) preflightSessionsV3PlanFreshRun(_ *http.Request, _ identity.Principal, _ string) (int, error) {
@@ -2357,7 +2445,7 @@ func (s *Server) handleSessionV3PrimaryPlanByID(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "plan not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "plan": plan, "document_sha256": sessionPlanDocumentDigest(plan.Document)})
 }
 
 func (s *Server) handleSessionsV3SubagentStop(w http.ResponseWriter, r *http.Request) {
@@ -3279,6 +3367,20 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 		return sessionsV3PrimaryBinding{}, fmt.Errorf("sessions v3 primary target_relationship %q is not self", strings.TrimSpace(req.TargetRelationship))
 	}
 	workspaceBindingID := strings.TrimSpace(req.WorkspaceBindingID)
+	if workspaceBindingID == "" && strings.TrimSpace(req.WorkspaceID) != "" {
+		reqWorkspaceID := strings.TrimSpace(req.WorkspaceID)
+		allBindings, listErr := s.topology.ListWorkspaceBindingsForAccount(principal.AccountScopeID, 100)
+		if listErr == nil {
+			for _, candidate := range allBindings {
+				if strings.TrimSpace(candidate.SourceWorkspaceID) == reqWorkspaceID && strings.TrimSpace(candidate.DestinationRuntimeSwarmID) == primarySwarmID && strings.TrimSpace(candidate.State) == pebblestore.TopologyWorkspaceBindingStateBound {
+					if workspaceBindingID != "" && workspaceBindingID != strings.TrimSpace(candidate.BindingID) {
+						return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary default workspace has multiple canonical local bindings")
+					}
+					workspaceBindingID = strings.TrimSpace(candidate.BindingID)
+				}
+			}
+		}
+	}
 	defaultWorkspacePath := ""
 	if workspaceBindingID == "" {
 		workspacePath := strings.TrimSpace(req.WorkspacePath)
@@ -3517,7 +3619,7 @@ func (s *Server) handleSessionsV3CreateReplay(w http.ResponseWriter, principal i
 
 func (s *Server) resolveSessionsV3CreateWorktree(principal identity.Principal, workspacePath, sessionID string, requestedUseCurrentBranch *bool, requestedBaseBranch, requestedBranchName, requestedExistingPath string) (worktreeruntime.Allocation, error) {
 	if strings.TrimSpace(requestedExistingPath) != "" {
-		return s.reuseSessionsV3CreateWorktree(principal, workspacePath, requestedBranchName, requestedExistingPath)
+		return worktreeruntime.Allocation{}, errors.New("existing worktrees require explicit same-session adoption or recovery; creation cannot claim an existing lane")
 	}
 	return s.allocateSessionsV3CreateWorktree(principal, workspacePath, sessionID, requestedUseCurrentBranch, requestedBaseBranch, requestedBranchName)
 }
@@ -3626,6 +3728,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorkspacePath            string                        `json:"workspace_path"`
 		WorkspaceName            string                        `json:"workspace_name"`
 		WorkspaceBindingID       string                        `json:"workspace_binding_id"`
+		WorkspaceID              string                        `json:"workspace_id,omitempty"`
 		SwarmID                  string                        `json:"swarm_id"`
 		Mode                     string                        `json:"mode"`
 		AgentName                string                        `json:"agent_name,omitempty"`
@@ -3644,6 +3747,7 @@ func sessionsV3CreatePayloadHash(sessionID string, req sessionsV3CreateRequest, 
 		WorkspacePath:            strings.TrimSpace(workspacePath),
 		WorkspaceName:            workspaceName,
 		WorkspaceBindingID:       strings.TrimSpace(req.WorkspaceBindingID),
+		WorkspaceID:              strings.TrimSpace(req.WorkspaceID),
 		SwarmID:                  strings.TrimSpace(req.SwarmID),
 		Mode:                     sessionruntime.NormalizeMode(req.Mode),
 		AgentName:                strings.TrimSpace(req.AgentName),
@@ -4084,7 +4188,9 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "agent_name",
+	case pebblestore.SessionPurposeMetadataKey,
+		pebblestore.SessionPurposeWorkspaceMetadataKey,
+		"agent_name",
 		"agent_profile",
 		"model_profile",
 		"resolved_agent_name",

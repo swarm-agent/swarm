@@ -107,8 +107,14 @@ type ToolImageSettings struct {
 	DefaultModel string `json:"default_model,omitempty"`
 }
 
+type ToolVideoSettings struct {
+	DefaultModel   string `json:"default_model,omitempty"`
+	IterationModel string `json:"iteration_model,omitempty"`
+}
+
 type ToolSettings struct {
 	Image ToolImageSettings `json:"image,omitempty"`
+	Video ToolVideoSettings `json:"video,omitempty"`
 }
 
 type MediaSettings struct {
@@ -265,6 +271,10 @@ func uiSettingsFromRecord(record pebblestore.UISettingsRecord) UISettings {
 			Image: ToolImageSettings{
 				DefaultModel: strings.TrimSpace(record.Tools.Image.DefaultModel),
 			},
+			Video: ToolVideoSettings{
+				DefaultModel:   strings.TrimSpace(record.Tools.Video.DefaultModel),
+				IterationModel: strings.TrimSpace(record.Tools.Video.IterationModel),
+			},
 		},
 		Media:     MediaSettings{TranscriptionModel: strings.TrimSpace(record.Media.TranscriptionModel)},
 		Artifacts: ArtifactSettings{LibraryDirectory: strings.TrimSpace(record.Artifacts.LibraryDirectory)},
@@ -380,6 +390,10 @@ func toolRecordFromSettings(settings ToolSettings) *pebblestore.UIToolSettingsRe
 	return &pebblestore.UIToolSettingsRecord{
 		Image: pebblestore.UIToolImageSettingsRecord{
 			DefaultModel: strings.TrimSpace(settings.Image.DefaultModel),
+		},
+		Video: pebblestore.UIToolVideoSettingsRecord{
+			DefaultModel:   strings.TrimSpace(settings.Video.DefaultModel),
+			IterationModel: strings.TrimSpace(settings.Video.IterationModel),
 		},
 	}
 }

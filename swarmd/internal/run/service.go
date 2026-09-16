@@ -107,6 +107,7 @@ var (
 )
 
 type Service struct {
+	automationContext            func(string) (string, error)
 	sessions                     *sessionruntime.Service
 	model                        *model.Service
 	modelProfiles                *modelprofile.Service
@@ -116,6 +117,7 @@ type Service struct {
 	agents                       *agentruntime.Service
 	discovery                    *discovery.Service
 	workspace                    *workspaceruntime.Service
+	memoryStore                  *pebblestore.MemoryStore
 	workspaceMap                 workspaceMapService
 	uiSettings                   *uisettings.Service
 	agentModelSettings           *agentmodelsettings.Service
@@ -1340,6 +1342,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	ctx = runnerCtx
 	compiledPolicy := options.CompiledPolicy
 	effectiveDisabledTools := cloneDisabledTools(options.DisabledTools)
+	automationOverlay, err := s.automationPolicy(sessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	for _, definition := range s.ListAgentToolDefinitionsForAccount(options.Principal.AccountScopeID) {
+		if !automationToolPermitted(automationOverlay, definition.Name) {
+			effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{definition.Name: true})
+		}
+	}
 	if targetKind == RunTargetKindSubagent || strings.EqualFold(strings.TrimSpace(agentProfile.Mode), agentruntime.ModeSubagent) {
 		effectiveDisabledTools = mergeDisabledTools(effectiveDisabledTools, map[string]bool{"task": true})
 	}
@@ -1755,9 +1766,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return assistantMessage, true, nil
 	}
 
-	tryContextOverflowCompaction := func(step int, assistantDraft string) (bool, error) {
+	tryContextOverflowCompaction := func(step int, assistantDraft string, cause error) (bool, error) {
 		if contextCompactionAttempts >= contextCompactionRetryLimit {
 			return false, nil
+		}
+		if cause != nil && isGoogleTokenOverflowDiagnostic(cause.Error()) {
+			if util, ok := s.runContextUtilizationPercent(sessionID, resolvedPreference.ContextWindow, usageSummaryState, input, cause); !ok || util < 85.0 {
+				return false, nil
+			}
 		}
 		contextCompactionAttempts++
 		var compactionToolStream *memoryCompactionToolStream
@@ -2238,7 +2254,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if err != nil {
 			if isContextOverflowDiagnostic(err.Error()) {
 				assistantDraft := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
-				resumed, compactErr := tryContextOverflowCompaction(step, assistantDraft)
+				resumed, compactErr := tryContextOverflowCompaction(step, assistantDraft, err)
 				if compactErr != nil {
 					return RunResult{}, compactErr
 				}
@@ -2382,7 +2398,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			// - fully empty response => retry briefly for transient provider gaps, then fail clearly
 			if responseText == "" && shouldTriggerContextCompaction(response) {
 				assistantDraft := strings.TrimSpace(strings.Join(assistantFragments, "\n\n"))
-				resumed, compactErr := tryContextOverflowCompaction(step, assistantDraft)
+				resumed, compactErr := tryContextOverflowCompaction(step, assistantDraft, errors.New(response.StopReason))
 				if compactErr != nil {
 					return RunResult{}, compactErr
 				}
@@ -2460,6 +2476,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				CallID:    callID,
 				Arguments: arguments,
 			})
+		}
+		for _, call := range toolCalls {
+			if err := s.enforceAutomationTool(sessionID, call.Name); err != nil {
+				return RunResult{}, err
+			}
 		}
 		guardDecisionCalls := 0
 		for i := range toolCalls {
@@ -2830,6 +2851,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			if err := s.appendPlanLifecycleMessageForToolResult(sessionID, call, result, options.ApplySessionMutation); err != nil {
 				return RunResult{}, err
 			}
+		}
+		for i, call := range toolCalls {
+			if automationV2PlanCall(call) && gatedResults[i].Error == "" && mapString(decodeToolPayload(gatedResults[i].Output), "next_action") == "await_automation_acceptance" {
+				terminalPlanState.MarkTerminal()
+			}
+		}
+		if terminalPlanState.IsTerminal() {
+			break
 		}
 		designerRefinementFeedback := ""
 		if isDesignerRun {
@@ -3227,6 +3256,30 @@ func shouldTriggerContextCompaction(response provideriface.Response) bool {
 	return isContextOverflowDiagnostic(response.StopReason)
 }
 
+var googleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
+
+func parseGoogleMaxAllowedTokens(detail string) int {
+	matches := googleMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	val, err := strconv.Atoi(matches[1])
+	if err != nil || val <= 0 {
+		return 0
+	}
+	return val
+}
+
+func isGoogleTokenOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "input token count exceeds") ||
+		strings.Contains(normalized, "exceeds the maximum number of tokens allowed") ||
+		strings.Contains(normalized, "maximum number of tokens allowed")
+}
+
 func isContextOverflowDiagnostic(detail string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(detail))
 	if normalized == "" {
@@ -3245,9 +3298,92 @@ func isContextOverflowDiagnostic(detail string) bool {
 		return true
 	case strings.Contains(normalized, "token limit exceeded"):
 		return true
+	case isGoogleTokenOverflowDiagnostic(detail):
+		return true
 	default:
 		return false
 	}
+}
+
+func extractInputItemContentText(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []map[string]any:
+		var sb strings.Builder
+		for _, part := range v {
+			if text, ok := part["text"].(string); ok {
+				sb.WriteString(text)
+			}
+		}
+		return sb.String()
+	case []any:
+		var sb strings.Builder
+		for _, part := range v {
+			if m, ok := part.(map[string]any); ok {
+				if text, ok := m["text"].(string); ok {
+					sb.WriteString(text)
+				}
+			}
+		}
+		return sb.String()
+	}
+	return ""
+}
+
+func (s *Service) runContextUtilizationPercent(sessionID string, contextWindow int, usageSummaryState *pebblestore.SessionUsageSummary, input []map[string]any, cause error) (float64, bool) {
+	var (
+		usedTokens  int64
+		utilization float64
+		found       bool
+	)
+	if usageSummaryState != nil {
+		if usageSummaryState.ContextWindow > 0 {
+			contextWindow = usageSummaryState.ContextWindow
+		}
+		if usageSummaryState.TotalTokens > 0 {
+			usedTokens = usageSummaryState.TotalTokens
+		} else if usageSummaryState.InputTokens > 0 {
+			usedTokens = usageSummaryState.InputTokens
+		}
+		if contextWindow > 0 && usedTokens > 0 {
+			utilization = float64(usedTokens) * 100.0 / float64(contextWindow)
+			found = true
+		}
+	} else if s != nil && s.sessions != nil {
+		if summary, ok, err := s.sessions.GetUsageSummary(sessionID); err == nil && ok {
+			if summary.ContextWindow > 0 {
+				contextWindow = summary.ContextWindow
+			}
+			if summary.TotalTokens > 0 {
+				usedTokens = summary.TotalTokens
+			} else if summary.InputTokens > 0 {
+				usedTokens = summary.InputTokens
+			}
+			if contextWindow > 0 && usedTokens > 0 {
+				utilization = float64(usedTokens) * 100.0 / float64(contextWindow)
+				found = true
+			}
+		}
+	}
+	if contextWindow <= 0 && cause != nil {
+		contextWindow = parseGoogleMaxAllowedTokens(cause.Error())
+	}
+	if contextWindow > 0 && len(input) > 0 {
+		totalChars := 0
+		for _, item := range input {
+			totalChars += len(extractInputItemContentText(item["content"]))
+		}
+		estimatedTokens := int64(totalChars / 4)
+		if estimatedTokens > 0 {
+			estUtilization := float64(estimatedTokens) * 100.0 / float64(contextWindow)
+			if !found || estUtilization > utilization {
+				utilization = estUtilization
+				found = true
+			}
+		}
+	}
+	return utilization, found
 }
 
 const memoryCompactionToolName = "compact"

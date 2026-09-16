@@ -546,6 +546,9 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if payload == nil {
 		return false
 	}
+	if mapString(payload, "next_action") == "await_automation_acceptance" {
+		return true
+	}
 	if mapBool(payload, "restart_turn") {
 		return true
 	}
@@ -566,7 +569,7 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 
 func providerManagedTerminalPlanNextAction(nextAction string) bool {
 	switch strings.ToLower(strings.TrimSpace(nextAction)) {
-	case "await_review", "plan_complete", "stopped":
+	case "await_review", "plan_complete", "stopped", "await_automation_acceptance":
 		return true
 	default:
 		return false
@@ -574,7 +577,7 @@ func providerManagedTerminalPlanNextAction(nextAction string) bool {
 }
 
 func providerManagedToolResultIsTerminalPlan(call tool.Call, result tool.Result) bool {
-	if canonicalToolName(call.Name) != "plan_manage" || strings.TrimSpace(result.Error) != "" {
+	if (canonicalToolName(call.Name) != "plan_manage" && canonicalToolName(call.Name) != "exit_plan_mode") || strings.TrimSpace(result.Error) != "" {
 		return false
 	}
 	payload := decodeToolPayload(strings.TrimSpace(result.Output))
@@ -598,6 +601,9 @@ func providerManagedControlPlaneResponse(call tool.Call, feedback PermissionFeed
 func (s *Service) executeProviderManagedToolCall(ctx context.Context, config providerToolInvokerConfig, call tool.Call, metadata map[string]any) (tool.Result, int64, error) {
 	if s == nil {
 		return tool.Result{}, 0, errors.New("run service is not configured")
+	}
+	if err := s.enforceAutomationTool(config.sessionID, call.Name); err != nil {
+		return tool.Result{}, 0, err
 	}
 	if config.providerManagedV3 && config.applySessionMutation == nil {
 		return tool.Result{}, 0, errors.New("v3 provider-managed tool execution requires applySessionV3PrimaryMutation")
@@ -662,6 +668,19 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	// media_inspect has no permission prompt: its provider-visible schema exists
 	// only after the current model/media intersection admits it, and the handler
 	// below revalidates that contract plus ownership, scope, type, and size.
+	if automationV2PlanCall(call) {
+		if permissionSessionID != config.sessionID || !strings.EqualFold(config.agentProfile.Name, "swarm") || (canonicalToolName(call.Name) == "exit_plan_mode" && !pebblestore.AgentExitPlanModeEnabled(config.agentProfile)) {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Automation plan authoring requires the primary session's own enabled plan capability"}, 0, nil
+		}
+		current, _, err := s.automationV2ToolSession(config.sessionID)
+		if err != nil {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: err.Error()}, 0, nil
+		}
+		principal := providerManagedExecutionPrincipal(ctx, config)
+		if !principal.Valid() || principal.AccountScopeID != current.AccountScopeID || principal.UserID != current.UserID {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Automation proposal principal mismatch"}, 0, nil
+		}
+	}
 	if canonicalToolName(call.Name) != mediaInspectToolName {
 		var err error
 		gatedResults, approvedCalls, _, _, permissionFeedback, err = s.gateToolCalls(

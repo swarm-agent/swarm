@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   addSourceMediaDirectory,
   cancelVideoTranscription,
+  getMediaSettingsCatalog,
   getSourceMediaDirectories,
   pollVideoTranscriptionJob,
   readVideoTranscript,
@@ -23,7 +24,7 @@ test('source media folder registration is backend-authoritative across refreshes
   const persisted = ['/videos/chosen']
   const requests: Array<{ method: string; path: string; search: string; body: unknown }> = []
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init)
+    const request = new Request(typeof input === 'string' && input.startsWith('/') ? new URL(input, 'http://127.0.0.1:5555') : input, init)
     const url = new URL(request.url)
     const body = request.method === 'POST' ? JSON.parse(await request.text()) : null
     requests.push({ method: request.method, path: url.pathname, search: url.search, body })
@@ -51,7 +52,7 @@ test('source media folder registration is backend-authoritative across refreshes
 test('direct video transcription clients send only workspace and opaque authority', async () => {
   const requests: Array<{ path: string; body: unknown }> = []
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init)
+    const request = new Request(typeof input === 'string' && input.startsWith('/') ? new URL(input, 'http://127.0.0.1:5555') : input, init)
     const path = new URL(request.url).pathname
     requests.push({ path, body: JSON.parse(await request.text()) })
     if (path.endsWith('/cancel')) {
@@ -73,6 +74,39 @@ test('direct video transcription clients send only workspace and opaque authorit
   assert.deepEqual(requests[2].body, { workspace_path: '/workspace', session_id: 'session_1', transcript_ref: 'transcript_1' })
   assert.equal(JSON.stringify(requests).includes('file_uri'), false)
   assert.equal(JSON.stringify(requests).includes('api_key'), false)
+})
+
+test('media settings catalog decodes video generation and iteration options', async () => {
+  const catalogPayload = {
+    image_models: [],
+    transcription_models: [],
+    video_generation_models: [
+      { id: 'veo-3.1-generate-preview', provider: 'google', model: 'veo-3.1-generate-preview', display_name: 'Veo 3.1', kind: 'video_generation', ready: true },
+      { id: 'gemini-omni-1.1-flash', provider: 'google', model: 'gemini-omni-1.1-flash', display_name: 'Gemini Omni 1.1 Flash', kind: 'video_generation', ready: true },
+    ],
+    video_iteration_models: [
+      { id: 'gemini-omni-1.1-flash', provider: 'google', model: 'gemini-omni-1.1-flash', display_name: 'Gemini Omni 1.1 Flash', kind: 'video_iteration', ready: true },
+    ],
+    video_models: [],
+    video_ready: true,
+    video_status: 'ready',
+  }
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(typeof input === 'string' && input.startsWith('/') ? new URL(input, 'http://127.0.0.1:5555') : input, init)
+    const url = new URL(request.url)
+    if (url.pathname === '/v1/media/settings/catalog') {
+      return Response.json(catalogPayload)
+    }
+    throw new Error(`unexpected url: ${url.pathname}`)
+  }) as typeof fetch
+
+  const result = await getMediaSettingsCatalog()
+  assert.equal(result.video_ready, true)
+  assert.equal(result.video_status, 'ready')
+  assert.equal(result.video_generation_models.length, 2)
+  assert.equal(result.video_iteration_models.length, 1)
+  assert.equal(result.video_iteration_models[0].model, 'gemini-omni-1.1-flash')
 })
 
 test('focus notes use the backend byte limit without splitting unicode', () => {

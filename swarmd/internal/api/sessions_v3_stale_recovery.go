@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -382,6 +383,9 @@ func (e *sessionV3Executor) staleCompactedAssistantResponse(ctx context.Context,
 		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 stale recovery compact created unexpected continuation epoch %q", activeEpoch.EpochID)
 	}
 	job.EpochID = activeEpoch.EpochID
+	if err := e.recordSessionV3CompactionContinuationUserMessage(job, "Continue the task from the compacted recap."); err != nil {
+		log.Printf("warning: v3 stale recovery compact continuation message record failed for session %q run %q: %v", job.SessionID, job.RunID, err)
+	}
 	job.ResumeContext = true
 	phaseJob := job
 	phaseJob.EpochID = originalEpochID

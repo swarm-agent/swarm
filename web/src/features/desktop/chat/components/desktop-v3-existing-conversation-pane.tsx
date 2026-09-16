@@ -17,6 +17,7 @@ import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
+  CalendarClock,
   CheckCircle2,
   Check,
   ChevronDown,
@@ -33,6 +34,9 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
+import { Button } from "../../../../components/ui/button";
+import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
+import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
@@ -153,6 +157,7 @@ import {
 import type { AgentModelControlConfirmInput } from "./agent-model-control";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
+  isAutomationPermission,
   isPlanProposalPermission,
   permissionDisplayToolName,
   permissionRequiresApproval,
@@ -554,11 +559,12 @@ const IsolatedPlanExecutionSummary = memo(function IsolatedPlanExecutionSummary(
     [sessionId],
   );
   const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
+  const automation = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation_v2 ?? record.session.automation : undefined; });
 
   return (
     <>
       <span className="flex min-w-0 flex-1 items-center gap-2.5">
-        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Plan</span>
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">{automation ? 'Automation' : 'Plan'}</span>
         <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
           {view?.activeCheckpoint?.title || view?.plan.title || "Plan execution"}
         </span>
@@ -567,7 +573,7 @@ const IsolatedPlanExecutionSummary = memo(function IsolatedPlanExecutionSummary(
         <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-primary)]">Review each</span>
       ) : null}
       <span className="hidden shrink-0 text-[10px] font-medium text-[var(--app-primary)] sm:inline">
-        {isolatedPlanExecutionStatus(view)}
+        {automation ? 'Scheduled configuration' : isolatedPlanExecutionStatus(view)}
       </span>
     </>
   );
@@ -583,10 +589,17 @@ const IsolatedPlanExecutionSidebar = memo(function IsolatedPlanExecutionSidebar(
     [sessionId],
   );
   const view = useDesktopV3CacheSelector(selectPlanView, planExecutionViewsEqual);
+  const automation = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation : undefined; });
   const taskChildren = useDesktopV3CacheSelector((state) =>
     taskRows.map((row) => ({ row, view: selectDesktopV3TaskChildViewModel(state, row) })),
   );
 
+  const automationV2 = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.automation_v2 : undefined; });
+  const occurrenceParent = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? metadataString(record.session.metadata, 'automation_v2_authoring_session_id') : ''; });
+  const occurrenceWorkspace = useDesktopV3CacheSelector(state => { const record = state.sessionsById[sessionId]; return record?.kind === 'full' ? record.session.workspace_grants?.find(g => g.kind === 'primary')?.workspace_id : undefined; });
+  if (occurrenceParent && occurrenceWorkspace) return <div className="min-h-0 min-w-0 overflow-y-auto bg-[var(--app-bg-alt)] p-4"><p className="mb-3 text-[11px] text-[var(--app-text-muted)]">Scheduled run · uses the instructions accepted for this run.</p><AutomationV2Detail workspaceId={occurrenceWorkspace} sessionId={occurrenceParent} /></div>;
+  if (automationV2) return <div className="min-h-0 min-w-0 overflow-y-auto bg-[var(--app-bg-alt)] p-4"><AutomationV2Detail workspaceId={automationV2.workspace_id} sessionId={sessionId} /></div>;
+  if (automation) return <AutomationSessionPanel workspaceId={automation.workspace_id} id={automation.automation_id} />;
   return (
     <DesktopPlanExecutionSidebar
       {...props}
@@ -1152,6 +1165,17 @@ export function isDesktopV3ManualCompactionAckMessage(
     .startsWith("Manual context compact complete (Compact #");
 }
 
+export function isDesktopV3CompactionContinuationMessage(
+  message: MessageSnapshot,
+): boolean {
+  if ((message.role || "").trim().toLowerCase() !== "user") return false;
+  const metadataSource =
+    typeof message.metadata?.source === "string"
+      ? message.metadata.source.trim().toLowerCase()
+      : "";
+  return metadataSource === "context_compaction_continuation";
+}
+
 export function isDesktopV3PlanExecutionBreakMessage(
   message: MessageSnapshot,
 ): boolean {
@@ -1485,6 +1509,7 @@ export function buildDesktopV3ConversationRenderItems(
   const committedMessages = renderedMessages.committed.filter(
     (message) =>
       !isDesktopV3ManualCompactionAckMessage(message) &&
+      !isDesktopV3CompactionContinuationMessage(message) &&
       !pendingMessageIds.has(message.id),
   );
   const finalHandoffKeys = new Set(
@@ -1813,8 +1838,16 @@ export function DesktopV3ExistingConversationPane({
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
+  const [automationModalDismissedId, setAutomationModalDismissedId] = useState<string | null>(null);
   const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
   const planSidebarViewport = usePlanSidebarViewport() && presentation !== "sidebar";
+  const pendingAutomationPermission = pendingPermissions.find(isAutomationPermission) ?? null;
+  useEffect(() => {
+    if (!pendingAutomationPermission) {
+      setAutomationModalDismissedId(null);
+    }
+  }, [pendingAutomationPermission?.id]);
+  const isAutomationModalOpen = Boolean(selectedPermission) && (!isAutomationPermission(selectedPermission) || automationModalDismissedId !== selectedPermission.id);
   useEffect(() => {
     setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
@@ -2277,6 +2310,7 @@ export function DesktopV3ExistingConversationPane({
     ? heldPlanPermissionRef.current
     : null;
   const stablePlanPermission = pendingPlanPermission ?? heldPlanPermission;
+  const isPendingAutomationV2 = Boolean(pendingPlanDocument?.automationV2);
   const stablePlanDocument = pendingPlanDocument ?? (heldPlanPermission
     ? structuredPlanDocumentFromPermission(heldPlanPermission)
     : null);
@@ -2290,7 +2324,7 @@ export function DesktopV3ExistingConversationPane({
     heldPlanPermissionRef.current = null;
     setResolvingPlanPermissionId("");
   }, [resolvingPlanPermissionId, showPlanExecutionSidebar]);
-  const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument);
+  const showPlanSidebar = showPlanExecutionSidebar || Boolean(stablePlanDocument) || Boolean(cacheSession?.automation) || Boolean(cacheSession?.automation_v2);
   const hasSessionArtifacts = desktopV3HasArtifactSidebarContent({
     artifactCount: sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length,
     error: sessionArtifactV3Error,
@@ -3242,6 +3276,7 @@ export function DesktopV3ExistingConversationPane({
       data-desktop-chat-presentation={presentation}
       data-testid="desktop-v3-existing-conversation-pane"
     >
+      {cacheSession?.automation && <AutomationSessionPanel key={`${normalizedSessionId}:${cacheSession.automation.automation_id}`} workspaceId={cacheSession.automation.workspace_id} id={cacheSession.automation.automation_id} />}
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
@@ -3411,6 +3446,39 @@ export function DesktopV3ExistingConversationPane({
                     onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
+                {pendingAutomationPermission && automationModalDismissedId === pendingAutomationPermission.id ? (
+                  <div
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 shadow-sm"
+                    data-testid="automation-modal-reopen-banner"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+                        <CalendarClock size={18} aria-hidden="true" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
+                            Pending Automation
+                          </span>
+                          <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-primary)]">
+                            Modal review
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-sm font-semibold text-[var(--app-text)]">
+                          {structuredPlanDocumentFromPermission(pendingAutomationPermission)?.title || "Automation plan review"}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      onClick={() => setAutomationModalDismissedId(null)}
+                    >
+                      Open automation modal
+                    </Button>
+                  </div>
+                ) : null}
                 {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
@@ -3480,7 +3548,7 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          {!stablePlanDocument && showPlanExecutionSidebar ? (
+          {!stablePlanDocument && (showPlanExecutionSidebar || cacheSession?.automation_v2) ? (
             <div
               className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] min-[1300px]:hidden"
               data-testid="desktop-plan-execution-composer-region"
@@ -3493,7 +3561,7 @@ export function DesktopV3ExistingConversationPane({
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
                   {hasSessionArtifacts ? (
                     <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
-                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />Plan</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show automation' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan'}</button>
                       <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}</button>
                     </div>
                   ) : null}
@@ -3516,7 +3584,8 @@ export function DesktopV3ExistingConversationPane({
             </div>
           ) : null}
 
-          {composerOverride ?? <DesktopV3ExistingConversationComposer
+          {cacheSession?.automation_v2 ? <AutomationV2ScheduleHandoff workspaceId={cacheSession.automation_v2.workspace_id} sessionId={normalizedSessionId} /> : null}
+          {cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? <section aria-label="Automation conversation protected" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm"><strong>Automation conversation</strong><p className="mt-1 text-[var(--app-text-muted)]">This conversation is reserved for scheduled work. Use “Talk to Swarm to help optimize this automation” in Automation details to discuss changes without changing accepted instructions.</p></section> : composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
@@ -3624,7 +3693,7 @@ export function DesktopV3ExistingConversationPane({
           >
             {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
-                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label="Show plan sidebar" title="Plan" onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? "Plan" : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show automation sidebar' : 'Show plan sidebar'} title={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan') : null}</button>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
@@ -3642,7 +3711,7 @@ export function DesktopV3ExistingConversationPane({
                   modelLabel={displayedPreference.model}
                   displayMode={planSidebarDisplayMode}
                 />
-              ) : showPlanExecutionSidebar ? (
+              ) : showPlanExecutionSidebar || cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? (
                 <IsolatedPlanExecutionSidebar
                   sessionId={normalizedSessionId}
                   busyAction={planExecutionBusyAction}
@@ -3732,11 +3801,15 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
-        open={Boolean(selectedPermission)}
+        open={isAutomationModalOpen}
         permission={selectedPermission}
         pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
-        onOpenChange={() => undefined}
+        onOpenChange={(open) => {
+          if (!open && selectedPermission && isAutomationPermission(selectedPermission)) {
+            setAutomationModalDismissedId(selectedPermission.id);
+          }
+        }}
         onOpenPermissions={openPermissionsSettings}
         onResolve={handleResolvePermission}
       />
@@ -3766,8 +3839,16 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   onArtifactNavigate?: (artifact: DesktopV3ArtifactCatalogEntry) => void;
   onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
+  const automationOccurrence = useDesktopV3CacheSelector(state => {
+    const id = 'message' in item && 'session_id' in item.message ? item.message.session_id : '';
+    const record = id ? state.sessionsById[id] : undefined;
+    return record?.kind === 'full' ? metadataString(record.session.metadata, 'automation_v2_occurrence_id') : '';
+  });
   const userMessage = desktopV3UserMessageElement(item);
   if (userMessage) return userMessage;
+  if (automationOccurrence && (item.type === 'plan-final-handoff' || item.type === 'plan-checkpoint-handoff' || item.type === 'plan-blocked-handoff')) {
+    return <section aria-label="Automation execution handoff" className="space-y-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">Automation execution handoff</h3><p className="text-sm text-[var(--app-text-muted)]">This report belongs to one scheduled occurrence. It does not start another run or change the accepted schedule. Check Automation details for the observed occurrence state and next forecast.</p><details><summary className="cursor-pointer text-sm">Checkpoint report and evidence</summary><div className="mt-3">{item.type === 'plan-final-handoff' ? <DesktopV3PlanFinalHandoff item={item} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} /> : item.type === 'plan-blocked-handoff' ? <DesktopV3PlanBlockedHandoff item={item} /> : <DesktopV3PlanCheckpointHandoff item={item} />}</div></details></section>;
+  }
 
   switch (item.type) {
     case "plan-break":

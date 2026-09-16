@@ -13,8 +13,10 @@ const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/des
 const IntegrationsPage = withStartupScreen(lazy(() => import('../features/desktop/integrations/pages/integrations-page').then((module) => ({ default: module.IntegrationsPage }))))
 const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio'])
+const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations'])
+const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -88,16 +90,20 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
   }
 }
 
-function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string } {
+function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string; sessionId?: string; automationId?: string } {
   const settingsSearch = validateSettingsSearch(search)
   const artifactSession = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
   const artifact = typeof search.artifact === 'string' ? search.artifact.trim() : ''
   const collection = typeof search.collection === 'string' ? search.collection.trim() : ''
+  const sessionId = typeof search.sessionId === 'string' ? search.sessionId.trim() : ''
+  const automationId = typeof search.automationId === 'string' ? search.automationId.trim() : ''
   return {
     ...settingsSearch,
     ...(artifactSession ? { artifactSession } : {}),
     ...(artifact ? { artifact } : {}),
     ...(collection ? { collection } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(automationId ? { automationId } : {}),
   }
 }
 
@@ -148,6 +154,8 @@ const agentsRoute = createRoute({
   path: '/agents',
   component: AgentSetupRedirect,
 })
+
+const memoryRoute = createRoute({ getParentRoute: () => rootRoute, path: '/memory', component: MemoryPage })
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -243,6 +251,14 @@ const workspaceVideoSessionRoute = createRoute({
   component: VideoToolPage,
 })
 
+const workspaceAutomationsRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/automations',
+  parseParams: validateWorkspaceParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
 const workspaceTaskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/task',
@@ -314,6 +330,7 @@ const workspaceImageToolSessionRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
+  memoryRoute,
   agentsRoute,
   integrationsRoute,
   integrationSessionRoute,
@@ -322,7 +339,7 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute]),
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceAutomationsRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,

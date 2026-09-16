@@ -77,37 +77,46 @@ type V3CheckpointBoundaryMutation struct {
 }
 
 type V3SessionMutationInput struct {
-	workspaceCatalog     *workspaceCatalogMutation
-	SessionID            string                        `json:"session_id"`
-	UserID               string                        `json:"user_id,omitempty"`
-	AccountScopeID       string                        `json:"account_scope_id,omitempty"`
-	ClientRequestID      string                        `json:"client_request_id,omitempty"`
-	IdempotencyKey       string                        `json:"idempotency_key,omitempty"`
-	PayloadHash          string                        `json:"payload_hash,omitempty"`
-	RequestHash          string                        `json:"request_hash,omitempty"`
-	Kind                 string                        `json:"kind"`
-	EventID              string                        `json:"event_id,omitempty"`
-	EventType            string                        `json:"event_type,omitempty"`
-	EventPayload         json.RawMessage               `json:"event_payload,omitempty"`
-	CausationID          string                        `json:"causation_id,omitempty"`
-	CorrelationID        string                        `json:"correlation_id,omitempty"`
-	Session              *SessionSnapshot              `json:"session,omitempty"`
-	Message              *MessageSnapshot              `json:"message,omitempty"`
-	Lifecycle            *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
-	RunIntent            *V3SessionRunIntent           `json:"run_intent,omitempty"`
-	PlanAcceptance       *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
-	PlanSave             *V3PlanSaveMutation           `json:"plan_save,omitempty"`
-	CheckpointBoundary   *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
-	Artifact             *V3ArtifactMutation           `json:"artifact,omitempty"`
-	ArtifactV2           *ArtifactV2Mutation           `json:"artifact_v2,omitempty"`
-	ArtifactV3           *ArtifactV3Mutation           `json:"artifact_v3,omitempty"`
-	Transcription        *V3TranscriptionMutation      `json:"transcription,omitempty"`
-	VideoProject         *V3VideoProjectMutation       `json:"video_project,omitempty"`
-	MediaStagingBindings []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
-	EpochID              string                        `json:"epoch_id,omitempty"`
-	TurnUsage            *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
-	ExpectedLastEventSeq *uint64                       `json:"expected_last_event_seq,omitempty"`
-	NowUnixMs            int64                         `json:"now_unix_ms,omitempty"`
+	automationV2                 *automationV2Mutation
+	AutomationBinding            *SessionAutomationBinding  `json:"automation_binding,omitempty"`
+	AutomationDefinitionRevision uint64                     `json:"automation_definition_revision,omitempty"`
+	WorktreeAdmission            *WorktreeAdmissionEvidence `json:"-"`
+	WorktreeRecovery             *WorktreeRecoveryMutation  `json:"worktree_recovery,omitempty"`
+	workspaceCatalog             *workspaceCatalogMutation
+	AutomationPermission         *AutomationPermissionResolution `json:"-"`
+	automationRealtime           *automationRealtimeMutation
+	automationAcceptance         *AutomationApproval
+	AutomationProposal           *AutomationPlanReference      `json:"automation_proposal,omitempty"`
+	SessionID                    string                        `json:"session_id"`
+	UserID                       string                        `json:"user_id,omitempty"`
+	AccountScopeID               string                        `json:"account_scope_id,omitempty"`
+	ClientRequestID              string                        `json:"client_request_id,omitempty"`
+	IdempotencyKey               string                        `json:"idempotency_key,omitempty"`
+	PayloadHash                  string                        `json:"payload_hash,omitempty"`
+	RequestHash                  string                        `json:"request_hash,omitempty"`
+	Kind                         string                        `json:"kind"`
+	EventID                      string                        `json:"event_id,omitempty"`
+	EventType                    string                        `json:"event_type,omitempty"`
+	EventPayload                 json.RawMessage               `json:"event_payload,omitempty"`
+	CausationID                  string                        `json:"causation_id,omitempty"`
+	CorrelationID                string                        `json:"correlation_id,omitempty"`
+	Session                      *SessionSnapshot              `json:"session,omitempty"`
+	Message                      *MessageSnapshot              `json:"message,omitempty"`
+	Lifecycle                    *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
+	RunIntent                    *V3SessionRunIntent           `json:"run_intent,omitempty"`
+	PlanAcceptance               *V3PlanAcceptanceMutation     `json:"plan_acceptance,omitempty"`
+	PlanSave                     *V3PlanSaveMutation           `json:"plan_save,omitempty"`
+	CheckpointBoundary           *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
+	Artifact                     *V3ArtifactMutation           `json:"artifact,omitempty"`
+	ArtifactV2                   *ArtifactV2Mutation           `json:"artifact_v2,omitempty"`
+	ArtifactV3                   *ArtifactV3Mutation           `json:"artifact_v3,omitempty"`
+	Transcription                *V3TranscriptionMutation      `json:"transcription,omitempty"`
+	VideoProject                 *V3VideoProjectMutation       `json:"video_project,omitempty"`
+	MediaStagingBindings         []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
+	EpochID                      string                        `json:"epoch_id,omitempty"`
+	TurnUsage                    *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	ExpectedLastEventSeq         *uint64                       `json:"expected_last_event_seq,omitempty"`
+	NowUnixMs                    int64                         `json:"now_unix_ms,omitempty"`
 }
 
 type V3SessionMutationResult struct {
@@ -354,6 +363,7 @@ func v3RealtimeMembershipMetadata(metadata map[string]any) map[string]any {
 	}
 	out := map[string]any{}
 	for _, key := range []string{
+		SessionPurposeMetadataKey, SessionPurposeWorkspaceMetadataKey,
 		"navigation_hidden", "system_session", "system_sidechat", "lineage_kind",
 		"swarm_v3_workspace_binding_id", "local_workspace_binding_id", "workspace_id",
 		"swarm_v3_source_workspace_id", "swarm_v3_source_workspace_generation", "swarm_v3_source_workspace_name", "swarm_v3_source_workspace_path",
@@ -652,8 +662,16 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return s.applyV3PlanAcceptanceMutation(input)
 	}
 
-	unlockSession := s.store.sessionMutations.lockSessions(input.SessionID)
+	lockIDs := []string{input.SessionID}
+	if input.WorktreeRecovery != nil {
+		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
+	}
+	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
 	defer unlockSession()
+	if input.Session != nil || input.WorktreeRecovery != nil || input.AutomationBinding != nil || (input.automationV2 != nil && input.automationV2.accept) {
+		s.store.sessionMutations.worktreeMu.Lock()
+		defer s.store.sessionMutations.worktreeMu.Unlock()
+	}
 
 	if len(input.MediaStagingBindings) > 0 {
 		mediaStaging := NewMediaStagingStore(s.store)
@@ -688,6 +706,24 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return result, nil
 	}
 
+	if input.Kind == V3SessionMutationUpdateSettings && input.EventType == "session.worktree.adopted" {
+		programs, err := s.ListTaskPrograms(input.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		for _, program := range programs {
+			if program.State != TaskProgramStateRunning && program.State != TaskProgramStateDeclared {
+				continue
+			}
+			for _, job := range program.Definition.Jobs {
+				if job.AgentType == "designer" && (job.OutputMode == "" || job.OutputMode == "managed") {
+					continue
+				}
+				return V3SessionMutationResult{}, fmt.Errorf("workspace adoption conflicts with active Task Program %q; finish or stop repository scheduling first", program.ProgramID)
+			}
+		}
+	}
+
 	// Live metric maintenance uses disjoint per-session keys. A shared repair
 	// lock excludes only the versioned full backfill, not unrelated commits.
 	s.store.sessionMutations.libraryRepairMu.RLock()
@@ -696,10 +732,22 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 }
 
 func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput, idempotencyStoreKey string) (V3SessionMutationResult, error) {
+	if err := s.prepareAutomationV2(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := s.guardAutomationSessionMutation(&input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if input.PlanSave != nil {
+		if input.PlanSave.Plan.Document != nil && input.PlanSave.Plan.Document.AutomationV2 != nil {
+			return V3SessionMutationResult{}, ErrAutomationV2Conflict
+		}
 		current, found, err := s.GetPlan(input.SessionID, input.PlanSave.Plan.ID)
 		if err != nil {
 			return V3SessionMutationResult{}, err
+		}
+		if found && current.Document != nil && current.Document.AutomationV2 != nil {
+			return V3SessionMutationResult{}, ErrAutomationV2Conflict
 		}
 		expected := input.PlanSave.ExpectedParentVersion
 		if expected == 0 && found {
@@ -831,6 +879,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		runIntent = v3SessionRunIntentWithStateTiming(runIntent, nextRunState)
 	}
 	session, sessionProvided, err := s.prepareV3SessionForMutation(input, seq, now)
+	if err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	worktreeOwnership, err := s.prepareWorktreeOwnership(input, session)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1007,6 +1059,20 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := s.setAutomationV2InBatch(batch, input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := setWorktreeOwnershipInBatch(batch, worktreeOwnership); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if err := s.setAutomationPermissionInBatch(batch, input); err != nil {
+		return V3SessionMutationResult{}, err
+	}
+	if input.automationRealtime != nil {
+		if err := setAutomationRealtimeMutationInBatch(batch, input.AccountScopeID, input.automationRealtime); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if input.workspaceCatalog != nil {
 		if err := setWorkspaceCatalogMutationInBatch(batch, input.AccountScopeID, input.workspaceCatalog); err != nil {
 			return V3SessionMutationResult{}, err
@@ -2639,6 +2705,13 @@ func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput,
 			if !ok {
 				return SessionSnapshot{}, false, fmt.Errorf("session %q not found", input.SessionID)
 			}
+			if input.automationV2 == nil {
+				session.AutomationV2 = current.AutomationV2
+			}
+			// Ordinary snapshot writes cannot remove or forge the automation authority.
+			if input.AutomationBinding == nil {
+				session.Automation = current.Automation
+			}
 			if session.UserID == "" {
 				session.UserID = current.UserID
 			}
@@ -2908,6 +2981,15 @@ func normalizeV3SessionMutationInput(input V3SessionMutationInput) V3SessionMuta
 }
 
 func validateV3SessionMutationInput(input V3SessionMutationInput) error {
+	if input.Kind == V3SessionMutationCreateSession && input.Session != nil && input.Session.AutomationV2 != nil {
+		return ErrAutomationV2Conflict
+	}
+	if input.PlanAcceptance != nil && input.PlanAcceptance.Plan.Document != nil && input.PlanAcceptance.Plan.Document.AutomationV2 != nil {
+		return ErrAutomationV2Conflict
+	}
+	if input.PlanSave != nil && input.PlanSave.Plan.Document != nil && input.PlanSave.Plan.Document.AutomationV2 != nil && (input.PlanSave.Activate || input.PlanSave.Plan.ApprovalState == "approved") {
+		return ErrAutomationV2Conflict
+	}
 	if len(input.MediaStagingBindings) > 0 {
 		if input.Kind != V3SessionMutationCreateSession || input.Message == nil || len(input.Message.Media) != len(input.MediaStagingBindings) {
 			return errors.New("media staging bindings require a create-session mutation with matching message media")

@@ -1205,6 +1205,9 @@ func modelDefaultContextWindow(providerSpecificRaw json.RawMessage, providerID s
 }
 
 func modelAllowsUnknownContextWindow(providerID string, model swarmSnapshotModel) bool {
+	if boolPtrValue(model.Capabilities.SupportsVideoOutput) {
+		return true
+	}
 	providerID = canonicalCatalogProviderID(providerID)
 	if providerID != "openai" {
 		return false

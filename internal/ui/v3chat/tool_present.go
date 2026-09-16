@@ -968,8 +968,13 @@ func manageSessionsStatusTone(status string) string {
 
 func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) toolPresentation {
 	directImageSwarm := strings.EqualFold(strings.TrimSpace(toolString(output, "execution_format")), "direct_image_swarm")
-	if tool.TaskStream != nil && strings.EqualFold(strings.TrimSpace(tool.TaskStream.ExecutionFormat), "direct_image_swarm") {
-		directImageSwarm = true
+	directVideoSwarm := strings.EqualFold(strings.TrimSpace(toolString(output, "execution_format")), "direct_video_swarm")
+	if tool.TaskStream != nil {
+		if strings.EqualFold(strings.TrimSpace(tool.TaskStream.ExecutionFormat), "direct_image_swarm") {
+			directImageSwarm = true
+		} else if strings.EqualFold(strings.TrimSpace(tool.TaskStream.ExecutionFormat), "direct_video_swarm") {
+			directVideoSwarm = true
+		}
 	}
 	launches := make([]map[string]any, 0)
 	launchCount := 0
@@ -985,10 +990,26 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		launches = toolObjectSlice(output, "launches")
 		launchCount = maxInt(launchCount, toolInt(output, "launch_count"))
 	}
-	finalImageStatus := normalizeTaskPresentationStatus(toolString(output, "status"))
-	terminalDirectImages := directImageSwarm && len(toolObjectSlice(output, "images")) > 0 && (finalImageStatus == "done" || finalImageStatus == "error" || finalImageStatus == "cancelled")
-	if terminalDirectImages {
+	finalMediaStatus := normalizeTaskPresentationStatus(toolString(output, "status"))
+	terminalDirectMedia := (directImageSwarm && len(toolObjectSlice(output, "images")) > 0 || directVideoSwarm && len(toolObjectSlice(output, "videos")) > 0) && (finalMediaStatus == "done" || finalMediaStatus == "error" || finalMediaStatus == "cancelled")
+	if terminalDirectMedia {
 		launches = nil
+	}
+	if directVideoSwarm && len(launches) == 0 {
+		for index, video := range toolObjectSlice(output, "videos") {
+			videoIndex := toolInt(video, "index")
+			if videoIndex <= 0 {
+				videoIndex = index + 1
+			}
+			status := normalizeTaskPresentationStatus(toolString(video, "status"))
+			stages := []string{"Routing", "Video generation"}
+			errorText := toolString(video, "error")
+			launches = append(launches, map[string]any{
+				"launch_index": videoIndex, "status": status, "requested_subagent": "video", "swarm_mode": true,
+				"assignment_label": firstNonEmptyToolRaw(toolString(video, "title"), toolString(video, "theme"), fmt.Sprintf("Video %d", videoIndex)),
+				"current_tool":     "Video generation", "current_tool_display": strings.Join(stages, " → "), "tool_order": stages, "error": errorText,
+			})
+		}
 	}
 	if directImageSwarm && len(launches) == 0 {
 		for index, image := range toolObjectSlice(output, "images") {
@@ -1012,7 +1033,7 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		}
 	}
 	launchCount = maxInt(launchCount, len(launches))
-	swarm := directImageSwarm || taskPresentationIsSwarm(arguments, output, launches)
+	swarm := directImageSwarm || directVideoSwarm || taskPresentationIsSwarm(arguments, output, launches)
 	swarmStrategy := taskPresentationSwarmStrategy(arguments, output, tool.TaskStream, launches, swarm)
 	integrationContract := taskPresentationIntegrationContract(arguments, output, tool.TaskStream, launches)
 	integrationRequired := taskPresentationIntegrationRequired(output, tool.TaskStream, launches)
@@ -1073,6 +1094,9 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	if directImageSwarm {
 		summary = "Image Swarm · Routing → Image creation"
 		swarmAgent = "image"
+	} else if directVideoSwarm {
+		summary = "Video Swarm · Routing → Video generation"
+		swarmAgent = "video"
 	} else if swarm {
 		summary = "Iteration Swarm"
 		if swarmStrategy == "assembly" {
@@ -1100,6 +1124,8 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 	if len(rows) == 0 && toolStatusRank(tool.Status) < 3 {
 		if directImageSwarm {
 			summary = "Image Swarm · Routing…"
+		} else if directVideoSwarm {
+			summary = "Video Swarm · Routing…"
 		} else if swarm {
 			if swarmStrategy == "assembly" {
 				summary = "hydrating Assembly Swarm…"
@@ -1111,6 +1137,8 @@ func presentTaskTool(tool ToolTimelineItem, arguments, output map[string]any) to
 		}
 	} else if directImageSwarm && len(rows) > 0 {
 		summary += " · " + toolCountLabel(len(rows), "image", "images")
+	} else if directVideoSwarm && len(rows) > 0 {
+		summary += " · " + toolCountLabel(len(rows), "video", "videos")
 	} else if launchCount > 0 {
 		summary += " · " + toolCountLabel(launchCount, "subagent", "subagents")
 	}

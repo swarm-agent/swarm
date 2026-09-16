@@ -245,7 +245,7 @@ func taskManagedArtifactCollectionRoutingID(taskCallID, programID string, spec t
 }
 
 func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCallID string, spec taskLaunchSpec, launchIndex int) *tool.ArtifactRunContext {
-	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+	if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType) && !agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 		return nil
 	}
 	if strings.TrimSpace(parent.ID) == "" || strings.TrimSpace(parent.AccountScopeID) == "" || strings.TrimSpace(parent.UserID) == "" || strings.TrimSpace(taskCallID) == "" || launchIndex < 1 {
@@ -395,7 +395,7 @@ func (s *Service) allocateManagedDesignerRefinementContext(parent pebblestore.Se
 func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.SessionSnapshot, taskCallID string, specs []taskLaunchSpec, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
 	managed := false
 	for _, spec := range specs {
-		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType) || agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
 			managed = true
 			break
 		}
@@ -412,7 +412,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	managedHasProgram, managedWithoutProgram := false, false
 	programJobs := map[string]struct{}{}
 	for _, spec := range specs {
-		if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
+		if (!agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) && !agentruntime.IsImageAgentName(spec.RequestedSubagentType) && !agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) || strings.TrimSpace(spec.OutputMode) != taskOutputModeManaged {
 			continue
 		}
 		value, _ := spec.SourceArguments["program_id"].(string)
@@ -441,7 +441,7 @@ func (s *Service) ensureManagedDesignerArtifactCollection(parent pebblestore.Ses
 	}
 	collectionRoutingID := taskManagedArtifactRoutingID(taskCallID, programID)
 	for _, spec := range specs {
-		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
+		if (agentruntime.IsDesignerAgentName(spec.RequestedSubagentType) || agentruntime.IsImageAgentName(spec.RequestedSubagentType) || agentruntime.IsVideoAgentName(spec.RequestedSubagentType)) && strings.TrimSpace(spec.OutputMode) == taskOutputModeManaged {
 			collectionRoutingID = taskManagedArtifactCollectionRoutingID(taskCallID, programID, spec)
 			break
 		}
@@ -589,6 +589,9 @@ func (s *Service) ensureManagedDesignerArtifactPlaceholders(parent pebblestore.S
 			label = fmt.Sprintf("Iteration %d", run.IterationIndex)
 		}
 		presentation := pebblestore.SessionArtifactPresentation{Label: label, Description: strings.TrimSpace(run.IterationTheme)}
+		if agentruntime.IsVideoAgentName(launch.RequestedSubagent) || agentruntime.IsVideoAgentName(run.PartKind) || strings.Contains(strings.ToLower(launch.RequestedSubagent), "video") {
+			presentation.Kind = "video"
+		}
 		if run.OutputRequirements != nil {
 			presentation.Width, presentation.Height = run.OutputRequirements.Width, run.OutputRequirements.Height
 		}
@@ -1499,6 +1502,16 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childMetadata["base_commit"] = strings.TrimSpace(launch.TaskBase.BaseCommit)
 		}
 	}
+	// Shared read-only workers carry a runtime root, never an ownership claim.
+	if !isCoderTarget {
+		childWorktreeEnabled = false
+		childWorktreeRootPath, childWorktreeBaseBranch, childWorktreeBranch = "", "", ""
+	}
+	var childAdmission *pebblestore.WorktreeAdmissionEvidence
+	if isCoderTarget {
+		childMetadata["swarm_v3_worktree_owner_session_id"] = childSessionID
+		childAdmission = &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: childWorktreeRootPath, SourcePath: mapString(childMetadata, "swarm_v3_source_workspace_path"), OwnerSessionID: childSessionID, Branch: childWorktreeBranch, DelegatedCoder: true}
+	}
 	nowMS := time.Now().UnixMilli()
 	childSession := pebblestore.SessionSnapshot{
 		ID:                      childSessionID,
@@ -1524,16 +1537,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		applyMutation = s.sessions.ApplySessionMutation
 	}
 	created, err := applyMutation(sessionruntime.SessionMutationInput{
-		SessionID:       childSessionID,
-		UserID:          strings.TrimSpace(parentSession.UserID),
-		AccountScopeID:  strings.TrimSpace(parentSession.AccountScopeID),
-		ClientRequestID: "task-child-create:" + childSessionID,
-		IdempotencyKey:  "task-child-create:" + childSessionID,
-		PayloadHash:     payloadHash,
-		RequestHash:     payloadHash,
-		Kind:            sessionruntime.SessionMutationCreateSession,
-		Session:         &childSession,
-		NowUnixMs:       nowMS,
+		SessionID:         childSessionID,
+		UserID:            strings.TrimSpace(parentSession.UserID),
+		AccountScopeID:    strings.TrimSpace(parentSession.AccountScopeID),
+		ClientRequestID:   "task-child-create:" + childSessionID,
+		IdempotencyKey:    "task-child-create:" + childSessionID,
+		PayloadHash:       payloadHash,
+		RequestHash:       payloadHash,
+		Kind:              sessionruntime.SessionMutationCreateSession,
+		Session:           &childSession,
+		WorktreeAdmission: childAdmission,
+		NowUnixMs:         nowMS,
 	})
 	if err != nil {
 		return taskLaunchPrepared{}, fmt.Errorf("task failed to create canonical v3 subagent session: %w", err)
@@ -1626,6 +1640,32 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
+		if automationV2PlanCall(toolCalls[i]) {
+			current, _, scopeErr := s.automationV2ToolSession(sessionID)
+			if scopeErr != nil {
+				decisions[i].Result.Error = scopeErr.Error()
+				continue
+			}
+			// Proposal authoring is not plan acceptance. Evaluate explicit restrictions
+			// against the tool identity without remapping it to one-shot acceptance.
+			explain, policyErr := s.permissions.ExplainAutomationV2Proposal(current.AccountScopeID, sessionMode, toolCalls[i].Name, toolCalls[i].Arguments, overlay)
+			if policyErr != nil {
+				decisions[i].Result.Error = policyErr.Error()
+				continue
+			}
+			if explain.Decision == permission.PolicyDecisionDeny {
+				decisions[i].Result.Error = explain.Reason
+				continue
+			}
+			output, err := s.executeAutomationV2PlanTool(sessionID, sessionruntime.NormalizeMode(sessionMode), toolCalls[i])
+			decisions[i].Result.Output = output
+			if err != nil {
+				decisions[i].Err = err
+				decisions[i].Result.Error = err.Error()
+			}
+			// A durable pending review is the result, not approval to execute the call.
+			continue
+		}
 		permissionMode := sessionMode
 		permissionArguments := strings.TrimSpace(toolCalls[i].Arguments)
 		var err error
@@ -1683,7 +1723,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect {
+			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
 				// Program status and direct image generation do not allocate delegated
 				// child sessions, so neither consumes a subagent-wave reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
@@ -1961,6 +2001,13 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 	}
 
 	switch name {
+	case "manage_memory":
+		if agentProfile.Name != "swarm" || agentProfile.Mode != "primary" {
+			return true, result, errors.New("memory tool requires Swarm primary")
+		}
+		output, err := s.executeMemoryTool(ctx, sessionID, call.Arguments)
+		result.Output = output
+		return true, result, err
 	case "ask_user":
 		output, err := executeAskUserTool(call.Arguments, approvedArguments)
 		result.Output = output
@@ -2089,6 +2136,10 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		}
 		result.Output = fmt.Sprintf("Plan context compact handoff accepted (%d characters).", len([]rune(handoff)))
 		return true, result, nil
+	case "manage_automation":
+		output, err := s.executeManageAutomationV2Tool(sessionID, call.Arguments)
+		result.Output = output
+		return true, result, err
 	case "exit_plan_mode":
 		output, err := s.executeExitPlanModeTool(sessionID, sessionMode, agentProfile, call.Arguments, approvedArguments, applySessionMutation)
 		result.Output = output
@@ -2112,7 +2163,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 }
 
 func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (string, error) {
-	if s.permissions == nil || s.sessions == nil {
+	if s.sessions == nil {
 		return "", errors.New("pending plan editing is not configured")
 	}
 	session, ok, err := s.sessions.GetSession(sessionID)
@@ -2127,16 +2178,44 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 	}
 	parentID := strings.TrimSpace(mapString(session.Metadata, "parent_session_id"))
 	permissionID := strings.TrimSpace(mapString(session.Metadata, "plan_permission_id"))
-	if parentID == "" || permissionID == "" {
-		return "", errors.New("Plan sidechat is not bound to a pending proposal")
+	if parentID == "" {
+		return "", errors.New("Plan sidechat is not bound to a parent")
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(firstNonEmptyString(strings.TrimSpace(arguments), "{}")), &args); err != nil {
 		return "", fmt.Errorf("edit_pending_plan arguments invalid: %w", err)
 	}
 	expected := int64(0)
-	if value, ok := args["expected_revision"].(float64); ok {
+	if value, ok := args["expected_revision"].(float64); ok && value > 0 && value < 1<<53 && value == float64(int64(value)) {
 		expected = int64(value)
+	}
+	if expected == 0 {
+		return "", errors.New("expected_revision must be a positive exact integer")
+	}
+	if value, present := args["automation"]; present {
+		if _, mixed := args["document"]; mixed || s.tools == nil {
+			return "", errors.New("automation editing requires a separate configured operation")
+		}
+		for key := range args {
+			if key != "automation" && key != "expected_revision" && key != "mutation_id" && key != "instruction_document" {
+				return "", errors.New("unsupported automation edit argument")
+			}
+		}
+		var intent pebblestore.SessionPlanAutomationIntent
+		if err := unmarshalPlanToolArg(value, &intent, "automation"); err != nil {
+			return "", err
+		}
+		if value, present := args["instruction_document"]; present {
+			var document pebblestore.SessionPlanDocument
+			if err := unmarshalPlanToolArg(value, &document, "instruction_document"); err != nil {
+				return "", err
+			}
+			return s.tools.ProposeParentAutomationInstructions(context.Background(), buildPermissionWorkspaceScope(session), intent, mapString(args, "mutation_id"), uint64(expected), &document)
+		}
+		return s.tools.EditParentAutomation(context.Background(), buildPermissionWorkspaceScope(session), intent, mapString(args, "mutation_id"), uint64(expected))
+	}
+	if permissionID == "" || s.permissions == nil {
+		return "", errors.New("Plan sidechat is not bound to a pending proposal")
 	}
 	rawDocument, ok := args["document"]
 	if !ok {
@@ -2149,6 +2228,27 @@ func (s *Service) executeEditPendingPlanTool(sessionID, arguments string) (strin
 	var document pebblestore.SessionPlanDocument
 	if err := json.Unmarshal(raw, &document); err != nil {
 		return "", fmt.Errorf("edit_pending_plan document invalid: %w", err)
+	}
+	if document.AutomationV2 != nil {
+		parent, workspace, err := s.automationV2ToolSession(parentID)
+		if err != nil {
+			return "", err
+		}
+		if session.AccountScopeID != parent.AccountScopeID || session.UserID != parent.UserID {
+			return "", errors.New("Plan sidechat ownership mismatch")
+		}
+		var review pebblestore.AutomationV2Review
+		if err := unmarshalPlanToolArg(args["automation_review"], &review, "automation_review"); err != nil {
+			return "", err
+		}
+		if review.Revision != uint64(expected) || permissionID != pebblestore.AutomationV2PermissionID(review.ProposalID) {
+			return "", errors.New("exact bound Automation plan review required")
+		}
+		proposal, err := s.sessions.ProposeAutomationV2(parent.AccountScopeID, parent.UserID, workspace, parentID, &document, review)
+		if err != nil {
+			return "", err
+		}
+		return automationV2ToolOutput(proposal)
 	}
 	edited, err := s.permissions.EditPendingPlanProposal(permission.PendingPlanProposalEditInput{SessionID: parentID, PermissionID: permissionID, ExpectedRevision: expected, Document: &document})
 	if err != nil {
@@ -2722,6 +2822,9 @@ func decodeAskUserFeedback(feedback string) (string, map[string]string) {
 }
 
 func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
+	if automationV2PlanCall(tool.Call{Name: "exit_plan_mode", Arguments: arguments}) {
+		return s.executeAutomationV2PlanTool(sessionID, sessionMode, tool.Call{Name: "exit_plan_mode", Arguments: arguments})
+	}
 	input, args, userMessage, err := s.prepareExitPlanModeLifecycleInput(sessionID, arguments, feedback)
 	if err != nil {
 		return "", err
@@ -2733,6 +2836,19 @@ func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentPr
 		return marshalExitPlanModeRejectionPayload(input, userMessage, "not_in_plan_mode", "exit_plan_mode rejected: session not in plan mode; use plan_manage save to update the active plan instead", []string{"Do not call exit_plan_mode from auto. To update the active plan instead, use plan_manage save."})
 	}
 
+	if input.Document != nil && input.Document.Automation != nil {
+		if s.tools == nil {
+			return "", errors.New("automation review runtime unavailable")
+		}
+		current, found, err := s.sessions.GetSession(sessionID)
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			return "", errors.New("automation review session unavailable")
+		}
+		return s.tools.ReviewPlanAutomation(context.Background(), buildPermissionWorkspaceScope(current), *input.Document.Automation)
+	}
 	input.ApplySessionMutation = applySessionMutation
 	input.BuildLifecycleMessage = func(plan pebblestore.SessionPlanSnapshot, summary sessionruntime.PlanExecutionSummary) *pebblestore.MessageSnapshot {
 		message, ok := BuildPlanExecutionLifecycleSystemMessage(PlanExecutionLifecycleMessageInput{Action: "approve_and_start", Plan: plan, Payload: map[string]any{"action": "approve_and_start", "checkpoint_id": summary.NextCheckpointID, "next_checkpoint_id": summary.NextCheckpointID, "next_action": "run_checkpoint_with_current_context", "context_preserved": true}})
@@ -3015,6 +3131,9 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 }
 
 func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
+	if automationV2PlanCall(tool.Call{Name: "plan_manage", Arguments: arguments}) {
+		return s.executeAutomationV2PlanTool(sessionID, "auto", tool.Call{Name: "plan_manage", Arguments: arguments})
+	}
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
 	}
@@ -3836,6 +3955,19 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 	case "amend_plan":
 		result, err = lifecycle.AmendPlan(sessionruntime.PlanLifecycleAmendmentInput{SessionID: sessionID, PlanID: planID, Title: strings.TrimSpace(mapString(args, "title")), Plan: strings.TrimSpace(mapString(args, "plan")), Document: document, BaseRevision: mapInt(args, "base_revision"), UpdateSummary: strings.TrimSpace(firstNonEmptyString(mapString(args, "update_summary"), mapString(args, "summary"), mapString(args, "reason"))), ReplaceFromCheckpointID: strings.TrimSpace(firstNonEmptyString(mapString(args, "replace_from_checkpoint_id"), mapString(args, "checkpoint_id"))), AmendFutureCheckpoints: mapBool(args, "amend_future_checkpoints"), OverrideStale: mapBool(args, "override_stale")})
 	case "request_new_plan":
+		if document != nil && document.Automation != nil {
+			if s.tools == nil {
+				return "", errors.New("automation review runtime unavailable")
+			}
+			current, found, getErr := s.sessions.GetSession(sessionID)
+			if getErr != nil {
+				return "", getErr
+			}
+			if !found {
+				return "", errors.New("automation review session unavailable")
+			}
+			return s.tools.ReviewPlanAutomation(context.Background(), buildPermissionWorkspaceScope(current), *document.Automation)
+		}
 		continuation := strings.TrimSpace(firstNonEmptyString(mapString(args, "continuation_policy"), mapString(args, "continuation"), mapString(args, "mode")))
 		continueAutomatically := (*bool)(nil)
 		if _, ok := args["continue_automatically"]; ok {
@@ -4390,6 +4522,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
 		return s.executeDirectImageSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "video" {
+		return s.executeDirectVideoSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {
@@ -6556,6 +6691,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"manage_actions":   true,
 		"manage-actions":   true,
 		"manage_workspace": true,
+		"manage_memory":    true,
 		"manage-workspace": true,
 		"manage_video":     true,
 		"manage-video":     true,
@@ -6711,6 +6847,12 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 	}
 
 	switch toolName {
+	case "manage_memory":
+		var args struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal([]byte(arguments), &args)
+		return toolName, args.Action != "inspect"
 	case "manage_artifact":
 		if permission.ShouldApproveManageArtifactGenerateImage(arguments) && !bypass {
 			return "manage_artifact_generate_image", true

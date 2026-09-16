@@ -57,7 +57,20 @@ func CloneModelProfileSelection(selection *ModelProfileSelection) *ModelProfileS
 	return &cloned
 }
 
+// SessionAutomationBinding is written only by the canonical automation mutation.
+// Each occurrence has its own plan; prior plans and messages remain immutable history.
+type SessionAutomationBinding struct {
+	AutomationID string                        `json:"automation_id"`
+	WorkspaceID  string                        `json:"workspace_id"`
+	Policy       AutomationAuthorizationPolicy `json:"policy"`
+	OccurrenceID string                        `json:"occurrence_id,omitempty"`
+	ExecutionKey string                        `json:"execution_key,omitempty"`
+	PlanID       string                        `json:"plan_id,omitempty"`
+}
+
 type SessionSnapshot struct {
+	AutomationV2            *SessionAutomationV2Binding  `json:"automation_v2,omitempty"`
+	Automation              *SessionAutomationBinding    `json:"automation,omitempty"`
 	ID                      string                       `json:"id"`
 	UserID                  string                       `json:"user_id,omitempty"`
 	AccountScopeID          string                       `json:"account_scope_id,omitempty"`
@@ -172,14 +185,28 @@ type SessionPlanSnapshot struct {
 	Checkpoint          bool                 `json:"checkpoint,omitempty"`
 }
 
+// SessionPlanAutomationIntent identifies the exact paused definition reviewed by
+// this proposal. Definition contains recurrence, timezone, scope/expiry policy and
+// immutable executable plan pins; prose is never interpreted as automation intent.
+// Existing distinguishes an edit from initial conversion, not approval authority.
+type SessionPlanAutomationIntent struct {
+	Scope              AutomationScope      `json:"scope"`
+	AutomationID       string               `json:"automation_id"`
+	DefinitionRevision uint64               `json:"definition_revision"`
+	Existing           bool                 `json:"existing"`
+	Definition         AutomationDefinition `json:"definition"`
+}
+
 type SessionPlanDocument struct {
-	ID              string                     `json:"id"`
-	Title           string                     `json:"title"`
-	Status          string                     `json:"status,omitempty"`
-	SchemaVersion   string                     `json:"schema_version,omitempty"`
-	RevisionID      string                     `json:"revision_id,omitempty"`
-	Info            SessionPlanInfo            `json:"info,omitempty"`
-	ExecutionPolicy SessionPlanExecutionPolicy `json:"execution_policy,omitempty"`
+	AutomationV2    *AutomationV2Settings        `json:"automation_v2,omitempty"`
+	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
+	ID              string                       `json:"id"`
+	Title           string                       `json:"title"`
+	Status          string                       `json:"status,omitempty"`
+	SchemaVersion   string                       `json:"schema_version,omitempty"`
+	RevisionID      string                       `json:"revision_id,omitempty"`
+	Info            SessionPlanInfo              `json:"info,omitempty"`
+	ExecutionPolicy SessionPlanExecutionPolicy   `json:"execution_policy,omitempty"`
 	// ExecutionOrigin distinguishes lightweight auto-session work from approved
 	// full-plan execution without relying on conversation history.
 	ExecutionOrigin     string                         `json:"execution_origin,omitempty"`
@@ -280,6 +307,9 @@ type SessionPlanCheckpoint struct {
 	Handoff         *SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
 	Attempts        []SessionPlanCheckpointAttempt       `json:"attempts,omitempty"`
 	Order           int                                  `json:"order,omitempty"`
+	ClosingState    string                               `json:"closing_state,omitempty"`
+	Summary         string                               `json:"summary,omitempty"`
+	AlertConditions string                               `json:"alert_conditions,omitempty"`
 }
 
 type SessionPlanSubtask struct {
@@ -1026,6 +1056,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 	for _, key := range []string{
 		KeySessionUsageSummary(session.ID), KeySessionUsageSummaryByAccount(session.AccountScopeID, session.ID),
 		KeyV3SessionSequence(session.ID), KeyV3SessionProjection(session.ID), KeyV3SessionRunIntentActive(session.ID), KeyExecutionEpochActive(session.ID), KeyExecutionEpochLatest(session.ID),
+		automationV2Key("accepted", session.AccountScopeID, session.ID), automationV2Key("proposal", session.AccountScopeID, session.ID),
 	} {
 		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
@@ -1460,6 +1491,9 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
+		if V3SessionNavigationHidden(session) {
+			return nil
+		}
 		matchedWorkspacePath := ""
 		for _, candidate := range order {
 			// Worktree sessions are physically rooted outside the source workspace; group them by binding/source identity when present.
@@ -1874,6 +1908,9 @@ func (s *SessionStore) ListMessages(sessionID string, afterGlobalSeq uint64, lim
 	if limit <= 0 {
 		limit = 500
 	}
+	if v3Messages, err := s.ListV3SessionMessages(sessionID, afterGlobalSeq, limit); err == nil && len(v3Messages) > 0 {
+		return v3Messages, nil
+	}
 	if afterGlobalSeq == 0 {
 		return s.listLatestMessages(sessionID, limit)
 	}
@@ -1898,6 +1935,9 @@ func (s *SessionStore) ListMessages(sessionID string, afterGlobalSeq uint64, lim
 }
 
 func (s *SessionStore) listLatestMessages(sessionID string, limit int) ([]MessageSnapshot, error) {
+	if v3Messages, err := s.ListV3SessionMessageTail(sessionID, limit); err == nil && len(v3Messages) > 0 {
+		return v3Messages, nil
+	}
 	prefix := MessagePrefix(sessionID)
 	iter, err := s.store.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte(prefix),

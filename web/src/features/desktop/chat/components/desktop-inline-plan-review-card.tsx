@@ -1,3 +1,5 @@
+import { AutomationPlanApproval } from '../../tools/automations/automation-plan-approval';
+import { AutomationV2PlanReview, automationV2PermissionProposal } from '../../tools/automations/automation-v2-plan-review';
 import { useMemo, useState } from "react";
 import { AlertCircle, Check, Copy, MessageCircle } from "lucide-react";
 import { Button } from "../../../../components/ui/button";
@@ -48,7 +50,7 @@ interface DesktopInlinePlanReviewCardProps {
 
 export function DesktopInlinePlanReviewCard({
   permission,
-  parentSessionId: _parentSessionId,
+  parentSessionId,
   pendingPosition,
   pendingCount,
   onResolve,
@@ -115,6 +117,12 @@ export function DesktopInlinePlanReviewCard({
     }
   };
 
+  if (permission.requirement === 'automation_v2_acceptance') {
+    const proposal = automationV2PermissionProposal(permission);
+    if (!proposal || proposal.session_id !== parentSessionId) return <p role="alert">Automation review unavailable. Refresh before accepting.</p>;
+    return <section><AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} onAskForChanges={onAskForChanges} askForChangesLabel="Ask the automation agent for any changes" /></section>;
+  }
+
   return (
     <section
       className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 shadow-sm"
@@ -124,7 +132,7 @@ export function DesktopInlinePlanReviewCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-            Pending plan edit
+            {document?.automation ? 'Pending Automation' : 'Pending plan edit'}
           </div>
           <h2 className="mt-1 text-lg font-semibold text-[var(--app-text)]">
             {title}
@@ -178,7 +186,7 @@ export function DesktopInlinePlanReviewCard({
         )}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
+      {document?.automation ? <AutomationPlanApproval key={JSON.stringify(document.automation) + document.revisionId} document={document} parentSessionId={parentSessionId} /> : <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
         {supportsExecutionChoice ? (
           <span className="text-sm text-[var(--app-text-muted)]">Starts automatically after approval</span>
         ) : (
@@ -207,7 +215,7 @@ export function DesktopInlinePlanReviewCard({
             {resolutionPending ? "Starting execution…" : "Accept once"}
           </Button>
         </div>
-      </div>
+      </div>}
     </section>
   );
 }

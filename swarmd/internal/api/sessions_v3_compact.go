@@ -168,6 +168,150 @@ func sessionV3CompactTerminalErrorResponse(sessionID, runID string, terminal ses
 	}
 }
 
+func (s *Server) CompactSession(ctx context.Context, principal identity.Principal, sessionID, note string) (map[string]any, error) {
+	if s == nil || s.runner == nil || s.sessions == nil {
+		return nil, errors.New("compaction services are not configured")
+	}
+	if s.isShuttingDown() {
+		return nil, errors.New("daemon is shutting down")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if _, found, err := s.requireSessionV3Access(principal, sessionID); err != nil {
+		return nil, err
+	} else if !found {
+		return nil, fmt.Errorf("session %q not found", sessionID)
+	}
+	clientRequestID := fmt.Sprintf("manage-sessions:compact:%s:%d", sessionID, time.Now().UnixMilli())
+	runID := stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
+
+	compactRunner, ok := s.runner.(interface {
+		RunManualCompaction(context.Context, string, runruntime.ManualCompactionInput) (runruntime.ManualCompactionResult, error)
+	})
+	if !ok {
+		return nil, errors.New("run service does not support direct manual compaction")
+	}
+
+	startingLifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, true, "starting", "")
+	accepted, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
+		Principal:       principal,
+		SessionID:       sessionID,
+		RunID:           runID,
+		ClientRequestID: clientRequestID + ":accepted",
+		EventType:       "session.lifecycle.updated",
+		Status:          sessionruntime.RunIntentPendingExecutor,
+		Payload: map[string]any{
+			"type":            "session.lifecycle.updated",
+			"session_id":      sessionID,
+			"run_id":          runID,
+			"status":          sessionruntime.RunIntentPendingExecutor,
+			"owner_transport": sessionV3ManualCompactOwnerTransport,
+			"lifecycle":       startingLifecycle,
+		},
+		Lifecycle: startingLifecycle,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if terminal, terminalOK := sessionV3ManualCompactTerminalFromMutation(accepted); terminalOK {
+		return sessionV3CompactTerminalResponse(&terminal.Result, terminal.Status), nil
+	}
+
+	runningLifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, true, "running", "")
+	if _, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
+		Principal:       principal,
+		SessionID:       sessionID,
+		RunID:           runID,
+		ClientRequestID: clientRequestID + ":running",
+		EventType:       "session.lifecycle.updated",
+		Status:          sessionruntime.RunIntentRunning,
+		Payload: map[string]any{
+			"type":            "session.lifecycle.updated",
+			"session_id":      sessionID,
+			"run_id":          runID,
+			"status":          sessionruntime.RunIntentRunning,
+			"owner_transport": sessionV3ManualCompactOwnerTransport,
+			"lifecycle":       runningLifecycle,
+		},
+		Lifecycle: runningLifecycle,
+	}); err != nil {
+		return nil, err
+	}
+
+	runCtx := ctx
+	if s.runCtx != nil {
+		runCtx = identity.ContextWithPrincipal(s.runCtx, principal)
+	}
+	result, compactErr := compactRunner.RunManualCompaction(runCtx, sessionID, runruntime.ManualCompactionInput{
+		RunID:                runID,
+		Note:                 note,
+		Origin:               "manual",
+		Principal:            principal,
+		OwnerTransport:       sessionV3ManualCompactOwnerTransport,
+		ApplySessionMutation: s.applySessionV3PrimaryMutation,
+	})
+	s.endActiveRun()
+	if compactErr != nil {
+		terminal, publishErr := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, compactErr)
+		if publishErr != nil {
+			return nil, fmt.Errorf("manual compact failed and failure mutation failed: %w", publishErr)
+		}
+		return sessionV3CompactTerminalErrorResponse(sessionID, runID, terminal), compactErr
+	}
+	if result.CheckpointMutation.Message == nil || result.CheckpointMutation.RealtimeOutbox == nil || result.CheckpointMutation.RealtimeOutbox.EndpointSeq == 0 || strings.TrimSpace(result.CheckpointMessage.ID) == "" {
+		terminal, publishErr := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, errors.New("manual compact did not return a committed checkpoint mutation"))
+		if publishErr != nil {
+			return nil, fmt.Errorf("manual compact checkpoint result invalid and failure mutation failed: %w", publishErr)
+		}
+		return sessionV3CompactTerminalErrorResponse(sessionID, runID, terminal), errors.New("manual compact did not return a committed checkpoint mutation")
+	}
+
+	checkpointMutation := result.CheckpointMutation
+	if signed, ok := s.sessionV3MutationWithHydrateCursor(principal, sessionID, checkpointMutation); ok {
+		checkpointMutation = signed
+	}
+	completedLifecycle := s.newSessionV3ManualCompactLifecycle(principal, sessionID, runID, false, "completed", "")
+	terminalMutation, err := s.recordSessionV3ManualCompactRunEvent(sessionV3ManualCompactRunEventInput{
+		Principal:       principal,
+		SessionID:       sessionID,
+		RunID:           runID,
+		ClientRequestID: clientRequestID + ":completed",
+		EventType:       "session.lifecycle.updated",
+		Status:          sessionruntime.RunIntentCompleted,
+		Payload: map[string]any{
+			"type":                  "session.lifecycle.updated",
+			"session_id":            sessionID,
+			"run_id":                runID,
+			"status":                sessionruntime.RunIntentCompleted,
+			"owner_transport":       sessionV3ManualCompactOwnerTransport,
+			"compact_checkpoint_id": result.CheckpointMessage.ID,
+			"compact_index":         result.CompactIndex,
+			"lifecycle":             completedLifecycle,
+		},
+		Lifecycle: completedLifecycle,
+	})
+	if err != nil {
+		terminal, publishErr := s.publishSessionV3ManualCompactFailure(principal, sessionID, runID, fmt.Errorf("manual compact completion mutation failed: %w", err))
+		if publishErr != nil {
+			return nil, fmt.Errorf("manual compact completion mutation failed and failure mutation failed: %w", publishErr)
+		}
+		return sessionV3CompactTerminalErrorResponse(sessionID, runID, terminal), err
+	}
+	return sessionV3CompactDirectResponse(sessionV3ManualCompactResponseInput{
+		SessionID:          sessionID,
+		RunID:              runID,
+		Status:             sessionruntime.RunIntentCompleted,
+		Summary:            result.Summary,
+		CompactIndex:       result.CompactIndex,
+		CheckpointMessage:  &result.CheckpointMessage,
+		CheckpointMutation: &checkpointMutation,
+		TerminalMutation:   &terminalMutation,
+		TitleMutation:      result.TitleMutation,
+		UsageMutation:      result.UsageMutation,
+		ToolMutation:       result.ToolMutation,
+		AssistantMutation:  result.AssistantMutation,
+	}), nil
+}
+
 func (s *Server) handleSessionV3PrimaryCompact(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)

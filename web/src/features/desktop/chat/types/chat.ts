@@ -687,12 +687,14 @@ export interface DesktopSessionPlanCheckpoint {
   completedAt: number;
   review: DesktopSessionPlanCheckpointReview | null;
   recommendation?: DesktopSessionPlanCheckpointRecommendation | null;
+  waitingReason?: string;
   finalHandoff?: DesktopPlanFinalHandoff | null;
   attempts: DesktopSessionPlanCheckpointAttempt[];
   order: number;
 }
 
 export interface DesktopSessionPlanDocument {
+  automation?: import('../components/structured-plan-document').StructuredPlanAutomation | null;
   id: string;
   title: string;
   status: string;

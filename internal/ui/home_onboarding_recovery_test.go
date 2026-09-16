@@ -2,7 +2,7 @@ package ui
 
 import (
 	"github.com/gdamore/tcell/v2"
-	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/client"
 	"testing"
 )
 
@@ -10,10 +10,11 @@ import (
 // repository setup, never queue admission instead, and permit cancellation/retry.
 // The UI action boundary is the narrowest proof of user intent routing.
 func TestOnboardingRepositorySetupConsent(t *testing.T) {
-	for _, readiness := range []model.GitReadiness{model.GitReadinessNotRepository, model.GitReadinessNeedsCommit} {
+	for _, readiness := range []string{"not_repository", "needs_initial_commit"} {
 		p := readyOnboardingPage()
-		p.model.WorkspaceSetupGitReadiness = readiness
 		p.ShowOnboardingWorkspace("")
+		p.SetOnboardingRepository(client.OnboardingRepository{Path: "/repo/project", State: readiness, CanSetup: true})
+		focusRepositoryControl(p, "consent")
 		p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
 		if _, ok := p.PopHomeAction(); ok {
 			t.Fatal("Enter mutated before consent")
@@ -29,20 +30,26 @@ func TestOnboardingRepositorySetupConsent(t *testing.T) {
 			t.Fatal("failure retained consent")
 		}
 		p.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, 0))
+		if p.OnboardingWorkspacePath() != "" || p.onboarding.SetupConsent {
+			t.Fatal("back did not clear folder and consent")
+		}
+		if _, ok := p.PopHomeAction(); ok {
+			t.Fatal("back queued a mutation")
+		}
+		p.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, 0))
 		if !p.OnboardingProviderActive() {
-			t.Fatal("back did not work")
+			t.Fatal("back from choices did not return to provider")
 		}
 	}
 }
 
 // Requirement: changing location revokes Git consent, and cancelling an edit
-// restores the selected path. Folder creation is a distinct action, never Git
-// consent. Exercise the production key router rather than rendered strings.
+// restores the selected path. New-folder navigation opens a blank name draft,
+// never a filesystem action. Exercise the production key router.
 func TestOnboardingLocationRevokesConsent(t *testing.T) {
 	p := readyOnboardingPage()
 	p.ShowOnboardingWorkspace("")
-	p.model.WorkspaceSetupGitReadiness = model.GitReadinessNotRepository
-	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	p.onboarding.SetupConsent = true
 	original := p.OnboardingWorkspacePath()
 	p.HandleKey(tcell.NewEventKey(tcell.KeyCtrlL, 0, 0))
 	p.HandleKey(tcell.NewEventKey(tcell.KeyCtrlU, 0, 0))
@@ -58,8 +65,10 @@ func TestOnboardingLocationRevokesConsent(t *testing.T) {
 		t.Fatal("location edit retained consent")
 	}
 	p.HandleKey(tcell.NewEventKey(tcell.KeyCtrlN, 0, 0))
-	action, ok := p.PopHomeAction()
-	if !ok || action.Kind != HomeActionCreateOnboardingFolder || action.WorkspacePath != original {
-		t.Fatalf("folder action: %+v", action)
+	if action, ok := p.PopHomeAction(); ok {
+		t.Fatalf("naming queued a mutation: %+v", action)
+	}
+	if !p.onboarding.NamingProject || p.onboarding.ProjectName != "" || p.onboarding.SetupConsent {
+		t.Fatal("new folder did not open an unconsented blank draft")
 	}
 }

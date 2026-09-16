@@ -64,7 +64,14 @@ export interface DesktopOnboardingIdentityWire {
   membership_role?: string
 }
 
+export interface OnboardingWorkspaceGuidance {
+ runtime_username: string
+ runtime_uid: string
+ home_path: string
+}
+
 export interface DesktopOnboardingStatusWire {
+  workspace_guidance?: OnboardingWorkspaceGuidance
   ok?: boolean
   needs_onboarding?: boolean
   identity?: DesktopOnboardingIdentityWire
@@ -110,6 +117,7 @@ export interface DesktopOnboardingIdentity {
 }
 
 export interface DesktopOnboardingStatus {
+  workspaceGuidance?: OnboardingWorkspaceGuidance
   ok: boolean
   needsOnboarding: boolean
   identity: DesktopOnboardingIdentity

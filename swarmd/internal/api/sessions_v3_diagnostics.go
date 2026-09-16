@@ -256,6 +256,12 @@ func (e *sessionV3Executor) recordSessionV3ContextOverflowDecision(job sessionV3
 		"classifier":         "sessionV3IsContextOverflowDiagnostic",
 		"classifier_matched": sessionV3IsContextOverflowDiagnostic(rawError),
 	}
+	if sessionV3IsGoogleTokenOverflowDiagnostic(rawError) {
+		payload["google_token_overflow_matched"] = true
+		if util, ok := e.sessionV3ContextUtilizationPercent(job, cause); ok {
+			payload["context_utilization_percent"] = util
+		}
+	}
 	if e.server.sessions != nil {
 		if summary, ok, err := e.server.sessions.GetUsageSummary(job.SessionID); err != nil {
 			payload["usage_summary_error"] = err.Error()

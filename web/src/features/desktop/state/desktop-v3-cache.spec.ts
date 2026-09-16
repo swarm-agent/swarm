@@ -3052,6 +3052,34 @@ test('realtime direct image swarm deltas merge per-image routing and creation pr
   assert.equal(tool.taskStream?.launchesByKey['image:1']?.child_session_id, undefined)
 })
 
+test('realtime direct video swarm deltas merge per-video routing and generation progress without child sessions', () => {
+  const state = bootstrappedState()
+  const routing = JSON.stringify({
+    path_id: 'tool.task.video_swarm.stream.v1', tool: 'task', execution_format: 'direct_video_swarm', task_mode: 'swarm', video_count: 1,
+    video_key: 'video:1', video: { video_key: 'video:1', index: 1, status: 'running', theme: 'cinematic', current_stage: 'router', current_stage_label: 'Routing', stage_history: ['Routing'], swarm_mode: true },
+  })
+  const creating = JSON.stringify({
+    path_id: 'tool.task.video_swarm.stream.v1', tool: 'task', execution_format: 'direct_video_swarm', task_mode: 'swarm', video_count: 1,
+    video_key: 'video:1', video: { video_key: 'video:1', index: 1, status: 'running', title: 'Cinematic video', current_stage: 'video_model', current_stage_label: 'Video generation', stage_history: ['Routing', 'Video generation'], swarm_mode: true },
+  })
+  applyRealtimeFrame(state, { frame: deltaFrame('session.tool.started', {
+    call_id: 'call-video-task', step_id: 'step-video-task', tool_instance_id: 'tool-instance-video-task', tool_name: 'task', arguments: '{"mode":"swarm","agent_type":"video"}',
+  }, 50, 'cursor-video-start') })
+  for (const [index, output] of [routing, creating].entries()) {
+    applyRealtimeFrame(state, { frame: deltaFrame('session.tool.delta', { call_id: 'call-video-task', tool_name: 'task', output }, 51 + index, `cursor-video-${index}`) })
+  }
+
+  const tool = state.liveRunsBySession[sessionA.id]['run-live'].toolCallsByCallId['call-video-task']
+  assert.equal(tool.outputText, undefined)
+  assert.equal(tool.taskStream?.executionFormat, 'direct_video_swarm')
+  assert.equal(tool.taskStream?.videoCount, 1)
+  assert.deepEqual(tool.taskStream?.launchOrder, ['video:1'])
+  assert.equal(tool.taskStream?.launchesByKey['video:1']?.status, 'running')
+  assert.equal(tool.taskStream?.launchesByKey['video:1']?.current_tool, 'Video generation')
+  assert.equal(tool.taskStream?.launchesByKey['video:1']?.current_tool_display, 'Routing → Video generation')
+  assert.equal(tool.taskStream?.launchesByKey['video:1']?.child_session_id, undefined)
+})
+
 test('realtime task stream v2 retains Task Program definition and status metadata', () => {
   const state = bootstrappedState()
   const program = {

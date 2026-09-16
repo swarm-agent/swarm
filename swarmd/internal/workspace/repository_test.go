@@ -190,7 +190,9 @@ func TestSetupRepositoryForPrincipalLeavesNonEmptyDirectoryUnchanged(t *testing.
 	}
 }
 
-func TestSetupRepositoryForPrincipalRejectsSavedDirectory(t *testing.T) {
+// Requirement: retrying setup after save must acknowledge the existing HEAD,
+// never duplicate a commit or catalog entry; invalid consent must still reject.
+func TestSetupRepositoryForPrincipalResumesSavedDirectory(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
 	defer cleanup()
 	svc := NewService(store)
@@ -204,8 +206,20 @@ func TestSetupRepositoryForPrincipalRejectsSavedDirectory(t *testing.T) {
 	if _, err := svc.AddForPrincipal(testPrincipal(), path, "saved", "", false); err != nil {
 		t.Fatalf("seed saved workspace: %v", err)
 	}
-	if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path); err == nil || !strings.Contains(err.Error(), "already saved") {
-		t.Fatalf("saved setup error=%v, want rejection", err)
+	before, err := runRepositoryGit(path, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path)
+	if err != nil || state.HeadCommit != before {
+		t.Fatalf("saved setup=%+v %v", state, err)
+	}
+	if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, path+"-stale"); err == nil {
+		t.Fatal("stale saved consent accepted")
+	}
+	entries, err := svc.ListKnownForPrincipal(testPrincipal(), 10)
+	if err != nil || len(entries) != 1 {
+		t.Fatal("saved retry changed catalog")
 	}
 }
 
@@ -230,9 +244,9 @@ func TestSetupRepositoryForPrincipalRejectsSymlinkAndStaleSelection(t *testing.T
 	}
 }
 
-// Requirement: daemon guidance proposes only a new child of its owned writable
-// canonical home, without mutation. Threat: unsafe homes, symlinks, collisions,
-// or caller identity could redirect setup onto existing data. Pure guidance is
+// Requirement: daemon guidance offers its verified non-root home without inventing
+// a project name or mutating it. Threat: unsafe homes, symlinks, or caller
+// identity could redirect setup onto existing data. Pure guidance is
 // the narrowest layer proving read-only selection with deterministic fixtures.
 func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) {
 	uid := strconv.Itoa(os.Geteuid())
@@ -243,7 +257,12 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 		t.Fatal(err)
 	}
 	guidance := daemonWorkspaceGuidance(account, uid)
-	if guidance.SuggestedWorkspacePath != first+"-2" || guidance.RuntimeUsername != account.Username || !guidance.SetupRequired {
+	if guidance.HomePath != func() string {
+		if uid == "0" {
+			return ""
+		}
+		return home
+	}() || guidance.RuntimeUsername != account.Username || !guidance.SetupRequired {
 		t.Fatalf("unexpected guidance: %+v", guidance)
 	}
 	if _, err := os.Lstat(first + "-2"); !os.IsNotExist(err) {
@@ -256,11 +275,11 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 	for _, unsafe := range []string{"", "relative", string(filepath.Separator), link, first, filepath.Join(home, "absent")} {
 		copy := *account
 		copy.HomeDir = unsafe
-		if got := daemonWorkspaceGuidance(&copy, uid); got.SuggestedWorkspacePath != "" {
+		if got := daemonWorkspaceGuidance(&copy, uid); got.HomePath != "" {
 			t.Fatalf("unsafe home %q suggested %+v", unsafe, got)
 		}
 	}
-	if got := daemonWorkspaceGuidance(account, uid+"1"); got.SuggestedWorkspacePath != "" || got.RuntimeUsername != "" {
+	if got := daemonWorkspaceGuidance(account, uid+"1"); got.HomePath != "" || got.RuntimeUsername != "" {
 		t.Fatalf("mismatched identity accepted: %+v", got)
 	}
 	for _, mode := range []os.FileMode{0o500, 0o777, 0o000} {
@@ -269,7 +288,7 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 		}
 		got := daemonWorkspaceGuidance(account, uid)
 		info, err := os.Stat(home)
-		if err != nil || info.Mode().Perm() != mode || got.SuggestedWorkspacePath != "" {
+		if err != nil || info.Mode().Perm() != mode || got.HomePath != "" {
 			t.Fatalf("unsafe permissions accepted or changed: guidance=%+v err=%v", got, err)
 		}
 	}
@@ -283,8 +302,8 @@ func TestDaemonWorkspaceGuidanceRejectsUnsafeHomesWithoutMutation(t *testing.T) 
 }
 
 // Requirement: missing folders are created only through explicit setup, not
-// inspection, and only in daemon home. Threat: caller-controlled HOME or stale
-// consent could create arbitrary paths. Service assertions prove rejection
+// inspection, in an accessible canonical parent (not restricted to daemon home).
+// Threat: stale consent could create arbitrary paths. Service assertions prove rejection
 // leaves filesystem and workspace catalog unchanged.
 func TestSetupRepositoryMissingPathRejectsCallerHomeAndStaleConsent(t *testing.T) {
 	store, cleanup := newTestWorkspaceStore(t)
@@ -296,7 +315,7 @@ func TestSetupRepositoryMissingPathRejectsCallerHomeAndStaleConsent(t *testing.T
 	if _, err := svc.InspectRepositoryForPrincipal(testPrincipal(), path); err == nil {
 		t.Fatal("inspection accepted absent directory")
 	}
-	for _, expected := range []string{"", path + "-stale", path} {
+	for _, expected := range []string{"", path + "-stale"} {
 		if _, err := svc.SetupRepositoryForPrincipal(testPrincipal(), path, expected); err == nil {
 			t.Fatalf("setup accepted caller home with expected=%q", expected)
 		}
