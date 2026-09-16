@@ -727,7 +727,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 		}
 		profile.Prompt = agentruntime.PlanSidechatAgentPromptWithContext(string(contextJSON))
 		if req.AutomationV2 {
-			profile.Prompt += "\nYou are Swarm helping optimize this bound Automation. Read manage_automation context/progress for current review and recorded work. Propose instruction and timing changes only through edit_pending_plan with the exact automation_review. Conversation belongs only here, never in the main automation or occurrence chat. Acceptance is exclusively the user's action; do not execute the automation."
+			profile.Prompt += "\nYou are Swarm helping optimize this bound Worker. Read manage_workers context/progress for current review and recorded work. Propose instruction and timing changes only through edit_pending_plan with the exact worker_review (or automation_review). Conversation belongs only here, never in the main worker or occurrence chat. Acceptance is exclusively the user's action; do not execute the worker."
 		}
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)

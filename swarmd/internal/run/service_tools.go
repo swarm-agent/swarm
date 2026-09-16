@@ -2136,7 +2136,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		}
 		result.Output = fmt.Sprintf("Plan context compact handoff accepted (%d characters).", len([]rune(handoff)))
 		return true, result, nil
-	case "manage_automation":
+	case "manage_automation", "manage_workers":
 		output, err := s.executeManageAutomationV2Tool(sessionID, call.Arguments)
 		result.Output = output
 		return true, result, err
@@ -6787,6 +6787,10 @@ func canonicalToolName(name string) string {
 		return "manage_video"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
+	case "manage-workers", "manage_workers":
+		return "manage_workers"
+	case "manage-automation", "manage_automation":
+		return "manage_automation"
 	default:
 		return strings.ToLower(strings.TrimSpace(name))
 	}

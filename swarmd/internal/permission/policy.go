@@ -550,7 +550,7 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
 	}
-	if toolName == "manage_automation" {
+	if toolName == "manage_automation" || toolName == "manage_workers" {
 		toolName = automationPolicyIdentity(toolArguments)
 	}
 	if toolName == "manage_actions" && shouldApproveManageActionsMutation(toolArguments) {

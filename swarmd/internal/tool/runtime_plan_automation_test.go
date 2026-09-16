@@ -31,7 +31,7 @@ func TestAutomationV2RetiresLegacyPlanAdapters(t *testing.T) {
 		})
 	}
 	for _, d := range r.Definitions() {
-		if d.Name == "manage_automation" {
+		if d.Name == "manage_automation" || d.Name == "manage_workers" {
 			p := d.Parameters["properties"].(map[string]any)
 			if p["definition"] != nil {
 				t.Fatal("legacy definition advertised")

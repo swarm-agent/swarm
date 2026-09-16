@@ -146,6 +146,12 @@ func automationV2ID() (string, error) {
 	return fmt.Sprintf("av2_%x", b), nil
 }
 func AutomationV2DocumentDigest(doc SessionPlanDocument) (string, error) {
+	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
+		doc.AutomationV2 = doc.WorkerV2
+	}
+	if doc.WorkerV2 == nil && doc.AutomationV2 != nil {
+		doc.WorkerV2 = doc.AutomationV2
+	}
 	b, err := json.Marshal(doc)
 	if err != nil {
 		return "", err
@@ -276,6 +282,12 @@ func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string
 }
 
 func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, workspace, id string) error {
+	if p.Document.AutomationV2 == nil && p.Document.WorkerV2 != nil {
+		p.Document.AutomationV2 = p.Document.WorkerV2
+	}
+	if p.Document.WorkerV2 == nil && p.Document.AutomationV2 != nil {
+		p.Document.WorkerV2 = p.Document.AutomationV2
+	}
 	if p.AccountID != account || p.UserID != user || p.WorkspaceID != workspace || p.SessionID != id || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil {
 		return ErrAutomationV2Conflict
 	}
@@ -294,6 +306,12 @@ func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, worksp
 func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, doc SessionPlanDocument, expected AutomationV2Review, validate func(*SessionPlanDocument) error) (AutomationV2Proposal, error) {
 	if _, err := s.automationV2Owner(account, user, workspace, id); err != nil {
 		return AutomationV2Proposal{}, err
+	}
+	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
+		doc.AutomationV2 = doc.WorkerV2
+	}
+	if doc.WorkerV2 == nil && doc.AutomationV2 != nil {
+		doc.WorkerV2 = doc.AutomationV2
 	}
 	if doc.AutomationV2 == nil || doc.Automation != nil {
 		return AutomationV2Proposal{}, ErrAutomationV2Conflict

@@ -45,6 +45,12 @@ func planDocumentFromArgsForTool(args map[string]any, toolName string) (*pebbles
 	if err := unmarshalPlanToolArg(value, &document, fmt.Sprintf("%s document", toolName)); err != nil {
 		return nil, err
 	}
+	if document.AutomationV2 == nil && document.WorkerV2 != nil {
+		document.AutomationV2 = document.WorkerV2
+	}
+	if document.WorkerV2 == nil && document.AutomationV2 != nil {
+		document.WorkerV2 = document.AutomationV2
+	}
 	return &document, nil
 }
 

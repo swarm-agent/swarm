@@ -822,6 +822,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
 					"document":          sessionExecutablePlanDocumentToolSchema(),
+					"worker_review":     automationV2ReviewSchema(),
 					"automation_review": automationV2ReviewSchema(),
 				},
 				"required":             []string{"expected_revision", "document"},
@@ -1454,6 +1455,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
 		manageArtifactDefinition(),
@@ -1528,6 +1530,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"title":                  map[string]any{"type": "string", "description": "Final plan title. Optional when document.title is provided."},
 					"plan":                   map[string]any{"type": "string", "description": "Optional markdown/display text for export only; document is canonical. Include any last display-text updates here instead of first calling plan_manage save."},
+					"worker_review":          automationV2ReviewSchema(),
 					"automation_review":      automationV2ReviewSchema(),
 					"document":               sessionExecutablePlanDocumentToolSchema(),
 					"plan_id":                map[string]any{"type": "string", "description": "Existing active plan id to update and submit. Optional; when omitted, the current active plan is reused if one exists."},
@@ -1573,6 +1576,7 @@ func (r *Runtime) Definitions() []Definition {
 					"amend_future_checkpoints":   map[string]any{"type": "boolean", "description": "For amend_plan: allow replacing pending future checkpoints; when replace_from_checkpoint_id is omitted, the first pending future checkpoint is used."},
 					"override_stale":             map[string]any{"type": "boolean", "description": "For amend_plan only: explicitly allow amendment when base_revision is missing or stale."},
 					"checkpoint":                 map[string]any{"anyOf": []any{map[string]any{"type": "boolean"}, map[string]any{"type": "object"}}, "description": "Structured checkpoint object for checkpoint document operations, or boolean marker for checkpoint-style plan update metadata. With action=update_checkpoint/patch_checkpoint, only provided checkpoint object fields are merged and omitted fields are preserved; use fields such as status, tasks, notes, report, changed_files, and validation for agent progress/checklist tracking. With upsert_checkpoint/replace_checkpoint/set_checkpoint, the checkpoint object intentionally replaces the target checkpoint."},
+					"worker_review":              automationV2ReviewSchema(),
 					"automation_review":          automationV2ReviewSchema(),
 					"document":                   map[string]any{"anyOf": []any{sessionPlanDocumentToolSchema(), map[string]any{"type": "string"}}, "description": "Canonical structured SessionPlanDocument. For approval-bearing actions (request_new_plan and amend_plan), an explicit object with title, info.goal, and at least one complete ordered pending checkpoint is required; markdown-only and partial documents are rejected. Draft mutation actions retain the looser document shape."},
 					"document_patch":             map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}, "description": "Atomic structured document patch for modular info/checkpoint edits. update_info and update_checkpoint merge only provided fields and preserve omitted fields; replace/set operations intentionally replace. A JSON-encoded object string is also accepted for compatibility."},
@@ -1801,6 +1805,7 @@ func sessionPlanDocumentToolSchema() map[string]any {
 			"title":         map[string]any{"type": "string"},
 			"status":        map[string]any{"type": "string"},
 			"info":          sessionPlanInfoToolSchema(),
+			"worker_v2":     sessionPlanAutomationV2ToolSchema(),
 			"automation_v2": sessionPlanAutomationV2ToolSchema(),
 			"artifacts":     map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifact references only; file contents are not embedded."},
 			"checkpoints":   map[string]any{"type": "array", "items": sessionPlanCheckpointToolSchema()},
@@ -2061,8 +2066,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workspace must be handled by run-service control-plane")
 	case "manage-worktree", "manage_worktree":
 		return r.executeManageWorktree(scope, args)
-	case "manage-automation", "manage_automation":
-		return "", errors.New("manage_automation V2 requires canonical session run dispatch; legacy execution is retired")
+	case "manage-workers", "manage_workers", "manage-automation", "manage_automation":
+		return "", errors.New("manage_workers V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
 	case "artifact-v2-author", "artifact_v2_author":
@@ -9222,6 +9227,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_worktree"
 	case "manage-workspace", "manage_workspace":
 		return "manage_workspace"
+	case "manage-workers", "manage_workers":
+		return "manage_workers"
 	case "manage-automation", "manage_automation":
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
@@ -9809,6 +9816,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_worktree"
 	case "manage-workspace", "manage_workspace":
 		return "manage_workspace"
+	case "manage-workers", "manage_workers":
+		return "manage_workers"
 	case "manage-automation", "manage_automation":
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
@@ -10274,6 +10283,8 @@ func toolPathID(name string) string {
 		return "tool.manage-agent.v1"
 	case "manage-worktree", "manage_worktree":
 		return "tool.manage-worktree.v1"
+	case "manage-workers", "manage_workers":
+		return "tool.manage-workers.v1"
 	case "manage-automation", "manage_automation":
 		return "tool.manage-automation.v1"
 	case "manage-actions", "manage_actions":

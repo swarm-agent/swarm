@@ -18,6 +18,6 @@ export function AutomationChat({ sessionId, automationId }: { sessionId: string;
   }, [sessionId, attempt])
   return <aside aria-label="Worker AI chat" className="flex min-h-[65dvh] min-w-0 flex-col border-t border-[var(--app-border)] w-full">
     {error && <div role="alert">Conversation could not load. <button onClick={() => setAttempt(value => value + 1)}>Retry chat</button></div>}
-    <DesktopV3ExistingConversationPane presentation="sidebar" contextChip={automationId ? { id: automationId, label: 'Worker', kind: 'automation', description: `Inspect worker ${automationId} with manage_automation. Management changes require explicit user review; this context does not authorize execution or replace pinned plans.` } : null} sessionId={sessionId} initialHydrateStatus={error ? 'error' : ready ? 'ready' : 'loading'} renderedMessages={messages} messagesLoaded={ready} loadedMessageCount={count} />
+    <DesktopV3ExistingConversationPane presentation="sidebar" contextChip={automationId ? { id: automationId, label: 'Worker', kind: 'automation', description: `Inspect worker ${automationId} with manage_workers. Management changes require explicit user review; this context does not authorize execution or replace pinned plans.` } : null} sessionId={sessionId} initialHydrateStatus={error ? 'error' : ready ? 'ready' : 'loading'} renderedMessages={messages} messagesLoaded={ready} loadedMessageCount={count} />
   </aside>
 }

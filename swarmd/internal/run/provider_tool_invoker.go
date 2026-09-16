@@ -546,7 +546,7 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 	if payload == nil {
 		return false
 	}
-	if mapString(payload, "next_action") == "await_automation_acceptance" {
+	if next := mapString(payload, "next_action"); next == "await_automation_acceptance" || next == "await_worker_acceptance" {
 		return true
 	}
 	if mapBool(payload, "restart_turn") {
@@ -569,7 +569,7 @@ func providerManagedToolRequiresTurnRestart(call tool.Call, result tool.Result) 
 
 func providerManagedTerminalPlanNextAction(nextAction string) bool {
 	switch strings.ToLower(strings.TrimSpace(nextAction)) {
-	case "await_review", "plan_complete", "stopped", "await_automation_acceptance":
+	case "await_review", "plan_complete", "stopped", "await_automation_acceptance", "await_worker_acceptance":
 		return true
 	default:
 		return false

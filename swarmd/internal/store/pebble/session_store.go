@@ -198,6 +198,7 @@ type SessionPlanAutomationIntent struct {
 }
 
 type SessionPlanDocument struct {
+	WorkerV2        *AutomationV2Settings        `json:"worker_v2,omitempty"`
 	AutomationV2    *AutomationV2Settings        `json:"automation_v2,omitempty"`
 	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
 	ID              string                       `json:"id"`

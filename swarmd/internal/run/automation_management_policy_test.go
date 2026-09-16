@@ -31,7 +31,7 @@ func TestAutomationManagementToolParity(t *testing.T) {
 		if err != nil || policy != nil {
 			t.Fatalf("management acquired execution overlay: %+v %v", policy, err)
 		}
-		for _, name := range []string{"read", "write", "bash", "task", "manage_sessions", "manage_automation", "plan_manage"} {
+		for _, name := range []string{"read", "write", "bash", "task", "manage_sessions", "manage_workers", "manage_automation", "plan_manage"} {
 			if err := runs.enforceAutomationTool(snapshot.ID, name); err != nil {
 				t.Fatalf("%s: %s denied: %v", mode, name, err)
 			}
@@ -43,7 +43,7 @@ func TestAutomationManagementToolParity(t *testing.T) {
 	}
 	// Management parity must not weaken an admitted occurrence's restricted policy.
 	policy := &store.AutomationAuthorizationPolicy{AllowedTools: []string{"read"}}
-	if automationToolPermitted(policy, "manage_automation") || automationToolPermitted(policy, "task") {
+	if automationToolPermitted(policy, "manage_automation") || automationToolPermitted(policy, "manage_workers") || automationToolPermitted(policy, "task") {
 		t.Fatal("execution overlay widened")
 	}
 }

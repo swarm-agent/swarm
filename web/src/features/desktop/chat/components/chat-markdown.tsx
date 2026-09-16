@@ -3264,7 +3264,7 @@ export function ToolMessageView({
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
-  if (['manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
+  if (['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
     const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
     if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
   }

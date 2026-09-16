@@ -24,6 +24,9 @@ func automationV2PlanCall(call tool.Call) bool {
 	if json.Unmarshal(args["document"], &doc) != nil {
 		return false
 	}
+	if _, ok := doc["worker_v2"]; ok {
+		return true
+	}
 	_, ok := doc["automation_v2"]
 	return ok
 }
@@ -63,8 +66,8 @@ func (s *Service) executeAutomationV2PlanTool(id, mode string, call tool.Call) (
 		return "", errors.New("automation_v2 uses request_new_plan with automation_review for edits, never ordinary plan mutation or approval")
 	}
 	for key := range args {
-		if key != "document" && key != "action" && key != "title" && key != "plan" && key != "automation_review" {
-			return "", fmt.Errorf("automation proposal does not accept %s; submit complete instructions and automation_review only for an exact pending edit", key)
+		if key != "document" && key != "action" && key != "title" && key != "plan" && key != "automation_review" && key != "worker_review" {
+			return "", fmt.Errorf("worker proposal does not accept %s; submit complete instructions and worker_review only for an exact pending edit", key)
 		}
 	}
 	doc, err := planDocumentFromArgsForTool(args, call.Name)
@@ -76,7 +79,11 @@ func (s *Service) executeAutomationV2PlanTool(id, mode string, call tool.Call) (
 		return "", err
 	}
 	var review store.AutomationV2Review
-	if raw, ok := args["automation_review"]; ok {
+	if raw, ok := args["worker_review"]; ok {
+		if err := unmarshalPlanToolArg(raw, &review, "worker_review"); err != nil {
+			return "", err
+		}
+	} else if raw, ok := args["automation_review"]; ok {
 		if err := unmarshalPlanToolArg(raw, &review, "automation_review"); err != nil {
 			return "", err
 		}
@@ -88,7 +95,19 @@ func (s *Service) executeAutomationV2PlanTool(id, mode string, call tool.Call) (
 	return automationV2ToolOutput(p)
 }
 func automationV2ToolOutput(p store.AutomationV2Proposal) (string, error) {
-	raw, err := json.Marshal(map[string]any{"status": "pending_review", "review_kind": "automation_v2", "title": "Automation plan", "created": false, "enabled": false, "next_action": "await_automation_acceptance", "automation_review": p.AutomationV2Review, "permission_id": store.AutomationV2PermissionID(p.ProposalID), "document": p.Document, "instruction": "Stop authoring. Only explicit user Accept automation creates and activates this schedule; no ordinary plan execution or immediate run."})
+	raw, err := json.Marshal(map[string]any{
+		"status":            "pending_review",
+		"review_kind":       "worker_v2",
+		"title":             "Worker plan",
+		"created":           false,
+		"enabled":           false,
+		"next_action":       "await_worker_acceptance",
+		"worker_review":     p.AutomationV2Review,
+		"automation_review": p.AutomationV2Review,
+		"permission_id":     store.AutomationV2PermissionID(p.ProposalID),
+		"document":          p.Document,
+		"instruction":       "Stop authoring. Only explicit user Accept worker creates and activates this schedule; no ordinary plan execution or immediate run.",
+	})
 	return string(raw), err
 }
 func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, error) {
@@ -127,9 +146,9 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 		if err != nil {
 			return "", err
 		}
-		out = map[string]any{"found": found, "state": "not_created", "instruction": tool.AutomationV2AuthoringInstructions}
+		out = map[string]any{"found": found, "state": "not_created", "instruction": tool.WorkerV2AuthoringInstructions}
 		if found {
-			out = map[string]any{"found": true, "proposal": p, "automation_review": p.AutomationV2Review}
+			out = map[string]any{"found": true, "proposal": p, "worker_review": p.AutomationV2Review, "automation_review": p.AutomationV2Review}
 		}
 	case "progress":
 		progress, err := s.sessions.AutomationV2Progress(current.AccountScopeID, current.UserID, workspace, id, mapString(args, "timezone"), mapString(args, "cursor"), time.Now().UnixMilli())
@@ -151,7 +170,7 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 		}
 		out = map[string]any{"records": rows, "next_cursor": next}
 	default:
-		return "", errors.New("V1 automation operations are retired; V2 mutations require an Automation plan review and explicit user acceptance")
+		return "", errors.New("V1 automation operations are retired; V2 mutations require a Worker plan review and explicit user acceptance")
 	}
 	raw, err := json.Marshal(out)
 	return string(raw), err

@@ -10,4 +10,8 @@ func TestAutomationPrimaryCapability(t *testing.T) {
 	if !ok || grant.Enabled == nil || !*grant.Enabled {
 		t.Fatal("missing compiled primary automation capability")
 	}
+	grantWorkers, ok := SwarmAgentToolContract().Tools["manage_workers"]
+	if !ok || grantWorkers.Enabled == nil || !*grantWorkers.Enabled {
+		t.Fatal("missing compiled primary workers capability")
+	}
 }

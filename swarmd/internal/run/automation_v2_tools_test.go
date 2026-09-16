@@ -167,6 +167,10 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 			if _, err := svc.executeManageAutomationV2Tool("author", `{"action":"approve"}`); err == nil {
 				t.Fatal("agent approval supported")
 			}
+			reviewOut, err := svc.executeManageAutomationV2Tool("author", `{"action":"review"}`)
+			if err != nil || !strings.Contains(reviewOut, "worker_review") {
+				t.Fatalf("manage_workers review missing worker_review: %s %v", reviewOut, err)
+			}
 			// The bound Plan sidechat can update only this exact parent's proposal.
 			if err := ss.CreateSession(store.SessionSnapshot{ID: "sidechat", AccountScopeID: "account", UserID: "owner", Metadata: map[string]any{"system_sidechat_kind": "plan", "lineage_kind": "system_sidechat", "parent_session_id": "author", "plan_permission_id": pending[0].ID}}); err != nil {
 				t.Fatal(err)
@@ -267,5 +271,100 @@ func TestAutomationV2DoesNotInferOrdinaryPlan(t *testing.T) {
 	accepted, found, err := sessions.GetActivePlan(id)
 	if err != nil || !found || accepted.ApprovalState != "approved" || accepted.Document.AutomationV2 != nil || !strings.Contains(output, "run_checkpoint_with_current_context") {
 		t.Fatalf("ordinary approval/execution changed: %s %v", output, err)
+	}
+}
+
+// Purpose: verify that worker_v2, worker_review, and manage_workers tool work seamlessly.
+func TestWorkerV2ProviderDispatch(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := store.NewSessionStore(db)
+	yes := true
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: w.Path, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := session.NewService(ss, events)
+	ps := store.NewPermissionStore(db)
+	permissions := permission.NewService(ps, events, nil)
+	permissions.SetBypassPermissions(true)
+	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	_, policy, disabled, err := svc.compileResolvedAgentToolContract("account", profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defs := filterToolDefinitions(convertToolDefinitions(svc.ListAgentToolDefinitionsForAccount("account")), disabled)
+	hasManageWorkers := false
+	for _, d := range defs {
+		if d.Name == "manage_workers" {
+			hasManageWorkers = true
+			break
+		}
+	}
+	if !hasManageWorkers {
+		t.Fatal("manage_workers missing from compiled agent tool definitions")
+	}
+	doc := map[string]any{
+		"title": "Worker plan: report",
+		"info":  map[string]any{"goal": "Report repository status"},
+		"worker_v2": map[string]any{
+			"schema_version":     2,
+			"schedule":           map[string]any{"kind": "interval", "interval_seconds": 900},
+			"missed":             "skip",
+			"overlap":            "serialize",
+			"activate_on_accept": true,
+		},
+		"checkpoints": []any{
+			map[string]any{"id": "report", "title": "Report", "status": "pending", "order": 1, "tasks": []string{"Report repository status without changes"}, "acceptance_criteria": []string{"Factual report returned"}},
+		},
+	}
+	args := map[string]any{"action": "request_new_plan", "document": doc}
+	raw, _ := json.Marshal(args)
+	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"}, sessionMode: "auto", runID: "authoring", providerManagedV3: true, applySessionMutation: sessions.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "plan_manage", CallID: "call-1", Arguments: string(raw)})
+	if err != nil || res.Error != "" {
+		t.Fatalf("worker_v2 plan dispatch failed: %s %v", res.Error, err)
+	}
+	if !res.RestartTurn {
+		t.Fatal("worker proposal did not stop turn")
+	}
+	p, found, err := sessions.GetAutomationV2Proposal("account", "owner", w.WorkspaceID, "author")
+	if err != nil || !found {
+		t.Fatalf("proposal not found: %v", err)
+	}
+	if p.Document.WorkerV2 == nil || p.Document.AutomationV2 == nil {
+		t.Fatal("expected mirrored worker_v2 and automation_v2 in proposal document")
+	}
+	// Verify manage_workers review in a fresh turn
+	invoker2 := svc.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"}, sessionMode: "auto", runID: "authoring-2", providerManagedV3: true, applySessionMutation: sessions.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
+	workersRes, err := invoker2.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "manage_workers", CallID: "call-2", Arguments: `{"action":"review"}`})
+	if err != nil || workersRes.Error != "" {
+		t.Fatalf("manage_workers review failed: %s %v", workersRes.Error, err)
+	}
+	if !strings.Contains(workersRes.Output, "worker_review") {
+		t.Fatalf("missing worker_review in output: %s", workersRes.Output)
 	}
 }

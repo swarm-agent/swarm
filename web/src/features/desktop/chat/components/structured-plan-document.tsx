@@ -370,7 +370,7 @@ export function normalizeStructuredPlanDocument(value: unknown): StructuredPlanD
 
   const document: StructuredPlanDocument = {
     automation: normalizePlanAutomation(record.automation),
-    automationV2: (record.automation_v2 ?? record.automationV2) as import('../../state/desktop-automation-v2-api').AutomationV2Settings | undefined,
+    automationV2: (record.worker_v2 ?? record.workerV2 ?? record.automation_v2 ?? record.automationV2) as import('../../state/desktop-automation-v2-api').AutomationV2Settings | undefined,
     id: stringValue(record, 'id'),
     title: stringValue(record, 'title'),
     status: stringValue(record, 'status'),
@@ -474,6 +474,7 @@ export function structuredPlanDocumentToWire(document: StructuredPlanDocument): 
     title: document.title,
     status: document.status,
     automation: document.automation ?? undefined,
+    worker_v2: document.automationV2,
     automation_v2: document.automationV2,
     schema_version: document.schemaVersion,
     revision_id: document.revisionId,
