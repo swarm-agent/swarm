@@ -7,7 +7,7 @@ import type { DesktopV3CacheState } from '../../state/desktop-v3-cache-types'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Record, AutomationV2Settings } from '../../state/desktop-automation-v2-api'
 import { automationV2PermissionProposal } from './automation-v2-plan-review'
-import { scheduleFrequency, scheduleLabel } from './automation-v2-schedule'
+import { formatScheduleDateTime, formatScheduleTime, scheduleFrequency, scheduleLabel } from './automation-v2-schedule'
 import { getOccurrenceDayKey } from './automation-v2-workspace'
 
 export function AutomationSidebarMetadataRow({
@@ -46,7 +46,7 @@ export function AutomationSidebarMetadataRow({
     schedule?.timezone,
     schedule && scheduleFrequency(schedule),
     runMeta || undefined,
-    nextDueAt ? `Next scheduled: ${new Date(nextDueAt).toLocaleString()} (local time; not a guaranteed start)` : undefined,
+    nextDueAt ? `Next scheduled: ${formatScheduleDateTime(nextDueAt, schedule?.timezone)} (${schedule?.timezone || 'local time'}; not a guaranteed start)` : undefined,
     onNavigateToAutomations || workspaceSlug ? 'Open Workers view' : undefined,
   ].filter(Boolean).join(' · ')
 
@@ -88,7 +88,7 @@ export function AutomationSidebarMetadataRow({
     </button>
   ) : workspaceSlug ? (
     <a
-      href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+      href={`/${encodeURIComponent(workspaceSlug)}/workers`}
       onClick={(e) => {
         e.stopPropagation()
       }}
@@ -135,8 +135,8 @@ export function AutomationSidebarMetadataRow({
           )}
         </span>
         {nextDueAt ? (
-          <span className="shrink-0 tabular-nums text-[var(--app-text-subtle)]" title={`Next scheduled: ${new Date(nextDueAt).toLocaleString()}`}>
-            Next: {new Date(nextDueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          <span className="shrink-0 tabular-nums text-[var(--app-text-subtle)]" title={`Next scheduled: ${formatScheduleDateTime(nextDueAt, schedule?.timezone)}`}>
+            Next: {formatScheduleTime(nextDueAt, schedule?.timezone)}
           </span>
         ) : onNavigateToAutomations || workspaceSlug ? (
           <span className="shrink-0 text-[var(--app-primary)] hover:underline">
@@ -243,10 +243,10 @@ function AcceptedAutomationMetadata({
 
   const upcomingCount = useMemo(() => {
     if (forecast && forecast.length > 0) {
-      return forecast.filter(ms => ms > now).length
+      return forecast.filter(ms => ms > now && getOccurrenceDayKey(ms, timezone) === todayKey).length
     }
-    return record && record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now ? 1 : 0
-  }, [forecast, now, record])
+    return record && record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now && getOccurrenceDayKey(record.next_due_at, timezone) === todayKey ? 1 : 0
+  }, [forecast, now, record, timezone, todayKey])
 
   const isRunning = useDesktopV3CacheSelector(state => {
     if (occurrences?.some(o => o.state === 'running' || o.state === 'in_progress')) return true
@@ -397,8 +397,8 @@ export function selectAutomationSummaryCounts(
         ).length
       }
       if (forecast && forecast.length > 0) {
-        upcoming += forecast.filter(ms => ms > now).length
-      } else if (record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now) {
+        upcoming += forecast.filter(ms => ms > now && getOccurrenceDayKey(ms, tz) === todayKey).length
+      } else if (record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now && getOccurrenceDayKey(record.next_due_at, tz) === todayKey) {
         upcoming++
       }
     }
@@ -540,7 +540,7 @@ export function AutomationSidebarSummaryBadge({
   if (workspaceSlug) {
     return (
       <a
-        href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+        href={`/${encodeURIComponent(workspaceSlug)}/workers`}
         onClick={(e) => {
           e.stopPropagation()
         }}
@@ -733,7 +733,7 @@ export function AutomationSidebarCompactCardView({
             </button>
           ) : workspaceSlug ? (
             <a
-              href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+              href={`/${encodeURIComponent(workspaceSlug)}/workers`}
               data-testid="compact-view-link"
               onClick={(e) => {
                 e.stopPropagation()
@@ -866,7 +866,7 @@ export function AutomationSidebarExpandedContainerView({
             </button>
           ) : workspaceSlug ? (
             <a
-              href={`/${encodeURIComponent(workspaceSlug)}/automations`}
+              href={`/${encodeURIComponent(workspaceSlug)}/workers`}
               data-testid="expanded-view-link"
               onClick={(e) => {
                 e.stopPropagation()

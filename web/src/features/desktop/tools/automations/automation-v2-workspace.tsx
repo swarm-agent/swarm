@@ -7,6 +7,7 @@ import {
   Calendar,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   ExternalLink,
@@ -45,7 +46,7 @@ import { loadAutomationConversations } from '../../state/desktop-automation-conv
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
-import { scheduleLabel, scheduleFrequency } from './automation-v2-schedule'
+import { scheduleLabel, scheduleFrequency, formatScheduleDateTime, formatScheduleTime } from './automation-v2-schedule'
 
 export interface AutomationStarterTemplate {
   id: string
@@ -542,8 +543,9 @@ export function PendingAutomationCard({
   const schedule = proposal.document.automation_v2.schedule
   const scheduleSettings = proposal.document.automation_v2
 
+  const tz = proposal.document?.automation_v2?.schedule?.timezone
   const time = (ms: number) =>
-    new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
+    formatScheduleDateTime(ms, tz)
 
   const handleAccept = async () => {
     if (acceptBusy || declineBusy || accepted || declined) return
@@ -1121,8 +1123,16 @@ export function AutomationV2Workspace({
 
   const hasAnyItems = (filteredRecords.length + filteredPendingProposals.length) > 0
 
-  const time = (ms: number) =>
-    new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms)
+  const primaryTimezone = useMemo(() => {
+    for (const r of activeRecords) {
+      const tz = r.document?.automation_v2?.schedule?.timezone
+      if (tz) return tz
+    }
+    return Intl.DateTimeFormat().resolvedOptions().timeZone
+  }, [activeRecords])
+
+  const time = (ms: number, tz?: string) =>
+    formatScheduleDateTime(ms, tz || primaryTimezone)
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
@@ -1154,6 +1164,56 @@ export function AutomationV2Workspace({
       {/* Main Body + Sidecar Layout */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden">
         <main className="min-w-0 flex-1 space-y-6 p-5 sm:p-8 overflow-y-auto">
+          {/* Selected Worker Context Banner */}
+          {selectedRecord && (
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)]/50 bg-[var(--app-primary-soft)]/40 p-4 text-xs shadow-xs"
+              data-testid="selected-worker-banner"
+            >
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelected('')
+                    if (typeof window !== 'undefined' && window.history && workspaceSlug) {
+                      window.history.replaceState(null, '', `/${encodeURIComponent(workspaceSlug)}/workers`)
+                    }
+                  }}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors cursor-pointer"
+                >
+                  <ChevronLeft size={13} className="shrink-0" />
+                  <span>View all workers</span>
+                </button>
+                <span className="text-[var(--app-border)] select-none">/</span>
+                <span className="truncate font-semibold text-sm text-[var(--app-text)]">
+                  {selectedRecord.document.title}
+                </span>
+                {selectedRecord.document?.automation_v2?.schedule && (
+                  <span className="hidden md:inline-flex items-center gap-1 rounded-md border border-[var(--app-border)]/60 bg-[var(--app-surface)] px-2 py-0.5 text-[11px] text-[var(--app-text-muted)]">
+                    <Clock3 size={11} className="shrink-0 text-[var(--app-text-subtle)]" />
+                    <span>
+                      {scheduleLabel(selectedRecord.document.automation_v2.schedule)}
+                      {selectedRecord.document.automation_v2.schedule.timezone ? ` · ${selectedRecord.document.automation_v2.schedule.timezone}` : ''}
+                    </span>
+                  </span>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {onOpenSession && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSession(selectedRecord.session_id)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] transition-colors cursor-pointer"
+                    title="Open raw conversation and instructions session"
+                  >
+                    <span>Inspect Session</span>
+                    <ExternalLink size={11} className="shrink-0 opacity-70" />
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Overview Heading & Refresh */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -1232,7 +1292,7 @@ export function AutomationV2Workspace({
           {activeRecords.length > 0 && (
             <AutomationUpcomingScheduleChart
               records={activeRecords}
-              timezone={Intl.DateTimeFormat().resolvedOptions().timeZone}
+              timezone={primaryTimezone}
               onOpenSession={onOpenSession}
               onChat={handleChatWithAutomation}
               workspaceSlug={workspaceSlug}
@@ -1407,6 +1467,10 @@ export function AutomationV2Workspace({
                           Revision {pendingProposal.revision} pending approval
                         </span>
                       )}
+                      <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text)] font-mono">
+                        <Clock3 size={11} className="text-[var(--app-text-subtle)] shrink-0" />
+                        <span>{scheduleLabel(schedule)}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}</span>
+                      </span>
                       <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
                         {scheduleFrequency(schedule)}
                       </span>
@@ -1418,7 +1482,7 @@ export function AutomationV2Workspace({
                       {isArchived ? (
                         <span>Archived</span>
                       ) : record.enabled && !record.cancelled && record.next_due_at ? (
-                        <span>Next: {time(record.next_due_at)}</span>
+                        <span>Next: {formatScheduleDateTime(record.next_due_at, schedule?.timezone || primaryTimezone)}</span>
                       ) : (
                         <span>No upcoming run</span>
                       )}
@@ -1825,9 +1889,18 @@ export function AutomationV2Detail({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const lock = useRef(false)
-  const input = { action: 'progress' as const, workspace_id: workspaceId, session_id: sessionId, timezone, cursor }
+  const input = useMemo(() => ({
+    action: 'progress' as const,
+    workspace_id: workspaceId,
+    session_id: sessionId,
+    timezone,
+    cursor,
+  }), [workspaceId, sessionId, timezone, cursor])
   const page = useAutomationV2Page(input)
   const progress = page?.data?.progress, record = progress?.record
+  const schedule = record?.document.automation_v2.schedule
+  const scheduleTimezone = schedule?.timezone
+  const effectiveDisplayTimezone = scheduleTimezone || timezone
   const disabled = busy || !record || !!page?.stale || !!page?.loading
   async function control(action: 'pause' | 'resume' | 'cancel_future' | 'cancel_all') {
     if (lock.current || disabled || !record) return
@@ -1836,11 +1909,10 @@ export function AutomationV2Detail({
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Control failed') }
     finally { lock.current = false; setBusy(false) }
   }
-  const time = (ms: number) => new Intl.DateTimeFormat(undefined, { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' }).format(ms)
+  const time = (ms: number) => formatScheduleDateTime(ms, effectiveDisplayTimezone)
   const status = record?.cancelled ? 'Cancelled' : record?.enabled ? 'Scheduled' : 'Paused'
   const eyebrow = 'text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]'
   const disclosure = 'cursor-pointer text-xs font-medium text-[var(--app-text-muted)]'
-  const schedule = record?.document.automation_v2.schedule
   const todayStats = useMemo(() => {
     if (!progress?.occurrences) return null
     const todayKey = getOccurrenceDayKey(Date.now(), timezone)
@@ -1942,7 +2014,7 @@ export function AutomationV2Detail({
             <div className="flex items-center gap-2">
               <label className="flex items-center gap-1.5 text-[11px]">
                 <span className="text-[var(--app-text-subtle)]">Timezone:</span>
-                <select className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]" value={timezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>
+                <select className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]" value={effectiveDisplayTimezone} onChange={e => { setTimezone(e.target.value); setCursor(undefined) }}>
                   {[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map(zone => <option key={zone}>{zone}</option>)}
                 </select>
               </label>

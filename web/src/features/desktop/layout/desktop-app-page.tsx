@@ -2350,7 +2350,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   if (isAcceptedAutomation) {
     return (
       <Link
-        to="/$workspaceSlug/automations"
+        to="/$workspaceSlug/workers"
         params={{ workspaceSlug: rowWorkspaceSlug }}
         search={{ sessionId: session.id }}
         {...linkProps}
@@ -2762,11 +2762,15 @@ export function DesktopAppPage() {
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
+  const workspaceWorkersMatch = matchRoute({ to: '/$workspaceSlug/workers', fuzzy: false })
   const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
+  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceAutomationsMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceAutomationsMatch
+  const routeWorkspaceSlug = (workspaceWorkersMatch
+    ? workspaceWorkersMatch.workspaceSlug
+    : workspaceAutomationsMatch
     ? workspaceAutomationsMatch.workspaceSlug
     : workspaceTaskMatch
     ? workspaceTaskMatch.workspaceSlug
@@ -2776,10 +2780,10 @@ export function DesktopAppPage() {
         ? workspaceMatch.workspaceSlug
         : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : null
-  const routeSessionId = mobileCreationPage || workspaceAutomationsMatch
+  const routeSessionId = mobileCreationPage || isWorkersRoute
     ? ''
     : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
-  const routeAutomationSessionId = workspaceAutomationsMatch && typeof search.sessionId === 'string'
+  const routeAutomationSessionId = isWorkersRoute && typeof search.sessionId === 'string'
     ? search.sessionId.trim()
     : ''
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
@@ -3706,11 +3710,11 @@ export function DesktopAppPage() {
       return
     }
     void navigate({
-      to: workspaceAutomationsMatch ? '/$workspaceSlug/automations' : '/$workspaceSlug',
+      to: isWorkersRoute ? '/$workspaceSlug/workers' : '/$workspaceSlug',
       params: { workspaceSlug: canonicalWorkspaceSlug },
       replace: true,
     })
-  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, workspaceAutomationsMatch])
+  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || !routeSessionId) {
@@ -3746,7 +3750,7 @@ export function DesktopAppPage() {
   useEffect(() => {
     if (routeSessionIsAcceptedAutomation && routeWorkspaceSlug && routeSessionId) {
       void navigate({
-        to: '/$workspaceSlug/automations',
+        to: '/$workspaceSlug/workers',
         params: { workspaceSlug: routeWorkspaceSlug },
         search: { sessionId: routeSessionId },
         replace: true,
@@ -3796,7 +3800,7 @@ export function DesktopAppPage() {
     const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
     if (automationIdentity === 'accepted') {
       void navigate({
-        to: '/$workspaceSlug/automations',
+        to: '/$workspaceSlug/workers',
         params: {
           workspaceSlug,
         },
@@ -4800,7 +4804,7 @@ export function DesktopAppPage() {
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
     onOpenAutomations: topWorkspaceSlug ? () => {
       setMobileSidebarOpen(false)
-      void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
+      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug } })
     } : undefined,
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
@@ -5631,11 +5635,11 @@ export function DesktopAppPage() {
                       onClick={() => {
                         if (!topWorkspaceSlug) return
                         setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
+                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug } })
                       }}
                       disabled={!topWorkspaceSlug}
                       aria-label="Open Workers"
-                      aria-current={workspaceAutomationsMatch ? 'page' : undefined}
+                      aria-current={isWorkersRoute ? 'page' : undefined}
                       title="Workers"
                     >
                       <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
@@ -5843,7 +5847,7 @@ export function DesktopAppPage() {
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onOpenAutomations: topWorkspaceSlug ? () => {
                       setMobileSidebarOpen(false)
-                      void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
+                      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug } })
                     } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
@@ -5925,7 +5929,7 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {workspaceAutomationsMatch ? (
+        {isWorkersRoute ? (
           <>
             <div className="flex h-[60px] shrink-0 items-center border-b border-[var(--app-border)] px-3 sm:hidden">
               <Button variant="ghost" onClick={() => setMobileSidebarOpen(true)} aria-label="Open sidebar"><Menu size={20} /></Button>

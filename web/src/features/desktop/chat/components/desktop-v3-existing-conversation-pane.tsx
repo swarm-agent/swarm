@@ -37,6 +37,7 @@ import { cn } from "../../../../lib/cn";
 import { Button } from "../../../../components/ui/button";
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
+import { WorkerSessionBanner } from '../../tools/automations/worker-session-banner';
 import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
@@ -3291,6 +3292,10 @@ export function DesktopV3ExistingConversationPane({
         sessionActions={headerSessionActions}
         studioMode={presentation === "page" ? studioMode : null}
         onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
+      />
+      <WorkerSessionBanner
+        sessionId={normalizedSessionId}
+        workspaceSlug={routeWorkspaceSlug}
       />
       <div
         ref={planSidebarGridRef}

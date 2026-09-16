@@ -120,7 +120,7 @@ export function SwarmToolSidebar({
         </button>
       </div>
 
-      {workspaceSlug && <a className="mb-3 block px-2 py-2 hover:bg-[var(--app-surface-hover)] focus-visible:outline-2" href={`/${encodeURIComponent(workspaceSlug)}/automations`}>Workers</a>}
+      {workspaceSlug && <a className="mb-3 block px-2 py-2 hover:bg-[var(--app-surface-hover)] focus-visible:outline-2" href={`/${encodeURIComponent(workspaceSlug)}/workers`}>Workers</a>}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain" data-tool-sidebar-scroll>
       {!compactSelectedSession ? (
         <>

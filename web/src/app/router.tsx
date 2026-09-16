@@ -251,12 +251,28 @@ const workspaceVideoSessionRoute = createRoute({
   component: VideoToolPage,
 })
 
+const workspaceWorkersRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/workers',
+  parseParams: validateWorkspaceParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
 const workspaceAutomationsRoute = createRoute({
   getParentRoute: () => conversationRoute,
   path: '/$workspaceSlug/automations',
   parseParams: validateWorkspaceParams,
   validateSearch: validateWorkspaceSessionSearch,
-  component: AutomationToolPage,
+  beforeLoad: ({ params, search }) => {
+    throw redirect({
+      to: '/$workspaceSlug/workers',
+      params: { workspaceSlug: params.workspaceSlug },
+      search,
+      replace: true,
+    })
+  },
+  component: () => null,
 })
 
 const workspaceTaskRoute = createRoute({
@@ -339,7 +355,7 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceAutomationsRoute]),
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceAutomationsRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,

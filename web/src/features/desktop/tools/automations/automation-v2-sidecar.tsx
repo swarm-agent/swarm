@@ -257,7 +257,7 @@ export function AutomationV2Sidecar({
     return false
   })
 
-  const tz = progressPage?.data?.progress?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const tz = progressPage?.data?.progress?.timezone || selectedAutomation?.document?.automation_v2?.schedule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
   const occurrences = progressPage?.data?.progress?.occurrences
   const forecast = progressPage?.data?.progress?.forecast
 
@@ -269,11 +269,12 @@ export function AutomationV2Sidecar({
 
   const upcomingCount = useMemo(() => {
     const now = Date.now()
+    const todayKey = getOccurrenceDayKey(now, tz)
     if (forecast && forecast.length > 0) {
-      return forecast.filter((ms) => ms > now).length
+      return forecast.filter((ms) => ms > now && getOccurrenceDayKey(ms, tz) === todayKey).length
     }
-    return selectedAutomation?.next_due_at && selectedAutomation.next_due_at > now ? 1 : 0
-  }, [forecast, selectedAutomation])
+    return selectedAutomation?.next_due_at && selectedAutomation.next_due_at > now && getOccurrenceDayKey(selectedAutomation.next_due_at, tz) === todayKey ? 1 : 0
+  }, [forecast, selectedAutomation, tz])
 
   const currentPendingProposal = useMemo(() => {
     const sId = directSessionId || (selectedAutomation ? selectedAutomation.session_id : undefined)

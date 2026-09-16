@@ -12,14 +12,17 @@ import test from 'node:test'
 const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
 const router = await readFile(new URL('../../../app/router.tsx', import.meta.url), 'utf8')
 
-test('automations is nested under the retained Desktop owner and rendered through its outlet', () => {
-  const registration = router.slice(router.indexOf('const workspaceAutomationsRoute ='), router.indexOf('const workspaceTaskRoute ='))
+test('workers is nested under the retained Desktop owner and rendered through its outlet, while automations redirects', () => {
+  const registration = router.slice(router.indexOf('const workspaceWorkersRoute ='), router.indexOf('const workspaceTaskRoute ='))
   assert.match(registration, /getParentRoute: \(\) => conversationRoute/)
   assert.match(registration, /component: AutomationToolPage/)
-  assert.match(router, /conversationRoute\.addChildren\(\[workspaceRoute, workspaceSessionRoute, workspaceAutomationsRoute\]\)/)
-  assert.match(source, /const routeSessionId = mobileCreationPage \|\| workspaceAutomationsMatch\s*\? ''/)
-  assert.match(source, /to: workspaceAutomationsMatch \? '\/\$workspaceSlug\/automations' : '\/\$workspaceSlug'/)
-  assert.match(source, /workspaceAutomationsMatch \? \([\s\S]*?<Outlet \/>/)
+  assert.match(registration, /path: '\/\$workspaceSlug\/workers'/)
+  assert.match(registration, /path: '\/\$workspaceSlug\/automations'/)
+  assert.match(registration, /redirect\({\s*to: '\/\$workspaceSlug\/workers'/)
+  assert.match(router, /conversationRoute\.addChildren\(\[workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceAutomationsRoute\]\)/)
+  assert.match(source, /const routeSessionId = mobileCreationPage \|\| isWorkersRoute\s*\? ''/)
+  assert.match(source, /to: isWorkersRoute \? '\/\$workspaceSlug\/workers' : '\/\$workspaceSlug'/)
+  assert.match(source, /isWorkersRoute \? \([\s\S]*?<Outlet \/>/)
 })
 
 test('shared sidebar keeps the info row first and Automations directly below Studio', () => {
@@ -44,8 +47,8 @@ test('automation content cannot restore a second workspace navigation shell', as
   assert.match(content, /aria-label="Worker controls"/)
 })
 
-test('clicking an accepted automation session navigates to the automations page instead of conversation chat', () => {
-  assert.match(source, /if \(isAcceptedAutomation\)\s*\{\s*return \(\s*<Link\s+to="\/\$workspaceSlug\/automations"[\s\S]*?search=\{\{\s*sessionId:\s*session\.id\s*\}\}/)
-  assert.match(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*void navigate\(\{\s*to: '\/\$workspaceSlug\/automations',\s*params: \{\s*workspaceSlug,\s*\},\s*search: \{\s*sessionId:\s*session\.id,\s*\},\s*\}\)/)
+test('clicking an accepted automation session navigates to the workers page instead of conversation chat', () => {
+  assert.match(source, /if \(isAcceptedAutomation\)\s*\{\s*return \(\s*<Link\s+to="\/\$workspaceSlug\/workers"[\s\S]*?search=\{\{\s*sessionId:\s*session\.id\s*\}\}/)
+  assert.match(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*void navigate\(\{\s*to: '\/\$workspaceSlug\/workers',\s*params: \{\s*workspaceSlug,\s*\},\s*search: \{\s*sessionId:\s*session\.id,\s*\},\s*\}\)/)
   assert.match(source, /routeSessionIsAcceptedAutomation \? \(\s*<div[^>]*>\s*<AutomationToolPage \/>\s*<\/div>\s*\) : routeSessionId/)
 })

@@ -72,3 +72,34 @@ export function scheduleFrequency(schedule: AutomationSchedule): string {
   }
   return 'Runs on matching calendar days'
 }
+
+export function formatScheduleTime(ms: number, timeZone?: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      ...(timeZone ? { timeZone } : {}),
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(ms)
+  } catch {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(ms)
+  }
+}
+
+export function formatScheduleDateTime(ms: number, timeZone?: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      ...(timeZone ? { timeZone } : {}),
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(ms)
+  } catch {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(ms)
+  }
+}
+

@@ -14,7 +14,7 @@ export function AutomationSidebar({ workspaceId, workspaceSlug }: { workspaceId:
   const page = usePage(input)
   return <section aria-label="Worker" className="max-h-64 shrink-0 overflow-y-auto border-b border-[var(--app-border)] p-3 text-sm">
     <h2 className="font-semibold">Worker</h2>
-    <Link to="/$workspaceSlug/automations" params={{ workspaceSlug }}>Manage workers</Link>
+    <Link to="/$workspaceSlug/workers" params={{ workspaceSlug }}>Manage workers</Link>
     {page?.data?.records?.filter(row => row.definition?.session_id).map(row => <Link key={row.id} className="my-2 block break-words" to="/$workspaceSlug/$sessionId" params={{ workspaceSlug, sessionId: row.definition!.session_id! }}>{row.definition!.name}<span className="block text-xs">{row.definition!.enabled ? 'Enabled' : 'Paused · execution not enabled'}</span><AutomationProgressView workspaceId={workspaceId} id={row.automation_id} revision={row.revision} compact /></Link>)}
     {(!page || page.loading) && <p role="status">Loading workers…</p>}
     {page?.stale && <p role="status">Worker list is stale.</p>}

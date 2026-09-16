@@ -81,7 +81,7 @@ test('automation metadata row renders active running state and top-down entry po
     />
   )
   assert.match(scheduledLinkMarkup, /Scheduled/)
-  assert.match(scheduledLinkMarkup, /href="\/my-project\/automations"/)
+  assert.match(scheduledLinkMarkup, /href="\/my-project\/workers"/)
   assert.match(scheduledLinkMarkup, /aria-label="Open Workers view"/)
   assert.doesNotMatch(scheduledLinkMarkup, /data-testid="automation-running-dot"/)
 
@@ -226,7 +226,7 @@ test('sidebar summary badge displays calm high-level state and navigates on clic
   assert.match(scheduledOnlyMarkup, /2 scheduled/)
   assert.doesNotMatch(scheduledOnlyMarkup, /running/)
   assert.doesNotMatch(scheduledOnlyMarkup, /data-testid="summary-running-dot"/)
-  assert.match(scheduledOnlyMarkup, /href="\/team-workspace\/automations"/)
+  assert.match(scheduledOnlyMarkup, /href="\/team-workspace\/workers"/)
 
   const emptyMarkup = renderToStaticMarkup(
     <AutomationSidebarSummaryBadge
