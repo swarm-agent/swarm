@@ -539,6 +539,57 @@ func shouldApproveManageActionsMutation(arguments string) bool {
 	}
 }
 
+// ShouldApproveManageConnectionsMutation reports whether a manage_connections invocation represents a mutating or sensitive action.
+func ShouldApproveManageConnectionsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return true
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "list", "get", "capabilities":
+		return false
+	default:
+		return true
+	}
+}
+
+// ShouldApproveManageEnvironmentsMutation reports whether a manage_environments invocation represents a mutation.
+func ShouldApproveManageEnvironmentsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return true
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "list", "get", "export":
+		return false
+	default:
+		return true
+	}
+}
+
+// ManageDeploymentsPolicyIdentity returns the policy capability identity and whether approval is required.
+func ManageDeploymentsPolicyIdentity(arguments string) (string, bool) {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return "manage_deployments", false
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "destroy":
+		return "deployment_destroy", true
+	case "deploy":
+		return "deployment_deploy", true
+	case "exec":
+		return "deployment_exec", true
+	case "stop":
+		return "deployment_stop", true
+	default:
+		return "manage_deployments", false
+	}
+}
+
 func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	toolName = normalizePolicyToolName(toolName)
 	toolArguments = strings.TrimSpace(toolArguments)
@@ -555,6 +606,17 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	}
 	if toolName == "manage_actions" && shouldApproveManageActionsMutation(toolArguments) {
 		toolName = "action_change"
+	}
+	if toolName == "manage_connections" && ShouldApproveManageConnectionsMutation(toolArguments) {
+		toolName = "connection_change"
+	}
+	if toolName == "manage_environments" && ShouldApproveManageEnvironmentsMutation(toolArguments) {
+		toolName = "environment_change"
+	}
+	if toolName == "manage_deployments" {
+		if id, sensitive := ManageDeploymentsPolicyIdentity(toolArguments); sensitive {
+			toolName = id
+		}
 	}
 	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
 		toolName = "skill_change"
@@ -979,6 +1041,12 @@ func normalizePolicyToolName(name string) string {
 		return "exit_plan_mode"
 	case "managetheme":
 		return "manage_theme"
+	case "manageconnections", "manage_connections":
+		return "manage_connections"
+	case "manageenvironments", "manage_environments":
+		return "manage_environments"
+	case "managedeployments", "manage_deployments":
+		return "manage_deployments"
 	default:
 		return name
 	}
@@ -1400,13 +1468,13 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// into a workspace is materialize/promote, which independently requires an
 		// exact ready reference and a trusted workspace root.
 		return PolicyDecisionAllow
-	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff":
+	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff", "manage_connections", "manage_environments", "manage_deployments":
 		return PolicyDecisionAllow
 	case "automation_read":
 		return PolicyDecisionAllow
 	case "automation_change", "automation_run", "automation_cancel":
 		return PolicyDecisionAsk
-	case "action_change":
+	case "action_change", "connection_change", "environment_change", "deployment_destroy", "deployment_deploy", "deployment_exec", "deployment_stop":
 		if bypass {
 			return PolicyDecisionAllow
 		}

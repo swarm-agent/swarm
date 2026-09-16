@@ -25,6 +25,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"swarm-refactor/swarmtui/pkg/environments"
 	actionruntime "swarm/packages/swarmd/internal/action"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/appstorage"
@@ -33,6 +34,8 @@ import (
 	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/environments/lifecycle"
+	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -195,6 +198,12 @@ type Runtime struct {
 	focusedPartMu         sync.Mutex
 	focusedPartProtocols  map[string]focusedPartProtocolState
 	sessionController     manageSessionController
+	connections           manageConnectionStore
+	environmentsStore     manageEnvironmentStore
+	deploymentsStore      manageDeploymentStore
+	deploymentManager     manageDeploymentLifecycleService
+	workspaceSettings     manageWorkspaceSettingsStore
+	providerRegistry      *provider.Registry
 }
 
 type manageSessionController interface {
@@ -330,6 +339,49 @@ type manageTodoService interface {
 	Reorder(input todoruntime.ReorderInput, options ...todoruntime.ListOptions) ([]pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	SetInProgress(workspacePath, itemID string, options ...todoruntime.ListOptions) (pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
 	ApplyBatch(workspacePath string, operations []todoruntime.BatchOperation, options ...todoruntime.ListOptions) ([]todoruntime.BatchResult, []pebblestore.WorkspaceTodoItem, pebblestore.WorkspaceTodoSummary, *pebblestore.EventEnvelope, error)
+}
+
+type manageConnectionStore interface {
+	Get(accountScopeID, workspaceID, connectionID string) (environments.Connection, bool, error)
+	List(accountScopeID, workspaceID string, limit int) ([]environments.Connection, error)
+	Save(conn environments.Connection) (environments.Connection, error)
+	Delete(accountScopeID, workspaceID, connectionID string) (bool, error)
+}
+
+type manageEnvironmentStore interface {
+	Get(accountScopeID, workspaceID, environmentID string) (environments.Environment, bool, error)
+	List(accountScopeID, workspaceID string, limit int) ([]environments.Environment, error)
+	Save(env environments.Environment) (environments.Environment, error)
+	Delete(accountScopeID, workspaceID, environmentID string) (bool, error)
+}
+
+type manageDeploymentStore interface {
+	Get(accountScopeID, workspaceID, deploymentID string) (environments.Deployment, bool, error)
+	List(accountScopeID, workspaceID string, limit int) ([]environments.Deployment, error)
+	ListByEnvironment(accountScopeID, workspaceID, environmentID string, limit int) ([]environments.Deployment, error)
+	Save(dep environments.Deployment) (environments.Deployment, error)
+	Delete(accountScopeID, workspaceID, deploymentID string) (bool, error)
+	GetActiveLease(accountScopeID, workspaceID, deploymentID string) (environments.DeploymentLease, bool, error)
+}
+
+type manageDeploymentLifecycleService interface {
+	EnsureDeployment(ctx context.Context, req lifecycle.EnsureDeploymentRequest) (*lifecycle.EnsureDeploymentResult, error)
+	DeployDeployment(ctx context.Context, req lifecycle.DeployDeploymentRequest) (*lifecycle.DeployDeploymentResult, error)
+	ReleaseDeployment(ctx context.Context, req lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
+	DestroyDeployment(ctx context.Context, req lifecycle.DestroyDeploymentRequest) error
+	StopDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error
+	InspectDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*environments.Deployment, error)
+	ResolveAccess(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*provider.DeploymentAccess, error)
+	Exec(ctx context.Context, accountScopeID, workspaceID, deploymentID string, req provider.ExecRequest) (*provider.ExecResult, error)
+	GetDeployment(accountScopeID, workspaceID, deploymentID string) (environments.Deployment, bool, error)
+	ListDeployments(accountScopeID, workspaceID string, limit int) ([]environments.Deployment, error)
+	ListDeploymentsByEnvironment(accountScopeID, workspaceID, environmentID string, limit int) ([]environments.Deployment, error)
+	GetActiveLease(accountScopeID, workspaceID, deploymentID string) (environments.DeploymentLease, bool, error)
+}
+
+type manageWorkspaceSettingsStore interface {
+	GetWorkspaceSettings(accountScopeID, workspaceID string) (environments.WorkspaceSettings, bool, error)
+	UpdateWorkspaceSettings(accountScopeID, workspaceID string, defaultTestEnvironmentID, defaultConnectionID *string) (pebblestore.WorkspaceEntry, error)
 }
 
 // ManagedImageGenerationService is the provider-neutral in-memory generation
@@ -794,6 +846,23 @@ func (r *Runtime) SetManageThemeServices(uiSettings manageThemeUISettingsService
 	}
 	r.uiSettings = uiSettings
 	r.themeWorkspace = workspace
+}
+
+func (r *Runtime) SetEnvironmentServices(
+	connections manageConnectionStore,
+	environmentsStore manageEnvironmentStore,
+	deployments manageDeploymentLifecycleService,
+	workspaceSettings manageWorkspaceSettingsStore,
+	providers *provider.Registry,
+) {
+	if r == nil {
+		return
+	}
+	r.connections = connections
+	r.environmentsStore = environmentsStore
+	r.deploymentManager = deployments
+	r.workspaceSettings = workspaceSettings
+	r.providerRegistry = providers
 }
 
 func (r *Runtime) Definitions() []Definition {
@@ -1455,6 +1524,9 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageConnectionsDefinition(),
+		manageEnvironmentsDefinition(),
+		manageDeploymentsDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
@@ -2070,6 +2142,12 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workers V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "manage-connections", "manage_connections":
+		return r.executeManageConnections(ctx, scope, args)
+	case "manage-environments", "manage_environments":
+		return r.executeManageEnvironments(ctx, scope, args)
+	case "manage-deployments", "manage_deployments":
+		return r.executeManageDeployments(ctx, scope, args)
 	case "artifact-v2-author", "artifact_v2_author":
 		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
 	case "artifact-v3-author", "artifact_v3_author":
@@ -9233,6 +9311,12 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-connections", "manage_connections":
+		return "manage_connections"
+	case "manage-environments", "manage_environments":
+		return "manage_environments"
+	case "manage-deployments", "manage_deployments":
+		return "manage_deployments"
 	case "manage-artifact", "manage_artifact":
 		return "manage_artifact"
 	case "manage-todos", "manage_todos":
@@ -9822,6 +9906,12 @@ func canonicalStubToolName(raw string) string {
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-connections", "manage_connections":
+		return "manage_connections"
+	case "manage-environments", "manage_environments":
+		return "manage_environments"
+	case "manage-deployments", "manage_deployments":
+		return "manage_deployments"
 	case "manage-artifact", "manage_artifact":
 		return "manage_artifact"
 	case "manage-todos", "manage_todos":
@@ -9874,6 +9964,44 @@ func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error
 		return "", fmt.Errorf("path %q escapes workspace scope", requested)
 	}
 	return candidateAbs, nil
+}
+
+func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, args map[string]any, toolName string) (accountScopeID string, workspaceID string, workspacePath string, err error) {
+	accountScopeID = strings.TrimSpace(scope.Principal.AccountScopeID)
+	if accountScopeID == "" {
+		return "", "", "", fmt.Errorf("%s requires an authenticated account scope", toolName)
+	}
+
+	requestedPath := strings.TrimSpace(asString(args["workspace_path"]))
+	if requestedPath == "" {
+		requestedPath = "."
+	}
+	workspacePath, err = resolveWorkspacePath(scope, requestedPath)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	if r != nil && r.workspace != nil {
+		wsScope, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, workspacePath)
+		if err != nil {
+			return "", "", "", err
+		}
+		if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
+			return "", "", "", fmt.Errorf("%s requires an account-owned canonical workspace", toolName)
+		}
+		workspaceID = wsScope.WorkspaceID
+		workspacePath = wsScope.WorkspacePath
+		return accountScopeID, workspaceID, workspacePath, nil
+	}
+
+	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
+		workspaceID = wsID
+	} else if len(scope.Roots) > 0 {
+		workspaceID = "ws-test"
+	} else {
+		return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+	}
+	return accountScopeID, workspaceID, workspacePath, nil
 }
 
 func asString(value any) string {
@@ -10289,6 +10417,12 @@ func toolPathID(name string) string {
 		return "tool.manage-automation.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
+	case "manage-connections", "manage_connections":
+		return "tool.manage-connections.v1"
+	case "manage-environments", "manage_environments":
+		return "tool.manage-environments.v1"
+	case "manage-deployments", "manage_deployments":
+		return "tool.manage-deployments.v1"
 	case "manage-artifact", "manage_artifact":
 		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":

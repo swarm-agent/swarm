@@ -474,6 +474,8 @@ type WorkspaceEntry struct {
 	UpdatedAt               int64    `json:"updated_at"`
 	LastSelectedAt          int64    `json:"last_selected_at"`
 	Active                  bool     `json:"active"`
+	DefaultTestEnvironmentID string  `json:"default_test_environment_id,omitempty"`
+	DefaultConnectionID      string  `json:"default_connection_id,omitempty"`
 }
 
 type WorkspaceOverviewWorkspace struct {

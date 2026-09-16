@@ -123,6 +123,10 @@ type Service struct {
 	agentModelSettings           *agentmodelsettings.Service
 	worktrees                    worktreeService
 	worktreeInspect              func(string) (worktreeruntime.TaskWorkspaceState, error)
+	envConnections               environmentConnectionStore
+	envDefinitions               environmentDefinitionStore
+	envDeployments               environmentDeploymentService
+	envWorkspaceSettings         environmentWorkspaceSettingsStore
 	events                       *pebblestore.EventLog
 	eventPublish                 func(pebblestore.EventEnvelope)
 	sessionDeployCanonicalize    SessionDeployCanonicalizer
@@ -1411,6 +1415,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	instructionScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 	baseInstructions := s.composeInstructionsForScope(instructionScope, agentProfile, options.Instructions)
 	baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+	baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
+	baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
 
 	runFailed := true
 	defer func() {
@@ -1923,6 +1929,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
 		}, agentProfile, options.Instructions)
 		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+		baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
+		baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
 		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
 		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
@@ -2689,6 +2697,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			instructionScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 			baseInstructions = s.composeInstructionsForScope(instructionScope, agentProfile, options.Instructions)
 			baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+			baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
+			baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
 		}
 
 		runtimeScope := workspaceCtx.Scope

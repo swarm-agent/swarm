@@ -14,8 +14,9 @@ const IntegrationsPage = withStartupScreen(lazy(() => import('../features/deskto
 const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
 const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations'])
+const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
@@ -319,6 +320,27 @@ const workspaceSettingsRoute = createRoute({
   component: DesktopSettingsPage,
 })
 
+const environmentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/environments',
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
+    return tab ? { tab } : {}
+  },
+  component: EnvironmentsPage,
+})
+
+const workspaceEnvironmentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/environments',
+  parseParams: validateWorkspaceParams,
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
+    return tab ? { tab } : {}
+  },
+  component: EnvironmentsPage,
+})
+
 const workspaceToolsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/tools',
@@ -377,6 +399,8 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
+  environmentsRoute,
+  workspaceEnvironmentsRoute,
   conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceWorkersDetailRoute, workspaceWorkerDetailRoute, workspaceAutomationsRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,

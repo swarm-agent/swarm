@@ -31,6 +31,8 @@ import (
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/environments/lifecycle"
+	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -412,7 +414,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("ensure canonical local swarm identity: %w", err)
 	}
-	workspaceSvc := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	workspaceStore := pebblestore.NewWorkspaceStore(store)
+	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
 	identityStore := pebblestore.NewIdentityStore(store)
 	identitySvc := identityruntime.NewService(identityStore)
@@ -494,6 +497,14 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	// V1 tool creation/execution is retired; existing records remain readable.
 	toolRuntime.SetManageThemeServices(uiSettingsSvc, workspaceSvc)
+	connStore := pebblestore.NewConnectionStore(store)
+	envStore := pebblestore.NewEnvironmentStore(store)
+	depStore := pebblestore.NewDeploymentStore(store)
+	providerReg := provider.NewRegistry()
+	providerReg.Register(provider.NewLocalDockerProvider(nil))
+	providerReg.Register(provider.NewSSHDockerProvider(nil))
+	deploymentMgr := lifecycle.NewDeploymentManager(connStore, envStore, depStore, workspaceStore, providerReg)
+	toolRuntime.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
 	videoTranscriptionSvc := videotranscription.NewService(sessionSvc.Store(), modelSvc, uiSettingsSvc, google.NewVideoTranscriptionAdapter(authStore))
 	videoProjectSvc := videoproject.NewService(sessionSvc.Store())
 	videoProjectSvc.SetArtifactV2Authority(artifactV2Service)
@@ -582,6 +593,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc.SetUISettingsService(uiSettingsSvc)
 	runSvc.SetAgentModelSettingsService(agentModelSettingsSvc)
 	runSvc.SetWorktreeService(worktreeSvc)
+	runSvc.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore)
 	runSvc.SetEventPublisher(hub.Publish)
 
 	if err := agentSvc.EnsureDefaults(); err != nil {
@@ -641,6 +653,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
 
 	apiServer.SetMemoryService(memorySvc)
+	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)

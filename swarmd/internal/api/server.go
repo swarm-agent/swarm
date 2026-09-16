@@ -172,6 +172,12 @@ type Server struct {
 	reviewCommitMu         sync.Mutex
 	reviewCommitActive     map[string]string
 	reviewAutoArchiveOnce  sync.Once
+
+	connections          manageConnectionStore
+	environments         manageEnvironmentStore
+	deployments          manageDeploymentLifecycleService
+	workspaceEnvSettings manageWorkspaceSettingsStore
+	envProviders         manageProviderRegistry
 }
 
 type aiTaskEnqueuer interface {

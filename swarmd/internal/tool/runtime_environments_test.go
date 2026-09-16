@@ -1,0 +1,1119 @@
+package tool
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"swarm-refactor/swarmtui/pkg/environments"
+	"swarm/packages/swarmd/internal/environments/lifecycle"
+	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+// mockTestProvider implements provider.DeploymentProvider for tool execution unit testing.
+type mockTestProvider struct {
+	kind        environments.ConnectionKind
+	validateErr error
+	caps        environments.ConnectionCapabilities
+}
+
+func newMockTestProvider(kind environments.ConnectionKind) *mockTestProvider {
+	return &mockTestProvider{
+		kind: kind,
+		caps: environments.ConnectionCapabilities{
+			SupportsDocker:      true,
+			SupportsSSH:         kind == environments.ConnectionKindSSH,
+			SupportsDirectMount: kind == environments.ConnectionKindLocalDocker,
+			SupportsPortForward: true,
+		},
+	}
+}
+
+func (m *mockTestProvider) Kind() environments.ConnectionKind {
+	return m.kind
+}
+
+func (m *mockTestProvider) ValidateConnection(_ context.Context, _ *environments.Connection) error {
+	return m.validateErr
+}
+
+func (m *mockTestProvider) Capabilities(_ context.Context, _ *environments.Connection) (environments.ConnectionCapabilities, error) {
+	return m.caps, nil
+}
+
+func (m *mockTestProvider) Deploy(_ context.Context, req provider.DeployRequest) (*provider.DeployResult, error) {
+	return &provider.DeployResult{
+		Runtime: environments.RuntimeMetadata{
+			ContainerID:         "mock_ctr_" + req.Deployment.ID,
+			ProviderResourceID:  "mock_res_" + req.Deployment.ID,
+			Endpoint:            "http://127.0.0.1:18080",
+			RemoteWorkspacePath: "/workspace",
+		},
+		Health: environments.HealthStatusHealthy,
+		Status: environments.DeploymentStatusBusy,
+	}, nil
+}
+
+func (m *mockTestProvider) Inspect(_ context.Context, _ *environments.Connection, dep *environments.Deployment) (*provider.InspectResult, error) {
+	return &provider.InspectResult{
+		Status: environments.DeploymentStatusReady,
+		Health: environments.HealthStatusHealthy,
+		Runtime: environments.RuntimeMetadata{
+			ContainerID:         "mock_ctr_" + dep.ID,
+			ProviderResourceID:  "mock_res_" + dep.ID,
+			Endpoint:            "http://127.0.0.1:18080",
+			RemoteWorkspacePath: "/workspace",
+		},
+	}, nil
+}
+
+func (m *mockTestProvider) Start(_ context.Context, _ *environments.Connection, _ *environments.Deployment) error {
+	return nil
+}
+
+func (m *mockTestProvider) Stop(_ context.Context, _ *environments.Connection, _ *environments.Deployment) error {
+	return nil
+}
+
+func (m *mockTestProvider) Destroy(_ context.Context, _ *environments.Connection, _ *environments.Deployment) error {
+	return nil
+}
+
+func (m *mockTestProvider) ResolveAccess(_ context.Context, _ *environments.Connection, dep *environments.Deployment) (*provider.DeploymentAccess, error) {
+	return &provider.DeploymentAccess{
+		PrimaryEndpoint:     "http://127.0.0.1:18080",
+		Endpoints:           map[string]string{"http": "http://127.0.0.1:18080"},
+		ExecSupported:       true,
+		RemoteWorkspacePath: "/workspace",
+		ContainerID:         "mock_ctr_" + dep.ID,
+	}, nil
+}
+
+func (m *mockTestProvider) Exec(_ context.Context, _ *environments.Connection, _ *environments.Deployment, req provider.ExecRequest) (*provider.ExecResult, error) {
+	return &provider.ExecResult{
+		ExitCode: 0,
+		Stdout:   "command output: " + strings.Join(req.Command, " "),
+		Stderr:   "",
+	}, nil
+}
+
+type toolTestHarness struct {
+	rt          *Runtime
+	store       *pebblestore.Store
+	connStore   *pebblestore.ConnectionStore
+	envStore    *pebblestore.EnvironmentStore
+	depStore    *pebblestore.DeploymentStore
+	leaseStore  *pebblestore.LeaseStore
+	wsStore     *pebblestore.WorkspaceStore
+	mgr         *lifecycle.DeploymentManager
+	providerReg *provider.Registry
+	scope       WorkspaceScope
+	tmpDir      string
+}
+
+func setupEnvironmentsToolHarness(t *testing.T) *toolTestHarness {
+	t.Helper()
+	tmpDir := t.TempDir()
+	dbDir := filepath.Join(tmpDir, "pebble")
+	store, err := pebblestore.Open(dbDir)
+	if err != nil {
+		t.Fatalf("Open store failed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	connStore := pebblestore.NewConnectionStore(store)
+	envStore := pebblestore.NewEnvironmentStore(store)
+	depStore := pebblestore.NewDeploymentStore(store)
+	wsStore := pebblestore.NewWorkspaceStore(store)
+
+	providerReg := provider.NewRegistry()
+	mockLocal := newMockTestProvider(environments.ConnectionKindLocalDocker)
+	mockSSH := newMockTestProvider(environments.ConnectionKindSSH)
+	providerReg.Register(mockLocal)
+	providerReg.Register(mockSSH)
+
+	mgr := lifecycle.NewDeploymentManager(connStore, envStore, depStore, wsStore, providerReg)
+
+	rt := NewRuntime(2)
+	rt.SetEnvironmentServices(connStore, envStore, mgr, wsStore, providerReg)
+
+	wsPath := filepath.Join(tmpDir, "workspace")
+	_ = os.MkdirAll(wsPath, 0755)
+
+	scope := WorkspaceScope{
+		PrimaryPath: wsPath,
+		Roots:       []string{wsPath},
+		Principal: identity.Principal{
+			AccountScopeID: "test-account",
+		},
+		SessionID: "test-session-001",
+	}
+
+	return &toolTestHarness{
+		rt:          rt,
+		store:       store,
+		connStore:   connStore,
+		envStore:    envStore,
+		depStore:    depStore,
+		leaseStore:  depStore.Leases(),
+		wsStore:     wsStore,
+		mgr:         mgr,
+		providerReg: providerReg,
+		scope:       scope,
+		tmpDir:      tmpDir,
+	}
+}
+
+func execTool(t *testing.T, h *toolTestHarness, name string, args map[string]any) (string, error) {
+	t.Helper()
+	raw, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return h.rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), h.scope, Call{
+		CallID:    "call-" + name,
+		Name:      name,
+		Arguments: string(raw),
+	})
+}
+
+// TestEnvironmentsTool_SchemaValidation verifies tool schema definitions.
+func TestEnvironmentsTool_SchemaValidation(t *testing.T) {
+	rt := NewRuntime(1)
+	defs := rt.Definitions()
+
+	toolDefs := make(map[string]Definition)
+	for _, d := range defs {
+		toolDefs[d.Name] = d
+	}
+
+	for _, name := range []string{"manage_connections", "manage_environments", "manage_deployments"} {
+		def, exists := toolDefs[name]
+		if !exists {
+			t.Fatalf("expected tool %q to be registered in Definitions()", name)
+		}
+		if def.Type != "function" {
+			t.Errorf("tool %q: expected Type=function, got %q", name, def.Type)
+		}
+		if def.Description == "" {
+			t.Errorf("tool %q: expected non-empty description", name)
+		}
+
+		params := def.Parameters
+		props, ok := params["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool %q: properties is not a map", name)
+		}
+		actionProp, ok := props["action"].(map[string]any)
+		if !ok {
+			t.Fatalf("tool %q: action property missing", name)
+		}
+		enums, ok := actionProp["enum"].([]string)
+		if !ok || len(enums) == 0 {
+			t.Fatalf("tool %q: action enum missing or empty", name)
+		}
+
+		reqs, ok := params["required"].([]string)
+		if !ok || len(reqs) == 0 || reqs[0] != "action" {
+			t.Errorf("tool %q: expected required to contain action", name)
+		}
+	}
+
+	// Verify action sets for each tool
+	connActions := toolDefs["manage_connections"].Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
+	for _, act := range []string{"list", "get", "create", "update", "delete", "check", "capabilities"} {
+		found := false
+		for _, a := range connActions {
+			if a == act {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("manage_connections missing action %q", act)
+		}
+	}
+
+	envActions := toolDefs["manage_environments"].Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
+	for _, act := range []string{"list", "get", "create", "update", "delete", "set_default_test", "export", "import"} {
+		found := false
+		for _, a := range envActions {
+			if a == act {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("manage_environments missing action %q", act)
+		}
+	}
+
+	depActions := toolDefs["manage_deployments"].Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
+	for _, act := range []string{"list", "get", "ensure", "deploy", "release", "stop", "destroy", "check", "access", "exec"} {
+		found := false
+		for _, a := range depActions {
+			if a == act {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("manage_deployments missing action %q", act)
+		}
+	}
+}
+
+// TestEnvironmentsTool_ManageConnectionsLifecycle tests the full lifecycle of manage_connections tool.
+func TestEnvironmentsTool_ManageConnectionsLifecycle(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+
+	// 1. Create local_docker connection
+	createLocalArgs := map[string]any{
+		"action":       "create",
+		"id":           "conn-local-1",
+		"name":         "Primary Local Docker",
+		"description":  "Main host Docker daemon",
+		"kind":         "local_docker",
+		"socket_path":  "/var/run/docker.sock",
+		"workspace_id": "ws-1",
+	}
+	out, err := execTool(t, h, "manage_connections", createLocalArgs)
+	if err != nil {
+		t.Fatalf("manage_connections create failed: %v", err)
+	}
+	var createRes map[string]any
+	if err := json.Unmarshal([]byte(out), &createRes); err != nil {
+		t.Fatalf("unmarshal create output: %v", err)
+	}
+	if createRes["status"] != "ok" || createRes["action"] != "create" {
+		t.Errorf("expected status=ok, action=create, got: %v", createRes)
+	}
+	connObj, ok := createRes["connection"].(map[string]any)
+	if !ok || connObj["id"] != "conn-local-1" || connObj["kind"] != "local_docker" {
+		t.Errorf("unexpected created connection object: %v", connObj)
+	}
+
+	// 2. Create SSH connection
+	createSSHArgs := map[string]any{
+		"action":       "create",
+		"id":           "conn-ssh-1",
+		"name":         "Remote Build Server",
+		"kind":         "ssh",
+		"host":         "192.168.1.100",
+		"user":         "builder",
+		"port":         2222,
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", createSSHArgs)
+	if err != nil {
+		t.Fatalf("manage_connections create ssh failed: %v", err)
+	}
+
+	// 3. List connections
+	listArgs := map[string]any{
+		"action":       "list",
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", listArgs)
+	if err != nil {
+		t.Fatalf("manage_connections list failed: %v", err)
+	}
+	var listRes map[string]any
+	_ = json.Unmarshal([]byte(out), &listRes)
+	if listRes["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got %v", listRes["count"])
+	}
+
+	// 4. Get connection
+	getArgs := map[string]any{
+		"action":       "get",
+		"id":           "conn-local-1",
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", getArgs)
+	if err != nil {
+		t.Fatalf("manage_connections get failed: %v", err)
+	}
+	var getRes map[string]any
+	_ = json.Unmarshal([]byte(out), &getRes)
+	if getRes["connection"].(map[string]any)["name"] != "Primary Local Docker" {
+		t.Errorf("unexpected get result: %v", getRes)
+	}
+
+	// 5. Update connection
+	updateArgs := map[string]any{
+		"action":       "update",
+		"id":           "conn-local-1",
+		"name":         "Updated Docker Name",
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", updateArgs)
+	if err != nil {
+		t.Fatalf("manage_connections update failed: %v", err)
+	}
+	var updateRes map[string]any
+	_ = json.Unmarshal([]byte(out), &updateRes)
+	if updateRes["connection"].(map[string]any)["name"] != "Updated Docker Name" {
+		t.Errorf("unexpected update result: %v", updateRes)
+	}
+
+	// 6. Check connection reachability
+	checkArgs := map[string]any{
+		"action":       "check",
+		"id":           "conn-local-1",
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", checkArgs)
+	if err != nil {
+		t.Fatalf("manage_connections check failed: %v", err)
+	}
+	var checkRes map[string]any
+	_ = json.Unmarshal([]byte(out), &checkRes)
+	if checkRes["reachable"] != true {
+		t.Errorf("expected reachable=true, got: %v", checkRes)
+	}
+
+	// 7. Capabilities
+	capsArgs := map[string]any{
+		"action":       "capabilities",
+		"id":           "conn-local-1",
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", capsArgs)
+	if err != nil {
+		t.Fatalf("manage_connections capabilities failed: %v", err)
+	}
+	var capsRes map[string]any
+	_ = json.Unmarshal([]byte(out), &capsRes)
+	if capsRes["capabilities"] == nil {
+		t.Errorf("expected capabilities in response, got: %v", capsRes)
+	}
+
+	// 8. Delete connection
+	delArgs := map[string]any{
+		"action":       "delete",
+		"id":           "conn-ssh-1",
+		"workspace_id": "ws-1",
+	}
+	out, err = execTool(t, h, "manage_connections", delArgs)
+	if err != nil {
+		t.Fatalf("manage_connections delete failed: %v", err)
+	}
+	var delRes map[string]any
+	_ = json.Unmarshal([]byte(out), &delRes)
+	if delRes["id"] != "conn-ssh-1" {
+		t.Errorf("unexpected delete result: %v", delRes)
+	}
+}
+
+// TestEnvironmentsTool_ManageEnvironmentsLifecycle tests create, get, list, update, set_default_test, export, import, delete.
+func TestEnvironmentsTool_ManageEnvironmentsLifecycle(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+
+	// Seed an active workspace entry for workspace settings tests
+	wsPath := filepath.Join(h.tmpDir, "ws-env")
+	_ = os.MkdirAll(wsPath, 0755)
+	wsEntry, err := h.wsStore.SaveForAccount(h.scope.Principal.AccountScopeID, wsPath, "Test Workspace", "", true)
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	workspaceID := wsEntry.WorkspaceID
+
+	// 1. Create environment
+	createArgs := map[string]any{
+		"action":                  "create",
+		"id":                      "env-go-test",
+		"name":                    "Go Testbench",
+		"description":             "Isolated Go testing environment",
+		"image":                   "golang:1.24",
+		"preferred_connection_id": "conn-local-1",
+		"workspace_id":            workspaceID,
+		"provisioning": map[string]any{
+			"strategy": map[string]any{
+				"kind": "local_mount",
+				"local_mount": map[string]any{
+					"container_path": "/workspace",
+				},
+			},
+		},
+		"deployment_policy": map[string]any{
+			"reuse":            true,
+			"max_instances":    2,
+			"release_behavior": "restart",
+		},
+	}
+	out, err := execTool(t, h, "manage_environments", createArgs)
+	if err != nil {
+		t.Fatalf("manage_environments create failed: %v", err)
+	}
+	var createRes map[string]any
+	_ = json.Unmarshal([]byte(out), &createRes)
+	if createRes["status"] != "ok" {
+		t.Errorf("expected status=ok, got: %v", createRes)
+	}
+	envObj := createRes["environment"].(map[string]any)
+	if envObj["id"] != "env-go-test" || envObj["name"] != "Go Testbench" {
+		t.Errorf("unexpected environment object: %v", envObj)
+	}
+
+	// 2. Set default test environment
+	setDefaultArgs := map[string]any{
+		"action":       "set_default_test",
+		"id":           "env-go-test",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", setDefaultArgs)
+	if err != nil {
+		t.Fatalf("manage_environments set_default_test failed: %v", err)
+	}
+	var setDefRes map[string]any
+	_ = json.Unmarshal([]byte(out), &setDefRes)
+	if setDefRes["default_test_environment_id"] != "env-go-test" {
+		t.Errorf("expected default_test_environment_id=env-go-test, got: %v", setDefRes)
+	}
+
+	// 3. Get environment (should report is_default_test=true)
+	getArgs := map[string]any{
+		"action":       "get",
+		"id":           "env-go-test",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", getArgs)
+	if err != nil {
+		t.Fatalf("manage_environments get failed: %v", err)
+	}
+	var getRes map[string]any
+	_ = json.Unmarshal([]byte(out), &getRes)
+	if getRes["is_default_test"] != true {
+		t.Errorf("expected is_default_test=true, got: %v", getRes["is_default_test"])
+	}
+
+	// 4. Update environment
+	updateArgs := map[string]any{
+		"action":       "update",
+		"id":           "env-go-test",
+		"name":         "Go 1.24 Advanced Testbench",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", updateArgs)
+	if err != nil {
+		t.Fatalf("manage_environments update failed: %v", err)
+	}
+	var updateRes map[string]any
+	_ = json.Unmarshal([]byte(out), &updateRes)
+	if updateRes["environment"].(map[string]any)["name"] != "Go 1.24 Advanced Testbench" {
+		t.Errorf("unexpected update result: %v", updateRes)
+	}
+
+	// 5. Export environment
+	exportArgs := map[string]any{
+		"action":       "export",
+		"id":           "env-go-test",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", exportArgs)
+	if err != nil {
+		t.Fatalf("manage_environments export failed: %v", err)
+	}
+	var exportRes map[string]any
+	_ = json.Unmarshal([]byte(out), &exportRes)
+	jsonStr, ok := exportRes["json"].(string)
+	if !ok || jsonStr == "" {
+		t.Fatalf("expected non-empty json string in export result")
+	}
+
+	// 6. Import environment into another ID/workspace
+	var envToImport environments.Environment
+	_ = json.Unmarshal([]byte(jsonStr), &envToImport)
+	envToImport.ID = "env-imported-1"
+	envToImport.Name = "Imported Go Environment"
+	importJSON, _ := json.Marshal(envToImport)
+
+	importArgs := map[string]any{
+		"action":       "import",
+		"json":         string(importJSON),
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", importArgs)
+	if err != nil {
+		t.Fatalf("manage_environments import failed: %v", err)
+	}
+	var importRes map[string]any
+	_ = json.Unmarshal([]byte(out), &importRes)
+	if importRes["environment"].(map[string]any)["id"] != "env-imported-1" {
+		t.Errorf("unexpected imported environment: %v", importRes)
+	}
+
+	// 7. List environments
+	listArgs := map[string]any{
+		"action":       "list",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", listArgs)
+	if err != nil {
+		t.Fatalf("manage_environments list failed: %v", err)
+	}
+	var listRes map[string]any
+	_ = json.Unmarshal([]byte(out), &listRes)
+	if listRes["count"].(float64) != 2 {
+		t.Errorf("expected count=2, got: %v", listRes["count"])
+	}
+
+	// 8. Delete environment
+	delArgs := map[string]any{
+		"action":       "delete",
+		"id":           "env-imported-1",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", delArgs)
+	if err != nil {
+		t.Fatalf("manage_environments delete failed: %v", err)
+	}
+	var delRes map[string]any
+	_ = json.Unmarshal([]byte(out), &delRes)
+	if delRes["id"] != "env-imported-1" {
+		t.Errorf("unexpected delete result: %v", delRes)
+	}
+}
+
+// TestEnvironmentsTool_ManageDeploymentsLifecycle verifies deploy, ensure, access, exec, check, release, stop, destroy.
+func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+	accountScope := h.scope.Principal.AccountScopeID
+	workspaceID := "ws-dep-lifecycle"
+
+	// Seed active workspace
+	wsPath := filepath.Join(h.tmpDir, "ws-dep")
+	_ = os.MkdirAll(wsPath, 0755)
+	wsEntry, err := h.wsStore.SaveForAccount(accountScope, wsPath, "Deployment Test WS", "", true)
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	workspaceID = wsEntry.WorkspaceID
+
+	// Seed connection
+	conn := environments.Connection{
+		ID:             "conn-dep-test",
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		Name:           "Local Docker for Deps",
+		Kind:           environments.ConnectionKindLocalDocker,
+		Capabilities: environments.ConnectionCapabilities{
+			SupportsDocker:      true,
+			SupportsDirectMount: true,
+			SupportsPortForward: true,
+		},
+		LocalDocker: &environments.LocalDockerConfig{},
+	}
+	_, _ = h.connStore.Save(conn)
+
+	// Seed environment with ReleaseBehaviorRestart
+	env := environments.Environment{
+		ID:                    "env-dep-test",
+		AccountScopeID:        accountScope,
+		WorkspaceID:           workspaceID,
+		Name:                  "Test App Environment",
+		Mode:                  environments.EnvironmentModeDeployable,
+		Role:                  environments.EnvironmentRoleTesting,
+		PreferredConnectionID: conn.ID,
+		Container: environments.ContainerDefinition{
+			Image: "test-image:latest",
+		},
+		Provisioning: environments.WorkspaceProvisioning{
+			Strategy: environments.SourceStrategy{
+				Kind: environments.SourceStrategyKindLocalMount,
+				LocalMount: &environments.LocalMountConfig{
+					ContainerPath: "/workspace",
+				},
+			},
+		},
+		DeploymentPolicy: environments.DeploymentPolicy{
+			Reuse:           true,
+			MaxInstances:    2,
+			ReleaseBehavior: environments.ReleaseBehaviorRestart,
+		},
+	}
+	if _, err := h.envStore.Save(env); err != nil {
+		t.Fatalf("save env: %v", err)
+	}
+
+	// 1. Action: ensure (should provision new deployment, acquire lease, return resolved access info)
+	ensureArgs := map[string]any{
+		"action":         "ensure",
+		"environment_id": env.ID,
+		"consumer_type":  "session",
+		"consumer_id":    "session-user-1",
+		"workspace_id":   workspaceID,
+	}
+	out, err := execTool(t, h, "manage_deployments", ensureArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments ensure failed: %v", err)
+	}
+	var ensureRes map[string]any
+	_ = json.Unmarshal([]byte(out), &ensureRes)
+	if ensureRes["status"] != "ok" {
+		t.Fatalf("expected status=ok, got: %v", ensureRes)
+	}
+
+	depMap, ok := ensureRes["deployment"].(map[string]any)
+	if !ok || depMap["id"] == "" {
+		t.Fatalf("expected deployment in ensure response: %v", ensureRes)
+	}
+	deploymentID := depMap["id"].(string)
+
+	leaseMap, ok := ensureRes["lease"].(map[string]any)
+	if !ok || leaseMap["id"] == "" {
+		t.Fatalf("expected lease in ensure response: %v", ensureRes)
+	}
+	leaseID := leaseMap["id"].(string)
+
+	accessMap, ok := ensureRes["access"].(map[string]any)
+	if !ok || accessMap["primary_endpoint"] != "http://127.0.0.1:18080" {
+		t.Fatalf("expected resolved access info with primary_endpoint: %v", accessMap)
+	}
+	if accessMap["exec_supported"] != true {
+		t.Errorf("expected exec_supported=true")
+	}
+
+	// 2. Action: get
+	getArgs := map[string]any{
+		"action":       "get",
+		"id":           deploymentID,
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", getArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments get failed: %v", err)
+	}
+	var getRes map[string]any
+	_ = json.Unmarshal([]byte(out), &getRes)
+	if getRes["deployment"].(map[string]any)["id"] != deploymentID {
+		t.Errorf("unexpected deployment in get: %v", getRes)
+	}
+	if getRes["lease"] == nil {
+		t.Errorf("expected active lease in get result")
+	}
+
+	// 3. Action: access
+	accessArgs := map[string]any{
+		"action":       "access",
+		"id":           deploymentID,
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", accessArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments access failed: %v", err)
+	}
+	var accRes map[string]any
+	_ = json.Unmarshal([]byte(out), &accRes)
+	if accRes["access"].(map[string]any)["primary_endpoint"] != "http://127.0.0.1:18080" {
+		t.Errorf("unexpected access response: %v", accRes)
+	}
+
+	// 4. Action: exec
+	execArgs := map[string]any{
+		"action":       "exec",
+		"id":           deploymentID,
+		"command":      []any{"ls", "-la", "/workspace"},
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", execArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments exec failed: %v", err)
+	}
+	var execRes map[string]any
+	_ = json.Unmarshal([]byte(out), &execRes)
+	if execRes["success"] != true || execRes["exit_code"].(float64) != 0 {
+		t.Errorf("expected exec success, got: %v", execRes)
+	}
+	if !strings.Contains(execRes["stdout"].(string), "ls -la /workspace") {
+		t.Errorf("expected command in stdout, got: %v", execRes["stdout"])
+	}
+
+	// 5. Action: check (live status & health inspection)
+	checkArgs := map[string]any{
+		"action":       "check",
+		"id":           deploymentID,
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", checkArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments check failed: %v", err)
+	}
+	var checkRes map[string]any
+	_ = json.Unmarshal([]byte(out), &checkRes)
+	if checkRes["health"] != "healthy" {
+		t.Errorf("expected health=healthy, got: %v", checkRes["health"])
+	}
+
+	// 6. Action: release (release lease with release behavior)
+	releaseArgs := map[string]any{
+		"action":       "release",
+		"lease_id":     leaseID,
+		"reason":       "test task completed",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", releaseArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments release failed: %v", err)
+	}
+	var relRes map[string]any
+	_ = json.Unmarshal([]byte(out), &relRes)
+	if relRes["action_taken"] != "restarted" {
+		t.Errorf("expected action_taken=restarted for ReleaseBehaviorRestart, got: %v", relRes["action_taken"])
+	}
+	if relRes["lease"].(map[string]any)["active"] != false {
+		t.Errorf("expected lease.active=false after release")
+	}
+
+	// 7. Action: ensure again (should REUSE the released deployment!)
+	ensureArgs2 := map[string]any{
+		"action":         "ensure",
+		"environment_id": env.ID,
+		"consumer_type":  "session",
+		"consumer_id":    "session-user-2",
+		"workspace_id":   workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", ensureArgs2)
+	if err != nil {
+		t.Fatalf("manage_deployments ensure reuse failed: %v", err)
+	}
+	var ensureRes2 map[string]any
+	_ = json.Unmarshal([]byte(out), &ensureRes2)
+	if ensureRes2["reused"] != true {
+		t.Errorf("expected reused=true on second ensure")
+	}
+	if ensureRes2["deployment"].(map[string]any)["id"] != deploymentID {
+		t.Errorf("expected reused deployment ID %q, got: %v", deploymentID, ensureRes2["deployment"])
+	}
+
+	// Release by deployment_id (convenience path)
+	releaseByDepArgs := map[string]any{
+		"action":        "release",
+		"deployment_id": deploymentID,
+		"workspace_id":  workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", releaseByDepArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments release by deployment_id failed: %v", err)
+	}
+
+	// 8. Action: stop
+	stopArgs := map[string]any{
+		"action":       "stop",
+		"id":           deploymentID,
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", stopArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments stop failed: %v", err)
+	}
+	var stopRes map[string]any
+	_ = json.Unmarshal([]byte(out), &stopRes)
+	if stopRes["deployment_id"] != deploymentID {
+		t.Errorf("unexpected stop result: %v", stopRes)
+	}
+
+	// 9. Action: destroy
+	destroyArgs := map[string]any{
+		"action":       "destroy",
+		"id":           deploymentID,
+		"reason":       "final cleanup",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", destroyArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments destroy failed: %v", err)
+	}
+	var destRes map[string]any
+	_ = json.Unmarshal([]byte(out), &destRes)
+	if destRes["deployment_id"] != deploymentID {
+		t.Errorf("unexpected destroy result: %v", destRes)
+	}
+}
+
+// TestEnvironmentsTool_WorkspaceIsolation verifies strict multi-workspace containment.
+func TestEnvironmentsTool_WorkspaceIsolation(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+
+	// Create connection in workspace A
+	_, err := execTool(t, h, "manage_connections", map[string]any{
+		"action":       "create",
+		"id":           "conn-ws-a",
+		"name":         "Connection WS A",
+		"kind":         "local_docker",
+		"workspace_id": "ws-a",
+	})
+	if err != nil {
+		t.Fatalf("create connection ws-a: %v", err)
+	}
+
+	// Create connection in workspace B
+	_, err = execTool(t, h, "manage_connections", map[string]any{
+		"action":       "create",
+		"id":           "conn-ws-b",
+		"name":         "Connection WS B",
+		"kind":         "local_docker",
+		"workspace_id": "ws-b",
+	})
+	if err != nil {
+		t.Fatalf("create connection ws-b: %v", err)
+	}
+
+	// Listing in workspace A should only return conn-ws-a
+	outA, err := execTool(t, h, "manage_connections", map[string]any{
+		"action":       "list",
+		"workspace_id": "ws-a",
+	})
+	if err != nil {
+		t.Fatalf("list ws-a: %v", err)
+	}
+	var resA map[string]any
+	_ = json.Unmarshal([]byte(outA), &resA)
+	if resA["count"].(float64) != 1 {
+		t.Errorf("expected count=1 for ws-a, got: %v", resA["count"])
+	}
+	connsA := resA["connections"].([]any)
+	if connsA[0].(map[string]any)["id"] != "conn-ws-a" {
+		t.Errorf("expected conn-ws-a in ws-a, got: %v", connsA[0])
+	}
+
+	// Attempting to get conn-ws-b with workspace_id ws-a must fail
+	_, err = execTool(t, h, "manage_connections", map[string]any{
+		"action":       "get",
+		"id":           "conn-ws-b",
+		"workspace_id": "ws-a",
+	})
+	if err == nil {
+		t.Errorf("expected cross-workspace get to fail")
+	}
+
+	// Unauthenticated account scope must fail
+	unauthHarness := *h
+	unauthHarness.scope.Principal.AccountScopeID = ""
+	_, err = execTool(t, &unauthHarness, "manage_connections", map[string]any{
+		"action": "list",
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires an authenticated account scope") {
+		t.Errorf("expected authenticated account scope error, got: %v", err)
+	}
+}
+
+// TestEnvironments_EndToEndLifecycleSmoke verifies the complete end-to-end flow:
+// resolve default test environment -> resolve connection -> ensure/lease deployment -> resolve access -> exec -> release deployment -> reuse.
+func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+	wsPath := filepath.Join(h.tmpDir, "ws-smoke")
+	_ = os.MkdirAll(wsPath, 0755)
+	wsEntry, err := h.wsStore.SaveForAccount(h.scope.Principal.AccountScopeID, wsPath, "Smoke Workspace", "", true)
+	if err != nil {
+		t.Fatalf("save workspace: %v", err)
+	}
+	workspaceID := wsEntry.WorkspaceID
+	h.scope.PrimaryPath = wsPath
+
+	// 1. Create default connection via tool
+	connOut, err := execTool(t, h, "manage_connections", map[string]any{
+		"action":       "create",
+		"name":         "E2E Smoke Connection",
+		"kind":         "local_docker",
+		"is_default":   true,
+		"workspace_id": workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("create connection failed: %v", err)
+	}
+	var connRes map[string]any
+	if err := json.Unmarshal([]byte(connOut), &connRes); err != nil {
+		t.Fatalf("unmarshal connRes: %v", err)
+	}
+	connObj := connRes["connection"].(map[string]any)
+	connID := connObj["id"].(string)
+
+	// 2. Create environment definition via tool with release_behavior=restart, reuse=true
+	envOut, err := execTool(t, h, "manage_environments", map[string]any{
+		"action":           "create",
+		"name":             "E2E Smoke Environment",
+		"image":            "golang:1.24-alpine",
+		"release_behavior": "restart",
+		"reuse":            true,
+		"max_instances":    3,
+		"ports": []any{
+			map[string]any{
+				"container_port": 8080,
+				"host_port":      18080,
+				"protocol":       "tcp",
+			},
+		},
+		"workspace_id": workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("create environment failed: %v", err)
+	}
+	var envRes map[string]any
+	if err := json.Unmarshal([]byte(envOut), &envRes); err != nil {
+		t.Fatalf("unmarshal envRes: %v", err)
+	}
+	envObj := envRes["environment"].(map[string]any)
+	envID := envObj["id"].(string)
+
+	// 3. Set as default test environment
+	setDefOut, err := execTool(t, h, "manage_environments", map[string]any{
+		"action":         "set_default_test",
+		"environment_id": envID,
+		"workspace_id":   workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("set default test environment failed: %v", err)
+	}
+	var setDefRes map[string]any
+	if err := json.Unmarshal([]byte(setDefOut), &setDefRes); err != nil {
+		t.Fatalf("unmarshal setDefRes: %v", err)
+	}
+	if setDefRes["default_test_environment_id"] != envID {
+		t.Fatalf("expected default_test_environment_id=%s, got: %v", envID, setDefRes["default_test_environment_id"])
+	}
+
+	// 4. Ensure deployment using auto-resolved default test environment (omitting environment_id and connection_id)
+	ensureOut, err := execTool(t, h, "manage_deployments", map[string]any{
+		"action":        "ensure",
+		"consumer_type": "test_run",
+		"consumer_id":   "test-run-e2e-smoke",
+		"consumer_metadata": map[string]any{
+			"suite": "smoke-e2e",
+		},
+		"workspace_id": workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("ensure deployment via default test environment failed: %v", err)
+	}
+	var ensureRes map[string]any
+	if err := json.Unmarshal([]byte(ensureOut), &ensureRes); err != nil {
+		t.Fatalf("unmarshal ensureRes: %v", err)
+	}
+	depObj := ensureRes["deployment"].(map[string]any)
+	depID := depObj["id"].(string)
+	leaseObj := ensureRes["lease"].(map[string]any)
+	leaseID := leaseObj["id"].(string)
+	accessObj := ensureRes["access"].(map[string]any)
+
+	if depObj["environment_id"] != envID {
+		t.Errorf("expected auto-resolved environment_id=%s, got: %v", envID, depObj["environment_id"])
+	}
+	if depObj["connection_id"] != connID {
+		t.Errorf("expected auto-resolved connection_id=%s, got: %v", connID, depObj["connection_id"])
+	}
+	if leaseObj["consumer_type"] != "test_run" || leaseObj["consumer_id"] != "test-run-e2e-smoke" {
+		t.Errorf("unexpected lease consumer: %v", leaseObj)
+	}
+	if accessObj["primary_endpoint"] == "" || accessObj["exec_supported"] != true {
+		t.Errorf("unexpected access metadata: %v", accessObj)
+	}
+
+	// 5. Exec command inside the leased deployment container
+	execOut, err := execTool(t, h, "manage_deployments", map[string]any{
+		"action":        "exec",
+		"deployment_id": depID,
+		"command":       []any{"echo", "smoke-test-ok"},
+		"workspace_id":  workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("exec command inside deployment failed: %v", err)
+	}
+	var execRes map[string]any
+	if err := json.Unmarshal([]byte(execOut), &execRes); err != nil {
+		t.Fatalf("unmarshal execRes: %v", err)
+	}
+	if execRes["success"] != true {
+		t.Errorf("expected exec success=true, got: %v", execRes)
+	}
+
+	// 6. Release deployment lease
+	relOut, err := execTool(t, h, "manage_deployments", map[string]any{
+		"action":       "release",
+		"lease_id":     leaseID,
+		"reason":       "smoke test passed",
+		"workspace_id": workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("release deployment failed: %v", err)
+	}
+	var relRes map[string]any
+	if err := json.Unmarshal([]byte(relOut), &relRes); err != nil {
+		t.Fatalf("unmarshal relRes: %v", err)
+	}
+	if relRes["status"] != "ok" || relRes["action"] != "release" {
+		t.Errorf("expected status=ok, action=release, got: %v", relRes)
+	}
+	leaseMap, ok := relRes["lease"].(map[string]any)
+	if !ok || leaseMap["active"] != false {
+		t.Errorf("expected active=false on released lease, got: %v", leaseMap)
+	}
+
+	// 7. Verify deployment reuse: second consumer (worker) calls ensure and should reuse the running deployment
+	workerEnsureOut, err := execTool(t, h, "manage_deployments", map[string]any{
+		"action":        "ensure",
+		"consumer_type": "worker",
+		"consumer_id":   "worker-run-hourly",
+		"workspace_id":  workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("worker ensure deployment failed: %v", err)
+	}
+	var workerEnsureRes map[string]any
+	if err := json.Unmarshal([]byte(workerEnsureOut), &workerEnsureRes); err != nil {
+		t.Fatalf("unmarshal workerEnsureRes: %v", err)
+	}
+	if workerEnsureRes["reused"] != true {
+		t.Errorf("expected deployment to be reused for worker, got reused=false")
+	}
+	workerDepObj := workerEnsureRes["deployment"].(map[string]any)
+	if workerDepObj["id"] != depID {
+		t.Errorf("expected same deployment ID %s, got: %s", depID, workerDepObj["id"])
+	}
+	workerLeaseObj := workerEnsureRes["lease"].(map[string]any)
+	workerLeaseID := workerLeaseObj["id"].(string)
+
+	// Release worker lease
+	_, err = execTool(t, h, "manage_deployments", map[string]any{
+		"action":       "release",
+		"lease_id":     workerLeaseID,
+		"reason":       "worker finished",
+		"workspace_id": workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("release worker deployment failed: %v", err)
+	}
+
+	// 8. Clean up: destroy deployment
+	destOut, err := execTool(t, h, "manage_deployments", map[string]any{
+		"action":        "destroy",
+		"deployment_id": depID,
+		"reason":        "e2e cleanup",
+		"workspace_id":  workspaceID,
+	})
+	if err != nil {
+		t.Fatalf("destroy deployment failed: %v", err)
+	}
+	var destRes map[string]any
+	if err := json.Unmarshal([]byte(destOut), &destRes); err != nil {
+		t.Fatalf("unmarshal destRes: %v", err)
+	}
+	if destRes["status"] != "ok" || destRes["deployment_id"] != depID {
+		t.Errorf("expected status=ok, deployment_id=%s, got: %v", depID, destRes)
+	}
+
+	// Verify deployment is removed from store after destroy
+	_, found, err := h.depStore.Get(h.scope.Principal.AccountScopeID, workspaceID, depID)
+	if err != nil {
+		t.Fatalf("error checking deployment in store: %v", err)
+	}
+	if found {
+		t.Errorf("expected destroyed deployment to be deleted from store, but was still found")
+	}
+}
