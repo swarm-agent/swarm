@@ -851,46 +851,6 @@ export function AutomationSidebarExpandedContainerView({
               <span>{counts.running} running</span>
             </span>
           )}
-          {onOpenAutomations ? (
-            <button
-              type="button"
-              data-testid="expanded-view-button"
-              onClick={(e) => {
-                e.stopPropagation()
-                onOpenAutomations()
-              }}
-              title="Open top-down Workers view"
-              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer shrink-0"
-            >
-              View →
-            </button>
-          ) : workspaceSlug ? (
-            <a
-              href={`/${encodeURIComponent(workspaceSlug)}/workers`}
-              data-testid="expanded-view-link"
-              onClick={(e) => {
-                e.stopPropagation()
-              }}
-              title="Open top-down Workers view"
-              className="text-[9px] font-medium text-[var(--app-primary)] hover:underline shrink-0"
-            >
-              View →
-            </a>
-          ) : null}
-          <button
-            type="button"
-            data-testid="expanded-collapse-button"
-            onClick={(e) => {
-              e.stopPropagation()
-              onCollapse()
-            }}
-            aria-label="Collapse workers to summary card"
-            title="Collapse workers to summary card"
-            className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer shrink-0"
-          >
-            <span>Collapse</span>
-            <ChevronUp size={11} className="shrink-0" aria-hidden="true" />
-          </button>
         </div>
       </div>
 
@@ -899,32 +859,44 @@ export function AutomationSidebarExpandedContainerView({
         {children}
       </div>
 
-      {/* Container Footer with bottom collapse button */}
+      {/* Container Footer: All workers button on left, Collapse button on far right */}
       <div className="flex w-full min-w-0 max-w-full items-center justify-between pt-1 border-t border-[var(--app-border)]/40 text-[9px] text-[var(--app-text-muted)]">
+        {onOpenAutomations ? (
+          <button
+            type="button"
+            data-testid="expanded-view-button"
+            onClick={onOpenAutomations}
+            title="Open top-down Workers view"
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-primary)] hover:underline hover:bg-[var(--app-surface-subtle)] cursor-pointer truncate"
+          >
+            <span>All workers ({rootCount}) →</span>
+          </button>
+        ) : workspaceSlug ? (
+          <a
+            href={`/${encodeURIComponent(workspaceSlug)}/workers`}
+            data-testid="expanded-view-link"
+            title="Open top-down Workers view"
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-primary)] hover:underline hover:bg-[var(--app-surface-subtle)] cursor-pointer truncate"
+          >
+            <span>All workers ({rootCount}) →</span>
+          </a>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
-          data-testid="expanded-bottom-collapse-button"
+          data-testid="expanded-collapse-button"
           onClick={(e) => {
             e.stopPropagation()
             onCollapse()
           }}
-          aria-label="Collapse workers section"
-          title="Collapse workers section"
-          className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
+          aria-label="Collapse workers to summary card"
+          title="Collapse workers to summary card"
+          className="inline-flex shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer ml-auto"
         >
-          <ChevronUp size={10} className="shrink-0" aria-hidden="true" />
-          <span>Collapse to summary</span>
+          <span>Collapse</span>
+          <ChevronUp size={11} className="shrink-0" aria-hidden="true" />
         </button>
-        {onOpenAutomations ? (
-          <button
-            type="button"
-            onClick={onOpenAutomations}
-            title="Open top-down Workers view"
-            className="shrink-0 text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer truncate"
-          >
-            All workers ({rootCount}) →
-          </button>
-        ) : null}
       </div>
     </div>
   )

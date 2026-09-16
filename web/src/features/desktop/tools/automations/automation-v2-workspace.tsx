@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   ExternalLink,
   FileText,
@@ -831,6 +832,7 @@ export function AutomationV2Workspace({
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
   const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
+  const [suggestionsCollapsed, setSuggestionsCollapsed] = useState(false)
 
   const isArchivedTab = statusFilter === 'archived'
   const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: !isArchivedTab ? cursor : undefined }), [workspaceId, cursor, isArchivedTab])
@@ -1297,17 +1299,6 @@ export function AutomationV2Workspace({
             </div>
           )}
 
-          {/* Upcoming Schedule & Continuity Timeline/Chart */}
-          {activeRecords.length > 0 && (
-            <AutomationUpcomingScheduleChart
-              records={activeRecords}
-              timezone={primaryTimezone}
-              onOpenSession={onOpenSession}
-              onChat={handleChatWithAutomation}
-              workspaceSlug={workspaceSlug}
-            />
-          )}
-
           {/* Search & Status Filter Controls */}
           {(activeRecords.length > 0 || archivedRecords.length > 0 || pendingProposals.length > 0) && (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
@@ -1750,60 +1741,110 @@ export function AutomationV2Workspace({
           </div>
 
           {/* Consider Adding New Automations Section */}
-          <section aria-label="Deploy a Worker" className="mt-8 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/70 p-5 sm:p-6 space-y-4">
+          <section
+            aria-label="Deploy a Worker"
+            className={cn(
+              "mt-8 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/50 transition-all",
+              suggestionsCollapsed ? "p-3.5 sm:p-4" : "p-4 sm:p-5 space-y-4"
+            )}
+          >
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <Sparkles size={16} className="text-[var(--app-primary)]" />
+                  <Sparkles size={15} className="text-[var(--app-primary)] shrink-0" />
                   <h2 className="text-sm font-semibold text-[var(--app-text)]">Deploy a Worker</h2>
+                  {suggestionsCollapsed && (
+                    <span className="rounded-full bg-[var(--app-surface)] border border-[var(--app-border)]/60 px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+                      {AUTOMATION_STARTER_TEMPLATES.length} starter suggestions
+                    </span>
+                  )}
                 </div>
-                <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-                  Choose a worker routine below to draft with the assistant, or ask Swarm for any custom deployed worker.
-                </p>
+                {!suggestionsCollapsed && (
+                  <p className="mt-1 text-xs text-[var(--app-text-muted)]">
+                    Choose a worker routine below to draft with the assistant, or ask Swarm for any custom deployed worker.
+                  </p>
+                )}
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="gap-1.5 text-xs rounded-xl"
-                onClick={() => handleUseTemplate('Help me design and deploy a custom worker for this workspace.')}
-              >
-                <Plus size={13} />
-                <span>Custom worker</span>
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-xs rounded-lg h-7 px-2.5"
+                  onClick={() => handleUseTemplate('Help me design and deploy a custom worker for this workspace.')}
+                >
+                  <Plus size={12} />
+                  <span>Custom worker</span>
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  data-testid="toggle-suggestions-collapse"
+                  className="gap-1 text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)] rounded-lg h-7 px-2"
+                  onClick={() => setSuggestionsCollapsed((prev) => !prev)}
+                  aria-label={suggestionsCollapsed ? "Expand worker suggestions" : "Collapse worker suggestions"}
+                  title={suggestionsCollapsed ? "Expand suggestions" : "Collapse suggestions"}
+                >
+                  <span>{suggestionsCollapsed ? 'Show suggestions' : 'Collapse'}</span>
+                  <ChevronDown size={12} className={cn("transition-transform duration-200 shrink-0", !suggestionsCollapsed && "rotate-180")} />
+                </Button>
+              </div>
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {AUTOMATION_STARTER_TEMPLATES.map((tpl) => (
-                <div
-                  key={tpl.id}
-                  className="flex flex-col justify-between rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-4 transition-all hover:border-[var(--app-border-strong)] hover:shadow-sm"
-                >
-                  <div>
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex size-7 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
-                        <TemplateIcon icon={tpl.icon} />
+            {!suggestionsCollapsed && (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {AUTOMATION_STARTER_TEMPLATES.map((tpl) => (
+                    <div
+                      key={tpl.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => handleUseTemplate(tpl.prompt)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          handleUseTemplate(tpl.prompt)
+                        }
+                      }}
+                      className="group relative flex flex-col justify-between rounded-xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-3.5 text-left cursor-pointer transition-all duration-150 hover:border-[var(--app-primary-border)] hover:bg-[var(--app-surface-hover)]/70 hover:shadow-xs"
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex size-7 items-center justify-center rounded-lg bg-[var(--app-surface-subtle)] text-[var(--app-text)] group-hover:bg-[var(--app-primary-soft)] group-hover:text-[var(--app-primary)] transition-colors">
+                            <TemplateIcon icon={tpl.icon} />
+                          </div>
+                          <span className="rounded-md border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)]/60 px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)] font-mono">
+                            {tpl.cadence}
+                          </span>
+                        </div>
+                        <h4 className="mt-2.5 text-xs font-semibold text-[var(--app-text)] group-hover:text-[var(--app-primary)] transition-colors">
+                          {tpl.title}
+                        </h4>
+                        <p className="mt-1 text-[11px] leading-relaxed text-[var(--app-text-muted)] line-clamp-2">
+                          {tpl.description}
+                        </p>
                       </div>
-                      <span className="rounded-md border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)] font-mono">
-                        {tpl.cadence}
-                      </span>
+                      <div className="mt-3 flex items-center justify-between border-t border-[var(--app-border)]/40 pt-2 text-[11px] font-medium text-[var(--app-text-muted)] group-hover:text-[var(--app-primary)] transition-colors">
+                        <span className="flex items-center gap-1">
+                          <Sparkles size={11} className="text-[var(--app-primary)]" />
+                          <span>Propose with Swarm →</span>
+                        </span>
+                        <ChevronRight size={12} className="transition-transform group-hover:translate-x-0.5" />
+                      </div>
                     </div>
-                    <h4 className="mt-3 text-xs font-semibold text-[var(--app-text)]">{tpl.title}</h4>
-                    <p className="mt-1 text-[11px] leading-relaxed text-[var(--app-text-muted)]">
-                      {tpl.description}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="mt-3 h-7 w-full gap-1 text-[11px] font-medium hover:border-[var(--app-primary-border)] hover:bg-[var(--app-primary-soft)] hover:text-[var(--app-primary)]"
-                    onClick={() => handleUseTemplate(tpl.prompt)}
-                  >
-                    <Sparkles size={12} />
-                    <span>Propose with Swarm →</span>
-                  </Button>
+                  ))}
                 </div>
-              ))}
-            </div>
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setSuggestionsCollapsed(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text-muted)] cursor-pointer"
+                  >
+                    <span>Collapse suggestions</span>
+                    <ChevronUp size={11} className="shrink-0" />
+                  </button>
+                </div>
+              </>
+            )}
           </section>
           </>
           )}

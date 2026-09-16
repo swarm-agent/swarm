@@ -281,8 +281,9 @@ test('AutomationV2Workspace renders flat overview of all workspace automations a
   assert.match(markup, /title="Permanently delete worker"/)
   assert.match(markup, />Archived \(0\)<\/button>/)
 
-  // Verify Consider adding new automations section with starter templates
+  // Verify Consider adding new automations section with starter templates and collapse toggle
   assert.match(markup, /aria-label="Deploy a Worker"/)
+  assert.match(markup, /data-testid="toggle-suggestions-collapse"/)
   assert.match(markup, /Repository Health Check/)
   assert.match(markup, /Test &amp; Build Sentinel|Test & Build Sentinel/)
   assert.match(markup, />Propose with Swarm →<\/span>/)
@@ -444,8 +445,8 @@ test('AutomationV2Workspace renders summary cards with pulse and open session li
   assert.match(markup, /data-testid="open-automation-session-link"/)
   assert.match(markup, />Open session<\/span>/)
 
-  // Verify Upcoming Schedule & Continuity section is rendered
-  assert.match(markup, /data-testid="automations-schedule-continuity"/)
+  // Verify Upcoming Schedule & Continuity section is removed from overview page per redesign
+  assert.doesNotMatch(markup, /data-testid="automations-schedule-continuity"/)
 
   // Crucially: verify that granular run feed is NOT inlined by default when opening the page
   assert.doesNotMatch(markup, /data-testid="automation-run-feed"/)

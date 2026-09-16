@@ -2361,6 +2361,9 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
         to="/$workspaceSlug/workers/$workerId"
         params={{ workspaceSlug: rowWorkspaceSlug, workerId }}
         {...linkProps}
+        title={`Open worker: ${rowTitle}`}
+        aria-label={`Open worker: ${rowTitle}`}
+        data-testid="sidebar-worker-link"
         onClick={(event: React.MouseEvent) => {
           if (event.defaultPrevented || event.button !== 0) return
           if (selectionMode && selectionEligible) {

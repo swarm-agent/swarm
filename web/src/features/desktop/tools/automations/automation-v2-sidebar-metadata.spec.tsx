@@ -427,20 +427,16 @@ test('expanded container holds automation sessions with collapse controls and he
   // Verifies running indicator
   assert.match(expandedMarkup, /2 running/)
   assert.match(expandedMarkup, /data-testid="expanded-running-dot"/)
-  // Verifies top collapse button
-  assert.match(expandedMarkup, /data-testid="expanded-collapse-button"/)
-  assert.match(expandedMarkup, /Collapse/)
-  // Verifies bottom collapse button in footer
-  assert.match(expandedMarkup, /data-testid="expanded-bottom-collapse-button"/)
-  assert.match(expandedMarkup, /Collapse to summary/)
-  // Verifies View link/button
+  // Verifies footer controls: All workers on left, Collapse on far right
   assert.match(expandedMarkup, /data-testid="expanded-view-button"/)
   assert.match(expandedMarkup, /All workers \(5\) →/)
+  assert.match(expandedMarkup, /data-testid="expanded-collapse-button"/)
+  assert.match(expandedMarkup, /Collapse/)
   // Verifies children rendered inside container
   assert.match(expandedMarkup, /Session 1/)
   assert.match(expandedMarkup, /Session 2/)
 
-  // Direct element test: top collapse button click
+  // Direct element test: footer All workers and Collapse buttons
   const element = AutomationSidebarExpandedContainerView({
     counts: { running: 0, scheduled: 3, paused: 0, pending: 0, total: 3, runsToday: 3, upcoming: 0, alerts: 0 },
     rootCount: 3,
@@ -451,27 +447,23 @@ test('expanded container holds automation sessions with collapse controls and he
   assert.ok(element)
   assert.equal((element as any).type, 'div')
 
-  // Top header collapse button
-  collapsed = false
+  // Verify top header has no redundant collapse or view buttons
   const header = (element as any).props.children[0]
   const headerControls = header.props.children[1]
-  const topCollapseBtn = headerControls.props.children[3]
-  assert.equal(topCollapseBtn.props['data-testid'], 'expanded-collapse-button')
-  topCollapseBtn.props.onClick({ stopPropagation() {} })
-  assert.equal(collapsed, true)
+  assert.equal(headerControls.props.children.length, 2) // only alerts and running badge slots
 
-  // Footer bottom collapse button
-  collapsed = false
-  const footer = (element as any).props.children[2]
-  const bottomCollapseBtn = footer.props.children[0]
-  assert.equal(bottomCollapseBtn.props['data-testid'], 'expanded-bottom-collapse-button')
-  bottomCollapseBtn.props.onClick({ stopPropagation() {} })
-  assert.equal(collapsed, true)
-
-  // Top View button
+  // Footer left: All workers button
   navigated = false
-  const topViewBtn = headerControls.props.children[2]
-  assert.equal(topViewBtn.props['data-testid'], 'expanded-view-button')
-  topViewBtn.props.onClick({ stopPropagation() {} })
+  const footer = (element as any).props.children[2]
+  const allWorkersBtn = footer.props.children[0]
+  assert.equal(allWorkersBtn.props['data-testid'], 'expanded-view-button')
+  allWorkersBtn.props.onClick({ stopPropagation() {} })
   assert.equal(navigated, true)
+
+  // Footer right: Collapse button
+  collapsed = false
+  const collapseBtn = footer.props.children[1]
+  assert.equal(collapseBtn.props['data-testid'], 'expanded-collapse-button')
+  collapseBtn.props.onClick({ stopPropagation() {} })
+  assert.equal(collapsed, true)
 })
