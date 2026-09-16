@@ -1058,6 +1058,24 @@ func TestDeploymentManager_DeployAndStop(t *testing.T) {
 		t.Errorf("expected status stopped, got %q", dep.Status)
 	}
 
+	// 2b. Start deployment
+	startBefore := atomic.LoadInt32(&h.mockProv.startCalls)
+	err = h.manager.StartDeployment(ctx, accountScope, workspaceID, dRes.Deployment.ID)
+	if err != nil {
+		t.Fatalf("StartDeployment failed: %v", err)
+	}
+	if atomic.LoadInt32(&h.mockProv.startCalls) != startBefore+1 {
+		t.Errorf("expected provider Start to be called")
+	}
+
+	dep, found, err = h.manager.GetDeployment(accountScope, workspaceID, dRes.Deployment.ID)
+	if err != nil || !found {
+		t.Fatalf("get deployment after start: %v", err)
+	}
+	if dep.Status != environments.DeploymentStatusReady {
+		t.Errorf("expected status ready after start, got %q", dep.Status)
+	}
+
 	// 3. Deploy with consumer (status should be busy, with lease)
 	dResWithLease, err := h.manager.DeployDeployment(ctx, DeployDeploymentRequest{
 		AccountScopeID: accountScope,

@@ -902,6 +902,50 @@ func (m *DeploymentManager) StopDeployment(ctx context.Context, accountScopeID, 
 	return nil
 }
 
+// StartDeployment starts a stopped deployment container.
+func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
+	if m == nil || m.deployments == nil {
+		return errors.New("deployment store is not configured")
+	}
+
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	workspaceID = strings.TrimSpace(workspaceID)
+	deploymentID = strings.TrimSpace(deploymentID)
+	if accountScopeID == "" || workspaceID == "" || deploymentID == "" {
+		return errors.New("account scope id, workspace id, and deployment id are required")
+	}
+
+	dep, found, err := m.deployments.Get(accountScopeID, workspaceID, deploymentID)
+	if err != nil {
+		return fmt.Errorf("get deployment %q: %w", deploymentID, err)
+	}
+	if !found {
+		return fmt.Errorf("deployment %q: %w", deploymentID, ErrDeploymentNotFound)
+	}
+
+	if m.connections != nil && m.registry != nil {
+		conn, foundConn, _ := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
+		if foundConn {
+			if prov, ok := m.registry.Get(conn.Kind); ok {
+				if err := prov.Start(ctx, &conn, &dep); err != nil {
+					return fmt.Errorf("start deployment container %q: %w", deploymentID, err)
+				}
+			}
+		}
+	}
+
+	newStatus := environments.DeploymentStatusReady
+	if _, hasLease, _ := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID); hasLease {
+		newStatus = environments.DeploymentStatusBusy
+	}
+
+	_, err = m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, newStatus, environments.HealthStatusHealthy, "")
+	if err != nil {
+		return fmt.Errorf("update deployment status: %w", err)
+	}
+	return nil
+}
+
 // InspectDeployment queries the provider for live runtime status and health, updating the stored deployment.
 func (m *DeploymentManager) InspectDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*environments.Deployment, error) {
 	if m == nil || m.deployments == nil {

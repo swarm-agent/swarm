@@ -345,60 +345,12 @@ func (f fakeWorkspaceBootstrapSwarmService) SetCurrentGroup(groupID string, loca
 	return swarmruntime.GroupState{}, nil
 }
 
-func (f fakeWorkspaceBootstrapSwarmService) OutgoingPeerAuthToken(swarmID string) (string, bool, error) {
-	return "", false, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) ValidateIncomingPeerAuth(swarmID, rawToken string) (bool, error) {
-	return false, nil
-}
-
 func (f fakeWorkspaceBootstrapSwarmService) UpsertGroupMember(input swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error) {
 	return swarmruntime.GroupMember{}, nil
 }
 
 func (f fakeWorkspaceBootstrapSwarmService) RemoveGroupMember(input swarmruntime.RemoveGroupMemberInput) error {
 	return nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) CreateInvite(input swarmruntime.CreateInviteInput) (swarmruntime.Invite, error) {
-	return swarmruntime.Invite{}, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) SubmitEnrollment(input swarmruntime.SubmitEnrollmentInput) (swarmruntime.Enrollment, error) {
-	return swarmruntime.Enrollment{}, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) ListPendingEnrollments(limit int) ([]swarmruntime.Enrollment, error) {
-	return nil, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) DecideEnrollment(input swarmruntime.DecideEnrollmentInput) (swarmruntime.Enrollment, []swarmruntime.TrustedPeer, error) {
-	return swarmruntime.Enrollment{}, nil, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) PrepareRemoteBootstrapParentPeer(input swarmruntime.PrepareRemoteBootstrapParentPeerInput) error {
-	return nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) ApproveManagedPairing(input swarmruntime.ApproveManagedPairingInput) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) TrustManagedPeer(input swarmruntime.TrustManagedPeerInput) (swarmruntime.TrustedPeer, error) {
-	return swarmruntime.TrustedPeer{}, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) UpdateLocalPairingFromConfig(cfg startupconfig.FileConfig, transports []swarmruntime.TransportSummary) (swarmruntime.PairingState, error) {
-	return swarmruntime.PairingState{}, nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) DetachToStandalone(localSwarmID string) error {
-	return nil
-}
-
-func (f fakeWorkspaceBootstrapSwarmService) RemoveManagedPeer(input swarmruntime.RemoveManagedPeerInput) (swarmruntime.RemoveManagedPeerResult, error) {
-	return swarmruntime.RemoveManagedPeerResult{}, nil
 }
 
 func osMkdirAll(path string) error {
