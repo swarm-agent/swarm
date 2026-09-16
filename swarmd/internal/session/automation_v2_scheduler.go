@@ -141,7 +141,8 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 	if timezone == "" || timezone == "Local" {
 		return out, errors.New("explicit display timezone required")
 	}
-	if _, err := time.LoadLocation(timezone); err != nil {
+	loc, err := time.LoadLocation(timezone)
+	if err != nil {
 		return out, err
 	}
 	r, found, err := s.store.GetAutomationV2Record(account, user, workspace, id)
@@ -166,6 +167,8 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 	case r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt:
 		out.NoNextReason = "expired"
 	default:
+		localNow := time.UnixMilli(now).In(loc)
+		dayEnd := time.Date(localNow.Year(), localNow.Month(), localNow.Day()+1, 0, 0, 0, 0, loc).UnixMilli()
 		due := r.NextDueAt
 		if due <= now {
 			due, err = store.AutomationV2NextDue(*r.Document.AutomationV2, r.AcceptedAt, now)
@@ -173,7 +176,8 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 				return out, err
 			}
 		}
-		for i := 0; i < 5; i++ {
+		const maxForecast = 500
+		for len(out.Forecast) < maxForecast {
 			if r.Authorization.Kind == "at" && due >= r.Authorization.ExpiresAt {
 				if len(out.Forecast) == 0 {
 					out.NoNextReason = "expiration_before_next_slot"
@@ -184,6 +188,9 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 			due, err = store.AutomationV2NextDue(*r.Document.AutomationV2, r.AcceptedAt, due)
 			if err != nil {
 				return out, err
+			}
+			if due >= dayEnd && len(out.Forecast) >= 5 {
+				break
 			}
 		}
 	}

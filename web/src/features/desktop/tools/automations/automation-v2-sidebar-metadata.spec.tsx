@@ -195,7 +195,7 @@ test('sidebar summary badge and metadata row display running state, runs today, 
       workspaceSlug="my-project"
     />
   )
-  assert.match(rowMarkup, /3 ran today · 2 upcoming/)
+  assert.match(rowMarkup, /3 done today · 2 left/)
   assert.match(rowMarkup, /data-testid="automation-running-dot"/)
   assert.match(rowMarkup, /Running/)
 })
@@ -253,7 +253,7 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
 
   const compactMarkup = renderToStaticMarkup(
     <AutomationSidebarCompactCardView
-      counts={{ running: 1, scheduled: 2, paused: 0, pending: 0, total: 3, runsToday: 4, upcoming: 2, alerts: 0 }}
+      counts={{ running: 1, scheduled: 2, paused: 0, pending: 0, total: 3, runsToday: 4, upcoming: 2, totalJobs: 6, alerts: 0 }}
       rootCount={8}
       onExpand={() => { expanded = true }}
       onOpenAutomations={() => { navigated = true }}
@@ -262,10 +262,10 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
   // Verifies compact card is strictly constrained to sidebar width without overflowing
   assert.match(compactMarkup, /w-full min-w-0 max-w-full box-border/)
   assert.match(compactMarkup, /overflow-hidden/)
-  assert.match(compactMarkup, /4 workers today/)
+  assert.match(compactMarkup, /3 workers today/)
   assert.match(compactMarkup, /data-testid="compact-running-dot"/)
-  assert.match(compactMarkup, /1 running/)
-  assert.match(compactMarkup, /4 ran today · 2 upcoming/)
+  assert.match(compactMarkup, /6 jobs · 2 left/)
+  assert.match(compactMarkup, /4 jobs done today/)
   assert.match(compactMarkup, /Expand/)
   assert.match(compactMarkup, /data-testid="compact-expand-button"/)
   assert.match(compactMarkup, /data-testid="compact-view-button"/)
@@ -321,7 +321,7 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
 test('compact card renders alert pill and warning icon when alerts are present', () => {
   const alertMarkup = renderToStaticMarkup(
     <AutomationSidebarCompactCardView
-      counts={{ running: 0, scheduled: 2, paused: 0, pending: 0, total: 2, runsToday: 3, upcoming: 1, alerts: 2 }}
+      counts={{ running: 0, scheduled: 2, paused: 0, pending: 0, total: 2, runsToday: 3, upcoming: 1, totalJobs: 4, alerts: 2 }}
       rootCount={2}
       onExpand={() => {}}
       onOpenAutomations={() => {}}
@@ -329,17 +329,20 @@ test('compact card renders alert pill and warning icon when alerts are present',
   )
   assert.match(alertMarkup, /2 alerts/)
   assert.match(alertMarkup, /bg-\[var\(--app-warning-bg\)\]/)
-  assert.match(alertMarkup, /2 alerts · 3 ran today · 1 upcoming/)
-  assert.match(alertMarkup, /3 workers today/)
+  assert.match(alertMarkup, /4 jobs · 1 left/)
+  assert.match(alertMarkup, /3 jobs done today/)
+  assert.match(alertMarkup, /2 workers today/)
 
   const pendingMarkup = renderToStaticMarkup(
     <AutomationSidebarCompactCardView
-      counts={{ running: 0, scheduled: 1, paused: 0, pending: 1, total: 2, runsToday: 0, upcoming: 0, alerts: 0 }}
+      counts={{ running: 0, scheduled: 1, paused: 0, pending: 1, total: 2, runsToday: 0, upcoming: 0, totalJobs: 0, alerts: 0 }}
       rootCount={2}
       onExpand={() => {}}
     />
   )
-  assert.match(pendingMarkup, /1 awaiting approval/)
+  assert.match(pendingMarkup, /2 workers today/)
+  assert.match(pendingMarkup, /0 jobs/)
+  assert.match(pendingMarkup, /0 jobs done today/)
 })
 
 test('sidebarVisibleGroupNodes limits visible automation cards and supports overflow expansion for 50+ automations', () => {
@@ -373,33 +376,32 @@ test('automation metadata multi-row card renders 3-row layout with distinct sche
       nextDueAt={1789400000000}
       runsToday={5}
       upcomingCount={3}
+      totalJobs={24}
       workspaceSlug="proj-1"
     />
   )
   assert.match(markup, /Every hour/)
   assert.match(markup, /Scheduled/)
-  assert.match(markup, /5 ran today · 3 upcoming/)
+  assert.match(markup, /24 jobs · 5 done · 3 left/)
   assert.match(markup, /Next:/)
   // Verify clean separation into flex rows
   assert.match(markup, /flex-col gap-1/)
 })
 
-test('formatAutomationHeadline states running sessions, automations today, or total counts cleanly', () => {
-  // 150 running sessions
-  assert.equal(formatAutomationHeadline({ running: 150, scheduled: 0, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 running sessions')
-  assert.equal(formatAutomationHeadline({ running: 1, scheduled: 0, paused: 0, pending: 0, total: 1, runsToday: 0, upcoming: 0, alerts: 0 }, 1), '1 running session')
-
+test('formatAutomationHeadline states workers today cleanly', () => {
   // 150 workers today
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 workers today')
-  assert.equal(formatAutomationHeadline({ running: 5, scheduled: 145, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 workers today')
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 1, paused: 0, pending: 0, total: 1, runsToday: 1, upcoming: 0, alerts: 0 }, 1), '1 worker today')
+  assert.equal(formatAutomationHeadline({ running: 150, scheduled: 0, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, totalJobs: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 1, scheduled: 0, paused: 0, pending: 0, total: 1, runsToday: 0, upcoming: 0, totalJobs: 0, alerts: 0 }, 1), '1 worker today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, totalJobs: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 5, scheduled: 145, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, totalJobs: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 1, paused: 0, pending: 0, total: 1, runsToday: 1, upcoming: 0, totalJobs: 0, alerts: 0 }, 1), '1 worker today')
 
   // Fallback to total / rootCount as workers today
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 workers today')
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 3), '3 workers today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, totalJobs: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, totalJobs: 0, alerts: 0 }, 3), '3 workers today')
 
   // Empty fallback
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 0), 'Workers')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, totalJobs: 0, alerts: 0 }, 0), 'Workers')
 })
 
 test('expanded container holds automation sessions with collapse controls and headline', () => {
@@ -424,8 +426,7 @@ test('expanded container holds automation sessions with collapse controls and he
   assert.match(expandedMarkup, /overflow-hidden/)
   // Verifies headline
   assert.match(expandedMarkup, /5 workers today/)
-  // Verifies running indicator
-  assert.match(expandedMarkup, /2 running/)
+  assert.match(expandedMarkup, /6 jobs · 1 left/)
   assert.match(expandedMarkup, /data-testid="expanded-running-dot"/)
   // Verifies footer controls: All workers on left, Collapse on far right
   assert.match(expandedMarkup, /data-testid="expanded-view-button"/)
@@ -447,10 +448,10 @@ test('expanded container holds automation sessions with collapse controls and he
   assert.ok(element)
   assert.equal((element as any).type, 'div')
 
-  // Verify top header has no redundant collapse or view buttons
+  // Verify top header has controls
   const header = (element as any).props.children[0]
   const headerControls = header.props.children[1]
-  assert.equal(headerControls.props.children.length, 2) // only alerts and running badge slots
+  assert.equal(headerControls.props.children.length, 3)
 
   // Footer left: All workers button
   navigated = false
@@ -466,4 +467,130 @@ test('expanded container holds automation sessions with collapse controls and he
   assert.equal(collapseBtn.props['data-testid'], 'expanded-collapse-button')
   collapseBtn.props.onClick({ stopPropagation() {} })
   assert.equal(collapsed, true)
+})
+
+test('worker scheduled every 5 minutes accurately calculates 288 jobs today, jobs done, jobs left, and 1 worker today', () => {
+  const now = new Date('2026-09-16T00:00:00.000Z').getTime()
+  const nextDue = now + 300000 // in 5 minutes
+
+  const record = {
+    automation_id: 'auto-5min',
+    session_id: 's-5min',
+    workspace_id: 'ws-1',
+    enabled: true,
+    cancelled: false,
+    accepted_at: now,
+    next_due_at: nextDue,
+    authorization: { kind: 'indefinite' },
+    document: {
+      title: 'Periodic check',
+      info: { goal: 'Check status' },
+      checkpoints: [],
+      automation_v2: {
+        schema_version: 2,
+        schedule: {
+          kind: 'interval',
+          interval_seconds: 300, // every 5 minutes
+          timezone: 'UTC',
+        },
+        expiration: { kind: 'indefinite' },
+        missed: 'skip',
+        overlap: 'independent',
+        activate_on_accept: true,
+      },
+    },
+  } as unknown as AutomationV2Record
+
+  const progressKey = automationV2PageKey({ action: 'progress', workspace_id: 'ws-1', session_id: 's-5min', timezone: 'UTC' })
+  const fakeState: DesktopV3CacheState = {
+    automationV2Pages: {
+      [progressKey]: {
+        input: { action: 'progress', workspace_id: 'ws-1', session_id: 's-5min', timezone: 'UTC' },
+        generation: 1,
+        loading: false,
+        stale: false,
+        data: {
+          record,
+          progress: {
+            record,
+            timezone: 'UTC',
+            observed_at: now,
+            forecast: [], // Even with empty forecast, schedule calculation gives accurate 288 jobs
+            forecast_is_admission: false,
+            complete: true,
+            occurrences: [],
+          },
+        },
+      } as any,
+    },
+    sessionsById: {},
+    permissionsBySession: {},
+    currentRunIntentBySession: {},
+    runIntentsBySession: {},
+  } as unknown as DesktopV3CacheState
+
+  // 1. Verify selectAutomationSummaryCounts
+  const counts = selectAutomationSummaryCounts(fakeState, 'ws-1', now)
+  assert.equal(counts.total, 1, 'must be exactly 1 worker, not 5 or 288')
+  assert.equal(counts.totalJobs, 288, 'must report 288 total jobs scheduled today for every 5 minute schedule')
+  assert.equal(counts.upcoming, 288, 'must report 288 jobs left today when 0 ran')
+  assert.equal(counts.runsToday, 0, 'must report 0 jobs done today')
+
+  // 2. Verify compact card rendering
+  const compactMarkup = renderToStaticMarkup(
+    <AutomationSidebarCompactCardView
+      counts={counts}
+      rootCount={1}
+      onExpand={() => {}}
+    />
+  )
+  assert.match(compactMarkup, /1 worker today/, 'compact card headline must be 1 worker today')
+  assert.match(compactMarkup, /288 jobs · 288 left/, 'compact card top right must show total jobs and jobs left')
+  assert.match(compactMarkup, /0 jobs done today/, 'compact card bottom left must show jobs done today')
+
+  // 3. Verify when 12 jobs have completed today
+  const countsWithRuns = {
+    ...counts,
+    runsToday: 12,
+    upcoming: 276,
+    totalJobs: 288,
+  }
+  const compactMarkupWithRuns = renderToStaticMarkup(
+    <AutomationSidebarCompactCardView
+      counts={countsWithRuns}
+      rootCount={1}
+      onExpand={() => {}}
+    />
+  )
+  assert.match(compactMarkupWithRuns, /1 worker today/)
+  assert.match(compactMarkupWithRuns, /288 jobs · 276 left/)
+  assert.match(compactMarkupWithRuns, /12 jobs done today/)
+
+  // 4. Verify expanded container header
+  const expandedMarkup = renderToStaticMarkup(
+    <AutomationSidebarExpandedContainerView
+      counts={countsWithRuns}
+      rootCount={1}
+      onCollapse={() => {}}
+    >
+      <div>Child Session</div>
+    </AutomationSidebarExpandedContainerView>
+  )
+  assert.match(expandedMarkup, /1 worker today/, 'expanded container headline must be 1 worker today')
+  assert.match(expandedMarkup, /288 jobs · 276 left/, 'expanded container top right must show total jobs and jobs left')
+
+  // 5. Verify individual worker metadata row
+  const rowMarkup = renderToStaticMarkup(
+    <AutomationSidebarMetadataRow
+      schedule={{ kind: 'interval', interval_seconds: 300, timezone: 'UTC' }}
+      status="Scheduled"
+      nextDueAt={nextDue}
+      runsToday={12}
+      upcomingCount={276}
+      totalJobs={288}
+    />
+  )
+  assert.match(rowMarkup, /Every 5 minutes · UTC/)
+  assert.match(rowMarkup, /288 jobs · 12 done · 276 left/)
+  assert.doesNotMatch(rowMarkup, /5 upcoming/, 'must not report hardcoded 5')
 })

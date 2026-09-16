@@ -47,7 +47,7 @@ import { loadAutomationConversations } from '../../state/desktop-automation-conv
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
-import { scheduleLabel, scheduleFrequency, formatScheduleDateTime } from './automation-v2-schedule'
+import { scheduleLabel, scheduleFrequency, formatScheduleDateTime, getOccurrenceDayKey } from './automation-v2-schedule'
 
 export interface AutomationStarterTemplate {
   id: string
@@ -2530,7 +2530,10 @@ export function AutomationV2Detail({
               </summary>
               <div className="mt-2 space-y-1">
                 {progress.no_next_reason && <p className="text-[11px] text-[var(--app-text-muted)]">{progress.no_next_reason.replace(/_/g, ' ')}</p>}
-                <ul className="space-y-1">{progress.forecast.map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)] font-mono">{time(ms)}</li>)}</ul>
+                <ul className="space-y-1">{progress.forecast.slice(0, 15).map(ms => <li key={ms} className="text-[11px] text-[var(--app-text-muted)] font-mono">{time(ms)}</li>)}</ul>
+                {progress.forecast.length > 15 && (
+                  <p className="text-[10px] text-[var(--app-text-subtle)]">+{progress.forecast.length - 15} more upcoming</p>
+                )}
               </div>
             </details>
           )}
@@ -3070,14 +3073,7 @@ export interface DayOccurrenceGroup {
   }
 }
 
-export function getOccurrenceDayKey(ms: number, timeZone: string): string {
-  try {
-    const formatter = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
-    return formatter.format(new Date(ms))
-  } catch {
-    return new Date(ms).toISOString().slice(0, 10)
-  }
-}
+export { getOccurrenceDayKey } from './automation-v2-schedule'
 
 export function getOccurrenceDayDisplayLabel(dayKey: string, timeZone: string): string {
   const todayKey = getOccurrenceDayKey(Date.now(), timeZone)

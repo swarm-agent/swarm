@@ -162,3 +162,78 @@ func TestAutomationV2SchedulerPolicies(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: when an automation is scheduled every 5 minutes (interval 300),
+// the progress forecast must enumerate all remaining slots for today rather
+// than truncating at a hardcoded 5 slots.
+func TestAutomationV2SchedulerFiveMinuteForecast(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := store.NewSessionStore(db)
+	yes := true
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: w.Path, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(ss, nil)
+	doc := store.SessionPlanDocument{
+		Title: "Five Minute Check",
+		Info:  store.SessionPlanInfo{Goal: "Check status"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion: 2,
+			Schedule: store.AutomationV2Schedule{
+				Kind:            "interval",
+				IntervalSeconds: 300, // every 5 minutes
+			},
+			Missed:           "skip",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{ID: "one", Title: "One", Status: "pending", Order: 1, Objective: "Check", AcceptanceCriteria: []string{"Checked"}}},
+	}
+	proposal, err := svc.ProposeAutomationV2("account", "owner", w.WorkspaceID, "author", &doc, store.AutomationV2Review{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.AcceptAutomationV2("account", "owner", w.WorkspaceID, "author", proposal.AutomationV2Review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	// Query progress at current time:
+	progress, err := svc.AutomationV2Progress("account", "owner", w.WorkspaceID, "author", "UTC", "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(progress.Forecast) <= 5 {
+		t.Fatalf("expected more than 5 forecast slots for every 5 minute schedule, got %d", len(progress.Forecast))
+	}
+	loc := time.UTC
+	localNow := time.UnixMilli(now).In(loc)
+	dayEnd := time.Date(localNow.Year(), localNow.Month(), localNow.Day()+1, 0, 0, 0, 0, loc).UnixMilli()
+	expectedRemaining := int((dayEnd-r.NextDueAt)/(300*1000)) + 1
+	if expectedRemaining < 5 {
+		expectedRemaining = 5
+	}
+	if len(progress.Forecast) != expectedRemaining {
+		t.Fatalf("expected %d forecast slots for 5-minute schedule, got %d", expectedRemaining, len(progress.Forecast))
+	}
+	_ = r
+}

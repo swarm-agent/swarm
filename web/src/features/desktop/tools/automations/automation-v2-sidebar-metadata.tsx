@@ -7,8 +7,15 @@ import type { DesktopV3CacheState } from '../../state/desktop-v3-cache-types'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Record, AutomationV2Settings } from '../../state/desktop-automation-v2-api'
 import { automationV2PermissionProposal } from './automation-v2-plan-review'
-import { formatScheduleDateTime, formatScheduleTime, scheduleFrequency, scheduleLabel } from './automation-v2-schedule'
-import { getOccurrenceDayKey } from './automation-v2-workspace'
+import {
+  formatScheduleDateTime,
+  formatScheduleTime,
+  getOccurrenceDayKey,
+  getScheduleDailyTotal,
+  getScheduleUpcomingCount,
+  scheduleFrequency,
+  scheduleLabel,
+} from './automation-v2-schedule'
 
 export function AutomationSidebarMetadataRow({
   schedule,
@@ -17,6 +24,7 @@ export function AutomationSidebarMetadataRow({
   running,
   runsToday,
   upcomingCount,
+  totalJobs,
   workspaceSlug,
   onNavigateToAutomations,
 }: {
@@ -26,17 +34,29 @@ export function AutomationSidebarMetadataRow({
   running?: boolean
   runsToday?: number
   upcomingCount?: number
+  totalJobs?: number
   workspaceSlug?: string
   onNavigateToAutomations?: () => void
 }) {
   const isRunning = running || status === 'Running'
   const cadence = schedule ? scheduleLabel(schedule) : 'Worker'
   const runMetaParts: string[] = []
-  if (typeof runsToday === 'number' && runsToday > 0) {
-    runMetaParts.push(`${runsToday} ran today`)
-  }
-  if (typeof upcomingCount === 'number' && upcomingCount > 0) {
-    runMetaParts.push(`${upcomingCount} upcoming`)
+  const done = typeof runsToday === 'number' ? runsToday : 0
+  const upcoming = typeof upcomingCount === 'number' ? upcomingCount : 0
+
+  if (typeof totalJobs === 'number' && totalJobs > 0) {
+    runMetaParts.push(`${totalJobs} ${totalJobs === 1 ? 'job' : 'jobs'}`)
+    runMetaParts.push(`${done} done`)
+    if (upcoming > 0) {
+      runMetaParts.push(`${upcoming} left`)
+    }
+  } else {
+    if (done > 0) {
+      runMetaParts.push(`${done} done today`)
+    }
+    if (upcoming > 0) {
+      runMetaParts.push(`${upcoming} left`)
+    }
   }
   const runMeta = runMetaParts.join(' · ')
 
@@ -233,20 +253,29 @@ function AcceptedAutomationMetadata({
   const record = page?.data?.progress?.record
   const occurrences = page?.data?.progress?.occurrences
   const forecast = page?.data?.progress?.forecast
-  const timezone = page?.data?.progress?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timezone = page?.data?.progress?.timezone || record?.document?.automation_v2?.schedule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
 
   const todayKey = getOccurrenceDayKey(now, timezone)
+  const schedule = record?.document?.automation_v2?.schedule
   const runsToday = useMemo(() => {
     if (!occurrences) return 0
     return occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, timezone) === todayKey).length
   }, [occurrences, timezone, todayKey])
 
+  const totalJobs = useMemo(() => {
+    const dailyTotal = getScheduleDailyTotal(schedule, now, timezone)
+    return Math.max(dailyTotal, runsToday + upcomingCount)
+  }, [schedule, now, timezone, runsToday, upcomingCount])
+
   const upcomingCount = useMemo(() => {
-    if (forecast && forecast.length > 0) {
-      return forecast.filter(ms => ms > now && getOccurrenceDayKey(ms, timezone) === todayKey).length
+    if (record && (!record.enabled || record.cancelled)) return 0
+    let count = getScheduleUpcomingCount(schedule, record?.next_due_at, now, timezone, forecast)
+    const dailyTotal = getScheduleDailyTotal(schedule, now, timezone)
+    if (dailyTotal > 0) {
+      count = Math.max(count, Math.max(0, dailyTotal - runsToday))
     }
-    return record && record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now && getOccurrenceDayKey(record.next_due_at, timezone) === todayKey ? 1 : 0
-  }, [forecast, now, record, timezone, todayKey])
+    return count
+  }, [forecast, now, record, schedule, timezone, runsToday])
 
   const isRunning = useDesktopV3CacheSelector(state => {
     if (occurrences?.some(o => o.state === 'running' || o.state === 'in_progress')) return true
@@ -284,6 +313,7 @@ function AcceptedAutomationMetadata({
       running={running}
       runsToday={runsToday}
       upcomingCount={upcomingCount}
+      totalJobs={totalJobs}
       nextDueAt={!unavailable && !refreshing && record && (status === 'Scheduled' || running) ? record.next_due_at : undefined}
       workspaceSlug={workspaceSlug}
       onNavigateToAutomations={onNavigateToAutomations}
@@ -316,6 +346,7 @@ export interface AutomationSummaryCounts {
   total: number
   runsToday: number
   upcoming: number
+  totalJobs: number
   alerts: number
 }
 
@@ -330,6 +361,7 @@ export function selectAutomationSummaryCounts(
   let pending = 0
   let runsToday = 0
   let upcoming = 0
+  let totalJobs = 0
   let alerts = 0
 
   const seenAutomationIds = new Set<string>()
@@ -351,7 +383,7 @@ export function selectAutomationSummaryCounts(
       // Check occurrences on this page or any progress page for this session
       let occurrences = page.data?.progress?.occurrences
       let forecast = page.data?.progress?.forecast
-      let tz = page.data?.progress?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+      let tz = page.data?.progress?.timezone || record.document?.automation_v2?.schedule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
       if (!occurrences) {
         for (const p of Object.values(state.automationV2Pages ?? {})) {
           if (p.input.session_id === record.session_id && p.data?.progress?.occurrences) {
@@ -386,9 +418,11 @@ export function selectAutomationSummaryCounts(
         scheduled++
       }
       const todayKey = getOccurrenceDayKey(now, tz)
+      let recordRunsToday = 0
       if (occurrences) {
         const todayOccurrences = occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey)
-        runsToday += todayOccurrences.length
+        recordRunsToday = todayOccurrences.length
+        runsToday += recordRunsToday
         alerts += todayOccurrences.filter(o =>
           o.closing_state === 'attention_alert' ||
           o.closing_state === 'blocked' ||
@@ -396,11 +430,17 @@ export function selectAutomationSummaryCounts(
           o.state === 'blocked'
         ).length
       }
-      if (forecast && forecast.length > 0) {
-        upcoming += forecast.filter(ms => ms > now && getOccurrenceDayKey(ms, tz) === todayKey).length
-      } else if (record.enabled && !record.cancelled && record.next_due_at && record.next_due_at > now && getOccurrenceDayKey(record.next_due_at, tz) === todayKey) {
-        upcoming++
+      const schedule = record.document?.automation_v2?.schedule
+      const recordDailyTotal = getScheduleDailyTotal(schedule, now, tz)
+      let recordUpcoming = record.enabled && !record.cancelled
+        ? getScheduleUpcomingCount(schedule, record.next_due_at, now, tz, forecast)
+        : 0
+      if (recordDailyTotal > 0 && record.enabled && !record.cancelled) {
+        recordUpcoming = Math.max(recordUpcoming, Math.max(0, recordDailyTotal - recordRunsToday))
       }
+      upcoming += recordUpcoming
+      const recordTotalJobs = Math.max(recordDailyTotal, recordRunsToday + recordUpcoming)
+      totalJobs += recordTotalJobs
     }
   }
 
@@ -431,7 +471,10 @@ export function selectAutomationSummaryCounts(
   }
 
   const total = running + scheduled + paused + pending
-  return { running, scheduled, paused, pending, total, runsToday, upcoming, alerts }
+  if (totalJobs === 0 && (runsToday > 0 || upcoming > 0)) {
+    totalJobs = runsToday + upcoming
+  }
+  return { running, scheduled, paused, pending, total, runsToday, upcoming, totalJobs, alerts }
 }
 
 export function AutomationSidebarSummaryBadge({
@@ -581,21 +624,9 @@ export function AutomationV2SidebarSummaryIndicator({
 export const AutomationSummaryIndicator = AutomationV2SidebarSummaryIndicator
 
 export function formatAutomationHeadline(counts: AutomationSummaryCounts, rootCount: number): string {
-  if (counts.running > 0 && counts.runsToday === 0) {
-    return `${counts.running} running session${counts.running === 1 ? '' : 's'}`
-  }
-  if (counts.runsToday > 0 && counts.running >= counts.runsToday) {
-    return `${counts.running} running session${counts.running === 1 ? '' : 's'}`
-  }
-  const todayCount = counts.runsToday > 0
-    ? counts.runsToday
-    : (counts.upcoming > 0 ? counts.upcoming : (counts.total || rootCount))
-  if (todayCount > 0) {
-    return `${todayCount} worker${todayCount === 1 ? '' : 's'} today`
-  }
-  const fallback = counts.total || rootCount
-  if (fallback > 0) {
-    return `${fallback} worker${fallback === 1 ? '' : 's'}`
+  const workerCount = counts.total > 0 ? counts.total : rootCount
+  if (workerCount > 0) {
+    return `${workerCount} worker${workerCount === 1 ? '' : 's'} today`
   }
   return 'Workers'
 }
@@ -617,18 +648,13 @@ export function AutomationSidebarCompactCardView({
   const alertCount = (counts.alerts ?? 0) + (counts.pending ?? 0)
   const hasAlerts = alertCount > 0
   const headline = formatAutomationHeadline(counts, rootCount)
+  const totalJobs = counts.totalJobs ?? (counts.runsToday + counts.upcoming)
+  const jobsLeft = counts.upcoming
+  const jobsSummary = totalJobs > 0
+    ? (jobsLeft > 0 ? `${totalJobs} jobs · ${jobsLeft} left` : `${totalJobs} ${totalJobs === 1 ? 'job' : 'jobs'}`)
+    : (jobsLeft > 0 ? `${jobsLeft} jobs left` : '0 jobs')
 
-  const runMetaParts: string[] = []
-  if (counts.alerts && counts.alerts > 0) {
-    runMetaParts.push(`${counts.alerts} alert${counts.alerts === 1 ? '' : 's'}`)
-  }
-  if (counts.runsToday > 0) {
-    runMetaParts.push(`${counts.runsToday} ran today`)
-  }
-  if (counts.upcoming > 0) {
-    runMetaParts.push(`${counts.upcoming} upcoming`)
-  }
-  const runMeta = runMetaParts.join(' · ')
+  const doneTodaySummary = `${counts.runsToday} ${counts.runsToday === 1 ? 'job' : 'jobs'} done today`
 
   const handleCardClick = () => {
     if (onOpenAutomations) {
@@ -643,13 +669,7 @@ export function AutomationSidebarCompactCardView({
       data-testid="automation-sidebar-compact-card"
       role="button"
       tabIndex={0}
-      aria-label={`${headline}, ${
-        hasAlerts
-          ? `${alertCount} alert${alertCount === 1 ? '' : 's'}`
-          : isRunning
-            ? `${counts.running} running`
-            : `${counts.scheduled} scheduled`
-      }. Click to open top-down Workers view`}
+      aria-label={`${headline}, ${jobsSummary}, ${doneTodaySummary}. Click to open top-down Workers view`}
       onClick={handleCardClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -659,8 +679,9 @@ export function AutomationSidebarCompactCardView({
       }}
       className="group relative flex w-full min-w-0 max-w-full box-border flex-col gap-1.5 rounded-lg border border-[var(--app-border)]/70 bg-[var(--app-surface-subtle)]/40 p-2.5 text-left transition-all hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)] cursor-pointer overflow-hidden"
     >
+      {/* Top row: Left: X workers today; Right: how many jobs */}
       <div className="flex min-w-0 items-center justify-between gap-1.5">
-        <span className="flex min-w-0 items-center gap-1.5">
+        <span className="flex min-w-0 items-center gap-1.5 truncate">
           {hasAlerts ? (
             <AlertTriangle
               size={12}
@@ -678,44 +699,29 @@ export function AutomationSidebarCompactCardView({
             {headline}
           </span>
         </span>
-        <div className="flex items-center gap-1 shrink-0">
-          {counts.alerts > 0 && (
+        <div className="flex items-center gap-1.5 shrink-0 text-[10px] font-medium text-[var(--app-text-muted)] tabular-nums">
+          {hasAlerts && (
             <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)]">
               <AlertTriangle size={8} aria-hidden="true" />
-              <span>{counts.alerts} alert{counts.alerts === 1 ? '' : 's'}</span>
+              <span>{alertCount} alert{alertCount === 1 ? '' : 's'}</span>
             </span>
           )}
-          {counts.alerts === 0 && counts.pending > 0 && (
-            <span className="inline-flex items-center rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)]">
-              <span>{counts.pending} awaiting approval</span>
-            </span>
+          {isRunning && (
+            <span
+              data-testid="compact-running-dot"
+              className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse shrink-0"
+              aria-hidden="true"
+              title={`${counts.running} running`}
+            />
           )}
-          {isRunning ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)]">
-              <span
-                data-testid="compact-running-dot"
-                className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
-                aria-hidden="true"
-              />
-              <span>{counts.running} running</span>
-            </span>
-          ) : counts.alerts === 0 && counts.pending === 0 ? (
-            counts.scheduled > 0 ? (
-              <span className="inline-flex items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-muted)]">
-                {counts.scheduled} scheduled
-              </span>
-            ) : (
-              <span className="inline-flex items-center rounded-full bg-[var(--app-surface-subtle)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)]">
-                Idle
-              </span>
-            )
-          ) : null}
+          <span data-testid="compact-jobs-summary">{jobsSummary}</span>
         </div>
       </div>
 
+      {/* Bottom row: Left: how many jobs done today; Right: View and Expand buttons */}
       <div className="flex min-w-0 items-center justify-between gap-1 text-[9px] text-[var(--app-text-muted)]">
-        <span className="min-w-0 truncate">
-          {runMeta || (counts.scheduled > 0 ? `${counts.scheduled} scheduled on cadence` : 'Ready')}
+        <span data-testid="compact-done-summary" className="min-w-0 truncate font-medium">
+          {doneTodaySummary}
         </span>
         <div className="flex items-center gap-2 shrink-0">
           {onOpenAutomations ? (
@@ -808,6 +814,11 @@ export function AutomationSidebarExpandedContainerView({
   const alertCount = (counts.alerts ?? 0) + (counts.pending ?? 0)
   const hasAlerts = alertCount > 0
   const headline = formatAutomationHeadline(counts, rootCount)
+  const totalJobs = counts.totalJobs ?? (counts.runsToday + counts.upcoming)
+  const jobsLeft = counts.upcoming
+  const jobsSummary = totalJobs > 0
+    ? (jobsLeft > 0 ? `${totalJobs} jobs · ${jobsLeft} left` : `${totalJobs} ${totalJobs === 1 ? 'job' : 'jobs'}`)
+    : (jobsLeft > 0 ? `${jobsLeft} jobs left` : '0 jobs')
 
   return (
     <div
@@ -816,7 +827,7 @@ export function AutomationSidebarExpandedContainerView({
     >
       {/* Container Header */}
       <div className="flex w-full min-w-0 max-w-full items-center justify-between gap-1 pb-1.5 border-b border-[var(--app-border)]/40">
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="flex min-w-0 items-center gap-1.5 truncate">
           {hasAlerts ? (
             <AlertTriangle
               size={12}
@@ -834,23 +845,22 @@ export function AutomationSidebarExpandedContainerView({
             {headline}
           </span>
         </span>
-        <div className="flex items-center gap-1 shrink-0 ml-auto">
-          {counts.alerts > 0 && (
+        <div className="flex items-center gap-1.5 shrink-0 ml-auto text-[10px] font-medium text-[var(--app-text-muted)] tabular-nums">
+          {hasAlerts && (
             <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-warning-bg)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-warning)] shrink-0">
               <AlertTriangle size={8} aria-hidden="true" />
-              <span>{counts.alerts} alert{counts.alerts === 1 ? '' : 's'}</span>
+              <span>{alertCount} alert{alertCount === 1 ? '' : 's'}</span>
             </span>
           )}
           {isRunning && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-success)] shrink-0">
-              <span
-                data-testid="expanded-running-dot"
-                className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse"
-                aria-hidden="true"
-              />
-              <span>{counts.running} running</span>
-            </span>
+            <span
+              data-testid="expanded-running-dot"
+              className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse shrink-0"
+              aria-hidden="true"
+              title={`${counts.running} running`}
+            />
           )}
+          <span data-testid="expanded-jobs-summary">{jobsSummary}</span>
         </div>
       </div>
 

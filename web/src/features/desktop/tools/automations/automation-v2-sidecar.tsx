@@ -14,7 +14,7 @@ import { automationV2PermissionProposal } from '../../state/desktop-automation-v
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { automationV2PageKey } from '../../state/desktop-automation-v2-state'
-import { getOccurrenceDayKey } from './automation-v2-workspace'
+import { getOccurrenceDayKey, getScheduleUpcomingCount } from './automation-v2-schedule'
 
 export function isGenericSessionTitle(title?: string): boolean {
   if (!title) return true
@@ -268,12 +268,14 @@ export function AutomationV2Sidecar({
   }, [occurrences, tz])
 
   const upcomingCount = useMemo(() => {
-    const now = Date.now()
-    const todayKey = getOccurrenceDayKey(now, tz)
-    if (forecast && forecast.length > 0) {
-      return forecast.filter((ms) => ms > now && getOccurrenceDayKey(ms, tz) === todayKey).length
-    }
-    return selectedAutomation?.next_due_at && selectedAutomation.next_due_at > now && getOccurrenceDayKey(selectedAutomation.next_due_at, tz) === todayKey ? 1 : 0
+    if (!selectedAutomation || !selectedAutomation.enabled || selectedAutomation.cancelled) return 0
+    return getScheduleUpcomingCount(
+      selectedAutomation.document?.automation_v2?.schedule,
+      selectedAutomation.next_due_at,
+      Date.now(),
+      tz,
+      forecast,
+    )
   }, [forecast, selectedAutomation, tz])
 
   const currentPendingProposal = useMemo(() => {
