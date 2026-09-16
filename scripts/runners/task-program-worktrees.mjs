@@ -203,7 +203,7 @@ function programPrompt({ label, targetWorkspace, markerName }) {
     'Call the task tool exactly once with action=start, a non-empty top-level prompt, and one fully declared Task Program. Every job must set agent_type exactly "coder" (lowercase), stage_id, id, title, meta_prompt, deliverable, dependency_evidence, acceptance_criteria and owned_scope. The stage must include id and dependency_evidence. Do not put max_concurrency at top level.',
     targetClause,
     `Use program id ${label === 'same-repo-current-parent' ? 'same_repo_probe' : 'linked_repo_probe'}, one stage id verify, max_concurrency 1, and exactly one Coder job.`,
-    `The Coder job must own only docs/task-program-probes/** and must create docs/task-program-probes/${markerName} containing one short public-safe line, commit it, and finish clean.`,
+    `The Coder job must own only docs/task-program-probes/** and its meta_prompt must instruct: "Write one short public-safe line to docs/task-program-probes/${markerName} using the write tool, then stage it with git_add and commit it with git_commit. You must commit your changes before finishing."`,
     `Its acceptance criterion is that the committed file docs/task-program-probes/${markerName} exists. The parent must let the Task Program integrate the committed result and then reply exactly PROGRAM_OK.`,
     'Do not use any other tool. Do not inspect unrelated files. Do not include private paths, hostnames, credentials, or topology in the file.',
   ].filter(Boolean).join(' ')

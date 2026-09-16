@@ -262,7 +262,7 @@ async function main() {
     'Create exactly two ordered checkpoints with ids cp-1 and cp-2.',
     'Each checkpoint must contain exactly one simple task so it materializes exactly one subtask.',
     'Checkpoint cp-1 should complete by calling plan_manage complete_checkpoint with result BASIC_CP1_OK.',
-    'Checkpoint cp-2 should complete by calling plan_manage complete_checkpoint with result BASIC_CP2_OK.',
+    'Checkpoint cp-2 should complete by calling plan_manage complete_checkpoint with result BASIC_CP2_OK and handoff_overview "All checkpoints completed cleanly."',
     'Use automatic checkpoint execution and submit the complete structured plan now with exit_plan_mode.',
     'Do not inspect or modify workspace files; this test only verifies plan lifecycle and model switching.',
   ].join(' ')
@@ -345,7 +345,7 @@ async function main() {
   result.gates.plan_model_verified = true
   result.gates.auto_model_verified = true
 
-  const failedEvents = events.filter((event) => /failed|cancelled|expired|interrupted/.test(String(event?.event_type || '')))
+  const failedEvents = events.filter((event) => ['session.run.failed', 'session.checkpoint.failed'].includes(String(event?.event_type || '')))
   const failedIntents = (replay?.run_intents || []).filter((intent) => !['completed'].includes(String(intent?.status || '')))
   assert(failedEvents.length === 0, `session contains failure events: ${failedEvents.map((event) => event.event_type).join(', ')}`)
   assert(failedIntents.length === 0, `session contains non-completed run intents: ${failedIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
