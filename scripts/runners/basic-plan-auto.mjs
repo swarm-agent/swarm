@@ -259,8 +259,9 @@ async function main() {
 
   const prompt = [
     `Basic runner flow ${testID}.`,
-    'Create exactly two ordered checkpoints with ids cp-1 and cp-2.',
-    'Each checkpoint must contain exactly one simple task so it materializes exactly one subtask.',
+    'You must create a plan with an array of EXACTLY two ordered checkpoints in document.checkpoints: the first checkpoint must have id "cp-1", order 1, and tasks ["Task 1"]; the second checkpoint must have id "cp-2", order 2, and tasks ["Task 2"].',
+    'Do NOT combine them into one checkpoint. Both checkpoints must be present in document.checkpoints.',
+    'Each checkpoint must contain exactly one simple task in tasks array so it materializes exactly one subtask.',
     'Checkpoint cp-1 should complete by calling plan_manage complete_checkpoint with result BASIC_CP1_OK.',
     'Checkpoint cp-2 should complete by calling plan_manage complete_checkpoint with result BASIC_CP2_OK and handoff_overview "All checkpoints completed cleanly."',
     'Use automatic checkpoint execution and submit the complete structured plan now with exit_plan_mode.',
