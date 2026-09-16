@@ -262,11 +262,6 @@ function AcceptedAutomationMetadata({
     return occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, timezone) === todayKey).length
   }, [occurrences, timezone, todayKey])
 
-  const totalJobs = useMemo(() => {
-    const dailyTotal = getScheduleDailyTotal(schedule, now, timezone)
-    return Math.max(dailyTotal, runsToday + upcomingCount)
-  }, [schedule, now, timezone, runsToday, upcomingCount])
-
   const upcomingCount = useMemo(() => {
     if (record && (!record.enabled || record.cancelled)) return 0
     let count = getScheduleUpcomingCount(schedule, record?.next_due_at, now, timezone, forecast)
@@ -276,6 +271,11 @@ function AcceptedAutomationMetadata({
     }
     return count
   }, [forecast, now, record, schedule, timezone, runsToday])
+
+  const totalJobs = useMemo(() => {
+    const dailyTotal = getScheduleDailyTotal(schedule, now, timezone)
+    return Math.max(dailyTotal, runsToday + upcomingCount)
+  }, [schedule, now, timezone, runsToday, upcomingCount])
 
   const isRunning = useDesktopV3CacheSelector(state => {
     if (occurrences?.some(o => o.state === 'running' || o.state === 'in_progress')) return true
