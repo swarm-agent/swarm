@@ -752,7 +752,7 @@ export function StructuredPlanReviewView({ document, className }: { document: St
   const review = structuredPlanReviewProjection(document)
   return (
     <div className={cn('grid gap-4', className)}>
-      {document.automation ? <><h3>Automation · workspace {document.automation.scope.workspace_id}</h3><AutomationDefinitionSummary definition={document.automation.definition} /></> : null}
+      {document.automation ? <><h3>Worker · workspace {document.automation.scope.workspace_id}</h3><AutomationDefinitionSummary definition={document.automation.definition} /></> : null}
       <section className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4 sm:p-5">
         <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Objective</div>
         <h3 className="mt-1 text-lg font-semibold text-[var(--app-text)]">{review.title}</h3>
@@ -819,7 +819,7 @@ export function StructuredPlanDocumentView({
       <div className={cn('grid gap-5', className)}>
         <div className="flex min-w-0 items-start justify-between gap-3 border-b border-[var(--app-border)] pb-3">
           <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automationV2 || document.automation ? 'Automation plan details' : 'Plan details'}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automationV2 || document.automation ? 'Worker plan details' : 'Plan details'}</div>
             <h3 className="mt-1 truncate text-lg font-semibold text-[var(--app-text)]">
               {document.title || document.info.goal || 'Structured execution blueprint'}
             </h3>
@@ -847,7 +847,7 @@ export function StructuredPlanDocumentView({
       <section className="grid min-w-0 content-start gap-4">
         <div className="flex min-w-0 items-start justify-between gap-3 border-b border-[var(--app-border)] pb-3">
           <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automationV2 || document.automation ? 'Automation plan details' : 'Plan details'}</div>
+            <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">{document.automationV2 || document.automation ? 'Worker plan details' : 'Plan details'}</div>
             <h3 className="mt-1 truncate text-lg font-semibold text-[var(--app-text)]">
               {document.title || document.info.goal || 'Structured execution blueprint'}
             </h3>

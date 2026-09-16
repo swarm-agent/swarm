@@ -23,11 +23,11 @@ export function AutomationProgressView({ workspaceId, id, compact = false, revis
     return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', visible) }
   }, [input, progress?.day_end, capacityError])
   const stale = !!page?.stale || !!page?.error || (revision !== undefined && progress?.definition_revision !== revision)
-  const summary = capacityError ? 'Progress unavailable — open automation for details' : automationProgressSummary(progress, stale, now)
+  const summary = capacityError ? 'Progress unavailable — open worker for details' : automationProgressSummary(progress, stale, now)
   const usable = progress && !stale && now >= progress.day_start && now < progress.day_end
   if (compact) return <span className="block text-xs break-words" title={`${summary}. Forecasts are not admitted work. Display day: ${timezone}. Actual start/completion and unrecorded misses unavailable.`}>{summary}</span>
-  return <section aria-label="Automation schedule and progress" className="space-y-2 break-words text-sm">
-    <h3 className="font-semibold">Automation</h3><p role="status">{summary}</p>
+  return <section aria-label="Worker schedule and progress" className="space-y-2 break-words text-sm">
+    <h3 className="font-semibold">Worker</h3><p role="status">{summary}</p>
     {page?.error && <p role="alert">{page.error}</p>}
     {usable && <>
       <p>Display day: {automationTime(progress.day_start, timezone)} – {automationTime(progress.day_end, timezone)} · {timezone}</p>

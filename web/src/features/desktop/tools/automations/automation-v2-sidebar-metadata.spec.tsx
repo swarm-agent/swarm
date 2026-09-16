@@ -30,7 +30,7 @@ test('automation metadata renders cadence, timezone and explicit pending state',
   assert.match(interval, /Every hour/)
   assert.match(interval, /24 runs \/ day on average/)
   assert.match(interval, /Scheduled/)
-  assert.match(interval, /aria-label="Automation metadata"/)
+  assert.match(interval, /aria-label="Worker metadata"/)
   const pending = renderToStaticMarkup(<AutomationSidebarMetadataRow schedule={{ kind: 'cron', cron: '0 9 * * *', timezone: 'Europe/Paris' }} status="Awaiting acceptance" />)
   assert.match(pending, /Daily at 09:00 · Europe\/Paris/)
   assert.match(pending, /Awaiting acceptance/)
@@ -69,8 +69,8 @@ test('automation metadata row renders active running state and top-down entry po
   assert.match(runningMarkup, /Every 30 minutes/)
   assert.match(runningMarkup, /data-testid="automation-running-dot"/)
   assert.match(runningMarkup, /animate-pulse/)
-  assert.match(runningMarkup, /aria-label="Open Automations view"/)
-  assert.match(runningMarkup, /Open Automations view/)
+  assert.match(runningMarkup, /aria-label="Open Workers view"/)
+  assert.match(runningMarkup, /Open Workers view/)
 
   const scheduledLinkMarkup = renderToStaticMarkup(
     <AutomationSidebarMetadataRow
@@ -82,7 +82,7 @@ test('automation metadata row renders active running state and top-down entry po
   )
   assert.match(scheduledLinkMarkup, /Scheduled/)
   assert.match(scheduledLinkMarkup, /href="\/my-project\/automations"/)
-  assert.match(scheduledLinkMarkup, /aria-label="Open Automations view"/)
+  assert.match(scheduledLinkMarkup, /aria-label="Open Workers view"/)
   assert.doesNotMatch(scheduledLinkMarkup, /data-testid="automation-running-dot"/)
 
   // Direct click test
@@ -212,8 +212,8 @@ test('sidebar summary badge displays calm high-level state and navigates on clic
   assert.match(activeMarkup, /1 running · 2 scheduled/)
   assert.match(activeMarkup, /data-testid="summary-running-dot"/)
   assert.match(activeMarkup, /animate-pulse/)
-  assert.match(activeMarkup, /Automations summary: 1 running · 2 scheduled/)
-  assert.match(activeMarkup, /Open top-down Automations view/)
+  assert.match(activeMarkup, /Workers summary: 1 running · 2 scheduled/)
+  assert.match(activeMarkup, /Open top-down Workers view/)
   // Ensures individual execution IDs are not exposed in calm indicator
   assert.doesNotMatch(activeMarkup, /occ-|exec-|av2-/)
 
@@ -262,7 +262,7 @@ test('compact card renders overview, running pulse dot, stats, and expands on cl
   // Verifies compact card is strictly constrained to sidebar width without overflowing
   assert.match(compactMarkup, /w-full min-w-0 max-w-full box-border/)
   assert.match(compactMarkup, /overflow-hidden/)
-  assert.match(compactMarkup, /4 automations today/)
+  assert.match(compactMarkup, /4 workers today/)
   assert.match(compactMarkup, /data-testid="compact-running-dot"/)
   assert.match(compactMarkup, /1 running/)
   assert.match(compactMarkup, /4 ran today · 2 upcoming/)
@@ -330,7 +330,7 @@ test('compact card renders alert pill and warning icon when alerts are present',
   assert.match(alertMarkup, /2 alerts/)
   assert.match(alertMarkup, /bg-\[var\(--app-warning-bg\)\]/)
   assert.match(alertMarkup, /2 alerts · 3 ran today · 1 upcoming/)
-  assert.match(alertMarkup, /3 automations today/)
+  assert.match(alertMarkup, /3 workers today/)
 
   const pendingMarkup = renderToStaticMarkup(
     <AutomationSidebarCompactCardView
@@ -389,17 +389,17 @@ test('formatAutomationHeadline states running sessions, automations today, or to
   assert.equal(formatAutomationHeadline({ running: 150, scheduled: 0, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 running sessions')
   assert.equal(formatAutomationHeadline({ running: 1, scheduled: 0, paused: 0, pending: 0, total: 1, runsToday: 0, upcoming: 0, alerts: 0 }, 1), '1 running session')
 
-  // 150 automations today
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 automations today')
-  assert.equal(formatAutomationHeadline({ running: 5, scheduled: 145, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 automations today')
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 1, paused: 0, pending: 0, total: 1, runsToday: 1, upcoming: 0, alerts: 0 }, 1), '1 automation today')
+  // 150 workers today
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 5, scheduled: 145, paused: 0, pending: 0, total: 150, runsToday: 150, upcoming: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 1, paused: 0, pending: 0, total: 1, runsToday: 1, upcoming: 0, alerts: 0 }, 1), '1 worker today')
 
-  // Fallback to total / rootCount as automations today
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 automations today')
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 3), '3 automations today')
+  // Fallback to total / rootCount as workers today
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 150, paused: 0, pending: 0, total: 150, runsToday: 0, upcoming: 0, alerts: 0 }, 150), '150 workers today')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 3), '3 workers today')
 
   // Empty fallback
-  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 0), 'Automations')
+  assert.equal(formatAutomationHeadline({ running: 0, scheduled: 0, paused: 0, pending: 0, total: 0, runsToday: 0, upcoming: 0, alerts: 0 }, 0), 'Workers')
 })
 
 test('expanded container holds automation sessions with collapse controls and headline', () => {
@@ -423,7 +423,7 @@ test('expanded container holds automation sessions with collapse controls and he
   assert.match(expandedMarkup, /w-full min-w-0 max-w-full box-border/)
   assert.match(expandedMarkup, /overflow-hidden/)
   // Verifies headline
-  assert.match(expandedMarkup, /5 automations today/)
+  assert.match(expandedMarkup, /5 workers today/)
   // Verifies running indicator
   assert.match(expandedMarkup, /2 running/)
   assert.match(expandedMarkup, /data-testid="expanded-running-dot"/)
@@ -435,7 +435,7 @@ test('expanded container holds automation sessions with collapse controls and he
   assert.match(expandedMarkup, /Collapse to summary/)
   // Verifies View link/button
   assert.match(expandedMarkup, /data-testid="expanded-view-button"/)
-  assert.match(expandedMarkup, /All automations \(5\) →/)
+  assert.match(expandedMarkup, /All workers \(5\) →/)
   // Verifies children rendered inside container
   assert.match(expandedMarkup, /Session 1/)
   assert.match(expandedMarkup, /Session 2/)

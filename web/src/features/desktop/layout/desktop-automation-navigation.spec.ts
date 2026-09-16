@@ -27,7 +27,7 @@ test('shared sidebar keeps the info row first and Automations directly below Stu
   assert.doesNotMatch(sidebar, /<AutomationSidebar/)
   const info = sidebar.indexOf('aria-label="Edit swarm name"')
   const studio = sidebar.indexOf('aria-label="Open Studio"')
-  const automation = sidebar.indexOf('aria-label="Open Automations"')
+  const automation = sidebar.indexOf('aria-label="Open Workers"')
   const quick = sidebar.indexOf('aria-label="Open Desktop quick actions"')
   assert.ok(info >= 0 && info < studio && studio < automation && automation < quick)
   const entry = sidebar.slice(sidebar.lastIndexOf('<button', automation), sidebar.indexOf('</button>', automation))
@@ -41,7 +41,7 @@ test('shared sidebar keeps the info row first and Automations directly below Stu
 test('automation content cannot restore a second workspace navigation shell', async () => {
   const content = await readFile(new URL('../tools/automations/automation-workspace.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(content, /Back to workspace|<nav aria-label="Automations"|min-h-dvh/)
-  assert.match(content, /aria-label="Automation controls"/)
+  assert.match(content, /aria-label="Worker controls"/)
 })
 
 test('clicking an accepted automation session navigates to the automations page instead of conversation chat', () => {

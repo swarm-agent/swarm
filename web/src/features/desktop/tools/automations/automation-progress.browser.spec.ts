@@ -31,7 +31,7 @@ test('detailed and compact progress distinguish forecasts, pause and day rollove
     await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }))
     await page.goto('https://automation.test/')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    await page.getByRole('heading', { name: 'Automation', exact: true }).waitFor()
+    await page.getByRole('heading', { name: 'Worker', exact: true }).waitFor()
     assert.match(await page.locator('#compact').innerText(), /0 completed.*1 failed.*paused/)
     assert.match(await page.locator('section').innerText(), /forecasts, not a run quota/)
     assert.match(await page.locator('section').innerText(), /Actual start\/completion times.*unavailable/)

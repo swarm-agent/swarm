@@ -3391,14 +3391,14 @@ function AutomationV2Modal(props: DesktopPermissionModalProps) {
     return (
       <ModalShell
         open={props.open}
-        title="Automation plan"
+        title="Worker plan"
         subtitle="Review recurring execution"
         sessionMode={props.sessionMode}
         widthClassName="max-w-3xl"
         pendingCount={props.pendingCount}
         onOpenChange={props.onOpenChange}
       >
-        <p role="alert">Automation review unavailable. Refresh before accepting.</p>
+        <p role="alert">Worker review unavailable. Refresh before accepting.</p>
       </ModalShell>
     )
   }
@@ -3406,8 +3406,8 @@ function AutomationV2Modal(props: DesktopPermissionModalProps) {
   return (
     <ModalShell
       open={props.open}
-      title={proposal.document.title || "Automation plan"}
-      subtitle="Review recurring execution and chat with Swarm Plan to make changes before accepting"
+      title={proposal.document.title || "Worker plan"}
+      subtitle="Review recurring execution and chat with the Worker Agent to make changes before deploying"
       pendingCount={props.pendingCount}
       sessionMode={props.sessionMode}
       widthClassName="w-[min(1520px,calc(100vw-24px))] sm:w-[min(1580px,calc(100vw-36px))] max-w-[1600px] h-[min(92vh,940px)] max-h-[min(92vh,940px)]"
@@ -3428,7 +3428,7 @@ function AutomationV2Modal(props: DesktopPermissionModalProps) {
               : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
           )}
         >
-          Automation Details
+          Worker Details
         </button>
         <button
           type="button"
@@ -3440,7 +3440,7 @@ function AutomationV2Modal(props: DesktopPermissionModalProps) {
               : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
           )}
         >
-          <span>AI Assistant</span>
+          <span>Worker Agent</span>
           <span className="rounded-full bg-[var(--app-primary-soft)] px-1.5 py-0.2 text-[10px] font-bold text-[var(--app-primary)]">
             Chat
           </span>

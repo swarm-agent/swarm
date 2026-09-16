@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronUp, Clock3, RefreshCcw } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { desktopAutomationV2 } from '../../runtime/desktop-automation-v2'
@@ -30,7 +30,7 @@ export function AutomationSidebarMetadataRow({
   onNavigateToAutomations?: () => void
 }) {
   const isRunning = running || status === 'Running'
-  const cadence = schedule ? scheduleLabel(schedule) : 'Automation'
+  const cadence = schedule ? scheduleLabel(schedule) : 'Worker'
   const runMetaParts: string[] = []
   if (typeof runsToday === 'number' && runsToday > 0) {
     runMetaParts.push(`${runsToday} ran today`)
@@ -47,7 +47,7 @@ export function AutomationSidebarMetadataRow({
     schedule && scheduleFrequency(schedule),
     runMeta || undefined,
     nextDueAt ? `Next scheduled: ${new Date(nextDueAt).toLocaleString()} (local time; not a guaranteed start)` : undefined,
-    onNavigateToAutomations || workspaceSlug ? 'Open Automations view' : undefined,
+    onNavigateToAutomations || workspaceSlug ? 'Open Workers view' : undefined,
   ].filter(Boolean).join(' · ')
 
   const statusContent = (
@@ -80,8 +80,8 @@ export function AutomationSidebarMetadataRow({
         e.stopPropagation()
         onNavigateToAutomations()
       }}
-      aria-label="Open Automations view"
-      title="Open top-down Automations view"
+      aria-label="Open Workers view"
+      title="Open top-down Workers view"
       className="inline-flex shrink-0 items-center gap-1 rounded hover:opacity-85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] cursor-pointer"
     >
       {statusContent}
@@ -92,8 +92,8 @@ export function AutomationSidebarMetadataRow({
       onClick={(e) => {
         e.stopPropagation()
       }}
-      aria-label="Open Automations view"
-      title="Open top-down Automations view"
+      aria-label="Open Workers view"
+      title="Open top-down Workers view"
       className="inline-flex shrink-0 items-center gap-1 rounded hover:opacity-85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)]"
     >
       {statusContent}
@@ -104,7 +104,7 @@ export function AutomationSidebarMetadataRow({
 
   return (
     <div
-      aria-label="Automation metadata"
+      aria-label="Worker metadata"
       title={details}
       className="mt-1 flex min-w-0 flex-col gap-1 text-[10px] leading-4 text-[var(--app-text-subtle)]"
     >
@@ -481,13 +481,13 @@ export function AutomationSidebarSummaryBadge({
 
   const title = [
     counts.alerts > 0 ? `${counts.alerts} alert${counts.alerts === 1 ? '' : 's'}` : undefined,
-    counts.running > 0 ? `${counts.running} active running automation${counts.running === 1 ? '' : 's'}` : undefined,
+    counts.running > 0 ? `${counts.running} active running worker${counts.running === 1 ? '' : 's'}` : undefined,
     counts.runsToday > 0 ? `${counts.runsToday} ran today` : undefined,
     counts.upcoming > 0 ? `${counts.upcoming} upcoming` : undefined,
-    counts.scheduled > 0 ? `${counts.scheduled} scheduled automation${counts.scheduled === 1 ? '' : 's'}` : undefined,
+    counts.scheduled > 0 ? `${counts.scheduled} scheduled worker${counts.scheduled === 1 ? '' : 's'}` : undefined,
     counts.paused > 0 ? `${counts.paused} paused` : undefined,
     counts.pending > 0 ? `${counts.pending} awaiting approval` : undefined,
-    'Click to open top-down Automations view',
+    'Click to open top-down Workers view',
   ].filter(Boolean).join(' · ')
 
   const badge = (
@@ -501,7 +501,7 @@ export function AutomationSidebarSummaryBadge({
             : 'bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]',
         className,
       )}
-      aria-label={`Automations summary: ${label}`}
+      aria-label={`Workers summary: ${label}`}
       title={title}
     >
       {hasAlerts ? (
@@ -528,7 +528,7 @@ export function AutomationSidebarSummaryBadge({
           e.stopPropagation()
           onNavigate()
         }}
-        aria-label={`Automations summary: ${label}. Open top-down Automations view`}
+        aria-label={`Workers summary: ${label}. Open top-down Workers view`}
         title={title}
         className="inline-flex shrink-0 items-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] rounded-full cursor-pointer"
       >
@@ -544,7 +544,7 @@ export function AutomationSidebarSummaryBadge({
         onClick={(e) => {
           e.stopPropagation()
         }}
-        aria-label={`Automations summary: ${label}. Open top-down Automations view`}
+        aria-label={`Workers summary: ${label}. Open top-down Workers view`}
         title={title}
         className="inline-flex shrink-0 items-center focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-focus-ring)] rounded-full cursor-pointer"
       >
@@ -591,13 +591,13 @@ export function formatAutomationHeadline(counts: AutomationSummaryCounts, rootCo
     ? counts.runsToday
     : (counts.upcoming > 0 ? counts.upcoming : (counts.total || rootCount))
   if (todayCount > 0) {
-    return `${todayCount} automation${todayCount === 1 ? '' : 's'} today`
+    return `${todayCount} worker${todayCount === 1 ? '' : 's'} today`
   }
   const fallback = counts.total || rootCount
   if (fallback > 0) {
-    return `${fallback} automation${fallback === 1 ? '' : 's'}`
+    return `${fallback} worker${fallback === 1 ? '' : 's'}`
   }
-  return 'Automations'
+  return 'Workers'
 }
 
 export function AutomationSidebarCompactCardView({
@@ -649,7 +649,7 @@ export function AutomationSidebarCompactCardView({
           : isRunning
             ? `${counts.running} running`
             : `${counts.scheduled} scheduled`
-      }. Click to open top-down Automations view`}
+      }. Click to open top-down Workers view`}
       onClick={handleCardClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -726,7 +726,7 @@ export function AutomationSidebarCompactCardView({
                 e.stopPropagation()
                 onOpenAutomations()
               }}
-              title="Open top-down Automations view"
+              title="Open top-down Workers view"
               className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
             >
               View →
@@ -738,7 +738,7 @@ export function AutomationSidebarCompactCardView({
               onClick={(e) => {
                 e.stopPropagation()
               }}
-              title="Open top-down Automations view"
+              title="Open top-down Workers view"
               className="text-[9px] font-medium text-[var(--app-primary)] hover:underline"
             >
               View →
@@ -751,8 +751,8 @@ export function AutomationSidebarCompactCardView({
               e.stopPropagation()
               onExpand()
             }}
-            aria-label="Expand automations in sidebar"
-            title="Expand automations in sidebar"
+            aria-label="Expand workers in sidebar"
+            title="Expand workers in sidebar"
             className="inline-flex items-center gap-0.5 rounded px-1 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
           >
             <span>Expand</span>
@@ -859,7 +859,7 @@ export function AutomationSidebarExpandedContainerView({
                 e.stopPropagation()
                 onOpenAutomations()
               }}
-              title="Open top-down Automations view"
+              title="Open top-down Workers view"
               className="text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer shrink-0"
             >
               View →
@@ -871,7 +871,7 @@ export function AutomationSidebarExpandedContainerView({
               onClick={(e) => {
                 e.stopPropagation()
               }}
-              title="Open top-down Automations view"
+              title="Open top-down Workers view"
               className="text-[9px] font-medium text-[var(--app-primary)] hover:underline shrink-0"
             >
               View →
@@ -884,8 +884,8 @@ export function AutomationSidebarExpandedContainerView({
               e.stopPropagation()
               onCollapse()
             }}
-            aria-label="Collapse automations to summary card"
-            title="Collapse automations to summary card"
+            aria-label="Collapse workers to summary card"
+            title="Collapse workers to summary card"
             className="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer shrink-0"
           >
             <span>Collapse</span>
@@ -908,8 +908,8 @@ export function AutomationSidebarExpandedContainerView({
             e.stopPropagation()
             onCollapse()
           }}
-          aria-label="Collapse automations section"
-          title="Collapse automations section"
+          aria-label="Collapse workers section"
+          title="Collapse workers section"
           className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-text-subtle)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-subtle)] cursor-pointer"
         >
           <ChevronUp size={10} className="shrink-0" aria-hidden="true" />
@@ -919,10 +919,10 @@ export function AutomationSidebarExpandedContainerView({
           <button
             type="button"
             onClick={onOpenAutomations}
-            title="Open top-down Automations view"
+            title="Open top-down Workers view"
             className="shrink-0 text-[9px] font-medium text-[var(--app-primary)] hover:underline cursor-pointer truncate"
           >
-            All automations ({rootCount}) →
+            All workers ({rootCount}) →
           </button>
         ) : null}
       </div>

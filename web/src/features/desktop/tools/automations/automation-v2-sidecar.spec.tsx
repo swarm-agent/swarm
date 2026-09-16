@@ -73,7 +73,7 @@ test('AutomationV2Sidecar renders plan-like sidebar ready to chat by default', (
 
   // Verify session switcher and "+ New" button in header
   assert.match(markup, /data-testid="automation-sidecar-session-switcher"/)
-  assert.match(markup, /aria-label="Prior automation sessions"/)
+  assert.match(markup, /aria-label="Prior worker sessions"/)
   assert.match(markup, /Hourly Health Check/)
   assert.match(markup, />New<\/span>/)
 })
@@ -90,7 +90,7 @@ test('AutomationV2Sidecar handles direct session selection cleanly', () => {
   assert.match(markup, /data-testid="automation-v2-sidecar-container"/)
   assert.match(markup, /data-testid="desktop-plan-composer"/)
   assert.match(markup, /data-testid="desktop-plan-agent-scroller"/)
-  assert.match(markup, /Automations Assistant/)
+  assert.match(markup, /Worker Agent/)
 })
 
 test('AutomationV2Workspace integrates full-height sidebar and eliminates halfway-down inline sidecar', () => {
@@ -144,7 +144,7 @@ test('AutomationV2Workspace integrates full-height sidebar and eliminates halfwa
   )
 
   // Verify full-height layout with aside containing AutomationV2Sidecar
-  assert.match(markup, /aria-label="Automations Assistant"/)
+  assert.match(markup, /aria-label="Worker Agent"/)
   assert.match(markup, /data-testid="automation-v2-sidecar-container"/)
   assert.match(markup, /data-testid="desktop-plan-composer"/)
 
@@ -273,16 +273,16 @@ test('AutomationV2Workspace renders flat overview of all workspace automations a
   assert.match(markup, /Paused[\s\S]*?>1<\/div>/)
 
   // Verify Discuss with Swarm action in header and on cards
-  assert.match(markup, /title="Discuss all automations with the assistant"/)
+  assert.match(markup, /title="Discuss all workers with the assistant"/)
   assert.match(markup, />Discuss with Swarm<\/span>/)
 
   // Verify Archive and Delete buttons on cards and Archived tab
-  assert.match(markup, /title="Archive automation"/)
-  assert.match(markup, /title="Permanently delete automation"/)
+  assert.match(markup, /title="Archive worker"/)
+  assert.match(markup, /title="Permanently delete worker"/)
   assert.match(markup, />Archived \(0\)<\/button>/)
 
   // Verify Consider adding new automations section with starter templates
-  assert.match(markup, /aria-label="Consider adding new automations"/)
+  assert.match(markup, /aria-label="Deploy a Worker"/)
   assert.match(markup, /Repository Health Check/)
   assert.match(markup, /Test &amp; Build Sentinel|Test & Build Sentinel/)
   assert.match(markup, />Propose with Swarm →<\/span>/)
@@ -331,14 +331,14 @@ test('AutomationV2Sidecar supports switching to workspace-level discussion of al
     />
   )
 
-  // When no single automation is selected, title defaults to Automations Assistant
-  assert.match(markup, /Automations Assistant/)
-  // Session switcher includes All workspace automations and records list
-  assert.match(markup, /All workspace automations/)
+  // When no single automation is selected, title defaults to Worker Agent
+  assert.match(markup, /Worker Agent/)
+  // Session switcher includes All workspace workers and records list
+  assert.match(markup, /All workspace workers/)
   assert.match(markup, /Hourly Health Check/)
   assert.match(markup, /Daily Commit Digest/)
   assert.match(markup, />New<\/span>/)
-  assert.match(markup, /placeholder="Talk to your automations"/, 'sidecar composer placeholder should be Talk to your automations in workspace overview')
+  assert.match(markup, /placeholder="Talk to your workers"/, 'sidecar composer placeholder should be Talk to your workers in workspace overview')
 })
 
 test('computeUpcomingAutomationEvents and formatRelativeTime compute future slots and countdowns', () => {
@@ -541,10 +541,10 @@ test('AutomationV2Sidecar renders recent automation chats with real titles and N
 
   // Verify dropdown includes New chat option
   assert.match(markup, /✨ New chat/)
-  // Verify dropdown includes All workspace automations
-  assert.match(markup, /All workspace automations/)
+  // Verify dropdown includes All workspace workers
+  assert.match(markup, /All workspace workers/)
   // Verify composer is mounted and ready to chat
   assert.match(markup, /data-testid="desktop-plan-composer"/)
-  assert.match(markup, /placeholder="Talk to your automations"/)
+  assert.match(markup, /placeholder="Talk to your workers"/)
 })
 

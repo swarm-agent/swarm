@@ -62,7 +62,7 @@ export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
     title: 'Repository Health Check',
     cadence: 'Daily at 09:00 UTC',
     description: 'Inspect git status, branch tracking, and report routine_clean or alert on uncommitted drift.',
-    prompt: 'Help me create an automation: daily repository health check at 09:00 UTC that inspects git status and uncommitted drift without modifying files.',
+    prompt: 'Help me deploy a worker: daily repository health check at 09:00 UTC that inspects git status and uncommitted drift without modifying files.',
     icon: 'git',
   },
   {
@@ -70,7 +70,7 @@ export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
     title: 'Test & Build Sentinel',
     cadence: 'Every 2 hours',
     description: 'Run fast critical test suites regularly and alert immediately if any tests fail.',
-    prompt: 'Help me create an hourly automation that runs fast tests and reports routine_clean when passing or attention_alert when failing.',
+    prompt: 'Help me deploy a worker that runs fast tests every 2 hours and reports routine_clean when passing or attention_alert when failing.',
     icon: 'test',
   },
   {
@@ -78,7 +78,7 @@ export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
     title: 'Daily Commit & PR Digest',
     cadence: 'Daily at 18:00 UTC',
     description: 'Summarize recent commits, PRs, and changes into an executive deliverable markdown report.',
-    prompt: 'Help me set up an automation at 18:00 UTC daily to summarize recent commits and PRs into a deliverable markdown report.',
+    prompt: 'Help me deploy a worker at 18:00 UTC daily to summarize recent commits and PRs into a deliverable markdown report.',
     icon: 'digest',
   },
   {
@@ -86,7 +86,7 @@ export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
     title: 'Dependency Security Audit',
     cadence: 'Weekly (Mondays at 09:00 UTC)',
     description: 'Audit project dependencies for security advisories and outdated packages.',
-    prompt: 'Propose a weekly automation every Monday at 09:00 UTC to audit dependencies for security advisories and outdated versions.',
+    prompt: 'Propose a weekly worker every Monday at 09:00 UTC to audit dependencies for security advisories and outdated versions.',
     icon: 'security',
   },
   {
@@ -94,7 +94,7 @@ export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
     title: 'Worktree Maintenance',
     cadence: 'Daily at 02:00 UTC',
     description: 'Check for dangling worktrees, stale temporary branches, and report cleanup status cleanly.',
-    prompt: 'Help me create a daily automation to inspect stale worktrees and temporary branches, reporting status cleanly.',
+    prompt: 'Help me deploy a daily worker to inspect stale worktrees and temporary branches, reporting status cleanly.',
     icon: 'clean',
   },
   {
@@ -102,7 +102,7 @@ export const AUTOMATION_STARTER_TEMPLATES: AutomationStarterTemplate[] = [
     title: 'Custom Recurring Routine',
     cadence: 'Flexible interval / cron',
     description: 'Describe any custom workflow, validation script, or recurring task to the assistant.',
-    prompt: 'I want to create a new automation. Help me design the schedule, tasks, and acceptance criteria.',
+    prompt: 'I want to deploy a new worker. Help me design the schedule, tasks, and acceptance criteria.',
     icon: 'custom',
   },
 ]
@@ -364,7 +364,7 @@ export function AutomationUpcomingScheduleChart({
         <div className="flex items-center gap-2.5 text-xs text-[var(--app-text-muted)]">
           <Clock3 size={15} className="text-[var(--app-text-subtle)] shrink-0" />
           <p>
-            No active schedules running. Enable a paused automation or create a new one to view upcoming schedule continuity.
+            No active schedules running. Deploy a worker or configure a new schedule to view upcoming schedule continuity.
           </p>
         </div>
       </section>
@@ -386,7 +386,7 @@ export function AutomationUpcomingScheduleChart({
           <div>
             <h3 className="text-sm font-semibold text-[var(--app-text)]">Upcoming Schedule &amp; Continuity</h3>
             <p className="text-[11px] text-[var(--app-text-muted)]">
-              Scheduled timeline across active workspace automations · {timezone}
+              Scheduled timeline across active workspace workers · {timezone}
             </p>
           </div>
         </div>
@@ -483,7 +483,7 @@ export function AutomationUpcomingScheduleChart({
                       type="button"
                       className="text-[var(--app-primary)] hover:underline font-medium cursor-pointer"
                       onClick={() => onChat?.(ev.sessionId)}
-                      title="Discuss this automation with Swarm"
+                      title="Discuss this worker with Swarm"
                     >
                       Discuss
                     </button>
@@ -638,7 +638,7 @@ export function PendingAutomationCard({
           </span>
         </div>
         <div className="text-xs font-medium text-[var(--app-warning)]">
-          <span>Awaiting acceptance</span>
+          <span>Awaiting deployment</span>
         </div>
       </div>
 
@@ -657,7 +657,7 @@ export function PendingAutomationCard({
         >
           <div className="min-w-0">
             <span className="block truncate text-base font-semibold">{proposal.document.title}</span>
-            <span className="sr-only"> · Pending · Automation proposal · revision {proposal.revision}</span>
+            <span className="sr-only"> · Pending · Worker proposal · revision {proposal.revision}</span>
           </div>
           <div className="flex shrink-0 items-center gap-1 text-xs text-[var(--app-text-muted)]">
             <span className="hidden sm:inline">{isExpanded ? 'Hide details' : 'View details'}</span>
@@ -693,18 +693,18 @@ export function PendingAutomationCard({
 
       {accepted && (
         <div className="mt-3 rounded-xl border border-[var(--app-success-border,rgba(16,185,129,0.3))] bg-[var(--app-success-bg,rgba(16,185,129,0.12))] p-3 text-xs text-[var(--app-success)]">
-          <p className="font-semibold">Automation accepted and activated!</p>
+          <p className="font-semibold">Worker accepted and deployed!</p>
           <p className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">
-            Schedule is now active. First execution will follow the schedule.
+            Worker is now deployed. First execution will follow the schedule.
           </p>
         </div>
       )}
 
       {declined && (
         <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-hover)] p-3 text-xs text-[var(--app-text-muted)]" data-testid="automation-declined-message">
-          <p className="font-semibold text-[var(--app-text)]">Automation proposal declined</p>
+          <p className="font-semibold text-[var(--app-text)]">Worker proposal declined</p>
           <p className="mt-0.5 text-[11px] text-[var(--app-text-muted)]">
-            This pending automation has been declined and will not be scheduled.
+            This pending worker has been declined and will not be scheduled.
           </p>
         </div>
       )}
@@ -717,10 +717,10 @@ export function PendingAutomationCard({
             variant="outline"
             className="h-8 gap-1.5 rounded-xl text-xs"
             onClick={() => onAskForChanges(proposal.session_id)}
-            title="Ask the automation agent to make adjustments to this plan"
+            title="Ask the worker agent to make adjustments to this plan"
           >
             <MessageSquare size={13} className="text-[var(--app-primary)]" />
-            <span>Ask the automation agent for any changes</span>
+            <span>Ask the worker agent for any changes</span>
           </Button>
           {!accepted && !declined && (
             <>
@@ -730,7 +730,7 @@ export function PendingAutomationCard({
                 className="h-8 gap-1.5 rounded-xl text-xs text-[var(--app-text-muted)] hover:border-[var(--app-danger-border,rgba(239,68,68,0.4))] hover:bg-[var(--app-danger-bg,rgba(239,68,68,0.08))] hover:text-[var(--app-danger)]"
                 disabled={declineBusy || acceptBusy}
                 onClick={() => void handleDecline()}
-                title="Decline this automation proposal"
+                title="Decline this worker proposal"
                 data-testid="decline-automation-button"
               >
                 {declineBusy ? <LoaderCircle size={13} className="animate-spin" /> : <XCircle size={13} />}
@@ -741,11 +741,11 @@ export function PendingAutomationCard({
                 className="h-8 gap-1.5 rounded-xl text-xs bg-[var(--app-primary)] text-white hover:bg-[var(--app-primary)]/90"
                 disabled={acceptBusy || declineBusy}
                 onClick={() => void handleAccept()}
-                title="Accept and activate this automation"
+                title="Deploy this worker"
                 data-testid="accept-automation-button"
               >
                 {acceptBusy ? <LoaderCircle size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
-                <span>Accept automation</span>
+                <span>Deploy Worker</span>
               </Button>
             </>
           )}
@@ -761,7 +761,7 @@ export function PendingAutomationCard({
                 }
               }}
               className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-primary-border)] hover:text-[var(--app-primary)] transition-colors"
-              title="Open automation session"
+              title="Open worker session"
             >
               <span>Open session</span>
               <ExternalLink size={11} className="opacity-70" />
@@ -1102,22 +1102,22 @@ export function AutomationV2Workspace({
   const archivedCount = useMemo(() => archivedRecords.length, [archivedRecords])
 
   const headingTitle = statusFilter === 'pending'
-    ? 'Pending automation proposals'
+    ? 'Pending worker proposals'
     : statusFilter === 'archived'
-      ? 'Archived automations'
+      ? 'Archived workers'
       : statusFilter === 'enabled'
-        ? 'Active recurring plans'
+        ? 'Active deployed workers'
         : statusFilter === 'paused'
-          ? 'Paused automations'
+          ? 'Paused workers'
           : pendingCount > 0
-            ? 'Workspace automations'
-            : 'Accepted recurring plans'
+            ? 'Workspace workers'
+            : 'Deployed workers'
 
   const headingSubtitle = statusFilter === 'pending'
-    ? 'Review and accept pending automation proposals, or ask the automation agent for changes.'
+    ? 'Review and deploy pending worker proposals, or ask the worker agent for changes.'
     : statusFilter === 'archived'
-      ? 'Paused and archived automations for this workspace.'
-      : 'Flat overview of all active and scheduled workspace automations.'
+      ? 'Paused and archived workers for this workspace.'
+      : 'Flat overview of all deployed and scheduled workspace workers.'
 
   const hasAnyItems = (filteredRecords.length + filteredPendingProposals.length) > 0
 
@@ -1130,7 +1130,7 @@ export function AutomationV2Workspace({
       <header className="flex min-h-[60px] flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] px-5 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <RefreshCcw size={16} className="text-[var(--app-primary)]" />
-          <h1 className="font-semibold">Automations</h1>
+          <h1 className="font-semibold">Workers</h1>
           <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span>
         </div>
         <div className="flex items-center gap-2">
@@ -1139,14 +1139,14 @@ export function AutomationV2Workspace({
             variant="outline"
             className="gap-1.5 text-xs rounded-xl"
             onClick={handleDiscussAll}
-            title="Discuss all automations with the assistant"
+            title="Discuss all workers with the assistant"
           >
             <MessageSquare size={13} className="text-[var(--app-primary)]" />
             <span>Discuss with Swarm</span>
           </Button>
           <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
             <Plus size={15} />
-            Add automation
+            Deploy a Worker
           </Button>
         </div>
       </header>
@@ -1179,14 +1179,14 @@ export function AutomationV2Workspace({
               }}
             >
               <RefreshCcw size={13} />
-              Refresh automations
+              Refresh workers
             </Button>
           </div>
 
           {/* Status Messages */}
           {(!page || page.loading || page.stale) && (
             <p role="status" className="text-xs text-[var(--app-text-muted)]">
-              {page?.stale && page.data ? 'Updating automation state…' : 'Loading automations…'}
+              {page?.stale && page.data ? 'Updating worker state…' : 'Loading workers…'}
             </p>
           )}
           {page?.error && <p role="alert" className="text-xs text-[var(--app-danger)]">{page.error}</p>}
@@ -1246,7 +1246,7 @@ export function AutomationV2Workspace({
                 <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
                 <input
                   type="text"
-                  placeholder="Filter automations by title or goal…"
+                  placeholder="Filter workers by title or goal…"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="h-8 w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] pl-8 pr-3 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)]"
@@ -1440,7 +1440,7 @@ export function AutomationV2Workspace({
                     >
                       <div className="min-w-0">
                         <span className="block truncate text-base font-semibold">{record.document.title}</span>
-                        <span className="sr-only"> · {statusText} · Automation · revision {record.revision}</span>
+                        <span className="sr-only"> · {statusText} · Worker · revision {record.revision}</span>
                       </div>
                       <div className="flex shrink-0 items-center gap-1 text-xs text-[var(--app-text-muted)]">
                         <span className="hidden sm:inline">{isExpanded ? 'Hide details' : 'View details'}</span>
@@ -1488,7 +1488,7 @@ export function AutomationV2Workspace({
                             className="h-8 gap-1.5 rounded-xl text-xs text-[var(--app-primary)] border-[var(--app-primary-border)] hover:bg-[var(--app-primary-soft)]"
                             disabled={actionLoadingId === record.session_id}
                             onClick={() => void handleUnarchiveRecord(record)}
-                            title="Unarchive automation"
+                            title="Unarchive worker"
                           >
                             {actionLoadingId === record.session_id ? <LoaderCircle size={13} className="animate-spin" /> : <ArchiveRestore size={13} />}
                             <span>Unarchive</span>
@@ -1498,7 +1498,7 @@ export function AutomationV2Workspace({
                             variant="ghost"
                             className="h-8 gap-1 rounded-xl text-xs text-[var(--app-text-muted)] hover:text-[var(--app-danger)]"
                             onClick={() => handleDeleteRecord(record)}
-                            title="Permanently delete automation"
+                            title="Permanently delete worker"
                           >
                             <Trash2 size={13} />
                             <span>Delete</span>
@@ -1512,10 +1512,10 @@ export function AutomationV2Workspace({
                               variant="outline"
                               className="h-8 gap-1.5 rounded-xl text-xs text-[var(--app-warning)] border-[var(--app-warning-border)] hover:bg-[var(--app-warning-soft)]"
                               onClick={() => handleAskForChanges(record.session_id)}
-                              title="Ask the automation agent to make adjustments to this revision"
+                              title="Ask the worker agent to make adjustments to this revision"
                             >
                               <MessageSquare size={13} />
-                              <span>Ask the automation agent for any changes</span>
+                              <span>Ask the worker agent for any changes</span>
                             </Button>
                           ) : (
                             <Button
@@ -1523,7 +1523,7 @@ export function AutomationV2Workspace({
                               variant="outline"
                               className="h-8 gap-1.5 rounded-xl text-xs"
                               onClick={() => handleChatWithAutomation(record.session_id)}
-                              title="Discuss or optimize this automation with Swarm"
+                              title="Discuss or optimize this worker with Swarm"
                             >
                               <MessageSquare size={13} />
                               <span>Discuss with Swarm</span>
@@ -1544,7 +1544,7 @@ export function AutomationV2Workspace({
                             className="h-8 gap-1 rounded-xl text-xs text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
                             disabled={actionLoadingId === record.session_id}
                             onClick={() => void handleArchiveRecord(record)}
-                            title="Archive automation"
+                            title="Archive worker"
                           >
                             {actionLoadingId === record.session_id ? <LoaderCircle size={13} className="animate-spin" /> : <Archive size={13} />}
                             <span>Archive</span>
@@ -1554,7 +1554,7 @@ export function AutomationV2Workspace({
                             variant="ghost"
                             className="h-8 gap-1 rounded-xl text-xs text-[var(--app-text-muted)] hover:text-[var(--app-danger)]"
                             onClick={() => handleDeleteRecord(record)}
-                            title="Permanently delete automation"
+                            title="Permanently delete worker"
                           >
                             <Trash2 size={13} />
                             <span>Delete</span>
@@ -1573,7 +1573,7 @@ export function AutomationV2Workspace({
                             }
                           }}
                           className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-hover)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)] hover:border-[var(--app-primary-border)] hover:text-[var(--app-primary)] transition-colors"
-                          title="Open dedicated automation session for full run history and chat"
+                          title="Open dedicated worker session for full run history and chat"
                           data-testid="open-automation-session-link"
                         >
                           <span>Open session</span>
@@ -1636,22 +1636,22 @@ export function AutomationV2Workspace({
               </div>
               <h3 className="text-base font-semibold text-[var(--app-text)]">
                 {isArchivedTab
-                  ? 'No archived automations'
+                  ? 'No archived workers'
                   : statusFilter === 'pending'
-                    ? 'No pending automation proposals'
-                    : 'No accepted automations on this page'}
+                    ? 'No pending worker proposals'
+                    : 'No deployed workers on this page'}
               </h3>
               <p className="mx-auto max-w-md text-xs text-[var(--app-text-muted)] leading-relaxed">
                 {isArchivedTab
-                  ? 'Archived automations will appear here. Archiving an automation pauses its schedule and moves it out of your active workspace views.'
+                  ? 'Archived workers will appear here. Archiving a worker pauses its schedule and moves it out of your active workspace views.'
                   : statusFilter === 'pending'
-                    ? 'No automation proposals are currently awaiting review. Ask the assistant in the sidebar to design one, or pick a starter template below.'
-                    : 'No accepted automations on this page. Start a conversation to propose one, or pick a starter template below.'}
+                    ? 'No worker proposals are currently awaiting review. Ask the Worker Agent in the sidebar to design one, or pick a starter template below.'
+                    : 'No deployed workers on this page. Start a conversation to propose one, or pick a starter template below.'}
               </p>
               {!isArchivedTab && (
                 <Button size="sm" onClick={() => setCreateRequest((n) => n + 1)}>
                   <Plus size={15} />
-                  Add automation
+                  Deploy a Worker
                 </Button>
               )}
             </div>
@@ -1671,31 +1671,31 @@ export function AutomationV2Workspace({
                 disabled={page.loading || page.stale}
                 onClick={() => setCursor(page.data?.next_cursor)}
               >
-                More automations
+                More workers
               </Button>
             )}
           </div>
 
           {/* Consider Adding New Automations Section */}
-          <section aria-label="Consider adding new automations" className="mt-8 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/70 p-5 sm:p-6 space-y-4">
+          <section aria-label="Deploy a Worker" className="mt-8 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)]/70 p-5 sm:p-6 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
                   <Sparkles size={16} className="text-[var(--app-primary)]" />
-                  <h2 className="text-sm font-semibold text-[var(--app-text)]">Consider adding new automations</h2>
+                  <h2 className="text-sm font-semibold text-[var(--app-text)]">Deploy a Worker</h2>
                 </div>
                 <p className="mt-1 text-xs text-[var(--app-text-muted)]">
-                  Choose an automation routine below to draft with the assistant, or ask Swarm for any custom recurring plan.
+                  Choose a worker routine below to draft with the assistant, or ask Swarm for any custom deployed worker.
                 </p>
               </div>
               <Button
                 size="sm"
                 variant="outline"
                 className="gap-1.5 text-xs rounded-xl"
-                onClick={() => handleUseTemplate('Help me design a new custom recurring automation for this workspace.')}
+                onClick={() => handleUseTemplate('Help me design and deploy a custom worker for this workspace.')}
               >
                 <Plus size={13} />
-                <span>Custom automation</span>
+                <span>Custom worker</span>
               </Button>
             </div>
 
@@ -1736,7 +1736,7 @@ export function AutomationV2Workspace({
 
         {/* Full-Height Right Aside: Automations Assistant */}
         <aside
-          aria-label="Automations Assistant"
+          aria-label="Worker Agent"
           className="flex h-full w-full min-h-[420px] flex-col border-t border-[var(--app-border)] bg-[var(--app-surface)] xl:w-[400px] xl:max-w-[400px] xl:shrink-0 xl:border-t-0 xl:border-l"
         >
           <AutomationV2Sidecar
@@ -1773,11 +1773,11 @@ export function AutomationV2Workspace({
             <div className="flex items-center gap-3 text-[var(--app-danger)]">
               <Trash2 size={20} />
               <h3 id="delete-automation-title" className="text-base font-semibold text-[var(--app-text)]">
-                Delete automation?
+                Delete worker?
               </h3>
             </div>
             <p className="text-xs leading-relaxed text-[var(--app-text-muted)]">
-              Are you sure you want to delete <strong className="text-[var(--app-text)]">“{deleteConfirmRecord.document.title}”</strong>? This will cancel all future recurring runs and permanently delete the automation session.
+              Are you sure you want to delete <strong className="text-[var(--app-text)]">“{deleteConfirmRecord.document.title}”</strong>? This will cancel all future recurring runs and permanently delete the worker session.
             </p>
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="outline" size="sm" disabled={deleteBusy} onClick={() => setDeleteConfirmRecord(null)}>
@@ -1790,7 +1790,7 @@ export function AutomationV2Workspace({
                 onClick={() => void confirmDeleteRecord()}
               >
                 {deleteBusy ? <LoaderCircle size={13} className="animate-spin" /> : null}
-                <span>{deleteBusy ? 'Deleting…' : 'Delete automation'}</span>
+                <span>{deleteBusy ? 'Deleting…' : 'Delete worker'}</span>
               </Button>
             </div>
           </div>
@@ -1804,7 +1804,7 @@ export function AutomationV2ScheduleHandoff({ workspaceId, sessionId }: { worksp
   const page = useAutomationV2Page({ action: 'progress', workspace_id: workspaceId, session_id: sessionId, timezone: 'UTC' })
   const record = page?.data?.progress?.record
   if (!record) return null
-  return <section aria-label="Automation handoff" className="m-4 space-y-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">{record.cancelled ? 'Automation cancelled' : record.enabled ? 'Automation scheduled' : 'Automation paused'}</h3><p className="text-sm">Accepted revision {record.revision}. Acceptance does not start an immediate run.</p><p className="text-sm">{record.enabled && !record.cancelled && record.next_due_at ? `Next scheduled time: ${new Date(record.next_due_at).toISOString()} (UTC)` : 'No active next scheduled time.'}</p><p className="text-xs text-[var(--app-text-muted)]">{page?.stale || page?.loading ? 'Refreshing observed schedule… ' : ''}Scheduled is not admitted or running. Automation details shows the schedule, expiration and observed work.</p></section>
+  return <section aria-label="Worker handoff" className="m-4 space-y-2 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">{record.cancelled ? 'Worker cancelled' : record.enabled ? 'Worker deployed' : 'Worker paused'}</h3><p className="text-sm">Deployed revision {record.revision}. Deployment does not start an immediate run.</p><p className="text-sm">{record.enabled && !record.cancelled && record.next_due_at ? `Next scheduled time: ${new Date(record.next_due_at).toISOString()} (UTC)` : 'No active next scheduled time.'}</p><p className="text-xs text-[var(--app-text-muted)]">{page?.stale || page?.loading ? 'Refreshing observed schedule… ' : ''}Deployed is not admitted or running. Worker details shows the schedule, expiration and observed work.</p></section>
 }
 export function AutomationV2Detail({
   workspaceId,
@@ -1868,21 +1868,21 @@ export function AutomationV2Detail({
     }
   }, [progress?.occurrences, timezone])
 
-  return <section aria-label="Automation details" className="min-w-0 rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] font-sans text-xs shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)] [overflow-wrap:anywhere]">
+  return <section aria-label="Worker details" className="min-w-0 rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] font-sans text-xs shadow-[0_1px_2px_color-mix(in_srgb,var(--app-text)_5%,transparent)] [overflow-wrap:anywhere]">
     <div className="space-y-2.5 p-3 sm:p-4">
     <header className="border-b border-[var(--app-border)]/60 pb-2">
-      <div className="flex items-center justify-between gap-2"><span className={`${eyebrow} text-[var(--app-primary)]`}>Automation</span><Button size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label="Refresh progress" title="Refresh progress" disabled={busy || page?.loading} onClick={() => void desktopAutomationV2.refresh(input)}><RefreshCcw size={12} /></Button></div>
-      <h2 className="mt-1 line-clamp-2 break-words text-sm font-semibold leading-5" title={record?.document.title}>{record?.document.title ?? 'Loading automation…'}</h2>
-      <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{record ? `${record.document.checkpoints.length} ${record.document.checkpoints.length === 1 ? 'step' : 'steps'} · Recurring plan` : 'Loading schedule'}</p>
+      <div className="flex items-center justify-between gap-2"><span className={`${eyebrow} text-[var(--app-primary)]`}>Worker</span><Button size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label="Refresh progress" title="Refresh progress" disabled={busy || page?.loading} onClick={() => void desktopAutomationV2.refresh(input)}><RefreshCcw size={12} /></Button></div>
+      <h2 className="mt-1 line-clamp-2 break-words text-sm font-semibold leading-5" title={record?.document.title}>{record?.document.title ?? 'Loading worker…'}</h2>
+      <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{record ? `${record.document.checkpoints.length} ${record.document.checkpoints.length === 1 ? 'step' : 'steps'} · Deployed worker` : 'Loading schedule'}</p>
     </header>
     {(page?.loading || page?.stale) && <p role="status" className="text-[11px] text-[var(--app-text-muted)]">Updating schedule…</p>}{(error || page?.error) && <p role="alert" className="text-[var(--app-danger)]">{error || page?.error}</p>}
-    {record && schedule && <section aria-label="Automation schedule handoff">
+    {record && schedule && <section aria-label="Worker schedule handoff">
       <div className="flex items-center justify-between gap-2"><h3 className={eyebrow}>Schedule</h3><span className={`text-[10px] font-semibold uppercase tracking-wider ${record.enabled && !record.cancelled ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-muted)]'}`}>{status}</span></div>
       <div className="mt-1.5 rounded-xl border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-3 py-2"><p className="font-mono text-[13px] font-medium">{scheduleLabel(schedule)}</p><p className="mt-0.5 text-[11px] text-[var(--app-primary)]">{scheduleFrequency(schedule)}</p>{schedule.timezone && <p className="mt-0.5 text-[10px] text-[var(--app-text-muted)]">Schedule timezone · {schedule.timezone}</p>}</div>
       <div className="mt-2 rounded-xl border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] p-2.5"><h3 className={eyebrow}>Next run</h3><p className="mt-1 font-medium">{record.enabled && !record.cancelled && record.next_due_at ? time(record.next_due_at) : 'No upcoming run'}</p><p className="mt-0.5 text-[10px] text-[var(--app-text-subtle)]">{timezone} · Scheduled time, not guaranteed start</p></div>
     </section>}
     {record && <>
-      <div className="grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => setEditing(v => !v)} aria-expanded={editing}>Edit automation</Button><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => void control(record.enabled ? 'pause' : 'resume')}>{record.enabled ? 'Pause schedule' : 'Resume schedule'}</Button></div>
+      <div className="grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => setEditing(v => !v)} aria-expanded={editing}>Edit worker</Button><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => void control(record.enabled ? 'pause' : 'resume')}>{record.enabled ? 'Pause schedule' : 'Resume schedule'}</Button></div>
       <p className="text-[11px] leading-4 text-[var(--app-text-subtle)]">{record.authorization.kind === 'indefinite' ? 'Repeats until stopped.' : `Ends ${time(record.authorization.expires_at!)}.`} Pausing leaves admitted work unchanged.</p>
       {editing && <AutomationV2Edit record={record} />}
       <details className="rounded-xl bg-[var(--app-bg-alt)] p-2.5"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>

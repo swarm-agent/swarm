@@ -224,18 +224,18 @@ export function AutomationV2PlanReview({
       ? 'silent_maintenance'
       : null
 
-  return <section aria-label="Automation plan review" className={containerClass} data-testid="automation-v2-plan-review">
+  return <section aria-label="Worker plan review" className={containerClass} data-testid="automation-v2-plan-review">
     <header>
       <div className="flex items-center gap-2">
         <span className="rounded-full border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-xs font-semibold text-[var(--app-primary)]">
-          Recurring Automation Plan
+          Recurring Worker Plan
         </span>
         <span className="text-xs text-[var(--app-text-muted)]">
           Workspace: {proposal.workspace_id}
         </span>
       </div>
       <h2 className="mt-2 break-words text-xl font-bold text-[var(--app-text)]">{draft.title}</h2>
-      <p className="mt-1 text-xs text-[var(--app-text-muted)]">Choose when this runs, review what Swarm will do, or ask Swarm in the AI sidebar to adjust instructions.</p>
+      <p className="mt-1 text-xs text-[var(--app-text-muted)]">Choose when this runs, review what Swarm will do, or ask the Worker Agent in the sidechat to adjust instructions.</p>
     </header>
 
     <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
@@ -465,7 +465,7 @@ export function AutomationV2PlanReview({
     {dirty && <p role="status" className="rounded-lg bg-[var(--app-warning-soft)] p-3 text-sm text-[var(--app-warning)]">Your manual changes aren’t active yet. Save the schedule, then accept it.</p>}
     {stale && <p role="alert" className="rounded-lg bg-[var(--app-warning-soft)] p-3 text-sm text-[var(--app-warning)]">A newer proposal arrived. Your draft was not applied. <Button size="sm" className="ml-2" onClick={() => { setReviewed(proposal); setDraft(proposal.document); setError('') }}>Discard draft and load current review</Button></p>}
     {(error || invalid) && <p role="alert" className="break-words rounded-lg bg-[var(--app-danger-soft)] p-3 text-sm text-[var(--app-danger)]">{error || invalid}</p>}
-    {accepted && <section aria-label="Automation handoff" role="status" className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4"><h3 className="font-semibold text-[var(--app-primary)]">Automation accepted · scheduled</h3><p className="mt-1 text-sm text-[var(--app-text)]">Activated revision {accepted.revision}. Acceptance did not start a run.</p><p className="mt-1 text-sm text-[var(--app-text-muted)]">{accepted.next_due_at ? `Next scheduled time: ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long', timeZone: accepted.document.automation_v2.schedule.timezone || 'UTC' }).format(accepted.next_due_at)}` : 'No next scheduled time is available.'}</p><p className="mt-2 text-xs text-[var(--app-text-muted)]">{accepted.document.automation_v2.schedule.kind === 'interval' ? 'Elapsed timer anchored to this acceptance; displayed in UTC.' : `Wall-clock schedule in ${accepted.document.automation_v2.schedule.timezone}.`} Scheduled is not admitted or running. Open Automation details for observed work.</p></section>}
+    {accepted && <section aria-label="Worker handoff" role="status" className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-4"><h3 className="font-semibold text-[var(--app-primary)]">Worker deployed · scheduled</h3><p className="mt-1 text-sm text-[var(--app-text)]">Activated revision {accepted.revision}. Deployment did not start a run.</p><p className="mt-1 text-sm text-[var(--app-text-muted)]">{accepted.next_due_at ? `Next scheduled time: ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long', timeZone: accepted.document.automation_v2.schedule.timezone || 'UTC' }).format(accepted.next_due_at)}` : 'No next scheduled time is available.'}</p><p className="mt-2 text-xs text-[var(--app-text-muted)]">{accepted.document.automation_v2.schedule.kind === 'interval' ? 'Elapsed timer anchored to this deployment; displayed in UTC.' : `Wall-clock schedule in ${accepted.document.automation_v2.schedule.timezone}.`} Scheduled is not admitted or running. Open Worker details for observed work.</p></section>}
 
     <footer className={modalMode ? "sticky bottom-0 -mx-4 -mb-4 sm:-mx-6 sm:-mb-6 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] bg-[var(--app-surface)]/95 backdrop-blur-sm p-4 sm:px-6" : "flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-4"}>
       {modalMode ? (
@@ -479,10 +479,10 @@ export function AutomationV2PlanReview({
           disabled={blocked}
           onClick={onAskForChanges}
           data-testid="ask-for-changes-button"
-          title="Ask the automation agent to adjust instructions or schedule"
+          title="Ask the worker agent to adjust instructions or schedule"
         >
           <MessageSquare size={13} className="text-[var(--app-primary)]" />
-          <span>{askForChangesLabel || 'Ask the automation agent for any changes'}</span>
+          <span>{askForChangesLabel || 'Ask the worker agent for any changes'}</span>
         </Button>
       ) : <div />}
       <div className="flex flex-wrap items-center gap-2">
@@ -498,7 +498,7 @@ export function AutomationV2PlanReview({
             {rejectLabel || 'Reject'}
           </Button>
         )}
-        {dirty ? <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('review')}>{busy ? 'Saving changes…' : 'Save schedule changes'}</Button> : <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('accept')}>{accepted ? 'Automation accepted' : rejected ? (rejectLabel?.toLowerCase().includes('decline') ? 'Proposal declined' : 'Proposal rejected') : busy ? 'Accepting…' : 'Accept automation'}</Button>}
+        {dirty ? <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('review')}>{busy ? 'Saving changes…' : 'Save schedule changes'}</Button> : <Button size="sm" className="h-8 rounded-xl text-xs" disabled={blocked || !!invalid} onClick={() => void run('accept')}>{accepted ? 'Worker deployed' : rejected ? (rejectLabel?.toLowerCase().includes('decline') ? 'Proposal declined' : 'Proposal rejected') : busy ? 'Deploying…' : 'Deploy Worker'}</Button>}
       </div>
     </footer>
   </section>

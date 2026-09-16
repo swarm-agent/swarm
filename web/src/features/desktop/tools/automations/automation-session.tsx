@@ -12,12 +12,12 @@ export function AutomationSidebar({ workspaceId, workspaceSlug }: { workspaceId:
   const [cursor, setCursor] = useState<string>()
   const input = { workspace_id: workspaceId, action: 'list' as const, limit: 20, cursor }
   const page = usePage(input)
-  return <section aria-label="Automation" className="max-h-64 shrink-0 overflow-y-auto border-b border-[var(--app-border)] p-3 text-sm">
-    <h2 className="font-semibold">Automation</h2>
-    <Link to="/$workspaceSlug/automations" params={{ workspaceSlug }}>Manage automations</Link>
+  return <section aria-label="Worker" className="max-h-64 shrink-0 overflow-y-auto border-b border-[var(--app-border)] p-3 text-sm">
+    <h2 className="font-semibold">Worker</h2>
+    <Link to="/$workspaceSlug/automations" params={{ workspaceSlug }}>Manage workers</Link>
     {page?.data?.records?.filter(row => row.definition?.session_id).map(row => <Link key={row.id} className="my-2 block break-words" to="/$workspaceSlug/$sessionId" params={{ workspaceSlug, sessionId: row.definition!.session_id! }}>{row.definition!.name}<span className="block text-xs">{row.definition!.enabled ? 'Enabled' : 'Paused · execution not enabled'}</span><AutomationProgressView workspaceId={workspaceId} id={row.automation_id} revision={row.revision} compact /></Link>)}
-    {(!page || page.loading) && <p role="status">Loading automations…</p>}
-    {page?.stale && <p role="status">Automation list is stale.</p>}
+    {(!page || page.loading) && <p role="status">Loading workers…</p>}
+    {page?.stale && <p role="status">Worker list is stale.</p>}
     {page?.error && <p role="alert">{page.error}</p>}
     <button onClick={() => void desktopAutomations.refresh(input)}>Refresh</button>{' '}
     {cursor && <button onClick={() => setCursor(undefined)}>First page</button>}
@@ -46,16 +46,16 @@ export function AutomationSessionPanel({ workspaceId, id }: { workspaceId: strin
     } catch (error) { setMessage(error instanceof Error ? error.message : 'Request failed') }
     finally { lock.current = false; setPending(false) }
   }
-  return <section aria-label="Automation session" className="max-h-[45vh] shrink-0 overflow-y-auto border-b border-[var(--app-border)] p-3 text-sm">
-    <strong>Automation · {record?.definition?.name ?? 'Loading configuration'}</strong>{' · '}{record?.definition?.enabled ? 'Enabled' : 'Paused / awaiting approval'}
+  return <section aria-label="Worker session" className="max-h-[45vh] shrink-0 overflow-y-auto border-b border-[var(--app-border)] p-3 text-sm">
+    <strong>Worker · {record?.definition?.name ?? 'Loading configuration'}</strong>{' · '}{record?.definition?.enabled ? 'Enabled' : 'Paused / awaiting approval'}
     <p>Execution and discussion stay in this conversation. Live execution and permission state appear below.</p>
     <AutomationProgressView workspaceId={workspaceId} id={id} revision={record?.revision} />
-    <button disabled={!record?.definition?.session_id || pending || page?.stale || page?.loading} onClick={() => setReview(true)}>Ask Plan agent to edit automation</button>
+    <button disabled={!record?.definition?.session_id || pending || page?.stale || page?.loading} onClick={() => setReview(true)}>Ask Worker Agent to edit worker</button>
     {review && record?.definition?.session_id && <DesktopPlanAgentSidecar key={`${id}:${record.revision}`} parentSessionId={record.definition.session_id} automation={{ automation_id: id, automation_revision: record.revision, workspace_id: workspaceId }} onClose={() => setReview(false)} /> }
     {record?.definition && <details><summary>Edit schedule and configuration</summary><AutomationDefinitionSummary definition={record.definition} /><AutomationEditor initial={record.definition} revision={record.revision} disabled={pending || !!page?.stale || !!page?.loading} onSave={async definition => { await desktopAutomations.mutate({ action: 'save', workspace_id: workspaceId, id, expected_revision: record.revision, mutation_id: crypto.randomUUID(), definition }) }} /></details>}
     {(['run', record?.definition?.enabled ? 'pause' : 'enable'] as const).map(action => <button className="mr-3 underline" key={action} disabled={pending || !record || page?.stale || page?.loading} onClick={() => void act(action)}>{action === 'run' ? 'Run now' : action === 'pause' ? 'Pause' : 'Enable'}</button>)}
     <button aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>Policy and occurrence history</button>
-    <p role="status">{message || (page?.stale ? 'Automation state is stale.' : page?.loading ? 'Loading…' : '')}</p>
+    <p role="status">{message || (page?.stale ? 'Worker state is stale.' : page?.loading ? 'Loading…' : '')}</p>
     {page?.error && <p role="alert">{page.error} <button onClick={() => void desktopAutomations.refresh(input)}>Retry</button></p>}
     {expanded && <><PolicyPanel workspaceId={workspaceId} id={id} /><UpdateFeed workspaceId={workspaceId} id={id} timezone="UTC" today={dayKey(Date.now(), 'UTC')} history onChat={sessionId => { if (workspaceSlug) void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug, sessionId } }) }} /></>}
   </section>

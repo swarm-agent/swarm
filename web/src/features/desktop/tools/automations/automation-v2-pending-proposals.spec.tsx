@@ -65,7 +65,7 @@ test('PendingAutomationCard renders base details on the outside in a pending sta
   // 1. Pending state indicator
   assert.match(markup, /data-testid="automation-status-pending"/)
   assert.match(markup, />Pending<\/span>/)
-  assert.match(markup, /Awaiting acceptance/)
+  assert.match(markup, /Awaiting deployment/)
   assert.match(markup, /data-pending-card="true"/)
 
   // 2. Base details on outside
@@ -78,11 +78,11 @@ test('PendingAutomationCard renders base details on the outside in a pending sta
   assert.match(markup, /Not yet activated/)
 
   // 3. Action buttons
-  assert.match(markup, /Ask the automation agent for any changes/)
+  assert.match(markup, /Ask the worker agent for any changes/)
   assert.match(markup, /data-testid="decline-automation-button"/)
   assert.match(markup, />Decline<\/span>/)
   assert.match(markup, /data-testid="accept-automation-button"/)
-  assert.match(markup, /Accept automation/)
+  assert.match(markup, /Deploy Worker/)
   assert.match(markup, /View details/)
 
   // 4. Collapsed: expanded detail is not shown
@@ -119,10 +119,10 @@ test('PendingAutomationCard expands to open it up with full plan review and acce
 
   // Both ways to act inside expanded review: Accept and Ask for changes, plus Decline
   assert.match(markup, /data-testid="ask-for-changes-button"/)
-  assert.match(markup, /Ask the automation agent for any changes/)
+  assert.match(markup, /Ask the worker agent for any changes/)
   assert.match(markup, /data-testid="reject-automation-button"/)
   assert.match(markup, />Decline<\/button>/)
-  assert.match(markup, />Accept automation<\/button>/)
+  assert.match(markup, />Deploy Worker<\/button>/)
 })
 
 test('AutomationV2Workspace surfaces pending automation proposals created by sidebar agent', () => {
@@ -193,14 +193,14 @@ test('AutomationV2Workspace surfaces pending automation proposals created by sid
   assert.match(markup, /data-pending-card="true"/)
   assert.match(markup, /Daily Health Audit/)
   assert.match(markup, /data-testid="automation-status-pending"/)
-  assert.match(markup, /Awaiting acceptance/)
+  assert.match(markup, /Awaiting deployment/)
 
   // 2. Base details on outside
   assert.match(markup, /2 steps · Rev 1/)
   assert.match(markup, /Daily at 09:00/)
   assert.match(markup, /\(UTC\)/)
-  assert.match(markup, /Ask the automation agent for any changes/)
-  assert.match(markup, /Accept automation/)
+  assert.match(markup, /Ask the worker agent for any changes/)
+  assert.match(markup, /Deploy Worker/)
 
   // 3. Summary strip displays Pending count
   assert.match(markup, /data-testid="summary-strip-pending"/)
@@ -293,7 +293,7 @@ test('AutomationV2Workspace displays pending revision on existing record and lin
   // Card shows Pending review status and Revision 2 pending approval badge
   assert.match(markup, />Pending review<\/span>/)
   assert.match(markup, /Revision 2 pending approval/)
-  assert.match(markup, /Ask the automation agent for any changes/)
+  assert.match(markup, /Ask the worker agent for any changes/)
 })
 
 test('AutomationV2Sidecar integrates pending proposals into switcher dropdown', () => {
@@ -305,7 +305,7 @@ test('AutomationV2Sidecar integrates pending proposals into switcher dropdown', 
     />
   )
 
-  assert.match(markup, /Pending automation proposals/)
+  assert.match(markup, /Pending worker proposals/)
   assert.match(markup, /Daily Health Audit \(Pending\)/)
 })
 

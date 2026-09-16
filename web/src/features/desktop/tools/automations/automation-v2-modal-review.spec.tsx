@@ -124,7 +124,7 @@ test('DesktopPermissionModal renders very big modal with full automation details
 
   // Left pane: Full automation review details
   assert.match(markup, /data-testid="automation-v2-plan-review"/, 'expected plan review component')
-  assert.match(markup, /Recurring Automation Plan/, 'expected recurring automation badge')
+  assert.match(markup, /Recurring Worker Plan/, 'expected recurring worker badge')
   assert.match(markup, /Verify service status and database connectivity/, 'expected goal callout')
   assert.match(markup, /Execution Schedule/, 'expected schedule section')
   assert.match(markup, /Every hour/, 'expected human-readable interval cadence')
@@ -142,7 +142,7 @@ test('DesktopPermissionModal renders very big modal with full automation details
 
   // Action buttons
   assert.match(markup, />Reject</, 'expected Reject button')
-  assert.match(markup, />Accept automation</, 'expected Accept automation button')
+  assert.match(markup, />Deploy Worker</, 'expected Deploy Worker button')
 
   // Right pane: Embedded AI sidebar
   assert.match(markup, /data-testid="automation-modal-ai-sidebar"/, 'expected embedded AI sidebar column')
@@ -150,7 +150,7 @@ test('DesktopPermissionModal renders very big modal with full automation details
   assert.match(markup, /Swarm Plan AI Sidebar/, 'expected AI sidebar header')
   assert.match(markup, /Live Editing/, 'expected live editing badge in sidebar')
   assert.match(markup, /Ask Swarm to adjust schedule, tasks, or acceptance criteria/, 'expected live edit prompt hint')
-  assert.match(markup, /Ask Swarm to change this automation…/, 'expected automation change composer placeholder')
+  assert.match(markup, /Ask Swarm to change this worker…/, 'expected worker change composer placeholder')
 })
 
 test('AutomationV2PlanReview in modalMode renders open checkpoints and criteria', () => {

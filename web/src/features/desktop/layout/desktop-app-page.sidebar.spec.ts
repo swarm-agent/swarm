@@ -828,6 +828,7 @@ test('sidebar review action is limited to Needs Review outside archive selection
 test('sidebar renders contextual controls for active groups without an Archived section', () => {
   assert.deepEqual(SIDEBAR_SESSION_GROUPS.map((group) => group.id), [
     'blocked',
+    'automation',
     'needs_review',
     'in_progress',
     'pinned',

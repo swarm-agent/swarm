@@ -2448,7 +2448,7 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
 
 export const SIDEBAR_SESSION_GROUPS = [
   { id: 'blocked', label: 'Blocked', showInactiveThreshold: false },
-  { id: 'automation', label: 'Automation', showInactiveThreshold: false },
+  { id: 'automation', label: 'Workers', showInactiveThreshold: false },
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
   { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
@@ -2558,8 +2558,8 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 className={input.presentation === 'mobile'
                   ? 'inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
                   : 'inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:border-[var(--app-border-strong)]'}
-                aria-label="Open top-down Automations view"
-                title="Open top-down Automations view"
+                aria-label="Open top-down Workers view"
+                title="Open top-down Workers view"
                 onClick={input.onOpenAutomations}
               >
                 <span>View</span>
@@ -2737,8 +2737,8 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                   <button
                     type="button"
                     className="flex min-h-7 items-center justify-center gap-1 rounded border border-[var(--app-border)]/50 bg-[var(--app-surface-subtle)]/30 px-2 text-[10px] font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]"
-                    aria-label="Open top-down Automations view"
-                    title="Open top-down Automations view"
+                    aria-label="Open top-down Workers view"
+                    title="Open top-down Workers view"
                     onClick={input.onOpenAutomations}
                   >
                     <span>All ({rootCount}) →</span>
@@ -5632,13 +5632,13 @@ export function DesktopAppPage() {
                         void navigate({ to: '/$workspaceSlug/automations', params: { workspaceSlug: topWorkspaceSlug } })
                       }}
                       disabled={!topWorkspaceSlug}
-                      aria-label="Open Automations"
+                      aria-label="Open Workers"
                       aria-current={workspaceAutomationsMatch ? 'page' : undefined}
-                      title="Automations"
+                      title="Workers"
                     >
                       <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="flex min-w-0 items-center justify-between gap-1.5">
-                        <span className="min-w-0 truncate">Automations</span>
+                        <span className="min-w-0 truncate">Workers</span>
                         <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
                       </span>
                     </button>
@@ -5927,7 +5927,7 @@ export function DesktopAppPage() {
           <>
             <div className="flex h-[60px] shrink-0 items-center border-b border-[var(--app-border)] px-3 sm:hidden">
               <Button variant="ghost" onClick={() => setMobileSidebarOpen(true)} aria-label="Open sidebar"><Menu size={20} /></Button>
-              <span className="text-sm font-semibold">Automations</span>
+              <span className="text-sm font-semibold">Workers</span>
             </div>
             <div className="min-h-0 flex-1 overflow-auto"><Outlet /></div>
           </>

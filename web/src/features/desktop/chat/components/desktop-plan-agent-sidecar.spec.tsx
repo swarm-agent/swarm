@@ -104,8 +104,8 @@ const automationPlanMarkup = renderToStaticMarkup(
     modelLabel="model-a"
   />,
 );
-assert.match(automationPlanMarkup, /placeholder="Talk to your automations"/, "automation plan composer placeholder must say Talk to your automations");
-assert.match(automationPlanMarkup, /Automation plan · Plan agent/, "automation plan heading should reflect automation context");
+assert.match(automationPlanMarkup, /placeholder="Talk to your workers"/, "automation plan composer placeholder must say Talk to your workers");
+assert.match(automationPlanMarkup, /Worker plan · Worker Agent/, "automation plan heading should reflect automation context");
 assert.match(markup, /class="[^"]*border-t[^\"]*bg-\[var\(--app-surface\)\][^"]*" data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
 assert.doesNotMatch(markup, /data-testid="desktop-plan-composer"[^>]*pb-1\.5/, "Plan composer should not be taller than the canonical chat composer");
 assert.match(markup, /min-w-0 items-center justify-between gap-2 overflow-hidden bg-transparent px-4 py-3 text-\[11px\]/, "Plan control row should use the canonical chat padding for the matched 311×144 geometry");

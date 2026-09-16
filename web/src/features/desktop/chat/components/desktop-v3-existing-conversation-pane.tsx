@@ -564,7 +564,7 @@ const IsolatedPlanExecutionSummary = memo(function IsolatedPlanExecutionSummary(
   return (
     <>
       <span className="flex min-w-0 flex-1 items-center gap-2.5">
-        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">{automation ? 'Automation' : 'Plan'}</span>
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">{automation ? 'Worker' : 'Plan'}</span>
         <span className="min-w-0 truncate text-xs font-medium text-[var(--app-text)]">
           {view?.activeCheckpoint?.title || view?.plan.title || "Plan execution"}
         </span>
@@ -3458,14 +3458,14 @@ export function DesktopV3ExistingConversationPane({
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-                            Pending Automation
+                            Pending Worker
                           </span>
                           <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-primary)]">
                             Modal review
                           </span>
                         </div>
                         <p className="mt-0.5 truncate text-sm font-semibold text-[var(--app-text)]">
-                          {structuredPlanDocumentFromPermission(pendingAutomationPermission)?.title || "Automation plan review"}
+                          {structuredPlanDocumentFromPermission(pendingAutomationPermission)?.title || "Worker plan review"}
                         </p>
                       </div>
                     </div>
@@ -3475,7 +3475,7 @@ export function DesktopV3ExistingConversationPane({
                       size="sm"
                       onClick={() => setAutomationModalDismissedId(null)}
                     >
-                      Open automation modal
+                      Open worker modal
                     </Button>
                   </div>
                 ) : null}
@@ -3561,7 +3561,7 @@ export function DesktopV3ExistingConversationPane({
                 <div className="max-h-[min(46vh,30rem)] overflow-y-auto border-t border-[var(--app-border)] py-4">
                   {hasSessionArtifacts ? (
                     <div className="mx-4 mb-3 grid grid-cols-2 gap-1 rounded-lg bg-[var(--app-bg-alt)] p-1 sm:mx-6" role="tablist" aria-label="Mobile session sidebar view" data-mobile-session-sidebar-toggle>
-                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show automation' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan'}</button>
+                      <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show worker' : 'Show plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><ListChecks size={14} aria-hidden="true" />{cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Worker' : 'Plan'}</button>
                       <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface)] text-[var(--app-text)] shadow-sm" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]")}><GalleryHorizontal size={14} aria-hidden="true" />Artifacts {sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}</button>
                     </div>
                   ) : null}
@@ -3585,7 +3585,7 @@ export function DesktopV3ExistingConversationPane({
           ) : null}
 
           {cacheSession?.automation_v2 ? <AutomationV2ScheduleHandoff workspaceId={cacheSession.automation_v2.workspace_id} sessionId={normalizedSessionId} /> : null}
-          {cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? <section aria-label="Automation conversation protected" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm"><strong>Automation conversation</strong><p className="mt-1 text-[var(--app-text-muted)]">This conversation is reserved for scheduled work. Use “Talk to Swarm to help optimize this automation” in Automation details to discuss changes without changing accepted instructions.</p></section> : composerOverride ?? <DesktopV3ExistingConversationComposer
+          {cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') ? <section aria-label="Worker conversation protected" className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-sm"><strong>Worker conversation</strong><p className="mt-1 text-[var(--app-text-muted)]">This conversation is reserved for scheduled work. Use “Talk to Swarm to help optimize this worker” in Worker details to discuss changes without changing accepted instructions.</p></section> : composerOverride ?? <DesktopV3ExistingConversationComposer
             key={normalizedSessionId}
             workspacePath={session?.workspacePath?.trim() || cacheSession?.workspace_path?.trim() || metadataString(sessionMetadata, "workspace_path")}
             sessionId={normalizedSessionId}
@@ -3693,7 +3693,7 @@ export function DesktopV3ExistingConversationPane({
           >
             {showPlanSidebar && hasSessionArtifacts ? (
               <div className={cn("shrink-0 border-b border-l border-[var(--app-border)]/60 bg-[var(--app-surface)]", planSidebarDisplayMode === "thin" ? "grid gap-1 p-1.5" : "grid grid-cols-2 gap-1 p-2")} role="tablist" aria-label="Session sidebar view" data-session-sidebar-toggle>
-                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show automation sidebar' : 'Show plan sidebar'} title={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Automation' : 'Plan') : null}</button>
+                <button type="button" role="tab" aria-selected={activeSidebarView === "plan"} aria-label={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Show worker sidebar' : 'Show plan sidebar'} title={cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Worker' : 'Plan'} onClick={() => setSidebarView("plan")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "plan" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><ListChecks size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? (cacheSession?.automation || cacheSession?.automation_v2 || metadataString(sessionMetadata, 'automation_v2_occurrence_id') || isPendingAutomationV2 ? 'Worker' : 'Plan') : null}</button>
                 <button type="button" role="tab" aria-selected={activeSidebarView === "artifacts"} aria-label={`Show ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length} session artifacts`} title="Artifacts" onClick={() => setSidebarView("artifacts")} className={cn("inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold transition", activeSidebarView === "artifacts" ? "bg-[var(--app-surface-active)] text-[var(--app-text)]" : "text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)]", planSidebarDisplayMode === "thin" && "px-0")}><GalleryHorizontal size={14} aria-hidden="true" />{planSidebarDisplayMode !== "thin" ? `Artifacts ${sessionArtifactV3.length + sessionArtifactV2.length + sessionArtifacts.length}` : null}</button>
               </div>
             ) : null}
@@ -3847,7 +3847,7 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   const userMessage = desktopV3UserMessageElement(item);
   if (userMessage) return userMessage;
   if (automationOccurrence && (item.type === 'plan-final-handoff' || item.type === 'plan-checkpoint-handoff' || item.type === 'plan-blocked-handoff')) {
-    return <section aria-label="Automation execution handoff" className="space-y-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">Automation execution handoff</h3><p className="text-sm text-[var(--app-text-muted)]">This report belongs to one scheduled occurrence. It does not start another run or change the accepted schedule. Check Automation details for the observed occurrence state and next forecast.</p><details><summary className="cursor-pointer text-sm">Checkpoint report and evidence</summary><div className="mt-3">{item.type === 'plan-final-handoff' ? <DesktopV3PlanFinalHandoff item={item} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} /> : item.type === 'plan-blocked-handoff' ? <DesktopV3PlanBlockedHandoff item={item} /> : <DesktopV3PlanCheckpointHandoff item={item} />}</div></details></section>;
+    return <section aria-label="Worker execution handoff" className="space-y-3 rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4"><h3 className="font-semibold">Worker execution handoff</h3><p className="text-sm text-[var(--app-text-muted)]">This report belongs to one scheduled occurrence. It does not start another run or change the accepted schedule. Check Worker details for the observed occurrence state and next forecast.</p><details><summary className="cursor-pointer text-sm">Checkpoint report and evidence</summary><div className="mt-3">{item.type === 'plan-final-handoff' ? <DesktopV3PlanFinalHandoff item={item} artifactCatalog={artifactCatalog} artifactHref={artifactHref} onArtifactNavigate={onArtifactNavigate} /> : item.type === 'plan-blocked-handoff' ? <DesktopV3PlanBlockedHandoff item={item} /> : <DesktopV3PlanCheckpointHandoff item={item} />}</div></details></section>;
   }
 
   switch (item.type) {

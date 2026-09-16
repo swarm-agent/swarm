@@ -119,8 +119,8 @@ export function DesktopInlinePlanReviewCard({
 
   if (permission.requirement === 'automation_v2_acceptance') {
     const proposal = automationV2PermissionProposal(permission);
-    if (!proposal || proposal.session_id !== parentSessionId) return <p role="alert">Automation review unavailable. Refresh before accepting.</p>;
-    return <section><AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} onAskForChanges={onAskForChanges} askForChangesLabel="Ask the automation agent for any changes" /></section>;
+    if (!proposal || proposal.session_id !== parentSessionId) return <p role="alert">Worker review unavailable. Refresh before accepting.</p>;
+    return <section><AutomationV2PlanReview key={proposal.proposal_id} proposal={proposal} disabled={resolutionPending} onReject={() => onResolve(permission, 'deny', '')} onAskForChanges={onAskForChanges} askForChangesLabel="Ask the worker agent for any changes" /></section>;
   }
 
   return (
@@ -132,7 +132,7 @@ export function DesktopInlinePlanReviewCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-            {document?.automation ? 'Pending Automation' : 'Pending plan edit'}
+            {document?.automation ? 'Pending Worker' : 'Pending plan edit'}
           </div>
           <h2 className="mt-1 text-lg font-semibold text-[var(--app-text)]">
             {title}

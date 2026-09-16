@@ -23,6 +23,8 @@ export function isGenericSessionTitle(title?: string): boolean {
     lower === 'new session' ||
     lower === 'automation conversation' ||
     lower === 'automation session' ||
+    lower === 'worker conversation' ||
+    lower === 'worker session' ||
     lower === 'new conversation' ||
     lower === 'new chat'
   )
@@ -313,12 +315,12 @@ export function AutomationV2Sidecar({
       if (currentConversation.message_count && currentConversation.message_count > 0) {
         return formatAutomationSessionTitle(currentConversation)
       }
-      return 'New automation chat'
+      return 'New worker chat'
     }
     if (selectedAutomation) {
       return `Optimize: ${selectedAutomation.document.title}`
     }
-    return 'Automations Assistant'
+    return 'Worker Agent'
   }, [currentConversation, directSessionId, selectedAutomation])
 
   // Header switcher: dropdown for prior conversations and + New button
@@ -328,7 +330,7 @@ export function AutomationV2Sidecar({
         <span
           data-testid="sidecar-running-badge"
           className="inline-flex items-center gap-1 rounded-full bg-[var(--app-success-bg,rgba(34,197,94,0.14))] px-1.5 py-0.5 text-[9px] font-medium text-[var(--app-success)]"
-          title="Automation is currently running an occurrence"
+          title="Worker is currently running an occurrence"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse" aria-hidden="true" />
           <span>Running</span>
@@ -346,7 +348,7 @@ export function AutomationV2Sidecar({
         </span>
       )}
       {(mergedConversations.length > 0 || selectedAutomation || (records && records.length > 0) || (pendingProposals && pendingProposals.length > 0)) && (
-        <label className="relative flex items-center" title="Switch or reopen automation sessions">
+        <label className="relative flex items-center" title="Switch or reopen worker sessions">
           <History size={12} className="pointer-events-none absolute left-2 text-[var(--app-text-muted)]" aria-hidden="true" />
           <select
             className="h-7 max-w-[150px] truncate rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] pl-6 pr-2 text-[11px] font-medium text-[var(--app-text)] outline-none hover:bg-[var(--app-surface-hover)] focus:border-[var(--app-primary)] sm:max-w-[180px]"
@@ -362,13 +364,13 @@ export function AutomationV2Sidecar({
                   : '__new__'
             }
             onChange={(e) => handleSelectSession(e.target.value)}
-            aria-label="Prior automation sessions"
+            aria-label="Prior worker sessions"
           >
             <option value={currentEmptyConversation ? currentEmptyConversation.id : '__new__'}>
               ✨ New chat
             </option>
             <option value="__all__">
-              🌐 All workspace automations
+              🌐 All workspace workers
             </option>
             {currentPendingProposal && (
               <option value={`pending:${currentPendingProposal.session_id}`}>
@@ -381,7 +383,7 @@ export function AutomationV2Sidecar({
               </option>
             )}
             {pendingProposals && pendingProposals.filter((p) => p.session_id !== (directSessionId || selectedAutomation?.session_id)).length > 0 && (
-              <optgroup label="Pending automation proposals">
+              <optgroup label="Pending worker proposals">
                 {pendingProposals
                   .filter((p) => p.session_id !== (directSessionId || selectedAutomation?.session_id))
                   .map((p) => (
@@ -392,7 +394,7 @@ export function AutomationV2Sidecar({
               </optgroup>
             )}
             {pastConversations.length > 0 && (
-              <optgroup label="Recent automation chats">
+              <optgroup label="Recent worker chats">
                 {pastConversations.map((c) => (
                   <option key={c.id} value={c.id}>
                     💬 {formatAutomationSessionTitle(c)}
@@ -401,7 +403,7 @@ export function AutomationV2Sidecar({
               </optgroup>
             )}
             {records && records.filter((r) => r.session_id !== selectedAutomation?.session_id).length > 0 && (
-              <optgroup label="Automation sessions">
+              <optgroup label="Worker sessions">
                 {records
                   .filter((r) => r.session_id !== selectedAutomation?.session_id)
                   .map((r) => (
@@ -418,7 +420,7 @@ export function AutomationV2Sidecar({
         size="sm"
         variant="ghost"
         className="h-7 gap-1 px-2 text-[11px]"
-        title="New automation conversation"
+        title="New worker conversation"
         onClick={() => void handleCreateNew()}
         disabled={creating || loading}
       >

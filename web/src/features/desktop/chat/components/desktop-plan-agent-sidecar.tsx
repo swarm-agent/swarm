@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowDown, Loader2, Mic, Send, Square, X } from "lucide-react";
 import { AutomationInstructionContext } from '../../tools/automations/automation-instruction-proposal';
 import { Button } from "../../../../components/ui/button";
@@ -390,9 +390,9 @@ export function DesktopPlanAgentSidecar({
                 : modalInline
                 ? "Swarm Plan AI Sidebar"
                 : automation?.automation_v2
-                  ? "Talk to Swarm to help optimize this automation"
+                  ? "Talk to Swarm to help optimize this worker"
                   : automation || document?.automation || document?.automationV2
-                    ? "Automation plan · Plan agent"
+                    ? "Worker plan · Worker Agent"
                     : mobileInline
                       ? "Ask Swarm Plan"
                       : "Plan"}
@@ -414,16 +414,16 @@ export function DesktopPlanAgentSidecar({
             <div ref={contentRef} className="flex min-h-full min-w-0 flex-col gap-5 [&>*:not(:last-child)]:[overflow-anchor:none]">
               <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] p-3 text-sm leading-5">
                 {modalInline || document?.automationV2 || permission?.requirement === 'automation_v2_acceptance'
-                  ? 'Ask Swarm to adjust schedule, tasks, or acceptance criteria. Changes update this automation review live.'
+                  ? 'Ask Swarm to adjust schedule, tasks, or acceptance criteria. Changes update this worker review live.'
                   : automation?.automation_v2
                     ? 'Discuss instructions, timing and recorded work here. Proposed changes do not alter the active schedule until you explicitly accept them; admitted runs retain their accepted instructions.'
                     : automation || document?.automation
-                      ? 'Request changes to the full current automation configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.'
+                      ? 'Request changes to the full current worker configuration. AI proposals are not applied until you accept them. Execution-affecting edits pause future runs and require fresh approval; admitted runs retain their pins.'
                       : directSessionId
-                        ? 'Talk to Swarm about automations. Propose instructions, timing, or ask about recurring tasks.'
+                        ? 'Talk to Swarm about workers. Propose instructions, timing, or ask about recurring tasks.'
                         : 'Ask about the plan or request changes conversationally. Saved edits update the parent approval card live.'}
               </div>
-              {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />{isAutomationContext ? 'Opening automations assistant…' : 'Opening durable Plan sidechat…'}</div> : null}
+              {sidechat.busy && renderItems.length === 0 ? <div className="flex items-center gap-2 text-sm text-[var(--app-text-muted)]"><Loader2 className="animate-spin" size={16} />{isAutomationContext ? 'Opening Worker Agent…' : 'Opening durable Plan sidechat…'}</div> : null}
               <AutomationInstructionContext.Provider value={automation && (parentSessionId || sidechat.sessionId) ? { ...automation, parentSessionId: parentSessionId || sidechat.sessionId } : null}>
               {renderItems.map((item, index) => <DesktopV3RenderItemView key={`${item.type}:${"id" in item ? item.id : item.type === "pending-user" ? item.message.clientRequestId : "message" in item ? item.message.id : index}`} item={item} thinkingTagsEnabled index={index} />)}
               </AutomationInstructionContext.Provider>
@@ -447,8 +447,8 @@ export function DesktopPlanAgentSidecar({
                       resizeTextarea(event.target);
                     }}
                     onKeyDown={handleComposerKeyDown}
-                    placeholder={modalInline ? 'Ask Swarm to change this automation…' : isAutomationContext ? 'Talk to your automations' : 'Talk to your plan'}
-                    aria-label={modalInline || isAutomationPlan ? 'Ask Swarm to change this automation' : automation?.automation_v2 ? 'Automation optimization message' : 'Plan message'}
+                    placeholder={modalInline ? 'Ask Swarm to change this worker…' : isAutomationContext ? 'Talk to your workers' : 'Talk to your plan'}
+                    aria-label={modalInline || isAutomationPlan ? 'Ask Swarm to change this worker' : automation?.automation_v2 ? 'Worker optimization message' : 'Plan message'}
                     className="max-h-[50vh] !min-h-[32px] resize-none overflow-y-hidden !rounded-none !border-0 !border-none bg-transparent px-0 py-0 !shadow-none !outline-none !ring-0 focus:!border-0 focus:!shadow-none focus:!ring-0 focus-visible:!border-0 focus-visible:!shadow-none focus-visible:!ring-0 focus-visible:!ring-offset-0 hover:!border-0 disabled:bg-transparent sm:!min-h-[56px] lg:!min-h-[52px]"
                     rows={1}
                     disabled={sidechat.busy || !sidechat.sessionId}

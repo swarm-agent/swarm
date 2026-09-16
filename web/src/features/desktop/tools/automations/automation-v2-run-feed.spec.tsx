@@ -439,7 +439,7 @@ test('AutomationV2Detail renders top-down run feed with calm runs, deliverables,
   )
 
   // Verify top-level structure
-  assert.match(markup, /aria-label="Automation details"/)
+  assert.match(markup, /aria-label="Worker details"/)
   assert.match(markup, /Daily Cleanup Automation/)
   assert.match(markup, /Run history (&amp;|&) upcoming times/)
   assert.match(markup, /data-testid="automation-run-feed"/)
