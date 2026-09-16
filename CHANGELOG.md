@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Normalize Google provider conversation turns and handle post-compaction session continuation. Docs impact: none.
+
 - Accept GCP workflow configuration from Repository Secrets as well as Repository Variables, preserving immutable verifier selection and fail-closed qualification. Docs impact: GCP configuration precedence in the deploy checklist.
 
 - Report missing GCP relay configuration separately from qualification failures without exposing variable values or weakening required checks. Docs impact: atlas validation notes.
