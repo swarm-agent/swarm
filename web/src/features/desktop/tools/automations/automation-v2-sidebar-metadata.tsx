@@ -427,7 +427,8 @@ export function selectAutomationSummaryCounts(
           o.closing_state === 'attention_alert' ||
           o.closing_state === 'blocked' ||
           o.state === 'failed' ||
-          o.state === 'blocked'
+          o.state === 'blocked' ||
+          o.state === 'unavailable'
         ).length
       }
       const schedule = record.document?.automation_v2?.schedule
@@ -610,6 +611,16 @@ export function AutomationV2SidebarSummaryIndicator({
   onNavigate?: () => void
   className?: string
 }) {
+  useEffect(() => {
+    if (!workspaceId) return
+    try {
+      const lease = desktopAutomationV2.acquire({ action: 'list', workspace_id: workspaceId })
+      return lease.release
+    } catch {
+      // Lease limit or offline
+    }
+  }, [workspaceId])
+
   const counts = useDesktopV3CacheSelector(state => selectAutomationSummaryCounts(state, workspaceId))
   return (
     <AutomationSidebarSummaryBadge

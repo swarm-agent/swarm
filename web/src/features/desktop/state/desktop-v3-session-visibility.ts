@@ -41,7 +41,12 @@ export function isDesktopV3VideoStudioRecord(record: SessionCacheRecord | undefi
 
 export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | undefined): boolean {
   if (!session) return false
+  if (isAutomationExecutionSession(session)) return true
   const metadata = session.metadata
+  // An accepted automation author session should be visible under the Workers sidebar group.
+  if (session.automation_v2 && metadata?.swarm_v3_session_purpose === 'automation_management') {
+    return false
+  }
   return isAutomationManagementSession(session)
     || isAutomationExecutionSession(session)
     || session.navigation_hidden === true

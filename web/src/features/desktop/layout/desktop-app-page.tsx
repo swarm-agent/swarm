@@ -2503,7 +2503,9 @@ export function sidebarVisibleGroupNodes(
 }
 
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
-  if (input.nodes.length === 0) return null
+  const automationCounts = selectAutomationSummaryCounts(getDesktopV3CacheSnapshot(), input.workspaceId)
+  const hasAutomationWork = Boolean(automationCounts && automationCounts.total > 0)
+  if (input.nodes.length === 0 && !hasAutomationWork) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
@@ -2517,11 +2519,11 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   }
   return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
-    if (nodes.length === 0) return []
+    const isAutomationGroup = group.id === 'automation'
+    if (nodes.length === 0 && (!isAutomationGroup || !hasAutomationWork)) return []
     const collapsed = input.collapsedGroups[group.id]
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
-    const rootCount = nodes.filter((node) => node.depth === 0).length
-    const isAutomationGroup = group.id === 'automation'
+    const rootCount = Math.max(nodes.filter((node) => node.depth === 0).length, isAutomationGroup && hasAutomationWork ? (automationCounts?.total ?? 0) : 0)
     const limit = isAutomationGroup ? SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT : SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
     const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && rootCount > limit
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
@@ -2645,47 +2647,62 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             onOpenAutomations={input.onOpenAutomations}
           >
             <div className="grid w-full min-w-0 max-w-full gap-1">
-              {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
-                const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
-                return (
-                  <div
-                    key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
-                    data-sidebar-task-group={taskCallId || undefined}
-                    className={cn('grid w-full min-w-0 max-w-full gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
-                  >
-                    {taskGroup.map((node) => (
-                      <SessionRow
-                        key={node.session.id}
-                        active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && (input.routeAutomationSessionId === node.session.id || input.routeAutomationSessionId === (node.session as any).automation_v2?.automation_id))}
-                        now={input.now}
-                        session={node.session}
-                        workspaceSlug={input.workspaceSlug}
-                        depth={node.depth}
-                        childLabel={node.label}
-                        childAssignmentLabel={node.assignmentLabel}
-                        childKind={node.kind}
-                        agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
-                        agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
-                        compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
-                        pendingAction={input.pendingActions[node.session.id] ?? null}
-                        selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
-                        selectionGroup={group.id}
-                        selected={input.selectedRootIDs.has(node.session.id)}
-                        onSelect={input.onSelect}
-                        onEnterSelectionMode={input.onEnterSelectionMode}
-                        onToggleSelected={input.onToggleSelected}
-                        onPrefetch={input.onPrefetch}
-                        onToggleAgents={input.onToggleAgents}
-                        onTogglePinned={input.onTogglePinned}
-                        onArchive={input.onArchive}
-                        onRename={input.onRename}
-                        onDelete={input.onDelete}
-                        onOpenAutomations={input.onOpenAutomations}
-                      />
-                    ))}
-                  </div>
-                )
-              })}
+              {visibleNodes.length > 0 ? (
+                sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
+                  const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+                  return (
+                    <div
+                      key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                      data-sidebar-task-group={taskCallId || undefined}
+                      className={cn('grid w-full min-w-0 max-w-full gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+                    >
+                      {taskGroup.map((node) => (
+                        <SessionRow
+                          key={node.session.id}
+                          active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && (input.routeAutomationSessionId === node.session.id || input.routeAutomationSessionId === (node.session as any).automation_v2?.automation_id))}
+                          now={input.now}
+                          session={node.session}
+                          workspaceSlug={input.workspaceSlug}
+                          depth={node.depth}
+                          childLabel={node.label}
+                          childAssignmentLabel={node.assignmentLabel}
+                          childKind={node.kind}
+                          agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                          agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                          compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                          pendingAction={input.pendingActions[node.session.id] ?? null}
+                          selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                          selectionGroup={group.id}
+                          selected={input.selectedRootIDs.has(node.session.id)}
+                          onSelect={input.onSelect}
+                          onEnterSelectionMode={input.onEnterSelectionMode}
+                          onToggleSelected={input.onToggleSelected}
+                          onPrefetch={input.onPrefetch}
+                          onToggleAgents={input.onToggleAgents}
+                          onTogglePinned={input.onTogglePinned}
+                          onArchive={input.onArchive}
+                          onRename={input.onRename}
+                          onDelete={input.onDelete}
+                          onOpenAutomations={input.onOpenAutomations}
+                        />
+                      ))}
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="flex items-center justify-between rounded-lg border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)]/30 px-2.5 py-1.5 text-[11px] text-[var(--app-text-muted)]">
+                  <span>{automationCounts?.total ?? 0} active {automationCounts?.total === 1 ? 'worker' : 'workers'}</span>
+                  {input.onOpenAutomations ? (
+                    <button
+                      type="button"
+                      onClick={input.onOpenAutomations}
+                      className="font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
+                    >
+                      Open workers →
+                    </button>
+                  ) : null}
+                </div>
+              )}
               {hasOverflow ? (
                 <div className="flex w-full min-w-0 max-w-full items-center gap-1.5 pt-0.5">
                   <button

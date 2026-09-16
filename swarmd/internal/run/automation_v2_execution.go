@@ -100,13 +100,14 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	metadata["swarm_v3_worktree_owner_session_id"] = o.SessionID
 	metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
 	metadata["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
-	snapshot := store.SessionSnapshot{ID: o.SessionID, UserID: r.UserID, AccountScopeID: r.AccountID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: r.Document.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: metadata, AutomationV2: &store.SessionAutomationV2Binding{AutomationID: r.AutomationID, WorkspaceID: r.WorkspaceID, Digest: r.Digest}, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: o.AdmittedAt, UpdatedAt: o.AdmittedAt}
+	snapshot := store.SessionSnapshot{ID: o.SessionID, UserID: r.UserID, AccountScopeID: r.AccountID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: r.Document.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: metadata, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: o.AdmittedAt, UpdatedAt: o.AdmittedAt}
 	if err = h.repository.JournalAutomationV2Preparation(o, snapshot); err != nil {
 		return snapshot, err
 	}
 	return snapshot, h.publishPrepared(o, snapshot)
 }
 func (h *AutomationV2ExecutionHost) publishPrepared(o store.AutomationV2Occurrence, snapshot store.SessionSnapshot) error {
+	snapshot.AutomationV2 = nil
 	r := o.Record
 	if err := h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, o.SessionID, snapshot.WorktreeBranch); err != nil {
 		return err

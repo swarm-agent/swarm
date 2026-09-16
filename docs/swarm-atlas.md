@@ -2030,3 +2030,25 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Tool runtime tests in `swarmd/internal/tool` (`runtime_environments_test.go`).
   - Prompt context injection tests in `swarmd/internal/run` (`service_environments_context_test.go`).
   - All tests pass; `scripts/check-atlas-sync.sh` passes.
+
+### Worker V2 Execution Session Creation, Sidebar Visibility, and Run Results (2026-09-16)
+
+- **Worker V2 Execution Session Creation (`swarmd/internal/run/automation_v2_execution.go`):**
+  - Corrected execution session preparation in `prepare` and `publishPrepared` by ensuring `snapshot.AutomationV2` is nil when creating an occurrence execution session via `V3SessionMutationCreateSession`. Setting `AutomationV2` on execution session snapshots violated the database invariant that `AutomationV2` belongs strictly to authoring sessions, which caused `publishPrepared` to fail with `ErrAutomationV2Conflict` ("automation v2 ownership or review conflict"). This failure marked occurrences as `state: "unavailable"` ("execution preparation or wake failed; retry retained"), prevented the execution session from being persisted in Pebble, and caused background `Sweep` to continuously retry and fail every second.
+  - In `publishPrepared`, explicitly sanitized `snapshot.AutomationV2 = nil` to ensure safe replay of historical occurrences whose preparations were journaled prior to the fix.
+- **Worker Sidebar Navigation and Discovery (`swarmd/internal/store/pebble/session_recent_index.go`, `store/pebble/automation_v2.go`, `web/src/features/desktop/state/desktop-v3-session-visibility.ts`, `desktop-app-page.tsx`, `automation-v2-sidebar-metadata.tsx`):**
+  - In `session_recent_index.go`, updated `selectV3RecentWorksetSessionsFromIndex` so that automation management sessions with accepted worker definitions (`session.AutomationV2 != nil`) are not excluded from the recent sessions index, enabling worker author sessions to appear in Desktop navigation.
+  - In `store/pebble/automation_v2.go`, updated `AcceptAutomationV2` to delete `navigation_hidden` from authoring session metadata upon plan acceptance.
+  - In `web/src/features/desktop/state/desktop-v3-session-visibility.ts`, updated `isDesktopV3NavigationHiddenSession` so that accepted worker author sessions (`session.automation_v2` with `automation_management` purpose) are not hidden, allowing them to populate the sidebar `Workers` section while execution sessions (`automation_v2_occurrence_id`) remain strictly hidden.
+  - In `web/src/features/desktop/layout/desktop-app-page.tsx`, updated `renderSidebarSessionGroups` so that the `Workers` section renders whenever the workspace has active workers (`automationCounts.total > 0`), even when no individual session rows are in view.
+  - In `web/src/features/desktop/tools/automations/automation-v2-sidebar-metadata.tsx`, updated `AutomationV2SidebarSummaryIndicator` to automatically acquire a list lease (`desktopAutomationV2.acquire({ action: 'list', workspace_id })`), ensuring summary counts and sidebar badges update immediately upon workspace selection.
+- **Worker Detail Page Run Results, Alerts, and Session Links (`web/src/features/desktop/tools/automations/automation-v2-workspace.tsx`, `automation-v2-sidebar-metadata.tsx`):**
+  - In `automation-v2-workspace.tsx` and `automation-v2-sidebar-metadata.tsx`, included `o.state === 'unavailable'` in alert counts (`todayStats.alerts`, `selectAutomationSummaryCounts`, `groupOccurrencesByDay`, and `statusFilter === 'alert'`), ensuring failed preparations trigger prominent warning badges and filter tabs rather than being reported as 0 alerts.
+  - In `StandardRunCard`, treated `occurrence.state === 'unavailable'` as a failure state (`isFailed`), rendering alert indicators with "Unavailable · Preparation failed" and "Execution failed or preparation error" instead of "Completed observation".
+  - In `OpenExecutionSessionButton`, rendered a disabled "Session unavailable" badge when `state === 'unavailable'`, preventing clicks to non-existent sessions.
+  - In `AutomationCardPulse`, allowed today's pulse and alert badges to remain visible for paused workers when runs occurred earlier in the day.
+- **Validation:**
+  - `(cd swarmd && go test -v ./internal/run -run "AutomationV2")` (all 5 tests pass).
+  - `(cd swarmd && go test -v ./internal/store/pebble -run "AutomationV2|Purpose")` (all 12 tests pass).
+  - Web unit tests: `automation-v2-sidebar-metadata.spec.tsx`, `automation-v2-run-feed.spec.tsx`, `worker-id-page.spec.tsx`, `desktop-automation-v2.spec.ts` (all 37 tests pass).
+  - `scripts/run-critical-tests.sh fast` (all tiers pass).

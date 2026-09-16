@@ -515,6 +515,9 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 			return err
 		}
 		current.AutomationV2 = &SessionAutomationV2Binding{id, p.WorkspaceID, p.Digest}
+		if current.Metadata != nil {
+			delete(current.Metadata, "navigation_hidden")
+		}
 		in.Session = &current
 	}
 	payload, err := json.Marshal(map[string]any{"proposal_id": p.ProposalID, "revision": p.Revision, "digest": p.Digest, "automation_id": m.record.AutomationID})

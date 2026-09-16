@@ -232,7 +232,7 @@ export function AutomationCardPulse({
       if (isOccurrenceAwaitingDocument(o)) {
         if (o.closing_state === 'blocked' || o.state === 'blocked') blocked++
         else alerts++
-      } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+      } else if (o.closing_state === 'attention_alert' || o.state === 'failed' || o.state === 'unavailable') {
         alerts++
       }
     }
@@ -245,7 +245,10 @@ export function AutomationCardPulse({
     }
   }, [occurrences, tz])
 
-  if (!enabled || cancelled) {
+  if (cancelled) {
+    return null
+  }
+  if (!enabled && (!stats || stats.total === 0)) {
     return null
   }
 
@@ -1989,7 +1992,7 @@ export function AutomationV2WorkerDetailPage({
       if (isOccurrenceAwaitingDocument(o)) {
         if (o.closing_state === 'blocked' || o.state === 'blocked') blockedCount++
         else alerts++
-      } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+      } else if (o.closing_state === 'attention_alert' || o.state === 'failed' || o.state === 'unavailable') {
         alerts++
       }
     }
@@ -2009,7 +2012,7 @@ export function AutomationV2WorkerDetailPage({
     } else if (statusFilter === 'deliverable') {
       list = list.filter(o => isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0)
     } else if (statusFilter === 'alert') {
-      list = list.filter(o => (isOccurrenceAwaitingDocument(o) && o.closing_state !== 'blocked' && o.state !== 'blocked') || o.closing_state === 'attention_alert' || o.state === 'failed')
+      list = list.filter(o => (isOccurrenceAwaitingDocument(o) && o.closing_state !== 'blocked' && o.state !== 'blocked') || o.closing_state === 'attention_alert' || o.state === 'failed' || o.state === 'unavailable')
     } else if (statusFilter === 'blocked') {
       list = list.filter(o => (isOccurrenceAwaitingDocument(o) && (o.closing_state === 'blocked' || o.state === 'blocked')) || o.closing_state === 'blocked' || o.state === 'blocked')
     }
@@ -2671,17 +2674,30 @@ export function isOccurrenceRoutineClean(o: AutomationV2Occurrence): boolean {
 
 export function OpenExecutionSessionButton({
   sessionId,
+  state,
   workspaceSlug,
   onOpenSession,
   onChat,
   className,
 }: {
   sessionId: string
+  state?: string
   workspaceSlug?: string
   onOpenSession?: (id: string) => void
   onChat?: (id: string) => void
   className?: string
 }) {
+  if (state === 'unavailable') {
+    return (
+      <span
+        title="Execution session was not created due to preparation or wake failure"
+        className="inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-[var(--app-text-subtle)] opacity-70"
+      >
+        Session unavailable
+      </span>
+    )
+  }
+
   const handleClick = (e: React.MouseEvent) => {
     if (onOpenSession) {
       e.preventDefault()
@@ -2823,6 +2839,7 @@ export function CalmRunCard({
         <div className="flex shrink-0 items-center gap-2">
           <OpenExecutionSessionButton
             sessionId={occurrence.session_id}
+            state={occurrence.state}
             workspaceSlug={workspaceSlug}
             onOpenSession={onOpenSession}
             onChat={onChat}
@@ -2923,6 +2940,7 @@ export function DeliverableRunCard({
         <span className="text-[10px] text-[var(--app-text-subtle)]">Occurrence receipt verified</span>
         <OpenExecutionSessionButton
           sessionId={occurrence.session_id}
+          state={occurrence.state}
           workspaceSlug={workspaceSlug}
           onOpenSession={onOpenSession}
           onChat={onChat}
@@ -2969,6 +2987,7 @@ export function AwaitingDocumentRunCard({
         <span className="text-[10px] text-[var(--app-text-muted)]">Action needed</span>
         <OpenExecutionSessionButton
           sessionId={occurrence.session_id}
+          state={occurrence.state}
           workspaceSlug={workspaceSlug}
           onOpenSession={onOpenSession}
           onChat={onChat}
@@ -2992,7 +3011,7 @@ export function StandardRunCard({
   onChat?: (id: string) => void
 }) {
   const isRunning = occurrence.state === 'running' || occurrence.state === 'in_progress'
-  const isFailed = occurrence.state === 'failed' || occurrence.closing_state === 'attention_alert'
+  const isFailed = occurrence.state === 'failed' || occurrence.state === 'unavailable' || occurrence.closing_state === 'attention_alert'
   const isAdmitted = occurrence.state === 'admitted'
 
   return (
@@ -3023,7 +3042,7 @@ export function StandardRunCard({
           ) : isFailed ? (
             <span className="flex items-center gap-1 text-[var(--app-danger)] font-medium">
               <AlertTriangle size={12} aria-hidden="true" />
-              <span className="capitalize">Alert · {occurrence.state.replace(/_/g, ' ')}</span>
+              <span className="capitalize">{occurrence.state === 'unavailable' ? 'Unavailable · Preparation failed' : `Alert · ${occurrence.state.replace(/_/g, ' ')}`}</span>
             </span>
           ) : (
             <span className="capitalize font-medium text-[var(--app-text)]">
@@ -3047,10 +3066,13 @@ export function StandardRunCard({
             ? 'Admitted means queued for dispatch.'
             : isRunning
               ? 'Active execution in progress.'
-              : 'Completed observation.'}
+              : occurrence.state === 'unavailable'
+                ? 'Execution failed or preparation error.'
+                : 'Completed observation.'}
         </span>
         <OpenExecutionSessionButton
           sessionId={occurrence.session_id}
+          state={occurrence.state}
           workspaceSlug={workspaceSlug}
           onOpenSession={onOpenSession}
           onChat={onChat}
@@ -3118,7 +3140,7 @@ export function groupOccurrencesByDay(occurrences: AutomationV2Occurrence[], tim
       } else {
         group.stats.alerts += 1
       }
-    } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+    } else if (o.closing_state === 'attention_alert' || o.state === 'failed' || o.state === 'unavailable') {
       group.stats.alerts += 1
     }
     if (isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0) {

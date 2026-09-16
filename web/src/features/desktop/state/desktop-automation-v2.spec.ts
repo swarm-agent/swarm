@@ -139,3 +139,29 @@ test('V2 sidebar groups automation authors without exposing hidden or removed se
   rows = selectDesktopSidebarRows(state, 'scope')
   assert.deepEqual(rows.map(row => row.sessionId), ['ordinary'])
 })
+
+test('V2 sidebar groups accepted automation authors created with automation_management purpose', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.sessionOrderByScope.scope = ['author-mgmt', 'draft-mgmt']
+  state.sessionsById['author-mgmt'] = {
+    kind: 'full',
+    session: {
+      id: 'author-mgmt',
+      title: 'Worker plan: test',
+      automation_v2: { automation_id: 'av2_123', workspace_id: 'w', digest: 'd' },
+      metadata: { swarm_v3_session_purpose: 'automation_management', swarm_v3_purpose_workspace_id: 'w', navigation_hidden: true },
+    },
+    needsHydrate: false,
+  } as any
+  state.sessionsById['draft-mgmt'] = {
+    kind: 'full',
+    session: {
+      id: 'draft-mgmt',
+      title: 'Unaccepted sidecar draft',
+      metadata: { swarm_v3_session_purpose: 'automation_management', swarm_v3_purpose_workspace_id: 'w', navigation_hidden: true },
+    },
+    needsHydrate: false,
+  } as any
+  const rows = selectDesktopSidebarRows(state, 'scope')
+  assert.deepEqual(rows.map(row => [row.sessionId, row.sidebarGroup]), [['author-mgmt', 'automation']])
+})

@@ -365,6 +365,29 @@ test('standard run card renders running active states and admitted slots', () =>
   assert.match(admittedMarkup, /Open execution session/)
 })
 
+test('StandardRunCard and OpenExecutionSessionButton render unavailable state and disabled session indicator', () => {
+  const unavailOcc: AutomationV2Occurrence = {
+    id: 'occ-unavail-1',
+    state: 'unavailable',
+    detail: 'execution preparation or wake failed; retry retained',
+    due_at: 1700000000000,
+    session_id: 'av2-execution-failed-1',
+    accepted: baseRecord,
+  }
+  const markup = renderToStaticMarkup(
+    <StandardRunCard
+      occurrence={unavailOcc}
+      timeStr="5:45 PM"
+      workspaceSlug="my-ws"
+    />
+  )
+  assert.match(markup, /Unavailable · Preparation failed/)
+  assert.match(markup, /execution preparation or wake failed; retry retained/)
+  assert.match(markup, /Execution failed or preparation error/)
+  assert.match(markup, /Session unavailable/)
+  assert.doesNotMatch(markup, /open-execution-session-link/)
+})
+
 test('AutomationV2Detail renders top-down run feed with calm runs, deliverables, and session drill-down', () => {
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
   const input = {
