@@ -20,7 +20,9 @@ test('workers is nested under the retained Desktop owner and rendered through it
   assert.match(registration, /path: '\/\$workspaceSlug\/workers'/)
   assert.match(registration, /path: '\/\$workspaceSlug\/automations'/)
   assert.match(registration, /redirect\({\s*to: '\/\$workspaceSlug\/workers'/)
-  assert.match(router, /conversationRoute\.addChildren\(\[workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceAutomationsRoute\]\)/)
+  assert.match(router, /conversationRoute\.addChildren\(\[workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute,[\s\S]*?workspaceAutomationsRoute\]\)/)
+  assert.match(router, /path: '\/\$workspaceSlug\/workers\/\$workerId'/)
+  assert.match(router, /path: '\/\$workspaceSlug\/worker\/\$workerId'/)
   assert.match(source, /const routeSessionId = mobileCreationPage \|\| isWorkersRoute\s*\? ''/)
   assert.match(source, /to: isWorkersRoute \? '\/\$workspaceSlug\/workers' : '\/\$workspaceSlug'/)
   assert.match(source, /isWorkersRoute \? \([\s\S]*?<Outlet \/>/)
@@ -48,9 +50,9 @@ test('automation content cannot restore a second workspace navigation shell', as
   assert.match(content, /aria-label="Worker controls"/)
 })
 
-test('clicking an accepted automation session navigates to the session page with conversation chat and worker banner context', () => {
-  assert.doesNotMatch(source, /if \(isAcceptedAutomation\)\s*\{\s*return \(\s*<Link\s+to="\/\$workspaceSlug\/workers"/)
-  assert.doesNotMatch(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*void navigate\(\{\s*to: '\/\$workspaceSlug\/workers'/)
+test('clicking a scheduled worker in the sidebar navigates to the worker ID page while individual session page renders conversation chat and worker banner context', () => {
+  assert.match(source, /if \(isAutomationRow\)\s*\{\s*const workerId =[\s\S]*?<Link\s+to="\/\$workspaceSlug\/workers\/\$workerId"/)
+  assert.match(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*const sessionRec =[\s\S]*?void navigate\(\{\s*to: '\/\$workspaceSlug\/workers\/\$workerId'/)
   assert.doesNotMatch(source, /routeSessionIsAcceptedAutomation \? \(\s*<div[^>]*>\s*<AutomationToolPage \/>\s*<\/div>\s*\) : routeSessionId/)
   assert.match(chatPane, /<WorkerSessionBanner[\s\S]*sessionId=\{normalizedSessionId\}[\s\S]*workspaceSlug=\{routeWorkspaceSlug\}/)
 })

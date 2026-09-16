@@ -73,7 +73,7 @@ import { AutomationProgressView } from '../tools/automations/automation-progress
 import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
-import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
@@ -1862,6 +1862,7 @@ interface SessionRowProps {
 }
 
 const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onDelete, onOpenAutomations }: SessionRowProps) {
+  const navigate = useNavigate()
   const session = initialSession
   const automation = useDesktopV3CacheSelector(state => {
     const record = state.sessionsById[session.id]
@@ -2345,6 +2346,33 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     </>
   )
 
+  if (isAutomationRow) {
+    const workerId = (session as any).automation_v2?.automation_id || session.id
+    return (
+      <Link
+        to="/$workspaceSlug/workers/$workerId"
+        params={{ workspaceSlug: rowWorkspaceSlug, workerId }}
+        {...linkProps}
+        onClick={(event: React.MouseEvent) => {
+          if (event.defaultPrevented || event.button !== 0) return
+          if (selectionMode && selectionEligible) {
+            event.preventDefault()
+            onToggleSelected?.(session.id, event.shiftKey)
+            return
+          }
+          if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+          event.preventDefault()
+          void navigate({
+            to: '/$workspaceSlug/workers/$workerId',
+            params: { workspaceSlug: rowWorkspaceSlug, workerId },
+          })
+        }}
+      >
+        {rowContent}
+      </Link>
+    )
+  }
+
   return (
     <Link
       to="/$workspaceSlug/$sessionId"
@@ -2617,7 +2645,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                     {taskGroup.map((node) => (
                       <SessionRow
                         key={node.session.id}
-                        active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && input.routeAutomationSessionId === node.session.id)}
+                        active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && (input.routeAutomationSessionId === node.session.id || input.routeAutomationSessionId === (node.session as any).automation_v2?.automation_id))}
                         now={input.now}
                         session={node.session}
                         workspaceSlug={input.workspaceSlug}
@@ -2748,13 +2776,19 @@ export function DesktopAppPage() {
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
   const workspaceWorkersMatch = matchRoute({ to: '/$workspaceSlug/workers', fuzzy: false })
+  const workspaceWorkersDetailMatch = matchRoute({ to: '/$workspaceSlug/workers/$workerId', fuzzy: false })
+  const workspaceWorkerDetailMatch = matchRoute({ to: '/$workspaceSlug/worker/$workerId', fuzzy: false })
   const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
-  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceAutomationsMatch)
+  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
   const routeWorkspaceSlug = (workspaceWorkersMatch
     ? workspaceWorkersMatch.workspaceSlug
+    : workspaceWorkersDetailMatch
+    ? workspaceWorkersDetailMatch.workspaceSlug
+    : workspaceWorkerDetailMatch
+    ? workspaceWorkerDetailMatch.workspaceSlug
     : workspaceAutomationsMatch
     ? workspaceAutomationsMatch.workspaceSlug
     : workspaceTaskMatch
@@ -2764,13 +2798,14 @@ export function DesktopAppPage() {
       : workspaceMatch
         ? workspaceMatch.workspaceSlug
         : '').trim()
+  const routeWorkerId = (workspaceWorkersDetailMatch ? workspaceWorkersDetailMatch.workerId : workspaceWorkerDetailMatch ? workspaceWorkerDetailMatch.workerId : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : null
   const routeSessionId = mobileCreationPage || isWorkersRoute
     ? ''
     : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
   const routeAutomationSessionId = isWorkersRoute && typeof search.sessionId === 'string'
     ? search.sessionId.trim()
-    : ''
+    : routeWorkerId
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
@@ -3694,13 +3729,23 @@ export function DesktopAppPage() {
     if (!canonicalWorkspaceSlug || canonicalWorkspaceSlug === routeWorkspaceSlug) {
       return
     }
+    if (isWorkersRoute && routeWorkerId) {
+      void navigate({
+        to: '/$workspaceSlug/workers/$workerId',
+        params: { workspaceSlug: canonicalWorkspaceSlug, workerId: routeWorkerId },
+        replace: true,
+      })
+      return
+    }
     void navigate({
       to: isWorkersRoute ? '/$workspaceSlug/workers' : '/$workspaceSlug',
-      params: { workspaceSlug: canonicalWorkspaceSlug },
+      params: {
+        workspaceSlug: canonicalWorkspaceSlug,
+      },
       search: isWorkersRoute && routeAutomationSessionId ? { sessionId: routeAutomationSessionId } : undefined,
       replace: true,
     })
-  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute, routeAutomationSessionId])
+  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute, routeAutomationSessionId, routeWorkerId])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || !routeSessionId) {
@@ -3767,6 +3812,20 @@ export function DesktopAppPage() {
 
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
+
+    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
+    if (automationIdentity === 'accepted') {
+      const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
+      const workerId = (sessionRec?.kind === 'full' && sessionRec.session.automation_v2?.automation_id) || normalizedSessionId
+      void navigate({
+        to: '/$workspaceSlug/workers/$workerId',
+        params: {
+          workspaceSlug,
+          workerId,
+        },
+      })
+      return true
+    }
 
     void navigate({
       to: '/$workspaceSlug/$sessionId',

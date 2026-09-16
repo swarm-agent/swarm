@@ -4,13 +4,14 @@ import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/wo
 import { AutomationV2Workspace as AutomationWorkspace } from '../automations/automation-v2-workspace'
 
 export function AutomationToolPage() {
-  const params = useParams({ strict: false }) as { workspaceSlug?: string }
-  const search = useSearch({ strict: false }) as { sessionId?: string; automationId?: string }
+  const params = useParams({ strict: false }) as { workspaceSlug?: string; workerId?: string }
+  const search = useSearch({ strict: false }) as { sessionId?: string; automationId?: string; workerId?: string }
   const navigate = useNavigate()
   const { workspaces, loading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   if (loading) return <main role="status" className="p-6">Loading workspace…</main>
   const workspace = resolveWorkspaceBySlug(workspaces, params.workspaceSlug ?? '')
   if (!workspace?.workspaceId) return <main className="p-6"><h1>Workspace unavailable</h1><p>Choose an accessible workspace before opening workers.</p><a href="/">Workspaces</a></main>
+  const targetWorkerId = (params.workerId || search?.workerId || search?.automationId || search?.sessionId || '').trim()
   return (
     <AutomationWorkspace
       key={workspace.workspaceId}
@@ -19,10 +20,19 @@ export function AutomationToolPage() {
       workspaceName={workspace.workspaceName}
       workspaceBindingId={workspace.localWorkspaceBindingId}
       workspaceSlug={params.workspaceSlug!}
-      initialSessionId={search?.sessionId}
+      initialSessionId={targetWorkerId || undefined}
       onOpenSession={(id) => {
         if (params.workspaceSlug) {
           void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: params.workspaceSlug, sessionId: id } })
+        }
+      }}
+      onSelectWorker={(id) => {
+        if (params.workspaceSlug) {
+          if (id) {
+            void navigate({ to: '/$workspaceSlug/workers/$workerId', params: { workspaceSlug: params.workspaceSlug, workerId: id } })
+          } else {
+            void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: params.workspaceSlug } })
+          }
         }
       }}
     />

@@ -3298,11 +3298,17 @@ export function DesktopV3ExistingConversationPane({
         workspaceSlug={routeWorkspaceSlug}
         onNavigateToWorkers={(targetSessionId) => {
           const targetSlug = routeWorkspaceSlug || 'workspace'
-          void navigate({
-            to: '/$workspaceSlug/workers',
-            params: { workspaceSlug: targetSlug },
-            search: targetSessionId ? { sessionId: targetSessionId } : undefined,
-          })
+          if (targetSessionId) {
+            void navigate({
+              to: '/$workspaceSlug/workers/$workerId',
+              params: { workspaceSlug: targetSlug, workerId: targetSessionId },
+            })
+          } else {
+            void navigate({
+              to: '/$workspaceSlug/workers',
+              params: { workspaceSlug: targetSlug },
+            })
+          }
         }}
       />
       <div

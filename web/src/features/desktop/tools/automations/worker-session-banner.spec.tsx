@@ -267,5 +267,5 @@ test('WorkerSessionBanner links render with cursor-pointer and proper href desti
   assert.match(markup, /title="Back to all Workers"/)
   assert.match(markup, /cursor-pointer/)
   assert.match(markup, /Worker Details/)
-  assert.match(markup, /href="\/my-workspace\/workers\?sessionId=worker-author-1"/)
+  assert.match(markup, /href="\/my-workspace\/workers\/auto-1"/)
 })

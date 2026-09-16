@@ -806,6 +806,7 @@ export function AutomationV2Workspace({
   workspaceSlug,
   initialSessionId,
   onOpenSession,
+  onSelectWorker,
 }: {
   workspaceId: string
   workspacePath: string
@@ -814,6 +815,7 @@ export function AutomationV2Workspace({
   workspaceSlug?: string
   initialSessionId?: string
   onOpenSession?: (id: string) => void
+  onSelectWorker?: (id?: string) => void
 }) {
   const [cursor, setCursor] = useState<string>()
   const [selected, setSelected] = useState(initialSessionId || '')
@@ -932,13 +934,30 @@ export function AutomationV2Workspace({
     if (initialSessionId) {
       setSelected(initialSessionId)
       setExpandedIds((prev) => ({ ...prev, [initialSessionId]: true }))
+    } else {
+      setSelected('')
     }
   }, [initialSessionId])
 
   const selectedRecord = useMemo(() => {
     if (!selected) return null
-    return records.find((r) => r.session_id === selected) ?? null
-  }, [records, selected])
+    return (
+      records.find((r) => r.session_id === selected || r.automation_id === selected) ??
+      activeRecords.find((r) => r.session_id === selected || r.automation_id === selected) ??
+      archivedRecords.find((r) => r.session_id === selected || r.automation_id === selected) ??
+      null
+    )
+  }, [records, activeRecords, archivedRecords, selected])
+
+  const handleOpenWorkerDetail = (rec: AutomationV2Record) => {
+    const targetId = rec.automation_id || rec.session_id
+    setSelected(rec.session_id)
+    if (onSelectWorker) {
+      onSelectWorker(targetId)
+    } else if (typeof window !== 'undefined' && window.history && workspaceSlug) {
+      window.history.pushState(null, '', `/${encodeURIComponent(workspaceSlug)}/workers/${encodeURIComponent(targetId)}`)
+    }
+  }
 
   const toggleExpanded = (sessionId: string) => {
     setExpandedIds((prev) => {
@@ -1164,56 +1183,46 @@ export function AutomationV2Workspace({
       {/* Main Body + Sidecar Layout */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden">
         <main className="min-w-0 flex-1 space-y-6 p-5 sm:p-8 overflow-y-auto">
-          {/* Selected Worker Context Banner */}
-          {selectedRecord && (
-            <div
-              className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)]/50 bg-[var(--app-primary-soft)]/40 p-4 text-xs shadow-xs"
-              data-testid="selected-worker-banner"
-            >
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelected('')
-                    if (typeof window !== 'undefined' && window.history && workspaceSlug) {
-                      window.history.replaceState(null, '', `/${encodeURIComponent(workspaceSlug)}/workers`)
-                    }
-                  }}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors cursor-pointer"
-                >
-                  <ChevronLeft size={13} className="shrink-0" />
-                  <span>View all workers</span>
-                </button>
-                <span className="text-[var(--app-border)] select-none">/</span>
-                <span className="truncate font-semibold text-sm text-[var(--app-text)]">
-                  {selectedRecord.document.title}
-                </span>
-                {selectedRecord.document?.automation_v2?.schedule && (
-                  <span className="hidden md:inline-flex items-center gap-1 rounded-md border border-[var(--app-border)]/60 bg-[var(--app-surface)] px-2 py-0.5 text-[11px] text-[var(--app-text-muted)]">
-                    <Clock3 size={11} className="shrink-0 text-[var(--app-text-subtle)]" />
-                    <span>
-                      {scheduleLabel(selectedRecord.document.automation_v2.schedule)}
-                      {selectedRecord.document.automation_v2.schedule.timezone ? ` · ${selectedRecord.document.automation_v2.schedule.timezone}` : ''}
-                    </span>
-                  </span>
-                )}
+          {selected ? (
+            selectedRecord ? (
+              <AutomationV2WorkerDetailPage
+                workspaceId={workspaceId}
+                workspacePath={workspacePath}
+                workspaceSlug={workspaceSlug}
+                record={selectedRecord}
+                pendingProposal={pendingProposalBySessionId.get(selectedRecord.session_id)}
+                onBack={() => {
+                  setSelected('')
+                  if (onSelectWorker) onSelectWorker()
+                  else if (typeof window !== 'undefined' && window.history && workspaceSlug) {
+                    window.history.pushState(null, '', `/${encodeURIComponent(workspaceSlug)}/workers`)
+                  }
+                }}
+                onOpenSession={onOpenSession}
+                onChat={handleChatWithAutomation}
+                onAskForChanges={handleAskForChanges}
+                onControlRecord={handleControlRecord}
+                onArchiveRecord={handleArchiveRecord}
+                onDeleteRecord={handleDeleteRecord}
+                actionLoadingId={actionLoadingId}
+              />
+            ) : page?.loading ? (
+              <div className="p-8 text-center space-y-2">
+                <div className="text-sm font-medium text-[var(--app-text)]">Loading worker details…</div>
+                <p className="text-xs text-[var(--app-text-muted)]">Looking up worker ID “{selected}”…</p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {onOpenSession && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenSession(selectedRecord.session_id)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] transition-colors cursor-pointer"
-                    title="Open raw conversation and instructions session"
-                  >
-                    <span>Inspect Session</span>
-                    <ExternalLink size={11} className="shrink-0 opacity-70" />
-                  </button>
-                )}
+            ) : (
+              <div className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center bg-[var(--app-surface)] space-y-3">
+                <h3 className="text-base font-semibold text-[var(--app-text)]">Worker not found</h3>
+                <p className="text-xs text-[var(--app-text-muted)]">Worker ID “{selected}” could not be found in this workspace.</p>
+                <Button variant="outline" size="sm" onClick={() => { setSelected(''); onSelectWorker?.() }}>
+                  <ChevronLeft size={14} />
+                  <span>Back to all Workers</span>
+                </Button>
               </div>
-            </div>
-          )}
-
+            )
+          ) : (
+            <>
           {/* Overview Heading & Refresh */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -1497,7 +1506,7 @@ export function AutomationV2Workspace({
                         "flex w-full min-w-0 items-center justify-between gap-3 text-left transition-colors focus-visible:outline-none hover:text-[var(--app-primary)]",
                         isSelected ? 'text-[var(--app-primary)]' : 'text-[var(--app-text)]'
                       )}
-                      onClick={() => toggleExpanded(record.session_id)}
+                      onClick={() => handleOpenWorkerDetail(record)}
                       aria-current={isSelected ? 'page' : undefined}
                       aria-expanded={isExpanded}
                       title="Click to view details and runs"
@@ -1648,7 +1657,7 @@ export function AutomationV2Workspace({
                         size="sm"
                         variant={isExpanded ? 'secondary' : 'outline'}
                         className="h-8 gap-1.5 rounded-xl text-xs"
-                        onClick={() => toggleExpanded(record.session_id)}
+                        onClick={() => handleOpenWorkerDetail(record)}
                         aria-expanded={isExpanded}
                       >
                         <span>{isExpanded ? 'Hide details' : 'View details'}</span>
@@ -1796,6 +1805,8 @@ export function AutomationV2Workspace({
               ))}
             </div>
           </section>
+          </>
+          )}
         </main>
 
         {/* Full-Height Right Aside: Automations Assistant */}
@@ -1863,6 +1874,449 @@ export function AutomationV2Workspace({
     </div>
   )
 }
+export function AutomationV2WorkerDetailPage({
+  workspaceId,
+  workspacePath: _workspacePath,
+  workspaceSlug,
+  record,
+  pendingProposal,
+  onBack,
+  onOpenSession,
+  onChat,
+  onAskForChanges,
+  onControlRecord,
+  onArchiveRecord,
+  onDeleteRecord,
+  actionLoadingId,
+}: {
+  workspaceId: string
+  workspacePath: string
+  workspaceSlug?: string
+  record: AutomationV2Record
+  pendingProposal?: AutomationV2Proposal
+  onBack: () => void
+  onOpenSession?: (id: string) => void
+  onChat?: (id: string) => void
+  onAskForChanges?: (id: string) => void
+  onControlRecord: (record: AutomationV2Record, action: 'pause' | 'resume') => Promise<void>
+  onArchiveRecord: (record: AutomationV2Record) => Promise<void>
+  onDeleteRecord: (record: AutomationV2Record) => void
+  actionLoadingId: string | null
+}) {
+  const [timezone, setTimezone] = useState(() => record.document?.automation_v2?.schedule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)
+  const [cursor, setCursor] = useState<string>()
+  const [editing, setEditing] = useState(false)
+  const [viewMode, setViewMode] = useState<'today' | 'all'>('today')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'deliverable' | 'alert' | 'blocked'>('all')
+
+  const input = useMemo(() => ({
+    action: 'progress' as const,
+    workspace_id: workspaceId,
+    session_id: record.session_id,
+    timezone,
+    cursor,
+  }), [workspaceId, record.session_id, timezone, cursor])
+
+  const page = useAutomationV2Page(input)
+  const progress = page?.data?.progress
+  const liveRecord = progress?.record || record
+  const schedule = liveRecord.document.automation_v2.schedule
+  const scheduleTimezone = schedule?.timezone
+  const effectiveDisplayTimezone = scheduleTimezone || timezone
+  const time = (ms: number) => formatScheduleDateTime(ms, effectiveDisplayTimezone)
+
+  const occurrences = useMemo(() => progress?.occurrences ?? [], [progress?.occurrences])
+  const todayKey = useMemo(() => getOccurrenceDayKey(Date.now(), timezone), [timezone])
+  const todayOccurrences = useMemo(() => occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, timezone) === todayKey), [occurrences, todayKey])
+
+  const todayStats = useMemo(() => {
+    let clean = 0
+    let deliverables = 0
+    let alerts = 0
+    let blockedCount = 0
+    for (const o of todayOccurrences) {
+      if (isOccurrenceRoutineClean(o)) clean++
+      if (isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0) deliverables++
+      if (isOccurrenceAwaitingDocument(o)) {
+        if (o.closing_state === 'blocked' || o.state === 'blocked') blockedCount++
+        else alerts++
+      } else if (o.closing_state === 'attention_alert' || o.state === 'failed') {
+        alerts++
+      }
+    }
+    return {
+      total: todayOccurrences.length,
+      clean,
+      deliverables,
+      alerts,
+      blocked: blockedCount,
+    }
+  }, [todayOccurrences])
+
+  const displayedOccurrences = useMemo(() => {
+    let list = viewMode === 'today' ? todayOccurrences : occurrences
+    if (statusFilter === 'clean') {
+      list = list.filter(isOccurrenceRoutineClean)
+    } else if (statusFilter === 'deliverable') {
+      list = list.filter(o => isOccurrenceDeliverableReady(o) || extractOccurrenceDeliverables(o).length > 0)
+    } else if (statusFilter === 'alert') {
+      list = list.filter(o => (isOccurrenceAwaitingDocument(o) && o.closing_state !== 'blocked' && o.state !== 'blocked') || o.closing_state === 'attention_alert' || o.state === 'failed')
+    } else if (statusFilter === 'blocked') {
+      list = list.filter(o => (isOccurrenceAwaitingDocument(o) && (o.closing_state === 'blocked' || o.state === 'blocked')) || o.closing_state === 'blocked' || o.state === 'blocked')
+    }
+    return list
+  }, [viewMode, statusFilter, todayOccurrences, occurrences])
+
+  const workerIdentifier = liveRecord.automation_id || liveRecord.session_id
+  const isArchived = liveRecord.archived
+
+  return (
+    <div className="space-y-6" data-testid="worker-id-page">
+      {/* Top Header & Breadcrumbs */}
+      <div
+        className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)]/50 bg-[var(--app-primary-soft)]/30 p-4 text-xs shadow-xs"
+        data-testid="selected-worker-banner"
+      >
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors cursor-pointer"
+            title="Back to all Workers"
+            data-testid="worker-detail-back-button"
+          >
+            <ChevronLeft size={14} className="shrink-0" />
+            <span>Workers</span>
+          </button>
+          <span className="text-[var(--app-border)] select-none">/</span>
+          <span className="truncate font-semibold text-base text-[var(--app-text)]">
+            {liveRecord.document.title}
+          </span>
+          <span className="font-mono text-[10.5px] rounded-md border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[var(--app-text-muted)]" title="Worker ID">
+            ID: {workerIdentifier}
+          </span>
+          <span className={cn(
+            "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider leading-none",
+            isArchived
+              ? "bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]"
+              : liveRecord.enabled && !liveRecord.cancelled
+                ? "bg-[var(--app-success-bg,rgba(34,197,94,0.14))] text-[var(--app-success)]"
+                : "bg-[var(--app-surface-subtle)] text-[var(--app-text-muted)]"
+          )}>
+            {!isArchived && liveRecord.enabled && !liveRecord.cancelled && (
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-success)] animate-pulse" />
+            )}
+            <span>{isArchived ? 'Archived' : liveRecord.cancelled ? 'Cancelled' : liveRecord.enabled ? 'Scheduled' : 'Paused'}</span>
+          </span>
+          {schedule && (
+            <span className="hidden sm:inline-flex items-center gap-1 rounded-md border border-[var(--app-border)]/60 bg-[var(--app-surface)] px-2 py-0.5 text-[11px] text-[var(--app-text-muted)]">
+              <Clock3 size={11} className="shrink-0 text-[var(--app-text-subtle)]" />
+              <span>
+                {scheduleLabel(schedule)}
+                {schedule.timezone ? ` · ${schedule.timezone}` : ''}
+              </span>
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {!isArchived && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 rounded-xl text-xs"
+                onClick={() => void onControlRecord(liveRecord, liveRecord.enabled ? 'pause' : 'resume')}
+                disabled={liveRecord.cancelled}
+              >
+                {liveRecord.enabled ? <Pause size={13} /> : <Clock3 size={13} />}
+                <span>{liveRecord.enabled ? 'Pause schedule' : 'Resume schedule'}</span>
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 rounded-xl text-xs"
+                onClick={() => setEditing((v) => !v)}
+                aria-expanded={editing}
+              >
+                <span>{editing ? 'Close editor' : 'Edit worker'}</span>
+              </Button>
+            </>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 rounded-xl text-xs"
+            onClick={() => onChat?.(liveRecord.session_id)}
+            title="Discuss or optimize this worker with Swarm"
+          >
+            Optimize with Swarm
+          </Button>
+          {onOpenSession && (
+            <button
+              type="button"
+              onClick={() => onOpenSession(liveRecord.session_id)}
+              className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1.5 text-xs font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] transition-colors cursor-pointer"
+              title="Open authoring session and conversation"
+            >
+              <span>Inspect Session</span>
+              <ExternalLink size={11} className="shrink-0 opacity-70" />
+            </button>
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-8 gap-1 text-xs text-[var(--app-text-muted)] hover:text-[var(--app-danger)]"
+            disabled={actionLoadingId === liveRecord.session_id}
+            onClick={() => void (isArchived ? onDeleteRecord(liveRecord) : onArchiveRecord(liveRecord))}
+            title={isArchived ? "Delete worker" : "Archive worker"}
+          >
+            {isArchived ? <Trash2 size={13} /> : <Archive size={13} />}
+            <span>{isArchived ? 'Delete' : 'Archive'}</span>
+          </Button>
+        </div>
+      </div>
+
+      {/* Pending Revision Notification */}
+      {pendingProposal && (
+        <div className="rounded-2xl border border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.06))] p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Clock3 size={16} className="text-[var(--app-warning)]" />
+              <span className="text-sm font-semibold text-[var(--app-text)]">
+                Pending Revision {pendingProposal.revision} Review
+              </span>
+            </div>
+            <span className="text-xs text-[var(--app-text-muted)]">Awaiting your approval</span>
+          </div>
+          <AutomationV2PlanReview
+            key={`${pendingProposal.proposal_id}-${pendingProposal.revision}`}
+            proposal={pendingProposal}
+            onAskForChanges={() => onAskForChanges?.(liveRecord.session_id)}
+          />
+        </div>
+      )}
+
+      {/* Active Plan & Instructions */}
+      <section aria-label="Worker Plan" className="rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/50 pb-3">
+          <div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)]">Active Plan & Instructions</div>
+            <h3 className="text-sm font-semibold text-[var(--app-text)] mt-1">
+              Goal: {liveRecord.document.info.goal}
+            </h3>
+          </div>
+          <span className="text-xs text-[var(--app-text-muted)] font-medium">
+            {liveRecord.document.checkpoints.length} {liveRecord.document.checkpoints.length === 1 ? 'checkpoint step' : 'checkpoint steps'} · Revision {liveRecord.revision}
+          </span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {liveRecord.document.checkpoints.map((cp, idx) => (
+            <div key={cp.id} className="rounded-xl border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/50 p-3.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-mono font-semibold text-[var(--app-primary)] uppercase">Step {idx + 1}</span>
+                <span className="text-[10px] rounded bg-[var(--app-surface)] px-1.5 py-0.5 font-medium text-[var(--app-text-muted)] capitalize">
+                  {String(cp.status || 'pending')}
+                </span>
+              </div>
+              <h4 className="text-xs font-semibold text-[var(--app-text)]">{cp.title}</h4>
+              {cp.objective && cp.objective !== cp.title && (
+                <p className="text-[11px] text-[var(--app-text-muted)] leading-relaxed">{cp.objective}</p>
+              )}
+              {cp.tasks && cp.tasks.length > 0 && (
+                <ul className="space-y-1 text-[11px] text-[var(--app-text-subtle)] list-inside list-disc">
+                  {cp.tasks.map((t, i) => (
+                    <li key={i} className="line-clamp-2">{t}</li>
+                  ))}
+                </ul>
+              )}
+              {cp.acceptance_criteria && cp.acceptance_criteria.length > 0 && (
+                <div className="pt-1.5 border-t border-[var(--app-border)]/40">
+                  <div className="text-[10px] font-medium text-[var(--app-text-muted)] uppercase tracking-wider">Acceptance</div>
+                  <ul className="mt-1 space-y-0.5 text-[10.5px] text-[var(--app-text-subtle)]">
+                    {cp.acceptance_criteria.map((c, i) => (
+                      <li key={i} className="line-clamp-1">✓ {c}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        {editing && <AutomationV2Edit record={liveRecord} />}
+      </section>
+
+      {/* Today's Pulse Strip & Summary */}
+      <section aria-label="Today's Pulse" className="rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-5 space-y-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+              <Clock3 size={16} />
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-[var(--app-text)]">
+                Today's Pulse · {new Intl.DateTimeFormat(undefined, { timeZone: effectiveDisplayTimezone, month: 'short', day: 'numeric', year: 'numeric' }).format(Date.now())}
+              </div>
+              <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
+                {todayStats.total === 0
+                  ? 'No runs executed yet today.'
+                  : `${todayStats.total} ${todayStats.total === 1 ? 'run' : 'runs'} executed today · ${todayStats.alerts === 0 && todayStats.blocked === 0 ? 'All systems clean' : `${todayStats.alerts + todayStats.blocked} item(s) require attention`}`}
+              </p>
+            </div>
+          </div>
+          <div className="text-xs text-[var(--app-text-muted)]">
+            {liveRecord.enabled && !liveRecord.cancelled && liveRecord.next_due_at ? (
+              <span>Next scheduled run: <strong className="font-semibold text-[var(--app-text)]">{time(liveRecord.next_due_at)}</strong></span>
+            ) : (
+              <span>No upcoming run scheduled</span>
+            )}
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+          <button
+            type="button"
+            onClick={() => setStatusFilter(statusFilter === 'clean' ? 'all' : 'clean')}
+            className={cn(
+              "rounded-xl border p-3 text-left transition-colors cursor-pointer",
+              statusFilter === 'clean' ? "border-[var(--app-success-border,rgba(16,185,129,0.5))] bg-[var(--app-success-bg,rgba(16,185,129,0.15))]" : "border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/40 hover:bg-[var(--app-surface-hover)]"
+            )}
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-success)]">Clean Runs</div>
+            <div className="text-lg font-semibold text-[var(--app-text)] mt-0.5">✓ {todayStats.clean}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter(statusFilter === 'deliverable' ? 'all' : 'deliverable')}
+            className={cn(
+              "rounded-xl border p-3 text-left transition-colors cursor-pointer",
+              statusFilter === 'deliverable' ? "border-[var(--app-primary-border)] bg-[var(--app-primary-soft)]" : "border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/40 hover:bg-[var(--app-surface-hover)]"
+            )}
+          >
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--app-primary)]">Deliverables Ready</div>
+            <div className="text-lg font-semibold text-[var(--app-text)] mt-0.5">★ {todayStats.deliverables}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter(statusFilter === 'alert' ? 'all' : 'alert')}
+            className={cn(
+              "rounded-xl border p-3 text-left transition-colors cursor-pointer",
+              statusFilter === 'alert' ? "border-[var(--app-warning-border,rgba(245,158,11,0.5))] bg-[var(--app-warning-bg,rgba(245,158,11,0.15))]" : "border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/40 hover:bg-[var(--app-surface-hover)]"
+            )}
+          >
+            <div className={cn("text-[10px] font-semibold uppercase tracking-wider", todayStats.alerts > 0 ? "text-[var(--app-warning)]" : "text-[var(--app-text-muted)]")}>Attention Alerts</div>
+            <div className="text-lg font-semibold text-[var(--app-text)] mt-0.5">⚠ {todayStats.alerts}</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setStatusFilter(statusFilter === 'blocked' ? 'all' : 'blocked')}
+            className={cn(
+              "rounded-xl border p-3 text-left transition-colors cursor-pointer",
+              statusFilter === 'blocked' ? "border-[var(--app-danger-border,rgba(239,68,68,0.5))] bg-[var(--app-danger-bg,rgba(239,68,68,0.15))]" : "border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/40 hover:bg-[var(--app-surface-hover)]"
+            )}
+          >
+            <div className={cn("text-[10px] font-semibold uppercase tracking-wider", todayStats.blocked > 0 ? "text-[var(--app-danger)]" : "text-[var(--app-text-muted)]")}>Blocked</div>
+            <div className="text-lg font-semibold text-[var(--app-text)] mt-0.5">✕ {todayStats.blocked}</div>
+          </button>
+        </div>
+      </section>
+
+      {/* Granular Execution Sessions / Runs Feed */}
+      <section aria-label="Execution Sessions" className="rounded-2xl border border-[var(--app-border)]/70 bg-[var(--app-surface)] p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)]/50 pb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--app-text)]">Execution Sessions</h3>
+            <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
+              Granular sessions and execution runs housed under worker ID <strong className="font-mono text-[var(--app-text)]">{workerIdentifier}</strong>. Click any session to inspect what it did.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* View switcher: Today vs All days */}
+            <div className="flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setViewMode('today')}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer",
+                  viewMode === 'today' ? "bg-[var(--app-surface)] text-[var(--app-text)] font-semibold shadow-xs" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                )}
+              >
+                Today ({todayOccurrences.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('all')}
+                className={cn(
+                  "px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer",
+                  viewMode === 'all' ? "bg-[var(--app-surface)] text-[var(--app-text)] font-semibold shadow-xs" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                )}
+              >
+                All Days ({occurrences.length})
+              </button>
+            </div>
+            {/* Status filter pills */}
+            <div className="flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-0.5 text-xs">
+              {(['all', 'clean', 'deliverable', 'alert', 'blocked'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setStatusFilter(filter)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-[11px] font-medium capitalize transition-colors cursor-pointer",
+                    statusFilter === filter ? "bg-[var(--app-surface)] text-[var(--app-text)] font-semibold shadow-xs" : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                  )}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+            {/* Timezone picker */}
+            <label className="flex items-center gap-1.5 text-[11px] text-[var(--app-text-subtle)]">
+              <span>TZ:</span>
+              <select
+                className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-[11px]"
+                value={effectiveDisplayTimezone}
+                onChange={(e) => setTimezone(e.target.value)}
+              >
+                {[...new Set([Intl.DateTimeFormat().resolvedOptions().timeZone, 'UTC', schedule?.timezone].filter((v): v is string => !!v))].map((zone) => (
+                  <option key={zone}>{zone}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* Runs feed */}
+        {displayedOccurrences.length > 0 ? (
+          <AutomationV2RunFeed
+            occurrences={displayedOccurrences}
+            timezone={effectiveDisplayTimezone}
+            workspaceSlug={workspaceSlug}
+            onOpenSession={onOpenSession}
+            onChat={onChat}
+          />
+        ) : (
+          <div className="rounded-xl border border-dashed border-[var(--app-border)] p-6 text-center text-xs text-[var(--app-text-muted)] space-y-1">
+            <p className="font-medium text-[var(--app-text)]">
+              {viewMode === 'today' ? 'No runs recorded today matching this filter.' : 'No runs recorded matching this filter.'}
+            </p>
+            <p className="text-[11px]">
+              {statusFilter !== 'all' ? 'Try switching the status filter to “all” to see other runs.' : 'Runs will appear here automatically according to the scheduled cadence.'}
+            </p>
+          </div>
+        )}
+
+        {/* Pagination */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[var(--app-border)]/40 text-xs text-[var(--app-text-subtle)]">
+          <div className="flex gap-2">
+            {cursor && <Button size="sm" variant="outline" onClick={() => setCursor(undefined)}>First observations</Button>}
+            {progress?.next_cursor && <Button size="sm" variant="outline" disabled={page?.loading || page?.stale} onClick={() => setCursor(progress.next_cursor)}>More observations</Button>}
+          </div>
+          <span>{progress?.complete ? 'All recorded runs loaded.' : 'More observations may be available.'}</span>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 // Persisted scheduling handoff survives permission removal, navigation and reload.
 export function AutomationV2ScheduleHandoff({ workspaceId, sessionId }: { workspaceId: string; sessionId: string }) {
   const page = useAutomationV2Page({ action: 'progress', workspace_id: workspaceId, session_id: sessionId, timezone: 'UTC' })
@@ -2372,7 +2826,10 @@ export function DeliverableRunCard({
         <span className="text-[10px] text-[var(--app-text-subtle)]">{timeStr}</span>
       </div>
 
-      {occurrence.detail && (
+      {occurrence.summary && (
+        <p className="text-xs font-semibold text-[var(--app-text)] leading-4">{occurrence.summary}</p>
+      )}
+      {occurrence.detail && occurrence.detail !== occurrence.summary && (
         <p className="text-xs font-medium text-[var(--app-text)] leading-4">{occurrence.detail}</p>
       )}
 
@@ -2525,7 +2982,10 @@ export function StandardRunCard({
         <span className="text-[10px] text-[var(--app-text-subtle)]">{timeStr}</span>
       </div>
 
-      {occurrence.detail && (
+      {occurrence.summary && (
+        <p className="text-xs font-semibold text-[var(--app-text)] leading-4">{occurrence.summary}</p>
+      )}
+      {occurrence.detail && occurrence.detail !== occurrence.summary && (
         <p className="text-[11px] text-[var(--app-text-muted)] leading-4">{occurrence.detail}</p>
       )}
 

@@ -88,6 +88,9 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	metadata := canonical.Metadata
 	metadata["automation_v2_occurrence_id"] = o.ID
 	metadata["automation_v2_authoring_session_id"] = r.SessionID
+	metadata["automation_v2_automation_id"] = r.AutomationID
+	metadata["automation_v2_worker_id"] = r.AutomationID
+	metadata["worker_id"] = r.AutomationID
 	metadata["automation_v2_digest"] = r.Digest
 	metadata["automation_v2_revision"] = r.Revision
 	metadata["navigation_hidden"] = true
@@ -97,7 +100,7 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	metadata["swarm_v3_worktree_owner_session_id"] = o.SessionID
 	metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
 	metadata["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
-	snapshot := store.SessionSnapshot{ID: o.SessionID, UserID: r.UserID, AccountScopeID: r.AccountID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: r.Document.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: metadata, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: o.AdmittedAt, UpdatedAt: o.AdmittedAt}
+	snapshot := store.SessionSnapshot{ID: o.SessionID, UserID: r.UserID, AccountScopeID: r.AccountID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: r.Document.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: metadata, AutomationV2: &store.SessionAutomationV2Binding{AutomationID: r.AutomationID, WorkspaceID: r.WorkspaceID, Digest: r.Digest}, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: o.AdmittedAt, UpdatedAt: o.AdmittedAt}
 	if err = h.repository.JournalAutomationV2Preparation(o, snapshot); err != nil {
 		return snapshot, err
 	}

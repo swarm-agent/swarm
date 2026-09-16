@@ -58,7 +58,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && (r.URL.Path == AutomationsV2Path || r.URL.Path == AutomationsV2Path+"/review" || r.URL.Path == AutomationsV2Path+"/progress") {
 		q := r.URL.Query()
 		for key, values := range q {
-			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode") {
+			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "automation_id" && key != "worker_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode") {
 				automationV2Error(w, errors.New("invalid query"))
 				return
 			}
@@ -68,11 +68,18 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == AutomationsV2Path+"/progress" {
-			if q.Get("session_id") == "" || q.Has("limit") || len(q.Get("cursor")) > 1024 {
+			targetID := q.Get("session_id")
+			if targetID == "" {
+				targetID = q.Get("automation_id")
+			}
+			if targetID == "" {
+				targetID = q.Get("worker_id")
+			}
+			if targetID == "" || q.Has("limit") || len(q.Get("cursor")) > 1024 {
 				automationV2Error(w, errors.New("invalid progress query"))
 				return
 			}
-			progress, err := s.sessions.AutomationV2Progress(p.AccountScopeID, p.UserID, q.Get("workspace_id"), q.Get("session_id"), q.Get("timezone"), q.Get("cursor"), time.Now().UnixMilli())
+			progress, err := s.sessions.AutomationV2Progress(p.AccountScopeID, p.UserID, q.Get("workspace_id"), targetID, q.Get("timezone"), q.Get("cursor"), time.Now().UnixMilli())
 			if err != nil {
 				automationV2Error(w, err)
 				return
@@ -89,11 +96,18 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == AutomationsV2Path+"/review" {
-			if q.Get("session_id") == "" || q.Has("limit") || q.Has("cursor") {
+			targetID := q.Get("session_id")
+			if targetID == "" {
+				targetID = q.Get("automation_id")
+			}
+			if targetID == "" {
+				targetID = q.Get("worker_id")
+			}
+			if targetID == "" || q.Has("limit") || q.Has("cursor") {
 				automationV2Error(w, errors.New("invalid review query"))
 				return
 			}
-			proposal, found, err := s.sessions.GetAutomationV2Proposal(p.AccountScopeID, p.UserID, q.Get("workspace_id"), q.Get("session_id"))
+			proposal, found, err := s.sessions.GetAutomationV2Proposal(p.AccountScopeID, p.UserID, q.Get("workspace_id"), targetID)
 			if err != nil {
 				automationV2Error(w, err)
 				return
@@ -110,7 +124,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		if q.Has("limit") {
 			limit, err = strconv.Atoi(q.Get("limit"))
 		}
-		if err != nil || limit < 1 || limit > 100 || len(q.Get("cursor")) > 1024 || q.Has("session_id") {
+		if err != nil || limit < 1 || limit > 100 || len(q.Get("cursor")) > 1024 || q.Has("session_id") || q.Has("automation_id") || q.Has("worker_id") {
 			automationV2Error(w, errors.New("invalid discovery query"))
 			return
 		}

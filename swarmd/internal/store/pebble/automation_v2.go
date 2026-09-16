@@ -254,25 +254,37 @@ func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id stri
 }
 func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string) (AutomationV2Record, bool, error) {
 	_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, workspace, id)
-	if err != nil {
-		return AutomationV2Record{}, false, err
-	}
-	var r AutomationV2Record
-	ok, err := s.store.GetJSON(automationV2Key("accepted", account, id), &r)
-	if err != nil {
-		return AutomationV2Record{}, false, err
-	}
-	if ok {
-		if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, workspace, id); err != nil {
+	if err == nil {
+		var r AutomationV2Record
+		ok, err := s.store.GetJSON(automationV2Key("accepted", account, id), &r)
+		if err != nil {
 			return AutomationV2Record{}, false, err
 		}
-		if r.AutomationID == "" || r.AcceptedBy != user || r.AcceptedAt <= 0 || r.Authorization != r.Document.AutomationV2.Expiration {
-			return AutomationV2Record{}, false, ErrAutomationV2Conflict
+		if ok {
+			if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, workspace, id); err != nil {
+				return AutomationV2Record{}, false, err
+			}
+			if r.AutomationID == "" || r.AcceptedBy != user || r.AcceptedAt <= 0 || r.Authorization != r.Document.AutomationV2.Expiration {
+				return AutomationV2Record{}, false, ErrAutomationV2Conflict
+			}
+			r.Archived = isArchived
+			r.ArchivedAt = archivedAt
+			return r, true, nil
 		}
-		r.Archived = isArchived
-		r.ArchivedAt = archivedAt
 	}
-	return r, ok, err
+	// If lookup by session ID does not match, search by AutomationID in this workspace
+	records, _, listErr := s.ListAutomationV2Records(account, user, workspace, "", 100, "include")
+	if listErr == nil {
+		for _, rec := range records {
+			if rec.AutomationID == id {
+				return rec, true, nil
+			}
+		}
+	}
+	if err != nil {
+		return AutomationV2Record{}, false, err
+	}
+	return AutomationV2Record{}, false, nil
 }
 
 func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, workspace, id string) error {

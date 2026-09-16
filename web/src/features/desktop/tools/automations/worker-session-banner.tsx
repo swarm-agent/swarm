@@ -118,6 +118,7 @@ export function WorkerSessionBanner({
       isAuthoring,
       occurrenceId,
       authoringSessionId: targetAuthorSessionId,
+      workerId: workerRecord?.automation_id || targetAuthorSessionId,
       workerTitle: authorTitle,
       schedule,
       workspaceId,
@@ -133,6 +134,7 @@ export function WorkerSessionBanner({
   const {
     isOccurrence,
     authoringSessionId,
+    workerId,
     workerTitle,
     schedule,
     occurrence,
@@ -180,20 +182,20 @@ export function WorkerSessionBanner({
     )
   }
 
+  const targetWorkerId = workerId || authoringSessionId
   const handleDetailsClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     handleBannerLinkClick(
       e,
-      onNavigateToWorkers ? () => onNavigateToWorkers(authoringSessionId) : undefined,
+      onNavigateToWorkers ? () => onNavigateToWorkers(targetWorkerId) : undefined,
       router
         ? () => {
             void router.navigate({
-              to: '/$workspaceSlug/workers',
-              params: { workspaceSlug: effectiveSlug },
-              search: { sessionId: authoringSessionId },
+              to: '/$workspaceSlug/workers/$workerId',
+              params: { workspaceSlug: effectiveSlug, workerId: targetWorkerId },
             })
           }
         : undefined,
-      `/${encodeURIComponent(effectiveSlug)}/workers?sessionId=${encodeURIComponent(authoringSessionId)}`
+      `/${encodeURIComponent(effectiveSlug)}/workers/${encodeURIComponent(targetWorkerId)}`
     )
   }
 
@@ -272,7 +274,7 @@ export function WorkerSessionBanner({
         {/* Right: Quick action back to Worker details */}
         <div className="flex shrink-0 items-center gap-1.5">
           <a
-            href={`/${encodeURIComponent(effectiveSlug)}/workers?sessionId=${encodeURIComponent(authoringSessionId)}`}
+            href={`/${encodeURIComponent(effectiveSlug)}/workers/${encodeURIComponent(targetWorkerId)}`}
             onClick={handleDetailsClick}
             className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors shadow-xs cursor-pointer"
             title="Open worker dashboard and configuration"

@@ -73,6 +73,12 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
+function validateWorkspaceWorkerParams(params: Record<string, unknown>): { workspaceSlug: string; workerId: string } {
+  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
+  const workerId = typeof params.workerId === 'string' ? params.workerId.trim() : ''
+  return { workspaceSlug, workerId }
+}
+
 function validateSettingsSearch(search: Record<string, unknown>): { tab?: string; returnSessionId?: string; agentSetup?: string; agent?: string; newWorktree?: string; newPlan?: string } {
   const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
   const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
@@ -259,6 +265,22 @@ const workspaceWorkersRoute = createRoute({
   component: AutomationToolPage,
 })
 
+const workspaceWorkersDetailRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/workers/$workerId',
+  parseParams: validateWorkspaceWorkerParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
+const workspaceWorkerDetailRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/worker/$workerId',
+  parseParams: validateWorkspaceWorkerParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
 const workspaceAutomationsRoute = createRoute({
   getParentRoute: () => conversationRoute,
   path: '/$workspaceSlug/automations',
@@ -355,7 +377,7 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceAutomationsRoute]),
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceWorkersDetailRoute, workspaceWorkerDetailRoute, workspaceAutomationsRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,
