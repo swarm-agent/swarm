@@ -1,5 +1,6 @@
 import { type CSSProperties, type ReactNode } from 'react'
 import { ArrowLeft, Loader2, Moon, Plus } from 'lucide-react'
+import { useRouter } from '@tanstack/react-router'
 
 export type SwarmToolSidebarSession = {
   id: string
@@ -95,6 +96,7 @@ export function SwarmToolSidebar({
   compactSelectedSession = false,
   prioritizeChildren = false,
 }: SwarmToolSidebarProps) {
+  const router = useRouter({ warn: false })
   return (
     <aside className={layoutClassName ?? 'flex min-h-0 w-full shrink-0 flex-1 flex-col overflow-hidden py-2 font-mono text-[12px] text-[var(--app-text-muted)] lg:mr-5 lg:w-[276px] lg:flex-none lg:border-r lg:border-[var(--app-border)] lg:py-5 lg:pl-3 lg:pr-4'}>
       <div className="mb-5 flex items-center justify-between gap-2">
@@ -120,7 +122,24 @@ export function SwarmToolSidebar({
         </button>
       </div>
 
-      {workspaceSlug && <a className="mb-3 block px-2 py-2 hover:bg-[var(--app-surface-hover)] focus-visible:outline-2" href={`/${encodeURIComponent(workspaceSlug)}/workers`}>Workers</a>}
+      {workspaceSlug && (
+        <a
+          className="mb-3 block px-2 py-2 hover:bg-[var(--app-surface-hover)] focus-visible:outline-2"
+          href={`/${encodeURIComponent(workspaceSlug)}/workers`}
+          onClick={(e) => {
+            if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+            if (router) {
+              e.preventDefault()
+              void router.navigate({
+                to: '/$workspaceSlug/workers',
+                params: { workspaceSlug },
+              })
+            }
+          }}
+        >
+          Workers
+        </a>
+      )}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain" data-tool-sidebar-scroll>
       {!compactSelectedSession ? (
         <>

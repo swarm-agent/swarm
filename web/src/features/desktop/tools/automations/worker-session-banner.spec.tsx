@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { WorkerSessionBanner } from './worker-session-banner'
+import { WorkerSessionBanner, handleBannerLinkClick } from './worker-session-banner'
 import { getDesktopV3CacheSnapshot } from '../../state/desktop-v3-cache-store'
 
 test('WorkerSessionBanner renders clear context for scheduled occurrence runs', () => {
@@ -144,4 +144,128 @@ test('WorkerSessionBanner returns null for non-worker sessions', () => {
   )
 
   assert.equal(markup, '')
+})
+
+test('handleBannerLinkClick intercepts primary clicks for client-side navigation without full page reload', () => {
+  let defaultPrevented = false
+  let navigated = false
+
+  const mockEvent = {
+    defaultPrevented: false,
+    button: 0,
+    preventDefault: () => { defaultPrevented = true },
+  }
+
+  const handled = handleBannerLinkClick(mockEvent, () => { navigated = true })
+  assert.equal(handled, true)
+  assert.equal(defaultPrevented, true)
+  assert.equal(navigated, true)
+})
+
+test('handleBannerLinkClick delegates to routerNavigate when onNavigate is not provided', () => {
+  let defaultPrevented = false
+  let routerNavigated = false
+
+  const mockEvent = {
+    defaultPrevented: false,
+    button: 0,
+    preventDefault: () => { defaultPrevented = true },
+  }
+
+  const handled = handleBannerLinkClick(mockEvent, undefined, () => { routerNavigated = true })
+  assert.equal(handled, true)
+  assert.equal(defaultPrevented, true)
+  assert.equal(routerNavigated, true)
+})
+
+test('handleBannerLinkClick does not prevent default for modifier keys or middle clicks', () => {
+  let defaultPrevented = false
+  let navigated = false
+
+  // Middle click (button 1)
+  const middleClick = {
+    defaultPrevented: false,
+    button: 1,
+    preventDefault: () => { defaultPrevented = true },
+  }
+  assert.equal(handleBannerLinkClick(middleClick, () => { navigated = true }), false)
+  assert.equal(defaultPrevented, false)
+  assert.equal(navigated, false)
+
+  // Cmd-click (metaKey)
+  const cmdClick = {
+    defaultPrevented: false,
+    button: 0,
+    metaKey: true,
+    preventDefault: () => { defaultPrevented = true },
+  }
+  assert.equal(handleBannerLinkClick(cmdClick, () => { navigated = true }), false)
+  assert.equal(defaultPrevented, false)
+  assert.equal(navigated, false)
+
+  // Ctrl-click (ctrlKey)
+  const ctrlClick = {
+    defaultPrevented: false,
+    button: 0,
+    ctrlKey: true,
+    preventDefault: () => { defaultPrevented = true },
+  }
+  assert.equal(handleBannerLinkClick(ctrlClick, () => { navigated = true }), false)
+  assert.equal(defaultPrevented, false)
+  assert.equal(navigated, false)
+
+  // Alt-click (altKey)
+  const altClick = {
+    defaultPrevented: false,
+    button: 0,
+    altKey: true,
+    preventDefault: () => { defaultPrevented = true },
+  }
+  assert.equal(handleBannerLinkClick(altClick, () => { navigated = true }), false)
+  assert.equal(defaultPrevented, false)
+  assert.equal(navigated, false)
+
+  // Shift-click (shiftKey)
+  const shiftClick = {
+    defaultPrevented: false,
+    button: 0,
+    shiftKey: true,
+    preventDefault: () => { defaultPrevented = true },
+  }
+  assert.equal(handleBannerLinkClick(shiftClick, () => { navigated = true }), false)
+  assert.equal(defaultPrevented, false)
+  assert.equal(navigated, false)
+})
+
+test('WorkerSessionBanner links render with cursor-pointer and proper href destinations', () => {
+  const sessionId = 'occurrence-session-1'
+  const authorSessionId = 'worker-author-1'
+
+  const cache = getDesktopV3CacheSnapshot()
+  cache.sessionsById[sessionId] = {
+    kind: 'full',
+    session: {
+      id: sessionId,
+      title: 'Health Check Run #42',
+      metadata: {
+        automation_v2_occurrence_id: 'occ-42',
+        automation_v2_authoring_session_id: authorSessionId,
+      },
+    },
+  } as any
+
+  let targetNavigated: string | undefined = undefined
+  const markup = renderToStaticMarkup(
+    <WorkerSessionBanner
+      sessionId={sessionId}
+      workspaceSlug="my-workspace"
+      onNavigateToWorkers={(target) => { targetNavigated = target }}
+    />
+  )
+
+  assert.match(markup, /href="\/my-workspace\/workers"/)
+  assert.match(markup, /title="Back to all Workers"/)
+  assert.match(markup, /cursor-pointer/)
+  assert.match(markup, /Worker Details/)
+  assert.match(markup, /href="\/my-workspace\/workers\?sessionId=worker-author-1"/)
 })

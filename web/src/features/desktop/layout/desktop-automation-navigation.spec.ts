@@ -54,3 +54,7 @@ test('clicking an accepted automation session navigates to the session page with
   assert.doesNotMatch(source, /routeSessionIsAcceptedAutomation \? \(\s*<div[^>]*>\s*<AutomationToolPage \/>\s*<\/div>\s*\) : routeSessionId/)
   assert.match(chatPane, /<WorkerSessionBanner[\s\S]*sessionId=\{normalizedSessionId\}[\s\S]*workspaceSlug=\{routeWorkspaceSlug\}/)
 })
+
+test('WorkerSessionBanner in conversation pane delegates to client-side router navigation without full page reload', () => {
+  assert.match(chatPane, /<WorkerSessionBanner[\s\S]*onNavigateToWorkers=\{[\s\S]*?navigate\(\{\s*to: '\/\$workspaceSlug\/workers'/)
+})

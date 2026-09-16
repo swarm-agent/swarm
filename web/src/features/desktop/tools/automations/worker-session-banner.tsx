@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileText,
 } from 'lucide-react'
+import { useRouter } from '@tanstack/react-router'
 import { cn } from '../../../../lib/cn'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { selectAutomationV2Identity } from '../../state/desktop-automation-v2-state'
@@ -25,13 +26,41 @@ function metadataString(metadata: Record<string, unknown> | undefined, key: stri
   return typeof val === 'string' ? val.trim() : ''
 }
 
+export function handleBannerLinkClick(
+  e: React.MouseEvent<HTMLAnchorElement> | { defaultPrevented: boolean; button: number; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean; preventDefault: () => void },
+  onNavigate?: () => void,
+  routerNavigate?: () => void,
+  fallbackHref?: string
+): boolean {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) {
+    return false
+  }
+  e.preventDefault()
+  if (onNavigate) {
+    onNavigate()
+    return true
+  }
+  if (routerNavigate) {
+    routerNavigate()
+    return true
+  }
+  if (fallbackHref && typeof window !== 'undefined') {
+    window.location.href = fallbackHref
+    return true
+  }
+  return false
+}
+
 export function WorkerSessionBanner({
   sessionId,
   workspaceSlug,
+  onNavigateToWorkers,
 }: {
   sessionId: string
   workspaceSlug?: string
+  onNavigateToWorkers?: (targetSessionId?: string) => void
 }) {
+  const router = useRouter({ warn: false })
   const sessionInfo = useDesktopV3CacheSelector((state) => {
     const sessionRecord = state.sessionsById?.[sessionId]
     if (!sessionRecord || sessionRecord.kind !== 'full') return null
@@ -135,6 +164,39 @@ export function WorkerSessionBanner({
 
   const effectiveSlug = workspaceSlug || 'workspace'
 
+  const handleWorkersClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    handleBannerLinkClick(
+      e,
+      onNavigateToWorkers ? () => onNavigateToWorkers() : undefined,
+      router
+        ? () => {
+            void router.navigate({
+              to: '/$workspaceSlug/workers',
+              params: { workspaceSlug: effectiveSlug },
+            })
+          }
+        : undefined,
+      `/${encodeURIComponent(effectiveSlug)}/workers`
+    )
+  }
+
+  const handleDetailsClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    handleBannerLinkClick(
+      e,
+      onNavigateToWorkers ? () => onNavigateToWorkers(authoringSessionId) : undefined,
+      router
+        ? () => {
+            void router.navigate({
+              to: '/$workspaceSlug/workers',
+              params: { workspaceSlug: effectiveSlug },
+              search: { sessionId: authoringSessionId },
+            })
+          }
+        : undefined,
+      `/${encodeURIComponent(effectiveSlug)}/workers?sessionId=${encodeURIComponent(authoringSessionId)}`
+    )
+  }
+
   return (
     <div
       role="region"
@@ -147,7 +209,8 @@ export function WorkerSessionBanner({
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           <a
             href={`/${encodeURIComponent(effectiveSlug)}/workers`}
-            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors"
+            onClick={handleWorkersClick}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors cursor-pointer"
             title="Back to all Workers"
           >
             <ChevronLeft size={13} className="shrink-0" />
@@ -210,7 +273,8 @@ export function WorkerSessionBanner({
         <div className="flex shrink-0 items-center gap-1.5">
           <a
             href={`/${encodeURIComponent(effectiveSlug)}/workers?sessionId=${encodeURIComponent(authoringSessionId)}`}
-            className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors shadow-xs"
+            onClick={handleDetailsClick}
+            className="inline-flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-[11px] font-medium text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-primary)] transition-colors shadow-xs cursor-pointer"
             title="Open worker dashboard and configuration"
           >
             <span>Worker Details</span>

@@ -3296,6 +3296,14 @@ export function DesktopV3ExistingConversationPane({
       <WorkerSessionBanner
         sessionId={normalizedSessionId}
         workspaceSlug={routeWorkspaceSlug}
+        onNavigateToWorkers={(targetSessionId) => {
+          const targetSlug = routeWorkspaceSlug || 'workspace'
+          void navigate({
+            to: '/$workspaceSlug/workers',
+            params: { workspaceSlug: targetSlug },
+            search: targetSessionId ? { sessionId: targetSessionId } : undefined,
+          })
+        }}
       />
       <div
         ref={planSidebarGridRef}
