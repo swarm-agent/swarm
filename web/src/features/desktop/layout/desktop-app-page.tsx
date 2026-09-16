@@ -3,8 +3,8 @@ import type { CSSProperties, JSX, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate, useSearch, Link } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Settings, X, XCircle } from 'lucide-react'
+import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -47,19 +47,19 @@ import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
 import { preferenceFromModelProfile } from '../chat/services/model-profiles'
-import { parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
+import { parseDesktopIntegrationCommand, parseDesktopNewSessionCommand, parseDesktopTaskCommand, type DesktopNewSessionCommandRequest, type DesktopSlashCommand } from '../chat/services/slash-commands'
 import { resolveDesktopTaskWorkspace } from '../chat/services/task-workspace-selection'
 import { executeDesktopTipsCommand } from '../chat/services/home-tips'
 import { commitWorkspaceChanges, fetchGitStatus, gitStatusQueryKey, suggestWorkspaceCommitMessage } from '../git/api'
 import { SessionRepositoryPicker } from '../git/session-repository-picker'
 import { useSessionRepositories } from '../runtime/use-session-repositories'
-import { repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
+import { repositoryDialogTargetMatches, repositoryKey, repositoryMutationSupported } from '../state/session-repositories'
 import type { GitFileStatus, GitSnapshot } from '../git/types'
 import { AICommitButton } from '../git/ai-commit-control'
 import { DesktopWorkspaceActionPanel } from '../chat/components/desktop-workspace-action-panel'
 import { startWorkspaceAction, type WorkspaceAction, type WorkspaceActionRun } from '../../workspaces/actions/types'
 import { WorkspaceActionsSidebarSection } from '../settings/actions/components/workspace-actions-sidebar-section'
-import { fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
+import { checkDesktopDevRebuild, fetchDesktopUpdateJob, fetchDesktopUpdateStatus, startDesktopUpdate, type DesktopUpdateJob } from '../update/api'
 import {
   groupSidebarTaskCallSiblings,
   sessionBackgroundInfo,
@@ -68,7 +68,12 @@ import {
   sidebarTaskCallPresentationGroups,
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
-import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
+import { AutomationProgressView } from '../tools/automations/automation-progress'
+import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
+import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
+import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
@@ -86,14 +91,16 @@ import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
 import { SearchChatsModal } from '../session-search/search-chats-modal'
-import type { DesktopSessionSearchItem } from '../session-search/session-search-api'
+import { deleteDesktopSessions, type DesktopSessionSearchItem } from '../session-search/session-search-api'
 import { DesktopQuickActionsModal, type DesktopQuickActionItem } from '../shortcuts/components/desktop-quick-actions-modal'
 import { DesktopWorkspacePicker } from '../shortcuts/components/desktop-workspace-picker'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { buildReviewWorktreeFixPrompt, ReviewWorktreesModal, type ReviewWorktreeIntegrationFailure } from './review-worktrees-modal'
 import { DesktopFeedbackModal } from '../feedback/desktop-feedback-modal'
+import { MemoryModal } from '../memory/memory-page'
 import { reviewDesktopV3Worktrees } from '../session-v3/review-worktrees-api'
 import { IntegrationConfirmation } from './integration-confirmation'
+import { IntegrateCommandDialog } from './integrate-command-dialog'
 import {
   loadDesktopMainSidebarMode,
   saveDesktopMainSidebarMode,
@@ -104,6 +111,7 @@ const DESKTOP_SIDEBAR_LAYOUT_STORAGE_KEY = 'swarm.web.desktop.sidebar.layout'
 const DESKTOP_PENDING_UPDATE_TOAST_STORAGE_KEY = 'swarm.web.desktop.pending_update_toast'
 const SIDEBAR_ACTIVITY_GRACE_MS = 15_000
 const SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT = 5
+export const SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT = 6
 const MOBILE_SIDEBAR_SWIPE_EDGE_PX = 28
 const MOBILE_SIDEBAR_SWIPE_MIN_X_PX = 72
 const MOBILE_SIDEBAR_SWIPE_MAX_Y_PX = 48
@@ -457,6 +465,7 @@ function desktopV3SidebarRowEqual(left: DesktopV3SidebarRow | undefined, right: 
     && left.sidebarGroup === right.sidebarGroup
     && left.branchLabel === right.branchLabel
     && left.activePlan?.id === right.activePlan?.id
+    && left.activePlan?.updatedAt === right.activePlan?.updatedAt
     && left.planExecution?.status === right.planExecution?.status
     && left.planExecution?.statusLabel === right.planExecution?.statusLabel
     && left.planExecution?.checkpointProgress.label === right.planExecution?.checkpointProgress.label
@@ -1435,12 +1444,12 @@ function sessionSidebarRowType(session: DesktopSessionRecord): 'plan_session' | 
   return metadataText(session, 'swarm_v3_sidebar_row_type') === 'plan_session' ? 'plan_session' : 'single_chat'
 }
 
-type SidebarBaseSessionGroupID = 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
+type SidebarBaseSessionGroupID = 'blocked' | 'automation' | 'needs_review' | 'in_progress' | 'active_chats' | 'archived'
 type SidebarSessionGroupID = SidebarBaseSessionGroupID | 'pinned' | 'video'
 
 function sessionSidebarGroup(session: DesktopSessionRecord): SidebarBaseSessionGroupID {
   const group = metadataText(session, 'swarm_v3_sidebar_group')
-  return group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
+  return group === 'blocked' || group === 'automation' || group === 'needs_review' || group === 'in_progress' || group === 'archived' ? group : 'active_chats'
 }
 
 function sessionManuallyPinnedInSidebar(session: DesktopSessionRecord): boolean {
@@ -1494,7 +1503,7 @@ function sessionIsActive(session: DesktopSessionRecord): boolean {
 
 export function sessionIsMobileActive(session: DesktopSessionRecord): boolean {
   const group = sessionSidebarDisplayGroup(session)
-  return sessionIsActive(session) || group === 'needs_review' || group === 'in_progress'
+  return sessionIsActive(session) || group === 'blocked' || group === 'needs_review' || group === 'in_progress'
 }
 
 function positiveTimestamp(value: number | null | undefined): number {
@@ -1848,16 +1857,38 @@ interface SessionRowProps {
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
   onRename: (sessionId: string, title: string) => Promise<void>
+  onDelete?: (sessionId: string) => void
+  onOpenAutomations?: () => void
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename }: SessionRowProps) {
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onDelete, onOpenAutomations }: SessionRowProps) {
+  const navigate = useNavigate()
   const session = initialSession
+  const automation = useDesktopV3CacheSelector(state => {
+    const record = state.sessionsById[session.id]
+    return record?.kind === 'full' ? record.session.automation : undefined
+  })
+  const automationV2 = useDesktopV3CacheSelector(state => selectAutomationV2Identity(state, session.id))
+  useEffect(() => {
+    // Sidebar bootstrap carries permission summaries, not every review payload.
+    // Hydrate once when pending identity is unknown; no timer or title inference.
+    if (session.pendingPermissionCount > 0 && !session.pendingPermissions.length) void desktopAutomationV2.reconcileSession(session.id).catch(() => { /* Canonical sidebar retains its pending/error state; explicit refresh can retry. */ })
+  }, [session.id, session.pendingPermissionCount, session.pendingPermissions.length])
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
   const backgroundInfo = sessionBackgroundInfo(session)
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
-  const isPlanRow = rowType === 'plan_session'
+  const sessionFullRec = useDesktopV3CacheSelector(state => state.sessionsById[session.id])
+  const workerRecordFromCache = useDesktopV3CacheSelector(state => {
+    for (const page of Object.values(state.automationV2Pages ?? {})) {
+      const match = page.data?.records?.find(r => r.session_id === session.id)
+      if (match) return match
+    }
+    return undefined
+  })
+  const isPlanRow = !automation && !automationV2 && rowType === 'plan_session'
+  const isAutomationRow = Boolean(automationV2 === 'accepted' || automation)
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -1891,7 +1922,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     : activeSession
       ? sessionActivityLabel(session)
       : sessionMeta(session) || ''
-  const rightSideLabel = hasPendingPermission || isPlanRow ? '' : singleStatusLabel
+  const rightSideLabel = hasPendingPermission || isPlanRow || automationV2 ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const showStatusCircle = activeSession || statusTone === 'error'
   const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
@@ -1999,6 +2030,23 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       {pendingAction === 'archive' ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> : <Archive size={12} aria-hidden="true" />}
     </button>
   )
+  const deleteActionControl = onDelete ? (
+    <button
+      type="button"
+      className={cn(actionButtonBaseClass, 'text-[var(--app-danger)] hover:text-[var(--app-danger)] hover:bg-[var(--app-danger-bg,rgba(239,68,68,0.1))]')}
+      disabled={pendingAction !== null}
+      aria-label={`Delete ${rowTitle}`}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        closeActionMenu()
+        onDelete(session.id)
+      }}
+    >
+      <Trash2 size={12} aria-hidden="true" />
+      <span>Delete</span>
+    </button>
+  ) : null
   const selectActionControl = selectionEligible && selectionGroup && onEnterSelectionMode ? (
     <button
       type="button"
@@ -2085,51 +2133,59 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           {subagentSessionsActionControl}
           {renameActionControl}
           {selectActionControl}
+          {deleteActionControl}
         </span>
       ) : null}
     </span>
   )
-  return (
-    <Link
-      to="/$workspaceSlug/$sessionId"
-      params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
-      onClick={(event) => {
-        if (event.defaultPrevented || event.button !== 0) return
+  const linkProps = {
+    onClick: (event: React.MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return
+      if (selectionMode && selectionEligible) {
+        event.preventDefault()
+        onToggleSelected?.(session.id, event.shiftKey)
+        return
+      }
+      if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+      event.preventDefault()
+      onSelect(session.id)
+    },
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === ' ') {
+        event.preventDefault()
         if (selectionMode && selectionEligible) {
-          event.preventDefault()
           onToggleSelected?.(session.id, event.shiftKey)
           return
         }
-        if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
-        event.preventDefault()
         onSelect(session.id)
-      }}
-      onKeyDown={(event) => {
-        if (event.key === ' ') {
-          event.preventDefault()
-          if (selectionMode && selectionEligible) {
-            onToggleSelected?.(session.id, event.shiftKey)
-            return
-          }
-          onSelect(session.id)
-        }
-      }}
-      onMouseEnter={() => onPrefetch(session.id)}
-      onFocus={() => onPrefetch(session.id)}
-      className={cn(
-        'group relative grid w-full min-w-0 rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform]',
-        isPlanRow ? 'gap-1.5 px-2.5 py-2' : 'gap-1 px-2.5 py-1.5',
-        active
-          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
-          : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
-        pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
-        isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
-        isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
-        hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
-        actionsOpen ? 'z-30' : null,
-      )}
-      title={tooltip || [workspaceLabel, showBranchLabel ? branchLabel : ''].filter(Boolean).join(' · ')}
-    >
+      }
+    },
+    onMouseEnter: () => onPrefetch(session.id),
+    onFocus: () => onPrefetch(session.id),
+    className: cn(
+      'group relative grid w-full min-w-0 max-w-full box-border rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform] overflow-hidden',
+      isAutomationRow
+        ? 'rounded-md border-[var(--app-border)]/55 bg-[var(--app-surface)]/60 p-2 gap-1 shadow-xs hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'
+        : isPlanRow
+          ? 'gap-1.5 px-2.5 py-2'
+          : 'gap-1 px-2.5 py-1.5',
+      active
+        ? isAutomationRow
+          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)]/50 ring-1 ring-[var(--app-border-accent)]'
+          : 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
+        : !isAutomationRow
+          ? 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]'
+          : null,
+      pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
+      isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
+      isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
+      hasAgentChildren && agentsExpanded && !isNestedSession ? 'border-[var(--app-border-accent)]' : null,
+      actionsOpen ? 'z-30' : null,
+    ),
+    title: tooltip || [workspaceLabel, showBranchLabel ? branchLabel : ''].filter(Boolean).join(' · '),
+  }
+  const rowContent = (
+    <>
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <div className="min-w-0 flex-1">
@@ -2175,12 +2231,25 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                   {renameError ? <span className="block truncate text-[9px] text-[var(--app-error)]">{renameError}</span> : null}
                 </form>
               ) : (
-                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)]', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
-                  {rowTitle}
+                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)] flex items-center gap-1.5', isNestedSession ? 'text-[12px]' : isAutomationRow ? 'text-[12px] font-semibold tracking-[-0.01em]' : 'text-[13px]')}>
+                  {isAutomationRow ? (
+                    <RefreshCcw
+                      size={12}
+                      className={cn(
+                        'shrink-0',
+                        activeSession ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]',
+                      )}
+                      aria-hidden="true"
+                    />
+                  ) : null}
+                  <span className="min-w-0 truncate">
+                    {automationV2 === 'pending' ? 'Plan · ' : ''}{rowTitle}
+                  </span>
                 </span>
               )}
 
             </div>
+            {automation && <AutomationProgressView workspaceId={automation.workspace_id} id={automation.automation_id} compact />}
           </div>
         </div>
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
@@ -2232,26 +2301,37 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           ) : null}
         </span>
       </div>
-      <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-        <span className="flex min-w-0 items-center gap-1.5">
-          {childIdentityLabel ? (
-            <>
-              <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
-              <span aria-hidden="true">·</span>
-            </>
-          ) : null}
-          <span className="min-w-0 truncate">{workspaceLabel}</span>
-          {showBranchLabel ? (
-            <>
-              <span aria-hidden="true">·</span>
-              <span className="min-w-0 truncate">{branchLabel}</span>
-            </>
-          ) : null}
-        </span>
-        <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
-          {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
-        </span>
-      </div>
+      {automationV2 ? (
+        <AutomationV2SidebarMetadata
+          sessionId={session.id}
+          identity={automationV2}
+          now={now}
+          needsApproval={hasPendingPermission}
+          workspaceSlug={rowWorkspaceSlug}
+          onNavigateToAutomations={onOpenAutomations}
+        />
+      ) : (
+        <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+          <span className="flex min-w-0 items-center gap-1.5">
+            {childIdentityLabel ? (
+              <>
+                <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
+                <span aria-hidden="true">·</span>
+              </>
+            ) : null}
+            <span className="min-w-0 truncate">{workspaceLabel}</span>
+            {showBranchLabel ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="min-w-0 truncate">{branchLabel}</span>
+              </>
+            ) : null}
+          </span>
+          <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
+            {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
+          </span>
+        </div>
+      )}
 
       {showPlanProgressBar ? (
         <div className="flex min-w-0 items-center gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
@@ -2271,7 +2351,46 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           </div>
         </div>
       ) : null}
+    </>
+  )
 
+  if (isAutomationRow) {
+    const workerId = (sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2?.automation_id) || workerRecordFromCache?.automation_id || (session as any).automation_v2?.automation_id || session.id
+    return (
+      <Link
+        to="/$workspaceSlug/workers/$workerId"
+        params={{ workspaceSlug: rowWorkspaceSlug, workerId }}
+        {...linkProps}
+        title={`Open worker: ${rowTitle}`}
+        aria-label={`Open worker: ${rowTitle}`}
+        data-testid="sidebar-worker-link"
+        onClick={(event: React.MouseEvent) => {
+          if (event.defaultPrevented || event.button !== 0) return
+          if (selectionMode && selectionEligible) {
+            event.preventDefault()
+            onToggleSelected?.(session.id, event.shiftKey)
+            return
+          }
+          if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
+          event.preventDefault()
+          void navigate({
+            to: '/$workspaceSlug/workers/$workerId',
+            params: { workspaceSlug: rowWorkspaceSlug, workerId },
+          })
+        }}
+      >
+        {rowContent}
+      </Link>
+    )
+  }
+
+  return (
+    <Link
+      to="/$workspaceSlug/$sessionId"
+      params={{ workspaceSlug: rowWorkspaceSlug, sessionId: session.id }}
+      {...linkProps}
+    >
+      {rowContent}
     </Link>
   )
 })
@@ -2280,7 +2399,9 @@ interface RenderSidebarSessionGroupsInput {
   nodes: SidebarSessionNode[]
   presentation?: 'desktop' | 'mobile'
   routeSessionId: string
+  routeAutomationSessionId?: string
   now: number
+  workspaceId?: string
   workspaceSlug: string | ((session: DesktopSessionRecord) => string)
   expandedAgentSessions: Record<string, boolean>
   agentSummaries: Map<string, SessionAgentSummary>
@@ -2300,6 +2421,7 @@ interface RenderSidebarSessionGroupsInput {
   gitBehindCount: number
   gitDirtyCount: number
   onOpenGit: () => void
+  onOpenAutomations?: () => void
   onToggleReviewCleanup: () => void
   onToggleGroupCollapsed: (group: SidebarSessionGroupID) => void
   onToggleGroupOverflow: (group: SidebarSessionGroupID) => void
@@ -2314,6 +2436,7 @@ interface RenderSidebarSessionGroupsInput {
   onTogglePinned: (sessionId: string) => void
   onArchive: (sessionId: string) => void
   onRename: (sessionId: string, title: string) => Promise<void>
+  onDelete?: (sessionId: string) => void
 }
 
 export function sidebarRootIDsForSelectionGroup(nodes: SidebarSessionNode[], group: SidebarSessionGroupID | null): string[] {
@@ -2348,6 +2471,8 @@ export function sidebarShouldShowReviewAction(group: SidebarSessionGroupID, sele
 }
 
 export const SIDEBAR_SESSION_GROUPS = [
+  { id: 'blocked', label: 'Blocked', showInactiveThreshold: false },
+  { id: 'automation', label: 'Workers', showInactiveThreshold: false },
   { id: 'needs_review', label: 'Needs Review', showInactiveThreshold: false },
   { id: 'in_progress', label: 'In Progress', showInactiveThreshold: false },
   { id: 'pinned', label: 'Pinned', showInactiveThreshold: false },
@@ -2359,16 +2484,28 @@ export function sidebarVisibleGroupNodes(
   group: SidebarSessionGroupID,
   overflowExpanded: boolean,
 ): SidebarSessionNode[] {
-  if (group !== 'needs_review' || overflowExpanded) return nodes
-  let visibleRoots = 0
-  return nodes.filter((node) => {
-    if (node.depth === 0) visibleRoots += 1
-    return visibleRoots <= SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
-  })
+  if (overflowExpanded) return nodes
+  if (group === 'needs_review') {
+    let visibleRoots = 0
+    return nodes.filter((node) => {
+      if (node.depth === 0) visibleRoots += 1
+      return visibleRoots <= SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    })
+  }
+  if (group === 'automation') {
+    let visibleRoots = 0
+    return nodes.filter((node) => {
+      if (node.depth === 0) visibleRoots += 1
+      return visibleRoots <= SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT
+    })
+  }
+  return nodes
 }
 
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
-  if (input.nodes.length === 0) return null
+  const automationCounts = selectAutomationSummaryCounts(getDesktopV3CacheSnapshot(), input.workspaceId)
+  const hasAutomationWork = Boolean(automationCounts && automationCounts.total > 0)
+  if (input.nodes.length === 0 && !hasAutomationWork) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
@@ -2382,13 +2519,15 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   }
   return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
-    if (nodes.length === 0) return []
+    const isAutomationGroup = group.id === 'automation'
+    if (nodes.length === 0 && (!isAutomationGroup || !hasAutomationWork)) return []
     const collapsed = input.collapsedGroups[group.id]
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
-    const rootCount = nodes.filter((node) => node.depth === 0).length
-    const hasOverflow = group.id === 'needs_review' && rootCount > SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const rootCount = Math.max(nodes.filter((node) => node.depth === 0).length, isAutomationGroup && hasAutomationWork ? (automationCounts?.total ?? 0) : 0)
+    const limit = isAutomationGroup ? SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT : SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && rootCount > limit
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
-    const hiddenRootCount = Math.max(0, rootCount - SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT)
+    const hiddenRootCount = Math.max(0, rootCount - limit)
     const collapseControl = (
       <button
         type="button"
@@ -2401,7 +2540,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
       </button>
     )
     const groupControls = (
-      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || isAutomationGroup || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
               <>
                 <button
@@ -2439,10 +2578,23 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
               </>
             ) : null}
+            {isAutomationGroup && input.onOpenAutomations ? (
+              <button
+                type="button"
+                className={input.presentation === 'mobile'
+                  ? 'inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
+                  : 'inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:border-[var(--app-border-strong)]'}
+                aria-label="Open top-down Workers view"
+                title="Open top-down Workers view"
+                onClick={input.onOpenAutomations}
+              >
+                <span>View</span>
+              </button>
+            ) : null}
       </div>
     )
     return [(
-      <section key={group.id} className="group/section grid content-start gap-1.5">
+      <section key={group.id} className="group/section grid w-full min-w-0 max-w-full content-start gap-1.5">
         {group.id === 'needs_review' ? (
           <>
             <div data-sidebar-review-toolbar className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold text-[var(--app-text-subtle)]">
@@ -2470,64 +2622,173 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
         ) : (
           <div className="flex min-h-6 items-center gap-1 px-1 pt-1 text-[9px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">
             {collapseControl}
+            {group.id === 'blocked' ? <span aria-hidden="true" className="text-[var(--app-warning)]">⊘</span> : null}
             <span>{group.label}</span>
             <span className="tabular-nums tracking-normal">{rootCount}</span>
             {groupControls}
           </div>
         )}
-        {!collapsed ? <div className="grid gap-1">
-          {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
-            const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
-            return (
-              <div
-                key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
-                data-sidebar-task-group={taskCallId || undefined}
-                className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
-              >
-                {taskGroup.map((node) => (
-                  <SessionRow
-                    key={node.session.id}
-                    active={input.routeSessionId === node.session.id}
-                    now={input.now}
-                    session={node.session}
-                    workspaceSlug={input.workspaceSlug}
-                    depth={node.depth}
-                    childLabel={node.label}
-                    childAssignmentLabel={node.assignmentLabel}
-                    childKind={node.kind}
-                    agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
-                    agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
-                    compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
-                    pendingAction={input.pendingActions[node.session.id] ?? null}
-                    selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
-                    selectionGroup={group.id}
-                    selected={input.selectedRootIDs.has(node.session.id)}
-                    onSelect={input.onSelect}
-                    onEnterSelectionMode={input.onEnterSelectionMode}
-                    onToggleSelected={input.onToggleSelected}
-                    onPrefetch={input.onPrefetch}
-                    onToggleAgents={input.onToggleAgents}
-                    onTogglePinned={input.onTogglePinned}
-                    onArchive={input.onArchive}
-                    onRename={input.onRename}
-                  />
-                ))}
+        {collapsed ? (
+          isAutomationGroup ? (
+            <AutomationSidebarCompactCard
+              workspaceId={input.workspaceId}
+              workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined}
+              rootCount={rootCount}
+              onExpand={() => input.onToggleGroupCollapsed(group.id)}
+              onOpenAutomations={input.onOpenAutomations}
+            />
+          ) : null
+        ) : isAutomationGroup ? (
+          <AutomationSidebarExpandedContainer
+            workspaceId={input.workspaceId}
+            workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined}
+            rootCount={rootCount}
+            onCollapse={() => input.onToggleGroupCollapsed(group.id)}
+            onOpenAutomations={input.onOpenAutomations}
+          >
+            <div className="grid w-full min-w-0 max-w-full gap-1">
+              {visibleNodes.length > 0 ? (
+                sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
+                  const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+                  return (
+                    <div
+                      key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                      data-sidebar-task-group={taskCallId || undefined}
+                      className={cn('grid w-full min-w-0 max-w-full gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+                    >
+                      {taskGroup.map((node) => (
+                        <SessionRow
+                          key={node.session.id}
+                          active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && (input.routeAutomationSessionId === node.session.id || input.routeAutomationSessionId === (node.session as any).automation_v2?.automation_id))}
+                          now={input.now}
+                          session={node.session}
+                          workspaceSlug={input.workspaceSlug}
+                          depth={node.depth}
+                          childLabel={node.label}
+                          childAssignmentLabel={node.assignmentLabel}
+                          childKind={node.kind}
+                          agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                          agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                          compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                          pendingAction={input.pendingActions[node.session.id] ?? null}
+                          selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                          selectionGroup={group.id}
+                          selected={input.selectedRootIDs.has(node.session.id)}
+                          onSelect={input.onSelect}
+                          onEnterSelectionMode={input.onEnterSelectionMode}
+                          onToggleSelected={input.onToggleSelected}
+                          onPrefetch={input.onPrefetch}
+                          onToggleAgents={input.onToggleAgents}
+                          onTogglePinned={input.onTogglePinned}
+                          onArchive={input.onArchive}
+                          onRename={input.onRename}
+                          onDelete={input.onDelete}
+                          onOpenAutomations={input.onOpenAutomations}
+                        />
+                      ))}
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="flex items-center justify-between rounded-lg border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)]/30 px-2.5 py-1.5 text-[11px] text-[var(--app-text-muted)]">
+                  <span>{automationCounts?.total ?? 0} active {automationCounts?.total === 1 ? 'worker' : 'workers'}</span>
+                  {input.onOpenAutomations ? (
+                    <button
+                      type="button"
+                      onClick={input.onOpenAutomations}
+                      className="font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
+                    >
+                      Open workers →
+                    </button>
+                  ) : null}
+                </div>
+              )}
+              {hasOverflow ? (
+                <div className="flex w-full min-w-0 max-w-full items-center gap-1.5 pt-0.5">
+                  <button
+                    type="button"
+                    className="flex flex-1 min-w-0 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                    aria-label={overflowExpanded ? `Show fewer ${group.label} sessions` : `Show ${hiddenRootCount} more ${group.label} sessions`}
+                    aria-expanded={overflowExpanded}
+                    onClick={() => input.onToggleGroupOverflow(group.id)}
+                  >
+                    <ChevronDown size={14} className={cn('transition-transform shrink-0', overflowExpanded && 'rotate-180')} />
+                    <span className="truncate">{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </AutomationSidebarExpandedContainer>
+        ) : (
+          <div className="grid gap-1">
+            {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
+              const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
+              return (
+                <div
+                  key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
+                  data-sidebar-task-group={taskCallId || undefined}
+                  className={cn('grid gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
+                >
+                  {taskGroup.map((node) => (
+                    <SessionRow
+                      key={node.session.id}
+                      active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && input.routeAutomationSessionId === node.session.id)}
+                      now={input.now}
+                      session={node.session}
+                      workspaceSlug={input.workspaceSlug}
+                      depth={node.depth}
+                      childLabel={node.label}
+                      childAssignmentLabel={node.assignmentLabel}
+                      childKind={node.kind}
+                      agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
+                      agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
+                      compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
+                      pendingAction={input.pendingActions[node.session.id] ?? null}
+                      selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
+                      selectionGroup={group.id}
+                      selected={input.selectedRootIDs.has(node.session.id)}
+                      onSelect={input.onSelect}
+                      onEnterSelectionMode={input.onEnterSelectionMode}
+                      onToggleSelected={input.onToggleSelected}
+                      onPrefetch={input.onPrefetch}
+                      onToggleAgents={input.onToggleAgents}
+                      onTogglePinned={input.onTogglePinned}
+                      onArchive={input.onArchive}
+                      onRename={input.onRename}
+                      onDelete={input.onDelete}
+                      onOpenAutomations={input.onOpenAutomations}
+                    />
+                  ))}
+                </div>
+              )
+            })}
+            {hasOverflow ? (
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  className="flex flex-1 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+                  aria-label={overflowExpanded ? `Show fewer ${group.label} sessions` : `Show ${hiddenRootCount} more ${group.label} sessions`}
+                  aria-expanded={overflowExpanded}
+                  onClick={() => input.onToggleGroupOverflow(group.id)}
+                >
+                  <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
+                  <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
+                </button>
+                {isAutomationGroup && input.onOpenAutomations ? (
+                  <button
+                    type="button"
+                    className="flex min-h-7 items-center justify-center gap-1 rounded border border-[var(--app-border)]/50 bg-[var(--app-surface-subtle)]/30 px-2 text-[10px] font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]"
+                    aria-label="Open top-down Workers view"
+                    title="Open top-down Workers view"
+                    onClick={input.onOpenAutomations}
+                  >
+                    <span>All ({rootCount}) →</span>
+                  </button>
+                ) : null}
               </div>
-            )
-          })}
-          {hasOverflow ? (
-            <button
-              type="button"
-              className="flex min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-              aria-label={overflowExpanded ? 'Show fewer Needs Review sessions' : `Show ${hiddenRootCount} more Needs Review sessions`}
-              aria-expanded={overflowExpanded}
-              onClick={() => input.onToggleGroupOverflow(group.id)}
-            >
-              <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
-              <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
-            </button>
-          ) : null}
-        </div> : null}
+            ) : null}
+          </div>
+        )}
       </section>
     )]
   })
@@ -2536,26 +2797,43 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
 export function DesktopAppPage() {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newPlan?: unknown }
+  const search = useSearch({ strict: false }) as { agentSetup?: unknown; agent?: unknown; newPlan?: unknown; sessionId?: unknown }
   const requestedAgentSetup = search.agentSetup === '1'
   const requestedNewPlan = search.newPlan === '1'
   const requestedAgentName = typeof search.agent === 'string' ? search.agent.trim() : 'swarm'
   const agentSettingsOpenSignal = requestedAgentSetup ? 1 : 0
   const matchRoute = useMatchRoute()
+  const workspaceWorkersMatch = matchRoute({ to: '/$workspaceSlug/workers', fuzzy: false })
+  const workspaceWorkersDetailMatch = matchRoute({ to: '/$workspaceSlug/workers/$workerId', fuzzy: false })
+  const workspaceWorkerDetailMatch = matchRoute({ to: '/$workspaceSlug/worker/$workerId', fuzzy: false })
+  const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
+  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
-  const routeWorkspaceSlug = (workspaceTaskMatch
+  const routeWorkspaceSlug = (workspaceWorkersMatch
+    ? workspaceWorkersMatch.workspaceSlug
+    : workspaceWorkersDetailMatch
+    ? workspaceWorkersDetailMatch.workspaceSlug
+    : workspaceWorkerDetailMatch
+    ? workspaceWorkerDetailMatch.workspaceSlug
+    : workspaceAutomationsMatch
+    ? workspaceAutomationsMatch.workspaceSlug
+    : workspaceTaskMatch
     ? workspaceTaskMatch.workspaceSlug
     : workspaceSessionMatch
       ? workspaceSessionMatch.workspaceSlug
       : workspaceMatch
         ? workspaceMatch.workspaceSlug
         : '').trim()
+  const routeWorkerId = (workspaceWorkersDetailMatch ? workspaceWorkersDetailMatch.workerId : workspaceWorkerDetailMatch ? workspaceWorkerDetailMatch.workerId : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : null
-  const routeSessionId = mobileCreationPage
+  const routeSessionId = mobileCreationPage || isWorkersRoute
     ? ''
     : (workspaceSessionMatch ? workspaceSessionMatch.sessionId : '').trim()
+  const routeAutomationSessionId = isWorkersRoute && typeof search.sessionId === 'string'
+    ? search.sessionId.trim()
+    : routeWorkerId
   const pwaDebugEnabled = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has(PWA_DEBUG_QUERY_PARAM)
   const { workspaces, loading: launcherWorkspacesLoading, setWorkspaceIcon } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   const [sidebarDisplayMode, setSidebarDisplayModeState] = useState<DesktopMainSidebarMode>(() => loadDesktopMainSidebarMode())
@@ -2572,6 +2850,7 @@ export function DesktopAppPage() {
   const [expandedAgentSessions, setExpandedAgentSessions] = useState<Record<string, boolean>>({})
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [memoryOpen, setMemoryOpen] = useState(false)
   const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [notificationActionError, setNotificationActionError] = useState<string | null>(null)
   const [searchModalOpen, setSearchModalOpen] = useState(false)
@@ -2588,6 +2867,7 @@ export function DesktopAppPage() {
   const [gitCommitIntegrate, setGitCommitIntegrate] = useState(false)
   const [gitCommitArchive, setGitCommitArchive] = useState(false)
   const [gitIntegrateModal, setGitIntegrateModal] = useState<GitIntegrateModalState | null>(null)
+  const [slashIntegrateSession, setSlashIntegrateSession] = useState<{ sessionId: string; build: boolean } | null>(null)
   const [gitIntegrateBusy, setGitIntegrateBusy] = useState(false)
   const [gitIntegrateHelpBusy, setGitIntegrateHelpBusy] = useState(false)
   const [gitInstallHelpBusy, setGitInstallHelpBusy] = useState(false)
@@ -2633,12 +2913,16 @@ export function DesktopAppPage() {
   const [bulkArchivePending, setBulkArchivePending] = useState(false)
   const [needsReviewCleanupOpen, setNeedsReviewCleanupOpen] = useState(false)
   const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    blocked: false,
+    automation: true,
     needs_review: false,
     in_progress: false,
     pinned: false,
     active_chats: false,
   })
   const [expandedSidebarOverflowGroups, setExpandedSidebarOverflowGroups] = useState<Partial<Record<SidebarSessionGroupID, boolean>>>({
+    blocked: false,
+    automation: false,
     needs_review: false,
     in_progress: false,
     pinned: false,
@@ -2789,10 +3073,11 @@ export function DesktopAppPage() {
   const updateAvailable = updateStatus?.update_available === true
   const updateDevMode = updateStatus?.dev_mode === true
   const updateActionEnabled = updateAvailable || updateDevMode
-  const updateActionLabel = updateDevMode ? 'Update Dev' : 'Update Swarm'
+  const updateActionLabel = updateDevMode ? 'Rebuild Swarm' : 'Update Swarm'
+  const UpdateActionIcon = updateDevMode ? RefreshCcw : Download
   const updateLatestVersion = updateStatus?.latest_version?.trim() ?? ''
   const updateStatusError = updateStatusQuery.error instanceof Error ? updateStatusQuery.error.message : null
-  const updateAttentionVisible = !updateDevMode && (updateActionEnabled || updateRunning || Boolean(updateError))
+  const updateAttentionVisible = updateActionEnabled || updateRunning || Boolean(updateError)
   const updateActionTitle = updateError
     || (updateRunning
       ? updateDevMode ? 'Rebuilding Swarm dev checkout…' : 'Updating Swarm…'
@@ -3060,6 +3345,11 @@ export function DesktopAppPage() {
     routeSessionId ? (state.messagesBySession[routeSessionId]?.items.length ?? 0) : 0
   ))
   const desktopSidebarRows = useDesktopV3CacheSelector(selectDesktopSidebarRows, desktopV3SidebarRowsEqual)
+  const blockerTransitions = useRef(createBlockerTransitionTracker())
+  useEffect(() => {
+    const messages = blockerTransitions.current(desktopSidebarRows)
+    if (messages.length) setDesktopToast({ message: messages.join('\n'), tone: 'info' })
+  }, [desktopSidebarRows])
   const desktopVideoStudioRows = useDesktopV3CacheSelector(selectDesktopVideoStudioRows, desktopV3SidebarRowsEqual)
   const desktopStateSessions = useMemo<DesktopSessionRecord[]>(
     () => [...desktopSidebarRows, ...desktopVideoStudioRows].map(desktopSessionRecordFromV3SidebarRow),
@@ -3145,7 +3435,10 @@ export function DesktopAppPage() {
   )
   const activeGitSession = routeSessionId ? sessionById.get(routeSessionId) ?? null : null
   const repositoryInventory = useSessionRepositories(routeSessionId || '')
-  const selectedRepository = repositoryInventory.items.find(row => repositoryKey(row) === repositoryInventory.selectedKey)
+  const selectedRepository = useMemo(
+    () => repositoryInventory.items.find(row => repositoryKey(row) === repositoryInventory.selectedKey),
+    [repositoryInventory.items, repositoryInventory.selectedKey],
+  )
   const currentGitWorkspacePath = activeGitSession?.worktreeEnabled
     ? activeGitSession.worktreeRootPath?.trim() || ''
     : activeGitSession
@@ -3153,9 +3446,13 @@ export function DesktopAppPage() {
       : ''
   const selectedGitSessionId = selectedRepository?.session_id || ''
   const selectedGitWorkspacePath = selectedRepository?.workspace_path || ''
+  const repositoryStaleOrError = Boolean(
+    repositoryInventory.error ||
+    (!selectedRepository && (repositoryInventory.stale || repositoryInventory.loading))
+  )
   const selectedRepositoryMutable = repositoryMutationSupported(selectedRepository, {
     id: activeGitSession?.id || '', path: currentGitWorkspacePath, worktree: Boolean(activeGitSession?.worktreeEnabled), branch: activeGitSession?.worktreeEnabled ? activeGitSession.worktreeBranch : undefined,
-  }, repositoryInventory.stale || repositoryInventory.loading)
+  }, repositoryStaleOrError)
   const [gitDockExpanded, setGitDockExpanded] = useState(false)
   useEffect(() => setGitDockExpanded(false), [routeSessionId])
   const [gitPageActive, setGitPageActive] = useState(() => document.visibilityState !== 'hidden')
@@ -3164,15 +3461,19 @@ export function DesktopAppPage() {
     queryKey: gitStatusQueryKey(selectedGitWorkspacePath, selectedGitSessionId),
     queryFn: ({ signal }) => withPageRequest((pageSignal) => fetchGitStatus(selectedGitWorkspacePath, 12, selectedGitSessionId, pageSignal), signal),
     enabled: gitPageActive && selectedRepositoryMutable,
-    staleTime: 0,
-    refetchOnWindowFocus: true,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
   })
   const gitSnapshot = selectedRepository?.availability === 'available'
     ? (selectedRepositoryMutable && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ? gitStatusQuery.data.status : selectedRepository.status ?? null)
     : null
   const activeSessionWorktree = Boolean(selectedRepositoryMutable && activeGitSession?.worktreeEnabled)
-  const selectedRepositoryActionsEnabled = selectedRepositoryMutable && !gitStatusQuery.isError && !gitStatusQuery.isFetching
-    && gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath
+  const selectedRepositoryActionsEnabled = Boolean(
+    selectedRepositoryMutable &&
+    !gitStatusQuery.isError &&
+    (gitStatusQuery.data?.status.workspace_path === selectedGitWorkspacePath ||
+      selectedRepository?.status?.workspace_path === selectedGitWorkspacePath)
+  )
   const activeSessionCommits = activeSessionWorktree ? gitSnapshot?.session_commits ?? [] : []
   const activeSessionTargetBranch = activeGitSession?.worktreeBaseBranch?.trim() || 'target branch'
   const activeSessionTargetWorkspacePath = activeGitSession ? desktopSidebarWorkspacePathForSession(activeGitSession, workspacePathByBindingId, workspacePathById) : ''
@@ -3189,7 +3490,21 @@ export function DesktopAppPage() {
   const activeSessionReviewCandidate = activeSessionWorktree
     ? [...(gitReviewQuery.data?.retained ?? []), ...(gitReviewQuery.data?.done ?? [])].find((item) => item.session_id === selectedGitSessionId) ?? null
     : null
-  const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && !gitReviewQuery.isFetching && activeSessionReviewCandidate?.integrate_eligible)
+  const activeSessionIntegrateEligible = Boolean(selectedRepositoryActionsEnabled && !gitReviewQuery.isError && activeSessionReviewCandidate?.integrate_eligible)
+
+  const [quickCommitIntegrateConfirming, setQuickCommitIntegrateConfirming] = useState(false)
+  const [quickCommitIntegrateBusy, setQuickCommitIntegrateBusy] = useState(false)
+  const [quickCommitIntegratePhase, setQuickCommitIntegratePhase] = useState<string | null>(null)
+  const [quickCommitIntegrateError, setQuickCommitIntegrateError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setQuickCommitIntegrateConfirming(false)
+    setQuickCommitIntegrateError(null)
+  }, [routeSessionId])
+
+  useEffect(() => {
+    if (gitDockExpanded) setQuickCommitIntegrateConfirming(false)
+  }, [gitDockExpanded])
 
   useEffect(() => {
     if (!selectedRepositoryMutable || !selectedRepository?.status) return
@@ -3208,6 +3523,7 @@ export function DesktopAppPage() {
     ?? mergedSidebarWorkspaceEntries[0]
     ?? visibleSidebarWorkspaceEntries[0]
     ?? null
+  const topWorkspaceId = topWorkspace?.workspaceId
   const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
   const topWorkspacePath = topWorkspace?.path || selectedWorkspacePath || ''
   const topWorkspaceSlug = topWorkspacePath
@@ -3441,12 +3757,23 @@ export function DesktopAppPage() {
     if (!canonicalWorkspaceSlug || canonicalWorkspaceSlug === routeWorkspaceSlug) {
       return
     }
+    if (isWorkersRoute && routeWorkerId) {
+      void navigate({
+        to: '/$workspaceSlug/workers/$workerId',
+        params: { workspaceSlug: canonicalWorkspaceSlug, workerId: routeWorkerId },
+        replace: true,
+      })
+      return
+    }
     void navigate({
-      to: '/$workspaceSlug',
-      params: { workspaceSlug: canonicalWorkspaceSlug },
+      to: isWorkersRoute ? '/$workspaceSlug/workers' : '/$workspaceSlug',
+      params: {
+        workspaceSlug: canonicalWorkspaceSlug,
+      },
+      search: !isWorkersRoute && routeAutomationSessionId ? { sessionId: routeAutomationSessionId } : undefined,
       replace: true,
     })
-  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath])
+  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute, routeAutomationSessionId, routeWorkerId])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || !routeSessionId) {
@@ -3471,6 +3798,7 @@ export function DesktopAppPage() {
       replace: true,
     })
   }, [knownWorkspacePaths, navigate, routeSessionId, routeWorkspaceSlug, sessionById, workspacePathByBindingId, workspacePathById, workspaceSlugByPath])
+
 
 
 
@@ -3512,6 +3840,21 @@ export function DesktopAppPage() {
 
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
+
+    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
+    if (automationIdentity === 'accepted') {
+      const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
+      const workerId = (sessionRec?.kind === 'full' && sessionRec.session.automation_v2?.automation_id) || normalizedSessionId
+      void navigate({
+        to: '/$workspaceSlug/workers/$workerId',
+        params: {
+          workspaceSlug,
+          workerId,
+        },
+      })
+      return true
+    }
+
     void navigate({
       to: '/$workspaceSlug/$sessionId',
       params: {
@@ -3667,6 +4010,41 @@ export function DesktopAppPage() {
           return next
         })
       })
+  }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
+
+  const handleDeleteSidebarSession = useCallback(async (sessionId: string) => {
+    const normalizedSessionId = sessionId.trim()
+    if (!normalizedSessionId || sidebarSessionActions[normalizedSessionId]) return
+    try {
+      const preview = await deleteDesktopSessions({
+        session_ids: [normalizedSessionId],
+        archived_mode: 'include',
+        global: true,
+        dry_run: true,
+      })
+      const warning = preview.recent_75_overlap_count > 0 ? '\nThis includes one of your newest 75 conversations.' : ''
+      if (!window.confirm(`Permanently delete this session and its content?${warning}`)) return
+      setSidebarSessionActions((current) => ({ ...current, [normalizedSessionId]: 'archive' }))
+      await deleteDesktopSessions({
+        session_ids: [normalizedSessionId],
+        archived_mode: 'include',
+        global: true,
+        confirmation_token: preview.confirmation_token,
+        confirm_recent: preview.recent_75_overlap_count > 0,
+      })
+      setDesktopToast({ message: 'Deleted session.', tone: 'success' })
+      if (routeSessionId === normalizedSessionId) {
+        handleArchivePlanSession(normalizedSessionId)
+      }
+    } catch (error) {
+      setDesktopToast({ message: error instanceof Error ? error.message : 'Failed to delete session.', tone: 'error' })
+    } finally {
+      setSidebarSessionActions((current) => {
+        const next = { ...current }
+        delete next[normalizedSessionId]
+        return next
+      })
+    }
   }, [handleArchivePlanSession, routeSessionId, sidebarSessionActions])
 
   const handleRenameSidebarSession = useCallback(async (sessionId: string, title: string): Promise<void> => {
@@ -3877,6 +4255,14 @@ export function DesktopAppPage() {
         if (workspacePath) openMainWorktreeGitPanel(workspacePath, workspaceName)
         return
       }
+      case 'integrate-session': {
+        const request = parseDesktopIntegrationCommand(draft || command.command, { developerMode: updateDevMode })
+        if (!routeSessionId) {
+          throw new Error('Open an existing session with a managed worktree before integrating.')
+        }
+        setSlashIntegrateSession(current => current || { sessionId: routeSessionId, build: request.build })
+        return
+      }
       case 'ai-commit': {
         const workspacePath = selectedGitWorkspacePath || selectedWorkspace?.path || selectedWorkspacePath || ''
         if (!workspacePath) {
@@ -3892,6 +4278,9 @@ export function DesktopAppPage() {
       case 'open-plan-modal':
         if (routeSessionId) openPlanModalForSession(routeSessionId)
         else setDesktopToast({ message: 'Open an existing session to view its plan.', tone: 'info' })
+        return
+      case 'open-memory':
+        setMemoryOpen(true)
         return
       case 'open-feedback':
         setFeedbackOpen(true)
@@ -3996,7 +4385,7 @@ export function DesktopAppPage() {
         return _exhaustive
       }
     }
-  }, [handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspace, topWorkspacePath, uiSettings, uiSettingsQuery.data, workspaces, workspaceAuthorityFor])
+  }, [updateDevMode, handleAICommit, handleOpenSettingsTab, handleStartNewSessionInWorkspace, openMainWorktreeGitPanel, openPlanModalForSession, queryClient, routeSessionId, selectedGitSessionId, selectedGitWorkspacePath, selectedWorkspace?.path, selectedWorkspace?.workspaceName, selectedWorkspacePath, sessionById, topWorkspace, topWorkspacePath, uiSettings, uiSettingsQuery.data, workspaces, workspaceAuthorityFor])
 
   const latestNeedsApprovalSession = useMemo(() => {
     return desktopStateSessions
@@ -4218,11 +4607,12 @@ export function DesktopAppPage() {
   ], [canReturnToPreviousChat, canStartNewSession, handleOpenLatestNeedsApproval, handleOpenPreviousChat, handleOpenQuickActions, handleOpenSearchChats, handleOpenSettingsTab, handleOpenWorkspacePicker, handleStartNewSessionInWorkspace, latestNeedsApprovalSession, mergedSidebarWorkspaceEntries.length, routeSessionId, topWorkspaceLabel, topWorkspacePath])
 
 
-  const runDesktopUpdate = useCallback(async () => {
+  const runDesktopUpdate = useCallback(async (expectedDevRoot?: string) => {
+    if (expectedDevRoot !== undefined) await checkDesktopDevRebuild(expectedDevRoot)
     setUpdateRunning(true)
     setUpdateProgress({ open: true, job: null, startedAt: Date.now() })
     try {
-      const initialJob = await startDesktopUpdate()
+      const initialJob = await startDesktopUpdate(expectedDevRoot)
       setUpdateProgress((current) => ({ ...current, job: initialJob }))
       const startedAt = Date.now()
       let sawBackendDrop = false
@@ -4237,6 +4627,7 @@ export function DesktopAppPage() {
           if (job.status === 'running') {
             continue
           }
+          if (job.id !== initialJob.id || job.status !== 'completed') throw new Error('Update failed: expected rebuild job completion was not confirmed')
           const toast = { message: updateCompleteToastMessage(job), tone: 'success' } satisfies DesktopToastState
           setDesktopToast(toast)
           savePendingDesktopToast(toast)
@@ -4264,6 +4655,7 @@ export function DesktopAppPage() {
           error: message,
         },
       }))
+      if (expectedDevRoot !== undefined) throw error
     } finally {
       setUpdateRunning(false)
     }
@@ -4432,7 +4824,9 @@ export function DesktopAppPage() {
     nodes,
     presentation: 'mobile',
     routeSessionId,
+    routeAutomationSessionId,
     now: sidebarNow,
+    workspaceId: topWorkspaceId,
     workspaceSlug: globalSessionWorkspaceSlug,
     expandedAgentSessions,
     agentSummaries: sidebarAgentSummaries,
@@ -4452,6 +4846,10 @@ export function DesktopAppPage() {
     gitBehindCount: topWorkspaceGitBehindCount,
     gitDirtyCount: topWorkspaceGitDirtyCount,
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
+    onOpenAutomations: topWorkspaceSlug ? () => {
+      setMobileSidebarOpen(false)
+      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+    } : undefined,
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
     onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
@@ -4466,6 +4864,7 @@ export function DesktopAppPage() {
     onTogglePinned: handleToggleSidebarPinned,
     onArchive: handleArchiveSidebarSession,
     onRename: handleRenameSidebarSession,
+    onDelete: handleDeleteSidebarSession,
   })
 
   const mobileSessionQuickMenu = routeWorkspace?.path ? (
@@ -4530,6 +4929,7 @@ export function DesktopAppPage() {
                     onTogglePinned={handleToggleSidebarPinned}
                     onArchive={handleArchiveSidebarSession}
                     onRename={handleRenameSidebarSession}
+                    onDelete={handleDeleteSidebarSession}
                   />
                 ))}
               </div>
@@ -4641,6 +5041,10 @@ export function DesktopAppPage() {
     const modal = gitCommitModal
     const message = gitCommitMessage.trim()
     if (!modal || gitCommitBusy || !message) return
+    if (modal.sessionId && !repositoryDialogTargetMatches(modal, { sessionId: selectedGitSessionId, workspacePath: selectedGitWorkspacePath }, selectedRepositoryActionsEnabled)) {
+      setGitCommitError('Repository selection or authority changed. Close this dialog and refresh the selected repository before committing.')
+      return
+    }
 
     setGitCommitBusy(true)
     setGitCommitError(null)
@@ -4714,6 +5118,10 @@ export function DesktopAppPage() {
   const handleGitIntegrate = async (archiveAfterIntegration = gitIntegrateArchive) => {
     const modal = gitIntegrateModal
     if (!modal || gitIntegrateBusy) return
+    if (modal.presentation === 'sidebar-popout' && !modal.integrationComplete && (modal.sessionId !== selectedGitSessionId || !activeSessionIntegrateEligible)) {
+      setGitIntegrateError('Repository selection or authority changed. Refresh and reopen integration for the selected active lane.')
+      return
+    }
     setGitIntegrateArchive(archiveAfterIntegration)
     setGitIntegrateBusy(true)
     setGitIntegrateError(null)
@@ -4734,6 +5142,93 @@ export function DesktopAppPage() {
       setGitIntegrateError(error instanceof Error ? error.message : String(error))
     } finally {
       setGitIntegrateBusy(false)
+    }
+  }
+
+  const handleQuickCommitAndIntegrate = async () => {
+    if (quickCommitIntegrateBusy || !selectedGitWorkspacePath || !selectedGitSessionId || !activeSessionTargetWorkspacePath) return
+    setQuickCommitIntegrateBusy(true)
+    setQuickCommitIntegrateError(null)
+    setQuickCommitIntegrateConfirming(false)
+
+    const isDirty = Boolean(gitSnapshot?.has_git && gitSnapshot.dirty_count > 0)
+    let commitMessage = ''
+    let commitSucceeded = false
+    if (isDirty) {
+      setQuickCommitIntegratePhase('Generating commit message…')
+      try {
+        const suggestion = await suggestWorkspaceCommitMessage({
+          workspacePath: selectedGitWorkspacePath,
+          sessionId: selectedGitSessionId,
+        })
+        commitMessage = suggestion.message?.trim() || ''
+      } catch {
+        // Fallback below
+      }
+      if (!commitMessage) {
+        commitMessage = `Update ${activeGitSession?.worktreeBranch?.trim() || gitSnapshot?.branch || 'session changes'}`
+      }
+
+      setQuickCommitIntegratePhase('Committing changes…')
+      try {
+        await commitWorkspaceChanges({
+          workspacePath: selectedGitWorkspacePath,
+          sessionId: selectedGitSessionId,
+          message: commitMessage,
+          all: true,
+        })
+        commitSucceeded = true
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'], refetchType: 'none' }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'], refetchType: 'none' }),
+        ])
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        setQuickCommitIntegrateError(`Commit failed: ${msg}`)
+        setQuickCommitIntegrateBusy(false)
+        setQuickCommitIntegratePhase(null)
+        return
+      }
+    }
+
+    const integrationTarget: GitIntegrateModalState = {
+      sessionId: selectedGitSessionId,
+      workspacePath: activeSessionTargetWorkspacePath,
+      worktreeBranch: activeGitSession?.worktreeBranch?.trim() || gitSnapshot?.branch || 'worktree',
+      targetBranch: activeSessionReviewCandidate?.target_branch || activeSessionTargetBranch,
+      presentation: 'sidebar-popout',
+    }
+
+    setQuickCommitIntegratePhase(`Integrating into ${integrationTarget.targetBranch}…`)
+    try {
+      await integrateSessionWorktree(integrationTarget)
+      setDesktopToast({
+        message: isDirty
+          ? `Changes committed (“${commitMessage}”) and integrated into ${integrationTarget.targetBranch}.`
+          : `Worktree integrated into ${integrationTarget.targetBranch}.`,
+        tone: 'success',
+      })
+      setQuickCommitIntegrateError(null)
+      setGitIntegrateError(null)
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        repositoryInventory.refresh(),
+      ])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setQuickCommitIntegrateError(msg)
+      setGitIntegrateModal(integrationTarget)
+      setGitIntegrateError(msg)
+      if (commitSucceeded) {
+        void Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }),
+          queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }),
+        ])
+      }
+    } finally {
+      setQuickCommitIntegrateBusy(false)
+      setQuickCommitIntegratePhase(null)
     }
   }
 
@@ -4843,6 +5338,14 @@ export function DesktopAppPage() {
     }
   }, [closeGitSidebarIntegratePopout, gitIntegrateModal?.presentation])
 
+  const unexpandedCommitIntegrateVisible = Boolean(
+    !gitDockExpanded &&
+    activeSessionWorktree &&
+    activeSessionTargetWorkspacePath &&
+    selectedRepositoryActionsEnabled &&
+    ((gitSnapshot?.has_git && gitSnapshot.dirty_count > 0) || quickCommitIntegrateError)
+  )
+
   const planSidebarGitPanel = routeSessionId ? (
     <>
     <section data-testid="desktop-plan-git-sidebar" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-git-expanded={gitDockExpanded} data-plan-git-layout="expandable-dock" data-plan-section-treatment="inset-card">
@@ -4855,9 +5358,54 @@ export function DesktopAppPage() {
       </div>
       <div className="shrink-0 truncate text-[11px] text-[var(--app-text-muted)]" title={selectedRepository?.workspace_name}>{selectedRepository?.workspace_name || 'Session repository'} · {gitSnapshot?.branch || selectedRepository?.branch || 'Loading branch…'}{activeSessionWorktree ? ` → ${activeSessionTargetBranch}` : ''}</div>
       <div className="shrink-0 py-1 text-xs" role="status">
-        {repositoryInventory.stale || repositoryInventory.error || gitStatusQuery.isError ? 'Status unavailable · refresh before making changes' : gitSnapshot?.has_git ? `${gitSnapshot.dirty_count} uncommitted file${gitSnapshot.dirty_count === 1 ? '' : 's'}` : repositoryInventory.loading ? 'Loading changes…' : 'Git status unavailable'}
-        <span className="block text-[var(--app-text-muted)]">{repositoryInventory.stale || gitStatusQuery.isError || gitReviewQuery.isError ? 'Integration comparison unavailable' : gitReviewQuery.isFetching ? 'Checking integration…' : activeSessionReviewCandidate?.reason === 'commits_missing_from_target' ? `${activeSessionReviewCandidate.missing_commit_count ?? 0} commit${activeSessionReviewCandidate.missing_commit_count === 1 ? '' : 's'} not in ${activeSessionTargetBranch}` : activeSessionReviewCandidate?.reason === 'clean_and_integrated' ? `Integrated into ${activeSessionTargetBranch}` : activeSessionIntegrateEligible ? `Ready to integrate into ${activeSessionTargetBranch}` : activeSessionWorktree ? 'Integration not yet verified' : selectedRepository?.kind === 'source' ? 'Source checkout · no session integration' : 'Select this session’s branch to integrate'}</span>
+        {gitSnapshot?.has_git ? `${gitSnapshot.dirty_count} uncommitted file${gitSnapshot.dirty_count === 1 ? '' : 's'}` : repositoryInventory.error || gitStatusQuery.isError || (repositoryInventory.stale && !repositoryInventory.loading) ? 'Status unavailable · refresh before making changes' : repositoryInventory.loading ? 'Loading changes…' : 'Git status unavailable'}
+        <span className="block text-[var(--app-text-muted)]">{repositoryInventory.error || gitStatusQuery.isError || gitReviewQuery.isError ? 'Integration comparison unavailable' : !activeSessionReviewCandidate && gitReviewQuery.isFetching ? 'Checking integration…' : activeSessionReviewCandidate?.reason === 'commits_missing_from_target' ? `${activeSessionReviewCandidate.missing_commit_count ?? 0} commit${activeSessionReviewCandidate.missing_commit_count === 1 ? '' : 's'} not in ${activeSessionTargetBranch}` : activeSessionReviewCandidate?.reason === 'clean_and_integrated' ? `Integrated into ${activeSessionTargetBranch}` : activeSessionIntegrateEligible ? `Ready to integrate into ${activeSessionTargetBranch}` : activeSessionWorktree ? 'Integration not yet verified' : selectedRepository?.kind === 'source' ? 'Source checkout · no session integration' : 'Select this session’s branch to integrate'}</span>
       </div>
+      {unexpandedCommitIntegrateVisible ? (
+        <div className="mt-1 shrink-0" data-plan-git-unexpanded-commit-integrate>
+          {quickCommitIntegrateError ? (
+            <div className="mb-1 rounded-md border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-2 text-xs text-[var(--app-danger)]" role="alert">
+              <p className="break-words">{quickCommitIntegrateError}</p>
+            </div>
+          ) : null}
+          {quickCommitIntegrateError ? <button type="button" className="mb-1 inline-flex min-h-8 w-full items-center justify-center gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-2 py-1 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={quickCommitIntegrateBusy || gitIntegrateHelpBusy} onClick={() => { void handleAskSwarmForGitIntegrationHelp(); setQuickCommitIntegrateError(null) }}>{gitIntegrateHelpBusy ? <LoaderCircle size={12} className="animate-spin" /> : <Bot size={12} />}{gitIntegrateHelpBusy ? 'Asking Swarm…' : 'Ask Swarm for Help'}</button> : null}
+          {quickCommitIntegrateConfirming ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                className="inline-flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-2 text-xs font-semibold text-[var(--app-primary-text,white)] hover:opacity-90 disabled:opacity-50"
+                disabled={quickCommitIntegrateBusy}
+                onClick={() => void handleQuickCommitAndIntegrate()}
+                aria-label={`Confirm commit and integrate into ${activeSessionTargetBranch}`}
+                title={`Confirm commit and integrate into ${activeSessionTargetBranch}`}
+              >
+                {quickCommitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
+                <span className="truncate">{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : 'Confirm'}</span>
+              </button>
+              <button
+                type="button"
+                className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-[var(--app-border)] px-2.5 text-xs text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] disabled:opacity-50"
+                disabled={quickCommitIntegrateBusy}
+                onClick={() => setQuickCommitIntegrateConfirming(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] px-2 text-xs font-semibold text-[var(--app-primary)] hover:bg-[var(--app-selection-bg)] disabled:opacity-50"
+              disabled={quickCommitIntegrateBusy || gitCommitBusy || gitIntegrateBusy}
+              onClick={() => setQuickCommitIntegrateConfirming(true)}
+              aria-label={quickCommitIntegrateError ? `Retry commit and integrate into ${activeSessionTargetBranch}` : `Commit and integrate into ${activeSessionTargetBranch}`}
+              title={quickCommitIntegrateError ? `Retry commit and integrate into ${activeSessionTargetBranch}` : `Commit and integrate into ${activeSessionTargetBranch}`}
+            >
+              {quickCommitIntegrateBusy ? <LoaderCircle size={12} className="animate-spin" /> : <GitMerge size={12} />}
+              <span className="truncate">{quickCommitIntegrateBusy ? (quickCommitIntegratePhase || 'Committing & integrating…') : quickCommitIntegrateError ? `Retry commit & integrate into ${activeSessionTargetBranch}` : `Commit & integrate into ${activeSessionTargetBranch}`}</span>
+            </button>
+          )}
+        </div>
+      ) : null}
       <div id="session-git-dock-details" hidden={!gitDockExpanded} className={gitDockExpanded ? 'min-h-0 max-h-[60vh] flex-1 overflow-y-auto overscroll-contain pr-1' : 'hidden'}>
       <details className="my-2 text-xs"><summary className="cursor-pointer py-2 text-[var(--app-text-muted)]">Branches &amp; repositories</summary>
       <SessionRepositoryPicker inventory={repositoryInventory} onSelect={repositoryInventory.select} onRefresh={() => { void repositoryInventory.refresh() }} onLoadMore={() => { void repositoryInventory.loadMore() }} />
@@ -4955,8 +5503,8 @@ export function DesktopAppPage() {
       ) : null}
       {updateAttentionVisible ? (
         <Button variant="ghost" className="relative h-12 w-12 min-w-12 p-0" onClick={() => { void handleDesktopUpdate() }} aria-label={updateActionLabel} title={updateActionTitle} disabled={updateRunning || !updateActionEnabled}>
-          <Download size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
-          {updateActionEnabled ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
+          <UpdateActionIcon size={24} className={cn('shrink-0', updateRunning && 'animate-pulse', updateActionEnabled && 'text-[var(--app-primary)]', updateError && 'text-[var(--app-error)]')} />
+          {!updateDevMode && updateAvailable ? <span aria-hidden="true" className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_10px_var(--app-primary)]" /> : null}
         </Button>
       ) : null}
       <Button variant="ghost" className="mt-auto h-12 w-12 min-w-12 p-0" onClick={() => handleOpenSettingsTab('account')} aria-label="Open settings" title="Settings">
@@ -5064,8 +5612,8 @@ export function DesktopAppPage() {
                         disabled={updateRunning || !updateActionEnabled}
                         title={updateActionTitle}
                       >
-                        <Download size={14} strokeWidth={1.8} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
-                        {updateActionEnabled ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
+                        <UpdateActionIcon size={14} strokeWidth={1.8} className={cn('shrink-0', updateRunning && 'animate-pulse')} />
+                        {!updateDevMode && updateAvailable ? <span aria-hidden="true" className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--app-primary)] shadow-[0_0_8px_var(--app-primary)]" /> : null}
                       </button>
                     ) : null}
                     <button
@@ -5127,6 +5675,41 @@ export function DesktopAppPage() {
                     </button>
                     <button
                       type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (!topWorkspaceSlug) return
+                        setMobileSidebarOpen(false)
+                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                      }}
+                      disabled={!topWorkspaceSlug}
+                      aria-label="Open Workers"
+                      aria-current={isWorkersRoute ? 'page' : undefined}
+                      title="Workers"
+                    >
+                      <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="flex min-w-0 items-center justify-between gap-1.5">
+                        <span className="min-w-0 truncate">Workers</span>
+                        <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => {
+                        if (!topWorkspaceSlug) return
+                        setMobileSidebarOpen(false)
+                        void navigate({ to: '/$workspaceSlug/environments', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                      }}
+                      disabled={!topWorkspaceSlug}
+                      aria-label="Open Environments"
+                      title="Environments"
+                      data-testid="sidebar-environments-btn"
+                    >
+                      <Server size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
+                      <span className="min-w-0 truncate">Environments</span>
+                    </button>
+                    <button
+                      type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
                       onClick={handleOpenQuickActions}
                       aria-label="Open Desktop quick actions"
@@ -5180,8 +5763,8 @@ export function DesktopAppPage() {
             </div>
           </div>
           <div className="flex min-h-0 flex-1 flex-col">
-            <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-3">
-              <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto font-mono">
+            <div ref={sidebarBodyRef} className="scrollbar-hidden flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden px-3 py-3">
+              <div className="scrollbar-hidden grid min-h-0 flex-1 content-start gap-2 overflow-y-auto overflow-x-hidden font-mono">
                   <div className="grid min-h-[34px] grid-cols-[minmax(0,1fr)_24px] items-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-1">
                     <div ref={workspaceDropdownRef} className="relative min-w-0">
                       <button
@@ -5291,6 +5874,7 @@ export function DesktopAppPage() {
                             onTogglePinned={handleToggleSidebarPinned}
                             onArchive={handleArchiveSidebarSession}
                             onRename={handleRenameSidebarSession}
+                            onDelete={handleDeleteSidebarSession}
                           />
                         ))}
                       </div>
@@ -5299,7 +5883,9 @@ export function DesktopAppPage() {
                   {renderSidebarSessionGroups({
                     nodes: globalFlattenedSessionNodes,
                     routeSessionId,
+                    routeAutomationSessionId,
                     now: sidebarNow,
+                    workspaceId: topWorkspaceId,
                     workspaceSlug: globalSessionWorkspaceSlug,
                     expandedAgentSessions,
                     agentSummaries: sidebarAgentSummaries,
@@ -5319,6 +5905,10 @@ export function DesktopAppPage() {
                     gitBehindCount: topWorkspaceGitBehindCount,
                     gitDirtyCount: topWorkspaceGitDirtyCount,
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
+                    onOpenAutomations: topWorkspaceSlug ? () => {
+                      setMobileSidebarOpen(false)
+                      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                    } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
                     onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
@@ -5333,6 +5923,7 @@ export function DesktopAppPage() {
                     onTogglePinned: handleToggleSidebarPinned,
                     onArchive: handleArchiveSidebarSession,
                     onRename: handleRenameSidebarSession,
+                    onDelete: handleDeleteSidebarSession,
                   })}
                   {globalFlattenedSessionNodes.length === 0 ? (
                     <div className="px-2 py-2 text-xs text-[var(--app-text-subtle)]">No active sessions.</div>
@@ -5398,7 +5989,15 @@ export function DesktopAppPage() {
       ) : null}
 
       <main className="flex-1 min-w-0 min-h-0 flex flex-col h-full overflow-hidden sm:pr-[var(--app-safe-area-right)] sm:pl-[var(--app-safe-area-left)]">
-        {mobileCreationPage === 'task' && routeWorkspace ? (
+        {isWorkersRoute ? (
+          <>
+            <div className="flex h-[60px] shrink-0 items-center border-b border-[var(--app-border)] px-3 sm:hidden">
+              <Button variant="ghost" onClick={() => setMobileSidebarOpen(true)} aria-label="Open sidebar"><Menu size={20} /></Button>
+              <span className="text-sm font-semibold">Workers</span>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto"><Outlet /></div>
+          </>
+        ) : mobileCreationPage === 'task' && routeWorkspace ? (
           <BackgroundTaskForm
             presentation="page"
             workspaceName={routeWorkspace.workspaceName || routeWorkspace.path}
@@ -5539,6 +6138,7 @@ export function DesktopAppPage() {
         )}
       </main>
 
+      {slashIntegrateSession ? <IntegrateCommandDialog key={slashIntegrateSession.sessionId} sessionId={slashIntegrateSession.sessionId} build={slashIntegrateSession.build ? { check: checkDesktopDevRebuild, run: async (path) => { if (updateRunning) throw new Error('A Swarm update is already running'); await runDesktopUpdate(path) } } : undefined} onClose={() => { setSlashIntegrateSession(null); void queryClient.invalidateQueries({ queryKey: ['workspace-git-status'] }); void queryClient.invalidateQueries({ queryKey: ['session-worktree-review'] }) }} onRepair={openIntegrationHelpDraft} /> : null}
       {needsReviewCleanupOpen ? <ReviewWorktreesModal workspacePath={topWorkspacePath || undefined} onClose={() => setNeedsReviewCleanupOpen(false)} repairFixAvailable={reviewFixAvailable} onAskSwarmFix={handleAskSwarmToFixReviewIntegration} /> : null}
 
       <DesktopQuickSettingsModal
@@ -5579,6 +6179,7 @@ export function DesktopAppPage() {
       />
 
       <DesktopFeedbackModal open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      {memoryOpen && <MemoryModal onClose={() => setMemoryOpen(false)} />}
 
       <DesktopNotificationsModal
         open={notificationsOpen}

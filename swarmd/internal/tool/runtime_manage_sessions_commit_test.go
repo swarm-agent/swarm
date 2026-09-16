@@ -229,6 +229,65 @@ func TestManageSessionsCommitAcceptsNeedsReviewFromDurablePlanAttention(t *testi
 	}
 }
 
+func TestManageSessionsCommitWorktreeFallbackWhenCheckpointFilesEmpty(t *testing.T) {
+	repo := t.TempDir()
+	runManageSessionsGitCommand(t, repo, "init")
+	runManageSessionsGitCommand(t, repo, "config", "user.name", "Test User")
+	runManageSessionsGitCommand(t, repo, "config", "user.email", "test@example.invalid")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runManageSessionsGitCommand(t, repo, "add", ".")
+	runManageSessionsGitCommand(t, repo, "commit", "-m", "base")
+
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("modified dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	principal := identity.Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	service := &gitManageSessionService{sessions: map[string]pebblestore.SessionSnapshot{}, plans: map[string]pebblestore.SessionPlanSnapshot{}}
+	sessionID := "session-worktree-fallback"
+	service.sessions[sessionID] = pebblestore.SessionSnapshot{
+		ID:               sessionID,
+		AccountScopeID:   principal.AccountScopeID,
+		UserID:           principal.UserID,
+		WorkspacePath:    repo,
+		WorktreeEnabled:  true,
+		WorktreeRootPath: repo,
+		WorktreeBranch:   "agent/feature",
+		UpdatedAt:        100,
+		Lifecycle:        &pebblestore.SessionLifecycleSnapshot{Phase: "needs_review"},
+	}
+	service.plans[sessionID] = pebblestore.SessionPlanSnapshot{
+		ID:        "plan-" + sessionID,
+		SessionID: sessionID,
+		Document: &pebblestore.SessionPlanDocument{
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{
+				{ID: "cp-1", Status: "needs_review", ChangedFiles: nil},
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service, workspace: &gitManageWorkspaceService{owned: map[string]bool{filepath.Clean(repo): true}}}
+	scope := WorkspaceScope{Principal: principal}
+	args := map[string]any{
+		"action": "commit",
+		"commits": []any{
+			map[string]any{"session_id": sessionID, "message": "feat: worktree fallback commit"},
+		},
+	}
+	permissionPayload, err := runtime.PrepareManageSessionsCommitManifest(context.Background(), scope, args)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	output, err := runtime.executeManageSessions(context.Background(), scope, permissionPayload)
+	if err != nil {
+		t.Fatalf("execute: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, `"files":["dirty.txt"]`) {
+		t.Fatalf("output missing fallback dirty.txt: %s", output)
+	}
+}
+
 func runManageSessionsGitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := execCommand("git", args...)

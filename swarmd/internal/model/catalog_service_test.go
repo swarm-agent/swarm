@@ -987,6 +987,26 @@ func snapshotPassthroughPayload() []byte {
 	}`)
 }
 
+func TestDecodeSwarmSnapshotRecordsPreservesOpenRouterVideoModels(t *testing.T) {
+	records, _, err := decodeSwarmSnapshotRecords(pinnedSwarmSnapshotJSON, 1000, 2000, catalogSourcePinned, "")
+	if err != nil {
+		t.Fatalf("decode pinned snapshot: %v", err)
+	}
+	foundVeo := false
+	for _, record := range records {
+		if record.Provider == "openrouter" && record.Model == "google/veo-3.1" {
+			foundVeo = true
+			if !stringInSlice(record.CatalogModalities.Outputs, "video") {
+				t.Fatalf("expected video in outputs, got %v", record.CatalogModalities.Outputs)
+			}
+			break
+		}
+	}
+	if !foundVeo {
+		t.Fatalf("expected openrouter google/veo-3.1 to be preserved in decoded records")
+	}
+}
+
 func stringSlicesEqual(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

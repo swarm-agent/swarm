@@ -116,7 +116,16 @@ if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
   BOOTSTRAP+=' && apt-get install -y --no-install-recommends python3'
 fi
 printf 'RUN %s\nSTOPSIGNAL SIGRTMIN+3\nCMD ["/usr/lib/systemd/systemd"]\n' "${BOOTSTRAP}" >>"${build_root}/Containerfile"
-"${RUNTIME}" build --pull -t "${test_image}" -f "${build_root}/Containerfile" "${build_root}"
+build_ok="false"
+for attempt in 1 2 3 4; do
+  if "${RUNTIME}" build --pull -t "${test_image}" -f "${build_root}/Containerfile" "${build_root}"; then
+    build_ok="true"
+    break
+  fi
+  echo "Container build attempt ${attempt} failed, retrying in 5s..."
+  sleep 5
+done
+[[ "${build_ok}" == "true" ]] || fail "failed to build distro container image after retries"
 
 run_args=(run --rm --name "${container_name}" --privileged --cpus=2 --memory=3g --pids-limit=512)
 if [[ "$INSTALL_IDENTITY" == root ]]; then

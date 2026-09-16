@@ -80,6 +80,9 @@ func TestRepositoryIdentityIsolation(t *testing.T) {
 		if err := ValidateOwnedIdentity(test.source, test.lane, test.branch, test.base); err == nil {
 			t.Fatal("mismatched identity accepted")
 		}
+		if err := ValidateOwnedExecutionIdentity(test.source, test.lane, test.branch, test.base); err == nil {
+			t.Fatal("mismatched execution identity accepted")
+		}
 	}
 	if err := os.Remove(alias); err != nil {
 		t.Fatal(err)
@@ -92,5 +95,29 @@ func TestRepositoryIdentityIsolation(t *testing.T) {
 	}
 	if git(parent, "worktree", "list", "--porcelain") != inventory || git(parent, "rev-parse", "HEAD") != base || git(nested, "rev-parse", "HEAD") != nestedHead || git(parent, "status", "--porcelain") != "" || git(nested, "status", "--porcelain") != "" {
 		t.Fatal("rejected identity mutated repositories")
+	}
+
+	// Purpose: execution on the same owned branch must survive history recovery,
+	// while transition ancestry still fails and staged recovery bytes stay intact.
+	// Exercise both authorities with real Git at the narrowest worktree layer.
+	if err := os.WriteFile(filepath.Join(lane, "recovered.txt"), []byte("recovered work\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(lane, "add", "recovered.txt")
+	git(lane, "commit", "-m", "recovery base")
+	recordedBase := git(lane, "rev-parse", "HEAD")
+	git(lane, "reset", "--soft", base)
+	before := git(lane, "status", "--porcelain")
+	if before == "" {
+		t.Fatal("fixture must retain staged recovery work")
+	}
+	if err := ValidateOwnedExecutionIdentity(parent, lane, "agent/owned", recordedBase); err != nil {
+		t.Fatalf("owned execution stranded after reset: %v", err)
+	}
+	if err := ValidateOwnedIdentity(parent, lane, "agent/owned", recordedBase); err == nil {
+		t.Fatal("transition accepted non-ancestor base")
+	}
+	if git(lane, "rev-parse", "HEAD") != base || git(lane, "status", "--porcelain") != before || git(lane, "show", ":recovered.txt") != "recovered work" || git(parent, "worktree", "list", "--porcelain") != inventory {
+		t.Fatal("identity validation modified recovery state")
 	}
 }

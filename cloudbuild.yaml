@@ -1,0 +1,68 @@
+# Supplemental deterministic checks, not complete release qualification.
+# Deployment-owned trigger identity must have no provider-secret or publish rights.
+timeout: 900s
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+steps:
+  - id: go-toolchain
+    name: golang:1.26.7-bookworm
+    entrypoint: bash
+    waitFor: ['-']
+    args: ['-ceu', 'mkdir -p /workspace/toolchain; cp -a /usr/local/go /workspace/toolchain/go']
+  - id: prepare
+    name: node:24-bookworm
+    entrypoint: bash
+    waitFor: ['-']
+    args:
+      - -ceu
+      - |
+        corepack enable
+        cd web
+        corepack pnpm install --frozen-lockfile
+        cd ..
+        mkdir -p /workspace/critical-tiers
+        for tier in fast deep agents; do
+          mkdir -p /workspace/critical-tiers/$$tier
+          tar --exclude=./critical-tiers --exclude=./toolchain --exclude=./.git -cf - . |
+            tar -xf - -C /workspace/critical-tiers/$$tier
+        done
+  - id: critical-fast
+    name: node:24-bookworm
+    entrypoint: bash
+    waitFor: [prepare, go-toolchain]
+    args:
+      - -ceu
+      - |
+        export PATH=/workspace/toolchain/go/bin:$$PATH GOMAXPROCS=2 GOFLAGS=-p=2
+        export TMPDIR=/workspace/scratch-fast GO_CACHE_ROOT=/workspace/scratch-fast/go
+        mkdir -p "$$TMPDIR"
+        cd /workspace/critical-tiers/fast
+        corepack enable
+        bash scripts/run-critical-tests.sh fast
+  - id: critical-deep
+    name: node:24-bookworm
+    entrypoint: bash
+    waitFor: [prepare, go-toolchain]
+    args:
+      - -ceu
+      - |
+        export PATH=/workspace/toolchain/go/bin:$$PATH GOMAXPROCS=2 GOFLAGS=-p=2
+        export TMPDIR=/workspace/scratch-deep GO_CACHE_ROOT=/workspace/scratch-deep/go
+        mkdir -p "$$TMPDIR"
+        cd /workspace/critical-tiers/deep
+        corepack enable
+        bash scripts/run-critical-tests.sh deep
+  - id: critical-agents
+    name: node:24-bookworm
+    entrypoint: bash
+    waitFor: [prepare, go-toolchain]
+    args:
+      - -ceu
+      - |
+        export PATH=/workspace/toolchain/go/bin:$$PATH GOMAXPROCS=2 GOFLAGS=-p=2
+        export TMPDIR=/workspace/scratch-agents GO_CACHE_ROOT=/workspace/scratch-agents/go
+        mkdir -p "$$TMPDIR"
+        cd /workspace/critical-tiers/agents
+        corepack enable
+        bash scripts/run-critical-tests.sh agents

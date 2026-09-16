@@ -83,6 +83,7 @@ function normalizeDesktopSessionPlanDocument(value: unknown): DesktopSessionPlan
   }
 
   const document: DesktopSessionPlanDocument = {
+    automation: record.automation as DesktopSessionPlanDocument['automation'],
     id: stringValue(record, 'id'),
     title: stringValue(record, 'title'),
     status: stringValue(record, 'status'),
@@ -190,7 +191,8 @@ function normalizeDesktopSessionPlanCheckpoints(value: unknown): DesktopSessionP
         completedAt: numberValue(checkpoint.completedAt ?? checkpoint.completed_at),
         review: normalizeDesktopSessionPlanCheckpointReview(checkpoint.review),
         recommendation: normalizeDesktopSessionPlanCheckpointRecommendation(checkpoint.recommendation),
-        finalHandoff: normalizeDesktopPlanFinalHandoff(checkpoint.finalHandoff ?? checkpoint.final_handoff ?? checkpoint.handoff),
+        waitingReason: String(checkpoint.waitingReason ?? objectValue(checkpoint.handoff)?.overview ?? ''),
+      finalHandoff: normalizeDesktopPlanFinalHandoff(checkpoint.finalHandoff ?? checkpoint.final_handoff ?? checkpoint.handoff),
         attempts: normalizeDesktopSessionPlanCheckpointAttempts(checkpoint.attempts),
         order: numberValue(checkpoint.order) || index + 1,
       }

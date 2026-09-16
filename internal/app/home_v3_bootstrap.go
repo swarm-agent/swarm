@@ -231,6 +231,11 @@ func applyHomeWorkspaceBootstrap(next model.HomeModel, data homeBootstrapData, s
 		next.ChatRoutes = buildChatRoutesForHomeModel(next, selectedPath)
 	}
 
+	// Recompute launch diagnostics from this bootstrap, not the prior model.
+	// Explicit workspace selection stops launch resolution on later refreshes.
+	next.WorkspaceSetupPath = ""
+	next.WorkspaceSetupHasGit = false
+	next.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
 	startupCWD = normalizePath(startupCWD)
 	if launchUsesCWDRoute {
 		next.WorkspaceSetupPath = firstNonEmpty(normalizePath(data.launchResolve.ResolvedPath), startupCWD)

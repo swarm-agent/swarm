@@ -94,7 +94,7 @@ func TestOnboardingGuidancePreservesSelectionUntilExplicitKey(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		w.Write([]byte(`{"workspace_guidance":{"runtime_username":"worker","runtime_uid":"different-user","runtime_non_root":true,"suggested_workspace_path":"/projects/new"}}`))
+		w.Write([]byte(`{"workspace_guidance":{"runtime_username":"worker","runtime_uid":"different-user","runtime_non_root":true,"home_path":"/projects/new"}}`))
 	}))
 	defer server.Close()
 	home := ui.NewHomePage(model.HomeModel{OnboardingRequired: true, CWD: "/selected"})

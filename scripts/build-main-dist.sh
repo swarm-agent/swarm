@@ -166,6 +166,10 @@ fi
   printf 'built_at=%s\n' "${built_at}"
 } > "${OUTPUT_DIR}/build-info.txt"
 
+# The unarchived artifact is also the first-run source for native rebuilds.
+cp "${ROOT_DIR}/LICENSE" "${OUTPUT_DIR}/LICENSE"
+cp "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${OUTPUT_DIR}/THIRD_PARTY_NOTICES.md"
+
 archive_basename="swarm-${release_version}-linux-amd64"
 archive_path="${OUTPUT_DIR}/${archive_basename}.tar.gz"
 mkdir -p "${RELEASE_STAGE_DIR}/${archive_basename}"
@@ -180,7 +184,11 @@ cp "${ROOT_DIR}/install.sh" "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh
 chmod 755 "${RELEASE_STAGE_DIR}/${archive_basename}/install.sh"
 (
   cd "${RELEASE_STAGE_DIR}"
-  tar -czf "${archive_path}" "${archive_basename}"
+  # Public archive permissions and ownership must not inherit a private build
+  # umask or the build machine's account. Keep executability, add read/traverse
+  # access, and never add group/other write access or special permission bits.
+  tar --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w,a-s,a-t' \
+    -czf "${archive_path}" "${archive_basename}"
 )
 (
   cd "${OUTPUT_DIR}"

@@ -273,10 +273,22 @@ func (s *SessionStore) searchV3SessionsRecentFromReader(reader pebble.Reader, op
 }
 
 func (s *SessionStore) searchV3SessionsQueryFromReader(reader pebble.Reader, options V3SessionSearchOptions) (V3SessionSearchResult, error) {
-	queryTokens := make([][]string, 0, len(options.Queries))
+	queryTokens := make([][]string, 0, len(options.Queries)*2)
+	seenVariants := map[string]struct{}{}
 	for _, query := range options.Queries {
 		if tokens := v3SessionSearchTokens(query); len(tokens) > 0 {
-			queryTokens = append(queryTokens, tokens)
+			key := strings.Join(tokens, "\x00")
+			if _, exists := seenVariants[key]; !exists {
+				seenVariants[key] = struct{}{}
+				queryTokens = append(queryTokens, tokens)
+			}
+			if filtered := v3SessionSearchFilterStopWords(tokens); len(filtered) > 0 && len(filtered) < len(tokens) {
+				filteredKey := strings.Join(filtered, "\x00")
+				if _, exists := seenVariants[filteredKey]; !exists {
+					seenVariants[filteredKey] = struct{}{}
+					queryTokens = append(queryTokens, filtered)
+				}
+			}
 		}
 	}
 	if len(queryTokens) == 0 {
@@ -769,12 +781,16 @@ func v3SessionSearchPostingPrefix(sessionID string) string {
 }
 
 func v3SessionSearchSessionHasTokens(reader pebble.Reader, sessionID string, tokens []string) ([]V3SessionSearchSnippet, bool, error) {
+	if len(tokens) == 0 {
+		return nil, false, nil
+	}
 	var meta v3SessionSearchSessionMeta
 	metaOK, err := getJSONFromReader(reader, keyV3SessionSearchMeta(sessionID), &meta)
 	if err != nil {
 		return nil, false, err
 	}
 	var snippets []V3SessionSearchSnippet
+	matchedCount := 0
 	for _, token := range tokens {
 		var record v3SessionSearchIndexRecord
 		ok, err := getJSONFromReader(reader, keyV3SessionSearchPosting(sessionID, "message", token), &record)
@@ -796,12 +812,18 @@ func v3SessionSearchSessionHasTokens(reader pebble.Reader, sessionID string, tok
 				}
 			}
 		}
-		if !ok {
-			return nil, false, nil
+		if ok {
+			matchedCount++
+			snippets = mergeV3SessionSearchSnippets(snippets, snippetList(record.Snippet))
 		}
-		snippets = mergeV3SessionSearchSnippets(snippets, snippetList(record.Snippet))
 	}
-	return snippets, true, nil
+	if matchedCount == len(tokens) {
+		return snippets, true, nil
+	}
+	if len(tokens) >= 3 && matchedCount >= 2 && float64(matchedCount)/float64(len(tokens)) >= 0.6 {
+		return snippets, true, nil
+	}
+	return nil, false, nil
 }
 
 func v3SessionSearchLegacyKeyForToken(keys []string, token string) (string, bool) {
@@ -896,6 +918,33 @@ func v3SessionSearchPrefixesForOptions(options V3SessionSearchOptions, token str
 		prefixes = append(prefixes, fmt.Sprintf("%s%s/archived/%s/", keyV3SessionSearchAccountPrefix, accountPart, tokenPart))
 	}
 	return prefixes
+}
+
+var v3SessionSearchStopWords = map[string]struct{}{
+	"a": {}, "about": {}, "all": {}, "an": {}, "and": {}, "any": {}, "are": {}, "as": {}, "at": {},
+	"be": {}, "been": {}, "but": {}, "by": {}, "can": {}, "check": {}, "could": {}, "did": {},
+	"do": {}, "does": {}, "find": {}, "for": {}, "from": {}, "get": {}, "had": {}, "has": {},
+	"have": {}, "how": {}, "if": {}, "in": {}, "into": {}, "is": {}, "it": {}, "its": {},
+	"like": {}, "look": {}, "me": {}, "my": {}, "no": {}, "not": {}, "of": {}, "on": {},
+	"or": {}, "our": {}, "see": {}, "show": {}, "so": {}, "some": {}, "tell": {}, "than": {},
+	"that": {}, "the": {}, "their": {}, "them": {}, "then": {}, "there": {}, "these": {},
+	"they": {}, "this": {}, "to": {}, "us": {}, "was": {}, "we": {}, "were": {}, "what": {},
+	"when": {}, "where": {}, "which": {}, "who": {}, "why": {}, "will": {}, "with": {}, "would": {},
+	"you": {}, "your": {},
+}
+
+func v3SessionSearchFilterStopWords(tokens []string) []string {
+	out := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if _, isStop := v3SessionSearchStopWords[t]; !isStop {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func V3SessionSearchTokens(text string) []string {
+	return v3SessionSearchTokens(text)
 }
 
 func v3SessionSearchTokens(text string) []string {
@@ -1040,6 +1089,10 @@ search:
 		start = len(s.runes) - v3SessionSearchSnippetMaxRunes
 	}
 	return string(s.runes[start : start+v3SessionSearchSnippetMaxRunes])
+}
+
+func MatchCenteredV3SessionSearchSnippet(text, token string) string {
+	return matchCenteredV3SessionSearchSnippet(text, token)
 }
 
 func matchCenteredV3SessionSearchSnippet(text, token string) string {

@@ -1,4 +1,6 @@
 import { ensureDesktopSession } from '../../../app/api'
+import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
+import { desktopAutomations } from '../runtime/desktop-automations'
 import { DesktopV3RealtimeTransport, type DesktopV3RealtimeTransportStatus } from '../session-v3/transport'
 import type { SessionV3RealtimeWorksetSubscriptionRequestWire } from '../session-v3/types'
 import { DesktopV3LivePatchCoordinator, createDefaultDesktopV3LivePatchCoordinatorDeps } from './v3-live-patch-coordinator'
@@ -126,6 +128,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
         if (status === 'open') {
           this.clientEffectRunner.refreshArtifactCatalogs()
           this.clientEffectRunner.refreshWorkspaceCatalog()
+          desktopAutomations.invalidate()
+    desktopAutomationV2.invalidate()
         }
         this.dispatch({
           type: 'realtime.statusChanged',
@@ -135,6 +139,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       },
       onResumeSent: () => this.handleResumeSent(),
       onRehydrateRequested: async (_reason, frame) => {
+        desktopAutomations.invalidate()
+    desktopAutomationV2.invalidate()
         if ((frame as { bootstrap_required?: boolean } | null)?.bootstrap_required) {
           await this.bootstrap({
             preferredSessionId: this.getSnapshot().selectedSessionId,
@@ -411,6 +417,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
       await commitDesktopV3StreamFrame(this.streamCommit, frame)
       this.livePatchCoordinator.afterDurableFrame(frame)
       this.clientEffectRunner.accept(frame)
+      desktopAutomations.acceptFrame(frame)
+      desktopAutomationV2.acceptFrame(frame)
       if (frame.kind === 'event' || frame.kind === 'workset.session.discovered' || frame.kind === 'workset.session.updated' || frame.kind === 'workset.session.removed') {
         // Cache listeners and this post-commit path can observe the same frame.
         // Coalesce both signals so an event burst performs one reconciliation.

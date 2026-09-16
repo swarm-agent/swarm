@@ -1,3 +1,4 @@
+import { isAutomationExecutionSession, isAutomationManagementSession } from './desktop-automation-purpose'
 import type { SessionCacheRecord, SessionSnapshot } from './desktop-v3-cache-types'
 
 function metadataBoolean(metadata: Record<string, unknown> | undefined, key: string): boolean {
@@ -40,8 +41,15 @@ export function isDesktopV3VideoStudioRecord(record: SessionCacheRecord | undefi
 
 export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | undefined): boolean {
   if (!session) return false
+  if (isAutomationExecutionSession(session)) return true
   const metadata = session.metadata
-  return session.navigation_hidden === true
+  // An accepted automation author session should be visible under the Workers sidebar group.
+  if (session.automation_v2 && metadata?.swarm_v3_session_purpose === 'automation_management') {
+    return false
+  }
+  return isAutomationManagementSession(session)
+    || isAutomationExecutionSession(session)
+    || session.navigation_hidden === true
     || session.system_session === true
     || session.system_sidechat === true
     || session.lineage_kind?.trim().toLowerCase() === 'system_sidechat'
@@ -49,6 +57,10 @@ export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | un
     || metadataBoolean(metadata, 'system_session')
     || metadataBoolean(metadata, 'system_sidechat')
     || metadataString(metadata, 'lineage_kind') === 'system_sidechat'
+    || Boolean(metadataString(metadata, 'automation_v2_occurrence_id'))
+    || Boolean(metadataString(metadata, 'automation_v2_parent_id'))
+    || metadataBoolean(metadata, 'automation_v2_optimization')
+    || Boolean(metadataString(metadata, 'automation_review_id'))
 }
 
 export function isDesktopV3NavigationHiddenRecord(record: SessionCacheRecord | undefined): boolean {

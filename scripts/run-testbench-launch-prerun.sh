@@ -13,6 +13,9 @@ all failures instead of hiding later results behind the first failure.
 Default suites:
   critical      local deterministic atlas-driven critical test gate
   onboarding    isolated local onboarding/bootstrap persistence gate
+  installed-new-user      installed root-created human account and resumable TUI
+  installed-existing-user installed root-selected human account and preservation
+  installed-normal-user   installed sudo-assisted human account and preservation
   desktop       real Desktop /new, /task, worktree, Plan-to-Auto lifecycle gate
   tui           real TUI /new, /task, worktree, and Plan launch gate
   plan-auto     API Plan-to-Auto two-checkpoint lifecycle runner
@@ -48,8 +51,10 @@ Options:
   --runner-timeout-ms <ms>   API runner wait budget (default: 600000)
   --expected-commit <sha>    Candidate commit override for provider-sync (default: local HEAD)
   --remote-repo <path>       Candidate checkout override (default: discovered testbench checkout)
-  --candidate-archive <path> Exact release archive for omarchy-install
-  --candidate-checksum <path> Matching archive SHA-256 file for omarchy-install
+  --installed-onboarding-runner <path>
+                             Reviewed Python installed proof runner (required for installed suites)
+  --candidate-archive <path> Exact release archive for installed suites / omarchy-install
+  --candidate-checksum <path> Matching SHA-256 sidecar for installed suites / omarchy-install
   --omarchy-guest <user@host> Clean official-ISO Omarchy VM SSH target
   --omarchy-port <n>         Optional Omarchy VM SSH port
   --omarchy-identity <path>  Optional Omarchy VM SSH identity
@@ -85,7 +90,7 @@ source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
 # shellcheck source=scripts/lib-launch-prerun.sh
 source "${ROOT_DIR}/scripts/lib-launch-prerun.sh"
 
-DEFAULT_SUITES=(critical onboarding desktop tui plan-auto task-routing task-program provider-sync)
+DEFAULT_SUITES=(critical onboarding installed-new-user installed-existing-user installed-normal-user desktop tui plan-auto task-routing task-program provider-sync)
 ALL_SUITES=("${DEFAULT_SUITES[@]}" omarchy-install attach-inspect workspace-routing workspace-workers workspace-safety workspace-browser)
 ATTACH_URL=""
 WALL_SECONDS=600
@@ -105,6 +110,7 @@ EXPECTED_COMMIT="${SWARM_EXPECTED_COMMIT:-}"
 REMOTE_REPO="${SWARM_REMOTE_REPO:-}"
 CANDIDATE_ARCHIVE="${SWARM_INSTALL_CANDIDATE_ARCHIVE:-}"
 CANDIDATE_CHECKSUM="${SWARM_INSTALL_CANDIDATE_CHECKSUM:-}"
+INSTALLED_ONBOARDING_RUNNER=""
 OMARCHY_GUEST=""
 OMARCHY_PORT=""
 OMARCHY_IDENTITY=""
@@ -131,6 +137,7 @@ while [[ $# -gt 0 ]]; do
     --runner-timeout-ms) [[ $# -ge 2 ]] || fail "--runner-timeout-ms requires a value"; RUNNER_TIMEOUT_MS="$2"; shift 2 ;;
     --expected-commit) [[ $# -ge 2 ]] || fail "--expected-commit requires a value"; EXPECTED_COMMIT="$2"; shift 2 ;;
     --remote-repo) [[ $# -ge 2 ]] || fail "--remote-repo requires a value"; REMOTE_REPO="$2"; shift 2 ;;
+    --installed-onboarding-runner) [[ $# -ge 2 ]] || fail "--installed-onboarding-runner requires a path"; INSTALLED_ONBOARDING_RUNNER="$2"; shift 2 ;;
     --candidate-archive) [[ $# -ge 2 ]] || fail "--candidate-archive requires a value"; CANDIDATE_ARCHIVE="$2"; shift 2 ;;
     --candidate-checksum) [[ $# -ge 2 ]] || fail "--candidate-checksum requires a value"; CANDIDATE_CHECKSUM="$2"; shift 2 ;;
     --omarchy-guest) [[ $# -ge 2 ]] || fail "--omarchy-guest requires a value"; OMARCHY_GUEST="$2"; shift 2 ;;
@@ -200,8 +207,14 @@ else
   for suite in attach-inspect workspace-routing workspace-workers workspace-safety workspace-browser; do
     contains "${suite}" "${SUITES[@]}" && fail "${suite} requires --attach-only"
   done
-  swarm_testbench_load_env "${ROOT_DIR}" || exit 1
-  swarm_testbench_validate_env || exit 1
+  NEEDS_TESTBENCH=false
+  for suite in "${SUITES[@]}"; do
+    case "$suite" in desktop|tui|plan-auto|task-routing|task-program|provider-sync) NEEDS_TESTBENCH=true ;; esac
+  done
+  if [[ "$NEEDS_TESTBENCH" == true ]]; then
+    swarm_testbench_load_env "${ROOT_DIR}" || exit 1
+    swarm_testbench_validate_env || exit 1
+  fi
 fi
 LINKED_WORKSPACE_PATH="${LINKED_WORKSPACE_PATH:-${SWARM_TESTBENCH_LINKED_WORKSPACE_PATH:-}}"
 
@@ -248,6 +261,11 @@ suite_command() {
     onboarding)
       built=("${ROOT_DIR}/tests/swarmd/identity_bootstrap_e2e.sh")
       if [[ -n "${RUN_DIR:-}" ]]; then built+=("${RUN_DIR}/onboarding"); fi
+      ;;
+    installed-new-user|installed-existing-user|installed-normal-user)
+      [[ -n "$INSTALLED_ONBOARDING_RUNNER" && -f "$INSTALLED_ONBOARDING_RUNNER" && ! -L "$INSTALLED_ONBOARDING_RUNNER" ]] || fail "installed suites require --installed-onboarding-runner (reviewed regular Python file)"
+      [[ -n "$CANDIDATE_ARCHIVE" && -n "$CANDIDATE_CHECKSUM" ]] || fail "installed suites require --candidate-archive and --candidate-checksum"
+      built=(python3 "$INSTALLED_ONBOARDING_RUNNER" --archive "$CANDIDATE_ARCHIVE" --checksum "$CANDIDATE_CHECKSUM" --case "${suite#installed-}")
       ;;
     desktop)
       built=("${ROOT_DIR}/scripts/run-testbench-desktop-e2e.sh" --timeout-ms "${DESKTOP_TIMEOUT_MS}")
@@ -323,14 +341,18 @@ if [[ -n "${ATTACH_URL}" ]]; then
   SWARM_ATTACH_EXPECTED_RUNTIME="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["runtime_id"])' "${RUN_DIR}/connection.json")"
   SWARM_ATTACH_EXPECTED_SETTINGS="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["settings_sha256"])' "${RUN_DIR}/connection.json")"
   export SWARM_ATTACH_EXPECTED_RUNTIME SWARM_ATTACH_EXPECTED_SETTINGS
-else
+elif [[ "${NEEDS_TESTBENCH:-false}" == true ]]; then
   printf '\n== Preflight: check exact isolated-container candidate ==\n'
   "${ROOT_DIR}/scripts/testbench-e2e-tunnel.sh" check
 fi
 printf 'launch-prerun: evidence=%s\n' "${RUN_DIR}"
 
 swarm_launch_prerun_lane_cleanup_seconds() {
-  case "$1" in workspace-routing|workspace-workers) printf '25\n' ;; *) printf '0.5\n' ;; esac
+  case "$1" in
+    workspace-routing|workspace-workers) printf '25\n' ;;
+    installed-new-user|installed-existing-user|installed-normal-user) printf '25\n' ;;
+    *) printf '0.5\n' ;;
+  esac
 }
 
 swarm_launch_prerun_lane_command() {

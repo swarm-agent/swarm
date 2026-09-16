@@ -268,6 +268,7 @@ func ToRequest(req provideriface.Request) Request {
 		ServiceTier:                   serviceTier,
 		ContextMode:                   NormalizeContextMode(req.ContextMode),
 		ContextWindow:                 req.ContextWindow,
+		MaxOutputTokens:               req.MaxOutputTokens,
 		MediaContract:                 req.MediaContract,
 		ParallelToolCalls:             req.ParallelToolCalls,
 	}

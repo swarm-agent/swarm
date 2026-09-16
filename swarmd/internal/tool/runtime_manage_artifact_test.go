@@ -184,7 +184,19 @@ func (f *fakeArtifactAuthority) Create(_ context.Context, principal artifact.Pri
 	f.createCalls++
 	f.principal = principal
 	digest := sha256.Sum256(input.Body)
-	created := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: uint64(f.createCalls), Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
+	var lineage pebblestore.SessionArtifactLineage
+	if input.IterationID != "" || input.SourceSessionID != "" {
+		lineage = pebblestore.SessionArtifactLineage{
+			SourceSessionID:    input.SourceSessionID,
+			SourceCollectionID: input.SourceCollectionID,
+			SourceVariantID:    input.SourceVariantID,
+			SourceEventSeq:     input.SourceEventSeq,
+			IterationID:        input.IterationID,
+			IterationIndex:     input.IterationIndex,
+			IterationLabel:     input.IterationLabel,
+		}
+	}
+	created := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, SessionID: principal.SessionID, EventSeq: uint64(f.createCalls), Status: pebblestore.SessionArtifactStatusReady, Filename: input.Filename, MediaType: input.MediaType, Size: int64(len(input.Body)), DigestSHA256: hex.EncodeToString(digest[:]), Presentation: input.Presentation, OutputRequirements: input.OutputRequirements, AnimationProfile: input.AnimationProfile, Lineage: lineage, Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...)}
 	if input.Role == pebblestore.SessionArtifactRoleRenderOnly {
 		f.inspectionCreates = append(f.inspectionCreates, input)
 		return created, nil

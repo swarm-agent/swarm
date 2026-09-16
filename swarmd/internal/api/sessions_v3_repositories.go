@@ -36,6 +36,10 @@ type sessionRepositoryItem struct {
 	BaseCommit          string              `json:"base_commit"`
 	Lifecycle           string              `json:"lifecycle"`
 	Retained            bool                `json:"retained"`
+	Active              bool                `json:"active"`
+	ProgramID           string              `json:"program_id,omitempty"`
+	JobID               string              `json:"job_id,omitempty"`
+	BaseBranch          string              `json:"base_branch,omitempty"`
 	Availability        string              `json:"availability"`
 	Error               string              `json:"error,omitempty"`
 	Status              *gitstatus.Snapshot `json:"status,omitempty"`
@@ -50,6 +54,7 @@ type sessionRepositoriesResponse struct {
 	Items           []sessionRepositoryItem `json:"items"`
 	NextCursor      string                  `json:"next_cursor,omitempty"`
 	HistoryCoverage string                  `json:"history_coverage"`
+	ProvenanceLimit int                     `json:"provenance_limit"`
 }
 
 // The entire continuation is sealed by the store against principal, parent,
@@ -122,6 +127,9 @@ func repositorySessionItems(row pebblestore.SessionRepositoryHistory, parent str
 		if kind != "source" {
 			item.SourcePath = source
 			item.Branch = owner.WorktreeBranch
+			item.BaseBranch = owner.WorktreeBaseBranch
+			item.ProgramID = sessionsV3MetadataString(owner.Metadata, "task_program_id")
+			item.JobID = sessionsV3MetadataString(owner.Metadata, "task_program_job_id")
 			item.BaseCommit = firstNonEmpty(sessionsV3MetadataString(owner.Metadata, "swarm_v3_worktree_base_commit"), sessionsV3MetadataString(owner.Metadata, "base_commit"))
 			item.WorkspaceID, item.WorkspaceGeneration = "", 0
 			// Worktree grants do not themselves carry source catalog identity.
@@ -243,7 +251,7 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	response := sessionRepositoriesResponse{OK: true, Items: []sessionRepositoryItem{}}
+	response := sessionRepositoriesResponse{OK: true, Items: []sessionRepositoryItem{}, ProvenanceLimit: 64}
 	// Sequential inspection bounds Git fan-out to one repository. Empty contexts
 	// also consume the read budget, preventing unbounded scans on one request.
 	for reads := 0; reads < limit && len(response.Items) < limit; reads++ {
@@ -287,6 +295,12 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 			}
 			for i := range items {
 				if found {
+					if current.AccountScopeID != principal.AccountScopeID || current.UserID != principal.UserID {
+						writeError(w, http.StatusForbidden, errors.New("repository current owner mismatch"))
+						return
+					}
+					items[i].Active = items[i].Kind != "source" && current.WorktreeEnabled && items[i].WorkspacePath == current.WorktreeRootPath
+					items[i].Retained = !items[i].Active
 					for _, grant := range current.WorkspaceGrants {
 						if grant.Path == items[i].WorkspacePath && grant.WorkspaceID == items[i].WorkspaceID {
 							items[i].Attached = row.Session.ID == sessionID
@@ -303,7 +317,7 @@ func (s *Server) handleSessionV3Repositories(w http.ResponseWriter, r *http.Requ
 			program := page.Programs[0]
 			contextID = program.ProgramID
 			if lane := program.RepositoryLane; lane != nil {
-				items = append(items, sessionRepositoryItem{ID: repositoryItemID(sessionID, "lane", lane.WorkspacePath), SessionID: sessionID, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit, Lifecycle: program.State, Retained: true})
+				items = append(items, sessionRepositoryItem{ID: repositoryItemID(sessionID, "lane", lane.WorkspacePath), SessionID: sessionID, WorkspaceID: lane.WorkspaceID, WorkspaceGeneration: lane.WorkspaceGeneration, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit, Lifecycle: program.State, Retained: true, ProgramID: program.ProgramID})
 			}
 		}
 		if cursor.Context != "" && cursor.Context != contextID {
@@ -455,7 +469,7 @@ func (s *Server) selectedSessionRepository(principal identity.Principal, session
 		if lane == nil || lane.WorkspacePath != path {
 			continue
 		}
-		item := sessionRepositoryItem{SessionID: sessionID, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit}
+		item := sessionRepositoryItem{SessionID: sessionID, WorkspaceID: lane.WorkspaceID, WorkspaceGeneration: lane.WorkspaceGeneration, SourcePath: lane.SourcePath, WorkspacePath: lane.WorkspacePath, Kind: "lane", Branch: lane.Branch, BaseCommit: lane.BaseCommit}
 		item = s.resolveRepositoryParentIdentity(principal, item)
 		if err := s.authorizeRepositoryItem(principal, item); err != nil {
 			return sessionRepositoryItem{}, err

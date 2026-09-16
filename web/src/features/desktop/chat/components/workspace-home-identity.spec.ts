@@ -7,7 +7,8 @@ const source = readFileSync(new URL('./workspace-home-identity.tsx', import.meta
 test('workspace home identity keeps the canonical themed Swarm SVG as fallback artwork', () => {
   assert.match(source, /viewBox="0 0 400 400"/)
   assert.match(source, /x="20" y="20" width="360" height="360" rx="90"/)
-  assert.match(source, /x="180" y="180" width="40" height="40" rx="10"/)
+  assert.match(source, /x="140" y="140" width="120" height="120" rx="25"/)
+  assert.doesNotMatch(source, /x="180"/)
   assert.match(source, /fill="currentColor"/)
   assert.match(source, /workspace\.iconPNGDataURL \? \(/)
   assert.doesNotMatch(source, /image\/svg|\.svg|innerHTML/)

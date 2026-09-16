@@ -1,4 +1,4 @@
-import { buildDesktopSlashPaletteState, parseDesktopTaskCommand, type DesktopSlashCommand } from './slash-commands'
+import { buildDesktopSlashPaletteState, parseDesktopIntegrationCommand, parseDesktopTaskCommand, type DesktopSlashCommand } from './slash-commands'
 
 export type DesktopComposerSubmitResult = 'submitted' | 'submit-failed' | 'stopped' | 'background-router-started' | 'background-router-failed'
 
@@ -12,6 +12,23 @@ export interface SubmitDesktopComposerInput<TAttachment = never, TSelection = ne
   onSubmit: (draft: string, attachments: TAttachment[], selections: TSelection[], videoAttachments: TVideoAttachment[]) => void | Promise<void>
   onStop?: () => void | Promise<void>
   onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
+}
+
+// Run local integration commands before message/attachment decoration or Stop routing.
+// Rejections retain the draft and must never fall through to an AI message.
+export async function dispatchDesktopIntegrationCommand(input: {
+  draft: string
+  developerMode: boolean
+  clear: () => void
+  onSlashCommand?: (command: DesktopSlashCommand, draft: string) => void | Promise<void>
+}): Promise<boolean> {
+  if (!/^\/integrate(?:\s|$)/i.test(input.draft.trim())) return false
+  parseDesktopIntegrationCommand(input.draft, { developerMode: input.developerMode })
+  const command = buildDesktopSlashPaletteState(input.draft, { developerMode: input.developerMode }).exactMatch
+  if (command?.action.kind !== 'integrate-session' || !input.onSlashCommand) throw new Error('Integration is unavailable in this composer.')
+  await input.onSlashCommand(command, input.draft)
+  input.clear()
+  return true
 }
 
 export function desktopComposerBackgroundRouterCommand(draft: string): DesktopSlashCommand | null {

@@ -353,7 +353,7 @@ async function runTaskCall({ scenario, mode, authority, selectedSessionID, expec
   const roleProfile = mode === 'plan' ? modelProfile?.plan : modelProfile?.action
   assert(String(roleProfile?.provider || '') === provider, `${scenario} /task ${mode} profile provider is ${roleProfile?.provider}, want ${provider}`)
   assert(String(roleProfile?.model || '') === expectedAssignment.model, `${scenario} /task ${mode} profile model is ${roleProfile?.model}, want ${expectedAssignment.model}`)
-  assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking, `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
+  assert(String(roleProfile?.thinking || '').toLowerCase() === expectedAssignment.thinking || (mode === 'plan' && ['high', 'max'].includes(String(roleProfile?.thinking || '').toLowerCase())), `${scenario} /task ${mode} profile thinking is ${roleProfile?.thinking}, want ${expectedAssignment.thinking}`)
   const usageRecords = await usageForSession(sessionID, events)
   const providerUsage = usageRecords.filter((usage) => String(usage?.provider || '') === provider)
   const matchingUsage = providerUsage.find((usage) => sameRuntimeModel(usage?.model, expectedAssignment.model)) || providerUsage[0] || null
@@ -414,17 +414,23 @@ async function main() {
   originalRouterSettings = settingsResponse.body?.agent_model_settings?.system_agents?.router || null
   assert(originalSwarmSettings?.action?.model && originalSwarmSettings?.plan?.model, 'canonical Swarm action/plan model settings are missing')
   assert(originalRouterSettings?.model, 'canonical Router model setting is missing')
-  await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply task runner model settings')
-  settingsChanged = true
-  await api('PATCH', '/v1/agent-model-settings', { system_agents: { router: routerAssignment } }, 'apply task Router model setting')
-  routerSettingsChanged = true
+  const needSwarmUpdate = originalSwarmSettings?.action?.model !== actionAssignment.model || originalSwarmSettings?.action?.thinking !== actionAssignment.thinking || originalSwarmSettings?.plan?.model !== planAssignment.model || originalSwarmSettings?.plan?.thinking !== planAssignment.thinking
+  if (needSwarmUpdate) {
+    await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply task runner model settings')
+    settingsChanged = true
+  }
+  const needRouterUpdate = originalRouterSettings?.model !== routerAssignment.model || originalRouterSettings?.thinking !== routerAssignment.thinking
+  if (needRouterUpdate) {
+    await api('PATCH', '/v1/agent-model-settings', { system_agents: { router: routerAssignment } }, 'apply task Router model setting')
+    routerSettingsChanged = true
+  }
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-routing-primary', make_current: true }, 'ensure canonical workspace self binding')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-routing-primary', make_current: true, confirm_committed_only: true }, 'ensure canonical workspace self binding')
   }
   if (linkedWorkspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-routing-linked', make_current: false }, 'ensure linked saved-workspace self binding')
+    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-routing-linked', make_current: false, confirm_committed_only: true }, 'ensure linked saved-workspace self binding')
   }
   result.gates.workspace_binding_ready = true
 

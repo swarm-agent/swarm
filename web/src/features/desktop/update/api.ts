@@ -69,8 +69,14 @@ export async function fetchDesktopUpdateStatus(): Promise<DesktopUpdateStatus> {
   return requestJson<DesktopUpdateStatus>('/v1/update/status')
 }
 
-export async function startDesktopUpdate(): Promise<DesktopUpdateJob> {
-  return requireJob(await requestJson<DesktopUpdateRunResponse>('/v1/update/run', { method: 'POST' }))
+export async function checkDesktopDevRebuild(workspacePath: string): Promise<void> {
+  const job = requireJob(await requestJson<DesktopUpdateRunResponse>(`/v1/update/run?expected_dev_root=${encodeURIComponent(workspacePath)}`))
+  if (job.status === 'running') throw new Error('A Swarm update is already running; wait before integrating and rebuilding.')
+}
+
+export async function startDesktopUpdate(expectedDevRoot?: string): Promise<DesktopUpdateJob> {
+  const url = expectedDevRoot === undefined ? '/v1/update/run' : `/v1/update/run?expected_dev_root=${encodeURIComponent(expectedDevRoot)}`
+  return requireJob(await requestJson<DesktopUpdateRunResponse>(url, { method: 'POST' }))
 }
 
 export async function fetchDesktopUpdateJob(): Promise<DesktopUpdateJob> {

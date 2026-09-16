@@ -111,6 +111,17 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		add("document", "structured document is required")
 		return validationErr
 	}
+	if doc.AutomationV2 != nil {
+		if doc.Automation != nil {
+			add("automation_v2", "V1 and V2 cannot coexist")
+		}
+		if err := pebblestore.ValidateAutomationV2Settings(doc.AutomationV2, 0); err != nil {
+			add("automation_v2", err.Error())
+		}
+	}
+	if err := validatePlanAutomation(doc.Automation); err != nil {
+		add("automation", err.Error())
+	}
 	if strings.TrimSpace(doc.Title) == "" {
 		add("title", "plan title is required")
 	}
@@ -197,6 +208,9 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 	if doc == nil {
 		return nil
 	}
+	if err := validatePlanAutomation(doc.Automation); err != nil {
+		return err
+	}
 	if strings.TrimSpace(doc.ID) == "" {
 		return errors.New("plan document id is required")
 	}
@@ -279,6 +293,9 @@ type PlanDocumentPatch struct {
 	Artifacts          []pebblestore.SessionPlanArtifactReference       `json:"artifacts,omitempty"`
 	Recommendation     *pebblestore.SessionPlanCheckpointRecommendation `json:"recommendation,omitempty"`
 	Handoff            *pebblestore.SessionPlanCheckpointHandoff        `json:"handoff,omitempty"`
+	ClosingState       string                                           `json:"closing_state,omitempty"`
+	Summary            string                                           `json:"summary,omitempty"`
+	AlertConditions    string                                           `json:"alert_conditions,omitempty"`
 	Operations         []PlanDocumentPatchOperation                     `json:"operations,omitempty"`
 }
 
@@ -486,6 +503,9 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			Artifacts:       op.Artifacts,
 			Recommendation:  op.Recommendation,
 			Handoff:         op.Handoff,
+			ClosingState:    op.ClosingState,
+			Summary:         op.Summary,
+			AlertConditions: op.AlertConditions,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -523,6 +543,9 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 			Artifacts:       op.Artifacts,
 			Recommendation:  op.Recommendation,
 			Handoff:         op.Handoff,
+			ClosingState:    op.ClosingState,
+			Summary:         op.Summary,
+			AlertConditions: op.AlertConditions,
 			StartedAt:       op.StartedAt,
 			CompletedAt:     op.CompletedAt,
 		})
@@ -889,6 +912,15 @@ func applyCheckpointCompletionFields(checkpoint *pebblestore.SessionPlanCheckpoi
 		handoff := *op.Handoff
 		checkpoint.Handoff = &handoff
 	}
+	if closingState := strings.TrimSpace(op.ClosingState); closingState != "" {
+		checkpoint.ClosingState = closingState
+	}
+	if summary := strings.TrimSpace(op.Summary); summary != "" {
+		checkpoint.Summary = summary
+	}
+	if alertConditions := strings.TrimSpace(op.AlertConditions); alertConditions != "" {
+		checkpoint.AlertConditions = alertConditions
+	}
 }
 
 func findPlanCheckpointIndex(checkpoints []pebblestore.SessionPlanCheckpoint, id string) int {
@@ -945,6 +977,11 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		return nil
 	}
 	clone := *doc
+	clone.Automation = clonePlanAutomation(doc.Automation)
+	if doc.AutomationV2 != nil {
+		a := *doc.AutomationV2
+		clone.AutomationV2 = &a
+	}
 	if clone.Info.Scope == "" {
 		clone.Info.Scope = clone.Info.Context
 	}

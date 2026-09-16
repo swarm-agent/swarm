@@ -275,6 +275,9 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
 				t.Fatal(err)
 			}
+			if page.ProvenanceLimit != 64 {
+				t.Error("history retention bound not exposed")
+			}
 			if len(page.Items) > 1 {
 				t.Fatal("page bound exceeded")
 			}
@@ -304,6 +307,9 @@ func TestSessionRepositoriesManagedRetainedLanes(t *testing.T) {
 				count++
 				if item.Branch != allocation.BranchName || item.BaseCommit != allocation.BaseCommit || item.Status == nil || item.Availability != "available" {
 					t.Errorf("lane provenance/status: %+v", item)
+				}
+				if item.Active != (path == current.WorkspacePath) || item.Retained == item.Active {
+					t.Errorf("active/retained distinction lost: %+v", item)
 				}
 				if path != current.WorkspacePath && item.SourcePath != repoA {
 					t.Error("historical source changed")

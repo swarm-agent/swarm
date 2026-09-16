@@ -145,7 +145,23 @@ func (s *SessionStore) selectV3RecentWorksetSessionsFromIndex(reader pebble.Read
 		if !ok {
 			return true, nil
 		}
+		if options.AutomationManagementWorkspaceID != "" {
+			if SessionAutomationManagementWorkspace(session) != options.AutomationManagementWorkspaceID {
+				return true, nil
+			}
+			if options.AccountScopeID != "" && strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(options.AccountScopeID) {
+				return true, nil
+			}
+			if options.UserID != "" && strings.TrimSpace(session.UserID) != strings.TrimSpace(options.UserID) {
+				return true, nil
+			}
+			sessions = append(sessions, session)
+			return len(sessions) <= limit, nil
+		}
 		if !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
+			return true, nil
+		}
+		if SessionAutomationManagementWorkspace(session) != "" && session.AutomationV2 == nil {
 			return true, nil
 		}
 		sessions = append(sessions, session)

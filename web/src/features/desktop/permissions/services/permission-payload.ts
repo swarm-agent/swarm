@@ -327,7 +327,7 @@ export interface SkillChangePermissionPayload {
   approvedArguments: Record<string, unknown>
 }
 
-export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'skill-change' | 'ask-user' | 'workspace-scope' | 'workspace-mutation' | 'task-launch' | 'agent-change'
+export type DesktopPermissionKind = 'generic' | 'exit-plan' | 'plan-update' | 'plan-revision-request' | 'plan-followup-request' | 'plan-amendment-request' | 'plan-new-request' | 'automation-v2-acceptance' | 'manage-todos' | 'session-commit' | 'session-archive' | 'session-unarchive' | 'session-deploy' | 'skill-change' | 'ask-user' | 'workspace-scope' | 'workspace-mutation' | 'task-launch' | 'agent-change'
 
 function decodePermissionArguments(raw: string): Record<string, unknown> | null {
   const trimmed = raw.trim()
@@ -566,7 +566,7 @@ export function permissionRequiresApproval(
     case 'skill_use':
       return false
     case 'plan_manage':
-      return ['plan_update', 'plan_followup_request', 'plan_amendment_request', 'plan_new_request'].includes(
+      return ['automation_v2_acceptance', 'plan_update', 'plan_followup_request', 'plan_amendment_request', 'plan_new_request'].includes(
         safeString(permission.requirement).toLowerCase(),
       )
     case 'task':
@@ -608,6 +608,10 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
           return 'plan-followup-request'
         case 'plan_amendment_request':
           return 'plan-amendment-request'
+        case 'plan_revision_request':
+          return 'plan-revision-request'
+        case 'automation_v2_acceptance':
+          return 'automation-v2-acceptance'
         case 'plan_new_request':
           return 'plan-new-request'
         case 'plan_update':
@@ -657,10 +661,16 @@ export function permissionKind(permission: DesktopPermissionRecord): DesktopPerm
 const PLAN_PROPOSAL_PERMISSION_KINDS: ReadonlySet<DesktopPermissionKind> = new Set([
   'exit-plan',
   'plan-update',
+  'plan-revision-request',
   'plan-followup-request',
   'plan-amendment-request',
   'plan-new-request',
 ])
+
+export function isAutomationPermission(permission: DesktopPermissionRecord): boolean {
+  return safeString(permission.requirement).toLowerCase() === 'automation_v2_acceptance' ||
+    permissionKind(permission) === 'automation-v2-acceptance'
+}
 
 export function isPlanProposalPermission(permission: DesktopPermissionRecord): boolean {
   return PLAN_PROPOSAL_PERMISSION_KINDS.has(permissionKind(permission))

@@ -3,6 +3,8 @@ package api
 import "net/http"
 
 func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/v1/memory", s.handleMemory)
+	mux.HandleFunc("/v1/memory/workspace-map", s.handleWorkspaceMap)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/ws", s.handleDesktopStream)
@@ -123,7 +125,10 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/image/threads/", s.handleWorkspaceImageThread)
 	mux.HandleFunc("/v1/workspace/folders/create", s.handleWorkspaceFolderCreate)
 	mux.HandleFunc("/v1/workspace/add", s.handleWorkspaceAdd)
+	mux.HandleFunc("/v1/workspace/repository", s.handleWorkspaceRepositoryInspect)
 	mux.HandleFunc("/v1/workspace/repository/setup", s.handleWorkspaceRepositorySetup)
+	mux.HandleFunc("/v1/workspace/repository/review", s.handleWorkspaceRepositoryReview)
+	mux.HandleFunc("/v1/workspace/repository/baseline", s.handleWorkspaceRepositoryBaseline)
 	mux.HandleFunc("/v1/workspace/directories/add", s.handleWorkspaceDirectoryAdd)
 	mux.HandleFunc("/v1/workspace/directories/remove", s.handleWorkspaceDirectoryRemove)
 	mux.HandleFunc("/v1/workspace/source-media/directories", s.handleWorkspaceSourceMediaDirectories)
@@ -146,6 +151,9 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/delete", s.handleWorkspaceDelete)
 	mux.HandleFunc("/v1/worktrees", s.handleWorktrees)
 	mux.HandleFunc("/v1/manage-worktree", s.handleManageWorktree)
+	mux.HandleFunc("/v1/connections", s.handleConnections)
+	mux.HandleFunc("/v1/environments", s.handleEnvironments)
+	mux.HandleFunc("/v1/deployments", s.handleDeployments)
 }
 
 func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
@@ -183,6 +191,16 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc(V3SyncBootstrapPath, s.handleSessionsV3SyncBootstrap)
 	mux.HandleFunc(V3SyncHydratePath, s.handleSessionsV3SyncHydrate)
 	mux.HandleFunc(V3SyncStreamPath, s.handleSessionsV3SyncStream)
+	mux.HandleFunc(AutomationsV2Path, s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/proposal", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/review", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/accept", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/decline", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/control", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsV2Path+"/progress", s.handleAutomationsV2)
+	mux.HandleFunc(AutomationsPath, s.handleAutomations)
+	mux.HandleFunc(AutomationsPath+"/approve", s.handleAutomations)
+	mux.HandleFunc(AutomationsPath+"/revoke", s.handleAutomations)
 	mux.HandleFunc("/v3/sessions:reconnect", s.handleSessionsV3Reconnect)
 	mux.HandleFunc("/v3/sessions:discover", s.handleSessionsV3Discovery)
 	mux.HandleFunc("/v3/sessions:search", s.handleSessionsV3Search)

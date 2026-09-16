@@ -121,6 +121,11 @@ const (
 	KeySessionRecentWorkspacePrefix                = "session_recent/workspace/"
 	KeySessionRecentAccountWorkspacePrefix         = "session_recent/account_workspace/"
 	keyGlobalSequenceCounter                       = "meta/global_seq"
+	KeyConnectionAccountPrefix                     = "environments/connection_by_account/"
+	KeyEnvironmentAccountPrefix                    = "environments/environment_by_account/"
+	KeyDeploymentAccountPrefix                     = "environments/deployment_by_account/"
+	KeyDeploymentLeaseAccountPrefix                = "environments/lease_by_account/"
+	KeyDeploymentActiveLeasePrefix                 = "environments/active_lease_by_account/"
 )
 
 const (
@@ -1557,6 +1562,86 @@ func IntegrationWorkspaceSessionUpdatedPrefixForAccount(accountScopeID, workspac
 
 func AgentActiveSubagentPrefix() string {
 	return KeyAgentActiveSubagentPrefix
+}
+
+func KeyConnectionForAccount(accountScopeID, workspaceID, connectionID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyConnectionAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(connectionID))
+}
+
+func ConnectionPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyConnectionAccountPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyConnectionAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyConnectionAccountPrefix, accountPart, workspacePart)
+}
+
+func KeyEnvironmentForAccount(accountScopeID, workspaceID, environmentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyEnvironmentAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(environmentID))
+}
+
+func EnvironmentPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyEnvironmentAccountPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyEnvironmentAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyEnvironmentAccountPrefix, accountPart, workspacePart)
+}
+
+func KeyDeploymentForAccount(accountScopeID, workspaceID, deploymentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeploymentAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(deploymentID))
+}
+
+func DeploymentPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyDeploymentAccountPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeploymentAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeploymentAccountPrefix, accountPart, workspacePart)
+}
+
+func KeyDeploymentLeaseForAccount(accountScopeID, workspaceID, leaseID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeploymentLeaseAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(leaseID))
+}
+
+func DeploymentLeasePrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyDeploymentLeaseAccountPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeploymentLeaseAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeploymentLeaseAccountPrefix, accountPart, workspacePart)
+}
+
+func KeyDeploymentActiveLeaseForAccount(accountScopeID, workspaceID, deploymentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeploymentActiveLeasePrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(deploymentID))
+}
+
+func DeploymentActiveLeasePrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyDeploymentActiveLeasePrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeploymentActiveLeasePrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeploymentActiveLeasePrefix, accountPart, workspacePart)
 }
 
 func reverseMillis(value int64) int64 {

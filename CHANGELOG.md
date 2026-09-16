@@ -6,6 +6,18 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Verify qualification test suites using Google Gemini 3.6 Flash (thinking: low) with ephemeral IP-locked credentials, per-agent model settings, sequenced live runners, and push check receipts. Docs impact: none.
+
+- Authorize in-worktree Git tools (git_status, git_diff, git_add, git_commit, git_init) under default auto-mode policy and unignore task-program-probes in git. Docs impact: none.
+
+- Normalize Google provider conversation turns and handle post-compaction session continuation. Docs impact: none.
+
+- Accept GCP workflow configuration from Repository Secrets as well as Repository Variables, preserving immutable verifier selection and fail-closed qualification. Docs impact: GCP configuration precedence in the deploy checklist.
+
+- Report missing GCP relay configuration separately from qualification failures without exposing variable values or weakening required checks. Docs impact: atlas validation notes.
+
+- Promote immutable GCP-qualified merged-source release archives without rebuilding on GitHub; retain keyless signatures and protected publication with explicit GCP promotion attestations. Docs impact: release configuration and verification contract in the deploy checklist and atlas.
+
 - Fix root-user installation and workspace recovery: require explicit consent before creating a service account, preserve existing ownership, and activate the installed candidate when a service is already running.
 - Offer authenticated daemon-owned workspace guidance during fresh and resumed TUI onboarding, with explicit consent for new-folder setup and repository initialization.
 

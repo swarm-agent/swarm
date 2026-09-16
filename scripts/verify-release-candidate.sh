@@ -91,6 +91,23 @@ for entry in "${root_name}/install.sh" "${platform_root}/swarmsetup"; do
   fi
 done
 
+# Requirement: a public bundle extracted by root must remain usable by the
+# selected non-root installer/runtime account, even when built under umask 077.
+# Reject inaccessible or writable/special-mode members before extraction.
+if ! tar --numeric-owner -tvzf "${ARCHIVE_PATH}" | awk '
+  substr($1, 1, 1) != "-" && substr($1, 1, 1) != "d" { bad = 1 }
+  $2 != "0/0" { bad = 1 }
+  substr($1, 5, 1) != "r" || substr($1, 8, 1) != "r" { bad = 1 }
+  substr($1, 6, 1) != "-" || substr($1, 9, 1) != "-" { bad = 1 }
+  $1 ~ /[sStT]/ { bad = 1 }
+  (substr($1, 1, 1) == "d" || substr($1, 4, 1) == "x") &&
+    (substr($1, 7, 1) != "x" || substr($1, 10, 1) != "x") { bad = 1 }
+  END { exit bad ? 1 : 0 }
+'; then
+  echo "release archive ownership or public access modes are unsafe" >&2
+  exit 1
+fi
+
 extract_dir="$(mktemp -d)"
 trap 'rm -rf "${extract_dir}"' EXIT
 tar -xzf "${ARCHIVE_PATH}" -C "${extract_dir}"

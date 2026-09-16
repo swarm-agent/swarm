@@ -1,0 +1,29 @@
+package tool
+
+// WorkerV2AuthoringInstructions is shared by the provider schema and harness.
+const WorkerV2AuthoringInstructions = `Worker V2 uses the canonical executable plan document with worker_v2 (or automation_v2), never an ordinary plan merely titled hourly. From a fresh conversation submit the complete document using exit_plan_mode in Plan or plan_manage action=request_new_plan in Auto. No existing plan, worker, save, approval or grant is required. This stores only a pending Worker plan review; stop authoring and let the user explicitly Accept worker. Acceptance creates and activates the disclosed schedule; the first run follows that schedule, not immediate one-shot execution. Never approve or activate your own proposal. Preserve exact instructions and cadence. Intervals are elapsed seconds (60–31622400); cron has five numeric, * or */n fields and requires an explicit IANA timezone. No ranges, lists, names or simultaneous restricted day-of-month/day-of-week. Ask about missing wall-clock time/timezone or genuinely ambiguous timing; never approximate unsupported cadence. If expiration was unspecified use {"kind":"indefinite"}; only requested finite expiration uses {"kind":"at","expires_at":<future Unix milliseconds>}. Read manage_workers review for the current exact review before editing; resubmit the complete document with worker_review (or automation_review) unchanged, preserving unrelated instructions/settings. Edits remain pending and do not alter active execution. Do not invent IDs or turn a recurring review into one-shot approval. Structured run closing states classify worker execution outcomes: routine_clean (routine check or maintenance completed with no anomalies, warnings, or action needed; renders as a calm minimal status), deliverable_ready (run produced new or updated deliverables/artifacts for user review), attention_alert (run detected actionable warnings, drift, threshold alerts, or issues requiring attention; renders an alert badge), or blocked (run cannot proceed due to missing external dependencies or permissions). When authoring a worker plan, propose checkpoints whose acceptance criteria clearly define which closing state should be chosen on completion and what criteria distinguish a calm routine run from an alert or deliverable.
+Complete fresh Auto example: {"action":"request_new_plan","document":{"title":"Worker plan: hourly repository report","info":{"goal":"Report repository status without modifying files"},"worker_v2":{"schema_version":2,"schedule":{"kind":"interval","interval_seconds":3600},"missed":"skip","overlap":"serialize","activate_on_accept":true,"expiration":{"kind":"indefinite"}},"checkpoints":[{"id":"report","title":"Report repository status","status":"pending","order":1,"tasks":["Inspect repository status and report changes; do not modify files"],"acceptance_criteria":["A factual status report is returned with closing_state routine_clean when no anomalies are found or attention_alert when issues require attention"]}]}}. In Plan use the same document with exit_plan_mode, omitting action. Daily 18:00 UTC instead uses schedule={"kind":"cron","cron":"0 18 * * *","timezone":"UTC"}.`
+
+// AutomationV2AuthoringInstructions provides backward compatibility.
+const AutomationV2AuthoringInstructions = WorkerV2AuthoringInstructions
+
+func sessionPlanAutomationV2ToolSchema() map[string]any {
+	str := func(values ...string) map[string]any { return map[string]any{"type": "string", "enum": values} }
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"schema_version", "schedule", "missed", "overlap", "activate_on_accept"}, "description": AutomationV2AuthoringInstructions, "properties": map[string]any{
+		"schema_version": map[string]any{"type": "integer", "enum": []int{2}},
+		"schedule":       map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{"kind": str("interval", "cron"), "interval_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 31622400}, "cron": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}}},
+		"missed":         str("skip", "coalesce"), "overlap": str("serialize", "independent"), "activate_on_accept": map[string]any{"type": "boolean", "enum": []bool{true}},
+		"expiration": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{"kind": str("indefinite", "at"), "expires_at": map[string]any{"type": "integer", "minimum": 1}}},
+	}}
+}
+func automationV2ReviewSchema() map[string]any {
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"proposal_id", "revision", "digest"}, "properties": map[string]any{"proposal_id": map[string]any{"type": "string"}, "revision": map[string]any{"type": "integer", "minimum": 1}, "digest": map[string]any{"type": "string"}}}
+}
+func manageWorkersV2Definition() Definition {
+	return Definition{Type: "function", Name: "manage_workers", Description: WorkerV2AuthoringInstructions + " This tool only reads V2 review/context, progress with explicit display timezone, or bounded accepted records in the current workspace. Mutations use the plan review workflow; V1 save/approve/enable/run are retired.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"review", "context", "list", "progress"}}, "cursor": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}}}
+}
+func manageAutomationV2Definition() Definition {
+	d := manageWorkersV2Definition()
+	d.Name = "manage_automation"
+	return d
+}

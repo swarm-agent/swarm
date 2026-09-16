@@ -43,6 +43,30 @@ func TestGitAddRejectsPathOutsideCoderOwnedScope(t *testing.T) {
 	}
 }
 
+func TestGitAddAcceptsStringPathspecAndPath(t *testing.T) {
+	repo := t.TempDir()
+	runGitTestCommand(t, repo, "init")
+	fileA := filepath.Join(repo, "file_a.txt")
+	fileB := filepath.Join(repo, "file_b.txt")
+	if err := os.WriteFile(fileA, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fileB, []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scope := WorkspaceScope{PrimaryPath: repo}
+	if _, err := executeGitAdd(context.Background(), scope, map[string]any{"pathspec": "file_a.txt"}); err != nil {
+		t.Fatalf("git_add with string pathspec failed: %v", err)
+	}
+	if _, err := executeGitAdd(context.Background(), scope, map[string]any{"path": "file_b.txt"}); err != nil {
+		t.Fatalf("git_add with path argument failed: %v", err)
+	}
+	status := runGitTestCommandOutput(t, repo, "status", "--porcelain")
+	if !strings.Contains(status, "A  file_a.txt") || !strings.Contains(status, "A  file_b.txt") {
+		t.Fatalf("unexpected staged status: %q", status)
+	}
+}
+
 // Requirement: a fresh first-workspace user may have no Git identity yet. The
 // onboarding assistant may apply only the user's explicitly supplied identity to
 // that commit without persisting repository configuration. Threat: inventing or

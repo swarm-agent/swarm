@@ -13,6 +13,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'open-codex-usage' }
   | { kind: 'open-commit-modal' }
   | { kind: 'ai-commit' }
+  | { kind: 'integrate-session'; build?: boolean }
   | { kind: 'open-plan-modal' }
   | { kind: 'open-action-chooser' }
   | { kind: 'open-quick-actions' }
@@ -22,6 +23,7 @@ export type DesktopSlashCommandAction =
   | { kind: 'show-help' }
   | { kind: 'open-artifact-viewer' }
   | { kind: 'open-feedback' }
+  | { kind: 'open-memory' }
 
 export interface DesktopSlashCommand {
   id: string
@@ -62,6 +64,13 @@ export interface DesktopNewSessionCommandRequest {
 }
 
 const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
+  {
+    id: 'memory', command: '/memory', aliases: [],
+    hint: 'List, edit, or permanently forget saved memories',
+    actionLabel: 'Open Memory',
+    tips: ['/memory', 'Manage individual account memories; permanent forgetting requires confirmation'],
+    state: 'ready', action: { kind: 'open-memory' },
+  },
   {
     id: 'help',
     command: '/help',
@@ -234,6 +243,20 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'open-model-picker' },
   },
   {
+    id: 'integrate-build', command: '/integrate build', aliases: [],
+    hint: 'Integrate, then rebuild the configured Swarm dev checkout',
+    actionLabel: 'Review Integration and Rebuild',
+    tips: ['/integrate build', 'Dev mode only; rebuild runs only after confirmed integration'],
+    state: 'ready', developerOnly: true, action: { kind: 'integrate-session', build: true },
+  },
+  {
+    id: 'integrate', command: '/integrate', aliases: [],
+    hint: 'Review, AI commit if needed, and integrate this session worktree',
+    actionLabel: 'Review Integration',
+    tips: ['/integrate', 'Confirm integration into the captured checkout; no archive or rebuild'],
+    state: 'ready', action: { kind: 'integrate-session' },
+  },
+  {
     id: 'commit-ai',
     command: '/commit ai',
     aliases: [],
@@ -387,6 +410,24 @@ export function getDesktopSlashCommands(options: DesktopSlashCommandOptions = {}
   return availableDesktopSlashCommands(options).slice()
 }
 
+export function parseDesktopIntegrationCommand(input: string, options: DesktopSlashCommandOptions = {}): { build: boolean } {
+  const normalized = input.trim().toLowerCase().replace(/\s+/g, ' ')
+  if (normalized === '/integrate') return { build: false }
+  if (normalized === '/integrate build') {
+    if (!options.developerMode) throw new Error('/integrate build requires developer mode. Use /integrate to integrate without rebuilding.')
+    return { build: true }
+  }
+  throw new Error(options.developerMode
+    ? 'Use /integrate or /integrate build; no other arguments are supported.'
+    : 'Use /integrate without arguments. /integrate build requires developer mode.')
+}
+
+// Selecting a palette item completes its typed prefix, but never discards extra arguments.
+export function desktopIntegrationSelectionDraft(command: DesktopSlashCommand, draft: string): string {
+  const normalized = draft.trim().toLowerCase().replace(/\s+/g, ' ')
+  return command.command.startsWith(normalized) ? command.command : draft
+}
+
 export function parseDesktopNewSessionCommand(input: string): DesktopNewSessionCommandRequest | null {
   const match = input.trim().match(/^\/new(?:\s+([\s\S]*))?$/i)
   if (!match) return null
@@ -464,7 +505,7 @@ export function buildDesktopSlashPaletteState(input: string, options: DesktopSla
   const parts = trimmedBody === '' ? [] : trimmedBody.split(/\s+/)
   const query = normalizeSlashToken(parts[0] ?? '')
   const hasArguments = parts.length > 1
-  const fullQuery = normalizeSlashToken(trimmedBody)
+  const fullQuery = normalizeSlashToken(parts.join(' '))
   const exactMatch = query === ''
     ? null
     : commands
@@ -475,8 +516,8 @@ export function buildDesktopSlashPaletteState(input: string, options: DesktopSla
       ?? null
 
   const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
-  const matches = (hasArguments && exactMatch && exactMatchHasPrefix
-    ? [exactMatch]
+  const matches = (hasArguments
+    ? exactMatch && exactMatchHasPrefix ? [exactMatch] : []
     : commands
         .filter((command) => commandMatchRank(command, query) > 0)
         .sort((left, right) => sortCommands(left, right, query)))

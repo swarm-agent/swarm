@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"swarm-refactor/swarmtui/internal/launcher"
 	"swarm-refactor/swarmtui/internal/updatehandoff"
@@ -61,6 +63,13 @@ func run(argv0 string, args []string) error {
 			return runUninstallCommand(args[1:])
 		}
 	}
+	firstLaunch := len(args) == 0 || (len(args) == 1 && (args[0] == "run" || args[0] == "open" || args[0] == "--desktop"))
+	if lane == "main" && firstLaunch && !bootstrap.HasAny() {
+		desktop := len(args) == 1 && (args[0] == "open" || args[0] == "--desktop")
+		if handled, err := launcher.RunFirstInstall(desktop); handled || err != nil {
+			return err
+		}
+	}
 	profile, err := launcher.LoadRuntimeProfile(lane, bypassOverride)
 	if err != nil {
 		return err
@@ -91,6 +100,13 @@ func run(argv0 string, args []string) error {
 	case "help", "-h", "--help":
 		usage()
 		return nil
+	case "setup-ready":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--desktop") {
+			return errors.New("invalid setup readiness arguments")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return launcher.ProbeSetupApplication(ctx, profile, len(args) == 2)
 	case "ctl":
 		if len(args) < 2 {
 			return errors.New("missing swarmctl arguments")

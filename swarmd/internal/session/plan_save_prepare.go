@@ -146,6 +146,12 @@ func (s *Service) PreparePlanSaveWithMetadata(sessionID, planID, title, plan, st
 			}
 		}
 	}
+	if !activate && record.Status == "approved" && record.ApprovalState == "approved" {
+		if err := ValidateExecutablePlanDocument(record.Document); err != nil {
+			return PreparedPlanSave{}, err
+		}
+		record.Document.Status = record.Status
+	}
 	record.Active = activate
 	payload, err := json.Marshal(map[string]any{"session_id": sessionID, "plan_id": planID, "plan_title": record.Title, "plan_status": record.Status, "plan_approval_state": record.ApprovalState, "activate": activate, "has_active_plan": activate, "active_plan": record, "updated_at": now, "updated": found, "version": record.Version, "parent_revision": record.ParentRevision, "update_summary": record.UpdateSummary, "update_scope": record.UpdateScope, "update_kind": record.UpdateKind, "revision_kind": record.RevisionKind, "restored_from_version": record.RestoredFromVersion, "checkpoint": record.Checkpoint})
 	if err != nil {

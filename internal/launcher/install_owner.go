@@ -26,6 +26,9 @@ func prepareInstallOwner() error {
 		return err
 	}
 	if found {
+		if selectedInstallAccount != nil && (selectedInstallAccount.Uid != uid || selectedInstallAccount.Gid != gid) {
+			return errors.New("installation owner changed after account selection; refusing reassignment")
+		}
 		account, err := user.LookupId(uid)
 		if err != nil {
 			return fmt.Errorf("resolve existing install owner: %w", err)
@@ -36,7 +39,7 @@ func prepareInstallOwner() error {
 		if gid != account.Gid {
 			return errors.New("existing service owner group mismatch")
 		}
-	} else if os.Geteuid() != 0 || os.Getenv("SUDO_UID") != "" || os.Getenv("SUDO_GID") != "" {
+	} else if selectedInstallAccount != nil || os.Geteuid() != 0 || os.Getenv("SUDO_UID") != "" || os.Getenv("SUDO_GID") != "" {
 		return validateInstallOwner()
 	}
 	if err := preflightServiceAccount(os.Getenv("SWARM_CREATE_SERVICE_ACCOUNT") == "1", user.Lookup, exec.LookPath, os.Stat); err != nil {

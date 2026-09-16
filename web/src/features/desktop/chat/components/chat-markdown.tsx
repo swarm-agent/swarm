@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Search, Sparkles, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Music, Pause, Play, Search, Sparkles, Volume2, VolumeX, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -25,7 +25,7 @@ import { toolActivityStartSummary } from "../services/tool-activity";
 import { describeToolActivity } from "../services/tool-message";
 import { ToolActivityShell } from "./tool-activity-shell";
 import { DesktopV3ArtifactPreviewThumbnail } from "./desktop-v3-artifact-preview-thumbnail";
-import { desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, revealDesktopV3Artifact, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
+import { desktopV3ArtifactDirectContentURL, desktopV3ArtifactDownloadName, desktopV3ArtifactMessageSelection, fetchDesktopV3ArtifactDownload, normalizeDesktopV3ArtifactCatalogEntry, preflightDesktopV3ArtifactDirectContent, revealDesktopV3Artifact, type DesktopV3ArtifactCatalogEntry, type DesktopV3ArtifactMessageSelection } from "../../session-v3/artifact-api";
 
 interface ChatMarkdownProps {
   content: string;
@@ -1390,6 +1390,11 @@ function toolJsonString(record: Record<string, unknown> | null | undefined, key:
   return typeof value === "string" ? value.trim() : "";
 }
 
+function toolJsonNumber(record: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
 interface ManageSessionNavigation {
   sessionId: string;
   href: string;
@@ -1524,6 +1529,285 @@ function ReviewWorktreeRow({ item }: { item: ManageSessionCardItem }) {
   );
 }
 
+function formatTime(seconds: number): string {
+  if (!seconds || isNaN(seconds)) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+}
+
+function ChatAudioSoundBar({
+  artifact,
+  index,
+  promptText,
+  isSelected,
+  onSelect,
+  href,
+  onOpenViewer,
+}: {
+  artifact: DesktopV3ArtifactCatalogEntry;
+  index: number;
+  promptText?: string;
+  isSelected: boolean;
+  onSelect: () => void;
+  href?: string;
+  onOpenViewer?: () => void;
+}) {
+  const [previewURL, setPreviewURL] = useState<string>("");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(30);
+  const [isMuted, setIsMuted] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const progressBarRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    preflightDesktopV3ArtifactDirectContent(artifact, controller.signal)
+      .then((url) => {
+        if (active) setPreviewURL(url);
+      })
+      .catch(() => {
+        if (active) {
+          const direct = desktopV3ArtifactDirectContentURL(artifact);
+          if (direct) setPreviewURL(direct);
+          else setFailed(true);
+        }
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [artifact.artifactId, artifact.sessionId, artifact.sourceRef]);
+
+  const handleTogglePlay = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    onSelect();
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) {
+      audio.pause();
+    } else {
+      document.querySelectorAll("audio").forEach((el) => {
+        if (el !== audio && !el.paused) el.pause();
+      });
+      audio.play().catch(() => setFailed(true));
+    }
+  };
+
+  const handleSeek = (e: MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const bar = progressBarRef.current;
+    const audio = audioRef.current;
+    if (!bar || !audio) return;
+    const rect = bar.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const pct = Math.max(0, Math.min(1, clickX / rect.width));
+    const targetTime = pct * (duration || 30);
+    audio.currentTime = targetTime;
+    setCurrentTime(targetTime);
+  };
+
+  const handleToggleMute = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.muted = !isMuted;
+    setIsMuted(!isMuted);
+  };
+
+  const vLabel = artifact.label || `Sound Clip ${index + 1}`;
+  const fullPrompt = promptText || artifact.description || "";
+  const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  return (
+    <div
+      className={cn(
+        "group flex flex-col gap-2 rounded-xl border p-3 transition",
+        isSelected
+          ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] shadow-2xs"
+          : "border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-hover)] hover:bg-[var(--app-surface-hover)]"
+      )}
+      data-testid="audio-sound-bar"
+      data-artifact-soundbar-index={index}
+      onClick={onSelect}
+    >
+      {/* Top row: Play button + Title + Duration + Actions */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={handleTogglePlay}
+            className="grid size-9 shrink-0 place-items-center rounded-full bg-[var(--app-primary)] text-white shadow-xs transition hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] mt-0.5"
+            aria-label={isPlaying ? `Pause ${vLabel}` : `Play ${vLabel}`}
+            title={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? (
+              <Pause size={14} fill="currentColor" />
+            ) : (
+              <Play size={14} fill="currentColor" className="ml-0.5" />
+            )}
+          </button>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-[var(--app-text)] break-words">
+                {vLabel}
+              </span>
+              <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[9px] text-[var(--app-text-muted)]">
+                {formatTime(duration || 30)}
+              </span>
+              {isSelected ? (
+                <span className="shrink-0 rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[9px] font-medium text-white">
+                  Active
+                </span>
+              ) : null}
+              {isPlaying ? (
+                <div className="flex items-center gap-0.5 h-3 px-1" aria-hidden="true">
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-3 animate-pulse" />
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-2 animate-pulse delay-75" />
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-3.5 animate-pulse delay-150" />
+                  <span className="w-0.5 rounded-full bg-[var(--app-primary)] h-2 animate-pulse delay-100" />
+                </div>
+              ) : null}
+            </div>
+
+            {/* The entire prompt - fully readable, no line clamp */}
+            {fullPrompt ? (
+              <p className="mt-1.5 text-xs leading-relaxed text-[var(--app-text)] select-text whitespace-pre-wrap break-words">
+                {fullPrompt}
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          {onOpenViewer || href ? (
+            <a
+              href={href || "#"}
+              onClick={(e) => {
+                if (onOpenViewer) {
+                  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSelect();
+                  onOpenViewer();
+                } else {
+                  e.stopPropagation();
+                  onSelect();
+                }
+              }}
+              className="grid size-7 place-items-center rounded-lg text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-active)] hover:text-[var(--app-text)] transition focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              aria-label={`Open ${vLabel} in viewer`}
+              title="Open in full viewer"
+            >
+              <ExternalLink size={13} />
+            </a>
+          ) : null}
+        </div>
+      </div>
+
+      {/* The play bar inside this song row */}
+      <div
+        className="flex items-center gap-2.5 rounded-lg bg-[var(--app-bg-alt)] px-3 py-2 border border-[var(--app-border)]/60 mt-1"
+        data-testid="soundbar-play-bar"
+      >
+        <button
+          type="button"
+          onClick={handleTogglePlay}
+          className="text-[var(--app-primary)] hover:opacity-80 transition p-0.5 shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] rounded"
+          aria-label={isPlaying ? `Pause ${vLabel}` : `Play ${vLabel}`}
+          title={isPlaying ? "Pause" : "Play"}
+        >
+          {isPlaying ? (
+            <Pause size={13} fill="currentColor" />
+          ) : (
+            <Play size={13} fill="currentColor" className="ml-0.5" />
+          )}
+        </button>
+
+        <span className="font-mono text-[10px] text-[var(--app-text-subtle)] w-8 shrink-0 text-right select-none">
+          {formatTime(currentTime)}
+        </span>
+
+        {/* Interactive scrubber bar */}
+        <div
+          ref={progressBarRef}
+          onClick={handleSeek}
+          className="relative h-2 flex-1 cursor-pointer rounded-full bg-[var(--app-border)] overflow-hidden"
+          role="slider"
+          aria-label={`Seek ${vLabel}`}
+          aria-valuenow={currentTime}
+          aria-valuemin={0}
+          aria-valuemax={duration || 30}
+        >
+          <div
+            className="h-full rounded-full bg-[var(--app-primary)] transition-[width] duration-100"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+
+        <span className="font-mono text-[10px] text-[var(--app-text-subtle)] w-8 shrink-0 select-none">
+          {formatTime(duration || 30)}
+        </span>
+
+        <button
+          type="button"
+          onClick={handleToggleMute}
+          className="text-[var(--app-text-subtle)] hover:text-[var(--app-text)] transition p-0.5 shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)] rounded"
+          aria-label={isMuted ? "Unmute" : "Mute"}
+          title={isMuted ? "Unmute" : "Mute"}
+        >
+          {isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+        </button>
+      </div>
+
+      {previewURL ? (
+        <audio
+          ref={audioRef}
+          src={previewURL}
+          preload="metadata"
+          data-artifact-audio-preview
+          onTimeUpdate={() => {
+            if (audioRef.current) {
+              setCurrentTime(audioRef.current.currentTime);
+              if (audioRef.current.duration && !isNaN(audioRef.current.duration)) {
+                setDuration(audioRef.current.duration);
+              }
+            }
+          }}
+          onLoadedMetadata={() => {
+            if (audioRef.current && audioRef.current.duration && !isNaN(audioRef.current.duration)) {
+              setDuration(audioRef.current.duration);
+            }
+          }}
+          onPlay={() => {
+            document.querySelectorAll("audio").forEach((el) => {
+              if (el !== audioRef.current && !el.paused) el.pause();
+            });
+            setIsPlaying(true);
+          }}
+          onPause={() => setIsPlaying(false)}
+          onEnded={() => {
+            setIsPlaying(false);
+            setCurrentTime(0);
+          }}
+          onError={() => setFailed(true)}
+        />
+      ) : failed ? (
+        <div className="text-[10px] text-[var(--app-danger)] mt-1">Audio preview unavailable</div>
+      ) : (
+        <div className="flex items-center gap-1.5 text-[10px] text-[var(--app-text-muted)] mt-1">
+          <LoaderCircle size={11} className="animate-spin text-[var(--app-primary)]" />
+          <span>Preparing audio stream…</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ManageArtifactCard({
   toolMessage,
   artifactCatalog = [],
@@ -1542,8 +1826,38 @@ export function ManageArtifactCard({
   const action = (toolMessage.artifactData?.action || toolJsonString(output, "action") || toolJsonString(args, "action") || "create").trim().toLowerCase();
   const isImageCapabilities = action === "image_capabilities";
   const isImageGeneration = action === "generate_image";
+  const isVideoStory = action === "generate_video_story";
+  const isVideoGeneration = action === "generate_video" || isVideoStory || action === "chain_video";
+  const isAudioGeneration = action === "generate_audio";
+  const isVideoIteration = isVideoGeneration && (Boolean(toolJsonString(args, "source_variant_id")) || Boolean(toolJsonString(args, "source_session_id")));
   const isInspection = ["get", "read", "list"].includes(action);
-  const rawArtifact = toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null);
+
+  const outputVariants = Array.isArray(output?.variants)
+    ? (output.variants as Array<Record<string, unknown>>)
+    : [];
+  const rawVariants: DesktopV3ArtifactCatalogEntry[] = useMemo(() => {
+    if (outputVariants.length > 0) {
+      return outputVariants
+        .map((v) => (v && typeof v === "object" ? normalizeDesktopV3ArtifactCatalogEntry(v) : null))
+        .filter((v): v is DesktopV3ArtifactCatalogEntry => Boolean(v))
+        .map((v) => {
+          const matched = artifactCatalog.find((entry) => (
+            entry.artifactId === v.artifactId
+            && entry.sessionId === v.sessionId
+            && entry.collectionId === v.collectionId
+            && entry.eventSeq === v.eventSeq
+          ));
+          return matched ?? v;
+        });
+    }
+    return [];
+  }, [outputVariants, artifactCatalog]);
+
+  const [selectedVariantIndex, setSelectedVariantIndex] = useState(0);
+
+  const rawArtifact = (rawVariants.length > 0 && rawVariants[selectedVariantIndex])
+    ? rawVariants[selectedVariantIndex]
+    : (toolMessage.artifactData?.artifact ?? (output?.artifact ? normalizeDesktopV3ArtifactCatalogEntry(output.artifact) : null));
 
   const matchedCatalogEntry = rawArtifact
     ? artifactCatalog.find((entry) => (
@@ -1572,25 +1886,58 @@ export function ManageArtifactCard({
       </div>
     );
   }
+  const prompt = toolJsonString(args, "prompt") || toolJsonString(output, "prompt");
+  const videoTitle = toolJsonString(args, "title") || toolJsonString(output, "title");
+  const estimatedCost = toolJsonNumber(output, "estimated_cost_usd") ?? toolJsonNumber(output, "cost_per_video_usd");
+  const pricingSummary = toolJsonString(output, "pricing_summary");
+  const videoModel = toolJsonString(output, "model");
+
   const label = artifact?.label
+    || videoTitle
     || toolJsonString(args, "label")
     || toolJsonString(args, "filename")
-    || (isImageCapabilities ? "Image generation options" : isImageGeneration ? "Generated image" : "Artifact");
+    || (isImageCapabilities ? "Image generation options" : isImageGeneration ? "Generated image" : isVideoGeneration ? "Generated video" : "Artifact");
   const description = artifact?.description
+    || prompt
     || toolJsonString(args, "description")
     || (isImageCapabilities ? "Checking the configured image model and supported output sizes." : "");
-  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type");
-  const filename = artifact?.filename || toolJsonString(args, "filename");
+  const mediaType = artifact?.mediaType || toolJsonString(args, "media_type") || (isVideoGeneration ? "video/mp4" : "");
+  const filename = artifact?.filename || toolJsonString(args, "filename") || (isVideoGeneration ? "generated-video.mp4" : "");
   const status = artifact?.status || (isError ? "failed" : isRunning ? "staging" : "ready");
 
-  const actionTitle = isImageCapabilities ? "Image setup" : isImageGeneration ? "Image generation" : action === "create_package" ? "Artifact package" : action === "list" ? "Artifact list" : action === "get" || action === "read" ? "Artifact read" : "Artifact";
+  const actionTitle = isImageCapabilities
+    ? "Image setup"
+    : isImageGeneration
+      ? "Image generation"
+      : isVideoIteration
+        ? "Video iteration"
+        : isVideoGeneration
+          ? isVideoStory ? "Video story" : "Video generation"
+          : isAudioGeneration
+            ? rawVariants.length > 1 ? `Audio generation (${rawVariants.length} clips)` : "Audio generation"
+            : action === "create_package"
+              ? "Artifact package"
+              : action === "list"
+                ? "Artifact list"
+                : action === "get" || action === "read"
+                  ? "Artifact read"
+                  : "Artifact";
   const statusLabel = isError
     ? "Failed"
     : isImageCapabilities
       ? isRunning ? "Checking…" : "Options ready"
       : isImageGeneration
         ? isRunning ? "Generating…" : status === "ready" ? "Image ready" : status || "Created"
-        : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
+        : isVideoGeneration
+          ? isRunning ? "Generating video…" : status === "ready" ? "Video ready" : status || "Created"
+          : isAudioGeneration
+            ? isRunning ? "Generating audio…" : status === "ready" ? (rawVariants.length > 1 ? `${rawVariants.length} clips ready` : "Audio ready") : status || "Created"
+            : isRunning ? "Creating…" : status === "ready" ? "Ready" : status || "Created";
+
+  const isAudio = isAudioGeneration
+    || Boolean(artifact?.mediaType?.startsWith("audio/"))
+    || artifact?.kind === "audio"
+    || rawVariants.some((v) => Boolean(v.mediaType?.startsWith("audio/")) || v.kind === "audio");
 
   const href = artifact && artifactHref ? artifactHref(artifact) : undefined;
 
@@ -1659,7 +2006,7 @@ export function ManageArtifactCard({
         <div className="flex min-w-0 items-center justify-between gap-2.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--app-accent)_15%,transparent)] text-[var(--app-accent)]">
-              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {isRunning ? <LoaderCircle size={14} className="animate-spin" /> : isVideoGeneration ? <Film size={14} /> : isAudioGeneration ? <Music size={14} /> : <Sparkles size={14} />}
             </span>
             <div className="min-w-0">
               <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[var(--app-text-subtle)]">{actionTitle}</span>
@@ -1698,7 +2045,140 @@ export function ManageArtifactCard({
           </div>
         ) : null}
 
-        {artifact && status === "ready" ? (
+        {isVideoGeneration && isRunning ? (
+          <div
+            className="relative mt-3 aspect-video w-full max-w-3xl overflow-hidden rounded-xl border border-[color-mix(in_srgb,var(--app-primary)_35%,var(--app-border))] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-zinc-950 to-black text-white shadow-xl"
+            data-testid="video-generation-pending"
+            role="status"
+            aria-label="Generating video"
+          >
+            <div className="absolute inset-x-0 top-0 flex h-3 items-center justify-between px-2 bg-black/70 border-b border-white/10" aria-hidden="true">
+              {Array.from({ length: 14 }).map((_, idx) => (
+                <div key={idx} className="h-1.5 w-2.5 rounded-sm bg-white/20" />
+              ))}
+            </div>
+            <div className="absolute inset-x-0 bottom-0 flex h-3 items-center justify-between px-2 bg-black/70 border-t border-white/10" aria-hidden="true">
+              {Array.from({ length: 14 }).map((_, idx) => (
+                <div key={idx} className="h-1.5 w-2.5 rounded-sm bg-white/20" />
+              ))}
+            </div>
+            <div className="absolute inset-0 motion-safe:animate-pulse bg-[radial-gradient(circle_at_50%_45%,rgba(99,102,241,0.22),transparent_55%),radial-gradient(circle_at_80%_20%,rgba(236,72,153,0.18),transparent_40%)] motion-reduce:animate-none" aria-hidden="true" />
+            <div className="relative flex size-full flex-col items-center justify-center px-6 py-6 text-center">
+              <div className="relative mb-3">
+                <span className="grid size-12 place-items-center rounded-2xl bg-white/10 text-[var(--app-primary)] shadow-lg ring-1 ring-white/20">
+                  <Film size={22} className="motion-safe:animate-pulse motion-reduce:animate-none text-indigo-400" aria-hidden="true" />
+                </span>
+                <span className="absolute -bottom-1 -right-1 flex size-5 items-center justify-center rounded-full bg-[var(--app-primary)] text-white shadow">
+                  <Loader2 size={12} className="animate-spin" />
+                </span>
+              </div>
+              <div className="text-sm font-semibold tracking-wide text-white">
+                {isVideoIteration ? "Iterating video with Gemini Omni…" : "Generating cinematic video with Veo…"}
+              </div>
+              <p className="mt-1 text-xs text-white/70 max-w-md">
+                Synthesizing high-frame-rate motion and diffusion keyframes. This usually takes 30–60 seconds.
+              </p>
+              {prompt ? (
+                <div className="mt-2.5 max-w-md rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 font-mono text-[11px] text-white/90 line-clamp-2" title={prompt}>
+                  "{prompt}"
+                </div>
+              ) : null}
+              <div className="mt-3.5 h-1.5 w-48 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full w-1/2 rounded-full bg-gradient-to-r from-indigo-500 via-[var(--app-primary)] to-pink-500 motion-safe:animate-[pulse_1.5s_ease-in-out_infinite]" />
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {rawVariants.length > 1 ? (
+          <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-2" data-testid="artifact-variants-selector">
+            <div className="mb-2 flex items-center justify-between px-1 text-[10px] font-semibold text-[var(--app-text-subtle)]">
+              <span className="flex items-center gap-1.5 uppercase tracking-wider">
+                {isAudioGeneration ? <Music size={12} className="text-[var(--app-primary)]" /> : <Sparkles size={12} className="text-[var(--app-primary)]" />}
+                {isAudioGeneration ? `Sound Clips (${rawVariants.length})` : `Variations (${rawVariants.length})`}
+              </span>
+              <span className="text-[9px] font-normal text-[var(--app-text-muted)]">
+                {isAudioGeneration ? "Click any clip to play" : "Select to preview & play"}
+              </span>
+            </div>
+            <div className="grid gap-2">
+              {rawVariants.map((variantItem, idx) => {
+                const isSelected = idx === selectedVariantIndex;
+                if (isAudioGeneration) {
+                  const promptFromArgs = (Array.isArray(args?.prompts) && typeof args.prompts[idx] === "string" && args.prompts[idx])
+                    ? args.prompts[idx]
+                    : (typeof args?.prompt === "string" ? args.prompt : "");
+                  return (
+                    <ChatAudioSoundBar
+                      key={variantItem.artifactId || idx}
+                      artifact={variantItem}
+                      index={idx}
+                      promptText={variantItem.description || promptFromArgs || undefined}
+                      isSelected={isSelected}
+                      onSelect={() => setSelectedVariantIndex(idx)}
+                      href={artifactHref ? artifactHref(variantItem) : undefined}
+                      onOpenViewer={onArtifactNavigate ? () => onArtifactNavigate(variantItem) : undefined}
+                    />
+                  );
+                }
+                const vLabel = variantItem.label || `Variation ${idx + 1}`;
+                const vDesc = variantItem.description;
+                return (
+                  <button
+                    key={variantItem.artifactId || idx}
+                    type="button"
+                    onClick={() => setSelectedVariantIndex(idx)}
+                    className={cn(
+                      "flex min-w-0 items-start gap-2.5 rounded-lg border p-2 text-left transition",
+                      isSelected
+                        ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)] shadow-2xs"
+                        : "border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text-muted)] hover:border-[var(--app-border-hover)] hover:bg-[var(--app-surface-hover)]"
+                    )}
+                    aria-pressed={isSelected}
+                  >
+                    <span className={cn(
+                      "grid size-5 shrink-0 place-items-center rounded border font-mono text-[9px] font-bold mt-0.5",
+                      isSelected ? "border-current bg-[var(--app-surface)]" : "border-[var(--app-border)] bg-[var(--app-bg-alt)]"
+                    )}>
+                      {idx + 1}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-semibold leading-tight text-[var(--app-text)] break-words">
+                        {vLabel}
+                      </div>
+                      {vDesc && vDesc !== vLabel ? (
+                        <p className="mt-0.5 line-clamp-2 text-[9px] leading-snug text-[var(--app-text-muted)] break-words">
+                          {vDesc}
+                        </p>
+                      ) : null}
+                    </div>
+                    {isSelected ? (
+                      <span className="shrink-0 rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[9px] font-medium text-white">
+                        Active
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        {artifact && status === "ready" && isAudio && rawVariants.length <= 1 ? (
+          <div className="mt-3">
+            <ChatAudioSoundBar
+              artifact={artifact}
+              index={0}
+              promptText={artifact.description || prompt || undefined}
+              isSelected={true}
+              onSelect={() => setSelectedVariantIndex(0)}
+              href={href}
+              onOpenViewer={handleOpenViewer}
+            />
+          </div>
+        ) : null}
+
+        {artifact && status === "ready" && !isAudio ? (
           href ? (
             <a
               href={href}
@@ -1728,6 +2208,16 @@ export function ManageArtifactCard({
           {mediaType && !isImageCapabilities ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
           {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
           {artifact?.collectionId ? <span className="font-mono text-[10px] truncate max-w-36">col: {artifact.collectionId}</span> : null}
+          {estimatedCost !== undefined && estimatedCost !== null && estimatedCost > 0 ? (
+            <span className="rounded bg-[var(--app-primary-soft)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--app-primary)]" title={pricingSummary || `Estimated cost: $${estimatedCost.toFixed(2)}`}>
+              Est. ${estimatedCost.toFixed(2)}
+            </span>
+          ) : null}
+          {videoModel ? (
+            <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">
+              {videoModel}
+            </span>
+          ) : null}
         </div>
 
         {isError && toolMessage.error ? (
@@ -2736,6 +3226,10 @@ function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredTo
   );
 }
 
+import { AutomationInstructionProposal } from '../../tools/automations/automation-instruction-proposal';
+import { AutomationProposalCard } from '../../tools/automations/automation-proposal-card';
+import { parseAutomationProposal } from '../../tools/automations/automation-proposal';
+
 export function ToolMessageView({
   toolMessage,
   isGroupItem,
@@ -2770,6 +3264,10 @@ export function ToolMessageView({
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
+  if (['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
+    const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+    if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
+  }
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
@@ -2840,7 +3338,7 @@ export function ToolMessageView({
       : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
-  if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
+  if (isPlanManage) return <><PlanManageToolView toolMessage={toolMessage} />{toolMessage.state === 'done' && <AutomationInstructionProposal payload={toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput)} />}</>;
   if (isManageWorktree) return <ManageWorktreeCard toolMessage={toolMessage} />;
   if (isManageArtifact) {
     return (

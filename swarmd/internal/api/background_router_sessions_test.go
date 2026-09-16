@@ -33,7 +33,7 @@ func TestBackgroundRouterSessionStartRoutesOnceBeforeMandatoryAllocationAndRepla
 			runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Implement task routing","worktree_name":"task-routing"}`}}
 			server, sessions, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 			managedPath := t.TempDir()
-			worktrees := &routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+			worktrees := &routedWorktreeServiceStub{repositoryFixture: t, fakeWorktreeService: fakeWorktreeService{
 				config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
 				allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, RepoRoot: managedPath, BranchName: "agent/task-routing", WorkspaceID: "background-router"},
 			}}
@@ -163,7 +163,7 @@ func TestBackgroundRouterSessionStartDoesNotConsumeOrdinaryRoutedIdentity(t *tes
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Background task","worktree_name":"background-task"}`}}
 	server, _, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 	managedPath := t.TempDir()
-	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+	server.SetWorktreeService(&routedWorktreeServiceStub{repositoryFixture: t, fakeWorktreeService: fakeWorktreeService{
 		config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, BranchName: "agent/background-task", WorkspaceID: "background-router"},
 	}})
@@ -196,7 +196,7 @@ func TestBackgroundRouterSessionStartToleratesRetiredWorktreeOverride(t *testing
 	runner := &sessionRouterRecordingRunner{id: "recording", response: provideriface.Response{Text: `{"title":"Do work","worktree_name":"do-work"}`}}
 	server, _, principal := newRoutedSessionAtomicityServer(t, runner, true, true)
 	managedPath := t.TempDir()
-	server.SetWorktreeService(&routedWorktreeServiceStub{fakeWorktreeService: fakeWorktreeService{
+	server.SetWorktreeService(&routedWorktreeServiceStub{repositoryFixture: t, fakeWorktreeService: fakeWorktreeService{
 		config:     worktreeruntime.Config{Enabled: true, UseCurrentBranch: true, BranchName: "agent/<id>"},
 		allocation: worktreeruntime.Allocation{WorkspacePath: managedPath, BranchName: "agent/do-work", WorkspaceID: "background-router"},
 	}})

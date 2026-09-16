@@ -84,6 +84,9 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	if err != nil {
 		return PlanAcceptanceCommitResult{}, err
 	}
+	if document != nil && (document.Automation != nil || document.AutomationV2 != nil) {
+		return PlanAcceptanceCommitResult{}, errors.New("automation proposal requires explicit automation acceptance; ordinary plan acceptance cannot start recurring work")
+	}
 	version := 1
 	createdAt := now
 	var archived *pebblestore.SessionPlanSnapshot

@@ -458,7 +458,7 @@ func canonicalManageWorkspaceAction(raw any) (string, bool) {
 		action = "delete"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
 		return action, true
 	default:
 		return "", false
@@ -506,7 +506,11 @@ func manageWorkspacePolicyIdentity(arguments string) (string, string) {
 		return policyToolWorkspaceInvalid, "manage_workspace action must be a supported non-empty string"
 	}
 	switch action {
-	case "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+	case "reclaim_worktree", "cancel_worktree_recovery":
+		return "workspace_reclaim", ""
+	case "copy_worktree":
+		return "workspace_copy", ""
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
 		return "manage_workspace", ""
 	case "create":
 		return policyToolWorkspaceCreate, ""
@@ -535,6 +539,57 @@ func shouldApproveManageActionsMutation(arguments string) bool {
 	}
 }
 
+// ShouldApproveManageConnectionsMutation reports whether a manage_connections invocation represents a mutating or sensitive action.
+func ShouldApproveManageConnectionsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return true
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "list", "get", "capabilities":
+		return false
+	default:
+		return true
+	}
+}
+
+// ShouldApproveManageEnvironmentsMutation reports whether a manage_environments invocation represents a mutation.
+func ShouldApproveManageEnvironmentsMutation(arguments string) bool {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return true
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "list", "get", "export":
+		return false
+	default:
+		return true
+	}
+}
+
+// ManageDeploymentsPolicyIdentity returns the policy capability identity and whether approval is required.
+func ManageDeploymentsPolicyIdentity(arguments string) (string, bool) {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
+		return "manage_deployments", false
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "destroy":
+		return "deployment_destroy", true
+	case "deploy":
+		return "deployment_deploy", true
+	case "exec":
+		return "deployment_exec", true
+	case "stop":
+		return "deployment_stop", true
+	default:
+		return "manage_deployments", false
+	}
+}
+
 func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	toolName = normalizePolicyToolName(toolName)
 	toolArguments = strings.TrimSpace(toolArguments)
@@ -546,8 +601,22 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	} else if toolName == "plan_manage" && IsPlanAcceptanceLifecycleRequirement(PlanManageLifecycleRequirement(toolArguments)) {
 		toolName = "plan_acceptance"
 	}
+	if toolName == "manage_automation" || toolName == "manage_workers" {
+		toolName = automationPolicyIdentity(toolArguments)
+	}
 	if toolName == "manage_actions" && shouldApproveManageActionsMutation(toolArguments) {
 		toolName = "action_change"
+	}
+	if toolName == "manage_connections" && ShouldApproveManageConnectionsMutation(toolArguments) {
+		toolName = "connection_change"
+	}
+	if toolName == "manage_environments" && ShouldApproveManageEnvironmentsMutation(toolArguments) {
+		toolName = "environment_change"
+	}
+	if toolName == "manage_deployments" {
+		if id, sensitive := ManageDeploymentsPolicyIdentity(toolArguments); sensitive {
+			toolName = id
+		}
 	}
 	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
 		toolName = "skill_change"
@@ -972,6 +1041,12 @@ func normalizePolicyToolName(name string) string {
 		return "exit_plan_mode"
 	case "managetheme":
 		return "manage_theme"
+	case "manageconnections", "manage_connections":
+		return "manage_connections"
+	case "manageenvironments", "manage_environments":
+		return "manage_environments"
+	case "managedeployments", "manage_deployments":
+		return "manage_deployments"
 	default:
 		return name
 	}
@@ -1341,6 +1416,14 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
+	case "manage_memory":
+		var args struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(toolArguments), &args) == nil && args.Action == "inspect" {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
 	case "manage_worktree":
 		// Internal integration is constrained to clean, committed children recorded
 		// in the current parent's durable lineage and may advance only that parent's
@@ -1351,7 +1434,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// catalog. The control-plane handler independently enforces primary-agent,
 		// principal, ownership, generation, path, and dirty-worktree boundaries.
 		return PolicyDecisionAllow
-	case policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
+	case "workspace_reclaim", "workspace_copy", policyToolWorkspaceCreate, policyToolWorkspaceUpdate, policyToolWorkspaceDelete, policyToolWorkspaceMapUpdate:
 		// Catalog and account-map mutations are independent approval identities.
 		// A persistent rule for one action cannot authorize another action or
 		// broaden into the safe inspection/selection surface.
@@ -1377,7 +1460,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow
 		// through the already-approved task manifest and permission-session scope.
-		if ShouldApproveManageArtifactGenerateImage(toolArguments) && !bypass {
+		if (ShouldApproveManageArtifactGenerateImage(toolArguments) || ShouldApproveManageArtifactGenerateVideo(toolArguments) || ShouldApproveManageArtifactGenerateAudio(toolArguments)) && !bypass {
 			return PolicyDecisionAsk
 		}
 		// Other managed artifact operations remain inside the authenticated session
@@ -1385,9 +1468,13 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// into a workspace is materialize/promote, which independently requires an
 		// exact ready reference and a trusted workspace root.
 		return PolicyDecisionAllow
-	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
+	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff", "manage_connections", "manage_environments", "manage_deployments":
 		return PolicyDecisionAllow
-	case "action_change":
+	case "automation_read":
+		return PolicyDecisionAllow
+	case "automation_change", "automation_run", "automation_cancel":
+		return PolicyDecisionAsk
+	case "action_change", "connection_change", "environment_change", "deployment_destroy", "deployment_deploy", "deployment_exec", "deployment_stop":
 		if bypass {
 			return PolicyDecisionAllow
 		}
@@ -1419,7 +1506,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAllow
 	case "ask_user", "exit_plan_mode":
 		return PolicyDecisionAsk
-	case "write", "edit":
+	case "write", "edit", "git_add", "git_commit", "git_init", "git_commit_initial":
 		if mode == "read" {
 			return PolicyDecisionDeny
 		}

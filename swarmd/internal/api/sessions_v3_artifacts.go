@@ -1233,7 +1233,11 @@ func (s *Server) handleSessionV3ArtifactLibraryPublish(w http.ResponseWriter, r 
 			writeError(w, http.StatusNotFound, errors.New("artifact ownership does not match session"))
 			return
 		}
-		body, readErr := authority.ReadVariant(r.Context(), artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, variant, sessionsV3ArtifactMaxBytes)
+		maxBytes := sessionsV3ArtifactMaxBytes
+		if variant.MediaType == "video/mp4" || strings.HasPrefix(variant.MediaType, "video/") {
+			maxBytes = sessionsV3ArtifactVideoMaxBytes
+		}
+		body, readErr := authority.ReadVariant(r.Context(), artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, variant, maxBytes)
 		if readErr != nil {
 			writeError(w, http.StatusBadRequest, readErr)
 			return
@@ -1765,8 +1769,12 @@ func (s *Server) openSessionV3Artifact(ctx context.Context, session pebblestore.
 	if resolved.Managed.Status != pebblestore.SessionArtifactStatusReady || s.artifacts == nil {
 		return nil, nil, artifact.ErrNotReady
 	}
+	maxAllowedBytes := sessionsV3ArtifactMaxBytes
+	if resolved.Descriptor.Kind == "video" || resolved.Descriptor.MediaType == "video/mp4" || strings.HasPrefix(resolved.Descriptor.MediaType, "video/") || resolved.Managed.MediaType == "video/mp4" || strings.HasPrefix(resolved.Managed.MediaType, "video/") {
+		maxAllowedBytes = sessionsV3ArtifactVideoMaxBytes
+	}
 	authority := artifact.NewAuthority(s.artifacts, s.sessions)
-	body, _, err := authority.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: resolved.Managed.SessionID, CollectionID: resolved.Managed.CollectionID, VariantID: resolved.Managed.ID, EventSeq: resolved.Managed.EventSeq}, sessionsV3ArtifactMaxBytes)
+	body, _, err := authority.ReadReference(ctx, artifact.Principal{SessionID: session.ID, AccountScopeID: session.AccountScopeID, UserID: session.UserID}, pebblestore.SessionArtifactSelectionReference{SessionID: resolved.Managed.SessionID, CollectionID: resolved.Managed.CollectionID, VariantID: resolved.Managed.ID, EventSeq: resolved.Managed.EventSeq}, maxAllowedBytes)
 	if err != nil {
 		return nil, nil, err
 	}

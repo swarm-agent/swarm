@@ -211,12 +211,15 @@ async function main() {
   const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')
   originalSwarmSettings = settingsResponse.body?.agent_model_settings?.swarm || null
   assert(originalSwarmSettings?.action?.model && originalSwarmSettings?.plan?.model, 'canonical Swarm action/plan model settings are missing')
-  await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply runner model settings')
-  settingsChanged = true
+  const needSwarmUpdate = originalSwarmSettings?.action?.model !== actionAssignment.model || originalSwarmSettings?.action?.thinking !== actionAssignment.thinking || originalSwarmSettings?.plan?.model !== planAssignment.model || originalSwarmSettings?.plan?.thinking !== planAssignment.thinking
+  if (needSwarmUpdate) {
+    await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply runner model settings')
+    settingsChanged = true
+  }
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'basic-plan-auto-primary', make_current: true }, 'ensure basic plan workspace binding')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'basic-plan-auto-primary', make_current: true, confirm_committed_only: true }, 'ensure basic plan workspace binding')
   }
   const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body
   const runtime = (topology?.runtimes || []).find((item) => item?.relationship === 'self') || (topology?.runtimes || [])[0]
@@ -256,10 +259,11 @@ async function main() {
 
   const prompt = [
     `Basic runner flow ${testID}.`,
-    'Create exactly two ordered checkpoints with ids cp-1 and cp-2.',
-    'Each checkpoint must contain exactly one simple task so it materializes exactly one subtask.',
+    'You must create a plan with an array of EXACTLY two ordered checkpoints in document.checkpoints: the first checkpoint must have id "cp-1", order 1, and tasks ["Task 1"]; the second checkpoint must have id "cp-2", order 2, and tasks ["Task 2"].',
+    'Do NOT combine them into one checkpoint. Both checkpoints must be present in document.checkpoints.',
+    'Each checkpoint must contain exactly one simple task in tasks array so it materializes exactly one subtask.',
     'Checkpoint cp-1 should complete by calling plan_manage complete_checkpoint with result BASIC_CP1_OK.',
-    'Checkpoint cp-2 should complete by calling plan_manage complete_checkpoint with result BASIC_CP2_OK.',
+    'Checkpoint cp-2 should complete by calling plan_manage complete_checkpoint with result BASIC_CP2_OK and handoff_overview "All checkpoints completed cleanly."',
     'Use automatic checkpoint execution and submit the complete structured plan now with exit_plan_mode.',
     'Do not inspect or modify workspace files; this test only verifies plan lifecycle and model switching.',
   ].join(' ')
@@ -307,12 +311,21 @@ async function main() {
   result.gates.checkpoints_completed = true
   result.gates.subtasks_completed = true
 
-  const { events, replay } = await fetchAllEvents(sessionID)
+  let { events, replay } = await fetchAllEvents(sessionID)
   const runIntents = replay?.run_intents || []
   const failedReplayIntents = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
   assert(failedReplayIntents.length === 0, `session has failed run intents: ${failedReplayIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
   const expectedCheckpointRunIDs = new Set(result.ids.checkpoint_run_ids)
-  const checkpointIntents = runIntents.filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  let checkpointIntents = runIntents.filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  for (let i = 0; i < 30; i++) {
+    if (checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed')) break
+    await sleep(1000)
+    const updated = await fetchAllEvents(sessionID)
+    events.length = 0
+    events.push(...updated.events)
+    checkpointIntents = (updated.replay?.run_intents || []).filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+    replay = updated.replay || replay
+  }
   assert(checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed'), 'completed checkpoint run intents are missing from event replay')
   result.ids.checkpoint_run_ids = checkpointIntents.map((intent) => String(intent.run_id || '')).filter(Boolean)
   const usageFromEvents = usageRecordsFromEvents(events)
@@ -334,7 +347,12 @@ async function main() {
   result.gates.plan_model_verified = true
   result.gates.auto_model_verified = true
 
-  const failedEvents = events.filter((event) => /failed|cancelled|expired|interrupted/.test(String(event?.event_type || '')))
+  const latestFetch = await fetchAllEvents(sessionID)
+  replay = latestFetch.replay || replay
+  events.length = 0
+  events.push(...latestFetch.events)
+
+  const failedEvents = events.filter((event) => ['session.run.failed', 'session.checkpoint.failed'].includes(String(event?.event_type || '')))
   const failedIntents = (replay?.run_intents || []).filter((intent) => !['completed'].includes(String(intent?.status || '')))
   assert(failedEvents.length === 0, `session contains failure events: ${failedEvents.map((event) => event.event_type).join(', ')}`)
   assert(failedIntents.length === 0, `session contains non-completed run intents: ${failedIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)

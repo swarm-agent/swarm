@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
 	"io"
@@ -21,12 +22,15 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/artifact"
+	"swarm/packages/swarmd/internal/audiogen"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videogen"
 )
 
 const (
@@ -253,10 +257,67 @@ func manageArtifactDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"artifact_id":      map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
-				"resume_draft":     map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":           map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip."},
-				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Image prompt required only for generate_image. For a remix, describe only the requested changes while preserving the attached exact source through all source_* fields."},
+				"artifact_id":  map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
+				"resume_draft": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
+				"action":       map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). Pass chain_from (or source_* with chain=true) to automatically extract the last keyframe and generate seamless continuous chained video. generate_video_story (or generate_video with scenes array): generates multi-part chained video end-to-end in ONE call, automatically extracting keyframes between scenes, generating continuous Lyria soundtrack, and concatenating with Foley ducking. extract_video_frame extracts a PNG keyframe (frame: last, first, or timestamp_ms) from a video artifact. chain_video concatenates multiple video artifacts and optionally overrides or mixes continuous soundtrack audio (audio_mode: override, mix_ducked, or native) into a master video artifact. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
+				"scenes": map[string]any{
+					"type":        "array",
+					"minItems":    2,
+					"maxItems":    16,
+					"description": "For generate_video_story: ordered list of scene objects ({prompt, title, duration_seconds}) to automatically generate and chain into a master video.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"prompt":           map[string]any{"type": "string", "description": "Visual scene description and audio direction."},
+							"title":            map[string]any{"type": "string", "description": "Optional scene title."},
+							"duration_seconds": map[string]any{"type": "integer", "description": "Optional scene duration in seconds (default 8s)."},
+						},
+						"required":             []string{"prompt"},
+						"additionalProperties": false,
+					},
+				},
+				"soundtrack": map[string]any{"description": "For generate_video_story: continuous soundtrack prompt string or object ({prompt, audio_mode, foley_volume}) generated via Google Lyria for total story duration."},
+				"script":     map[string]any{"type": "object", "description": "For generate_video_story: script object containing scenes and soundtrack."},
+				"chain_from": map[string]any{"description": "For generate_video: video artifact reference or workspace path from which the last keyframe is automatically extracted to seed continuous image-to-video generation."},
+				"chain":      map[string]any{"type": "boolean", "description": "For generate_video with source_* pointing to a video: when true, extracts last keyframe and chains via image-to-video instead of conversational editing."},
+				"videos": map[string]any{
+					"type":        "array",
+					"minItems":    2,
+					"maxItems":    16,
+					"description": "Ordered array of video artifact references or workspace paths for chain_video.",
+					"items": map[string]any{
+						"anyOf": []any{
+							reference,
+							map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"path": map[string]any{"type": "string", "description": "Clean workspace-relative or absolute video file path."},
+								},
+								"required":             []string{"path"},
+								"additionalProperties": false,
+							},
+							map[string]any{
+								"type":        "string",
+								"description": "Clean workspace-relative or absolute video file path.",
+							},
+						},
+					},
+				},
+				"audio":            map[string]any{"description": "Optional audio artifact reference or workspace path for chain_video continuous soundtrack."},
+				"audio_mode":       map[string]any{"type": "string", "enum": []string{"override", "mix_ducked", "native"}, "description": "Audio mode for chain_video: override (replaces all video audio with soundtrack), mix_ducked (duck native Foley at 35%, overlay soundtrack at 100%), or native (preserves video audio)."},
+				"foley_volume":     map[string]any{"type": "number", "minimum": 0, "maximum": 2, "description": "Optional volume multiplier (0.0 to 2.0, default 0.35) for native audio in mix_ducked mode."},
+				"transition":       map[string]any{"type": "string", "enum": []string{"cut", "crossfade"}, "description": "Optional transition for chain_video: cut (lossless concat, default) or crossfade."},
+				"frame":            map[string]any{"type": "string", "description": "For extract_video_frame: 'last' (default), 'first', or milliseconds timestamp."},
+				"timestamp_ms":     map[string]any{"type": "integer", "minimum": 0, "description": "Optional timestamp in milliseconds for extract_video_frame."},
+				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image, generate_video, and generate_audio. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
+				"prompts":          map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes}, "description": "Optional array of prompts for generating multiple audio variations in one call."},
+				"image":            map[string]any{"description": "Optional image input for generate_video or generate_audio (image inspiration). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
+				"image_path":       map[string]any{"type": "string", "description": "Optional workspace file path to an image for generate_video or generate_audio."},
+				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated media (video or audio). If omitted, a descriptive title is automatically derived from the prompt."},
+				"aspect_ratio":     map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
+				"resolution":       map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, or 360p."},
+				"duration_seconds": map[string]any{"type": "integer", "description": "Optional media duration in seconds for video (4, 6, 8) or audio (e.g. 15, 28, 30, 60, 120)."},
+				"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional number of media variants to generate (1 to 8)."},
 				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
 				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
 					"size":         map[string]any{"type": "string", "maxLength": 64, "description": "Optional portable output size, for example auto, 1024x1024, 1536x1024, or 1024x1536. The backend adapts it to the configured image provider."},
@@ -483,6 +544,101 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		}
 		response["artifact"] = managedArtifactVariant(variant)
 		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	case "generate_video":
+		if args["scenes"] != nil || args["parts"] != nil || args["script"] != nil {
+			variant, details, err := r.generateVideoStory(ctx, scope, principal, callID, requestID, args)
+			if err != nil {
+				return "", err
+			}
+			response["status"] = "ok"
+			response["artifact"] = managedArtifactVariant(variant)
+			response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+			for k, v := range details {
+				response[k] = v
+			}
+			break
+		}
+		videoResult, err := r.generateManagedVideoArtifact(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["title"] = videoResult.Title
+		response["prompt"] = videoResult.Prompt
+		response["model"] = videoResult.Model
+		response["provider"] = videoResult.Provider
+		response["aspect_ratio"] = videoResult.AspectRatio
+		response["resolution"] = videoResult.Resolution
+		response["duration_seconds"] = videoResult.DurationSeconds
+		response["estimated_cost_usd"] = videoResult.TotalEstimatedCostUSD
+		response["cost_per_video_usd"] = videoResult.CostPerVideoUSD
+		response["pricing_summary"] = videoResult.PricingSummary
+		response["artifact"] = managedArtifactVariant(videoResult.LastVariant)
+		response["reference"] = managedArtifactReferenceWithSession(videoResult.LastVariant.SessionID, videoResult.LastVariant.CollectionID, videoResult.LastVariant.ID, videoResult.LastVariant.EventSeq)
+		response["variants"] = videoResult.Variants
+		response["references"] = videoResult.References
+		if videoResult.HasImageInput {
+			response["has_image_input"] = true
+		}
+	case "generate_video_story":
+		variant, details, err := r.generateVideoStory(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+		for k, v := range details {
+			response[k] = v
+		}
+	case "extract_video_frame":
+		variant, err := r.extractVideoFrame(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	case "chain_video":
+		variant, details, err := r.chainVideo(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["artifact"] = managedArtifactVariant(variant)
+		response["reference"] = managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+		for k, v := range details {
+			response[k] = v
+		}
+	case "generate_audio":
+		audioResult, err := r.generateManagedAudioArtifact(ctx, scope, principal, callID, requestID, args)
+		if err != nil {
+			return "", err
+		}
+		response["status"] = "ok"
+		response["title"] = audioResult.Title
+		response["prompt"] = audioResult.Prompt
+		if len(audioResult.Prompts) > 0 {
+			response["prompts"] = audioResult.Prompts
+		}
+		response["model"] = audioResult.Model
+		response["provider"] = audioResult.Provider
+		response["duration_seconds"] = audioResult.DurationSeconds
+		response["duration_ms"] = audioResult.DurationMs
+		if audioResult.Lyrics != "" {
+			response["lyrics"] = audioResult.Lyrics
+		}
+		response["estimated_cost_usd"] = audioResult.TotalEstimatedCostUSD
+		response["cost_per_audio_usd"] = audioResult.CostPerAudioUSD
+		response["pricing_summary"] = audioResult.PricingSummary
+		response["artifact"] = managedArtifactVariant(audioResult.LastVariant)
+		response["reference"] = managedArtifactReferenceWithSession(audioResult.LastVariant.SessionID, audioResult.LastVariant.CollectionID, audioResult.LastVariant.ID, audioResult.LastVariant.EventSeq)
+		response["variants"] = audioResult.Variants
+		response["references"] = audioResult.References
+		response["metadata"] = audioResult.Metadata
+		if audioResult.HasImageInput {
+			response["has_image_input"] = true
+		}
 	case "create":
 		artifactV3Result, err := r.createDirectArtifactV3HTML(ctx, scope, principal, callID, args)
 		if err != nil {
@@ -1604,6 +1760,974 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	return r.artifactAuthority.Create(ctx, principal, create)
 }
 
+type managedVideoArtifactResult struct {
+	LastVariant           pebblestore.SessionArtifactVariant
+	Variants              []map[string]any
+	References            []map[string]any
+	Title                 string
+	Prompt                string
+	Model                 string
+	Provider              string
+	AspectRatio           string
+	Resolution            string
+	DurationSeconds       int
+	CostPerVideoUSD       float64
+	TotalEstimatedCostUSD float64
+	PricingSummary        string
+	HasImageInput         bool `json:"has_image_input,omitempty"`
+}
+
+type managedAudioArtifactResult struct {
+	LastVariant           pebblestore.SessionArtifactVariant
+	Variants              []map[string]any
+	References            []map[string]any
+	Title                 string
+	Prompt                string
+	Prompts               []string
+	Model                 string
+	Provider              string
+	DurationSeconds       int
+	DurationMs            int
+	Lyrics                string
+	CostPerAudioUSD       float64
+	TotalEstimatedCostUSD float64
+	PricingSummary        string
+	HasImageInput         bool `json:"has_image_input,omitempty"`
+	Metadata              audiogen.AudioMetadata
+}
+
+func deriveVideoTitle(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "Generated video"
+	}
+	clean := prompt
+	for _, prefix := range []string{
+		"generate a video of ", "generate a video showing ", "generate video of ",
+		"a video of ", "video of ", "a clip of ", "clip of ", "show a video of ",
+		"create a video of ", "please generate a video of ",
+	} {
+		if strings.HasPrefix(strings.ToLower(clean), prefix) {
+			clean = clean[len(prefix):]
+			break
+		}
+	}
+	clean = strings.TrimLeft(clean, "\"'`# ")
+	for _, sep := range []string{". ", "! ", "? ", "; ", "\n"} {
+		if idx := strings.Index(clean, sep); idx > 0 {
+			clean = clean[:idx]
+			break
+		}
+	}
+	runes := []rune(clean)
+	if len(runes) > 50 {
+		cut := string(runes[:50])
+		if lastSpace := strings.LastIndex(cut, " "); lastSpace > 20 {
+			cut = cut[:lastSpace]
+		}
+		clean = strings.TrimSpace(cut)
+	}
+	clean = strings.TrimRight(clean, ".,;:-! ")
+	if clean == "" {
+		return "Generated video"
+	}
+	r := []rune(clean)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+func deriveAudioTitle(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return "Generated audio"
+	}
+	clean := prompt
+	for _, prefix := range []string{
+		"generate an audio clip of ", "generate audio clip of ", "generate an audio of ",
+		"generate audio of ", "generate music for ", "generate music of ",
+		"create an audio clip of ", "create audio clip of ", "create music for ",
+		"create a song about ", "generate a song about ", "a song about ",
+		"audio clip of ", "music for ", "sound clip of ", "clip of ",
+		"please generate audio of ", "please create music for ",
+	} {
+		if strings.HasPrefix(strings.ToLower(clean), prefix) {
+			clean = clean[len(prefix):]
+			break
+		}
+	}
+	clean = strings.TrimLeft(clean, "\"'`# ")
+	for _, sep := range []string{". ", "! ", "? ", "; ", "\n"} {
+		if idx := strings.Index(clean, sep); idx > 0 {
+			clean = clean[:idx]
+			break
+		}
+	}
+	runes := []rune(clean)
+	if len(runes) > 50 {
+		cut := string(runes[:50])
+		if lastSpace := strings.LastIndex(cut, " "); lastSpace > 20 {
+			cut = cut[:lastSpace]
+		}
+		clean = strings.TrimSpace(cut)
+	}
+	clean = strings.TrimRight(clean, ".,;:-! ")
+	if clean == "" {
+		return "Generated audio"
+	}
+	r := []rune(clean)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+func (r *Runtime) resolveVideoImageInput(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, raw any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {
+	if raw == nil {
+		return nil, nil, nil
+	}
+	switch v := raw.(type) {
+	case string:
+		str := strings.TrimSpace(v)
+		if str == "" {
+			return nil, nil, nil
+		}
+		if strings.HasPrefix(str, "data:image/") {
+			idx := strings.Index(str, ",")
+			if idx < 0 {
+				return nil, nil, errors.New("invalid image data URI: missing comma separator")
+			}
+			header := str[:idx]
+			encoded := str[idx+1:]
+			mimeType := "image/png"
+			if semi := strings.Index(header, ";"); semi > 5 {
+				mimeType = strings.TrimPrefix(header[:semi], "data:")
+			} else {
+				mimeType = strings.TrimPrefix(header, "data:")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, nil, fmt.Errorf("decode image data URI: %w", err)
+			}
+			if len(decoded) == 0 {
+				return nil, nil, errors.New("image data URI payload is empty")
+			}
+			return &videogen.ManagedVideoImage{
+				Bytes:     decoded,
+				MediaType: canonicalArtifactMediaType(mimeType),
+			}, nil, nil
+		}
+
+		// Try resolving as a workspace path
+		rooted, err := openRootedWorkspacePath(scope, str)
+		if err == nil {
+			defer rooted.Close()
+			info, statErr := rooted.stat()
+			if statErr == nil && info.Mode().IsRegular() {
+				if info.Size() > int64(manageArtifactMaxImageReadBytes) {
+					return nil, nil, fmt.Errorf("image file %q exceeds maximum limit of %d bytes", str, manageArtifactMaxImageReadBytes)
+				}
+				f, openErr := rooted.open()
+				if openErr != nil {
+					return nil, nil, fmt.Errorf("open image file %q: %w", str, openErr)
+				}
+				defer f.Close()
+				data, readErr := io.ReadAll(io.LimitReader(f, manageArtifactMaxImageReadBytes+1))
+				if readErr != nil {
+					return nil, nil, fmt.Errorf("read image file %q: %w", str, readErr)
+				}
+				if len(data) == 0 {
+					return nil, nil, fmt.Errorf("image file %q is empty", str)
+				}
+				mimeType := http.DetectContentType(data)
+				ext := strings.ToLower(filepath.Ext(str))
+				switch ext {
+				case ".png":
+					mimeType = "image/png"
+				case ".jpg", ".jpeg":
+					mimeType = "image/jpeg"
+				case ".webp":
+					mimeType = "image/webp"
+				case ".gif":
+					mimeType = "image/gif"
+				case ".svg":
+					mimeType = "image/svg+xml"
+				}
+				return &videogen.ManagedVideoImage{
+					Bytes:     data,
+					MediaType: canonicalArtifactMediaType(mimeType),
+				}, nil, nil
+			}
+		}
+
+		// Try as base64 string if sufficiently long and does not look like a filesystem path
+		if len(str) > 64 && !strings.ContainsAny(str, "/\\") {
+			decoded, b64Err := base64.StdEncoding.DecodeString(str)
+			if b64Err == nil && len(decoded) > 0 {
+				detected := http.DetectContentType(decoded)
+				if strings.HasPrefix(detected, "image/") {
+					return &videogen.ManagedVideoImage{
+						Bytes:     decoded,
+						MediaType: canonicalArtifactMediaType(detected),
+					}, nil, nil
+				}
+			}
+		}
+
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve image path %q: %w", str, err)
+		}
+		return nil, nil, fmt.Errorf("image file %q not found or is not a regular file", str)
+
+	case map[string]any:
+		if pathVal := strings.TrimSpace(asString(v["path"])); pathVal != "" {
+			return r.resolveVideoImageInput(ctx, scope, principal, pathVal)
+		}
+		if b64Val := strings.TrimSpace(firstNonEmptyString(asString(v["bytes_base64"]), asString(v["data"]))); b64Val != "" {
+			decoded, err := base64.StdEncoding.DecodeString(b64Val)
+			if err != nil {
+				return nil, nil, fmt.Errorf("decode image base64: %w", err)
+			}
+			mime := strings.TrimSpace(asString(v["mime_type"]))
+			if mime == "" {
+				mime = http.DetectContentType(decoded)
+			}
+			return &videogen.ManagedVideoImage{
+				Bytes:     decoded,
+				MediaType: canonicalArtifactMediaType(mime),
+			}, nil, nil
+		}
+		if assetID := strings.TrimSpace(asString(v["asset_id"])); assetID != "" {
+			if r.sessions == nil {
+				return nil, nil, errors.New("sessions service is not configured to resolve asset_id")
+			}
+			asset, payload, err := r.sessions.ReadSessionMediaAsset(principal.AccountScopeID, principal.SessionID, assetID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("read image asset %q: %w", assetID, err)
+			}
+			mime := asset.DetectedMIMEType
+			if mime == "" {
+				mime = http.DetectContentType(payload)
+			}
+			return &videogen.ManagedVideoImage{
+				Bytes:     payload,
+				MediaType: canonicalArtifactMediaType(mime),
+			}, nil, nil
+		}
+		if artRefRaw, ok := v["artifact_reference"].(map[string]any); ok {
+			return r.resolveVideoArtifactReference(ctx, principal, artRefRaw)
+		}
+		if artV3Raw, ok := v["artifact_v3_reference"].(map[string]any); ok {
+			return r.resolveVideoArtifactV3Reference(ctx, principal, artV3Raw)
+		}
+		if strings.TrimSpace(asString(v["collection_id"])) != "" && strings.TrimSpace(asString(v["variant_id"])) != "" {
+			return r.resolveVideoArtifactReference(ctx, principal, v)
+		}
+		if strings.TrimSpace(asString(v["artifact_id"])) != "" && strings.TrimSpace(asString(v["revision_ref"])) != "" {
+			return r.resolveVideoArtifactV3Reference(ctx, principal, v)
+		}
+		return nil, nil, errors.New("unsupported image input object: expected path, asset_id, artifact_reference, or bytes_base64")
+
+	default:
+		return nil, nil, fmt.Errorf("unsupported image input type %T", raw)
+	}
+}
+
+func (r *Runtime) resolveVideoArtifactReference(ctx context.Context, principal artifact.Principal, m map[string]any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {
+	if r.artifactAuthority == nil {
+		return nil, nil, errors.New("artifact authority is not configured to resolve artifact reference")
+	}
+	sessionID := strings.TrimSpace(asString(m["session_id"]))
+	if sessionID == "" {
+		sessionID = principal.SessionID
+	}
+	collectionID := strings.TrimSpace(asString(m["collection_id"]))
+	variantID := strings.TrimSpace(asString(m["variant_id"]))
+	eventSeq := asUint64(m["event_seq"])
+	if collectionID == "" || variantID == "" || eventSeq == 0 {
+		return nil, nil, errors.New("artifact reference requires collection_id, variant_id, and non-zero event_seq")
+	}
+	ref := pebblestore.SessionArtifactSelectionReference{
+		SessionID:    sessionID,
+		CollectionID: collectionID,
+		VariantID:    variantID,
+		EventSeq:     eventSeq,
+	}
+	body, variant, err := r.artifactAuthority.ReadReference(ctx, principal, ref, manageArtifactMaxImageReadBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read image artifact reference: %w", err)
+	}
+	if len(body) == 0 || !strings.HasPrefix(canonicalArtifactMediaType(variant.MediaType), "image/") {
+		return nil, nil, errors.New("artifact reference is empty or not a supported ready image")
+	}
+	return &videogen.ManagedVideoImage{
+		Bytes:     append([]byte(nil), body...),
+		MediaType: canonicalArtifactMediaType(variant.MediaType),
+	}, &ref, nil
+}
+
+func (r *Runtime) resolveVideoArtifactV3Reference(ctx context.Context, principal artifact.Principal, m map[string]any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {
+	if r.artifactV3Author == nil {
+		return nil, nil, errors.New("artifact v3 authority is not configured to resolve artifact_v3_reference")
+	}
+	sessionID := strings.TrimSpace(asString(m["session_id"]))
+	if sessionID == "" {
+		sessionID = principal.SessionID
+	}
+	artifactID := strings.TrimSpace(asString(m["artifact_id"]))
+	revisionRef := strings.TrimSpace(asString(m["revision_ref"]))
+	if artifactID == "" || revisionRef == "" {
+		return nil, nil, errors.New("artifact_v3_reference requires artifact_id and revision_ref")
+	}
+	payload, err := r.artifactV3Author.ReadPreviewEvidence(ctx, principal.AccountScopeID, principal.UserID, sessionID, artifactID, revisionRef)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read artifact v3 preview evidence: %w", err)
+	}
+	mime := http.DetectContentType(payload)
+	return &videogen.ManagedVideoImage{
+		Bytes:     payload,
+		MediaType: canonicalArtifactMediaType(mime),
+	}, nil, nil
+}
+
+func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (managedVideoArtifactResult, error) {
+	if strings.TrimSpace(principal.SessionID) == "" {
+		return managedVideoArtifactResult{}, identity.ErrPrincipalRequired
+	}
+	for key := range args {
+		switch key {
+		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
+			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
+			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
+			"image", "image_path", "chain_from", "chain":
+		default:
+			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
+		}
+	}
+	if r.videoGeneration == nil {
+		return managedVideoArtifactResult{}, errors.New("manage_artifact video generation is not configured")
+	}
+	prompt := strings.TrimSpace(asString(args["prompt"]))
+	if prompt == "" {
+		return managedVideoArtifactResult{}, errors.New("manage_artifact generate_video requires prompt")
+	}
+	if len([]rune(prompt)) > manageArtifactMaxPromptRunes {
+		return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact video prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+	}
+
+	aspectRatio := strings.TrimSpace(asString(args["aspect_ratio"]))
+	resolution := strings.TrimSpace(asString(args["resolution"]))
+	durationSeconds := int(asUint64(args["duration_seconds"]))
+
+	count := int(asUint64(args["count"]))
+	if count <= 0 {
+		count = 1
+	}
+	if count > 8 {
+		return managedVideoArtifactResult{}, errors.New("manage_artifact generate_video count exceeds maximum of 8")
+	}
+
+	requestedPresentation, err := parseArtifactPresentation(args["presentation"])
+	if err != nil {
+		return managedVideoArtifactResult{}, err
+	}
+
+	rawTitle := strings.TrimSpace(firstNonEmptyString(asString(args["title"]), asString(args["collection_name"]), asString(args["label"])))
+	if rawTitle == "" || strings.EqualFold(rawTitle, "Generated video") {
+		rawTitle = deriveVideoTitle(prompt)
+	}
+	title := rawTitle
+
+	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
+	collectionName := title
+	collectionDescription := strings.TrimSpace(asString(args["collection_description"]))
+	if collectionDescription == "" {
+		collectionDescription = prompt
+	}
+	managedDestination := false
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+		managedDestination = true
+		if strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" {
+			return managedVideoArtifactResult{}, errors.New("manage_artifact trusted video destination is incomplete")
+		}
+		if strings.TrimSpace(asString(args["collection_id"])) != "" || strings.TrimSpace(asString(args["variant_id"])) != "" {
+			return managedVideoArtifactResult{}, errors.New("manage_artifact managed generate_video must omit collection_id and variant_id")
+		}
+		collectionID, variantID = strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
+		collectionName, collectionDescription = "", ""
+	}
+	if !managedDestination {
+		if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
+			collectionID = supplied
+			collectionName, collectionDescription = "", ""
+		}
+		if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
+			variantID = supplied
+		}
+	}
+
+	var sourceRef *pebblestore.SessionArtifactSelectionReference
+	var source *videogen.ManagedVideoSource
+	var videoImage *videogen.ManagedVideoImage
+
+	sourceFields := 0
+	for _, key := range []string{"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq"} {
+		if _, supplied := args[key]; supplied {
+			sourceFields++
+		}
+	}
+	if sourceFields != 0 {
+		if sourceFields != 4 {
+			return managedVideoArtifactResult{}, errors.New("manage_artifact video iteration requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
+		}
+		sourceEventSeq := asUint64(args["source_event_seq"])
+		ref := pebblestore.SessionArtifactSelectionReference{
+			SessionID:    strings.TrimSpace(asString(args["source_session_id"])),
+			CollectionID: strings.TrimSpace(asString(args["source_collection_id"])),
+			VariantID:    strings.TrimSpace(asString(args["source_variant_id"])),
+			EventSeq:     sourceEventSeq,
+		}
+		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq == 0 {
+			return managedVideoArtifactResult{}, errors.New("manage_artifact video iteration requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
+		}
+		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, 512<<20)
+		if readErr != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("resolve video iteration source: %w", readErr)
+		}
+		if strings.HasPrefix(variant.MediaType, "image/") {
+			if len(body) == 0 {
+				return managedVideoArtifactResult{}, errors.New("image source artifact is empty")
+			}
+			videoImage = &videogen.ManagedVideoImage{
+				Bytes:     append([]byte(nil), body...),
+				MediaType: canonicalArtifactMediaType(variant.MediaType),
+			}
+			sourceRef = &ref
+		} else if variant.MediaType == "video/mp4" || strings.HasPrefix(variant.MediaType, "video/") {
+			if len(body) == 0 {
+				return managedVideoArtifactResult{}, errors.New("video iteration source is empty")
+			}
+			sourceRef = &ref
+			if chainVal, ok := args["chain"].(bool); ok && chainVal {
+				keyframeBytes, err := extractLastKeyframeBytes(ctx, body)
+				if err != nil {
+					return managedVideoArtifactResult{}, fmt.Errorf("extract last keyframe for video chaining: %w", err)
+				}
+				videoImage = &videogen.ManagedVideoImage{
+					Bytes:     keyframeBytes,
+					MediaType: "image/png",
+				}
+			} else {
+				interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+				source = &videogen.ManagedVideoSource{
+					Bytes:         append([]byte(nil), body...),
+					MediaType:     "video/mp4",
+					InteractionID: interactionID,
+				}
+			}
+		} else {
+			return managedVideoArtifactResult{}, errors.New("video iteration source is empty or not a supported ready video/mp4 or image")
+		}
+	}
+
+	if chainFromRaw := args["chain_from"]; chainFromRaw != nil && videoImage == nil {
+		body, ref, _, err := r.resolveVideoSourceBytes(ctx, scope, principal, chainFromRaw)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("resolve chain_from video: %w", err)
+		}
+		keyframeBytes, err := extractLastKeyframeBytes(ctx, body)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("extract last keyframe from chain_from video: %w", err)
+		}
+		videoImage = &videogen.ManagedVideoImage{
+			Bytes:     keyframeBytes,
+			MediaType: "image/png",
+		}
+		sourceRef = ref
+	}
+
+	rawImage := args["image"]
+	if rawImage == nil {
+		rawImage = args["image_path"]
+	}
+	if rawImage != nil {
+		img, imgRef, err := r.resolveVideoImageInput(ctx, scope, principal, rawImage)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("resolve image input: %w", err)
+		}
+		videoImage = img
+		if imgRef != nil && sourceRef == nil {
+			sourceRef = imgRef
+		}
+	}
+
+	if videoImage != nil {
+		isSVG := videoImage.MediaType == "image/svg+xml" || (len(videoImage.Bytes) > 4 && strings.Contains(string(videoImage.Bytes[:min(len(videoImage.Bytes), 256)]), "<svg"))
+		if isSVG && r.svgRasterizer != nil {
+			pngBytes, err := r.svgRasterizer.RasterizeSVG(ctx, videoImage.Bytes)
+			if err != nil {
+				return managedVideoArtifactResult{}, fmt.Errorf("rasterize SVG image to PNG: %w", err)
+			}
+			videoImage.Bytes = pngBytes
+			videoImage.MediaType = "image/png"
+		}
+	}
+
+	var lastVariant pebblestore.SessionArtifactVariant
+	var allVariants []map[string]any
+	var allReferences []map[string]any
+	var costPerVideo, totalCost float64
+	var pricingSummary, lastModel, lastProvider string
+
+	for i := 0; i < count; i++ {
+		currentVariantID := variantID
+		if i > 0 && !managedDestination {
+			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
+		}
+		generated, err := r.videoGeneration.GenerateManagedVideo(identity.ContextWithPrincipal(ctx, scope.Principal), videogen.ManagedVideoRequest{
+			Prompt:          prompt,
+			AspectRatio:     aspectRatio,
+			Resolution:      resolution,
+			DurationSeconds: durationSeconds,
+			Principal:       scope.Principal,
+			Source:          source,
+			Image:           videoImage,
+		})
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("generate managed video: %w", err)
+		}
+		if len(generated.Bytes) == 0 {
+			return managedVideoArtifactResult{}, errors.New("generated video output is empty")
+		}
+
+		variantTitle := title
+		if count > 1 {
+			variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+		}
+
+		presentation := requestedPresentation
+		presentation.Kind, presentation.Previewable = "video", true
+		presentation.Label = variantTitle
+		presentation.Description = prompt
+
+		filename := strings.TrimSpace(asString(args["filename"]))
+		if filename == "" {
+			filename = "generated-video.mp4"
+		}
+		if i > 0 && !strings.Contains(filename, fmt.Sprintf("-%d", i+1)) {
+			filename = fmt.Sprintf("generated-video-%d.mp4", i+1)
+		}
+
+		iterationIndex := i + 1
+		iterationLabel := variantTitle
+		autoAccept := true
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			if run.IterationIndex > 0 {
+				iterationIndex = run.IterationIndex
+			}
+			if strings.TrimSpace(run.IterationLabel) != "" {
+				iterationLabel = strings.TrimSpace(run.IterationLabel)
+			}
+			if strings.TrimSpace(run.IterationTheme) != "" {
+				presentation.Description = strings.TrimSpace(run.IterationTheme)
+			}
+			autoAccept = run.AutoAccept
+		}
+
+		create := artifact.CreateInput{
+			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
+			CollectionID:          collectionID,
+			CollectionName:        collectionName,
+			CollectionDescription: collectionDescription,
+			VariantID:             currentVariantID,
+			Filename:              filename,
+			MediaType:             "video/mp4",
+			Presentation:          presentation,
+			IterationID:           generated.InteractionID,
+			IterationIndex:        iterationIndex,
+			IterationLabel:        iterationLabel,
+			Body:                  append([]byte(nil), generated.Bytes...),
+			AutoAccept:            autoAccept,
+		}
+		if sourceRef != nil {
+			create.SourceSessionID = sourceRef.SessionID
+			create.SourceCollectionID = sourceRef.CollectionID
+			create.SourceVariantID = sourceRef.VariantID
+			create.SourceEventSeq = sourceRef.EventSeq
+		}
+
+		published, err := r.artifactAuthority.Create(ctx, principal, create)
+		if err != nil {
+			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
+		}
+		lastVariant = published
+		allVariants = append(allVariants, managedArtifactVariant(published))
+		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
+		costPerVideo = generated.EstimatedCostUSD
+		totalCost += generated.EstimatedCostUSD
+		pricingSummary = generated.PricingSummary
+		lastModel = generated.Model
+		lastProvider = generated.Provider
+	}
+
+	return managedVideoArtifactResult{
+		LastVariant:           lastVariant,
+		Variants:              allVariants,
+		References:            allReferences,
+		Title:                 title,
+		Prompt:                prompt,
+		Model:                 lastModel,
+		Provider:              lastProvider,
+		AspectRatio:           aspectRatio,
+		Resolution:            resolution,
+		DurationSeconds:       durationSeconds,
+		CostPerVideoUSD:       costPerVideo,
+		TotalEstimatedCostUSD: totalCost,
+		PricingSummary:        pricingSummary,
+		HasImageInput:         videoImage != nil,
+	}, nil
+}
+
+func (r *Runtime) generateManagedAudioArtifact(
+	ctx context.Context,
+	scope WorkspaceScope,
+	principal artifact.Principal,
+	callID, requestID string,
+	args map[string]any,
+) (managedAudioArtifactResult, error) {
+	for key := range args {
+		switch key {
+		case "action", "prompt", "prompts", "title", "label", "duration_seconds", "count",
+			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
+			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
+			"image", "image_path":
+		default:
+			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact generate_audio contains unsupported field %q", key)
+		}
+	}
+	if r.audioGeneration == nil {
+		return managedAudioArtifactResult{}, errors.New("manage_artifact audio generation is not configured")
+	}
+
+	var prompts []string
+	if rawPrompts, exists := args["prompts"]; exists {
+		switch v := rawPrompts.(type) {
+		case []any:
+			if len(v) > 8 {
+				return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio prompts exceeds maximum of 8")
+			}
+			for _, item := range v {
+				s := strings.TrimSpace(asString(item))
+				if s != "" {
+					prompts = append(prompts, s)
+				}
+			}
+		case []string:
+			if len(v) > 8 {
+				return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio prompts exceeds maximum of 8")
+			}
+			for _, item := range v {
+				s := strings.TrimSpace(item)
+				if s != "" {
+					prompts = append(prompts, s)
+				}
+			}
+		default:
+			return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio prompts must be an array of strings")
+		}
+	}
+
+	prompt := strings.TrimSpace(asString(args["prompt"]))
+	if prompt == "" && len(prompts) > 0 {
+		prompt = prompts[0]
+	}
+	if prompt == "" {
+		return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio requires prompt")
+	}
+	if len([]rune(prompt)) > manageArtifactMaxPromptRunes {
+		return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact audio prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+	}
+	for _, p := range prompts {
+		if len([]rune(p)) > manageArtifactMaxPromptRunes {
+			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact audio prompt exceeds %d characters", manageArtifactMaxPromptRunes)
+		}
+	}
+
+	count := int(asUint64(args["count"]))
+	if count <= 0 {
+		if len(prompts) > 0 {
+			count = len(prompts)
+		} else {
+			count = 1
+		}
+	}
+	if count > 8 {
+		return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio count exceeds maximum of 8")
+	}
+
+	durationSeconds := int(asUint64(args["duration_seconds"]))
+
+	requestedPresentation, err := parseArtifactPresentation(args["presentation"])
+	if err != nil {
+		return managedAudioArtifactResult{}, err
+	}
+
+	rawTitle := strings.TrimSpace(firstNonEmptyString(asString(args["title"]), asString(args["collection_name"]), asString(args["label"])))
+	if rawTitle == "" || strings.EqualFold(rawTitle, "Generated audio") {
+		rawTitle = deriveAudioTitle(prompt)
+	}
+	title := rawTitle
+
+	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
+	collectionName := title
+	collectionDescription := strings.TrimSpace(asString(args["collection_description"]))
+	if collectionDescription == "" {
+		collectionDescription = prompt
+	}
+	managedDestination := false
+	if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok && (strings.TrimSpace(run.CollectionID) != "" || strings.TrimSpace(run.VariantID) != "") {
+		managedDestination = true
+		if strings.TrimSpace(run.CollectionID) == "" || strings.TrimSpace(run.VariantID) == "" {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact trusted audio destination is incomplete")
+		}
+		if strings.TrimSpace(asString(args["collection_id"])) != "" || strings.TrimSpace(asString(args["variant_id"])) != "" {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact managed generate_audio must omit collection_id and variant_id")
+		}
+		collectionID, variantID = strings.TrimSpace(run.CollectionID), strings.TrimSpace(run.VariantID)
+		collectionName, collectionDescription = "", ""
+	}
+	if !managedDestination {
+		if supplied := strings.TrimSpace(asString(args["collection_id"])); supplied != "" {
+			collectionID = supplied
+			collectionName, collectionDescription = "", ""
+		}
+		if supplied := strings.TrimSpace(asString(args["variant_id"])); supplied != "" {
+			variantID = supplied
+		}
+	}
+
+	var sourceRef *pebblestore.SessionArtifactSelectionReference
+	var source *audiogen.ManagedAudioSource
+	var audioImage *audiogen.ManagedAudioImage
+
+	sourceFields := 0
+	for _, key := range []string{"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq"} {
+		if _, supplied := args[key]; supplied {
+			sourceFields++
+		}
+	}
+	if sourceFields != 0 {
+		if sourceFields != 4 {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact audio iteration requires source_session_id, source_collection_id, source_variant_id, and source_event_seq from the same exact ready reference")
+		}
+		sourceEventSeq := asUint64(args["source_event_seq"])
+		ref := pebblestore.SessionArtifactSelectionReference{
+			SessionID:    strings.TrimSpace(asString(args["source_session_id"])),
+			CollectionID: strings.TrimSpace(asString(args["source_collection_id"])),
+			VariantID:    strings.TrimSpace(asString(args["source_variant_id"])),
+			EventSeq:     sourceEventSeq,
+		}
+		if ref.SessionID == "" || ref.CollectionID == "" || ref.VariantID == "" || sourceEventSeq == 0 {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact audio iteration requires non-empty source_session_id, source_collection_id, source_variant_id, and source_event_seq")
+		}
+		body, variant, readErr := r.artifactAuthority.ReadReference(ctx, principal, ref, 512<<20)
+		if readErr != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("resolve audio iteration source: %w", readErr)
+		}
+		if strings.HasPrefix(variant.MediaType, "image/") {
+			if len(body) == 0 {
+				return managedAudioArtifactResult{}, errors.New("image source artifact is empty")
+			}
+			audioImage = &audiogen.ManagedAudioImage{
+				Bytes:     append([]byte(nil), body...),
+				MediaType: canonicalArtifactMediaType(variant.MediaType),
+			}
+			sourceRef = &ref
+		} else if strings.HasPrefix(variant.MediaType, "audio/") || variant.MediaType == "audio/mp3" || variant.MediaType == "audio/mpeg" {
+			if len(body) == 0 {
+				return managedAudioArtifactResult{}, errors.New("audio iteration source is empty")
+			}
+			sourceRef = &ref
+			interactionID := strings.TrimSpace(variant.Lineage.IterationID)
+			source = &audiogen.ManagedAudioSource{
+				Bytes:         append([]byte(nil), body...),
+				MediaType:     canonicalArtifactMediaType(variant.MediaType),
+				InteractionID: interactionID,
+			}
+		} else {
+			return managedAudioArtifactResult{}, errors.New("audio iteration source is empty or not a supported ready audio (audio/mp3) or image")
+		}
+	}
+
+	rawImage := args["image"]
+	if rawImage == nil {
+		rawImage = args["image_path"]
+	}
+	if rawImage != nil {
+		img, imgRef, err := r.resolveVideoImageInput(ctx, scope, principal, rawImage)
+		if err != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("resolve image input: %w", err)
+		}
+		if img != nil {
+			audioImage = &audiogen.ManagedAudioImage{
+				Bytes:     img.Bytes,
+				MediaType: img.MediaType,
+			}
+		}
+		if imgRef != nil && sourceRef == nil {
+			sourceRef = imgRef
+		}
+	}
+
+	if audioImage != nil {
+		isSVG := audioImage.MediaType == "image/svg+xml" || (len(audioImage.Bytes) > 4 && strings.Contains(string(audioImage.Bytes[:min(len(audioImage.Bytes), 256)]), "<svg"))
+		if isSVG && r.svgRasterizer != nil {
+			pngBytes, err := r.svgRasterizer.RasterizeSVG(ctx, audioImage.Bytes)
+			if err != nil {
+				return managedAudioArtifactResult{}, fmt.Errorf("rasterize SVG image to PNG: %w", err)
+			}
+			audioImage.Bytes = pngBytes
+			audioImage.MediaType = "image/png"
+		}
+	}
+
+	var lastVariant pebblestore.SessionArtifactVariant
+	var allVariants []map[string]any
+	var allReferences []map[string]any
+	var costPerAudio, totalCost float64
+	var pricingSummary, lastModel, lastProvider, lastLyrics string
+	var lastDurationMs int
+	var lastMetadata audiogen.AudioMetadata
+
+	for i := 0; i < count; i++ {
+		currentVariantID := variantID
+		if i > 0 && !managedDestination {
+			currentVariantID = fmt.Sprintf("%s-%d", variantID, i+1)
+		}
+
+		currentPrompt := prompt
+		if i < len(prompts) && prompts[i] != "" {
+			currentPrompt = prompts[i]
+		}
+
+		generated, err := r.audioGeneration.GenerateManagedAudio(identity.ContextWithPrincipal(ctx, scope.Principal), audiogen.ManagedAudioRequest{
+			Prompt:          currentPrompt,
+			DurationSeconds: durationSeconds,
+			Principal:       scope.Principal,
+			Source:          source,
+			Image:           audioImage,
+		})
+		if err != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("generate managed audio: %w", err)
+		}
+		if len(generated.Bytes) == 0 {
+			return managedAudioArtifactResult{}, errors.New("generated audio output is empty")
+		}
+
+		variantTitle := title
+		if count > 1 {
+			if len(prompts) > 1 && i < len(prompts) && prompts[i] != "" {
+				derived := deriveAudioTitle(prompts[i])
+				if derived != "" && !strings.EqualFold(derived, "Generated audio") {
+					variantTitle = fmt.Sprintf("%d. %s", i+1, derived)
+				} else {
+					variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+				}
+			} else {
+				variantTitle = fmt.Sprintf("%s · Variant %d", title, i+1)
+			}
+		}
+
+		presentation := requestedPresentation
+		presentation.Kind, presentation.Previewable = "audio", true
+		presentation.Label = variantTitle
+		presentation.Description = currentPrompt
+
+		filename := strings.TrimSpace(asString(args["filename"]))
+		if filename == "" {
+			filename = "generated-audio.mp3"
+		}
+		if i > 0 && !strings.Contains(filename, fmt.Sprintf("-%d", i+1)) {
+			filename = fmt.Sprintf("generated-audio-%d.mp3", i+1)
+		}
+
+		iterationIndex := i + 1
+		iterationLabel := variantTitle
+		autoAccept := true
+		if run, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			if run.IterationIndex > 0 {
+				iterationIndex = run.IterationIndex
+			}
+			if strings.TrimSpace(run.IterationLabel) != "" {
+				iterationLabel = strings.TrimSpace(run.IterationLabel)
+			}
+			if strings.TrimSpace(run.IterationTheme) != "" {
+				presentation.Description = strings.TrimSpace(run.IterationTheme)
+			}
+			autoAccept = run.AutoAccept
+		}
+
+		mediaType := strings.TrimSpace(generated.MediaType)
+		if mediaType == "" {
+			mediaType = audiogen.DefaultAudioMIMEType
+		}
+
+		create := artifact.CreateInput{
+			RequestID:             fmt.Sprintf("%s-%d", requestID, i),
+			CollectionID:          collectionID,
+			CollectionName:        collectionName,
+			CollectionDescription: collectionDescription,
+			VariantID:             currentVariantID,
+			Filename:              filename,
+			MediaType:             mediaType,
+			Presentation:          presentation,
+			IterationID:           generated.InteractionID,
+			IterationIndex:        iterationIndex,
+			IterationLabel:        iterationLabel,
+			Body:                  append([]byte(nil), generated.Bytes...),
+			AutoAccept:            autoAccept,
+		}
+		if sourceRef != nil {
+			create.SourceSessionID = sourceRef.SessionID
+			create.SourceCollectionID = sourceRef.CollectionID
+			create.SourceVariantID = sourceRef.VariantID
+			create.SourceEventSeq = sourceRef.EventSeq
+		}
+
+		published, err := r.artifactAuthority.Create(ctx, principal, create)
+		if err != nil {
+			return managedAudioArtifactResult{}, fmt.Errorf("publish audio artifact: %w", err)
+		}
+		lastVariant = published
+		allVariants = append(allVariants, managedArtifactVariant(published))
+		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
+		costPerAudio = generated.EstimatedCostUSD
+		totalCost += generated.EstimatedCostUSD
+		pricingSummary = generated.PricingSummary
+		lastModel = generated.Model
+		lastProvider = generated.Provider
+		lastLyrics = generated.Lyrics
+		lastDurationMs = generated.DurationMs
+		lastMetadata = generated.Metadata
+	}
+
+	return managedAudioArtifactResult{
+		LastVariant:           lastVariant,
+		Variants:              allVariants,
+		References:            allReferences,
+		Title:                 title,
+		Prompt:                prompt,
+		Prompts:               prompts,
+		Model:                 lastModel,
+		Provider:              lastProvider,
+		DurationSeconds:       durationSeconds,
+		DurationMs:            lastDurationMs,
+		Lyrics:                lastLyrics,
+		CostPerAudioUSD:       costPerAudio,
+		TotalEstimatedCostUSD: totalCost,
+		PricingSummary:        pricingSummary,
+		HasImageInput:         audioImage != nil,
+		Metadata:              lastMetadata,
+	}, nil
+}
+
 func applyImageOutputRequirements(settings map[string]any, size *string, requirements *pebblestore.SessionArtifactOutputRequirements) {
 	if requirements == nil {
 		return
@@ -2183,6 +3307,9 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
 	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "progress": v.Progress, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	if v.Lineage != (pebblestore.SessionArtifactLineage{}) {
+		result["lineage"] = v.Lineage
+	}
 	if v.PartGraphState == pebblestore.SessionArtifactGraphAuthoritative && v.Composition != nil {
 		result["artifact_chain_id"] = v.ArtifactChainID
 		result["part_definitions"] = v.PartDefinitions

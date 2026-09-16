@@ -8,6 +8,8 @@ ARTIFACT_ROOT=""
 ASSUME_YES=0
 SERVICE_MODE=""
 VERIFY_ONLY=0
+ACCOUNT_MODE=""
+ACCOUNT_NAME=""
 
 usage() {
   cat <<'EOF'
@@ -15,7 +17,10 @@ Usage:
   sh install.sh [--yes] [--service|--no-service] [--verify-only] [--version <tag>] [--artifact-root <path>]
 
 Options:
-  --yes, -y              Run without the confirmation prompt.
+  --yes, -y              Run without the confirmation prompt (legacy default: locked service account for fresh direct root).
+  --install-user NAME    Select an existing non-root OS account; never reassign an existing install.
+  --create-user NAME     Root explicitly creates a human account; OS passwd requires a terminal.
+  --create-service-account  Explicitly choose the locked non-login service account.
   --service, --systemd   Install, enable, and start swarm.service with systemd.
   --no-service           Install files only; do not install/start a service.
   --version <tag>        Install a specific release tag.
@@ -34,6 +39,18 @@ while [ "$#" -gt 0 ]; do
     --artifact-root)
       ARTIFACT_ROOT="${2:-}"
       shift 2
+      ;;
+    --install-user|--create-user)
+      [ -z "$ACCOUNT_MODE" ] || { echo 'choose only one account mode' >&2; exit 2; }
+      [ -n "${2:-}" ] || { echo "missing value for $1" >&2; exit 2; }
+      ACCOUNT_MODE="$1"
+      ACCOUNT_NAME="$2"
+      shift 2
+      ;;
+    --create-service-account)
+      [ -z "$ACCOUNT_MODE" ] || { echo 'choose only one account mode' >&2; exit 2; }
+      ACCOUNT_MODE="$1"
+      shift
       ;;
     --yes|-y)
       ASSUME_YES=1
@@ -260,6 +277,16 @@ ensure_runtime_prerequisites() {
     return 0
   fi
 
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    if ! read_prompt_answer "Install missing mandatory packages (${missing_commands}) with administrator privileges before continuing? [y/N] "; then
+      echo 'prerequisite installation requires explicit consent; no packages changed' >&2
+      return 1
+    fi
+    case "$PROMPT_ANSWER" in
+      y|Y|yes|YES|Yes) ;;
+      *) echo 'install cancelled; no packages or Swarm runtime changed'; return 1 ;;
+    esac
+  fi
   echo "Installing missing mandatory Swarm runtime prerequisites: ${missing_commands}"
   package_status=0
   PREREQUISITE_INSTALLER_FOUND=0
@@ -314,14 +341,17 @@ Swarm install plan
   Daemon data: /var/lib/swarmd
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
-  Direct root installs: locked non-root swarm account with home /var/lib/swarm.
+  Account: ${ACCOUNT_MODE:-interactive choice (or legacy default with --yes)} ${ACCOUNT_NAME}
+  Direct root installs: choose an existing user, create a human user with OS prompts,
+  or explicitly use the locked non-root swarm account with home /var/lib/swarm.
   Fresh sudo/non-root installs: use the invoking user's identity and home.
   Reinstall: preserve consistent existing install ownership, regardless of caller.
-  Continuing consents to creating the locked swarm service account if needed.
+  Account selection occurs before runtime provisioning. --yes retains the legacy
+  locked-service-account default unless --install-user or --create-user is supplied.
   No service-account password, sudo, interactive login, or SSH changes.
-  For a separate human login, use your OS administrator's interactive account tools
-  (Ubuntu/Debian: adduser NAME; passwd NAME). Optional sudo access is a separate
-  administrator decision under OS sudo policy; never grant it to swarm.
+  Human account creation uses useradd and passwd on the OS terminal; no password
+  enters Swarm logs. Optional sudo access is a separate administrator decision.
+  OS account selection does not log you into Swarm; complete Swarm setup/sign-in.
   Service: $(service_plan_label)
   Mandatory runtime prerequisites: Git and Bash; missing packages are installed with a detected supported package manager before Swarm paths are changed, and existing installations are left unchanged.
 
@@ -576,6 +606,7 @@ print_service_commands() {
 }
 
 finish_install() {
+  echo 'Installation identity is separate from Swarm authentication: open Swarm and complete account setup or sign in. Reinstall retains completed setup.'
   print_path_refresh_instructions
 }
 
@@ -584,11 +615,25 @@ run_bundle_install() {
   platform_dir="$(printf '%s/%s\n' "$artifact_root" "linux-amd64")"
   installer="$(printf '%s/%s\n' "$platform_dir" "root/swarmsetup")"
   log_path="$2"
+  set -- --artifact-root "$artifact_root"
+  case "$ACCOUNT_MODE" in
+    --install-user|--create-user) set -- "$@" "$ACCOUNT_MODE" "$ACCOUNT_NAME" ;;
+    --create-service-account) set -- "$@" --create-service-account ;;
+    '')
+      if [ "$ASSUME_YES" -eq 1 ]; then
+        set -- "$@" --create-service-account
+      else
+        set -- "$@" --choose-account
+      fi
+      ;;
+  esac
   if [ "$SERVICE_MODE" = "none" ]; then
-    "$installer" --create-service-account --artifact-root "$artifact_root" --no-service >"$log_path" 2>&1
+    set -- "$@" --no-service
   else
-    "$installer" --create-service-account --artifact-root "$artifact_root" --service >"$log_path" 2>&1
+    set -- "$@" --service
   fi
+  # Account selection and passwd use /dev/tty, never this diagnostic log.
+  "$installer" "$@" >"$log_path" 2>&1
 }
 
 validate_artifact_root() {

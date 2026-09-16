@@ -428,6 +428,7 @@ interface SessionPlanCheckpointWire {
 }
 
 interface SessionPlanDocumentWire {
+  automation?: DesktopSessionPlanDocument['automation'];
   id?: string;
   title?: string;
   status?: string;
@@ -766,6 +767,7 @@ function mapSessionPlanDocument(
   }
   const info = document.info ?? {};
   return {
+    automation: document.automation,
     id: String(document.id ?? "").trim(),
     title: String(document.title ?? "").trim(),
     status: String(document.status ?? "").trim(),
@@ -1981,12 +1983,14 @@ export async function ensureSystemSidechat(input: {
   permissionId?: string;
   planId?: string;
   planRevision?: number;
+  automation?: { automation_id: string; automation_revision: number; workspace_id: string; automation_v2?: boolean };
 }): Promise<{ sessionId: string; replayed: boolean; originatingAgentName: string; provider: string; model: string; runtimeSwarmId: string }> {
   const parentSessionId = input.parentSessionId.trim();
   const permissionId = input.permissionId?.trim() ?? "";
   const planId = input.planId?.trim() ?? "";
   const planRevision = input.planRevision ?? 0;
-  if (!parentSessionId || (input.kind === "plan" && (!permissionId || !planId || planRevision <= 0))) {
+  if (input.automation && (input.kind !== 'plan' || permissionId || planId || planRevision || !input.automation.automation_id || !input.automation.workspace_id || !Number.isSafeInteger(input.automation.automation_revision) || input.automation.automation_revision <= 0)) throw new Error('Exact exclusive automation review context required.');
+  if (!parentSessionId || (input.kind === "plan" && !input.automation && (!permissionId || !planId || planRevision <= 0))) {
     throw new Error("Plan sidechat requires a parent session, permission, plan, and positive revision.");
   }
   const response = await requestJson<{
@@ -2001,11 +2005,11 @@ export async function ensureSystemSidechat(input: {
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input.kind === "plan" ? {
+      body: JSON.stringify(input.automation ?? (input.kind === "plan" ? {
         permission_id: permissionId,
         plan_id: planId,
         plan_revision: planRevision,
-      } : {}),
+      } : {})),
     },
   );
   const sessionId = String(response.session_id ?? "").trim();

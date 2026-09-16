@@ -33,31 +33,32 @@ import (
 )
 
 const (
-	sessionV3ExecutorDefaultStartDelay        = 10 * time.Millisecond
-	sessionV3ExecutorRecoveryLimit            = 500
-	sessionV3ExecutorDefaultRunningStaleAfter = 5 * time.Minute
-	sessionV3ProviderIdenticalToolCallLimit   = 5
-	sessionV3AssistantDeltaFlushMaxBytes      = 2048
-	sessionV3AssistantDeltaFlushMaxDelay      = 250 * time.Millisecond
-	sessionV3ReasoningDeltaFlushMaxBytes      = 4096
-	sessionV3ReasoningDeltaFlushMaxDelay      = 500 * time.Millisecond
-	sessionV3ReasoningEventType               = "v3_provider_reasoning"
-	sessionV3RunStopDefaultReason             = "run stopped by user"
-	sessionV3TitleDefault                     = "New Session"
-	sessionV3TitleConversationLimit           = 24
-	sessionV3TitlePromptPreviewRunes          = 2000
-	sessionV3TitleGenerationTimeout           = 20 * time.Second
-	sessionV3TitleFinalWordsMin               = 0
-	sessionV3TitleFinalWordsMax               = 5
-	sessionV3StaleRecoveryMinInactivity       = 2 * time.Minute
-	sessionV3StaleRecoveryConfirmInterval     = 10 * time.Second
-	sessionV3StaleRecoveryScanInterval        = 30 * time.Second
-	sessionV3StaleRecoveryScanLimit           = 100
-	sessionV3StaleRecoveryCooldown            = 15 * time.Minute
-	sessionV3StaleRecoveryMinUtilization      = 85.0
-	sessionV3StaleRecoveryMaxUtilization      = 99.0
-	sessionV3HandoffDefaultTailMessages       = 24
-	sessionV3HandoffDefaultToolOutputChars    = 1200
+	sessionV3ExecutorDefaultStartDelay         = 10 * time.Millisecond
+	sessionV3ExecutorRecoveryLimit             = 500
+	sessionV3ExecutorDefaultRunningStaleAfter  = 5 * time.Minute
+	sessionV3ProviderIdenticalToolCallLimit    = 5
+	sessionV3AssistantDeltaFlushMaxBytes       = 2048
+	sessionV3AssistantDeltaFlushMaxDelay       = 250 * time.Millisecond
+	sessionV3ReasoningDeltaFlushMaxBytes       = 4096
+	sessionV3ReasoningDeltaFlushMaxDelay       = 500 * time.Millisecond
+	sessionV3ReasoningEventType                = "v3_provider_reasoning"
+	sessionV3RunStopDefaultReason              = "run stopped by user"
+	sessionV3TitleDefault                      = "New Session"
+	sessionV3TitleConversationLimit            = 24
+	sessionV3TitlePromptPreviewRunes           = 2000
+	sessionV3TitleGenerationTimeout            = 20 * time.Second
+	sessionV3TitleFinalWordsMin                = 0
+	sessionV3TitleFinalWordsMax                = 5
+	sessionV3StaleRecoveryMinInactivity        = 2 * time.Minute
+	sessionV3StaleRecoveryConfirmInterval      = 10 * time.Second
+	sessionV3StaleRecoveryScanInterval         = 30 * time.Second
+	sessionV3StaleRecoveryScanLimit            = 100
+	sessionV3StaleRecoveryCooldown             = 15 * time.Minute
+	sessionV3StaleRecoveryMinUtilization       = 85.0
+	sessionV3StaleRecoveryMaxUtilization       = 99.0
+	sessionV3GoogleTokenOverflowMinUtilization = 85.0
+	sessionV3HandoffDefaultTailMessages        = 24
+	sessionV3HandoffDefaultToolOutputChars     = 1200
 	// Provider tokenizers differ, so handoff sizing uses the same deterministic
 	// approximation as memory compaction: four Unicode code points per token.
 	sessionV3HandoffApproxCharsPerToken = 4
@@ -552,7 +553,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	}
 	if err != nil {
 		if !e.isRunCanceled(job) {
-			if sessionV3IsContextOverflowDiagnostic(err.Error()) {
+			if e.shouldTriggerContextOverflowCompaction(job, err) {
 				e.recordSessionV3ContextOverflowDecision(job, "assistant_response_error", err)
 				response, job, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
 			}
@@ -1679,6 +1680,9 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact created unexpected continuation epoch %q", activeEpoch.EpochID)
 	}
 	job.EpochID = activeEpoch.EpochID
+	if err := e.recordSessionV3CompactionContinuationUserMessage(job, "Continue the task from the compacted recap."); err != nil {
+		log.Printf("warning: v3 context overflow compact continuation message record failed for session %q run %q: %v", job.SessionID, job.RunID, err)
+	}
 	resolved, err := e.resolveSessionV3Runtime(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, job, fmt.Errorf("v3 context overflow compact continuation runtime resolve failed: %w", err)
@@ -1687,9 +1691,112 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 	return response, job, err
 }
 
+var sessionV3GoogleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
+
+func parseSessionV3GoogleMaxAllowedTokens(detail string) int {
+	matches := sessionV3GoogleMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	val, err := strconv.Atoi(matches[1])
+	if err != nil || val <= 0 {
+		return 0
+	}
+	return val
+}
+
+func sessionV3IsGoogleTokenOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "input token count exceeds") ||
+		strings.Contains(normalized, "exceeds the maximum number of tokens allowed") ||
+		strings.Contains(normalized, "maximum number of tokens allowed")
+}
+
 func sessionV3IsContextOverflowDiagnostic(detail string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(detail))
-	return strings.Contains(normalized, "context_length_exceeded") || strings.Contains(normalized, "context window") || strings.Contains(normalized, "context length") || strings.Contains(normalized, "maximum context")
+	return strings.Contains(normalized, "context_length_exceeded") ||
+		strings.Contains(normalized, "context window") ||
+		strings.Contains(normalized, "context length") ||
+		strings.Contains(normalized, "maximum context") ||
+		strings.Contains(normalized, "token limit exceeded") ||
+		sessionV3IsGoogleTokenOverflowDiagnostic(detail)
+}
+
+func (e *sessionV3Executor) sessionV3ContextUtilizationPercent(job sessionV3ExecutorJob, cause error) (float64, bool) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return 0, false
+	}
+	var (
+		contextWindow int
+		usedTokens    int64
+		utilization   float64
+		found         bool
+	)
+	if summary, ok, err := e.server.sessions.GetUsageSummary(job.SessionID); err == nil && ok {
+		if summary.ContextWindow > 0 {
+			contextWindow = summary.ContextWindow
+		}
+		if summary.TotalTokens > 0 {
+			usedTokens = summary.TotalTokens
+		} else if summary.InputTokens > 0 {
+			usedTokens = summary.InputTokens
+		}
+		if contextWindow > 0 && usedTokens > 0 {
+			utilization = float64(usedTokens) * 100.0 / float64(contextWindow)
+			found = true
+		}
+	}
+	if contextWindow <= 0 {
+		if resolved, err := e.resolveSessionV3Runtime(job); err == nil && resolved.ContextWindow > 0 {
+			contextWindow = resolved.ContextWindow
+		}
+	}
+	if contextWindow <= 0 && cause != nil {
+		contextWindow = parseSessionV3GoogleMaxAllowedTokens(cause.Error())
+	}
+	if contextWindow > 0 {
+		var messages []pebblestore.MessageSnapshot
+		if msgs, err := e.sessionV3ProviderContextMessages(job); err == nil && len(msgs) > 0 {
+			messages = msgs
+		} else if msgs, err := e.server.sessions.ListMessages(job.SessionID, 0, 500); err == nil && len(msgs) > 0 {
+			messages = msgs
+		}
+		if len(messages) > 0 {
+			totalChars := 0
+			for _, msg := range messages {
+				totalChars += len(msg.Content)
+			}
+			estimatedTokens := int64(totalChars / sessionV3HandoffApproxCharsPerToken)
+			if estimatedTokens > 0 {
+				estUtilization := float64(estimatedTokens) * 100.0 / float64(contextWindow)
+				if !found || estUtilization > utilization {
+					utilization = estUtilization
+					found = true
+				}
+			}
+		}
+	}
+	return utilization, found
+}
+
+func (e *sessionV3Executor) shouldTriggerContextOverflowCompaction(job sessionV3ExecutorJob, cause error) bool {
+	if cause == nil {
+		return false
+	}
+	errStr := cause.Error()
+	if !sessionV3IsContextOverflowDiagnostic(errStr) {
+		return false
+	}
+	if sessionV3IsGoogleTokenOverflowDiagnostic(errStr) {
+		utilization, ok := e.sessionV3ContextUtilizationPercent(job, cause)
+		if !ok || utilization < sessionV3GoogleTokenOverflowMinUtilization {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, requestPhaseSuffix string, forceCommittedContext bool, planContextGuard *runruntime.PlanContextGuard) (sessionV3AssistantResponse, error) {
@@ -3652,10 +3759,11 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if parentEpochID == "" {
 		return messages, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") {
-		// A final handoff deliberately starts a fresh provider-context epoch. The
-		// canonical handoff is already injected above, so replaying this epoch's
-		// parent would cross the boundary and duplicate that handoff.
+	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") ||
+		strings.HasPrefix(strings.TrimSpace(epoch.Boundary.Reason), "context_compaction_") {
+		// Compaction checkpoints and final handoffs deliberately start fresh
+		// provider-context epochs. Replaying this epoch's parent would cross
+		// the hard boundary and re-introduce overflowing or duplicated history.
 		return messages, nil
 	}
 	_, parentMessages, err := e.server.sessions.ListExecutionEpochMessages(sessionID, parentEpochID, 0)
@@ -4278,6 +4386,9 @@ func sessionsV3ProviderInputWithOptions(messages []pebblestore.MessageSnapshot, 
 		if content == "" {
 			continue
 		}
+		if isManualCompactionAcknowledgement(message) {
+			continue
+		}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
 		case "assistant":
 			if !options.SuppressNativeReplay {
@@ -4801,7 +4912,9 @@ func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {
 		return false
 	}
 	title := strings.TrimSpace(session.Title)
-	return title == "" || strings.EqualFold(title, sessionV3TitleDefault)
+	return title == "" || strings.EqualFold(title, sessionV3TitleDefault) ||
+		strings.EqualFold(title, "Automation conversation") ||
+		strings.EqualFold(title, "Automation session")
 }
 
 func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapshot, messages []pebblestore.MessageSnapshot) bool {
@@ -5153,6 +5266,70 @@ func sessionV3AssistantMessageID(sessionID, runID string) string {
 func sessionV3RunFailureMessageID(sessionID, runID string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00run_failure"))
 	return "v3msg_system_failure_" + hex.EncodeToString(sum[:16])
+}
+
+func sessionV3RunContinuationMessageID(sessionID, runID, epochID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(runID) + "\x00" + strings.TrimSpace(epochID) + "\x00compaction_continuation"))
+	return "v3msg_user_continuation_" + hex.EncodeToString(sum[:16])
+}
+
+func isManualCompactionAcknowledgement(message pebblestore.MessageSnapshot) bool {
+	if strings.ToLower(strings.TrimSpace(message.Role)) != "assistant" {
+		return false
+	}
+	if source := strings.ToLower(strings.TrimSpace(sessionV3MetadataString(message.Metadata, "source"))); source == "manual_context_compaction_ack" {
+		return true
+	}
+	content := strings.TrimSpace(message.Content)
+	if content == "" || !strings.HasPrefix(content, "Manual context compact complete (Compact #") {
+		return false
+	}
+	return !strings.Contains(content, "Compacted recap:")
+}
+
+func (e *sessionV3Executor) recordSessionV3CompactionContinuationUserMessage(job sessionV3ExecutorJob, promptText string) error {
+	if e == nil || e.server == nil {
+		return nil
+	}
+	promptText = strings.TrimSpace(promptText)
+	if promptText == "" {
+		promptText = "Continue the task from the compacted recap."
+	}
+	now := time.Now().UnixMilli()
+	message := pebblestore.MessageSnapshot{
+		ID:             sessionV3RunContinuationMessageID(job.SessionID, job.RunID, job.EpochID),
+		SessionID:      job.SessionID,
+		UserID:         job.Principal.UserID,
+		AccountScopeID: job.Principal.AccountScopeID,
+		Role:           "user",
+		Content:        promptText,
+		CreatedAt:      now,
+		Metadata: map[string]any{
+			"source":    "context_compaction_continuation",
+			"synthetic": true,
+			"visible":   false,
+			"run_id":    strings.TrimSpace(job.RunID),
+		},
+	}
+	payloadHash, err := sessionV3ExecutorPayloadHash(job.SessionID, job.RunID, sessionruntime.RunIntentRunning, "", "session.message.appended", "continuation:"+promptText)
+	if err != nil {
+		return err
+	}
+	clientRequestID := sessionV3ExecutorClientRequestID("session.compaction_continuation:"+job.EpochID, job.RunID)
+	_, err = e.server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       job.SessionID,
+		UserID:          job.Principal.UserID,
+		AccountScopeID:  job.Principal.AccountScopeID,
+		ClientRequestID: clientRequestID,
+		IdempotencyKey:  clientRequestID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationAppendMessage,
+		EventType:       "session.message.appended",
+		Message:         &message,
+		NowUnixMs:       now,
+	})
+	return err
 }
 
 func sessionV3AssistantSegmentMessageID(sessionID, runID string, step int) string {

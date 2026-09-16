@@ -13,11 +13,28 @@ import (
 )
 
 func TestReadOnlyDiscoveryToolsDefaultAllow(t *testing.T) {
-	for _, toolName := range []string{"read", "search", "find", "list"} {
+	for _, toolName := range []string{"read", "search", "find", "list", "git_status", "git_diff"} {
 		t.Run(toolName, func(t *testing.T) {
 			got := ExplainPolicy(sessionruntime.ModeAuto, toolName, `{}`, DefaultPolicy())
 			if got.Decision != PolicyDecisionAllow {
 				t.Fatalf("%s decision = %q source=%q reason=%q", toolName, got.Decision, got.Source, got.Reason)
+			}
+		})
+	}
+}
+
+func TestInWorktreeGitToolsDefaultPolicy(t *testing.T) {
+	for _, toolName := range []string{"git_add", "git_commit", "git_init", "git_commit_initial"} {
+		t.Run(toolName+"_auto", func(t *testing.T) {
+			got := ExplainPolicy(sessionruntime.ModeAuto, toolName, `{}`, DefaultPolicy())
+			if got.Decision != PolicyDecisionAllow {
+				t.Fatalf("%s in auto decision = %q source=%q reason=%q", toolName, got.Decision, got.Source, got.Reason)
+			}
+		})
+		t.Run(toolName+"_read", func(t *testing.T) {
+			got := ExplainPolicy("read", toolName, `{}`, DefaultPolicy())
+			if got.Decision != PolicyDecisionDeny {
+				t.Fatalf("%s in read decision = %q source=%q reason=%q, want deny", toolName, got.Decision, got.Source, got.Reason)
 			}
 		})
 	}

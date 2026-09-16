@@ -25,7 +25,7 @@ if (!['off', 'low', 'medium', 'high', 'xhigh'].includes(suppliedThinking)) throw
 const testID = `runner-task-program-worktrees-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
 const requiredGates = [
   'provider_runnable', 'model_available', 'models_configured', 'workspace_bindings_ready',
-  'same_repo_program', 'linked_repo_program', 'parent_mode_worktree', 'parent_mode_current_workspace',
+  'same_repo_program', 'linked_repo_program', 'parent_mode_worktree', 'parent_mode_same_repository',
   'coder_model_verified', 'sparse_worktrees_verified', 'integration_verified', 'no_failures',
 ]
 const result = {
@@ -200,11 +200,12 @@ function programPrompt({ label, targetWorkspace, markerName }) {
   const targetClause = targetWorkspace ? ` Set top-level workspace_path to exactly ${JSON.stringify(targetWorkspace)}.` : ''
   return [
     `Critical task-program worktree probe ${testID} case ${label}.`,
-    'Call the task tool exactly once with action=start and one fully declared Task Program.',
+    'Call the task tool exactly once with action=start, a non-empty top-level prompt, and one fully declared Task Program. The program must have one stage with id "verify" and dependency_evidence "Initial verify stage ready".',
     targetClause,
-    `Use program id ${label === 'same-repo-current-parent' ? 'same_repo_probe' : 'linked_repo_probe'}, one stage id verify, max_concurrency 1, and exactly one Coder job.`,
-    `The Coder job must own only docs/task-program-probes/** and must create docs/task-program-probes/${markerName} containing one short public-safe line, commit it, and finish clean.`,
-    `Its acceptance criterion is that the committed file docs/task-program-probes/${markerName} exists. The parent must let the Task Program integrate the committed result and then reply exactly PROGRAM_OK.`,
+    `The program must have program id "${label === 'same-repo-current-parent' ? 'same_repo_probe' : 'linked_repo_probe'}", max_concurrency 1, and exactly one Coder job.`,
+    `The job must have: id "probe_coder", stage_id "verify", agent_type "coder", title "Probe Coder", owned_scope ["docs/task-program-probes/**"], deliverable "Committed verified probe file", dependency_evidence "Stage verify is ready", acceptance_criteria ["The committed file docs/task-program-probes/${markerName} exists"].`,
+    `The job meta_prompt must be: "Write one short public-safe line to docs/task-program-probes/${markerName} using the write tool, then stage it with git_add (all: true) and commit it with git_commit (message: \\"Add probe file\\"). You must commit your changes before finishing."`,
+    `The parent must let the Task Program integrate the committed result and then reply exactly PROGRAM_OK.`,
     'Do not use any other tool. Do not inspect unrelated files. Do not include private paths, hostnames, credentials, or topology in the file.',
   ].filter(Boolean).join(' ')
 }
@@ -274,10 +275,10 @@ async function main() {
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-program-primary', make_current: true }, 'bind primary fixture workspace')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-program-primary', make_current: true, confirm_committed_only: true }, 'bind primary fixture workspace')
   }
   if (linkedWorkspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-program-linked', make_current: false }, 'bind linked fixture workspace')
+    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-program-linked', make_current: false, confirm_committed_only: true }, 'bind linked fixture workspace')
     if (workspacePathOverride) {
       await api('POST', '/v1/workspace/directories/add', { workspace_path: workspacePathOverride, directory_path: linkedWorkspacePathOverride }, 'authorize linked fixture for primary workspace')
     }
@@ -294,10 +295,21 @@ async function main() {
   result.workspaces = { primary: { binding_id: bindingID(primary), path: bindingPath(primary) }, linked: { binding_id: bindingID(linked), path: bindingPath(linked) } }
   result.gates.workspace_bindings_ready = true
 
-  const currentParent = await createSession({ binding: primary, runtimeID: runtime.swarm_id, worktreeMode: 'off', label: 'current-workspace-parent' })
+  // Requirement: managed isolation is mandatory. Prove explicit opt-out rejects
+  // before running both same-repository and linked-repository managed parents.
+  const rejectedID = `${testID}:reject-opt-out`
+  const rejection = await api('POST', '/v3/sessions', {
+    client_request_id: rejectedID, idempotency_key: rejectedID,
+    workspace_path: bindingPath(primary), workspace_binding_id: bindingID(primary),
+    swarm_id: runtime.swarm_id, target_kind: 'host', target_relationship: 'self',
+    mode: 'auto', agent_name: 'swarm', worktree_mode: 'off',
+  }, 'reject isolation opt-out', true)
+  assert(rejection.status === 400 && !rejection.body?.session && String(rejection.body?.error || '').includes('managed worktree isolation'), 'explicit opt-out was not rejected before session creation')
+  result.gates.explicit_opt_out_rejected = true
+  const currentParent = await createSession({ binding: primary, runtimeID: runtime.swarm_id, worktreeMode: 'on', label: 'same-repository-parent' })
   const sameRepo = await runProgram({ parent: currentParent, label: 'same-repo-current-parent', targetWorkspace: '' })
   result.gates.same_repo_program = true
-  result.gates.parent_mode_current_workspace = true
+  result.gates.parent_mode_same_repository = true
 
   const managedParent = await createSession({ binding: linked, runtimeID: runtime.swarm_id, worktreeMode: 'on', label: 'managed-worktree-parent' })
   const linkedSourcePath = bindingPath(linked)

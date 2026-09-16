@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/memory"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,9 @@ const (
 )
 
 type Server struct {
+	automations *automationHTTPServices
+
+	memory                      *memory.Service
 	auth                        *auth.Service
 	agents                      *agentruntime.Service
 	model                       *model.Service
@@ -168,6 +172,12 @@ type Server struct {
 	reviewCommitMu         sync.Mutex
 	reviewCommitActive     map[string]string
 	reviewAutoArchiveOnce  sync.Once
+
+	connections          manageConnectionStore
+	environments         manageEnvironmentStore
+	deployments          manageDeploymentLifecycleService
+	workspaceEnvSettings manageWorkspaceSettingsStore
+	envProviders         manageProviderRegistry
 }
 
 type aiTaskEnqueuer interface {
@@ -1929,10 +1939,11 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Path        string `json:"path"`
-		Name        string `json:"name"`
-		ThemeID     string `json:"theme_id"`
-		MakeCurrent *bool  `json:"make_current"`
+		Path                 string `json:"path"`
+		Name                 string `json:"name"`
+		ThemeID              string `json:"theme_id"`
+		MakeCurrent          *bool  `json:"make_current"`
+		ConfirmCommittedOnly bool   `json:"confirm_committed_only"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -1957,6 +1968,9 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if repository.State != workspace.RepositoryStateReady {
 		writeWorkspaceRepositoryError(w, &workspace.RepositoryPrerequisiteError{Repository: repository})
+		return
+	} else if !repository.ContentReady && !req.ConfirmCommittedOnly {
+		writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "code": "workspace_content_review_required", "error": "Uncommitted content will not enter managed worktrees; review it and explicitly confirm using committed HEAD only", "repository": repository})
 		return
 	}
 	if _, err := s.topology.EnsureLocalSelfPlacementForPrincipal(principal.AccountScopeID, principal.UserID); err != nil {
@@ -3570,8 +3584,14 @@ type uiToolImageSettingsPatchPresence struct {
 	DefaultModel *string `json:"default_model"`
 }
 
+type uiToolVideoSettingsPatchPresence struct {
+	DefaultModel   *string `json:"default_model"`
+	IterationModel *string `json:"iteration_model"`
+}
+
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
+	Video *uiToolVideoSettingsPatchPresence `json:"video"`
 }
 
 type uiMediaSettingsPatchPresence struct {
@@ -3674,9 +3694,17 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			settings.Swarm.RemoteSSHTargets = patch.Swarm.RemoteSSHTargets
 		}
 	}
-	if raw.Tools != nil && raw.Tools.Image != nil {
-		if raw.Tools.Image.DefaultModel != nil {
+	if raw.Tools != nil {
+		if raw.Tools.Image != nil && raw.Tools.Image.DefaultModel != nil {
 			settings.Tools.Image.DefaultModel = patch.Tools.Image.DefaultModel
+		}
+		if raw.Tools.Video != nil {
+			if raw.Tools.Video.DefaultModel != nil {
+				settings.Tools.Video.DefaultModel = patch.Tools.Video.DefaultModel
+			}
+			if raw.Tools.Video.IterationModel != nil {
+				settings.Tools.Video.IterationModel = patch.Tools.Video.IterationModel
+			}
 		}
 	}
 	if raw.Media != nil && raw.Media.TranscriptionModel != nil {

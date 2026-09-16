@@ -302,21 +302,27 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 	}
 	pathID := strings.TrimSpace(anyString(payload["path_id"]))
 	directImageStream := pathID == "tool.task.image_swarm.stream.v1"
-	if pathID != "tool.task.stream.v2" && !directImageStream {
+	directVideoStream := pathID == "tool.task.video_swarm.stream.v1"
+	directMediaStream := directImageStream || directVideoStream
+	if pathID != "tool.task.stream.v2" && !directMediaStream {
 		return false
 	}
 	launch, _ := payload["launch"].(map[string]any)
 	if directImageStream {
 		launch, _ = payload["image"].(map[string]any)
+	} else if directVideoStream {
+		launch, _ = payload["video"].(map[string]any)
 	}
-	if len(launch) == 0 && (!taskStreamPayloadHasProgramMetadata(payload) || directImageStream) {
+	if len(launch) == 0 && (!taskStreamPayloadHasProgramMetadata(payload) || directMediaStream) {
 		return false
 	}
 	launchKey := firstNonEmpty(
 		anyString(payload["launch_key"]),
 		anyString(payload["image_key"]),
+		anyString(payload["video_key"]),
 		anyString(launch["launch_key"]),
 		anyString(launch["image_key"]),
+		anyString(launch["video_key"]),
 		anyString(payload["child_session_id"]),
 		anyString(launch["child_session_id"]),
 	)
@@ -324,7 +330,11 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		if launchIndex := anyInt(launch["launch_index"]); launchIndex > 0 {
 			launchKey = fmt.Sprintf("launch:%d", launchIndex)
 		} else if imageIndex := anyInt(launch["index"]); imageIndex > 0 {
-			launchKey = fmt.Sprintf("image:%d", imageIndex)
+			if directVideoStream {
+				launchKey = fmt.Sprintf("video:%d", imageIndex)
+			} else {
+				launchKey = fmt.Sprintf("image:%d", imageIndex)
+			}
 		}
 	}
 	if launchKey == "" && len(launch) > 0 {
@@ -349,7 +359,7 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 		stream.LaunchOrder = append([]string(nil), stream.LaunchOrder...)
 	}
 	if len(launch) > 0 {
-		if directImageStream {
+		if directMediaStream {
 			index := anyInt(launch["index"])
 			stageHistory, _ := launch["stage_history"].([]any)
 			stages := make([]string, 0, len(stageHistory))
@@ -358,10 +368,18 @@ func applyTaskStreamPatch(item *ToolTimelineItem, output string) bool {
 					stages = append(stages, label)
 				}
 			}
+			subagentName := "image"
+			defaultLabel := fmt.Sprintf("Image %d", index)
+			defaultStage := "Image creation"
+			if directVideoStream {
+				subagentName = "video"
+				defaultLabel = fmt.Sprintf("Video %d", index)
+				defaultStage = "Video generation"
+			}
 			launch["launch_index"] = index
-			launch["requested_subagent"] = "image"
-			launch["assignment_label"] = firstNonEmpty(anyString(launch["title"]), anyString(launch["theme"]), fmt.Sprintf("Image %d", index))
-			launch["current_tool"] = firstNonEmpty(anyString(launch["current_stage_label"]), anyString(launch["current_stage"]))
+			launch["requested_subagent"] = subagentName
+			launch["assignment_label"] = firstNonEmpty(anyString(launch["title"]), anyString(launch["theme"]), defaultLabel)
+			launch["current_tool"] = firstNonEmpty(anyString(launch["current_stage_label"]), anyString(launch["current_stage"]), defaultStage)
 			launch["current_tool_display"] = strings.Join(stages, " → ")
 			launch["tool_order"] = stages
 			launch["swarm_mode"] = true

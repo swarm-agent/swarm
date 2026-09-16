@@ -11,6 +11,10 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
+// Requirement: an explicit RunDevUpdate rebuilds Desktop even when assets are
+// current, then reconciles the service before restart, matching rebuild s.
+// Threat: a freshness shortcut leaves stale UI installed. This launcher-level
+// test fakes build/service boundaries and asserts the complete ordered effects.
 func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *testing.T) {
 	originalStopBackend := stopBackendForUpdate
 	originalStartBackend := startBackendForUpdate
@@ -79,11 +83,11 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 		return nil
 	}
 	devFrontendAssetsNeedRebuildForUpdate = func(Profile) (bool, error) {
-		calls = append(calls, "web-check")
+		t.Fatal("explicit rebuild must not use the frontend freshness shortcut")
 		return false, nil
 	}
 	buildAndInstallWebAssetsForUpdate = func(Profile) error {
-		t.Fatalf("web asset build should not run when assets are current")
+		calls = append(calls, "build-web")
 		return nil
 	}
 	installLaunchersForUpdate = func(string) (InstallReport, error) {
@@ -118,7 +122,7 @@ func TestRunDevUpdateReconcilesSystemdUnitAfterLauncherInstallBeforeRestart(t *t
 	if !(installIndex < ensureIndex && ensureIndex < restartIndex) {
 		t.Fatalf("systemd unit reconciliation order wrong: calls=%v", calls)
 	}
-	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "web-check", "install-launchers", "ensure-unit", "restart-systemd"}
+	want := []string{"preflight", "resolve-lifecycle", "service-active", "stop", "build-swarmd", "build-tools", "build-tui", "build-web", "install-launchers", "ensure-unit", "restart-systemd"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}

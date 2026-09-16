@@ -45,6 +45,12 @@ func planDocumentFromArgsForTool(args map[string]any, toolName string) (*pebbles
 	if err := unmarshalPlanToolArg(value, &document, fmt.Sprintf("%s document", toolName)); err != nil {
 		return nil, err
 	}
+	if document.AutomationV2 == nil && document.WorkerV2 != nil {
+		document.AutomationV2 = document.WorkerV2
+	}
+	if document.WorkerV2 == nil && document.AutomationV2 != nil {
+		document.WorkerV2 = document.AutomationV2
+	}
 	return &document, nil
 }
 
@@ -121,7 +127,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 		}
 	}
 	if planManageActionUsesDocumentPatch(action) {
-		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "artifacts", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "copyable_code_blocks", "suggested_prompts", "pull_request_url")
+		add("plan", "document", "document_patch", "document_operation", "operations", "info", "execution_policy", "execution_state", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "status", "outcome", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "reviewed_at", "notes", "report", "result", "changed_files", "validation", "artifacts", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "copyable_code_blocks", "suggested_prompts", "pull_request_url", "closing_state", "summary")
 		return keys
 	}
 	switch strings.ReplaceAll(strings.ToLower(strings.TrimSpace(action)), "-", "_") {
@@ -179,6 +185,9 @@ func planDocumentPatchFromArgs(args map[string]any) (*sessionruntime.PlanDocumen
 		Result:             rawStringArg(args, "result"),
 		ChangedFiles:       mapStringSlice(args, "changed_files"),
 		Validation:         mapStringSlice(args, "validation"),
+		ClosingState:       strings.TrimSpace(mapString(args, "closing_state")),
+		Summary:            strings.TrimSpace(firstNonEmptyString(mapString(args, "summary"), rawStringArg(args, "summary"))),
+		AlertConditions:    strings.TrimSpace(mapString(args, "alert_conditions")),
 	}
 	if artifacts, err := planArtifactsFromArgs(args); err != nil {
 		return nil, err
@@ -310,7 +319,7 @@ func planFinalHandoffArgsPresent(args map[string]any) bool {
 }
 
 func planDocumentPatchArgsPresent(args map[string]any) bool {
-	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "artifacts", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "copyable_code_blocks", "suggested_prompts", "pull_request_url", "operations"}
+	keys := []string{"document_patch", "document_operation", "info", "execution_policy", "execution_state", "checkpoint", "checkpoint_id", "checkpoint_order", "subtask", "subtasks", "subtask_id", "subtask_ids", "subtask_order", "complete_checkpoint", "active_checkpoint_id", "active_checkpoint", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "completed_at", "notes", "report", "result", "changed_files", "validation", "artifacts", "recommendation", "handoff_title", "handoff_overview", "impact_bullets", "copyable_code_blocks", "suggested_prompts", "pull_request_url", "operations", "closing_state", "summary", "alert_conditions"}
 	for _, key := range keys {
 		value, ok := args[key]
 		if !ok {

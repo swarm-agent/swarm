@@ -14,6 +14,12 @@ Fast SSH testing flow:
   5. create/update a detached deployment worktree and run its checked-in rebuild script
   6. restart the remote user systemd service unless --no-restart is set
 
+Fresh root onboarding: --fresh-onboarding (direct root SSH only).
+  Deletes canonical Swarm setup recovery, config, data, cache, logs, runtime,
+  installed payload and launcher symlinks, then runs ./rebuild s. Preserves OS,
+  SSH, Unix accounts and user files. Does not create or start a daemon service.
+  Requires an existing source checkout; cannot combine with --from-zero.
+
 Rebuild-from-zero flow:
   1. run the same committed git-bundle transport as the fast flow
   2. stop the remote user systemd service before updating the checkout
@@ -130,6 +136,7 @@ REMOTE_DEPLOY_DIR=""
 SERVICE_UNIT="swarm.service"
 RESTART_SERVICE="true"
 FROM_ZERO="false"
+FRESH_ONBOARDING="false"
 PREPARE_ONLY="false"
 DB_PATH="/var/lib/swarmd/swarmd.pebble"
 TARGET_BRANCH=""
@@ -162,6 +169,11 @@ while [[ $# -gt 0 ]]; do
       DB_PATH="$2"
       shift 2
       ;;
+    --fresh-onboarding)
+      FRESH_ONBOARDING="true"
+      RESTART_SERVICE="false"
+      shift
+      ;;
     --from-zero|--rebuild-from-zero)
       FROM_ZERO="true"
       shift
@@ -189,6 +201,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${FRESH_ONBOARDING}" == "true" && ( "${FROM_ZERO}" == "true" || "${PREPARE_ONLY}" == "true" ) ]]; then
+  fail "--fresh-onboarding cannot be combined with --from-zero or --prepare-only"
+fi
 if [[ "${FROM_ZERO}" == "true" && "${PREPARE_ONLY}" == "true" ]]; then
   fail "--from-zero cannot be combined with --prepare-only"
 fi
@@ -256,7 +271,7 @@ fi
 
 REMOTE_BUNDLE_DIR="${SWARM_SSH_FAST_TEST_REMOTE_TMPDIR:-${TMPDIR:-/tmp}}"
 REMOTE_BUNDLE_PATH="${REMOTE_BUNDLE_DIR%/}/swarm-fast-test-${LOCAL_HEAD:0:12}-$$.bundle"
-printf 'ssh-fast-test: remote=%s source_dir=%s deploy_dir=%s service=%s mode=%s commit=%s branch=%s\n' "${SSH_ALIAS}" "${REMOTE_DIR}" "${REMOTE_DEPLOY_DIR:-auto}" "${SERVICE_UNIT}" "$([[ "${FROM_ZERO}" == "true" ]] && printf from-zero || printf fast)" "${LOCAL_HEAD}" "${LOCAL_BRANCH:-detached}"
+printf 'ssh-fast-test: remote=%s source_dir=%s deploy_dir=%s service=%s mode=%s commit=%s branch=%s\n' "${SSH_ALIAS}" "${REMOTE_DIR}" "${REMOTE_DEPLOY_DIR:-auto}" "${SERVICE_UNIT}" "$([[ "${FRESH_ONBOARDING}" == "true" ]] && printf fresh-onboarding || { [[ "${FROM_ZERO}" == "true" ]] && printf from-zero || printf fast; })" "${LOCAL_HEAD}" "${LOCAL_BRANCH:-detached}"
 printf 'ssh-fast-test: copying git bundle to %s:%s\n' "${SSH_ALIAS}" "${REMOTE_BUNDLE_PATH}"
 copy_bundle_to_remote "${LOCAL_BUNDLE}" "${REMOTE_BUNDLE_PATH}"
 trap 'rm -f -- "${LOCAL_BUNDLE}"; cleanup_remote_bundle "${REMOTE_BUNDLE_PATH}" >/dev/null 2>&1 || true' EXIT
@@ -267,7 +282,7 @@ if [[ "${FROM_ZERO}" == "true" ]]; then
 fi
 
 remote_command="bash -s --"
-for remote_arg in "${REMOTE_DIR}" "${REMOTE_DEPLOY_DIR}" "${FROM_ZERO}" "${PREPARE_ONLY}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" "${REMOTE_BUNDLE_PATH}" "${LOCAL_HEAD}" "${LOCAL_BRANCH}" "${LOCAL_REF}"; do
+for remote_arg in "${REMOTE_DIR}" "${REMOTE_DEPLOY_DIR}" "${FROM_ZERO}" "${PREPARE_ONLY}" "${DB_PATH}" "${RESTART_SERVICE}" "${SERVICE_UNIT}" "${REMOTE_BUNDLE_PATH}" "${LOCAL_HEAD}" "${LOCAL_BRANCH}" "${LOCAL_REF}" "${FRESH_ONBOARDING}"; do
   remote_command+=" $(quote_remote "${remote_arg}")"
 done
 ssh "${SSH_ALIAS}" "${remote_command}" <<'REMOTE_SSH_FAST_TEST'
@@ -283,6 +298,9 @@ remote_bundle_path="$8"
 local_head="$9"
 local_branch="${10}"
 bundle_ref="${11}"
+fresh_onboarding="${12}"
+# The caller provides a command-scoped scratch root via the bundle location.
+export TMPDIR="$(dirname -- "${remote_bundle_path}")"
 
 cd "${source_dir}"
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -334,6 +352,33 @@ printf 'ssh-fast-test: deployment worktree %s now at %s; source remains %s at %s
 cd "${deploy_dir}"
 if [ "${prepare_only}" = 'true' ]; then
   printf 'ssh-fast-test: prepare-only complete; rebuild and restart skipped\n'
+  exit 0
+fi
+if [ "${fresh_onboarding}" = 'true' ]; then
+  # Explicit destructive device reset, never a daemon-only restart.
+  [ "$(id -u)" = 0 ] || { echo 'fresh onboarding requires direct root SSH' >&2; exit 1; }
+  [ -z "${SUDO_UID:-}" ] || { echo 'fresh onboarding requires direct root SSH' >&2; exit 1; }
+  if pgrep -x swarmsetup >/dev/null; then
+    echo 'refusing reset while onboarding is running' >&2
+    exit 1
+  fi
+  for name in swarm swarmdev swarmsetup rebuild; do
+    target="/usr/local/bin/${name}"
+    if [ -e "${target}" ] || [ -L "${target}" ]; then
+      [ -L "${target}" ] || { echo "refusing non-symlink launcher ${target}" >&2; exit 1; }
+    fi
+  done
+  if systemctl cat swarm.service >/dev/null 2>&1; then
+    systemctl disable --now swarm.service
+  fi
+  rm -f -- /usr/local/bin/swarm /usr/local/bin/swarmdev /usr/local/bin/swarmsetup /usr/local/bin/rebuild
+  rm -rf -- /etc/swarm-setup /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /usr/local/share/swarm
+  rm -f -- /etc/systemd/system/swarm.service
+  systemctl daemon-reload
+  if [ ! -f web/node_modules/vite/bin/vite.js ]; then
+    (cd web && pnpm install --frozen-lockfile --child-concurrency=2 --network-concurrency=4)
+  fi
+  GOMAXPROCS=2 GOFLAGS='-p=2' ./rebuild s
   exit 0
 fi
 if [ "${from_zero}" = 'true' ]; then

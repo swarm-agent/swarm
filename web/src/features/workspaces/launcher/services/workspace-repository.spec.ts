@@ -20,6 +20,7 @@ test('repository readiness mapping preserves the backend setup contract', () => 
     headCommit: '',
     canSetup: true,
     needsReview: false,
+    contentReady: false,
     message: 'empty directory can be initialized safely',
   })
 })

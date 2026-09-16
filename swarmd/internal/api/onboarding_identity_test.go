@@ -110,6 +110,10 @@ func TestOnboardingPostRequiresUsernameAndSwarmNameBeforeBootstrap(t *testing.T)
 	}
 }
 
+// Requirement: handleOnboarding/updateOnboarding create identity and its session
+// exactly once but keep provider/workspace onboarding required. Real handler and
+// temporary identity-store assertions prevent identity success from falsely
+// completing the whole wizard; no OS account or external provider is involved.
 func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	server, identityStore, swarmCalls := newOnboardingIdentityTestServerWithCalls(t, false)
 
@@ -126,13 +130,13 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
 		t.Fatalf("decode bootstrap response: %v", err)
 	}
-	if status.NeedsOnboarding || !status.Identity.Bootstrapped || status.Identity.UserID != "user_onboarding_test" || status.Identity.Username != "alice" {
+	if !status.NeedsOnboarding || !status.Identity.Bootstrapped || status.Identity.UserID != "user_onboarding_test" || status.Identity.Username != "alice" {
 		t.Fatalf("bootstrap response identity=%+v needs=%v", status.Identity, status.NeedsOnboarding)
 	}
 	if status.Session == nil || strings.TrimSpace(status.Session.ExpiresAt) == "" {
 		t.Fatalf("bootstrap response missing session metadata: %+v", status.Session)
 	}
-	if swarmCalls.ensureLocalState != 1 || swarmCalls.upsertGroup != 0 {
+	if swarmCalls.ensureLocalState != 0 || swarmCalls.upsertGroup != 0 {
 		t.Fatalf("identity onboarding called swarm group/linking APIs: ensureLocalState=%d upsertGroup=%d", swarmCalls.ensureLocalState, swarmCalls.upsertGroup)
 	}
 	counts, err := identityStore.IdentityCounts()

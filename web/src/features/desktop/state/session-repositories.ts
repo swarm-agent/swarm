@@ -1,5 +1,5 @@
 import type { SessionRepository, SessionRepositoriesResponse } from '../git/types'
-import type { DesktopV3CacheAction } from './desktop-v3-cache-types'
+import type { CacheEvent, DesktopV3CacheAction, DesktopV3CacheState } from './desktop-v3-cache-types'
 
 export const repositoryKey = (row: SessionRepository) => JSON.stringify([row.id, row.session_id, row.workspace_path])
 export const repositoryGroupKey = (row: SessionRepository) => JSON.stringify([row.workspace_id, row.source_path])
@@ -57,7 +57,8 @@ export class SessionRepositoryInventory {
       const previous = append && this.state.items.length + page.items.length <= 200 ? this.state.items : []
       const items = mergeRepositoryRows(previous, page.items).slice(0, 200)
       // A missing selection remains unresolved, never silently replaced by a default.
-      const initial = items.find(row => row.kind === 'parent' && row.default) || items.find(row => row.kind === 'parent') || items[0]
+      const initial = items.find(row => row.kind === 'parent' && row.active)
+        || items.find(row => row.kind === 'parent' && row.default) || items.find(row => row.kind === 'parent') || items[0]
       const selectedKey = this.state.selectedKey || (initial ? repositoryKey(initial) : '')
       this.update({ items, selectedKey, nextCursor: page.next_cursor || '', historyCoverage: page.history_coverage, stale: invalidation !== this.invalidation, loading: false })
     } catch (error) {
@@ -67,16 +68,44 @@ export class SessionRepositoryInventory {
   }
 }
 
+export function repositoryDialogTargetMatches(target: { sessionId: string; workspacePath: string }, selected: { sessionId: string; workspacePath: string }, enabled: boolean) {
+  return enabled && target.sessionId === selected.sessionId && target.workspacePath === selected.workspacePath
+}
+
 export function repositoryMutationSupported(row: SessionRepository | undefined, owner: { id: string; path: string; worktree: boolean; branch?: string }, stale: boolean) {
   return Boolean(row && !stale && row.availability === 'available' && row.status?.has_git && !row.files_truncated
+    && row.active !== false && row.status.workspace_path === row.workspace_path
     && row.session_id === owner.id && row.workspace_path === owner.path
     && (!owner.branch || row.branch === owner.branch)
     && row.kind === (owner.worktree ? 'parent' : 'source'))
 }
 
+// Resolve newly hydrated children from the canonical cache, not the paged inventory.
+// These IDs trigger reads only; the repository API remains authorization authority.
+export function repositoryOwnerIds(parent: string, rows: SessionRepository[], state: DesktopV3CacheState) {
+  const ids = new Set([parent, ...rows.map(row => row.session_id)])
+  for (const [id, record] of Object.entries(state.sessionsById)) {
+    if (record.kind === 'full' && record.session.metadata?.parent_session_id === parent) ids.add(id)
+  }
+  return ids
+}
+
 export function repositoryEventInvalidates(action: DesktopV3CacheAction, sessionIds: ReadonlySet<string>, attachmentsOnly = false) {
-  const relevant = (event: { sessionId: string; eventType: string }) => sessionIds.has(event.sessionId)
-    && (event.eventType === 'session.settings.updated' || event.eventType === 'session.created' || event.eventType === 'session.metadata.updated'
+  const allocated = (event: CacheEvent) => {
+    if (attachmentsOnly || event.eventType !== 'session.tool.delta') return false
+    const raw = event.payload.output || event.payload.output_delta || event.payload.delta
+    if (typeof raw !== 'string' || raw.length > 262144) return false
+    try {
+      const progress = JSON.parse(raw)
+      return progress?.tool === 'task' && progress.phase === 'repository.allocated'
+    } catch { return false }
+  }
+  // Recovery publications change the canonical execution root and grants too.
+  // Reservation events only affect inventory freshness, not attachment identity.
+  const recoveryPublished = (event: CacheEvent) => ['session.worktree.reclaimed', 'session.worktree.copied',
+    'session.worktree.recovery.publish', 'session.worktree.recovery.publish_copy'].includes(event.eventType)
+  const relevant = (event: CacheEvent) => sessionIds.has(event.sessionId)
+    && (recoveryPublished(event) || allocated(event) || event.eventType === 'session.settings.updated' || event.eventType === 'session.created' || event.eventType === 'session.metadata.updated'
       || (!attachmentsOnly && /^(session\.(tool|run)\.(completed|failed|cancelled)|session\.worktree\.)/.test(event.eventType)))
   switch (action.type) {
     case 'realtime.applyEvent': return relevant(action.event)

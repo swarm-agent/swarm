@@ -9,12 +9,14 @@ import {
   Clock3,
   Download,
   FileText,
+  Film,
   FolderOpen,
   GalleryHorizontal,
   Loader2,
   Maximize2,
   MessageSquarePlus,
   Minimize2,
+  Music,
   Pause,
   Play,
   Search,
@@ -207,6 +209,91 @@ function artifactCanReveal(artifact: DesktopV3ArtifactGalleryEntry | undefined):
     && artifact.content === undefined)
 }
 
+function VideoStagingPreview({ artifact }: { artifact: DesktopV3ArtifactGalleryEntry }) {
+  const [phaseIndex, setPhaseIndex] = useState(0)
+  const phases = [
+    'Synthesizing cinematic composition & camera motion…',
+    'Computing diffusion keyframes and lighting…',
+    'Refining temporal continuity across motion vectors…',
+    'Rendering high-definition video frames…',
+    'Encoding MP4 container and finalizing video stream…',
+  ]
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setPhaseIndex((prev) => (prev + 1) % phases.length)
+    }, 4500)
+    return () => clearInterval(timer)
+  }, [phases.length])
+
+  const prompt = artifact.description || artifact.collectionDescription || ''
+  const title = artifact.label || artifact.collectionName || 'Video Generation'
+
+  return (
+    <div
+      className="relative flex size-full min-h-[360px] flex-col items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-zinc-900 via-neutral-950 to-black p-6 text-white shadow-2xl"
+      data-testid="video-staging-loader"
+      role="status"
+      aria-label="Generating video"
+    >
+      <div className="absolute inset-x-0 top-0 flex h-4 items-center justify-between bg-black/80 px-3 border-b border-white/10" aria-hidden="true">
+        {Array.from({ length: 24 }).map((_, i) => (
+          <div key={i} className="h-2 w-3 rounded-[2px] bg-white/20" />
+        ))}
+      </div>
+      <div className="absolute inset-x-0 bottom-0 flex h-4 items-center justify-between bg-black/80 px-3 border-t border-white/10" aria-hidden="true">
+        {Array.from({ length: 24 }).map((_, i) => (
+          <div key={i} className="h-2 w-3 rounded-[2px] bg-white/20" />
+        ))}
+      </div>
+
+      <div className="pointer-events-none absolute inset-0 motion-safe:animate-pulse bg-[radial-gradient(circle_at_50%_40%,rgba(99,102,241,0.22),transparent_50%),radial-gradient(circle_at_75%_65%,rgba(236,72,153,0.18),transparent_40%)]" aria-hidden="true" />
+
+      <div className="relative z-10 flex max-w-lg flex-col items-center text-center">
+        <div className="relative mb-4">
+          <span className="grid size-16 place-items-center rounded-3xl bg-white/10 shadow-xl ring-1 ring-white/20 backdrop-blur-sm">
+            <Film size={32} className="text-indigo-400 motion-safe:animate-pulse" aria-hidden="true" />
+          </span>
+          <span className="absolute -bottom-1 -right-1 flex size-6 items-center justify-center rounded-full bg-[var(--app-primary)] text-white shadow-lg">
+            <Loader2 size={14} className="animate-spin" />
+          </span>
+        </div>
+
+        <span className="rounded-full bg-indigo-500/20 px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-indigo-300 ring-1 ring-indigo-500/30">
+          AI Video Studio
+        </span>
+
+        <h3 className="mt-3 text-lg font-bold tracking-tight text-white sm:text-xl">
+          {title}
+        </h3>
+
+        <div className="mt-2 min-h-6 flex items-center justify-center gap-2 text-xs font-medium text-indigo-200">
+          <Sparkles size={13} className="text-pink-400 animate-pulse" />
+          <span className="transition-all duration-500">{phases[phaseIndex]}</span>
+        </div>
+
+        {prompt ? (
+          <div className="mt-4 w-full rounded-xl border border-white/10 bg-white/5 p-3 text-left shadow-inner">
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-white/50">Prompt</div>
+            <p className="mt-1 line-clamp-3 font-mono text-xs leading-relaxed text-white/90" title={prompt}>
+              "{prompt}"
+            </p>
+          </div>
+        ) : null}
+
+        <div className="mt-5 w-full max-w-xs">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+            <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 motion-safe:animate-[pulse_1.5s_ease-in-out_infinite]" />
+          </div>
+          <p className="mt-2 text-[10px] text-white/50">
+            Generating video with AI. Video generation typically takes 30–60 seconds.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function collectionGroups(entries: DesktopV3ArtifactGalleryEntry[]): ArtifactCollectionGroup[] {
   const grouped = new Map<string, DesktopV3ArtifactGalleryEntry[]>()
   for (const entry of entries) {
@@ -270,7 +357,7 @@ export function DesktopV3ArtifactGallery({
   const [iterationTimeMs, setIterationTimeMs] = useState(0)
   const [iterationPlaying, setIterationPlaying] = useState(false)
   const [iterationPlayerReadyVersion, setIterationPlayerReadyVersion] = useState(0)
-  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
+  const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'swarm-video' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [actionConfirmation, setActionConfirmation] = useState('')
   const [query, setQuery] = useState('')
@@ -1127,6 +1214,21 @@ export function DesktopV3ArtifactGallery({
     }
   }
 
+  const requestSwarmVideo = async () => {
+    if (!selected || !onAddToChat || selected.status !== 'ready' || !selected.collectionId || !(selected.eventSeq ?? 0)) return
+    try {
+      setActionPending('swarm-video')
+      setActionError('')
+      const selection = desktopV3ArtifactMessageSelection(selected, 'select')
+      await onAddToChat([{ label: selection.label, description: selection.description, selection }])
+      setOpen(false)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not queue video for swarming')
+    } finally {
+      setActionPending('')
+    }
+  }
+
   const persistAndUseDesign = async () => {
     if (!selected || !onUseThisDesign) return
     try {
@@ -1247,7 +1349,7 @@ export function DesktopV3ArtifactGallery({
     >
       {showTrigger ? <button ref={galleryButtonRef} type="button" className="inline-flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 text-xs font-medium text-[var(--app-text)] transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => { if (onTriggerOpen && triggerArtifact) onTriggerOpen(triggerArtifact); else setOpen(true) }}><GalleryHorizontal size={14} aria-hidden="true" />Open gallery ({artifacts.length})</button> : null}
       {open && portalTarget ? createPortal(
-        <section aria-label="Artifact collection review" className={cn('flex w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]', presentation === 'embedded' ? 'absolute inset-0 h-full' : 'fixed inset-0 z-[85] h-[100dvh] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]')} data-artifact-gallery-page data-artifact-review-surface data-artifact-studio-review={presentation === 'embedded' || undefined}>
+        <section aria-label="Artifact collection review" className={cn('flex w-full min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]', presentation === 'embedded' ? 'absolute inset-0 h-full' : 'fixed inset-0 z-[85] h-[100dvh] w-full pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]')} data-artifact-gallery-page data-artifact-review-surface data-artifact-studio-review={presentation === 'embedded' || undefined}>
           <header className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-1.5 sm:min-h-14 sm:px-5 sm:py-2">
             <button ref={backButtonRef} type="button" className="inline-flex shrink-0 items-center gap-2 rounded-lg px-2.5 py-2 text-sm font-medium text-[var(--app-text-muted)] transition hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => setOpen(false)}><ArrowLeft size={16} aria-hidden="true" />{presentation === 'embedded' ? <span>{backLabel}</span> : <><span className="hidden sm:inline">{backLabel}</span><span className="sm:hidden">Back</span></>}</button>
             <div className="min-w-0 text-center"><div className="flex items-center justify-center gap-2 text-sm font-semibold"><GalleryHorizontal size={16} aria-hidden="true" /> {title}</div><div className="text-[10px] text-[var(--app-text-subtle)]">Live collections · {groups.length}</div></div>
@@ -1290,7 +1392,7 @@ export function DesktopV3ArtifactGallery({
                         return <button key={artifactSelectionKey(artifact)} type="button" className="group min-w-0 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-left transition hover:border-[var(--app-border-active)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)]" onClick={() => selectArtifact(artifact)}>
                           <div className="flex items-start justify-between gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[var(--app-primary-soft)] text-xs font-semibold text-[var(--app-primary)]">{artifact.lineage?.iterationIndex || index + 1}</span><span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', artifact.status === 'failed' || artifact.status === 'unavailable' ? 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]' : artifact.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-success-bg)] text-[var(--app-success)]')}>{artifactStatusLabel(artifact)}</span></div>
                           <div className="mt-3 truncate text-sm font-semibold">{variantDisplayLabel(artifact, index)}</div>
-                          {artifact.description && artifact.description !== artifact.collectionDescription && artifact.description !== artifact.label ? <p className="mt-1 line-clamp-2 text-xs text-[var(--app-text-muted)]">{artifact.description}</p> : null}
+                          {(artifact.description || artifact.collectionDescription) && (artifact.description || artifact.collectionDescription) !== artifact.label ? <p className="mt-1 line-clamp-2 text-xs text-[var(--app-text-muted)]">{artifact.description || artifact.collectionDescription}</p> : null}
                           <div className="mt-3 flex items-center justify-between gap-2 text-[10px] text-[var(--app-text-subtle)]"><span>{artifactTypeLabel(artifact)}</span>{canonical ? <span className="inline-flex items-center gap-1 text-[var(--app-success)]"><Check className="size-3" />Selected design</span> : <span className="text-[var(--app-primary)]">Open variant</span>}</div>
                         </button>
                       })}
@@ -1313,7 +1415,7 @@ export function DesktopV3ArtifactGallery({
                   </div>
                 </div>
                 <div className={cn('hidden flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2.5 sm:px-4', presentation !== 'embedded' && 'md:flex')}>
-                  <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{selected.description && selected.description !== selected.label && selected.description !== selected.collectionDescription ? <p className="truncate text-xs text-[var(--app-text-muted)]">{selected.description}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
+                  <div className="min-w-0 flex-1"><div className="flex min-w-0 flex-wrap items-center gap-2"><div className="truncate text-sm font-semibold">{variantDisplayLabel(selected, Math.max(selectedVariantIndex, 0))}</div><span className="shrink-0 rounded border border-[var(--app-border)] bg-[var(--app-bg-alt)] px-1.5 py-0.5 text-[9px] font-semibold uppercase">{artifactTypeLabel(selected)}</span>{selectedIsCanonical ? <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--app-success-bg)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-success)]" data-artifact-selected-design><Check className="size-3" />Selected design</span> : null}{selected.status && selected.status !== 'ready' ? <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', selected.status === 'staging' ? 'bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'bg-[var(--app-danger-bg)] text-[var(--app-danger)]')}>{artifactStatusLabel(selected)}</span> : null}</div>{(selected.description || selected.collectionDescription) && (selected.description || selected.collectionDescription) !== selected.label ? <p className="mt-1 line-clamp-2 text-xs text-[var(--app-text-muted)]" title={selected.description || selected.collectionDescription}><span className="font-semibold text-[var(--app-text-subtle)] uppercase text-[9px] mr-1.5">Prompt:</span>{selected.description || selected.collectionDescription}</p> : null}<p className="truncate text-[10px] text-[var(--app-text-subtle)]">{selectedGroup ? collectionDisplayLabel(selectedGroup) : selected.sessionTitle}{selectedVariantIndex >= 0 ? ` · Variant ${selectedVariantIndex + 1} of ${selectedVariants.length}` : ''}</p>{selectedRequirementLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-output-requirements title="Requested output target; not measured binary dimensions">{selectedRequirementLabel}</p> : null}{selectedAnimationLabel ? <p className="truncate text-[10px] font-medium text-[var(--app-text-muted)]" data-artifact-animation-profile-label>{selectedAnimationLabel}</p> : null}</div>
                   <div className="flex shrink-0 items-center gap-1.5">{artifactHref ? <a href={artifactHref(selected)} className="inline-flex h-8 items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)]" onClick={(event) => openArtifactLink(event, selected)}>Open iteration URL</a> : null}<button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Previous artifact" onClick={() => selectAdjacentVariant(-1)}><ChevronLeft size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)] disabled:cursor-default disabled:opacity-40" disabled={selectedVariants.length < 2} aria-label="Next artifact" onClick={() => selectAdjacentVariant(1)}><ChevronRight size={15} /></button><button type="button" className="grid size-8 place-items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]" aria-label="View artifact fullscreen" onClick={() => void togglePreviewFullscreen()}><Maximize2 size={14} /></button>{artifactCanReveal(selected) ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)] disabled:opacity-50" disabled={Boolean(actionPending)} title="Open this artifact in the native file manager" onClick={() => void revealArtifact(selected)}>{actionPending === 'reveal-artifact' ? <Loader2 size={13} className="animate-spin" /> : <FolderOpen size={13} />} <span className="hidden sm:inline">Show in folder</span></button> : null}{selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <button type="button" className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs font-medium hover:bg-[var(--app-surface-hover)]" onClick={() => void downloadArtifact(selected)}><Download size={13} /> <span className="hidden sm:inline">{desktopV3ArtifactRequiresBundle(selected) ? 'Download bundle' : 'Download file'}</span></button> : null}</div>
                 </div>
                 <div
@@ -1323,7 +1425,7 @@ export function DesktopV3ArtifactGallery({
                   }}
                   className={cn(
                     'relative h-full min-h-0 min-w-0',
-                    selected.mediaType.startsWith('image/') || selected.mediaType.startsWith('video/') || selected.kind === 'video' || selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'overflow-hidden' : 'overflow-auto',
+                    selected.mediaType.startsWith('image/') || selected.mediaType.startsWith('video/') || selected.kind === 'video' || selected.mediaType.startsWith('audio/') || selected.kind === 'audio' || selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'overflow-hidden' : 'overflow-auto',
                     selected.mediaType === 'text/html' || selected.mediaType === 'application/pdf' ? 'p-0' : 'p-3 sm:p-4',
                     studioModeActive && !previewFullscreen && 'overflow-x-hidden md:pl-72 xl:pl-80',
                     previewFullscreen && 'h-[100dvh] w-[100dvw] flex-none bg-[var(--app-bg-alt)]',
@@ -1334,12 +1436,13 @@ export function DesktopV3ArtifactGallery({
                   {studioModeActive && !previewFullscreen ? <aside className="absolute inset-y-0 left-0 z-10 hidden w-72 overflow-x-hidden overflow-y-auto border-r border-[var(--app-border)] bg-[var(--app-surface)] p-3 xl:w-80 md:block" aria-label="Artifact Studio steps" data-artifact-studio-step-sidebar data-artifact-studio-unified-iterations>
                     {selectedIsWaveGroup && selectedGroup && selectedVariants.length > 1 ? <section className="sticky top-0 z-20 mb-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-2 shadow-sm" aria-label="Generation group" data-artifact-generation-group>
                       <div className="flex min-w-0 items-start justify-between gap-2 px-1 pb-1.5"><span className="min-w-0"><span className="block truncate text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--app-text-subtle)]">Generation group</span><span className="mt-0.5 block truncate text-[10px] text-[var(--app-text-muted)]">{collectionDisplayLabel(selectedGroup)}</span></span><span className="shrink-0 rounded-full bg-[var(--app-primary-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--app-primary)]">{selectedVariants.length} iterations</span></div>
-                      <div className="grid max-h-44 gap-1 overflow-y-auto pr-1" aria-label="Generation group iterations">
+                      <div className="grid max-h-80 gap-1.5 overflow-y-auto pr-1" aria-label="Generation group iterations">
                         {selectedVariants.map((artifact, index) => {
                           const active = selected && artifactSelectionKey(artifact) === artifactSelectionKey(selected)
-                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
+                          const vTitle = variantDisplayLabel(artifact, index)
+                          return <button key={artifactSelectionKey(artifact)} type="button" className={cn('flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-[10px] transition', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-transparent text-[var(--app-text-muted)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)]')} aria-current={active ? 'true' : undefined} onClick={() => selectFullIterationArtifact(artifact)}>
                             <span className="grid size-5 shrink-0 place-items-center rounded border border-current/20 font-mono text-[9px]">{artifact.lineage?.iterationIndex || index + 1}</span>
-                            <span className="min-w-0 flex-1 truncate font-semibold">{variantDisplayLabel(artifact, index)}</span>
+                            <span className="min-w-0 flex-1 truncate font-semibold text-[11px] text-[var(--app-text)]">{vTitle}</span>
                             <span className="shrink-0 text-[9px] opacity-75">{artifact.status === 'staging' ? 'Generating' : artifact.status === 'failed' || artifact.status === 'unavailable' ? 'Failed' : active ? 'Viewing' : 'Ready'}</span>
                           </button>
                         })}
@@ -1423,11 +1526,47 @@ export function DesktopV3ArtifactGallery({
                   {previewFullscreen ? <button type="button" className="absolute right-3 top-3 z-20 grid size-9 place-items-center rounded-full border border-white/20 bg-black/60 text-white shadow-lg hover:bg-black/75" aria-label="Exit fullscreen artifact preview" onClick={() => void togglePreviewFullscreen()}><Minimize2 size={16} /></button> : null}
                   {previewLoading ? <div className="grid h-full min-h-40 place-items-center text-sm text-[var(--app-text-muted)]"><span><Loader2 className="mr-2 inline size-4 animate-spin" />Loading preview…</span></div> : null}
                   {previewError ? <div className="mx-auto mt-8 max-w-lg rounded-lg border border-[var(--app-danger)] bg-[var(--app-danger-bg)] p-4 text-sm text-[var(--app-danger)]"><p className="font-semibold">Preview unavailable</p><p className="mt-1">{previewError}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" className="rounded-md border border-current px-2.5 py-1 text-xs font-semibold" onClick={() => setPreviewRetry((value) => value + 1)}>Retry preview</button>{selected.content === undefined ? <button type="button" className="rounded-md border border-current px-2.5 py-1 text-xs font-semibold" onClick={() => void downloadArtifact(selected)}>Download instead</button> : null}</div></div> : null}
-                  {!previewLoading && !previewError && selected.status === 'staging' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><Loader2 className="mx-auto mb-3 size-6 animate-spin text-[var(--app-primary)]" /><p>This variant is still generating.</p><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The live review surface will refresh when it is ready.</p></div></div> : null}
+                  {!previewLoading && !previewError && selected.status === 'staging' ? (
+                    (selected.mediaType.startsWith('video/') || selected.kind === 'video') ? (
+                      <VideoStagingPreview artifact={selected} />
+                    ) : (
+                      <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><Loader2 className="mx-auto mb-3 size-6 animate-spin text-[var(--app-primary)]" /><p>This variant is still generating.</p><p className="mt-1 text-xs text-[var(--app-text-subtle)]">The live review surface will refresh when it is ready.</p></div></div>
+                    )
+                  ) : null}
                   {!previewLoading && !previewError && (selected.status === 'failed' || selected.status === 'unavailable') ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-danger)]"><div><AlertTriangle className="mx-auto mb-3 size-6" /><p>This variant could not be generated.</p>{selected.failureCode ? <p className="mt-1 font-mono text-xs text-[var(--app-text-muted)]">{selected.failureCode}</p> : null}</div></div> : null}
                   {!previewLoading && !previewError && !selected.previewable && selected.content === undefined && selected.status !== 'staging' && selected.status !== 'failed' && selected.status !== 'unavailable' ? <div className="grid h-full min-h-40 place-items-center text-center text-sm text-[var(--app-text-muted)]"><div><FileText className="mx-auto mb-2 size-6" /><p>This artifact is available to download, but has no inline preview.</p></div></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType.startsWith('image/') && previewURL ? <div className="grid size-full min-h-0 place-items-center"><img key={`${previewURL}:${previewRetry}`} src={previewURL} alt={selected.description || selected.label} className="size-full rounded-lg border border-[var(--app-border)] bg-white object-contain shadow-sm" onError={() => setPreviewError('The browser could not decode or load this image.')} /></div> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selectedVideoProfileCompatible && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && previewURL ? <div className="grid size-full min-h-0 place-items-center bg-black/90 p-2 sm:p-4 rounded-lg"><video key={`${previewURL}:${previewRetry}`} src={previewURL} controls autoPlay={false} playsInline preload="metadata" className="max-h-full max-w-full rounded-lg border border-white/10 object-contain shadow-md" data-artifact-video-player onError={() => setPreviewError('The browser could not decode or load this video.')} /></div> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && (selected.mediaType.startsWith('audio/') || selected.kind === 'audio') && previewURL ? (
+                    <div className="grid size-full min-h-0 place-items-center bg-[var(--app-surface)] p-6 sm:p-10 rounded-lg border border-[var(--app-border)] shadow-sm">
+                      <div className="flex w-full max-w-xl flex-col items-center gap-5 text-center">
+                        <div className="grid size-16 place-items-center rounded-2xl bg-[var(--app-primary-soft)] text-[var(--app-primary)] shadow-inner">
+                          <Music className="size-8" aria-hidden="true" />
+                        </div>
+                        <div className="min-w-0 w-full">
+                          <h3 className="text-base font-semibold text-[var(--app-text)]">{selected.label || selected.filename || 'Audio clip'}</h3>
+                          {(selected.description || selected.collectionDescription) ? (
+                            <div className="mt-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 text-left shadow-2xs">
+                              <span className="block text-[10px] font-semibold uppercase tracking-wider text-[var(--app-text-subtle)] mb-1.5">Prompt</span>
+                              <p className="text-xs leading-relaxed text-[var(--app-text)] select-text whitespace-pre-wrap break-words">
+                                {selected.description || selected.collectionDescription}
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                        <audio
+                          key={`${previewURL}:${previewRetry}`}
+                          src={previewURL}
+                          controls
+                          autoPlay={false}
+                          preload="metadata"
+                          className="w-full"
+                          data-artifact-audio-player
+                          onError={() => setPreviewError('The browser could not decode or load this audio.')}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? <iframe ref={animationFrameRef} key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onLoad={() => requestIterationDescription(artifactSelectionKey(selected))} onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} /> : null}
                   {iterationDescriptor && !previewLoading && !previewError && !previewFullscreen ? <button type="button" className="absolute bottom-3 left-1/2 z-20 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-white/20 bg-black/75 px-4 text-xs font-semibold text-white shadow-lg backdrop-blur hover:bg-black/90 md:left-[calc(50%+9rem)] xl:left-[calc(50%+10rem)]" aria-label={iterationPlaying ? 'Pause animated artifact' : `Play animated artifact from ${iterationSection?.label || 'current position'}`} onClick={playIterationSection} data-artifact-primary-playback>{iterationPlaying ? <Pause size={15} /> : <Play size={15} />}{iterationPlaying ? 'Pause' : iterationTimeMs > 0 ? `Play from ${iterationSection?.label || 'here'}` : 'Play animation'}</button> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onError={() => setPreviewError('The browser could not load this PDF.')} /> : null}
@@ -1465,9 +1604,10 @@ export function DesktopV3ArtifactGallery({
                 </section> : null}
                 {selectedPartDefinitions.length ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact parts" data-artifact-parts>{Object.keys(stagedPartChoices).length ? <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2.5 py-2" data-artifact-staged-part-choices><span className="text-[10px] font-semibold text-[var(--app-primary)]">{Object.keys(stagedPartChoices).length} exact part choice{Object.keys(stagedPartChoices).length === 1 ? '' : 's'} staged</span><span className="flex gap-1"><button type="button" className="rounded-md border border-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-[var(--app-primary)]" disabled={Boolean(actionPending)} onClick={() => setStagedPartChoices({})}>Clear</button><button type="button" className="inline-flex items-center gap-1 rounded-md bg-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50" disabled={Boolean(actionPending)} onClick={() => void applyStagedPartChoices()} data-artifact-apply-part-choices>{actionPending === 'apply-parts' ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}Apply atomically</button></span></div> : null}<div className="mb-1.5 flex items-center justify-between gap-2"><span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[var(--app-text-subtle)]">Parts · select one or more change targets · {selectedAcceptedPartCount}/{selectedPartDefinitions.length} accepted</span>{selectedParts.length ? <button type="button" className="inline-flex items-center gap-1 rounded-md bg-[var(--app-primary)] px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50" disabled={!onAddToChat || !(selectedHead ?? selectedCanAttach) || Boolean(actionPending)} onClick={() => void requestPartChanges()} data-artifact-ask-selected-parts>{actionPending === 'ask-part' ? <Loader2 size={11} className="animate-spin" /> : <MessageSquarePlus size={11} />}Ask changes to {selectedParts.length}</button> : <span className="text-[10px] text-[var(--app-text-subtle)]">No parts selected</span>}</div><div className="flex min-w-0 gap-2 overflow-x-auto">{selectedPartDefinitions.map((part, index) => { const active = selectedPartIds.includes(part.id); const slot = selected.composition?.parts.find((candidate) => candidate.partId === part.id); const accepted = selectedAcceptedPartHeads.find((candidate) => candidate.partId === part.id); const acceptedCurrent = Boolean(slot && accepted && desktopV3ArtifactStudioSamePartRevision(slot, accepted)); return <button key={part.id} type="button" className={cn('min-w-36 shrink-0 rounded-lg border px-3 py-2 text-left hover:bg-[var(--app-surface-hover)]', active ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)]' : 'border-[var(--app-border)] bg-[var(--app-bg)]')} aria-pressed={active} onClick={() => selectArtifactPart(part)} data-artifact-part={part.id}><span className="flex items-center gap-1.5 text-[10px] font-semibold">{active ? <Check size={11} /> : (part.locator?.kind ?? 'semantic') === 'temporal' ? <Play size={11} /> : null}{index + 1}. {part.label}</span><span className="block text-[9px] text-[var(--app-text-subtle)]">{acceptedCurrent ? 'Accepted revision' : slot?.locked ? 'Locked pending revision' : (part.locator?.kind ?? 'semantic') === 'temporal' ? `${formatDesktopV3ArtifactIterationTime(part.locator?.startMs ?? 0)} · play from here` : (part.locator?.kind ?? 'semantic')}</span></button>})}</div></section> : null}
                 {!studioModeActive && selectedRounds.length > 1 ? <section className="shrink-0 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2" aria-label="Artifact revision history" data-artifact-revision-history><div className="flex gap-2 overflow-x-auto">{selectedRounds.map((round) => <div key={round.id} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-1.5 text-[10px]"><span className="font-semibold">Revision {round.revisionNumber}</span><span className="ml-1 text-[var(--app-text-subtle)]">{round.candidates.length} candidate{round.candidates.length === 1 ? '' : 's'}</span></div>)}</div></section> : null}
-                <footer className={cn('grid shrink-0 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3', selectedCanExportVideoStills && onExportVideoStills ? 'grid-cols-4' : 'grid-cols-3')} aria-live="polite" data-mobile-generation-actions>
+                <footer className={cn('grid shrink-0 gap-1.5 border-t border-[var(--app-border)] bg-[var(--app-surface)] px-2 py-2 md:flex md:flex-wrap md:items-center md:justify-between md:gap-2 md:px-4 md:py-3', (selectedCanExportVideoStills && onExportVideoStills) || (selected && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && selected.status === 'ready') ? 'grid-cols-4' : 'grid-cols-3')} aria-live="polite" data-mobile-generation-actions>
                   <div className="col-span-full min-w-0 text-[10px] leading-4 md:flex-1 md:text-xs">{actionError ? <span className="text-[var(--app-danger)]">{actionError}</span> : actionConfirmation ? <span className="text-[var(--app-success)]">{actionConfirmation}</span> : <span className="text-[var(--app-text-subtle)]"><strong className="text-[var(--app-text)]">Your choice{selectedChoiceCount === 1 ? '' : 's'}: {selectedChoiceCount}</strong> · Attach for changes keeps the durable selected design unchanged. Use this design selects the previewed choice and continues with iterations.{selectedIsCanonical ? ' This choice is already the durable selected design.' : ''}</span>}</div>
                   {selectedCanExportVideoStills && onExportVideoStills ? <button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2 text-[10px] font-semibold text-[var(--app-primary)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={Boolean(actionPending)} title="Export declared capture states as managed 1920 × 1080 PNGs, then prepare a pending video plan" onClick={() => void requestVideoStillExport()} data-artifact-export-video-stills>{actionPending === 'export-video-stills' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <Sparkles className="size-4 shrink-0" />}<span className="truncate">Video stills</span></button> : null}
+                  {selected && (selected.mediaType.startsWith('video/') || selected.kind === 'video') && selected.status === 'ready' && onAddToChat ? <button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-2 text-[10px] font-semibold text-[var(--app-primary)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={Boolean(actionPending)} title="Attach video to chat and swarm 10 variations" onClick={() => void requestSwarmVideo()} data-artifact-swarm-video>{actionPending === 'swarm-video' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <Sparkles className="size-4 shrink-0" />}<span className="truncate">Swarm 10 videos</span></button> : null}
                   <button type="button" className={cn('inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border px-2 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs', selectedIsQueuedForChat ? 'border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)]' : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:bg-[var(--app-surface-hover)]')} disabled={!selectedCanAttach || Boolean(actionPending)} aria-pressed={selectedIsQueuedForChat} onClick={() => selected && toggleChatSelection(selected)}>{selectedIsQueuedForChat ? <Check className="size-4 shrink-0" /> : <MessageSquarePlus className="size-4 shrink-0" />}<span className="truncate md:hidden">{selectedIsQueuedForChat ? 'Chosen' : 'Choose'}</span><span className="hidden md:inline">{selectedIsQueuedForChat ? 'Your choice' : 'Choose this iteration'}</span></button><button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-[10px] font-semibold hover:bg-[var(--app-surface-hover)] disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={pendingChatArtifacts.length === 0 || !onAddToChat || Boolean(actionPending)} title={pendingChatArtifacts.length === 0 ? 'Only ready managed variants can be attached' : undefined} onClick={() => void emitAddToChat()}>{actionPending === 'add' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <MessageSquarePlus className="size-4 shrink-0" />}<span className="truncate">Attach{pendingChatArtifacts.length > 1 ? ` ${pendingChatArtifacts.length}` : ''}<span className="hidden md:inline"> for changes</span></span></button><button type="button" className="inline-flex h-10 min-w-0 items-center justify-center gap-1 rounded-lg bg-[var(--app-primary)] px-2 text-[10px] font-semibold text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 md:h-9 md:px-3 md:text-xs" disabled={!selectedCanAttach || !onUseThisDesign || Boolean(actionPending)} title={!selectedCanAttach ? 'Only ready managed variants can be used' : undefined} onClick={() => void persistAndUseDesign()}>{actionPending === 'use' ? <Loader2 className="size-4 shrink-0 animate-spin" /> : <Sparkles className="size-4 shrink-0" />}<span className="truncate md:hidden">Use & continue</span><span className="hidden md:inline">Use this design & continue</span></button>
                 </footer>
               </> : null}

@@ -79,6 +79,33 @@ assert.match(markup, /aria-label="Send to Plan"/, "idle real session should expo
 assert.match(markup, /aria-label="Start microphone dictation"/, "Plan composer should expose the canonical microphone affordance");
 assert.match(markup, /aria-label="Context window unavailable"/, "Plan composer should expose the real compact/context control before usage arrives");
 assert.match(markup, /data-testid="desktop-plan-composer"/, "expected dedicated Plan composer wrapper");
+assert.match(markup, /placeholder="Talk to your plan"/, "standard plan composer placeholder should say Talk to your plan");
+
+const automationPlanDoc = normalizeStructuredPlanDocument({
+  id: "plan-auto-1",
+  revision_id: "1",
+  info: { goal: "Automated recurring checks" },
+  checkpoints: [{ id: "cp-1", title: "Run checks" }],
+  automation_v2: {
+    schema_version: 2,
+    schedule: { kind: "interval", interval_seconds: 3600 },
+    missed: "skip",
+    overlap: "serialize",
+    activate_on_accept: true,
+  },
+});
+if (!automationPlanDoc) throw new Error("expected normalized automation plan document");
+const automationPlanMarkup = renderToStaticMarkup(
+  <DesktopPlanAgentSidecar
+    parentSessionId="parent-1"
+    permission={permission}
+    document={automationPlanDoc}
+    embedded
+    modelLabel="model-a"
+  />,
+);
+assert.match(automationPlanMarkup, /placeholder="Talk to your workers"/, "automation plan composer placeholder must say Talk to your workers");
+assert.match(automationPlanMarkup, /Worker plan · Worker Agent/, "automation plan heading should reflect automation context");
 assert.match(markup, /class="[^"]*border-t[^\"]*bg-\[var\(--app-surface\)\][^"]*" data-testid="desktop-plan-composer"/, "Plan composer should share the canonical chat composer boundary");
 assert.doesNotMatch(markup, /data-testid="desktop-plan-composer"[^>]*pb-1\.5/, "Plan composer should not be taller than the canonical chat composer");
 assert.match(markup, /min-w-0 items-center justify-between gap-2 overflow-hidden bg-transparent px-4 py-3 text-\[11px\]/, "Plan control row should use the canonical chat padding for the matched 311×144 geometry");

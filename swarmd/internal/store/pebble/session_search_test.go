@@ -281,6 +281,32 @@ func TestNormalizeV3SessionSearchOptionsBoundsQueryVariants(t *testing.T) {
 	}
 }
 
+func TestSearchV3SessionsSmartStopWords(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	session := SessionSnapshot{ID: "session-smart", UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Pebble Database Storage Bug", CreatedAt: 1000, UpdatedAt: 2000}
+	createSearchTestSession(t, sessions, session)
+	appendSearchTestMessage(t, sessions, session.ID, session.UserID, session.AccountScopeID, "We found a critical bug in pebble database storage handling", 2000)
+
+	// Search with conversational natural language query containing common stop words
+	result, err := sessions.SearchV3Sessions(V3SessionSearchOptions{
+		AccountScopeID: "acct-1",
+		UserID:         "user-1",
+		Global:         true,
+		Query:          "how to fix the bug in pebble database storage",
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("search error: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].ID != "session-smart" {
+		t.Fatalf("expected session-smart to match, got %d items", len(result.Items))
+	}
+	if len(result.Items[0].Snippets) == 0 {
+		t.Fatalf("expected snippets for match")
+	}
+}
+
 func BenchmarkSearchV3SessionsLongMessage(b *testing.B) {
 	store := openV3SessionEventTestStore(b)
 	sessions := NewSessionStore(store)

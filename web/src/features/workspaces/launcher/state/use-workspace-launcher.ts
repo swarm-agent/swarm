@@ -32,6 +32,7 @@ interface SaveWorkspaceInput {
   name: string
   themeId: string
   makeCurrent: boolean
+  confirmCommittedOnly?: boolean
 }
 
 interface UseWorkspaceLauncherOptions {
@@ -472,7 +473,7 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
     setActionError(null)
 
     try {
-      const resolution = await saveWorkspaceAPI(targetPath, input.name.trim(), input.themeId.trim() === 'inherit' ? '' : input.themeId.trim(), input.makeCurrent)
+      const resolution = await saveWorkspaceAPI(targetPath, input.name.trim(), input.themeId.trim() === 'inherit' ? '' : input.themeId.trim(), input.makeCurrent, input.confirmCommittedOnly)
       setWorkspaces((current) => {
         const resolvedPath = resolution.resolvedPath.trim() || targetPath
         const next = current.map((workspace) => workspace.path === resolvedPath

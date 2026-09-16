@@ -25,6 +25,7 @@ function mapOnboardingBootstrapStatus(onboarding: DesktopOnboardingStatusWire): 
       ? onboarding.workspace.saved_count
       : 0
   return {
+    workspaceGuidance: onboarding.workspace_guidance,
     ok: Boolean(onboarding.ok),
     needsOnboarding: Boolean(onboarding.needs_onboarding),
     identity: {

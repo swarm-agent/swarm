@@ -57,6 +57,7 @@ func runV3SessionWorksetAfterSnapshotHook() {
 }
 
 type V3SessionWorksetOptions struct {
+	AutomationManagementWorkspaceID    string
 	AccountScopeID                     string
 	UserID                             string
 	Global                             bool
@@ -508,7 +509,25 @@ func V3SessionNavigationHidden(session SessionSnapshot) bool {
 		return true
 	}
 	lineageKind, _ := session.Metadata["lineage_kind"].(string)
-	return strings.EqualFold(strings.TrimSpace(lineageKind), "system_sidechat")
+	if strings.EqualFold(strings.TrimSpace(lineageKind), "system_sidechat") {
+		return true
+	}
+	if purpose, _ := session.Metadata[SessionPurposeMetadataKey].(string); strings.EqualFold(strings.TrimSpace(purpose), SessionPurposeAutomationExecution) || strings.EqualFold(strings.TrimSpace(purpose), SessionPurposeAutomationManagement) {
+		return true
+	}
+	if opt, ok := session.Metadata["automation_v2_optimization"].(bool); ok && opt {
+		return true
+	}
+	if parentID, _ := session.Metadata["automation_v2_parent_id"].(string); strings.TrimSpace(parentID) != "" {
+		return true
+	}
+	if reviewID, _ := session.Metadata["automation_review_id"].(string); strings.TrimSpace(reviewID) != "" {
+		return true
+	}
+	if occurrenceID, _ := session.Metadata["automation_v2_occurrence_id"].(string); strings.TrimSpace(occurrenceID) != "" {
+		return true
+	}
+	return false
 }
 
 func v3SessionWorksetSessionVisible(session SessionSnapshot, accountScopeID string, userID string, workspacePath string) bool {

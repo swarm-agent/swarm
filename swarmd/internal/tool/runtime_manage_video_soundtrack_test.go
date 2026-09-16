@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -80,6 +81,13 @@ func TestManageVideoCreatesPendingSoundtrackProposalFromExactAudioReference(t *t
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workspacePath
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("initialize fixture: %v: %s", err, output)
+		}
+	}
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceResolution, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false)
 	if err != nil {

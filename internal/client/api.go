@@ -68,12 +68,12 @@ type OnboardingHeuristics struct {
 }
 
 type RuntimeWorkspaceGuidance struct {
-	RuntimeUsername        string `json:"runtime_username,omitempty"`
-	RuntimeUID             string `json:"runtime_uid"`
-	RuntimeNonRoot         bool   `json:"runtime_non_root"`
-	SuggestedWorkspacePath string `json:"suggested_workspace_path,omitempty"`
-	SetupRequired          bool   `json:"setup_required"`
-	Message                string `json:"message"`
+	RuntimeUsername string `json:"runtime_username,omitempty"`
+	RuntimeUID      string `json:"runtime_uid"`
+	RuntimeNonRoot  bool   `json:"runtime_non_root"`
+	HomePath        string `json:"home_path,omitempty"`
+	SetupRequired   bool   `json:"setup_required"`
+	Message         string `json:"message"`
 }
 
 type OnboardingStatus struct {
@@ -460,20 +460,22 @@ type WorkspaceOverviewSwarmTarget struct {
 }
 
 type WorkspaceEntry struct {
-	Path                    string   `json:"path"`
-	WorkspaceID             string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
-	State                   string   `json:"state,omitempty"`
-	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string   `json:"workspace_name"`
-	ThemeID                 string   `json:"theme_id,omitempty"`
-	Directories             []string `json:"directories"`
-	IsGitRepo               bool     `json:"is_git_repo"`
-	SortIndex               int      `json:"sort_index"`
-	AddedAt                 int64    `json:"added_at"`
-	UpdatedAt               int64    `json:"updated_at"`
-	LastSelectedAt          int64    `json:"last_selected_at"`
-	Active                  bool     `json:"active"`
+	Path                     string   `json:"path"`
+	WorkspaceID              string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration      int64    `json:"workspace_generation,omitempty"`
+	State                    string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID  string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName            string   `json:"workspace_name"`
+	ThemeID                  string   `json:"theme_id,omitempty"`
+	Directories              []string `json:"directories"`
+	IsGitRepo                bool     `json:"is_git_repo"`
+	SortIndex                int      `json:"sort_index"`
+	AddedAt                  int64    `json:"added_at"`
+	UpdatedAt                int64    `json:"updated_at"`
+	LastSelectedAt           int64    `json:"last_selected_at"`
+	Active                   bool     `json:"active"`
+	DefaultTestEnvironmentID string   `json:"default_test_environment_id,omitempty"`
+	DefaultConnectionID      string   `json:"default_connection_id,omitempty"`
 }
 
 type WorkspaceOverviewWorkspace struct {
@@ -1635,6 +1637,12 @@ func New(baseURL string) *API {
 	}
 }
 
+// NewLocalTransport pins requests to one Unix socket. Unlike environment-based
+// discovery it never falls back to unauthenticated HTTP if the socket vanishes.
+func NewLocalTransport(socket string) *API {
+	return &API{baseURL: localTransportBaseURL, http: newLocalTransportHTTPClient(socket)}
+}
+
 func (c *API) BaseURL() string {
 	return c.baseURL
 }
@@ -2625,11 +2633,16 @@ func (c *API) SetupOnboardingRepository(ctx context.Context, path string) error 
 }
 
 func (c *API) AddWorkspace(ctx context.Context, path, name, themeID string, makeCurrent bool) (WorkspaceResolution, error) {
+	return c.AddWorkspaceWithContentConsent(ctx, path, name, themeID, makeCurrent, false)
+}
+
+func (c *API) AddWorkspaceWithContentConsent(ctx context.Context, path, name, themeID string, makeCurrent, committedOnly bool) (WorkspaceResolution, error) {
 	req := map[string]any{
-		"path":         strings.TrimSpace(path),
-		"name":         strings.TrimSpace(name),
-		"theme_id":     strings.TrimSpace(themeID),
-		"make_current": makeCurrent,
+		"path":                   strings.TrimSpace(path),
+		"name":                   strings.TrimSpace(name),
+		"theme_id":               strings.TrimSpace(themeID),
+		"make_current":           makeCurrent,
+		"confirm_committed_only": committedOnly,
 	}
 	var resp struct {
 		OK        bool                `json:"ok"`

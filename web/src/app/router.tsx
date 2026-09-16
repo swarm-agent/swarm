@@ -13,8 +13,11 @@ const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/des
 const IntegrationsPage = withStartupScreen(lazy(() => import('../features/desktop/integrations/pages/integrations-page').then((module) => ({ default: module.IntegrationsPage }))))
 const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'integrations', 'tools', 'agents', 'studio'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio'])
+const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
+const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments'])
+const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
   const parts = pathname.split('/').map((part) => decodeURIComponent(part).trim()).filter(Boolean)
@@ -71,6 +74,12 @@ function validateWorkspaceSessionParams(params: Record<string, unknown>): { work
   return { workspaceSlug, sessionId }
 }
 
+function validateWorkspaceWorkerParams(params: Record<string, unknown>): { workspaceSlug: string; workerId: string } {
+  const workspaceSlug = typeof params.workspaceSlug === 'string' ? params.workspaceSlug.trim() : ''
+  const workerId = typeof params.workerId === 'string' ? params.workerId.trim() : ''
+  return { workspaceSlug, workerId }
+}
+
 function validateSettingsSearch(search: Record<string, unknown>): { tab?: string; returnSessionId?: string; agentSetup?: string; agent?: string; newWorktree?: string; newPlan?: string } {
   const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
   const returnSessionId = typeof search.returnSessionId === 'string' ? search.returnSessionId.trim() : ''
@@ -88,16 +97,20 @@ function validateSettingsSearch(search: Record<string, unknown>): { tab?: string
   }
 }
 
-function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string } {
+function validateWorkspaceSessionSearch(search: Record<string, unknown>): ReturnType<typeof validateSettingsSearch> & { artifactSession?: string; artifact?: string; collection?: string; sessionId?: string; automationId?: string } {
   const settingsSearch = validateSettingsSearch(search)
   const artifactSession = typeof search.artifactSession === 'string' ? search.artifactSession.trim() : ''
   const artifact = typeof search.artifact === 'string' ? search.artifact.trim() : ''
   const collection = typeof search.collection === 'string' ? search.collection.trim() : ''
+  const sessionId = typeof search.sessionId === 'string' ? search.sessionId.trim() : ''
+  const automationId = typeof search.automationId === 'string' ? search.automationId.trim() : ''
   return {
     ...settingsSearch,
     ...(artifactSession ? { artifactSession } : {}),
     ...(artifact ? { artifact } : {}),
     ...(collection ? { collection } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(automationId ? { automationId } : {}),
   }
 }
 
@@ -148,6 +161,8 @@ const agentsRoute = createRoute({
   path: '/agents',
   component: AgentSetupRedirect,
 })
+
+const memoryRoute = createRoute({ getParentRoute: () => rootRoute, path: '/memory', component: MemoryPage })
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -243,6 +258,46 @@ const workspaceVideoSessionRoute = createRoute({
   component: VideoToolPage,
 })
 
+const workspaceWorkersRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/workers',
+  parseParams: validateWorkspaceParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
+const workspaceWorkersDetailRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/workers/$workerId',
+  parseParams: validateWorkspaceWorkerParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
+const workspaceWorkerDetailRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/worker/$workerId',
+  parseParams: validateWorkspaceWorkerParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
+const workspaceAutomationsRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/$workspaceSlug/automations',
+  parseParams: validateWorkspaceParams,
+  validateSearch: validateWorkspaceSessionSearch,
+  beforeLoad: ({ params, search }) => {
+    throw redirect({
+      to: '/$workspaceSlug/workers',
+      params: { workspaceSlug: params.workspaceSlug },
+      search,
+      replace: true,
+    })
+  },
+  component: () => null,
+})
+
 const workspaceTaskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/task',
@@ -263,6 +318,27 @@ const workspaceSettingsRoute = createRoute({
   parseParams: validateWorkspaceParams,
   validateSearch: validateSettingsSearch,
   component: DesktopSettingsPage,
+})
+
+const environmentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/environments',
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
+    return tab ? { tab } : {}
+  },
+  component: EnvironmentsPage,
+})
+
+const workspaceEnvironmentsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/environments',
+  parseParams: validateWorkspaceParams,
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
+    return tab ? { tab } : {}
+  },
+  component: EnvironmentsPage,
 })
 
 const workspaceToolsRoute = createRoute({
@@ -314,6 +390,7 @@ const workspaceImageToolSessionRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
+  memoryRoute,
   agentsRoute,
   integrationsRoute,
   integrationSessionRoute,
@@ -322,7 +399,9 @@ const routeTree = rootRoute.addChildren([
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
-  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute]),
+  environmentsRoute,
+  workspaceEnvironmentsRoute,
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceWorkersDetailRoute, workspaceWorkerDetailRoute, workspaceAutomationsRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,

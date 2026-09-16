@@ -62,7 +62,14 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(store), events)
+	sessionStore := pebblestore.NewSessionStore(store)
+	for phase := 0; phase < 4; phase++ {
+		ready, err := sessionStore.BackfillRepositoryHistory(100)
+		if err != nil || (phase == 3 && !ready) {
+			t.Fatalf("initialize fixture repository history: %v", err)
+		}
+	}
+	sessions := sessionruntime.NewService(sessionStore, events)
 	wt := &worktreeruntime.Service{}
 	primarySource, source := recoveryRepo(t), recoveryRepo(t)
 	primaryBase, err := wt.ResolveTaskBase(primarySource)
@@ -94,7 +101,29 @@ func newRecoveryFixture(t *testing.T, primaryLane ...bool) recoveryFixture {
 	}
 	create := func(id string, allocation worktreeruntime.Allocation, metadata map[string]any) {
 		t.Helper()
-		_, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: id, UserID: "user", AccountScopeID: "account", WorkspacePath: allocation.WorkspacePath, Mode: sessionruntime.ModeAuto, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"}, Worktree: &sessionruntime.CreateSessionWorktree{RootPath: allocation.WorkspacePath, BranchName: allocation.BranchName, BaseBranch: "dev"}, Metadata: metadata})
+		workspacePath := primarySource
+		if id != "recovery-parent" {
+			workspacePath = allocation.WorkspacePath
+			metadata["swarm_v3_source_workspace_path"] = lane.WorkspacePath
+			metadata["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
+			metadata["swarm_v3_worktree_owner_session_id"] = id
+		}
+		_, _, err := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{SessionID: id, UserID: "user", AccountScopeID: "account", WorkspacePath: workspacePath, Mode: sessionruntime.ModeAuto, Preference: &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"}, Worktree: &sessionruntime.CreateSessionWorktree{RootPath: allocation.WorkspacePath, BranchName: allocation.BranchName, BaseBranch: "dev"}, Metadata: metadata})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The fixture allocated real managed Git above; publish that trusted
+		// admission evidence before subsequent V3 metadata mutations.
+		snapshot, _, err := sessions.GetSession(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sourcePath := primarySource
+		delegated := id != "recovery-parent"
+		if delegated {
+			sourcePath = lane.WorkspacePath
+		}
+		_, err = sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{SessionID: id, UserID: "user", AccountScopeID: "account", Kind: pebblestore.V3SessionMutationUpdateMetadata, Session: &snapshot, IdempotencyKey: "fixture-admit-" + id, RequestHash: "fixture-admit-" + id, WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: allocation.WorkspacePath, SourcePath: sourcePath, OwnerSessionID: id, Branch: allocation.BranchName, DelegatedCoder: delegated}})
 		if err != nil {
 			t.Fatal(err)
 		}

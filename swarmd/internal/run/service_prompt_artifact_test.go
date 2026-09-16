@@ -283,6 +283,54 @@ func TestMasterHarnessPromptGuidesDeterministicHTMLAnimationExport(t *testing.T)
 	}
 }
 
+func TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"video models like Veo 3.1 natively generate audio and video in one pass; leaving sound unprompted causes hallucinated audio",
+		"Always direct the soundscape:",
+		"concrete action-tied sound effects (e.g. SFX: heavy metallic latch engaging, boots crunching on gravel)",
+		"ambient acoustic scale and room tone (e.g. Ambient noise: deep subterranean rumble, wet cavern drips)",
+		"musical score mood (e.g. Music: dark ambient synth with driving sub-bass or Music: none)",
+		"Never use quotation marks in video prompts unless spoken dialogue is explicitly requested",
+		"Ambient noise: near-total silence, dead room tone, no background music, no dialogue",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing video audio guidance %q", want)
+		}
+	}
+}
+
+func TestMasterHarnessPromptGuidesVideoChainingAndAudioOverride(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"For multi-part video generation, chaining, and audio continuity across multiple clips:",
+		"chain_from with the previous video's exact ready reference",
+		"manage_artifact action=chain_video",
+		"audio_mode ('mix_ducked' to layer continuous music at 100% with ducked native Foley sound effects at 35%, or 'override' for pure music replacement)",
+		"manage_artifact action=extract_video_frame with frame='last' or 'first'",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing video chaining guidance %q", want)
+		}
+	}
+}
+
+func TestMasterHarnessPromptGuidesAudioGenerationAndMultipleSoundClips(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio",
+		"The AI can generate multiple sound clips or audio variations in ONE tool call:",
+		"prompts: [\"...\", \"...\"] (up to 8 clips",
+		"specify count: N (1 to 8) to generate multiple variations from a single prompt",
+		"Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly",
+		"To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing audio generation guidance %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsProjectsExactTypedPart(t *testing.T) {
 	selection := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41, Action: "use", PartID: "hero", Part: &pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "spatial", X: .1, Y: .2, Width: .7, Height: .5}}
 	got := AttachedArtifactSelectionsForProvider([]pebblestore.SessionArtifactSelectionReference{selection})

@@ -1,0 +1,64 @@
+import { useEffect, useRef, useState } from 'react'
+import { createAutomationConversation, isAutomationManagementSession, loadAutomationConversations, type AutomationConversationPage } from '../../state/desktop-automation-conversations'
+import { AutomationChat } from './automation-chat'
+import { MessageSquare, Plus } from 'lucide-react'
+import { Button } from '../../../../components/ui/button'
+import { automationControl as control } from './automation-editor'
+import { formatAutomationSessionTitle } from './automation-v2-sidecar'
+
+export function AutomationConversations({ workspaceId, workspacePath, selected, onSelect, automationId, createRequest }: {
+  workspaceId: string; workspacePath: string; selected: string; onSelect: (id: string) => void; automationId?: string; createRequest?: number
+}) {
+  const [page, setPage] = useState<AutomationConversationPage>()
+  const [before, setBefore] = useState<AutomationConversationPage['pagination']>()
+  const [refresh, setRefresh] = useState(0)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const handledCreate = useRef(0)
+  const lock = useRef(false)
+  const requestId = useRef('')
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  useEffect(() => {
+    if (createRequest && createRequest !== handledCreate.current) {
+      handledCreate.current = createRequest
+      void create()
+    }
+  }, [createRequest])
+  useEffect(() => {
+    const controller = new AbortController()
+    setError(''); setLoading(true)
+    void loadAutomationConversations(workspaceId, workspacePath, before, controller.signal).then(result => {
+      if (!controller.signal.aborted) setPage(result)
+    }).catch(cause => {
+      if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Conversation list unavailable.')
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [workspaceId, workspacePath, before, refresh])
+  async function create() {
+    if (lock.current) return
+    lock.current = true; setBusy(true); setError('')
+    requestId.current ||= crypto.randomUUID()
+    try {
+      const session = await createAutomationConversation(workspacePath, requestId.current, workspaceId)
+      if (!mounted.current) return
+      requestId.current = ''; onSelect(session.id); setBefore(undefined); setRefresh(value => value + 1)
+    } catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : 'Conversation could not be created.') }
+    finally { lock.current = false; if (mounted.current) setBusy(false) }
+  }
+  return <section id="automation-ai" tabIndex={-1} aria-label="Worker management conversations" className="min-w-0 space-y-3 border-t border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-xs focus-visible:outline-2 xl:sticky xl:top-0 xl:max-h-dvh xl:w-[380px] xl:shrink-0 xl:self-start xl:overflow-y-auto xl:border-t-0 xl:border-l">
+    <header className="flex items-center justify-between gap-2"><h2 className="flex items-center gap-2 text-sm font-semibold"><MessageSquare size={15} className="text-[var(--app-primary)]" />Swarm</h2><Button variant="ghost" size="sm" disabled={busy} onClick={() => void create()}><Plus size={13} />{busy ? 'Starting…' : 'New worker chat'}</Button></header>
+    <details><summary className="cursor-pointer rounded-lg py-2 text-xs text-[var(--app-text-muted)]">Reopen or switch conversations</summary>
+      <button className={control} disabled={loading} onClick={() => setRefresh(value => value + 1)}>Refresh conversations</button>
+      <nav aria-label="Worker conversations"><ul>{page?.session_order.map(id => page.sessions_by_id[id]).filter(session => isAutomationManagementSession(session, workspaceId)).map(session => <li key={session.id}><button className={`${control} my-1 w-full text-left break-words`} disabled={busy} aria-current={selected === session.id ? 'page' : undefined} onClick={() => onSelect(session.id)}>{formatAutomationSessionTitle(session)}</button></li>)}</ul></nav>
+      {before && <button className={control} onClick={() => setBefore(undefined)}>Latest conversations</button>}
+      {page?.pagination.has_more && <button className={control} disabled={loading} onClick={() => setBefore(page.pagination)}>Older conversations</button>}
+    </details>
+    {loading && <p role="status">Loading conversations…</p>}
+    {!loading && !error && page?.session_order.length === 0 && <p className="text-xs text-[var(--app-text-subtle)]">No worker conversations yet.</p>}
+    {error && <p role="alert">{error} <button className={control} onClick={() => setRefresh(value => value + 1)}>Retry list</button></p>}
+    {!selected && <div className="flex min-h-[280px] flex-col items-center justify-center px-5 text-center"><span className="mb-4 grid size-14 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-primary)]"><MessageSquare size={24} /></span><h3 className="text-sm font-medium">What worker would you like to deploy?</h3><p className="mt-2 max-w-[260px] text-xs leading-5 text-[var(--app-text-muted)]">Work with Swarm to shape the worker task, schedule and plan. You review before deployment.</p><Button className="mt-5" variant="primary" size="sm" disabled={busy} onClick={() => void create()}><Plus size={14} />Start a conversation</Button></div>}
+    {selected && <AutomationChat key={selected} sessionId={selected} automationId={automationId} />}
+  </section>
+}

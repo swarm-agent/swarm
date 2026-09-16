@@ -13,6 +13,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/google/uuid"
+	"swarm-refactor/swarmtui/pkg/environments"
 )
 
 type WorkspaceBinding struct {
@@ -36,10 +37,12 @@ const (
 )
 
 type WorkspaceCatalogUpdate struct {
-	ExpectedGeneration int64
-	NewPath            string
-	Name               *string
-	ThemeID            *string
+	ExpectedGeneration       int64
+	NewPath                  string
+	Name                     *string
+	ThemeID                  *string
+	DefaultTestEnvironmentID *string
+	DefaultConnectionID      *string
 }
 
 type WorkspaceEntry struct {
@@ -67,6 +70,8 @@ type WorkspaceEntry struct {
 	DefinitionCompletedAt     int64    `json:"definition_completed_at,omitempty"`
 	DefinitionFailedAt        int64    `json:"definition_failed_at,omitempty"`
 	DefinitionUpdatedAt       int64    `json:"definition_updated_at,omitempty"`
+	DefaultTestEnvironmentID  string   `json:"default_test_environment_id,omitempty"`
+	DefaultConnectionID       string   `json:"default_connection_id,omitempty"`
 }
 
 type WorkspaceStore struct {
@@ -193,6 +198,12 @@ func (s *WorkspaceStore) UpdateForWorkspaceIDForAccountGuarded(accountScopeID, u
 	if update.ThemeID != nil {
 		entry.ThemeID = normalizeWorkspaceThemeID(*update.ThemeID)
 	}
+	if update.DefaultTestEnvironmentID != nil {
+		entry.DefaultTestEnvironmentID = strings.TrimSpace(*update.DefaultTestEnvironmentID)
+	}
+	if update.DefaultConnectionID != nil {
+		entry.DefaultConnectionID = strings.TrimSpace(*update.DefaultConnectionID)
+	}
 	if newPath != oldPath {
 		entry.Path = newPath
 		entry.Directories = normalizeWorkspaceDirectories(newPath, nil)
@@ -214,6 +225,60 @@ func (s *WorkspaceStore) UpdateForWorkspaceIDForAccountGuarded(accountScopeID, u
 		}
 	}
 	if err := s.putWorkspaceCatalogMutationAtomic(accountScopeID, userID, entry, oldPath, binding, false); err != nil {
+		return WorkspaceEntry{}, err
+	}
+	return entry, nil
+}
+
+// GetWorkspaceSettings retrieves the workspace settings (default test environment, default connection) for a workspace.
+func (s *WorkspaceStore) GetWorkspaceSettings(accountScopeID, workspaceID string) (environments.WorkspaceSettings, bool, error) {
+	entry, found, err := s.GetByWorkspaceIDForAccount(accountScopeID, workspaceID)
+	if err != nil || !found {
+		return environments.WorkspaceSettings{}, found, err
+	}
+	return environments.WorkspaceSettings{
+		WorkspaceID:              entry.WorkspaceID,
+		AccountScopeID:           entry.AccountScopeID,
+		DefaultTestEnvironmentID: entry.DefaultTestEnvironmentID,
+		DefaultConnectionID:      entry.DefaultConnectionID,
+		UpdatedAt:                entry.UpdatedAt,
+	}, true, nil
+}
+
+// UpdateWorkspaceSettings updates the default test environment and default connection for a workspace.
+func (s *WorkspaceStore) UpdateWorkspaceSettings(accountScopeID, workspaceID string, defaultTestEnvironmentID, defaultConnectionID *string) (WorkspaceEntry, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	workspaceID = strings.TrimSpace(workspaceID)
+	if accountScopeID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("account scope is required")
+	}
+	if workspaceID == "" {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id is required")
+	}
+
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+
+	entry, ok, err := s.GetByWorkspaceIDForAccount(accountScopeID, workspaceID)
+	if err != nil {
+		return WorkspaceEntry{}, err
+	}
+	if !ok {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q not found", workspaceID)
+	}
+	if !strings.EqualFold(strings.TrimSpace(entry.State), "active") {
+		return WorkspaceEntry{}, fmt.Errorf("workspace id %q is not active", workspaceID)
+	}
+
+	if defaultTestEnvironmentID != nil {
+		entry.DefaultTestEnvironmentID = strings.TrimSpace(*defaultTestEnvironmentID)
+	}
+	if defaultConnectionID != nil {
+		entry.DefaultConnectionID = strings.TrimSpace(*defaultConnectionID)
+	}
+	entry.UpdatedAt = time.Now().UnixMilli()
+
+	if err := s.putWorkspaceCatalogMutationAtomic(accountScopeID, "", entry, entry.Path, nil, false); err != nil {
 		return WorkspaceEntry{}, err
 	}
 	return entry, nil
@@ -1219,6 +1284,8 @@ func normalizeWorkspaceEntryForAccount(accountScopeID string, entry WorkspaceEnt
 	entry.Directories = normalizeWorkspaceDirectories(entry.Path, nil)
 	entry.SourceMediaDirectories = normalizeSourceMediaDirectories(entry.SourceMediaDirectories)
 	entry.State = normalizeWorkspaceState(entry.State)
+	entry.DefaultTestEnvironmentID = strings.TrimSpace(entry.DefaultTestEnvironmentID)
+	entry.DefaultConnectionID = strings.TrimSpace(entry.DefaultConnectionID)
 	if entry.WorkspaceGeneration <= 0 {
 		entry.WorkspaceGeneration = 1
 	}

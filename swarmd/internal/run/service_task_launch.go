@@ -32,6 +32,7 @@ const (
 	taskModeSwarm                  = "swarm"
 	taskExecutionFormatSubagents   = "subagent_wave"
 	taskExecutionFormatImageDirect = "direct_image_swarm"
+	taskExecutionFormatVideoDirect = "direct_video_swarm"
 	taskSwarmStrategyExplore       = "explore"
 	taskSwarmStrategyAssembly      = "assembly"
 	taskOutputModeManaged          = "managed"
@@ -208,11 +209,20 @@ type taskImageManifestRow struct {
 	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 }
 
+type taskVideoManifestRow struct {
+	Index              int                                            `json:"index"`
+	Theme              string                                         `json:"theme,omitempty"`
+	StreamKey          string                                         `json:"stream_key"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+}
+
 type taskLaunchManifest struct {
 	PathID              string                         `json:"path_id"`
 	Goal                string                         `json:"goal"`
 	LaunchCount         int                            `json:"launch_count"`
 	ImageCount          int                            `json:"image_count,omitempty"`
+	VideoCount          int                            `json:"video_count,omitempty"`
 	Description         string                         `json:"description"`
 	Prompt              string                         `json:"prompt"`
 	SubagentType        string                         `json:"subagent_type"`
@@ -229,6 +239,7 @@ type taskLaunchManifest struct {
 	Parent              *taskLaunchParentInfo          `json:"parent,omitempty"`
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
 	Images              []taskImageManifestRow         `json:"images,omitempty"`
+	Videos              []taskVideoManifestRow         `json:"videos,omitempty"`
 	ExecutionFormat     string                         `json:"execution_format,omitempty"`
 	TaskMode            string                         `json:"task_mode,omitempty"`
 	Program             *taskProgramSpec               `json:"program,omitempty"`
@@ -885,6 +896,9 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if !exists {
 			return nil, nil, fmt.Errorf("task program jobs[%d] references unknown stage %q", i, job.StageID)
 		}
+		if job.RequestedSubagentType == "" {
+			job.RequestedSubagentType = "coder"
+		}
 		switch {
 		case agentruntime.IsCoderAgentName(job.RequestedSubagentType):
 			job.RequestedSubagentType = "coder"
@@ -961,7 +975,13 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if job.RequestedSubagentType == "designer" {
 			job.OutputMode = launch.OutputMode
 		} else if len(ownedScope) == 0 {
-			return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
+			if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
+				ownedScope = []string{"docs/task-program-probes/**"}
+				job.OwnedScope = ownedScope
+				row["owned_scope"] = ownedScope
+			} else {
+				return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
+			}
 		}
 		criteria, err := taskProgramStringArray(row, "acceptance_criteria", fmt.Sprintf("task program jobs[%d] acceptance_criteria", i), true)
 		if err != nil {
@@ -1143,10 +1163,12 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		agentType = "idea"
 	case agentruntime.IsImageAgentName(agentType):
 		agentType = "image"
+	case agentruntime.IsVideoAgentName(agentType):
+		agentType = "video"
 	default:
-		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, image, or idea")
+		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, image, video, or idea")
 	}
-	if strategy == taskSwarmStrategyAssembly && (agentType == "idea" || agentType == "image") {
+	if strategy == taskSwarmStrategyAssembly && (agentType == "idea" || agentType == "image" || agentType == "video") {
 		return nil, nil, fmt.Errorf("task %s swarms support only swarm_strategy=explore", taskSwarmAgentLabel(agentType))
 	}
 	count, err := taskPositiveInt(args, "count")
@@ -1193,8 +1215,8 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if err != nil {
 		return nil, nil, err
 	}
-	if iterationControls != nil && agentType != "designer" && agentType != "image" {
-		return nil, nil, errors.New("task swarm iteration_controls is supported only for Designer or image")
+	if iterationControls != nil && agentType != "designer" && agentType != "image" && agentType != "video" {
+		return nil, nil, errors.New("task swarm iteration_controls is supported only for Designer, image, or video")
 	}
 	outputContract := strings.TrimSpace(mapString(args, "output_contract"))
 	if outputContract == "" {
@@ -1209,13 +1231,13 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		if outputMode != taskOutputModeManaged {
 			return nil, nil, errors.New("task Designer Iteration Swarm output_mode must be managed; use regular task launches for workspace repository output")
 		}
-	} else if agentType == "image" {
+	} else if agentType == "image" || agentType == "video" {
 		if outputMode != "" && outputMode != taskOutputModeManaged {
-			return nil, nil, errors.New("task image swarm output_mode must be managed when supplied")
+			return nil, nil, fmt.Errorf("task %s swarm output_mode must be managed when supplied", agentType)
 		}
 		outputMode = taskOutputModeManaged
 	} else if outputModeProvided {
-		return nil, nil, errors.New("task swarm output_mode is supported only for Designer or image")
+		return nil, nil, errors.New("task swarm output_mode is supported only for Designer, image, or video")
 	}
 	_, animationProfileProvided := args["animation_profile"]
 	if animationProfileProvided && agentType != "designer" {
@@ -1233,8 +1255,8 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 		args["animation_profile"] = cloneTaskAnimationProfile(animationProfile)
 	}
 	_, outputRequirementsProvided := args["output_requirements"]
-	if outputRequirementsProvided && agentType != "designer" && agentType != "image" {
-		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer or image")
+	if outputRequirementsProvided && agentType != "designer" && agentType != "image" && agentType != "video" {
+		return nil, nil, errors.New("task swarm output_requirements is supported only for Designer, image, or video")
 	}
 	if outputRequirementsProvided && args["output_requirements"] == nil {
 		return nil, nil, errors.New("task swarm output_requirements must be an object")
@@ -1309,8 +1331,8 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	if outputMode != taskOutputModeManaged && animationProfile != nil {
 		return nil, nil, errors.New("task Designer swarm animation_profile requires managed output")
 	}
-	if sourceArtifact != nil && agentType != "image" && agentType != "designer" {
-		return nil, nil, errors.New("task source_artifact is supported only for Designer or direct image Iteration Swarms")
+	if sourceArtifact != nil && agentType != "image" && agentType != "video" && agentType != "designer" {
+		return nil, nil, errors.New("task source_artifact is supported only for Designer, direct image, or direct video Iteration Swarms")
 	}
 	if sourceArtifact != nil {
 		args["source_artifact"] = cloneTaskImageSourceArtifact(sourceArtifact)
@@ -1767,6 +1789,8 @@ func taskSwarmAgentLabel(agentType string) string {
 		return "Idea"
 	case "image":
 		return "Image"
+	case "video":
+		return "Video"
 	default:
 		return "Swarm"
 	}
@@ -3821,6 +3845,35 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		digest, digestErr := taskLaunchManifestDigest(manifest)
 		if digestErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("hash direct image swarm manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "video" {
+		videos := make([]taskVideoManifestRow, len(parsed.Launches))
+		for i, launch := range parsed.Launches {
+			theme := ""
+			if i < len(parsed.Swarm.Themes) {
+				theme = strings.TrimSpace(parsed.Swarm.Themes[i])
+			}
+			videos[i] = taskVideoManifestRow{Index: i + 1, Theme: theme, StreamKey: strings.TrimSpace(launch.StreamKey), OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements), SourceArtifact: cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact)}
+		}
+		manifest := taskLaunchManifest{
+			PathID: taskLaunchPermissionPathID, Goal: parsed.Description, VideoCount: len(videos), Description: parsed.Description,
+			Prompt: parsed.Prompt, Action: parsed.Action, ParentMode: sessionruntime.NormalizeMode(sessionMode), TaskMode: parsed.Mode,
+			SwarmAgentType: "video", SwarmStrategy: parsed.Swarm.Strategy, Videos: videos, ExecutionFormat: taskExecutionFormatVideoDirect,
+			SourceArguments: parsed.SourceArguments,
+		}
+		if parent, found := s.lookupTaskLaunchParentSession(sessionID, manifest.ParentMode); found {
+			manifest.Parent = parent
+			manifest.TargetWorkspacePath = strings.TrimSpace(firstNonEmptyString(parent.WorktreeRootPath, parent.WorkspacePath))
+			manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash direct video swarm manifest: %w", digestErr)
 		}
 		manifest.ManifestHash = digest
 		approvedManifest := manifest

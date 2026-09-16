@@ -259,6 +259,86 @@ func TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane(t *testing.T
 	}
 }
 
+func TestManageWorktreePromoteMultiSession(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = []string{scope.PrimaryPath}
+	sessions := runtime.sessions.(*coderLineageSessionService)
+
+	source1 := sessions.parent
+	source1.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source1.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source1
+
+	source2 := pebblestore.SessionSnapshot{
+		ID:                 "child-promote",
+		AccountScopeID:     source1.AccountScopeID,
+		UserID:             source1.UserID,
+		WorktreeEnabled:    true,
+		WorktreeRootPath:   "/worktrees/child-promote",
+		WorktreeBranch:     "agent/child-promote",
+		WorktreeBaseBranch: "dev",
+		Metadata: map[string]any{
+			"swarm_v3_source_workspace_path": "/captured",
+			"base_commit":                    "captured-base",
+		},
+	}
+	sessions.children["child-promote"] = source2
+
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "current-dev-head", Clean: true}
+	worktrees.states["/worktrees/child-promote"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/worktrees/child-promote", BranchName: "agent/child-promote", HeadCommit: "child-promote-head", Clean: true}
+	runtime.workspace = &gitManageWorkspaceService{owned: map[string]bool{"/captured": true}}
+
+	output, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_ids":    []any{source1.ID, "child-promote"},
+		"target_workspace_path": "/captured",
+		"target_branch":         "dev",
+		"target_head":           "current-dev-head",
+	})
+	if err != nil {
+		t.Fatalf("promote multi-session: %v", err)
+	}
+	if worktrees.applyCalls != 1 {
+		t.Fatalf("promotion applied %d times, want 1", worktrees.applyCalls)
+	}
+	if len(worktrees.preparedChildren) != 2 {
+		t.Fatalf("prepared children count = %d, want 2", len(worktrees.preparedChildren))
+	}
+	if worktrees.preparedChildren[0].SessionID != source1.ID || worktrees.preparedChildren[1].SessionID != "child-promote" {
+		t.Fatalf("prepared children = %#v", worktrees.preparedChildren)
+	}
+	if !strings.Contains(output, `"source_session_ids":["parent-session","child-promote"]`) {
+		t.Fatalf("output missing source_session_ids: %s", output)
+	}
+}
+
+func TestManageWorktreePromoteAutoResolvesCleanLineageWhenOmitted(t *testing.T) {
+	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
+	scope.Roots = []string{scope.PrimaryPath}
+	sessions := runtime.sessions.(*coderLineageSessionService)
+	source := sessions.parent
+	source.Metadata["swarm_v3_source_workspace_path"] = "/captured"
+	source.Metadata["base_commit"] = "captured-base"
+	sessions.parent = source
+	worktrees.states["/captured"] = worktreeruntime.TaskWorkspaceState{WorkspacePath: "/captured", BranchName: "dev", HeadCommit: "current-dev-head", Clean: true}
+	runtime.workspace = &gitManageWorkspaceService{owned: map[string]bool{"/captured": true}}
+
+	output, err := runtime.manageWorktreePromote(scope, map[string]any{
+		"source_session_id": source.ID,
+	})
+	if err != nil {
+		t.Fatalf("promote with auto-resolved parameters: %v", err)
+	}
+	if worktrees.applyCalls != 1 {
+		t.Fatalf("promotion applied %d times, want 1", worktrees.applyCalls)
+	}
+	if len(worktrees.preparedChildren) != 1 || worktrees.preparedChildren[0].HeadCommit != "parent-head" {
+		t.Fatalf("prepared children = %#v", worktrees.preparedChildren)
+	}
+	if !strings.Contains(output, `"target_workspace_path":"/captured"`) || !strings.Contains(output, `"target_branch":"dev"`) {
+		t.Fatalf("output missing resolved target: %s", output)
+	}
+}
+
 func TestManageWorktreeRecallFindsParallelCoderLineage(t *testing.T) {
 	runtime, scope, _, childIDs := newCoderLineageRuntime(t)
 	output, err := runtime.manageWorktreeRecall(scope, map[string]any{"limit": 25})

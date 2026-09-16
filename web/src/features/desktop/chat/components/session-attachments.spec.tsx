@@ -33,6 +33,14 @@ test('collapsed header names the default and working roots without attachment co
   assert.match(html, /<details><summary[^>]*>Available workspaces/)
 })
 
+test('collapsed header summarizes three or more working workspaces as count', () => {
+  const items = Array.from({ length: 9 }, (_, index) => ({ id: `row-${index}`, workspace_id: `workspace-${index}`, workspace_name: `Project ${index}`, source_path: `/workspaces/project-${index}`, kind: 'source', attached: true, default: index === 0, availability: 'available' }))
+  const html = renderToStaticMarkup(<SessionAttachmentsView {...props} items={items} workingSources={[items[2].source_path, items[3].source_path]} />)
+  const button = html.slice(0, html.indexOf('</button>'))
+  assert.match(button, /aria-label="Workspaces: 3 workspaces"/)
+  assert.match(button, />3 workspaces<\/span>/)
+})
+
 // Requirement: background invalidation must not change the visible identity or
 // slot geometry; failures must remain discoverable without resizing the header.
 // SessionAttachmentsView owns this presentation. SSR proves text/class stability,
