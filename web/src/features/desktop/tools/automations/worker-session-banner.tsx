@@ -1,4 +1,3 @@
-import React, { useMemo } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -8,13 +7,12 @@ import {
   Clock3,
   ExternalLink,
   FileText,
-  RefreshCcw,
 } from 'lucide-react'
 import { cn } from '../../../../lib/cn'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { selectAutomationV2Identity } from '../../state/desktop-automation-v2-state'
 import type { AutomationV2Occurrence, AutomationV2Record } from '../../state/desktop-automation-v2-api'
-import { formatScheduleDateTime, formatScheduleTime, scheduleLabel } from './automation-v2-schedule'
+import { scheduleLabel, type AutomationSchedule } from './automation-v2-schedule'
 import {
   formatCalmStatus,
   isOccurrenceDeliverableReady,
@@ -41,8 +39,6 @@ export function WorkerSessionBanner({
     const metadata = sessionRecord.session.metadata
     const occurrenceId = metadataString(metadata, 'automation_v2_occurrence_id')
     const authoringSessionId = metadataString(metadata, 'automation_v2_authoring_session_id')
-    const occurrenceDigest = metadataString(metadata, 'automation_v2_digest')
-    const occurrenceRevision = metadataString(metadata, 'automation_v2_revision')
     const isOccurrence = Boolean(occurrenceId)
 
     const isAuthoring =
@@ -78,9 +74,10 @@ export function WorkerSessionBanner({
       sessionRecord.session.title ||
       'Worker'
 
-    const schedule =
+    const schedule: AutomationSchedule | undefined =
       workerRecord?.document.automation_v2.schedule ||
-      (sessionRecord.session.automation_v2?.schedule)
+      (authorSessionRecord?.kind === 'full' ? (authorSessionRecord.session.automation_v2 as { schedule?: AutomationSchedule } | undefined)?.schedule : undefined) ||
+      (sessionRecord.session.automation_v2 as { schedule?: AutomationSchedule } | undefined)?.schedule
 
     const workspaceId =
       workerRecord?.workspace_id ||

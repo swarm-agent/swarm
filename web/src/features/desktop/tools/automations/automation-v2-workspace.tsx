@@ -46,7 +46,7 @@ import { loadAutomationConversations } from '../../state/desktop-automation-conv
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
-import { scheduleLabel, scheduleFrequency, formatScheduleDateTime, formatScheduleTime } from './automation-v2-schedule'
+import { scheduleLabel, scheduleFrequency, formatScheduleDateTime } from './automation-v2-schedule'
 
 export interface AutomationStarterTemplate {
   id: string

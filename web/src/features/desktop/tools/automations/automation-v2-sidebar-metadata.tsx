@@ -385,8 +385,8 @@ export function selectAutomationSummaryCounts(
       } else {
         scheduled++
       }
+      const todayKey = getOccurrenceDayKey(now, tz)
       if (occurrences) {
-        const todayKey = getOccurrenceDayKey(now, tz)
         const todayOccurrences = occurrences.filter(o => getOccurrenceDayKey(o.due_at || 0, tz) === todayKey)
         runsToday += todayOccurrences.length
         alerts += todayOccurrences.filter(o =>
