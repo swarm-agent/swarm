@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Verify qualification test suites using Google Gemini 3.6 Flash (thinking: low) with ephemeral IP-locked credentials and push check receipts. Docs impact: none.
+
 - Authorize in-worktree Git tools (git_status, git_diff, git_add, git_commit, git_init) under default auto-mode policy and unignore task-program-probes in git. Docs impact: none.
 
 - Normalize Google provider conversation turns and handle post-compaction session continuation. Docs impact: none.
