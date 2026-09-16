@@ -274,10 +274,10 @@ async function main() {
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-program-primary', make_current: true }, 'bind primary fixture workspace')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-program-primary', make_current: true, confirm_committed_only: true }, 'bind primary fixture workspace')
   }
   if (linkedWorkspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-program-linked', make_current: false }, 'bind linked fixture workspace')
+    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-program-linked', make_current: false, confirm_committed_only: true }, 'bind linked fixture workspace')
     if (workspacePathOverride) {
       await api('POST', '/v1/workspace/directories/add', { workspace_path: workspacePathOverride, directory_path: linkedWorkspacePathOverride }, 'authorize linked fixture for primary workspace')
     }

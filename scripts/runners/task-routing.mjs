@@ -421,10 +421,10 @@ async function main() {
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-routing-primary', make_current: true }, 'ensure canonical workspace self binding')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'task-routing-primary', make_current: true, confirm_committed_only: true }, 'ensure canonical workspace self binding')
   }
   if (linkedWorkspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-routing-linked', make_current: false }, 'ensure linked saved-workspace self binding')
+    await api('POST', '/v1/workspace/add', { path: linkedWorkspacePathOverride, name: 'task-routing-linked', make_current: false, confirm_committed_only: true }, 'ensure linked saved-workspace self binding')
   }
   result.gates.workspace_binding_ready = true
 

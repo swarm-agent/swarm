@@ -216,7 +216,7 @@ async function main() {
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
-    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'basic-plan-auto-primary', make_current: true }, 'ensure basic plan workspace binding')
+    await api('POST', '/v1/workspace/add', { path: workspacePathOverride, name: 'basic-plan-auto-primary', make_current: true, confirm_committed_only: true }, 'ensure basic plan workspace binding')
   }
   const topology = (await api('GET', '/v1/swarm/topology', undefined, 'read topology')).body
   const runtime = (topology?.runtimes || []).find((item) => item?.relationship === 'self') || (topology?.runtimes || [])[0]
@@ -312,7 +312,15 @@ async function main() {
   const failedReplayIntents = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
   assert(failedReplayIntents.length === 0, `session has failed run intents: ${failedReplayIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
   const expectedCheckpointRunIDs = new Set(result.ids.checkpoint_run_ids)
-  const checkpointIntents = runIntents.filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  let checkpointIntents = runIntents.filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  for (let i = 0; i < 30; i++) {
+    if (checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed')) break
+    await sleep(1000)
+    const updated = await fetchAllEvents(sessionID)
+    events.length = 0
+    events.push(...updated.events)
+    checkpointIntents = (updated.replay?.run_intents || []).filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+  }
   assert(checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed'), 'completed checkpoint run intents are missing from event replay')
   result.ids.checkpoint_run_ids = checkpointIntents.map((intent) => String(intent.run_id || '')).filter(Boolean)
   const usageFromEvents = usageRecordsFromEvents(events)
