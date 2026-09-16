@@ -896,6 +896,9 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if !exists {
 			return nil, nil, fmt.Errorf("task program jobs[%d] references unknown stage %q", i, job.StageID)
 		}
+		if job.RequestedSubagentType == "" {
+			job.RequestedSubagentType = "coder"
+		}
 		switch {
 		case agentruntime.IsCoderAgentName(job.RequestedSubagentType):
 			job.RequestedSubagentType = "coder"

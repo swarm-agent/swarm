@@ -2775,6 +2775,9 @@ func (s *Server) publishSessionV3PermissionUpdatedFromRecord(principal identity.
 		NowUnixMs:       now,
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "cannot claim or update") || strings.Contains(err.Error(), "is completed") {
+			return sessionruntime.SessionMutationResult{}, false, nil
+		}
 		return result, false, err
 	}
 	return result, !result.Replayed, nil

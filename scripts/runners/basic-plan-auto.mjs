@@ -211,8 +211,11 @@ async function main() {
   const settingsResponse = await api('GET', '/v1/agent-model-settings', undefined, 'read agent model settings')
   originalSwarmSettings = settingsResponse.body?.agent_model_settings?.swarm || null
   assert(originalSwarmSettings?.action?.model && originalSwarmSettings?.plan?.model, 'canonical Swarm action/plan model settings are missing')
-  await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply runner model settings')
-  settingsChanged = true
+  const needSwarmUpdate = originalSwarmSettings?.action?.model !== actionAssignment.model || originalSwarmSettings?.action?.thinking !== actionAssignment.thinking || originalSwarmSettings?.plan?.model !== planAssignment.model || originalSwarmSettings?.plan?.thinking !== planAssignment.thinking
+  if (needSwarmUpdate) {
+    await api('PATCH', '/v1/agent-model-settings', { swarm: { action: actionAssignment, plan: planAssignment } }, 'apply runner model settings')
+    settingsChanged = true
+  }
   result.gates.models_configured = true
 
   if (workspacePathOverride) {
