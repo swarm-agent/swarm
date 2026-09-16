@@ -236,7 +236,7 @@ func TestDeploymentManager_ConnectionPrecedence(t *testing.T) {
 	workspaceID := "ws-prec"
 
 	// Create workspace entry
-	wsEntry, err := h.workspaces.AddForAccount(accountScope, "/home/user/repo", "Repo")
+	wsEntry, err := h.workspaces.AddForAccount(accountScope, "/workspaces/repo", "Repo")
 	if err != nil {
 		t.Fatalf("add workspace entry: %v", err)
 	}

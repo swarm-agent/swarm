@@ -50,7 +50,7 @@ const mockEnvironments: Environment[] = [
         kind: 'local_mount',
         local_mount: {
           container_path: '/workspace',
-          host_path: '/home/user/project',
+          host_path: '/workspaces/project',
         },
       },
     },

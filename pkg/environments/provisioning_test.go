@@ -11,7 +11,7 @@ func TestProvisioning_LocalMount_Valid(t *testing.T) {
 		Strategy: SourceStrategy{
 			Kind: SourceStrategyKindLocalMount,
 			LocalMount: &LocalMountConfig{
-				HostPath:      "/home/user/project",
+				HostPath:      "/workspaces/project",
 				ContainerPath: "/workspace",
 				ReadOnly:      false,
 			},

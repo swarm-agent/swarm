@@ -485,7 +485,7 @@ func TestSSHDockerProvider_Deploy_RejectsLocalMount(t *testing.T) {
 			Strategy: environments.SourceStrategy{
 				Kind: environments.SourceStrategyKindLocalMount,
 				LocalMount: &environments.LocalMountConfig{
-					HostPath:      "/home/user/localrepo",
+					HostPath:      "/workspaces/localrepo",
 					ContainerPath: "/workspace",
 				},
 			},
@@ -1298,8 +1298,8 @@ func TestSSHDockerProvider_BuildSSHCommand_Options(t *testing.T) {
 			Host:           "bastion.cloud.org",
 			Port:           22022,
 			User:           "admin",
-			IdentityFile:   "/home/user/.ssh/id_ed25519_custom",
-			KnownHostsFile: "/home/user/.ssh/known_hosts.custom",
+			IdentityFile:   "/workspaces/.ssh/id_ed25519_custom",
+			KnownHostsFile: "/workspaces/.ssh/known_hosts.custom",
 		},
 	}
 
@@ -1316,10 +1316,10 @@ func TestSSHDockerProvider_BuildSSHCommand_Options(t *testing.T) {
 	if !strings.Contains(joined, "-p 22022") {
 		t.Fatalf("expected -p 22022 in args, got: %s", joined)
 	}
-	if !strings.Contains(joined, "-i /home/user/.ssh/id_ed25519_custom") {
+	if !strings.Contains(joined, "-i /workspaces/.ssh/id_ed25519_custom") {
 		t.Fatalf("expected -i in args, got: %s", joined)
 	}
-	if !strings.Contains(joined, "-o UserKnownHostsFile=/home/user/.ssh/known_hosts.custom") {
+	if !strings.Contains(joined, "-o UserKnownHostsFile=/workspaces/.ssh/known_hosts.custom") {
 		t.Fatalf("expected UserKnownHostsFile in args, got: %s", joined)
 	}
 	if !strings.Contains(joined, "-o BatchMode=yes") {

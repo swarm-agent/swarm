@@ -30,7 +30,7 @@ func TestEnvironmentStore_CRUD(t *testing.T) {
 			Strategy: environments.SourceStrategy{
 				Kind: environments.SourceStrategyKindLocalMount,
 				LocalMount: &environments.LocalMountConfig{
-					HostPath:      "/home/user/project",
+					HostPath:      "/workspaces/project",
 					ContainerPath: "/workspace",
 					ReadOnly:      false,
 				},

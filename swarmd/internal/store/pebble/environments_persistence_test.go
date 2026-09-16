@@ -61,7 +61,7 @@ func TestEnvironments_RestartRecovery(t *testing.T) {
 				Strategy: environments.SourceStrategy{
 					Kind: environments.SourceStrategyKindLocalMount,
 					LocalMount: &environments.LocalMountConfig{
-						HostPath:      "/home/dev/repo",
+						HostPath:      "/workspaces/repo",
 						ContainerPath: "/workspace",
 					},
 				},
@@ -122,7 +122,7 @@ func TestEnvironments_RestartRecovery(t *testing.T) {
 
 		// 5. Workspace Entry & Settings
 		ws := NewWorkspaceStore(store)
-		wsEntry, err := ws.AddForAccount("acc-rec", "/home/dev/repo", "Repo")
+		wsEntry, err := ws.AddForAccount("acc-rec", "/workspaces/repo", "Repo")
 		if err != nil {
 			t.Fatalf("phase 1 add workspace: %v", err)
 		}
@@ -191,7 +191,7 @@ func TestEnvironments_RestartRecovery(t *testing.T) {
 
 		// 5. Verify Workspace Settings
 		ws := NewWorkspaceStore(store)
-		wsEntry, found, err := ws.GetForAccount("acc-rec", "/home/dev/repo")
+		wsEntry, found, err := ws.GetForAccount("acc-rec", "/workspaces/repo")
 		if err != nil || !found {
 			t.Fatalf("phase 2 get workspace entry: found=%v err=%v", found, err)
 		}
@@ -216,7 +216,7 @@ func TestEnvironments_WorkspaceSettingsUpdates(t *testing.T) {
 	store := openEphemeralStore(t)
 	ws := NewWorkspaceStore(store)
 
-	entry, err := ws.AddForAccount("acc-s", "/home/user/project", "Project")
+	entry, err := ws.AddForAccount("acc-s", "/workspaces/project", "Project")
 	if err != nil {
 		t.Fatalf("add workspace: %v", err)
 	}
