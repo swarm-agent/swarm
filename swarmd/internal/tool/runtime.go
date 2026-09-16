@@ -9987,6 +9987,22 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 			return "", "", "", err
 		}
 		if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
+			if requestedPath == "." {
+				if strings.TrimSpace(scope.SourceWorkspacePath) != "" {
+					if srcScope, srcErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, scope.SourceWorkspacePath); srcErr == nil && srcScope.Matched && strings.TrimSpace(srcScope.WorkspaceID) != "" {
+						wsScope = srcScope
+					}
+				}
+				if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
+					if current, ok, cErr := r.workspace.CurrentBindingForPrincipal(scope.Principal); cErr == nil && ok {
+						if curScope, curErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, current.WorkspacePath); curErr == nil && curScope.Matched && strings.TrimSpace(curScope.WorkspaceID) != "" {
+							wsScope = curScope
+						}
+					}
+				}
+			}
+		}
+		if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
 			return "", "", "", fmt.Errorf("%s requires an account-owned canonical workspace", toolName)
 		}
 		workspaceID = wsScope.WorkspaceID
