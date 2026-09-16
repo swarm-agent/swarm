@@ -80,8 +80,8 @@ func (m *mockProvider) Deploy(ctx context.Context, req provider.DeployRequest) (
 
 func (m *mockProvider) Inspect(ctx context.Context, conn *environments.Connection, dep *environments.Deployment) (*provider.InspectResult, error) {
 	return &provider.InspectResult{
-		Status: dep.Status,
-		Health: dep.Health,
+		Status:  dep.Status,
+		Health:  dep.Health,
 		Runtime: dep.Runtime,
 	}, nil
 }
@@ -1199,5 +1199,3 @@ func TestDeploymentManager_WorkerAndCustomConsumers(t *testing.T) {
 		t.Fatalf("ReleaseDeployment for Custom failed: %v", err)
 	}
 }
-
-

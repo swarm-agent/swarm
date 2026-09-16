@@ -48,7 +48,7 @@ type SSHConfig struct {
 	Host           string `json:"host"`
 	Port           int    `json:"port"` // default 22 if <= 0
 	User           string `json:"user"`
-	IdentityFile   string `json:"identity_file,omitempty"`   // optional path to identity file reference (path only, not key contents)
+	IdentityFile   string `json:"identity_file,omitempty"`    // optional path to identity file reference (path only, not key contents)
 	KnownHostsFile string `json:"known_hosts_file,omitempty"` // optional path to known_hosts file
 }
 

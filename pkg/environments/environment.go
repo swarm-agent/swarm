@@ -52,13 +52,13 @@ type PortMapping struct {
 // ContainerDefinition specifies the container configuration.
 // Strictly contains NO runtime state (container_id, live IPs, runtime ports).
 type ContainerDefinition struct {
-	Image        string            `json:"image"`
-	Command      []string          `json:"command,omitempty"`
-	Args         []string          `json:"args,omitempty"`
-	EnvVars      map[string]string `json:"env_vars,omitempty"`
-	ExposedPorts []PortMapping     `json:"exposed_ports,omitempty"`
-	Privileged   bool              `json:"privileged,omitempty"`
-	User         string            `json:"user,omitempty"`
+	Image         string            `json:"image"`
+	Command       []string          `json:"command,omitempty"`
+	Args          []string          `json:"args,omitempty"`
+	EnvVars       map[string]string `json:"env_vars,omitempty"`
+	ExposedPorts  []PortMapping     `json:"exposed_ports,omitempty"`
+	Privileged    bool              `json:"privileged,omitempty"`
+	User          string            `json:"user,omitempty"`
 	WorkingDir    string            `json:"working_dir,omitempty"`
 	SetupCommands []string          `json:"setup_commands,omitempty"`
 }
@@ -76,10 +76,10 @@ type HealthCheck struct {
 
 // ResourceRequirements specifies resource limits and requirements for the container.
 type ResourceRequirements struct {
-	CPULimit      string `json:"cpu_limit,omitempty"`    // e.g. "2.0"
-	MemoryLimit   string `json:"memory_limit,omitempty"` // e.g. "4Gi"
-	GPURequired   bool   `json:"gpu_required,omitempty"`
-	GPUCount      int    `json:"gpu_count,omitempty"`
+	CPULimit    string `json:"cpu_limit,omitempty"`    // e.g. "2.0"
+	MemoryLimit string `json:"memory_limit,omitempty"` // e.g. "4Gi"
+	GPURequired bool   `json:"gpu_required,omitempty"`
+	GPUCount    int    `json:"gpu_count,omitempty"`
 }
 
 // DeploymentPolicy defines reuse, capacity, and release rules.

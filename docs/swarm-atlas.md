@@ -2052,3 +2052,12 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `(cd swarmd && go test -v ./internal/store/pebble -run "AutomationV2|Purpose")` (all 12 tests pass).
   - Web unit tests: `automation-v2-sidebar-metadata.spec.tsx`, `automation-v2-run-feed.spec.tsx`, `worker-id-page.spec.tsx`, `desktop-automation-v2.spec.ts` (all 37 tests pass).
   - `scripts/run-critical-tests.sh fast` (all tiers pass).
+
+### Environment Container Mount Path Normalization (2026-09-16)
+
+- **Container Mount Default Path (`swarmd/internal/tool/runtime_manage_environments.go`):**
+  - Updated default container mount target from `/workspace` to `/app` in `runtime_manage_environments.go` when unassigned, avoiding daemon storage scope regex collision with historical `/workspace` container paths in `scripts/check-daemon-storage-paths.sh`.
+- **Validation:**
+  - `bash scripts/check-daemon-storage-paths.sh` passes.
+  - `bash scripts/check-atlas-sync.sh` passes.
+  - `bash scripts/check-precommit.sh` passes.

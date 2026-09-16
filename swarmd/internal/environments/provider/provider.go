@@ -70,8 +70,8 @@ type InspectResult struct {
 
 // DeploymentAccess exposes consumer-relevant access metadata for AI tasks, test runners, or workers.
 type DeploymentAccess struct {
-	PrimaryEndpoint     string                      `json:"primary_endpoint,omitempty"`      // e.g. "http://127.0.0.1:18080"
-	Endpoints           map[string]string           `json:"endpoints,omitempty"`             // port or name mapped endpoints, e.g. "http": "http://127.0.0.1:18080", "8080": "http://127.0.0.1:18080"
+	PrimaryEndpoint     string                      `json:"primary_endpoint,omitempty"` // e.g. "http://127.0.0.1:18080"
+	Endpoints           map[string]string           `json:"endpoints,omitempty"`        // port or name mapped endpoints, e.g. "http": "http://127.0.0.1:18080", "8080": "http://127.0.0.1:18080"
 	ExecSupported       bool                        `json:"exec_supported"`
 	RemoteWorkspacePath string                      `json:"remote_workspace_path,omitempty"` // working dir inside container (e.g. "/workspace")
 	MappedPorts         []environments.AssignedPort `json:"mapped_ports,omitempty"`

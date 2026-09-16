@@ -859,4 +859,3 @@ func TestResolveDefaultTestbench_UnconfiguredConnection(t *testing.T) {
 		t.Errorf("expected prompt to mention no connection configured, got:\n%s", prompt)
 	}
 }
-

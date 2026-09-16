@@ -1131,36 +1131,36 @@ func TestSSHDockerProvider_Deploy_RemoteExistingPath_ValidationErrors(t *testing
 
 	// empty remote path
 	if _, err := p.Deploy(ctx, DeployRequest{
-		Connection:   conn,
-		Environment:  baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "", ContainerPath: "/workspace"}),
-		Deployment:   dep,
+		Connection:  conn,
+		Environment: baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "", ContainerPath: "/workspace"}),
+		Deployment:  dep,
 	}); err == nil {
 		t.Fatal("expected error for empty remote path")
 	}
 
 	// relative remote path
 	if _, err := p.Deploy(ctx, DeployRequest{
-		Connection:   conn,
-		Environment:  baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "relative/path", ContainerPath: "/workspace"}),
-		Deployment:   dep,
+		Connection:  conn,
+		Environment: baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "relative/path", ContainerPath: "/workspace"}),
+		Deployment:  dep,
 	}); err == nil {
 		t.Fatal("expected error for relative remote path")
 	}
 
 	// empty container path
 	if _, err := p.Deploy(ctx, DeployRequest{
-		Connection:   conn,
-		Environment:  baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "/srv/repo", ContainerPath: ""}),
-		Deployment:   dep,
+		Connection:  conn,
+		Environment: baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "/srv/repo", ContainerPath: ""}),
+		Deployment:  dep,
 	}); err == nil {
 		t.Fatal("expected error for empty container path")
 	}
 
 	// relative container path
 	if _, err := p.Deploy(ctx, DeployRequest{
-		Connection:   conn,
-		Environment:  baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "/srv/repo", ContainerPath: "relative"}),
-		Deployment:   dep,
+		Connection:  conn,
+		Environment: baseEnv(&environments.RemoteExistingPathConfig{RemotePath: "/srv/repo", ContainerPath: "relative"}),
+		Deployment:  dep,
 	}); err == nil {
 		t.Fatal("expected error for relative container path")
 	}
@@ -1326,4 +1326,3 @@ func TestSSHDockerProvider_BuildSSHCommand_Options(t *testing.T) {
 		t.Fatalf("expected BatchMode=yes in args, got: %s", joined)
 	}
 }
-

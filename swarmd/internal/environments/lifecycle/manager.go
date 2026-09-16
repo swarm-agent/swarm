@@ -85,7 +85,7 @@ type EnsureDeploymentRequest struct {
 	WorkspaceID      string                    `json:"workspace_id"`
 	EnvironmentID    string                    `json:"environment_id"`
 	ConnectionID     string                    `json:"connection_id,omitempty"` // Tier 1 explicit connection override
-	ConsumerType     environments.ConsumerType `json:"consumer_type"`          // session, test_run, worker, custom
+	ConsumerType     environments.ConsumerType `json:"consumer_type"`           // session, test_run, worker, custom
 	ConsumerID       string                    `json:"consumer_id"`
 	ConsumerMetadata map[string]string         `json:"consumer_metadata,omitempty"`
 	DeploymentName   string                    `json:"deployment_name,omitempty"`

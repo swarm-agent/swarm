@@ -114,20 +114,20 @@ func (s *Server) resolveEnvironmentScope(r *http.Request, rawWorkspaceID, rawPat
 // =============================================================================
 
 type connectionMutationRequest struct {
-	Action         string                              `json:"action"`
-	WorkspaceID    string                              `json:"workspace_id"`
-	WorkspacePath  string                              `json:"workspace_path"`
-	ID             string                              `json:"id"`
-	Name           string                              `json:"name"`
-	Description    string                              `json:"description,omitempty"`
-	Kind           environments.ConnectionKind         `json:"kind"`
-	Host           string                              `json:"host,omitempty"`
-	Port           int                                 `json:"port,omitempty"`
-	User           string                              `json:"user,omitempty"`
-	SSHKeyPath     string                              `json:"ssh_key_path,omitempty"`
-	KnownHostsFile string                              `json:"known_hosts_file,omitempty"`
-	SocketPath     string                              `json:"socket_path,omitempty"`
-	DockerHost     string                              `json:"docker_host,omitempty"`
+	Action         string                               `json:"action"`
+	WorkspaceID    string                               `json:"workspace_id"`
+	WorkspacePath  string                               `json:"workspace_path"`
+	ID             string                               `json:"id"`
+	Name           string                               `json:"name"`
+	Description    string                               `json:"description,omitempty"`
+	Kind           environments.ConnectionKind          `json:"kind"`
+	Host           string                               `json:"host,omitempty"`
+	Port           int                                  `json:"port,omitempty"`
+	User           string                               `json:"user,omitempty"`
+	SSHKeyPath     string                               `json:"ssh_key_path,omitempty"`
+	KnownHostsFile string                               `json:"known_hosts_file,omitempty"`
+	SocketPath     string                               `json:"socket_path,omitempty"`
+	DockerHost     string                               `json:"docker_host,omitempty"`
 	Capabilities   *environments.ConnectionCapabilities `json:"capabilities,omitempty"`
 }
 
@@ -666,9 +666,9 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			}
 			lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID)
 			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":              true,
-				"deployment":      dep,
-				"active_lease":    lease,
+				"ok":               true,
+				"deployment":       dep,
+				"active_lease":     lease,
 				"has_active_lease": hasLease,
 			})
 			return

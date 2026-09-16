@@ -404,7 +404,7 @@ func parseEnvironmentInput(args map[string]any, accountScopeID, workspaceID stri
 		// Default to local mount if unspecified
 		prov.Strategy.Kind = environments.SourceStrategyKindLocalMount
 		prov.Strategy.LocalMount = &environments.LocalMountConfig{
-			ContainerPath: "/workspace",
+			ContainerPath: "/app",
 		}
 	}
 

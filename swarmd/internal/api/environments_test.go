@@ -551,9 +551,9 @@ func TestDeploymentsAPI(t *testing.T) {
 
 	// 4. Release deployment
 	relReq := authedRequest(http.MethodPost, "/v1/deployments", map[string]any{
-		"action":        "release",
-		"workspace_id":  "ws-1",
-		"deployment_id": depID,
+		"action":         "release",
+		"workspace_id":   "ws-1",
+		"deployment_id":  depID,
 		"release_reason": "test complete",
 	})
 	w = httptest.NewRecorder()

@@ -346,8 +346,8 @@ func TestEnvironment_ReleaseBehaviors(t *testing.T) {
 			Container:      ContainerDefinition{Image: "ubuntu:latest"},
 			Provisioning: WorkspaceProvisioning{
 				Strategy: SourceStrategy{
-					Kind:               SourceStrategyKindLocalMount,
-					LocalMount:         &LocalMountConfig{ContainerPath: "/workspace"},
+					Kind:       SourceStrategyKindLocalMount,
+					LocalMount: &LocalMountConfig{ContainerPath: "/workspace"},
 				},
 			},
 			DeploymentPolicy: DeploymentPolicy{

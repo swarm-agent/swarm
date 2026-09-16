@@ -460,22 +460,22 @@ type WorkspaceOverviewSwarmTarget struct {
 }
 
 type WorkspaceEntry struct {
-	Path                    string   `json:"path"`
-	WorkspaceID             string   `json:"workspace_id,omitempty"`
-	WorkspaceGeneration     int64    `json:"workspace_generation,omitempty"`
-	State                   string   `json:"state,omitempty"`
-	LocalWorkspaceBindingID string   `json:"local_workspace_binding_id,omitempty"`
-	WorkspaceName           string   `json:"workspace_name"`
-	ThemeID                 string   `json:"theme_id,omitempty"`
-	Directories             []string `json:"directories"`
-	IsGitRepo               bool     `json:"is_git_repo"`
-	SortIndex               int      `json:"sort_index"`
-	AddedAt                 int64    `json:"added_at"`
-	UpdatedAt               int64    `json:"updated_at"`
-	LastSelectedAt          int64    `json:"last_selected_at"`
-	Active                  bool     `json:"active"`
-	DefaultTestEnvironmentID string  `json:"default_test_environment_id,omitempty"`
-	DefaultConnectionID      string  `json:"default_connection_id,omitempty"`
+	Path                     string   `json:"path"`
+	WorkspaceID              string   `json:"workspace_id,omitempty"`
+	WorkspaceGeneration      int64    `json:"workspace_generation,omitempty"`
+	State                    string   `json:"state,omitempty"`
+	LocalWorkspaceBindingID  string   `json:"local_workspace_binding_id,omitempty"`
+	WorkspaceName            string   `json:"workspace_name"`
+	ThemeID                  string   `json:"theme_id,omitempty"`
+	Directories              []string `json:"directories"`
+	IsGitRepo                bool     `json:"is_git_repo"`
+	SortIndex                int      `json:"sort_index"`
+	AddedAt                  int64    `json:"added_at"`
+	UpdatedAt                int64    `json:"updated_at"`
+	LastSelectedAt           int64    `json:"last_selected_at"`
+	Active                   bool     `json:"active"`
+	DefaultTestEnvironmentID string   `json:"default_test_environment_id,omitempty"`
+	DefaultConnectionID      string   `json:"default_connection_id,omitempty"`
 }
 
 type WorkspaceOverviewWorkspace struct {
