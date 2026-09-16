@@ -1400,7 +1400,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// into a workspace is materialize/promote, which independently requires an
 		// exact ready reference and a trusted workspace root.
 		return PolicyDecisionAllow
-	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme":
+	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff":
 		return PolicyDecisionAllow
 	case "automation_read":
 		return PolicyDecisionAllow
@@ -1438,7 +1438,7 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		return PolicyDecisionAllow
 	case "ask_user", "exit_plan_mode":
 		return PolicyDecisionAsk
-	case "write", "edit":
+	case "write", "edit", "git_add", "git_commit", "git_init", "git_commit_initial":
 		if mode == "read" {
 			return PolicyDecisionDeny
 		}

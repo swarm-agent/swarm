@@ -310,7 +310,7 @@ async function main() {
   result.gates.checkpoints_completed = true
   result.gates.subtasks_completed = true
 
-  const { events, replay } = await fetchAllEvents(sessionID)
+  let { events, replay } = await fetchAllEvents(sessionID)
   const runIntents = replay?.run_intents || []
   const failedReplayIntents = runIntents.filter((intent) => /failed|cancelled|expired|interrupted/.test(String(intent?.status || '')))
   assert(failedReplayIntents.length === 0, `session has failed run intents: ${failedReplayIntents.map((intent) => `${intent.run_id}:${intent.status}`).join(', ')}`)
@@ -323,6 +323,7 @@ async function main() {
     events.length = 0
     events.push(...updated.events)
     checkpointIntents = (updated.replay?.run_intents || []).filter((intent) => expectedCheckpointRunIDs.has(String(intent?.run_id || '')))
+    replay = updated.replay || replay
   }
   assert(checkpointIntents.length === expectedCheckpointRunIDs.size && checkpointIntents.every((intent) => intent?.status === 'completed'), 'completed checkpoint run intents are missing from event replay')
   result.ids.checkpoint_run_ids = checkpointIntents.map((intent) => String(intent.run_id || '')).filter(Boolean)
@@ -344,6 +345,11 @@ async function main() {
   }
   result.gates.plan_model_verified = true
   result.gates.auto_model_verified = true
+
+  const latestFetch = await fetchAllEvents(sessionID)
+  replay = latestFetch.replay || replay
+  events.length = 0
+  events.push(...latestFetch.events)
 
   const failedEvents = events.filter((event) => ['session.run.failed', 'session.checkpoint.failed'].includes(String(event?.event_type || '')))
   const failedIntents = (replay?.run_intents || []).filter((intent) => !['completed'].includes(String(intent?.status || '')))

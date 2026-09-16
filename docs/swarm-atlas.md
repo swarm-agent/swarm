@@ -1916,5 +1916,10 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Added unit test `TestGitAddAcceptsStringPathspecAndPath` in `swarmd/internal/tool/runtime_git_test.go`.
 - **Task Program Test Runner Guidance (`scripts/runners/task-program-worktrees.mjs`):**
   - Updated Coder probe prompt to explicitly specify `git_add (all: true)` and `git_commit (message: "Add probe file")` parameters, ensuring reliable tool call execution across candidate models.
+- **In-Worktree Git Tool Authority (`swarmd/internal/permission/policy.go`):**
+  - Included `git_status`, `git_diff` in default allowed discovery/status tools and `git_add`, `git_commit`, `git_init`, `git_commit_initial` in routine auto-mode in-worktree execution authority matching `write` and `edit`, ensuring subagents in isolated worktrees execute without hanging on unapproved permissions. In read mode, mutating Git tools remain denied.
+  - Added unit test `TestInWorktreeGitToolsDefaultPolicy` in `swarmd/internal/permission/policy_test.go`.
+- **Live Plan-Auto Event Replay Synchronization (`scripts/runners/basic-plan-auto.mjs`):**
+  - Updated `replay` reference across event polling iterations and before final intent assertions, preventing stale run intent status checks.
 
 
