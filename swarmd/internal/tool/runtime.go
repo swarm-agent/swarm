@@ -2387,6 +2387,13 @@ func executeGitDiff(parent context.Context, scope WorkspaceScope, args map[strin
 func executeGitAdd(parent context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	argv := []string{"add"}
 	pathspec := asStringSlice(args["pathspec"])
+	if len(pathspec) == 0 {
+		if single := strings.TrimSpace(asString(args["pathspec"])); single != "" {
+			pathspec = []string{single}
+		} else if singlePath := strings.TrimSpace(asString(args["path"])); singlePath != "" {
+			pathspec = []string{singlePath}
+		}
+	}
 	all := asBool(args["all"])
 	if len(pathspec) == 0 && !all {
 		return "", errors.New("git_add requires pathspec or all=true")

@@ -1909,3 +1909,12 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
     - `TestRunTurnGoogleOverflowRefusesCompactionUnder85Percent` (full RunTurn flow verifying no compaction when under 85%)
   - All package tests pass.
 
+### Git Add Argument Normalization and Task Program Coder Commit Clarification (2026-09-16)
+
+- **Git Add Argument Normalization (`swarmd/internal/tool/runtime.go`):**
+  - Updated `executeGitAdd` to accept single string values for `pathspec` and `path` arguments in addition to slice `pathspec: []string`, ensuring subagent calls passing string paths or standard path parameters succeed without unexpected type mismatches.
+  - Added unit test `TestGitAddAcceptsStringPathspecAndPath` in `swarmd/internal/tool/runtime_git_test.go`.
+- **Task Program Test Runner Guidance (`scripts/runners/task-program-worktrees.mjs`):**
+  - Updated Coder probe prompt to explicitly specify `git_add (all: true)` and `git_commit (message: "Add probe file")` parameters, ensuring reliable tool call execution across candidate models.
+
+

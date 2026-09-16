@@ -204,7 +204,7 @@ function programPrompt({ label, targetWorkspace, markerName }) {
     targetClause,
     `The program must have program id "${label === 'same-repo-current-parent' ? 'same_repo_probe' : 'linked_repo_probe'}", max_concurrency 1, and exactly one Coder job.`,
     `The job must have: id "probe_coder", stage_id "verify", agent_type "coder", title "Probe Coder", owned_scope ["docs/task-program-probes/**"], deliverable "Committed verified probe file", dependency_evidence "Stage verify is ready", acceptance_criteria ["The committed file docs/task-program-probes/${markerName} exists"].`,
-    `The job meta_prompt must be: "Write one short public-safe line to docs/task-program-probes/${markerName} using the write tool, then stage it with git_add and commit it with git_commit. You must commit your changes before finishing."`,
+    `The job meta_prompt must be: "Write one short public-safe line to docs/task-program-probes/${markerName} using the write tool, then stage it with git_add (all: true) and commit it with git_commit (message: \\"Add probe file\\"). You must commit your changes before finishing."`,
     `The parent must let the Task Program integrate the committed result and then reply exactly PROGRAM_OK.`,
     'Do not use any other tool. Do not inspect unrelated files. Do not include private paths, hostnames, credentials, or topology in the file.',
   ].filter(Boolean).join(' ')
