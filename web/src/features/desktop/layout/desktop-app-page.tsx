@@ -1879,8 +1879,16 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   const backgroundInfo = sessionBackgroundInfo(session)
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
+  const sessionFullRec = useDesktopV3CacheSelector(state => state.sessionsById[session.id])
+  const workerRecordFromCache = useDesktopV3CacheSelector(state => {
+    for (const page of Object.values(state.automationV2Pages ?? {})) {
+      const match = page.data?.records?.find(r => r.session_id === session.id)
+      if (match) return match
+    }
+    return undefined
+  })
   const isPlanRow = !automation && !automationV2 && rowType === 'plan_session'
-  const isAutomationRow = Boolean(automationV2 || automation)
+  const isAutomationRow = Boolean(automationV2 === 'accepted' || automation)
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -2347,7 +2355,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
   )
 
   if (isAutomationRow) {
-    const workerId = (session as any).automation_v2?.automation_id || session.id
+    const workerId = (sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2?.automation_id) || workerRecordFromCache?.automation_id || (session as any).automation_v2?.automation_id || session.id
     return (
       <Link
         to="/$workspaceSlug/workers/$workerId"
@@ -3742,7 +3750,7 @@ export function DesktopAppPage() {
       params: {
         workspaceSlug: canonicalWorkspaceSlug,
       },
-      search: isWorkersRoute && routeAutomationSessionId ? { sessionId: routeAutomationSessionId } : undefined,
+      search: !isWorkersRoute && routeAutomationSessionId ? { sessionId: routeAutomationSessionId } : undefined,
       replace: true,
     })
   }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute, routeAutomationSessionId, routeWorkerId])
@@ -4820,7 +4828,7 @@ export function DesktopAppPage() {
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
     onOpenAutomations: topWorkspaceSlug ? () => {
       setMobileSidebarOpen(false)
-      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug } })
+      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
     } : undefined,
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
@@ -5651,7 +5659,7 @@ export function DesktopAppPage() {
                       onClick={() => {
                         if (!topWorkspaceSlug) return
                         setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug } })
+                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
                       }}
                       disabled={!topWorkspaceSlug}
                       aria-label="Open Workers"
@@ -5879,7 +5887,7 @@ export function DesktopAppPage() {
                     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
                     onOpenAutomations: topWorkspaceSlug ? () => {
                       setMobileSidebarOpen(false)
-                      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug } })
+                      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
                     } : undefined,
                     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
                     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,

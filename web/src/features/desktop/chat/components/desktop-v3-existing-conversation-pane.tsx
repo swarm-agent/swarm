@@ -3302,11 +3302,13 @@ export function DesktopV3ExistingConversationPane({
             void navigate({
               to: '/$workspaceSlug/workers/$workerId',
               params: { workspaceSlug: targetSlug, workerId: targetSessionId },
+              search: {},
             })
           } else {
             void navigate({
               to: '/$workspaceSlug/workers',
               params: { workspaceSlug: targetSlug },
+              search: {},
             })
           }
         }}

@@ -1822,7 +1822,15 @@ export function AutomationV2Workspace({
             activeSessionId={session}
             onSelectSession={(id) => {
               setSession(id)
-              setSelected(id)
+              if (id && (records.some((r) => r.session_id === id || r.automation_id === id) ||
+                         activeRecords.some((r) => r.session_id === id || r.automation_id === id) ||
+                         archivedRecords.some((r) => r.session_id === id || r.automation_id === id))) {
+                setSelected(id)
+                onSelectWorker?.(id)
+              } else if (!id) {
+                setSelected('')
+                onSelectWorker?.()
+              }
             }}
             createRequest={createRequest}
             records={records}

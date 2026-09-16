@@ -11,7 +11,7 @@ export function AutomationToolPage() {
   if (loading) return <main role="status" className="p-6">Loading workspace…</main>
   const workspace = resolveWorkspaceBySlug(workspaces, params.workspaceSlug ?? '')
   if (!workspace?.workspaceId) return <main className="p-6"><h1>Workspace unavailable</h1><p>Choose an accessible workspace before opening workers.</p><a href="/">Workspaces</a></main>
-  const targetWorkerId = (params.workerId || search?.workerId || search?.automationId || search?.sessionId || '').trim()
+  const targetWorkerId = (params.workerId || search?.workerId || search?.automationId || '').trim()
   return (
     <AutomationWorkspace
       key={workspace.workspaceId}
@@ -29,9 +29,9 @@ export function AutomationToolPage() {
       onSelectWorker={(id) => {
         if (params.workspaceSlug) {
           if (id) {
-            void navigate({ to: '/$workspaceSlug/workers/$workerId', params: { workspaceSlug: params.workspaceSlug, workerId: id } })
+            void navigate({ to: '/$workspaceSlug/workers/$workerId', params: { workspaceSlug: params.workspaceSlug, workerId: id }, search: {} })
           } else {
-            void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: params.workspaceSlug } })
+            void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: params.workspaceSlug }, search: {} })
           }
         }
       }}

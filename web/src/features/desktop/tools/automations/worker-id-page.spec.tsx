@@ -245,3 +245,27 @@ test('AutomationV2Workspace switches to AutomationV2WorkerDetailPage when initia
   assert.match(markupWithSessionId, /data-testid="worker-id-page"/)
   assert.match(markupWithSessionId, /ID: av2_9876543210abcdef/)
 })
+
+test('AutomationV2Workspace without initialSessionId renders flat overview and does not render Worker not found', () => {
+  const listKey = automationV2PageKey({ action: 'list', workspace_id: 'ws-test' })
+  dispatchDesktopV3Cache({
+    type: 'automationV2.finish',
+    key: listKey,
+    requestId: 'req-ws-overview',
+    generation: 1,
+    data: { records: [sampleWorkerRecord] },
+  })
+
+  const markup = renderToStaticMarkup(
+    <AutomationV2Workspace
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      workspaceName="My Workspace"
+      workspaceSlug="my-workspace"
+    />
+  )
+
+  assert.match(markup, /data-testid="automations-flat-overview"/)
+  assert.doesNotMatch(markup, /Worker not found/)
+  assert.doesNotMatch(markup, /could not be found in this workspace/)
+})

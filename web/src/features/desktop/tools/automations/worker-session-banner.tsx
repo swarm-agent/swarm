@@ -175,6 +175,7 @@ export function WorkerSessionBanner({
             void router.navigate({
               to: '/$workspaceSlug/workers',
               params: { workspaceSlug: effectiveSlug },
+              search: {},
             })
           }
         : undefined,
@@ -192,6 +193,7 @@ export function WorkerSessionBanner({
             void router.navigate({
               to: '/$workspaceSlug/workers/$workerId',
               params: { workspaceSlug: effectiveSlug, workerId: targetWorkerId },
+              search: {},
             })
           }
         : undefined,
