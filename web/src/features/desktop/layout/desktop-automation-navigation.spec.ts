@@ -11,6 +11,7 @@ import test from 'node:test'
 // runtime transitions, authentication, or visual quality.
 const source = await readFile(new URL('./desktop-app-page.tsx', import.meta.url), 'utf8')
 const router = await readFile(new URL('../../../app/router.tsx', import.meta.url), 'utf8')
+const chatPane = await readFile(new URL('../chat/components/desktop-v3-existing-conversation-pane.tsx', import.meta.url), 'utf8')
 
 test('workers is nested under the retained Desktop owner and rendered through its outlet, while automations redirects', () => {
   const registration = router.slice(router.indexOf('const workspaceWorkersRoute ='), router.indexOf('const workspaceTaskRoute ='))
@@ -47,8 +48,9 @@ test('automation content cannot restore a second workspace navigation shell', as
   assert.match(content, /aria-label="Worker controls"/)
 })
 
-test('clicking an accepted automation session navigates to the workers page instead of conversation chat', () => {
-  assert.match(source, /if \(isAcceptedAutomation\)\s*\{\s*return \(\s*<Link\s+to="\/\$workspaceSlug\/workers"[\s\S]*?search=\{\{\s*sessionId:\s*session\.id\s*\}\}/)
-  assert.match(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*void navigate\(\{\s*to: '\/\$workspaceSlug\/workers',\s*params: \{\s*workspaceSlug,\s*\},\s*search: \{\s*sessionId:\s*session\.id,\s*\},\s*\}\)/)
-  assert.match(source, /routeSessionIsAcceptedAutomation \? \(\s*<div[^>]*>\s*<AutomationToolPage \/>\s*<\/div>\s*\) : routeSessionId/)
+test('clicking an accepted automation session navigates to the session page with conversation chat and worker banner context', () => {
+  assert.doesNotMatch(source, /if \(isAcceptedAutomation\)\s*\{\s*return \(\s*<Link\s+to="\/\$workspaceSlug\/workers"/)
+  assert.doesNotMatch(source, /if \(automationIdentity === 'accepted'\)\s*\{\s*void navigate\(\{\s*to: '\/\$workspaceSlug\/workers'/)
+  assert.doesNotMatch(source, /routeSessionIsAcceptedAutomation \? \(\s*<div[^>]*>\s*<AutomationToolPage \/>\s*<\/div>\s*\) : routeSessionId/)
+  assert.match(chatPane, /<WorkerSessionBanner[\s\S]*sessionId=\{normalizedSessionId\}[\s\S]*workspaceSlug=\{routeWorkspaceSlug\}/)
 })

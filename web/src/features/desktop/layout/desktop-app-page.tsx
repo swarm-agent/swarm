@@ -71,10 +71,9 @@ import {
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
 import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator } from '../tools/automations/automation-v2-sidebar-metadata'
-import { AutomationToolPage } from '../tools/pages/automation-tool-page'
 import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
@@ -2130,7 +2129,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       ) : null}
     </span>
   )
-  const isAcceptedAutomation = automationV2 === 'accepted'
   const linkProps = {
     onClick: (event: React.MouseEvent) => {
       if (event.defaultPrevented || event.button !== 0) return
@@ -2346,19 +2344,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       ) : null}
     </>
   )
-
-  if (isAcceptedAutomation) {
-    return (
-      <Link
-        to="/$workspaceSlug/workers"
-        params={{ workspaceSlug: rowWorkspaceSlug }}
-        search={{ sessionId: session.id }}
-        {...linkProps}
-      >
-        {rowContent}
-      </Link>
-    )
-  }
 
   return (
     <Link
@@ -3712,9 +3697,10 @@ export function DesktopAppPage() {
     void navigate({
       to: isWorkersRoute ? '/$workspaceSlug/workers' : '/$workspaceSlug',
       params: { workspaceSlug: canonicalWorkspaceSlug },
+      search: isWorkersRoute && routeAutomationSessionId ? { sessionId: routeAutomationSessionId } : undefined,
       replace: true,
     })
-  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute])
+  }, [navigate, routeSessionId, routeWorkspace?.path, routeWorkspaceSlug, workspaceSlugByPath, isWorkersRoute, routeAutomationSessionId])
 
   useEffect(() => {
     if (!routeWorkspaceSlug || !routeSessionId) {
@@ -3742,21 +3728,6 @@ export function DesktopAppPage() {
 
 
 
-  const routeSessionIsAcceptedAutomation = useDesktopV3CacheSelector((state) => {
-    if (!routeSessionId) return false
-    return selectAutomationV2Identity(state, routeSessionId) === 'accepted'
-  })
-
-  useEffect(() => {
-    if (routeSessionIsAcceptedAutomation && routeWorkspaceSlug && routeSessionId) {
-      void navigate({
-        to: '/$workspaceSlug/workers',
-        params: { workspaceSlug: routeWorkspaceSlug },
-        search: { sessionId: routeSessionId },
-        replace: true,
-      })
-    }
-  }, [navigate, routeSessionIsAcceptedAutomation, routeSessionId, routeWorkspaceSlug])
 
   const handleSelectVideoSidebarSession = useCallback((sessionId: string) => {
     const normalizedSessionId = sessionId.trim()
@@ -3796,20 +3767,6 @@ export function DesktopAppPage() {
 
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
-
-    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
-    if (automationIdentity === 'accepted') {
-      void navigate({
-        to: '/$workspaceSlug/workers',
-        params: {
-          workspaceSlug,
-        },
-        search: {
-          sessionId: session.id,
-        },
-      })
-      return true
-    }
 
     void navigate({
       to: '/$workspaceSlug/$sessionId',
@@ -5956,10 +5913,6 @@ export function DesktopAppPage() {
                 Desktop state route readiness marked this session as {routeReadinessStatus}. Refresh the workspace if this session was just created elsewhere.
               </p>
             </Card>
-          </div>
-        ) : routeSessionIsAcceptedAutomation ? (
-          <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-            <AutomationToolPage />
           </div>
         ) : routeSessionId || (topWorkspace?.path && activeWorkspaceAuthority && (!routeWorkspaceSlug || chatWorkspacePath)) ? (
           <div className="flex min-h-0 flex-1 flex-col">
