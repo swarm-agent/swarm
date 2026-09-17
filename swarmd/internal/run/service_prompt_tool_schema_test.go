@@ -134,33 +134,19 @@ func TestTaskToolSchemaExposesOnlyDesignerOutputModeSelection(t *testing.T) {
 	launches := properties["launches"].(map[string]any)
 	items := launches["items"].(map[string]any)
 	launchProperties := items["properties"].(map[string]any)
-	if _, ok := launchProperties["output_mode"]; !ok {
-		t.Fatal("task launch schema omits output_mode")
+	launchOutputMode, ok := launchProperties["output_mode"].(map[string]any)
+	if !ok || !reflect.DeepEqual(launchOutputMode["enum"], []string{"managed", "workspace"}) {
+		t.Fatalf("task launch output_mode = %#v", launchOutputMode)
 	}
 	if _, exposedAtTopLevel := properties["max_concurrency"]; exposedAtTopLevel {
 		t.Fatal("task schema exposes max_concurrency at the task-call top level")
 	}
 	program := properties["program"].(map[string]any)
-	programProperties := program["properties"].(map[string]any)
-	maxConcurrency, ok := programProperties["max_concurrency"].(map[string]any)
-	if !ok {
-		t.Fatal("task program schema omits nested max_concurrency")
+	if program["type"] != "object" {
+		t.Fatalf("task program type = %v, want object", program["type"])
 	}
-	if description, _ := maxConcurrency["description"].(string); !strings.Contains(description, "program-only") || !strings.Contains(description, "Never place this field at the task-call top level") || !strings.Contains(description, "Prefer omitting it") {
-		t.Fatalf("task program max_concurrency description = %q", description)
-	}
-	jobs := programProperties["jobs"].(map[string]any)
-	jobItems := jobs["items"].(map[string]any)
-	jobProperties := jobItems["properties"].(map[string]any)
-	programOutputMode, ok := jobProperties["output_mode"].(map[string]any)
-	if !ok || !reflect.DeepEqual(programOutputMode["enum"], []string{"managed", "workspace"}) {
-		t.Fatalf("task program job output_mode = %#v", programOutputMode)
-	}
-	required := jobItems["required"].([]string)
-	for _, name := range required {
-		if name == "owned_scope" {
-			t.Fatalf("task program job schema requires owned_scope, preventing managed Designer jobs: %#v", required)
-		}
+	if desc, _ := program["description"].(string); !strings.Contains(desc, "Task Program object") || !strings.Contains(desc, "action='help'") || !strings.Contains(desc, "topic='program'") {
+		t.Fatalf("task program description = %q", desc)
 	}
 }
 

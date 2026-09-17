@@ -132,22 +132,11 @@ func TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements(
 	if !ok {
 		t.Fatalf("task program schema missing: %#v", properties["program"])
 	}
-	jobs, ok := itemsProperty(program, "jobs")
-	if !ok {
-		t.Fatalf("task program jobs schema missing: %#v", program)
+	if program["type"] != "object" {
+		t.Fatalf("task program type = %v, want object", program["type"])
 	}
-	jobArray, ok := jobs.(map[string]any)
-	if !ok {
-		t.Fatalf("task program jobs schema = %#v, want object", jobs)
-	}
-	jobItems, ok := jobArray["items"].(map[string]any)
-	if !ok {
-		t.Fatalf("task program job item schema missing: %#v", jobArray)
-	}
-	for _, key := range []string{"animation_profile", "workspace_path"} {
-		if _, ok := itemsProperty(jobItems, key); !ok {
-			t.Fatalf("task program job schema missing %s: %#v", key, jobItems)
-		}
+	if desc, _ := program["description"].(string); !strings.Contains(desc, "Task Program object") || !strings.Contains(desc, "action='help'") || !strings.Contains(desc, "topic='program'") {
+		t.Fatalf("task program description = %q", desc)
 	}
 	if !definitionTextContains(taskDefinition, "ideally three words") || !definitionTextContains(taskDefinition, "full instructive") {
 		t.Fatalf("task definition must separate concise cosmetic titles from full child instructions: %#v", taskDefinition)

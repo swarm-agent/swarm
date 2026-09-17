@@ -65,39 +65,39 @@ func manageEnvironmentsDefinition() Definition {
 				},
 				"container": map[string]any{
 					"type":        "object",
-					"description": "Container specification (image, command, args, env_vars, exposed_ports, working_dir, setup_commands, privileged)",
+					"description": "Container specification. Call action='help' for schema.",
 				},
 				"provisioning": map[string]any{
 					"type":        "object",
-					"description": "Workspace source provisioning strategy: strategy (kind: local_mount|remote_existing_path|sync|registry_image|git_checkout), container_working_dir, mounts",
+					"description": "Workspace source provisioning strategy. Call action='help' for schema.",
 				},
 				"deployment_policy": map[string]any{
 					"type":        "object",
-					"description": "Deployment policy: reuse (bool), max_instances (int), release_behavior (none|restart|recreate), idle_timeout_seconds",
+					"description": "Deployment policy. Call action='help' for schema.",
 				},
 				"health_check": map[string]any{
 					"type":        "object",
-					"description": "Health check definition: test, http_path, http_port, interval_seconds, timeout_seconds, retries",
+					"description": "Health check definition. Call action='help' for schema.",
 				},
 				"resources": map[string]any{
 					"type":        "object",
-					"description": "Resource limits: cpu_limit, memory_limit, gpu_required, gpu_count",
+					"description": "Resource limits. Call action='help' for schema.",
 				},
 				"labels": map[string]any{
 					"type":        "object",
-					"description": "Metadata labels (key-value strings)",
+					"description": "Metadata labels. Call action='help' for schema.",
 				},
 				"set_default_test": map[string]any{
 					"type":        "boolean",
-					"description": "If true when creating/updating, sets this environment as the workspace default test environment",
+					"description": "If true, sets this as default test environment",
 				},
 				"json": map[string]any{
 					"type":        "string",
-					"description": "JSON representation of environment definition for import action",
+					"description": "JSON representation for import action",
 				},
 				"environment": map[string]any{
 					"type":        "object",
-					"description": "Complete environment definition object for import or structured create",
+					"description": "Complete environment definition object. Call action='help' for schema.",
 				},
 				"limit": map[string]any{
 					"type":        "integer",

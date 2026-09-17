@@ -67,7 +67,7 @@ func manageDeploymentsDefinition() Definition {
 				},
 				"consumer_metadata": map[string]any{
 					"type":        "object",
-					"description": "Optional key-value metadata to record on the lease (e.g. task_id, test_name)",
+					"description": "Optional key-value metadata for the lease. Call action='help' for schema.",
 				},
 				"lease_id": map[string]any{
 					"type":        "string",
@@ -83,7 +83,7 @@ func manageDeploymentsDefinition() Definition {
 				},
 				"env_overrides": map[string]any{
 					"type":        "object",
-					"description": "Optional environment variable overrides for the container",
+					"description": "Optional container environment variable overrides. Call action='help' for schema.",
 				},
 				"command": map[string]any{
 					"type":        "array",
@@ -96,7 +96,7 @@ func manageDeploymentsDefinition() Definition {
 				},
 				"env": map[string]any{
 					"type":        "object",
-					"description": "Environment variables for exec action",
+					"description": "Container environment variables for exec action. Call action='help' for schema.",
 				},
 				"timeout_ms": map[string]any{
 					"type":        "integer",

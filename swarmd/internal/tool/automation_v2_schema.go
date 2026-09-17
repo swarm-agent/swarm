@@ -8,20 +8,23 @@ Complete fresh Auto example: {"action":"request_new_plan","document":{"title":"W
 const AutomationV2AuthoringInstructions = WorkerV2AuthoringInstructions
 
 func sessionPlanAutomationV2ToolSchema() map[string]any {
-	str := func(values ...string) map[string]any { return map[string]any{"type": "string", "enum": values} }
-	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"schema_version", "schedule", "missed", "overlap", "activate_on_accept"}, "description": "Worker V2 / Automation V2 schedule specification.", "properties": map[string]any{
-		"schema_version": map[string]any{"type": "integer", "enum": []int{2}},
-		"schedule":       map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{"kind": str("interval", "cron"), "interval_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 31622400}, "cron": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}}},
-		"missed":         str("skip", "coalesce"), "overlap": str("serialize", "independent"), "activate_on_accept": map[string]any{"type": "boolean", "enum": []bool{true}},
-		"expiration": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{"kind": str("indefinite", "at"), "expires_at": map[string]any{"type": "integer", "minimum": 1}}},
-	}}
+	return map[string]any{
+		"type":        "object",
+		"description": "Worker V2 / Automation V2 schedule specification. Call action='help' for schema.",
+	}
 }
+
 func automationV2ReviewSchema() map[string]any {
-	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"proposal_id", "revision", "digest"}, "properties": map[string]any{"proposal_id": map[string]any{"type": "string"}, "revision": map[string]any{"type": "integer", "minimum": 1}, "digest": map[string]any{"type": "string"}}}
+	return map[string]any{
+		"type":        "object",
+		"description": "Worker V2 / Automation V2 review context. Call action='help' for schema.",
+	}
 }
+
 func manageWorkersV2Definition() Definition {
 	return Definition{Type: "function", Name: "manage_workers", Description: "Inspect and read Worker V2 review, context, and progress in the current workspace. Propose worker plans via exit_plan_mode (in Plan) or plan_manage action='request_new_plan' (in Auto). Call action='help' for full Worker V2 authoring and scheduling guide.", Parameters: map[string]any{"type": "object", "additionalProperties": false, "required": []string{"action"}, "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"review", "context", "list", "progress", "help"}}, "cursor": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 50}}}}
 }
+
 func manageAutomationV2Definition() Definition {
 	d := manageWorkersV2Definition()
 	d.Name = "manage_automation"

@@ -83,20 +83,12 @@ func TestPlanToolDefinitionsExposeCanonicalInfoFieldTypes(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s document property missing", toolName)
 		}
-		variants, _ := document["anyOf"].([]any)
-		if len(variants) == 0 {
-			t.Fatalf("%s document schema has no variants: %#v", toolName, document)
+		if document["type"] != "object" {
+			t.Fatalf("%s document type = %v, want object", toolName, document["type"])
 		}
-		objectSchema, _ := variants[0].(map[string]any)
-		documentProperties, _ := objectSchema["properties"].(map[string]any)
-		infoSchema, _ := documentProperties["info"].(map[string]any)
-		infoProperties, _ := infoSchema["properties"].(map[string]any)
-		if infoProperties["scope"].(map[string]any)["type"] != "string" {
-			t.Fatalf("%s info.scope schema = %#v", toolName, infoProperties["scope"])
-		}
-		decisions := infoProperties["decisions"].(map[string]any)
-		if decisions["type"] != "array" || decisions["items"].(map[string]any)["type"] != "string" {
-			t.Fatalf("%s info.decisions schema = %#v", toolName, decisions)
+		desc, _ := document["description"].(string)
+		if !strings.Contains(desc, "Authoritative SessionPlanDocument") || !strings.Contains(desc, "action='help'") {
+			t.Fatalf("%s document description = %q", toolName, desc)
 		}
 	}
 }

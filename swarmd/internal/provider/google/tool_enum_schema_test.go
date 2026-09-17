@@ -135,12 +135,8 @@ func TestGoogleToolCatalogEnumsOnWire(t *testing.T) {
 		case "manage_video":
 			found = true
 			fps := props["render_fps"].(map[string]any)
-			version := props["plan"].(map[string]any)["properties"].(map[string]any)["composition_catalog"].(map[string]any)["properties"].(map[string]any)["schema_version"].(map[string]any)
 			if fps["type"] != "integer" || !reflect.DeepEqual(fps["enum"], []string{"30", "60"}) {
 				t.Fatalf("fps=%#v", fps)
-			}
-			if version["type"] != "integer" || !reflect.DeepEqual(version["enum"], []string{"1"}) {
-				t.Fatalf("version=%#v", version)
 			}
 		}
 	}

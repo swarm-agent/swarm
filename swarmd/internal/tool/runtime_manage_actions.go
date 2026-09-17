@@ -11,42 +11,27 @@ import (
 )
 
 func manageActionsDefinition() Definition {
-	inputSchema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"id":          map[string]any{"type": "string"},
-			"label":       map[string]any{"type": "string"},
-			"description": map[string]any{"type": "string"},
-			"kind":        map[string]any{"type": "string", "description": "Input kind: text|secret"},
-			"required":    map[string]any{"type": "boolean"},
-			"placeholder": map[string]any{"type": "string"},
-			"default":     map[string]any{"type": "string"},
-			"arguments":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		},
-		"required":             []string{"id", "label"},
-		"additionalProperties": false,
-	}
 	return Definition{
 		Type:        "function",
 		Name:        "manage_actions",
-		Description: "List, inspect, create, update, delete, or reorder private Actions for an account-owned workspace. This tool manages definitions only and cannot run Actions. Entrypoints must be workspace-relative and arguments are structured arrays, never persisted shell command strings.",
+		Description: "List, inspect, create, update, delete, or reorder private Actions. Entrypoints must be workspace-relative.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action":         map[string]any{"type": "string", "description": "Action: list|get|create|update|delete|reorder"},
-				"workspace_path": map[string]any{"type": "string", "description": "Optional account-owned workspace path; defaults to the current workspace"},
-				"id":             map[string]any{"type": "string", "description": "Action id for get/update/delete"},
+				"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path"},
+				"id":             map[string]any{"type": "string", "description": "Action ID"},
 				"name":           map[string]any{"type": "string"},
 				"description":    map[string]any{"type": "string"},
 				"icon":           map[string]any{"type": "string"},
-				"entrypoint":     map[string]any{"type": "string", "description": "Workspace-relative executable or script path"},
-				"arguments":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Fixed argv values passed without shell interpolation"},
-				"inputs":         map[string]any{"type": "array", "items": inputSchema, "description": "Optional prompted input definitions whose argument templates are structured argv values"},
-				"pinned":         map[string]any{"type": "boolean", "description": "Whether the Action appears in pinned quick-access lists"},
-				"ordered_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Every workspace Action id in the desired order"},
+				"entrypoint":     map[string]any{"type": "string", "description": "Workspace-relative executable/script path"},
+				"arguments":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Argv values"},
+				"inputs":         map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Optional prompted input definitions. Call action='help' for schema."},
+				"pinned":         map[string]any{"type": "boolean"},
+				"ordered_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Action IDs in order"},
 			},
 			"required":             []string{"action"},
-			"additionalProperties": false,
+			"additionalProperties": true,
 		},
 	}
 }

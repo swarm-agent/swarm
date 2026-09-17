@@ -148,200 +148,86 @@ func manageVideoDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                        map[string]any{"type": "string", "enum": manageVideoActionNames(false), "description": "Call capabilities to discover the allowed action set. In Video Studio, call inspect_context first to load the exact attached project, revisions, selection, and proposal state without mutation."},
-				"source_root_ref":               map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
-				"relative_path":                 map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
-				"video_refs":                    map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque video references returned by browse_source. With start_transcription, these are transcribed without needing a message attachment."},
-				"audio_refs":                    map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}, "description": "Opaque audiosrc_ references returned by browse_source. With start_transcription, these produce word-timed speech plus deterministic music analysis. Do not mix with video_refs."},
-				"job_refs":                      map[string]any{"type": "array", "maxItems": pebblestore.SessionVideoAttachmentMaxCount, "items": map[string]any{"type": "string"}},
-				"job_ref":                       map[string]any{"type": "string"},
-				"transcript_ref":                map[string]any{"type": "string"},
-				"source_fingerprint":            map[string]any{"type": "string", "description": "Exact source fingerprint returned for an unchanged registered source; read_transcript and read_audio_analysis may use it."},
-				"analysis_ref":                  map[string]any{"type": "string", "description": "Exact audanalysis_ reference returned by browse_source or read_audio_analysis."},
-				"waveform_resolution_ms":        map[string]any{"type": "integer", "minimum": 1, "maximum": 60000, "description": "Optional minimum waveform bucket width for read_audio_analysis; adjacent deterministic level samples are aggregated."},
-				"focus_notes":                   map[string]any{"type": "string", "maxLength": videotranscription.MaxFocusNotesBytes, "description": "Optional job-specific instructions from the initiating user or AI for start_transcription only, for example: 'Silent software demo; produce a dense play-by-play of cursor actions, navigation, text changes, and visible results.' Guidance cannot change the multimodal schema, factuality rules, or source authority."},
-				"max_bytes":                     map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxTranscriptBytes},
-				"max_segments":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageVideoMaxSegments},
-				"start_ms":                      map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive evidence-range start for bounded transcript retrieval."},
-				"end_ms":                        map[string]any{"type": "integer", "minimum": 1, "description": "Optional exclusive evidence-range end for bounded transcript retrieval."},
-				"timestamps_ms":                 map[string]any{"type": "array", "minItems": 1, "maxItems": videorender.MaxInspectionFrames, "items": map[string]any{"type": "integer", "minimum": 0}, "description": "Canonical timestamps for inspect_frames, sorted and deduplicated server-side."},
-				"ranges":                        map[string]any{"type": "array", "maxItems": videorender.MaxInspectionFrames, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "count": map[string]any{"type": "integer", "minimum": 1, "maximum": videorender.MaxInspectionFrames}}, "required": []string{"start_ms", "end_ms", "count"}, "additionalProperties": false}, "description": "Bounded ranges no longer than 60000ms each; frames are sampled inclusively and returned in canonical timestamp order."},
-				"max_width":                     map[string]any{"type": "integer", "minimum": 2, "maximum": videorender.MaxInspectionWidth, "description": "Maximum PNG width; aspect ratio is preserved."},
-				"include_index":                 map[string]any{"type": "boolean", "description": "Derive the compact section index, ranged deduplicated evidence, and conservative splice manifest."},
-				"index_only":                    map[string]any{"type": "boolean", "description": "Return transcript authority metadata plus the compact index and bounded evidence without hydrating full transcript text or segments."},
-				"project_id":                    map[string]any{"type": "string", "description": "Opaque video project identifier for reading, revising, or rendering a project."},
-				"revision_id":                   map[string]any{"type": "string", "description": "Optional opaque project revision identifier."},
-				"source_revision_id":            map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
-				"render_job_id":                 map[string]any{"type": "string", "description": "Opaque render job identifier for checking status or cancelling a render."},
-				"render_quality":                map[string]any{"type": "string", "enum": []string{pebblestore.VideoRenderQualityPreview, pebblestore.VideoRenderQualityStandard, pebblestore.VideoRenderQualityHigh, pebblestore.VideoRenderQualityMaster}, "description": "Server-allowlisted durable final render quality."},
-				"render_fps":                    map[string]any{"type": "integer", "enum": []int{30, 60}, "description": "Server-allowlisted durable output frame rate."},
-				"queue_grace_ms":                map[string]any{"type": "integer", "minimum": 0, "maximum": int(videorender.MaxQueueGracePeriod.Milliseconds()), "description": "Optional bounded delay before a new render leaves queued status, allowing deterministic immediate cancellation without weakening terminal-state rules."},
-				"title":                         map[string]any{"type": "string", "description": "Human-readable video project title."},
-				"description":                   map[string]any{"type": "string", "description": "Optional description for a video project or revision."},
-				"output_preset":                 map[string]any{"type": "string", "description": "Target video format preset (e.g. landscape_1080p, landscape_720p, portrait_1080p, portrait_720p, square_1080p, landscape_video, portrait_video, x_header)."},
-				"change_summary":                map[string]any{"type": "string", "description": "Summary of changes made in this revision."},
-				"timeline":                      map[string]any{"type": "object", "description": "Structured video project timeline with clips, captions, and audio policy."},
-				"initial_timeline":              map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan without accepted media. When registered soundtrack audio must share the initial part playhead, include one exact trimmed source_audio clip here; the returned base revision owns that audio and a subsequent propose_plan preserves it."},
-				"metadata":                      map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
-				"proposal_id":                   map[string]any{"type": "string", "description": "Opaque edit proposal identifier."},
-				"expected_revision_id":          map[string]any{"type": "string", "description": "Exact current pending working revision required by update_composition; stale updates fail atomically."},
-				"part_id":                       map[string]any{"type": "string", "description": "Stable video-plan part id for animation candidate selection, storyboard replacement, derivative promotion, or composition inspection."},
-				"selected_candidate_id":         map[string]any{"type": "string", "description": "Exact candidate id already declared on the stable video-plan part."},
-				"selected_source":               manageVideoArtifactReferenceSchema(),
-				"derivative":                    manageVideoArtifactReferenceSchema(),
-				"artifact_v2_artifact_id":       map[string]any{"type": "string", "description": "Exact Artifact V2 artifact identity for the server-owned conversion action."},
-				"artifact_v2_published_head_id": map[string]any{"type": "string", "description": "Exact published Artifact V2 head for conversion."},
-				"artifact_v3_session_id":        map[string]any{"type": "string", "description": "Exact owner session of the selected native Artifact V3 head."},
-				"artifact_v3_artifact_id":       map[string]any{"type": "string", "description": "Exact native Artifact V3 artifact identity."},
-				"capture_state_id":              map[string]any{"type": "string", "description": "Optional exact native V3 temporal storyboard state. Unknown states fail; spatial part_id is rejected for conversion."},
-				"artifact_v3_revision_ref":      map[string]any{"type": "string", "description": "Exact revision-* reference currently selected as the Artifact V3 head."},
-				"base_revision_id":              map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
-				"rationale":                     map[string]any{"type": "string", "description": "Concise rationale for the proposed edit."},
-				"plan":                          map[string]any{"type": "object", "description": "Atomic visual video-plan proposal with kind ('initial'|'revision'), summary, optional composition_catalog, and parts array. For detailed specification, call action='help'.", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}}, "summary": map[string]any{"type": "string"}, "composition_catalog": map[string]any{"type": "object", "description": "Reusable layout geometry. See action='help'."}, "parts": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.MaxClipsPerTimeline, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxVideoTimelineDurationMs}, "narration": map[string]any{"type": "string"}, "on_screen_text": map[string]any{"type": "string"}, "visual_direction": map[string]any{"type": "string"}, "transition_in": map[string]any{"type": "string"}, "source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 1}, "visual": manageVideoArtifactReferenceSchema()}, "required": []string{"id"}}}}, "required": []string{"parts"}},
-				"operations":                    manageVideoEditOperationsSchema(),
-				"affected_ranges":               map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"start_ms", "end_ms"}, "additionalProperties": false}},
-				"max_clips":                     map[string]any{"type": "integer", "minimum": 1, "maximum": pebblestore.MaxClipsPerTimeline, "description": "Bounded accepted-cut clip count."},
+				"action":                   map[string]any{"type": "string", "enum": manageVideoActionNames(false), "description": "Call capabilities to discover the allowed action set. In Video Studio, call inspect_context first to load the exact attached project, revisions, selection, and proposal state without mutation."},
+				"source_root_ref":          map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
+				"relative_path":            map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
+				"video_refs":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Video references from browse_source."},
+				"audio_refs":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Audio references from browse_source."},
+				"job_refs":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"job_ref":                  map[string]any{"type": "string"},
+				"transcript_ref":           map[string]any{"type": "string"},
+				"source_fingerprint":       map[string]any{"type": "string", "description": "Exact source fingerprint for read_transcript/read_audio_analysis."},
+				"analysis_ref":             map[string]any{"type": "string", "description": "Exact audanalysis_ reference."},
+				"waveform_resolution_ms":   map[string]any{"type": "integer", "description": "Waveform bucket width in ms for read_audio_analysis."},
+				"focus_notes":              map[string]any{"type": "string", "description": "job-specific instructions from the initiating user or AI (e.g. 'Silent software demo; produce a dense play-by-play')."},
+				"max_bytes":                map[string]any{"type": "integer"},
+				"max_segments":             map[string]any{"type": "integer"},
+				"start_ms":                 map[string]any{"type": "integer", "description": "Optional evidence-range start in ms."},
+				"end_ms":                   map[string]any{"type": "integer", "description": "Optional evidence-range end in ms."},
+				"timestamps_ms":            map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Canonical timestamps for inspect_frames."},
+				"ranges":                   map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer"}, "end_ms": map[string]any{"type": "integer"}, "count": map[string]any{"type": "integer"}}, "required": []string{"start_ms", "end_ms", "count"}}, "description": "Bounded ranges for inspect_frames. Call action='help' for schema."},
+				"max_width":                map[string]any{"type": "integer", "description": "Maximum PNG width."},
+				"include_index":            map[string]any{"type": "boolean", "description": "Derive section index and evidence manifest."},
+				"index_only":               map[string]any{"type": "boolean", "description": "Return metadata index without full text."},
+				"project_id":               map[string]any{"type": "string", "description": "Video project identifier."},
+				"revision_id":              map[string]any{"type": "string", "description": "Project revision identifier."},
+				"source_revision_id":       map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
+				"render_job_id":            map[string]any{"type": "string", "description": "Render job identifier."},
+				"render_fps":               map[string]any{"type": "integer", "enum": []int{30, 60}, "description": "Output frame rate."},
+				"queue_grace_ms":           map[string]any{"type": "integer", "description": "Optional bounded delay before render leaves queued status."},
+				"title":                    map[string]any{"type": "string", "description": "Video project title."},
+				"description":              map[string]any{"type": "string", "description": "Video project or revision description."},
+				"output_preset":            map[string]any{"type": "string", "description": "Target video format preset."},
+				"change_summary":           map[string]any{"type": "string", "description": "Summary of changes made in this revision."},
+				"timeline":                 map[string]any{"type": "object", "description": "Structured timeline. Call action='help' for schema."},
+				"initial_timeline":         map[string]any{"type": "object", "description": "Initial timeline. For soundtracks, include trimmed source_audio clip here; base revision owns that audio and subsequent propose_plan preserves it. Call action='help' for schema."},
+				"metadata":                 map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
+				"artifact_v3_session_id":   map[string]any{"type": "string", "description": "Exact owner session of the selected native Artifact V3 head."},
+				"artifact_v3_artifact_id":  map[string]any{"type": "string", "description": "Exact native Artifact V3 artifact identity."},
+				"artifact_v3_revision_ref": map[string]any{"type": "string", "description": "Exact revision-* reference currently selected as the Artifact V3 head."},
+				"expected_revision_id":     map[string]any{"type": "string", "description": "Exact current pending working revision required by update_composition; stale updates fail atomically."},
+				"part_id":                  map[string]any{"type": "string", "description": "Stable video-plan part id for animation candidate selection, storyboard replacement, derivative promotion, or composition inspection."},
+				"selected_candidate_id":    map[string]any{"type": "string", "description": "Exact candidate id already declared on the stable video-plan part."},
+				"selected_source":          manageVideoArtifactReferenceSchema(),
+				"derivative":               manageVideoArtifactReferenceSchema(),
+				"base_revision_id":         map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
+				"plan":                     map[string]any{"type": "object", "description": "Atomic visual video-plan proposal with kind ('initial'|'revision'), summary, optional composition_catalog, and parts array. Call action='help' to obtain detailed parameters and workflow schemas."},
+				"operations": map[string]any{
+					"type":        "array",
+					"description": "Bounded typed add, update, replace, and remove operations. Call action='help' to obtain detailed parameters and workflow schemas.",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"id":           map[string]any{"type": "string"},
+							"type":         map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
+							"source_kind":  map[string]any{"type": "string", "enum": []string{"source_audio"}},
+							"audio_source": map[string]any{"type": "object", "properties": map[string]any{"source_fingerprint": map[string]any{"type": "string"}, "fingerprint_version": map[string]any{"type": "string"}}},
+						},
+					},
+				},
+				"affected_ranges": map[string]any{"type": "array", "maxItems": pebblestore.MaxVideoEditProposalOperations, "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}, "required": []string{"start_ms", "end_ms"}, "additionalProperties": false}},
 			},
-			"required": []string{"action"}, "additionalProperties": false,
+			"required": []string{"action"}, "additionalProperties": true,
 		},
 	}
-}
-
-func manageVideoAnimationCandidatesSchema() map[string]any {
-	candidateRef := manageVideoArtifactReferenceSchema()
-	return map[string]any{"type": "object", "description": "Optional 2 to 16 exact ready text/html candidates for immediate live Video Studio preview. The selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead; no HTML-to-MP4 export is needed for preview. Visual remains the image/* or video/mp4 render-ready fallback. Export only the selected candidate when explicit durable acceptance/promotion or final rendering requires an MP4 derivative; never replace a durable timeline artifact_ref with text/html.", "properties": map[string]any{
-		"candidates":            map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "items": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "label": map[string]any{"type": "string"}, "source": candidateRef}, "required": []string{"id", "source"}, "additionalProperties": false}},
-		"selected_candidate_id": map[string]any{"type": "string"}, "selected_source": candidateRef, "derivative": candidateRef,
-		"status":         map[string]any{"type": "string", "enum": []string{pebblestore.VideoAnimationCandidateStatusAwaitingSelection, pebblestore.VideoAnimationCandidateStatusAwaitingExport, pebblestore.VideoAnimationCandidateStatusReady, pebblestore.VideoAnimationCandidateStatusFailed}},
-		"failure_reason": map[string]any{"type": "string"},
-	}, "required": []string{"candidates", "status"}, "additionalProperties": false}
-}
-
-func manageVideoCompositionCatalogSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Reusable normalized layout geometry shared by linked storyboard shots.", "properties": map[string]any{
-		"schema_version": map[string]any{"type": "integer", "enum": []int{1}},
-		"layouts": map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "properties": map[string]any{
-			"id": map[string]any{"type": "string"}, "extends_layout_id": map[string]any{"type": "string"}, "slots": map[string]any{"type": "array", "maxItems": 16, "items": manageVideoCompositionSlotSchema()},
-		}, "required": []string{"id", "slots"}, "additionalProperties": false}},
-	}, "required": []string{"schema_version", "layouts"}, "additionalProperties": false}
-}
-
-func manageVideoCompositionLinkSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Part-level linked layout, sparse overrides, or detached private slots.", "properties": map[string]any{
-		"layout_id": map[string]any{"type": "string"}, "overrides": map[string]any{"type": "array", "maxItems": 16, "items": manageVideoCompositionOverrideSchema()},
-		"detached": map[string]any{"type": "boolean"}, "detached_slots": map[string]any{"type": "array", "maxItems": 16, "items": manageVideoCompositionSlotSchema()}, "disabled": map[string]any{"type": "boolean"},
-	}, "additionalProperties": false}
-}
-
-func manageVideoCompositionRectSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}}, "required": []string{"x", "y", "width", "height"}, "additionalProperties": false}
-}
-
-func manageVideoCompositionCropSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{"top": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "right": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "bottom": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "left": map[string]any{"type": "number", "minimum": 0, "maximum": 1}}, "additionalProperties": false}
-}
-
-func manageVideoCompositionMaskSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"none", "rounded_rect", "ellipse"}}, "radius": map[string]any{"type": "number", "minimum": 0, "maximum": .5}}, "required": []string{"kind"}, "additionalProperties": false}
-}
-
-func manageVideoCompositionSourceSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Exact opaque registered video source with independent source and part-relative ranges.", "properties": map[string]any{
-		"source_ref": map[string]any{"type": "string"}, "media_type": map[string]any{"type": "string"}, "source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 1}, "timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "timeline_end_ms": map[string]any{"type": "integer", "minimum": 1}, "audio_policy": map[string]any{"type": "string", "enum": []string{"mute", "include"}}, "gain": map[string]any{"type": "number", "minimum": 0, "maximum": 2},
-	}, "required": []string{"source_ref", "media_type", "source_start_ms", "source_end_ms", "timeline_start_ms", "timeline_end_ms", "audio_policy"}, "additionalProperties": false}
-}
-
-func manageVideoCompositionSlotSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"id": map[string]any{"type": "string"}, "requirement": map[string]any{"type": "string"}, "geometry": manageVideoCompositionRectSchema(), "z_index": map[string]any{"type": "integer", "minimum": 0, "maximum": 255}, "fit": map[string]any{"type": "string", "enum": []string{"contain", "cover"}}, "alignment_x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "alignment_y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "crop": manageVideoCompositionCropSchema(), "mask": manageVideoCompositionMaskSchema(), "aspect_lock": map[string]any{"type": "number", "minimum": 0, "maximum": 10}, "source": manageVideoCompositionSourceSchema(),
-	}, "required": []string{"id", "requirement", "geometry", "z_index", "fit", "alignment_x", "alignment_y", "mask"}, "additionalProperties": false}
-}
-
-func manageVideoCompositionOverrideSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"slot_id": map[string]any{"type": "string"}, "requirement": map[string]any{"type": "string"}, "geometry": manageVideoCompositionRectSchema(), "z_index": map[string]any{"type": "integer", "minimum": 0, "maximum": 255}, "fit": map[string]any{"type": "string", "enum": []string{"contain", "cover"}}, "alignment_x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "alignment_y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "crop": manageVideoCompositionCropSchema(), "mask": manageVideoCompositionMaskSchema(), "aspect_lock": map[string]any{"type": "number", "minimum": 0, "maximum": 10}, "source": manageVideoCompositionSourceSchema(), "clear_source": map[string]any{"type": "boolean"},
-	}, "required": []string{"slot_id"}, "additionalProperties": false}
-}
-
-func manageVideoPlanCaptionSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Optional explicit caption payload. Times are relative to the part and are compiled to timeline time.", "properties": map[string]any{
-		"id": map[string]any{"type": "string"}, "text": map[string]any{"type": "string"}, "position": map[string]any{"type": "string", "enum": []string{"bottom", "top", "center"}}, "font_size": map[string]any{"type": "integer", "minimum": 1}, "font_color": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "style": map[string]any{"type": "string"},
-	}, "required": []string{"id", "text", "start_ms", "end_ms"}, "additionalProperties": false}
-}
-
-func manageVideoPlanTransitionSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Optional explicit first-class transition into this part.", "properties": map[string]any{
-		"id": map[string]any{"type": "string"}, "kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoTransitionKindCut, pebblestore.VideoTransitionKindCrossfade}}, "from_clip_id": map[string]any{"type": "string"}, "to_clip_id": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 0},
-	}, "required": []string{"id", "kind", "from_clip_id", "to_clip_id"}, "additionalProperties": false}
-}
-
-func manageVideoEditOperationsSchema() map[string]any {
-	return map[string]any{
-		"type": "array", "minItems": 1, "maxItems": pebblestore.MaxVideoEditProposalOperations,
-		"description": "Bounded typed add, update, replace, and remove operations. Soundtracks use source_audio clips carrying one complete exact audio_source reference returned by browse_source; arbitrary paths are rejected.",
-		"items": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":              map[string]any{"type": "string"},
-				"type":            map[string]any{"type": "string", "enum": []string{pebblestore.VideoEditOperationAddClip, pebblestore.VideoEditOperationUpdateClip, pebblestore.VideoEditOperationReplaceClip, pebblestore.VideoEditOperationRemoveClip, pebblestore.VideoEditOperationAddTransition, pebblestore.VideoEditOperationUpdateTransition, pebblestore.VideoEditOperationRemoveTransition, "trim_clip", "move_clip", "set_volume", "set_mute", "set_captions", "replace_source"}},
-				"clip_id":         map[string]any{"type": "string", "description": "Existing clip ID required by clip edits, replace_clip, and remove_clip."},
-				"clip":            map[string]any{"type": "object", "description": "Typed timeline clip. See action='help'.", "properties": map[string]any{"source_kind": map[string]any{"type": "string", "enum": []string{pebblestore.VideoClipSourceKindSourceVideo, pebblestore.VideoClipSourceKindSourceAudio, pebblestore.VideoClipSourceKindManagedArtifact, pebblestore.VideoClipSourceKindColor, pebblestore.VideoClipSourceKindText}}}},
-				"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
-				"timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"},
-				"captions": manageVideoCaptionsSchema(), "source_kind": map[string]any{"type": "string"}, "source_ref": map[string]any{"type": "string"},
-				"audio_source": manageVideoAudioSourceSchema(), "artifact_ref": manageVideoArtifactReferenceSchema(), "design_input": manageVideoDesignInputSchema(), "media_type": map[string]any{"type": "string"},
-				"transition_id": map[string]any{"type": "string"},
-				"transition": map[string]any{"type": "object", "properties": map[string]any{
-					"id": map[string]any{"type": "string"}, "kind": map[string]any{"type": "string"}, "from_clip_id": map[string]any{"type": "string"}, "to_clip_id": map[string]any{"type": "string"}, "duration_ms": map[string]any{"type": "integer", "minimum": 0},
-				}, "additionalProperties": false},
-			},
-			"required": []string{"id", "type"}, "additionalProperties": false,
-		},
-	}
-}
-
-func manageVideoTimelineClipSchema() map[string]any {
-	return map[string]any{
-		"type":        "object",
-		"description": "Typed timeline clip. A soundtrack sets source_kind=source_audio, visible=false, a bounded source/timeline range, gain/mute, and the complete exact audio_source object from browse_source.",
-		"properties": map[string]any{
-			"id": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"},
-			"track": map[string]any{"type": "integer", "minimum": 0}, "sequence": map[string]any{"type": "integer", "minimum": 0}, "layer": map[string]any{"type": "integer", "minimum": 0},
-			"source_kind":  map[string]any{"type": "string", "enum": []string{pebblestore.VideoClipSourceKindSourceVideo, pebblestore.VideoClipSourceKindSourceAudio, pebblestore.VideoClipSourceKindManagedArtifact, pebblestore.VideoClipSourceKindColor, pebblestore.VideoClipSourceKindText}},
-			"source_ref":   map[string]any{"type": "string"},
-			"audio_source": manageVideoAudioSourceSchema(),
-			"artifact_ref": manageVideoArtifactReferenceSchema(), "design_input": manageVideoDesignInputSchema(), "media_type": map[string]any{"type": "string"},
-			"source_start_ms": map[string]any{"type": "integer", "minimum": 0}, "source_end_ms": map[string]any{"type": "integer", "minimum": 0},
-			"timeline_start_ms": map[string]any{"type": "integer", "minimum": 0}, "timeline_end_ms": map[string]any{"type": "integer", "minimum": 0}, "duration_ms": map[string]any{"type": "integer", "minimum": 1},
-			"visible": map[string]any{"type": "boolean"}, "volume": map[string]any{"type": "number", "minimum": 0, "maximum": 2}, "muted": map[string]any{"type": "boolean"}, "captions": manageVideoCaptionsSchema(),
-		},
-		"required": []string{"id", "track", "sequence", "source_kind", "duration_ms", "timeline_start_ms", "timeline_end_ms", "visible"}, "additionalProperties": false,
-	}
-}
-
-func manageVideoAudioSourceSchema() map[string]any {
-	return map[string]any{"type": "object", "description": "Complete exact trusted audio reference returned by browse_source; never substitute a path.", "properties": map[string]any{
-		"ref": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"}, "mime_type": map[string]any{"type": "string"}, "size_bytes": map[string]any{"type": "integer", "minimum": 1}, "source_fingerprint": map[string]any{"type": "string"}, "fingerprint_version": map[string]any{"type": "string"},
-	}, "required": []string{"ref", "name", "mime_type", "size_bytes", "source_fingerprint", "fingerprint_version"}, "additionalProperties": false}
 }
 
 func manageVideoArtifactReferenceSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
-		"label": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}, "action": map[string]any{"type": "string"}, "part_id": map[string]any{"type": "string"},
-	}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false}
-}
-
-func manageVideoDesignInputSchema() map[string]any {
-	return map[string]any{"type": "object", "properties": map[string]any{
-		"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"}, "variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1}, "action": map[string]any{"type": "string"}, "overlay_mode": map[string]any{"type": "string", "enum": []string{"pip", "full", "intro", "outro", "watermark"}},
-	}, "required": []string{"collection_id", "variant_id", "event_seq"}, "additionalProperties": false}
-}
-
-func manageVideoCaptionsSchema() map[string]any {
-	return map[string]any{"type": "array", "maxItems": pebblestore.MaxCaptionsPerClip, "items": map[string]any{"type": "object", "properties": map[string]any{
-		"id": map[string]any{"type": "string"}, "text": map[string]any{"type": "string", "maxLength": pebblestore.MaxTextOverlayLength}, "position": map[string]any{"type": "string", "enum": []string{"bottom", "top", "center"}}, "font_size": map[string]any{"type": "integer", "minimum": 1}, "font_color": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "style": map[string]any{"type": "string"},
-	}, "required": []string{"text", "start_ms", "end_ms"}, "additionalProperties": false}}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"session_id":    map[string]any{"type": "string"},
+			"collection_id": map[string]any{"type": "string"},
+			"variant_id":    map[string]any{"type": "string"},
+			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
+			"label":         map[string]any{"type": "string"},
+			"description":   map[string]any{"type": "string"},
+			"action":        map[string]any{"type": "string"},
+			"part_id":       map[string]any{"type": "string"},
+		},
+		"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
+		"additionalProperties": false,
+	}
 }
 
 func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
