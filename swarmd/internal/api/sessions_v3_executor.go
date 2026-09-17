@@ -2904,6 +2904,14 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 					planGuardArmed = planContextGuard.Observe(sessionV3PlanContextGuardUsageSummary(usageResult, turnUsage))
 				}
 			}
+			if e.server != nil && e.server.sessions != nil {
+				if exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(job.Principal.AccountScopeID); err == nil && exceeded {
+					reason := fmt.Sprintf("daily usage limit exceeded ($%.4f spent today, limit is $%.2f)", currentCost, limitCost)
+					log.Printf("warning: daily usage limit exceeded during run %s: %s", job.RunID, reason)
+					e.CancelRunsForAccount(job.Principal.AccountScopeID, reason)
+					return sessionV3ProviderLoopResult{}, errors.New(reason)
+				}
+			}
 		}
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			if planGuardArmed {
