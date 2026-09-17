@@ -45,9 +45,9 @@ func narrationTestRuntime(t *testing.T, builder ArtifactV3Builder, previewer Art
 func TestNarrationPlanExampleNativePublication(t *testing.T) {
 	builder, previewer := &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}
 	runtime, repo, scope, ctx := narrationTestRuntime(t, builder, previewer)
-	schema := manageArtifactDefinition().Parameters["properties"].(map[string]any)["narration_plan"].(map[string]any)
-	if !strings.Contains(schema["description"].(string), artifactNarrationCreateExample) || schema["additionalProperties"] != false {
-		t.Fatal("missing executable closed-schema example")
+	help := artifactHelpText("narration")
+	if !strings.Contains(help, artifactNarrationCreateExample) {
+		t.Fatal("missing executable closed-schema example in narration help")
 	}
 	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "example", Name: "manage_artifact", Arguments: artifactNarrationCreateExample})
 	if err != nil {

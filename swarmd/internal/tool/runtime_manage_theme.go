@@ -771,16 +771,7 @@ func manageThemeBatchSummary(prefix string, names []string, applyPlan manageThem
 }
 
 func manageThemePaletteSchema() map[string]any {
-	properties := map[string]any{}
-	for _, key := range []string{
-		"background", "panel", "element", "border", "border_active", "text", "text_muted",
-		"primary", "secondary", "accent", "success", "warning", "error", "prompt",
-		"prompt_cursor_bg", "prompt_cursor_fg", "code_background", "code_text", "code_keyword",
-		"code_type", "code_string", "code_number", "code_comment", "code_function", "code_operator",
-	} {
-		properties[key] = map[string]any{"type": "string"}
-	}
-	return map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+	return map[string]any{"type": "object", "description": "Theme color palette object. Call action='inspect' for palette fields."}
 }
 
 func manageThemeCreateUsage() string {

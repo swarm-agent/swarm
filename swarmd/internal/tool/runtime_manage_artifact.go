@@ -142,256 +142,115 @@ func manageArtifactDefinition() Definition {
 			"label":       map[string]any{"type": "string", "maxLength": 256},
 			"kind":        map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Locator contract for this review target. temporal requires start_ms/end_ms; spatial requires normalized x/y/width/height; page requires page; state requires state_id; selector requires selector; semantic needs no locator beyond id/label/description."},
 			"description": map[string]any{"type": "string", "maxLength": 2048, "description": "Concise explanation of the actual authored region or section and the changes it can receive."},
-			"start_ms":    map[string]any{"type": "integer", "minimum": 0, "description": "Temporal start in milliseconds; required only for kind=temporal."},
-			"end_ms":      map[string]any{"type": "integer", "minimum": 1, "description": "Exclusive temporal end in milliseconds greater than start_ms; required only for kind=temporal."},
-			"x":           map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized left coordinate; required only for kind=spatial."},
-			"y":           map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized top coordinate; required only for kind=spatial."},
-			"width":       map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Normalized width with x+width <= 1; required only for kind=spatial."},
-			"height":      map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Normalized height with y+height <= 1; required only for kind=spatial."},
-			"page":        map[string]any{"type": "integer", "minimum": 1, "description": "One-based page number; required only for kind=page."},
-			"state_id":    map[string]any{"type": "string", "maxLength": 128, "description": "Exact authored state identifier; required only for kind=state."},
-			"selector":    map[string]any{"type": "string", "maxLength": 512, "description": "Stable selector for an element in the authored artifact; required only for kind=selector."},
 		},
 		"required":             []string{"id", "label", "kind"},
-		"additionalProperties": false,
-	}
-	locator := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}},
-			"start_ms": map[string]any{"type": "integer", "minimum": 0},
-			"end_ms":   map[string]any{"type": "integer", "minimum": 1},
-			"x":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-			"y":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-			"width":    map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
-			"height":   map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
-			"page":     map[string]any{"type": "integer", "minimum": 1},
-			"state_id": map[string]any{"type": "string", "maxLength": 128},
-			"selector": map[string]any{"type": "string", "maxLength": 512},
-		},
-		"required":             []string{"kind"},
-		"additionalProperties": false,
-	}
-	replacementPart := map[string]any{
-		"type": "object", "properties": map[string]any{
-			"part_id":        map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
-			"content":        map[string]any{"type": "string"},
-			"content_base64": map[string]any{"type": "string"},
-			"media_type":     map[string]any{"type": "string", "maxLength": 255},
-			"filename":       map[string]any{"type": "string", "maxLength": 255},
-			"locked":         map[string]any{"type": "boolean"},
-		}, "required": []string{"part_id"}, "additionalProperties": false,
+		"additionalProperties": true,
 	}
 	initialPart := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"id":             map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Stable independently replaceable part identity."},
-			"label":          map[string]any{"type": "string", "maxLength": 256},
-			"description":    map[string]any{"type": "string", "maxLength": 2048},
-			"media_type":     map[string]any{"type": "string", "maxLength": 255, "description": "Media type for this part's independently stored immutable bytes."},
-			"content":        map[string]any{"type": "string", "description": "Non-empty UTF-8 bytes for this independent part; mutually exclusive with content_base64."},
-			"content_base64": map[string]any{"type": "string", "description": "Non-empty base64 bytes for this independent part; mutually exclusive with content."},
-			"locator":        locator,
+			"id":         map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Stable independently replaceable part identity."},
+			"label":      map[string]any{"type": "string", "maxLength": 256},
+			"media_type": map[string]any{"type": "string", "maxLength": 255, "description": "Media type for this part's independently stored immutable bytes."},
+			"content":    map[string]any{"type": "string", "description": "Non-empty UTF-8 bytes for this independent part; mutually exclusive with content_base64."},
 		},
 		"required":             []string{"id", "label", "media_type"},
-		"additionalProperties": false,
+		"additionalProperties": true,
 	}
 	presentation := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"kind":        map[string]any{"type": "string", "description": "Display kind: download|text|code|image|html|package"},
 			"label":       map[string]any{"type": "string", "maxLength": 256},
-			"description": map[string]any{"type": "string", "maxLength": 2048},
 			"previewable": map[string]any{"type": "boolean"},
-			"width":       map[string]any{"type": "integer", "minimum": 0, "maximum": 100000},
-			"height":      map[string]any{"type": "integer", "minimum": 0, "maximum": 100000},
 		},
-		"additionalProperties": false,
-	}
-	entry := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"name":    map[string]any{"type": "string", "description": "Relative slash-delimited package entry name"},
-			"content": map[string]any{"type": "string", "description": "UTF-8 entry content"},
-		},
-		"required":             []string{"name", "content"},
-		"additionalProperties": false,
-	}
-	partChoice := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"part_id": map[string]any{"type": "string"},
-			"revision": map[string]any{"type": "object", "properties": map[string]any{
-				"artifact_chain_id": map[string]any{"type": "string"}, "part_id": map[string]any{"type": "string"}, "part_revision_id": map[string]any{"type": "string"}, "owner_session_id": map[string]any{"type": "string"}, "digest_sha256": map[string]any{"type": "string"}, "size": map[string]any{"type": "integer", "minimum": 1}, "media_type": map[string]any{"type": "string"},
-			}, "required": []string{"artifact_chain_id", "part_id", "part_revision_id", "owner_session_id", "digest_sha256", "size", "media_type"}, "additionalProperties": false},
-			"revision_event_seq": map[string]any{"type": "integer", "minimum": 1},
-			"locked":             map[string]any{"type": "boolean"},
-		},
-		"required": []string{"part_id", "revision", "revision_event_seq", "locked"}, "additionalProperties": false,
-	}
-	reference := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"session_id":    map[string]any{"type": "string"},
-			"collection_id": map[string]any{"type": "string"},
-			"variant_id":    map[string]any{"type": "string"},
-			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
-		},
-		"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
-		"additionalProperties": false,
-	}
-	artifactV3Reference := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"session_id":   map[string]any{"type": "string"},
-			"artifact_id":  map[string]any{"type": "string"},
-			"revision_ref": map[string]any{"type": "string"},
-		},
-		"required":             []string{"session_id", "artifact_id", "revision_ref"},
-		"additionalProperties": false,
+		"additionalProperties": true,
 	}
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For detailed authoring instructions, schemas, and media guidelines, call action='help' with optional topic ('animation', 'video', 'audio', 'narration', 'workflow').",
+		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For ANY artifact creation, revision, or media task, first call action='help' (with optional topic: 'animation', 'video', 'audio', 'narration', 'workflow') to obtain complete schema contracts, examples, and authoring guidelines. Do not substitute generate_image for native HTML documents.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"artifact_id":  map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
-				"resume_draft": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":       map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan or complete text/html. read_v3 returns HTML and Parts. revise_v3 publishes candidate revisions. begin_v3/author_v3 handle incremental native authoring. generate_image/video/audio creates AI media assets. Supports search, materialize/materialize_batch, and publish_workspace. Pass action='help' with optional topic (animation, video, audio, narration) for detailed authoring specifications."},
-				"topic":        map[string]any{"type": "string", "description": "Optional topic for action=help (e.g. animation, video, audio, narration)."},
-				"scenes": map[string]any{
-					"type":        "array",
-					"minItems":    2,
-					"maxItems":    16,
-					"description": "For generate_video_story: ordered list of scene objects ({prompt, title, duration_seconds}) to automatically generate and chain into a master video.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"prompt":           map[string]any{"type": "string", "description": "Visual scene description and audio direction."},
-							"title":            map[string]any{"type": "string", "description": "Optional scene title."},
-							"duration_seconds": map[string]any{"type": "integer", "description": "Optional scene duration in seconds (default 8s)."},
-						},
-						"required":             []string{"prompt"},
-						"additionalProperties": false,
-					},
-				},
-				"soundtrack": map[string]any{"description": "For generate_video_story: continuous soundtrack prompt string or object ({prompt, audio_mode, foley_volume}) generated via Google Lyria for total story duration."},
-				"script":     map[string]any{"type": "object", "description": "For generate_video_story: script object containing scenes and soundtrack."},
-				"chain_from": map[string]any{"description": "For generate_video: video artifact reference or workspace path from which the last keyframe is automatically extracted to seed continuous image-to-video generation."},
-				"chain":      map[string]any{"type": "boolean", "description": "For generate_video with source_* pointing to a video: when true, extracts last keyframe and chains via image-to-video instead of conversational editing."},
-				"videos": map[string]any{
-					"type":        "array",
-					"minItems":    2,
-					"maxItems":    16,
-					"description": "Ordered array of video artifact references or workspace paths for chain_video.",
-					"items": map[string]any{
-						"anyOf": []any{
-							reference,
-							map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"path": map[string]any{"type": "string", "description": "Clean workspace-relative or absolute video file path."},
-								},
-								"required":             []string{"path"},
-								"additionalProperties": false,
-							},
-							map[string]any{
-								"type":        "string",
-								"description": "Clean workspace-relative or absolute video file path.",
-							},
-						},
-					},
-				},
-				"audio":            map[string]any{"description": "Optional audio artifact reference or workspace path for chain_video continuous soundtrack."},
-				"audio_mode":       map[string]any{"type": "string", "enum": []string{"override", "mix_ducked", "native"}, "description": "Audio mode for chain_video: override (replaces all video audio with soundtrack), mix_ducked (duck native Foley at 35%, overlay soundtrack at 100%), or native (preserves video audio)."},
-				"foley_volume":     map[string]any{"type": "number", "minimum": 0, "maximum": 2, "description": "Optional volume multiplier (0.0 to 2.0, default 0.35) for native audio in mix_ducked mode."},
-				"transition":       map[string]any{"type": "string", "enum": []string{"cut", "crossfade"}, "description": "Optional transition for chain_video: cut (lossless concat, default) or crossfade."},
-				"frame":            map[string]any{"type": "string", "description": "For extract_video_frame: 'last' (default), 'first', or milliseconds timestamp."},
-				"timestamp_ms":     map[string]any{"type": "integer", "minimum": 0, "description": "Optional timestamp in milliseconds for extract_video_frame."},
-				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image, generate_video, and generate_audio. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
-				"prompts":          map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes}, "description": "Optional array of prompts for generating multiple audio variations in one call."},
-				"image":            map[string]any{"description": "Optional image input for generate_video or generate_audio (image inspiration). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
-				"image_path":       map[string]any{"type": "string", "description": "Optional workspace file path to an image for generate_video or generate_audio."},
-				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated media (video or audio). If omitted, a descriptive title is automatically derived from the prompt."},
-				"aspect_ratio":     map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
-				"resolution":       map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, or 360p."},
-				"duration_seconds": map[string]any{"type": "integer", "description": "Optional media duration in seconds for video (4, 6, 8) or audio (e.g. 15, 28, 30, 60, 120)."},
-				"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional number of media variants to generate (1 to 8)."},
-				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
-				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
-					"size":         map[string]any{"type": "string", "maxLength": 64, "description": "Optional portable output size, for example auto, 1024x1024, 1536x1024, or 1024x1536. The backend adapts it to the configured image provider."},
-					"aspect_ratio": map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, or 21:9."},
-					"image_size":   map[string]any{"type": "string", "maxLength": 32, "description": "Optional portable resolution tier: 512, 1K, 2K, or 4K. Equivalent square pixel aliases such as 1024x1024, 2048x2048, and 4096x4096 are accepted. The backend translates this for the configured provider."},
-				}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Omit unless the user requested a size or aspect ratio. The backend resolves the account's configured provider/model and translates these controls; never pass provider or model."},
-				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session. For get/read/materialize/promote of an attached ready artifact, copy this together with collection_id, variant_id, and event_seq from the same returned reference."},
-				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, variant_id, and event_seq from the same returned reference. For standalone generate_image, omit to create a new collection or pass an existing collection to append the generated variant without replacing collection metadata. Required for collection-scoped actions."},
+				"artifact_id":            map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
+				"resume_draft":           map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
+				"action":                 map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, etc. For complete schemas and workflow guides, call action='help' with optional topic (animation, video, audio, narration, workflow)."},
+				"topic":                  map[string]any{"type": "string", "description": "Optional topic for action=help (animation, video, audio, narration, workflow)."},
+				"scenes":                 map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "items": map[string]any{"type": "object"}, "description": "For generate_video_story: ordered list of scene objects ({prompt, title, duration_seconds}). See action='help' topic='video'."},
+				"soundtrack":             map[string]any{"description": "For generate_video_story: continuous soundtrack prompt string or {prompt, audio_mode, foley_volume}. See action='help' topic='video'."},
+				"script":                 map[string]any{"type": "object", "description": "For generate_video_story: script object with scenes and soundtrack."},
+				"chain_from":             map[string]any{"description": "For generate_video: video reference or path to seed continuous image-to-video generation."},
+				"chain":                  map[string]any{"type": "boolean", "description": "For generate_video: chain via image-to-video instead of conversational editing."},
+				"videos":                 map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "items": map[string]any{"type": "object"}, "description": "Ordered array of video artifact references or workspace paths for chain_video. See action='help' topic='video'."},
+				"audio":                  map[string]any{"description": "Optional audio artifact reference or workspace path for chain_video continuous soundtrack."},
+				"audio_mode":             map[string]any{"type": "string", "enum": []string{"override", "mix_ducked", "native"}, "description": "Audio mode for chain_video: override, mix_ducked, or native."},
+				"foley_volume":           map[string]any{"type": "number", "minimum": 0, "maximum": 2, "description": "Volume multiplier (0.0 to 2.0, default 0.35) for native audio in mix_ducked mode."},
+				"transition":             map[string]any{"type": "string", "enum": []string{"cut", "crossfade"}, "description": "Transition for chain_video: cut or crossfade."},
+				"frame":                  map[string]any{"type": "string", "description": "For extract_video_frame: 'last' (default), 'first', or milliseconds timestamp."},
+				"timestamp_ms":           map[string]any{"type": "integer", "minimum": 0, "description": "Optional timestamp in milliseconds for extract_video_frame."},
+				"prompt":                 map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt for generate_image, generate_video, or generate_audio. See action='help'."},
+				"prompts":                map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes}, "description": "Array of prompts for generating multiple audio variations in one call."},
+				"image":                  map[string]any{"description": "Image input for generate_video or generate_audio (path, data URI, or artifact reference)."},
+				"image_path":             map[string]any{"type": "string", "description": "Workspace file path to an image for generate_video or generate_audio."},
+				"title":                  map[string]any{"type": "string", "maxLength": 160, "description": "Human-readable title for generated media (video/audio)."},
+				"aspect_ratio":           map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
+				"resolution":             map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, 360p."},
+				"duration_seconds":       map[string]any{"type": "integer", "description": "Media duration in seconds for video (4, 6, 8) or audio (15, 30, 60, 120)."},
+				"count":                  map[string]any{"type": "integer", "minimum": 1, "maximum": 8, "description": "Number of media variants to generate (1 to 8)."},
+				"capability_token":       map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for generate_image."},
+				"image_settings":         map[string]any{"type": "object", "properties": map[string]any{"size": map[string]any{"type": "string", "maxLength": 64}, "aspect_ratio": map[string]any{"type": "string", "maxLength": 32}, "image_size": map[string]any{"type": "string", "maxLength": 32}}, "additionalProperties": false, "description": "Optional provider-neutral image controls (size, aspect_ratio, image_size). Never pass provider or model."},
+				"session_id":             map[string]any{"type": "string", "description": "Source session ID. Combined with collection_id, variant_id, and event_seq for exact artifact reference."},
+				"collection_id":          map[string]any{"type": "string", "description": "Collection ID. Combined with session_id, variant_id, and event_seq for exact artifact reference."},
 				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
 				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
-				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and event_seq from the same returned reference; otherwise optional on create."},
+				"variant_id":             map[string]any{"type": "string", "description": "Variant ID. Combined with session_id, collection_id, and event_seq for exact artifact reference."},
 				"filename":               map[string]any{"type": "string", "maxLength": 255},
-				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
-				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
-				"draft_handle":           map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "grant_id": map[string]any{"type": "string"}}, "required": []string{"session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"}, "additionalProperties": false},
-				"operation": map[string]any{
-					"type":        "object",
-					"description": "Artifact V3 authoring operation (inspect_context, read_file, edit_file, build_preview, finish_turn, etc.).",
-					"properties": map[string]any{
-						"action":      map[string]any{"type": "string", "enum": []string{"inspect_context", "list_files", "read_file", "create_file", "edit_file", "rename_file", "delete_file", "diff", "build_preview", "finish_turn", "reconcile_parts"}},
-						"path":        map[string]any{"type": "string"},
-						"old_string":  map[string]any{"type": "string"},
-						"new_string":  map[string]any{"type": "string"},
-						"content":     map[string]any{"type": "string"},
-						"to_path":     map[string]any{"type": "string"},
-						"replace_all": map[string]any{"type": "boolean"},
-					},
-					"required": []string{"action"},
-				},
-				"narration_plan":         artifactNarrationPlanToolSchema(),
-				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
-				"text_edits":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "properties": map[string]any{"old_string": map[string]any{"type": "string", "minLength": 1}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []string{"old_string", "new_string"}, "additionalProperties": false}, "description": "Ordered exact UTF-8 replacements for derive_text. By default each old_string must occur exactly once; replace_all requires at least one occurrence. Bytes outside matched spans are preserved exactly."},
-				"part_choices":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": partChoice, "description": "Exact immutable part revisions and desired lock states to combine atomically into one accepted complete composition."},
-				"replacements":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": replacementPart, "description": "Canonical publish_parts payload. Include exactly one replacement for every authenticated selected part; publication is one atomic candidate composition."},
-				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
-				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": initialPart, "description": "Two or more real independently byte-bearing initial parts for create. Every item has its own stable id, media type, and non-empty content/content_base64. The server owns all chain, composition, and part-revision identities. Mutually exclusive with top-level content, entries, and locator-only parts."},
+				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional filter for list/search."},
+				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes."},
+				"draft_handle":           map[string]any{"type": "object", "description": "Draft handle from begin_v3/create/revise_v3 for author_v3. See action='help' topic='workflow'."},
+				"operation":              map[string]any{"type": "object", "description": "Artifact V3 authoring operation (read_file, edit_file, build_preview, finish_turn, etc.). See action='help' topic='workflow'."},
+				"narration_plan":         map[string]any{"type": "object", "description": "Built-in narration-plan template with title and scenes array. See action='help' topic='narration'."},
+				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content."},
+				"text_edits":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object"}, "description": "Ordered exact UTF-8 replacements for derive_text."},
+				"part_choices":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Exact immutable part revisions to combine atomically into one composition. See action='help'."},
+				"replacements":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Canonical publish_parts payload with {part_id, content} items."},
+				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": map[string]any{"type": "object"}, "description": "Package entries array ({name, content}) for application/zip."},
+				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": initialPart, "description": "Two or more real independently byte-bearing initial parts for create. The server owns all chain, composition, and part-revision identities. Mutually exclusive with top-level content, entries, and locator-only parts."},
 				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact. These locators never create or prove independently replaceable bytes. For text/html, omit parts to let the server derive useful targets from swarm.iteration/v1 sections, swarm.capture/v1 states, and stable IDs on semantic HTML regions without splitting or rewriting the file; explicitly supplied parts remain authoritative for the complete revision. Use initial_parts only when independently stored byte payloads are intentionally required."},
-				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": reference, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
-				"state_ids":              map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "description": "Optional bounded declared swarm.capture/v1 state IDs for export_html_stills; omitted exports every manifest state. Caller order never overrides canonical manifest order."},
+				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": map[string]any{"type": "object"}, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
+				"state_ids":              map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "description": "Optional declared swarm.capture/v1 state IDs for export_html_stills."},
 				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
 				"presentation":           presentation,
-				"output_requirements":    artifact.OutputRequirementsToolSchema(),
-				"animation_profile":      manageArtifactAnimationProfileToolSchema(),
-				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the authenticated source session from the reusable exact ready attached-artifact reference together with all other source_* fields"},
-				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source collection from the same reusable exact ready reference"},
-				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
-				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
-				"artifact_v3_reference":  artifactV3Reference,
-				"native_parts":           artifactV3NativePartsSchema(),
-				"scene_contract":         ArtifactV3SceneContractSchema(),
+				"output_requirements":    map[string]any{"type": "object", "description": "Output preset (e.g. twitter_header, landscape_video) or paired dimensions. See action='help'."},
+				"animation_profile":      map[string]any{"type": "object", "description": "Animation profile: motion_ui, spatial_3d, vector_playback, or final_render. Export actions like export_html_animation and export_html_animation_fallback inherit the exact source artifact's reviewed animation profile; omit this field for exports. See action='help' topic='animation'."},
+				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix, copy source_session_id from the reusable exact reference."},
+				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix, copy source_collection_id from the reusable exact reference."},
+				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix, copy source_variant_id from the reusable exact reference."},
+				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix, copy source_event_seq from the reusable exact reference."},
+				"artifact_v3_reference":  map[string]any{"type": "object", "description": "Exact native Artifact V3 reference ({session_id, artifact_id, revision_ref})."},
+				"native_parts":           map[string]any{"type": "array", "description": "Complete replacement Parts for initial authoring or explicit whole_project revision intent. See action='help' topic='workflow'.", "items": map[string]any{"type": "object"}},
+				"scene_contract":         map[string]any{"type": "object", "description": "Animation scene sequence contract ({duration_ms, scenes}). See action='help' topic='animation'."},
 				"turn_id":                map[string]any{"type": "string"},
 				"candidate_id":           map[string]any{"type": "string"},
 				"expected_head":          map[string]any{"type": "string"},
-				"expected_turn_revision": map[string]any{"type": "integer", "minimum": 1, "description": "Required for select_v3: copy a complete selection_calls entry from source_v3. This equals the turn event_seq, NOT schema version or repository projection_seq. Never omit or guess this CAS value."},
-				"revision_intent":        map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}, "description": "Explicit native revision intent. whole_project omits target_part_ids; focused_parts requires targets."},
+				"expected_turn_revision": map[string]any{"type": "integer", "minimum": 1, "description": "Required for select_v3: turn event_seq CAS value."},
+				"revision_intent":        map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}, "description": "Explicit native revision intent: focused_parts (requires targets) or whole_project."},
 				"target_part_ids":        map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "uniqueItems": true, "description": "Native Artifact V3 Part IDs; required for focused_parts, omitted for whole_project."},
-				"turn_key":               map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Optional lowercase stable key shared by sibling revise_v3 candidates from one exact base. When omitted for a single candidate, the server derives a replay-stable key from trusted run and call identity. Required for alternatives."},
-				"candidate_index":        map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Optional one-based sibling candidate index for revise_v3; defaults to 1."},
-				"alternatives": map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "description": "Optional server-owned multi-candidate revise_v3 request. Every item supplies one complete corrected HTML document and a distinct contiguous candidate_index; the tool preflights all candidates before allocation and returns individual ready, fixing, or failed results without selecting a sibling. Requires turn_key and cannot be combined with top-level content or candidate_index.", "items": map[string]any{"type": "object", "properties": map[string]any{
-					"candidate_index": map[string]any{"type": "integer", "minimum": 1, "maximum": 16},
-					"content":         map[string]any{"type": "string"},
-				}, "required": []string{"candidate_index", "content"}, "additionalProperties": false}},
-				"event_seq":      map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote/export_html_stills/export_html_animation of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
-				"query":          map[string]any{"type": "string", "maxLength": 1024, "description": "Optional authenticated cross-session metadata search across collection and variant display fields; search results are explicit candidates and ready items carry complete exact references."},
-				"status":         map[string]any{"type": "string", "description": "Optional list/search filter: staging|ready|failed|unavailable"},
-				"created_after":  map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive variant created_at lower bound in Unix milliseconds for cross-session discovery"},
-				"created_before": map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive variant created_at upper bound in Unix milliseconds for cross-session discovery"},
-				"cursor":         map[string]any{"type": "string", "description": "Opaque cross-session discovery continuation cursor. Copy next_cursor from the prior search/list response unchanged; never parse or construct it."},
-				"limit":          map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list/search items for this page; use next_cursor/cursor to continue cross-session discovery."},
-				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read for bounded inspection. Text/package entries are capped at 256 KiB; supported ready images are capped at 16 MiB and returned as base64. A response-quota error does not mean the artifact is unavailable; use materialize for workspace use instead of bulk-reading it."},
-				"entry":          map[string]any{"type": "string", "maxLength": 1024, "description": "Optional normalized slash-delimited regular-file entry for application/zip read; omit to return the bounded package manifest. Materialize the package for whole-package workspace work."},
-				"destination":    map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote and materialize_batch; overwrite defaults to false."},
-				"overwrite":      map[string]any{"type": "boolean", "description": "Explicitly permit bounded replacement of destination files; defaults to false"},
+				"turn_key":               map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Key shared by sibling revise_v3 candidates."},
+				"candidate_index":        map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Candidate index for revise_v3 (defaults to 1)."},
+				"alternatives":           map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "items": map[string]any{"type": "object"}, "description": "Multi-candidate revise_v3 request array ([{candidate_index, content}]). See action='help'."},
+				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Event sequence. Combined with session_id, collection_id, and variant_id for exact artifact reference."},
+				"query":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Authenticated cross-session search across collection and variant fields; ready items return complete exact references."},
+				"status":                 map[string]any{"type": "string", "description": "Optional list/search filter: staging|ready|failed|unavailable"},
+				"created_after":          map[string]any{"type": "integer", "minimum": 0, "description": "Created after Unix ms for cross-session discovery."},
+				"created_before":         map[string]any{"type": "integer", "minimum": 0, "description": "Created before Unix ms for cross-session discovery."},
+				"cursor":                 map[string]any{"type": "string", "description": "Opaque continuation cursor from next_cursor unchanged; never parse or construct it."},
+				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list/search items; use next_cursor/cursor to continue cross-session discovery."},
+				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize for workspace use instead of bulk-reading it."},
+				"entry":                  map[string]any{"type": "string", "maxLength": 1024, "description": "Normalized slash-delimited regular-file entry for zip read; omit for manifest."},
+				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
+				"overwrite":              map[string]any{"type": "boolean", "description": "Permit replacement of destination files; defaults to false"},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": false,
@@ -1942,7 +1801,9 @@ func artifactHelpText(topic string) string {
 	case "narration":
 		return `Narration Plan Draft Contract:
 - For narration-plan drafts, use manage_artifact action=create with the built-in narration_plan object and its complete schema example instead of inventing HTML, selectors, or Parts.
-- Supply persistent scene IDs and plain narration/title text with optional visual_direction and music_direction: {"title": "...", "scenes": [{"id": "scene-1", "title": "...", "narration": "...", "visual_direction": "...", "music_direction": "..."}]}.
+- Supply persistent scene IDs and plain narration/title text with optional visual_direction and music_direction.
+- Complete reusable example:
+` + artifactNarrationCreateExample + `
 - The server renders escaped HTML with separate narration, scene-context, visual and music Parts. Omit content/parts/entries/initial_parts.
 - Later changes use the exact native reference, read_v3 and revise_v3 with the selected target_part_ids; do not recreate the plan as a separate artifact.`
 	case "workflow", "lifecycle":
@@ -1957,13 +1818,23 @@ func artifactHelpText(topic string) string {
 - For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.`
 	default:
 		return `Artifact V3 Overview & Help Topics:
-Available detailed topics (pass topic="<name>"):
+For detailed schema contracts and instructions, call action='help' with topic="<name>":
 - "animation": Native HTML animations, swarm.animation/v1 manifest, Three.js spatial 3D, deterministic seek.
 - "video": Veo 3.1 AI video generation, prompt direction, soundscapes, keyframe extraction, chaining, and master story generation.
 - "audio": Google Lyria music, sound effects, multi-prompt variations, and audio iteration.
 - "narration": Multi-scene narration plan drafts.
 - "workflow": Lifecycle, draft repair, CAS tokens, cross-session search, materialization, and workspace publication.
-Basic operations: create, read_v3, revise_v3, begin_v3, author_v3, generate_image, generate_video, generate_audio, materialize, export_html_stills, export_html_animation.`
+
+Quick Action References:
+- create (HTML V3): action='create', content='<!doctype html>...', parts=[{id, label, kind: 'temporal|spatial|selector|semantic', description}]. Do NOT substitute generate_image for native HTML documents.
+- create (narration): action='create', narration_plan={title, scenes:[{id, title, narration, visual_direction, music_direction}]}.
+- revise_v3 (candidate revision): action='revise_v3', session_id, artifact_id, content='...', revision_intent='whole_project|focused_parts', target_part_ids=['...'].
+- begin_v3 / author_v3 (incremental repair): begin_v3 returns draft_handle; author_v3 accepts draft_handle and operation={action:'read_file|edit_file|build_preview|finish_turn', path, old_string, new_string}.
+- generate_image: action='generate_image', prompt='...', capability_token='...' (call action='image_capabilities' first).
+- generate_video: action='generate_video', prompt='...', duration_seconds=8, aspect_ratio='16:9'.
+- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), duration_seconds=30.
+- materialize: action='materialize', session_id, collection_id, variant_id, event_seq, destination='path/to/file'.
+- publish_workspace: action='publish_workspace', source='path/to/file', media_type='...'.`
 	}
 }
 

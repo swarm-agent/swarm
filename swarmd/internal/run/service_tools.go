@@ -3258,6 +3258,16 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 	switch action {
 	case "transition_checkpoint_boundary":
 		return s.executeCheckpointBoundaryTransition(sessionID, args, applySessionMutation, lifecycleRun)
+	case "help":
+		payload := map[string]any{
+			"tool":              "plan_manage",
+			"action":            "help",
+			"status":            "ok",
+			"path_id":           "tool.plan-manage.v3",
+			"instructions":      planManageHelpText(),
+			"details_truncated": false,
+		}
+		return marshalPlanManagePayload(payload)
 	case "approve_and_start", "restart_checkpoint", "rewind_to_checkpoint", "resolve_blocked_checkpoint", "start_session_checkpoint", "amend_plan", "request_new_plan":
 		return s.executePlanLifecycleControlAction(sessionID, action, args, applySessionMutation, lifecycleRun)
 	case "list":
@@ -4501,6 +4511,22 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	action := parsed.Action
 	if strings.TrimSpace(action) == "" {
 		action = "spawn"
+	}
+	if action == "help" {
+		topic := ""
+		if parsed.SourceArguments != nil {
+			topic = mapString(parsed.SourceArguments, "topic")
+		}
+		payload := map[string]any{
+			"tool":              "task",
+			"action":            "help",
+			"status":            "ok",
+			"path_id":           "tool.task.v1",
+			"instructions":      taskHelpText(topic),
+			"details_truncated": false,
+		}
+		raw, _ := json.Marshal(payload)
+		return string(raw), nil
 	}
 	if action == taskProgramActionStatus {
 		record, ok, lifecycleErr := s.sessions.GetTaskProgram(sessionID, parsed.ProgramID)

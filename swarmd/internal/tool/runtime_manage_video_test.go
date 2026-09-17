@@ -34,9 +34,15 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 			t.Fatalf("manage_video schema exposes forbidden field %q", forbidden)
 		}
 	}
-	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "propose_html_iteration", "import_storyboard", "storyboard_source", "exports", "inspect_composition", "update_composition", "expected_revision_id", "composition_catalog", "detached_slots", "clear_source", "audio_policy"} {
+	for _, required := range []string{"source_root_ref", "relative_path", "video_refs", "audio_refs", "job_refs", "job_ref", "transcript_ref", "analysis_ref", "source_fingerprint", "waveform_resolution_ms", "focus_notes", "start_ms", "end_ms", "timestamps_ms", "ranges", "max_width", "include_index", "index_only", "base_revision_id", "operations", "affected_ranges", "part_id", "selected_candidate_id", "selected_source", "derivative", "expected_revision_id"} {
 		if !strings.Contains(text, `"`+required+`"`) {
 			t.Fatalf("manage_video schema lacks %q", required)
+		}
+	}
+	help := videoHelpText()
+	for _, required := range []string{"composition_catalog", "detached_slots", "clear_source", "audio_policy", "propose_html_iteration", "import_storyboard", "storyboard_source", "exports", "inspect_composition", "update_composition"} {
+		if !strings.Contains(help, required) {
+			t.Fatalf("manage_video help lacks %q", required)
 		}
 	}
 }
@@ -72,27 +78,19 @@ func TestManageVideoSelectionContextRetainsStoryboardLineage(t *testing.T) {
 }
 
 func TestManageVideoDefinitionExposesManagedMP4PlanContract(t *testing.T) {
-	raw, err := json.Marshal(manageVideoDefinition().Parameters)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(raw)
+	help := videoHelpText()
 	for _, required := range []string{"video/mp4", "source_start_ms", "source_end_ms", "caption", "transition", "Descriptive on_screen_text and transition_in never create timeline presentation"} {
-		if !strings.Contains(text, required) {
-			t.Fatalf("manage_video plan schema lacks %q", required)
+		if !strings.Contains(help, required) {
+			t.Fatalf("manage_video help lacks %q", required)
 		}
 	}
 }
 
 func TestManageVideoDefinitionDescribesAtomicMultiPartHTMLIterations(t *testing.T) {
-	raw, err := json.Marshal(manageVideoDefinition().Parameters)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(raw)
+	help := videoHelpText()
 	for _, required := range []string{"accepts one or more stable parts in one atomic proposal", "every part requires 2 to 16 compatible ready text/html", "per-part image-only downgrade"} {
-		if !strings.Contains(text, required) {
-			t.Fatalf("manage_video schema lacks multi-part HTML contract %q", required)
+		if !strings.Contains(help, required) {
+			t.Fatalf("manage_video help lacks multi-part HTML contract %q", required)
 		}
 	}
 }
@@ -554,9 +552,14 @@ func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "import_storyboard", "propose_html_iteration", "select_animation_candidate", "promote_animation_derivative", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
+	for _, action := range []string{"create_project", "read_project", "get_project", "list_projects", "create_edit_proposal", "propose_plan", "select_animation_candidate", "promote_animation_derivative", "create_revision", "restore_revision", "start_render", "render_status", "cancel_render"} {
 		if !strings.Contains(text, `"`+action+`"`) {
 			t.Fatalf("schema lacks video project/render action %q", action)
+		}
+	}
+	for _, action := range []string{"import_storyboard", "propose_html_iteration"} {
+		if !strings.Contains(help, action) {
+			t.Fatalf("help lacks video storyboard/iteration action %q", action)
 		}
 	}
 	for _, param := range []string{"project_id", "revision_id", "source_revision_id", "render_job_id", "queue_grace_ms", "title", "description", "output_preset", "change_summary", "timeline", "initial_timeline", "metadata", "artifact_v3_session_id", "artifact_v3_artifact_id", "artifact_v3_revision_ref"} {

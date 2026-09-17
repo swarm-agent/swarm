@@ -885,12 +885,12 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "edit_pending_plan",
-			Description: "Edit the exact pending canonical plan bound to the reserved Plan sidechat. Pass complete native document and expected_revision; for Automation V2 also pass the complete automation_review from attached context. Preserve unrelated instructions/settings. Editing never accepts, enables or runs the plan; V1 automation save/pin workflows are retired.",
+			Description: "Edit the exact pending canonical plan bound to the reserved Plan sidechat using optimistic concurrency. Pass document as a native structured JSON object, never as serialized/quoted JSON text; review the authoritative attached document and preserve its current title unless the user explicitly requests a rename. For Automation V2 also pass the complete automation_review from attached context. Preserve unrelated instructions/settings. Editing never accepts, enables or runs the plan; V1 automation save/pin workflows are retired.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"expected_revision": map[string]any{"type": "integer", "description": "Current pending proposal revision as an integer, not a quoted string"},
-					"document":          sessionExecutablePlanDocumentToolSchema(),
+					"document":          sessionExecutablePlanDocumentToolSchemaWithDescription("Replacement structured plan document as a native JSON object (do not pass JSON text or quoted/stringified JSON); review the authoritative attached document and preserve its current title unless the user explicitly requests a rename. Call action='help' for schema."),
 					"worker_review":     automationV2ReviewSchema(),
 					"automation_review": automationV2ReviewSchema(),
 				},
@@ -1617,11 +1617,11 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "plan_manage",
-			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes. document is authoritative; markdown is display-only. In auto mode with no active plan, start_session_checkpoint atomically creates and starts one bounded checkpoint; use request_new_plan for broad, uncertain, high-risk, multi-phase, or approval-gated work. From a trusted parent provider turn with an active plan, transition_checkpoint_boundary is the only action that appends one self-contained checkpoint and assigns it to the already-current run; its successful result preserves context and continues that provider turn. The retired request_followup_checkpoint action and all aliases are rejected. Do not call transition_checkpoint_boundary from a checkpoint-owned run. Classify feedback by contract impact: guidance needs no mutation; bounded additive work uses add_subtask; a superseded checklist uses replace_subtasks; invalidated objectives use restart_checkpoint; independently shippable work from a parent turn uses transition_checkpoint_boundary; future-plan rewrites use amend_plan; whole-plan replacement uses request_new_plan. action=new never replaces an active plan: use request_new_plan with current plan_id; use patch and update_section for targeted partial edits. Put terminal report, changed_files, validation, and result on the terminal checkpoint action.",
+			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes. document is authoritative; markdown is display-only. Do not use manage_todos for agent progress; plan_manage is the canonical agent checklist/progress surface. In auto mode with no active plan, start_session_checkpoint atomically creates and starts one bounded checkpoint; use request_new_plan for broad, uncertain, high-risk, multi-phase, or approval-gated work. From a trusted parent provider turn with an active plan, transition_checkpoint_boundary is the only action that appends one self-contained checkpoint and assigns it to the already-current run; its successful result preserves context and continues that provider turn. The retired request_followup_checkpoint action and all aliases are rejected. Do not call transition_checkpoint_boundary from a checkpoint-owned run. Classify feedback by contract impact: guidance needs no mutation; bounded additive work uses add_subtask; a superseded checklist uses replace_subtasks; invalidated objectives use restart_checkpoint; independently shippable work from a parent turn uses transition_checkpoint_boundary; future-plan rewrites use amend_plan; whole-plan replacement uses request_new_plan. action=new never replaces an active plan: use request_new_plan with current plan_id; use patch and update_section for targeted partial edits. Put terminal report, changed_files, validation, and result on the terminal checkpoint action.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                     map[string]any{"type": "string", "description": "Action: list|get|get-active|save|patch/update_section/update_info/upsert_checkpoint/update_checkpoint/approve_and_start/restart_checkpoint/rewind_to_checkpoint/resolve_blocked_checkpoint/start_session_checkpoint/transition_checkpoint_boundary/amend_plan/request_new_plan/start_checkpoint/continue_checkpoint/complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed/remove_checkpoint/reorder_checkpoints/set_active_checkpoint/add_subtask/replace_subtasks/update_subtask/remove_subtask/reorder_subtasks/focus_subtask/complete_subtask/set-active/new/history. transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action and is valid only in a trusted parent provider turn. It copies the self-contained change request into a new checkpoint, assigns checkpoint ownership to the already-current run, and continues the parent turn without allocating another run. request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected. Checkpoint-owned runs must finish their selected objective and cannot transition the boundary."},
+					"action":                     map[string]any{"type": "string", "description": "Action: help|list|get|get-active|save|patch/update_section/update_info/upsert_checkpoint/update_checkpoint/approve_and_start/restart_checkpoint/rewind_to_checkpoint/resolve_blocked_checkpoint/start_session_checkpoint/transition_checkpoint_boundary/amend_plan/request_new_plan/start_checkpoint/continue_checkpoint/complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed/remove_checkpoint/reorder_checkpoints/set_active_checkpoint/add_subtask/replace_subtasks/update_subtask/remove_subtask/reorder_subtasks/focus_subtask/complete_subtask/set-active/new/history. In multi-task checkpoints, keep progress durable: at a genuine boundary use complete_subtask for one task or pass subtask_ids to batch every task completed since the last update; skip it for discovery-only work and single-step checkpoints. When all checkpoint work and acceptance criteria are done, set complete_checkpoint=true on that same call with terminal report/evidence instead of making a second call. Use update_checkpoint only for meaningful intermediate state, not routine agent progress/checklist transitions. transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action and is valid only in a trusted parent provider turn. It copies the self-contained change request into a new checkpoint, assigns checkpoint ownership to the already-current run, and continues the parent turn without allocating another run. request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected. Checkpoint-owned runs must finish their selected objective and cannot transition the boundary."},
 					"continuation_policy":        map[string]any{"type": "string", "description": "For approve_and_start: review_each_checkpoint/pause or automatic/continue_automatically."},
 					"continue_automatically":     map[string]any{"type": "boolean", "description": "For approve_and_start checkpointed execution: true auto-continues completed checkpoints; false pauses for review."},
 					"plan_id":                    map[string]any{"type": "string", "description": "Plan id for get/set-active/save/patch or typed lifecycle actions. Omit on lifecycle actions to use the active plan."},
@@ -1699,7 +1699,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm (fast parallel alternatives or independent trials). Every spawn call requires a non-empty prompt. In regular mode, use the launches array. In swarm mode, specify agent_type and count.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm (fast parallel alternatives or independent trials; internal explore strategy remains implicit for backward compatibility). Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. In regular mode, use the structured launches array; Do not embed launch JSON as text embedded in prompt. Designer requires explicitly requested multiple UI/design iterations or variants (prohibited for ordinary UI work and single-design requests); workspace Designers share the parent checkout with read/search/find/list and write/edit (no Bash or Git) on distinct non-overlapping workspace-relative scopes, while managed Designers produce ordinary reusable artifacts. Approved-checkpoint starts omit program and max_concurrency because the runtime loads the canonical definition. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode uses the same subagent policy: agent_type and count generate the wave; omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Idea Swarms send the same question directly without Router.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1740,11 +1740,14 @@ func (r *Runtime) Definitions() []Definition {
 					}, "required": []string{"artifact_id", "published_head_id", "composition_id", "working_revision", "composition_head_revision", "target_part_ids"}, "additionalProperties": false, "description": "Exact published Artifact V2 source for a focused Designer Iteration Swarm. The server authenticates it, opens one durable Iteration Round, imports only target revisions, and keeps candidates out of the accepted head until explicit selection."},
 					"section_target": map[string]any{"type": "object", "properties": map[string]any{
 						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1},
-						"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
-						"start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "page": map[string]any{"type": "integer", "minimum": 1}, "state_id": map[string]any{"type": "string", "minLength": 1}, "selector": map[string]any{"type": "string", "minLength": 1},
-					}, "required": []string{"id", "label"}, "additionalProperties": false, "description": "Optional exact artifact part target for managed Designer work. Requires source_artifact. Mutually exclusive with section_targets."},
+						"kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
+						"x":    map[string]any{"type": "number"}, "y": map[string]any{"type": "number"},
+						"width": map[string]any{"type": "number"}, "height": map[string]any{"type": "number"},
+						"page": map[string]any{"type": "integer"}, "state_id": map[string]any{"type": "string"},
+						"selector": map[string]any{"type": "string"},
+					}, "required": []string{"id", "label"}, "additionalProperties": true, "description": "Optional exact artifact part target for managed Designer work. Requires source_artifact. Mutually exclusive with section_targets."},
 					"section_targets": map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object", "properties": map[string]any{
-						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}, "x": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "y": map[string]any{"type": "number", "minimum": 0, "maximum": 1}, "width": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "height": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1}, "page": map[string]any{"type": "integer", "minimum": 1}, "state_id": map[string]any{"type": "string", "minLength": 1}, "selector": map[string]any{"type": "string", "minLength": 1},
+						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1}, "kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}},
 					}, "required": []string{"id", "label"}, "additionalProperties": true}, "description": "Canonical bounded multi-part selection from one exact source composition. Managed Designer candidates must replace every selected part together as one atomic composition turn. Mutually exclusive with section_target."},
 					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"description": map[string]any{
@@ -1802,9 +1805,9 @@ func (r *Runtime) Definitions() []Definition {
 								"role":                   map[string]any{"type": "string", "description": "Alias for meta_prompt."},
 								"deliverable":            map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 								"concurrency_reason":     map[string]any{"type": "string", "description": "Why this scope is useful and safe to run in the current wave."},
-								"output_requirements":    artifact.OutputRequirementsToolSchema(),
-								"animation_profile":      artifact.AnimationProfileToolSchema(),
-								"scene_contract":         ArtifactV3SceneContractSchema(),
+								"output_requirements":    map[string]any{"type": "object", "description": "Optional managed output preset (e.g. twitter_header, landscape_video) or paired dimensions."},
+								"animation_profile":      map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
+								"scene_contract":         map[string]any{"type": "object", "description": "Optional native animation scene sequence contract."},
 								"output_mode":            map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed. managed forbids owned_scope and workspace requires it. Trusted destination identity is server-owned and cannot be supplied here."},
 								"workspace_path":         map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder. Each Coder gets a worktree based on that target repository HEAD; omitted uses the parent workspace."},
 								"recovery_source_digest": map[string]any{"type": "string", "description": "Exact parent-owned retained recovery digest from manage-worktree retain_source. Coder only, explicit narrow owned_scope required. Use a new program containing only unfinished jobs, never replay completed jobs. Ignored documentation stays unstaged: hand exact paths back to the parent for permission-gated inclusion or an explicit tracked destination; missing Git inclusion is unfinished work, not an external blocker."},
@@ -1844,24 +1847,21 @@ func taskProgramDefinitionToolSchema(description string) map[string]any {
 			"jobs": map[string]any{
 				"type": "array", "minItems": 1,
 				"items": map[string]any{"type": "object", "properties": map[string]any{
-					"id":                     id,
-					"stage_id":               id,
-					"depends_on":             map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
-					"agent_type":             map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Canonical job identity; prefer agent_type in both inline and checkpoint Task Programs. subagent_type is an input alias; conflicting values are rejected."},
-					"subagent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
-					"workspace_path":         map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder job. Overrides the Task Program start workspace_path. Coder jobs in one program must resolve to one target workspace so staged integration has one parent Git history."},
-					"meta_prompt":            map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
-					"title":                  map[string]any{"type": "string", "minLength": 1},
-					"deliverable":            map[string]any{"type": "string", "minLength": 1},
-					"output_requirements":    map[string]any{"type": "object", "description": "Optional managed output preset (e.g. twitter_header, landscape_video) or paired dimensions."},
-					"animation_profile":      map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
-					"scene_contract":         map[string]any{"type": "object", "description": "Optional native animation scene sequence contract."},
-					"output_mode":            map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
-					"recovery_source_digest": map[string]any{"type": "string", "description": "Exact parent-owned retained recovery digest from manage-worktree retain_source. Coder only, explicit narrow owned_scope required. Use a new program containing only unfinished jobs, never replay completed jobs. Ignored documentation stays unstaged: hand exact paths back to the parent for permission-gated inclusion or an explicit tracked destination; missing Git inclusion is unfinished work, not an external blocker."},
-					"owned_scope":            map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs. " + taskscope.Guidance + " Workspace Designers require concrete paths without wildcard suffixes; program jobs cannot use whole-workspace sentinels."},
-					"acceptance_criteria":    map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
-					"dependency_evidence":    map[string]any{"type": "string", "minLength": 1},
-				}, "required": []string{"id", "stage_id", "agent_type", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence", "owned_scope"}, "additionalProperties": false},
+					"id":                  id,
+					"stage_id":            id,
+					"depends_on":          map[string]any{"type": "array", "items": id, "description": "Earlier-stage job IDs whose accepted/integrated handoffs are required."},
+					"agent_type":          map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Canonical job identity; prefer agent_type in both inline and checkpoint Task Programs. subagent_type is an input alias; conflicting values are rejected."},
+					"subagent_type":       map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
+					"workspace_path":      map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder job. Overrides the Task Program start workspace_path. Coder jobs in one program must resolve to one target workspace so staged integration has one parent Git history."},
+					"meta_prompt":         map[string]any{"type": "string", "minLength": 1, "description": "Complete distinguished assignment; broad copies of the parent objective are invalid program design."},
+					"title":               map[string]any{"type": "string", "minLength": 1},
+					"deliverable":         map[string]any{"type": "string", "minLength": 1},
+					"owned_scope":         map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}, "description": "Required for Coder/Finder and workspace Designer jobs; omitted for managed Designer jobs. " + taskscope.Guidance + " Workspace Designers require concrete paths without wildcard suffixes; program jobs cannot use whole-workspace sentinels."},
+					"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string", "minLength": 1}},
+					"dependency_evidence": map[string]any{"type": "string", "minLength": 1},
+					"output_mode":         map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer jobs only; defaults to managed. Managed forbids owned_scope. Workspace requires concrete non-overlapping workspace-relative owned_scope targets."},
+					"animation_profile":   map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
+				}, "required": []string{"id", "stage_id", "agent_type", "meta_prompt", "title", "deliverable", "acceptance_criteria", "dependency_evidence"}, "additionalProperties": true},
 			},
 		},
 		"required":             []string{"id", "stages", "jobs"},
@@ -1900,6 +1900,12 @@ func sessionExecutablePlanDocumentToolSchema() map[string]any {
 	return schema
 }
 
+func sessionExecutablePlanDocumentToolSchemaWithDescription(description string) map[string]any {
+	schema := sessionExecutablePlanDocumentToolSchema()
+	schema["description"] = description
+	return schema
+}
+
 func sessionExecutablePlanInfoToolSchema() map[string]any {
 	schema := sessionPlanInfoToolSchema()
 	schema["required"] = []string{"goal"}
@@ -1920,7 +1926,7 @@ func sessionPlanCheckpointToolSchema() map[string]any {
 			"objective":           map[string]any{"type": "string"},
 			"tasks":               stringArray(),
 			"acceptance_criteria": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}},
-			"task_program":        taskProgramDefinitionToolSchema("Canonical staged implementation program for this lifecycle checkpoint. Include it when dependent delegated implementation qualifies for a Task Program; the approved definition is shown to the user and delivered to the executing checkpoint."),
+			"task_program":        map[string]any{"type": "object", "description": "Canonical staged implementation program for this lifecycle checkpoint. See task action='help' topic='program'."},
 			"artifacts":           map[string]any{"type": "array", "items": sessionPlanArtifactToolSchema(), "description": "Workspace-relative artifacts relevant to or delivered by this checkpoint."},
 			"notes":               map[string]any{"type": "string"},
 		},
