@@ -1709,6 +1709,61 @@ func (s *Service) ListAllMediaArtifactVariants(accountScopeID string, limit int)
 	return s.store.ListAllMediaArtifactVariants(accountScopeID, limit)
 }
 
+func (s *Service) GetUsageLimit(accountScopeID string) (pebblestore.UsageLimitRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.UsageLimitRecord{}, false, errors.New("session store is not configured")
+	}
+	return s.store.GetUsageLimit(accountScopeID)
+}
+
+func (s *Service) SetUsageLimit(accountScopeID string, limitUSD float64, tokensLimit int64, enabled bool) (pebblestore.UsageLimitRecord, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.UsageLimitRecord{}, errors.New("session store is not configured")
+	}
+	if limitUSD < 0 {
+		limitUSD = 0
+	}
+	if tokensLimit < 0 {
+		tokensLimit = 0
+	}
+	rec := pebblestore.UsageLimitRecord{
+		AccountScopeID:    accountScopeID,
+		DailyCostLimitUSD: limitUSD,
+		DailyTokensLimit:  tokensLimit,
+		Enabled:           enabled,
+		UpdatedAt:         time.Now().UnixMilli(),
+	}
+	if err := s.store.PutUsageLimit(rec); err != nil {
+		return pebblestore.UsageLimitRecord{}, err
+	}
+	return rec, nil
+}
+
+func (s *Service) GetTodayUsageTotal(accountScopeID string) (float64, int64, error) {
+	if s == nil || s.store == nil {
+		return 0, 0, errors.New("session store is not configured")
+	}
+	return s.store.GetTodayUsageTotal(accountScopeID)
+}
+
+func (s *Service) CheckDailyLimit(accountScopeID string) (exceeded bool, currentCost float64, limitCost float64, err error) {
+	if s == nil || s.store == nil {
+		return false, 0, 0, nil
+	}
+	limit, found, err := s.store.GetUsageLimit(accountScopeID)
+	if err != nil || !found || !limit.Enabled || limit.DailyCostLimitUSD <= 0 {
+		return false, 0, 0, err
+	}
+	cost, _, err := s.store.GetTodayUsageTotal(accountScopeID)
+	if err != nil {
+		return false, 0, limit.DailyCostLimitUSD, err
+	}
+	if cost >= limit.DailyCostLimitUSD {
+		return true, cost, limit.DailyCostLimitUSD, nil
+	}
+	return false, cost, limit.DailyCostLimitUSD, nil
+}
+
 type PlanSaveMetadata struct {
 	UpdateSummary       string
 	UpdateScope         string

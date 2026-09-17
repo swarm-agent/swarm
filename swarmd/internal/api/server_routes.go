@@ -201,6 +201,8 @@ func (s *Server) registerRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/sessions:search", s.handleSessionsV3Search)
 	mux.HandleFunc("/v3/sessions:usage", s.handleSessionsV3Usage)
 	mux.HandleFunc("/v3/usage", s.handleSessionsV3Usage)
+	mux.HandleFunc("/v3/sessions:usage-limits", s.handleSessionsV3UsageLimits)
+	mux.HandleFunc("/v3/usage/limits", s.handleSessionsV3UsageLimits)
 	mux.HandleFunc("/v3/sessions:archive", s.handleSessionsV3Primary)
 	mux.HandleFunc("/v3/sessions:review-worktrees", s.handleSessionsV3ReviewWorktrees)
 	mux.HandleFunc("/v3/subagents:stop", s.handleSessionsV3SubagentStop)

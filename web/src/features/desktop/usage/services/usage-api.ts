@@ -8,6 +8,7 @@ export interface SessionUsageDashboardResponse {
   by_model: SessionUsageModelItem[]
   media: SessionUsageMediaSummary
   recent_sessions: SessionUsageSessionItem[]
+  limits?: SessionUsageLimits
   meta: SessionUsageDashboardMeta
 }
 
@@ -127,6 +128,44 @@ export interface FetchUsageParams {
   sessionId?: string
   startDate?: string
   endDate?: string
+}
+
+export interface SessionUsageLimits {
+  account_scope_id: string
+  daily_cost_limit_usd: number
+  daily_tokens_limit?: number
+  enabled: boolean
+  today_cost_usd: number
+  today_tokens: number
+  limit_exceeded: boolean
+  updated_at: number
+}
+
+export interface UsageLimitsResponse {
+  ok: boolean
+  limits: SessionUsageLimits
+}
+
+export interface UpdateUsageLimitsRequest {
+  daily_cost_limit_usd?: number
+  daily_tokens_limit?: number
+  enabled?: boolean
+}
+
+export async function fetchUsageLimits(signal?: AbortSignal): Promise<UsageLimitsResponse> {
+  return requestJson<UsageLimitsResponse>('/v3/usage/limits', { signal })
+}
+
+export async function updateUsageLimits(
+  req: UpdateUsageLimitsRequest,
+  signal?: AbortSignal,
+): Promise<UsageLimitsResponse> {
+  return requestJson<UsageLimitsResponse>('/v3/usage/limits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+    signal,
+  })
 }
 
 export async function fetchSessionUsageDashboard(

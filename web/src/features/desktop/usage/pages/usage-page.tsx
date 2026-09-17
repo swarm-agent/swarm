@@ -13,6 +13,7 @@ import {
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
 import { fetchSessionUsageDashboard } from '../services/usage-api'
+import { UsageLimitsCard } from '../components/usage-limits-card'
 import { UsageChartTokens } from '../components/usage-chart-tokens'
 import { UsageProviderCards } from '../components/usage-provider-cards'
 import { UsageModelsTable } from '../components/usage-models-table'
@@ -263,6 +264,9 @@ export function UsagePage() {
                 </div>
               </Card>
             </div>
+
+            {/* Daily Usage Limit Controls & Status */}
+            <UsageLimitsCard limits={data.limits} onUpdated={() => void refetch()} />
 
             {/* Provider Filter Indicator */}
             {selectedProvider && (

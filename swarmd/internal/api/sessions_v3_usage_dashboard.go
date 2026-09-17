@@ -22,6 +22,7 @@ type SessionUsageDashboardResponse struct {
 	ByModel        []SessionUsageModelItem        `json:"by_model"`
 	Media          SessionUsageMediaSummary       `json:"media"`
 	RecentSessions []SessionUsageSessionItem      `json:"recent_sessions"`
+	Limits         SessionUsageLimitsStatus       `json:"limits"`
 	Meta           SessionUsageDashboardMeta      `json:"meta"`
 }
 
@@ -511,6 +512,10 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		providerList[i].Sessions = len(provSessionSet[providerList[i].Provider])
 	}
 
+	limitRec, _, _ := s.sessions.GetUsageLimit(principal.AccountScopeID)
+	todayCost, todayTokens, _ := s.sessions.GetTodayUsageTotal(principal.AccountScopeID)
+	limitExceeded := limitRec.Enabled && limitRec.DailyCostLimitUSD > 0 && todayCost >= limitRec.DailyCostLimitUSD
+
 	writeJSON(w, http.StatusOK, SessionUsageDashboardResponse{
 		OK:             true,
 		Summary:        summary,
@@ -519,6 +524,16 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		ByModel:        modelList,
 		Media:          mediaSummary,
 		RecentSessions: sessionList,
+		Limits: SessionUsageLimitsStatus{
+			AccountScopeID:    principal.AccountScopeID,
+			DailyCostLimitUSD: limitRec.DailyCostLimitUSD,
+			DailyTokensLimit:  limitRec.DailyTokensLimit,
+			Enabled:           limitRec.Enabled,
+			TodayCostUSD:      todayCost,
+			TodayTokens:       todayTokens,
+			LimitExceeded:     limitExceeded,
+			UpdatedAt:         limitRec.UpdatedAt,
+		},
 		Meta: SessionUsageDashboardMeta{
 			GeneratedAt:          now.UnixMilli(),
 			TimeRange:            timeRange,

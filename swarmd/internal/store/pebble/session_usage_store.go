@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/privacy"
 
@@ -101,6 +102,9 @@ func clampUsageTokenCount(value int64) int64 {
 
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
+	if record.EstimatedCostUSD <= 0 {
+		record.EstimatedCostUSD = CalculateBaselineCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+	}
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal turn usage %q/%q: %w", record.SessionID, record.RunID, err)
@@ -115,7 +119,19 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			return err
 		}
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	ts := record.CreatedAt
+	if ts <= 0 {
+		ts = record.UpdatedAt
+	}
+	if ts <= 0 {
+		ts = time.Now().UnixMilli()
+	}
+	dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
+	_, _ = s.IncrementDailyUsage(record.AccountScopeID, dateStr, record.EstimatedCostUSD, record.TotalTokens)
+	return nil
 }
 
 func (s *SessionStore) GetTurnUsage(sessionID, runID string) (SessionTurnUsageSnapshot, bool, error) {
