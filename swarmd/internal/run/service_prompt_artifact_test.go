@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func TestBuildInputProjectsAttachedArtifactSelectionsWithoutBytes(t *testing.T) {
@@ -210,10 +211,10 @@ func TestMasterHarnessPromptRequiresExactRenderedPixelVerification(t *testing.T)
 // Requirement: masterHarnessPrompt explains output-only Part derivation so authors
 // cannot request capture controls as immutable targets. This text-contract test
 // proves guidance only; tool allocation and browser rejection tests prove behavior.
-func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
-	prompt := masterHarnessPrompt("/workspace")
+func TestArtifactHelpGuidesManagedArtifactParts(t *testing.T) {
+	help := tool.ArtifactHelpText("animation")
 	for _, want := range []string{
-		"For direct native HTML with animation_profile motion_ui",
+		"Direct native HTML accepts animation_profile motion_ui",
 		"data-swarm-capture-ui are excluded from derived Parts",
 		"explicit Parts must target output regions only",
 		"remaining meaningful output regions still required",
@@ -222,69 +223,48 @@ func TestMasterHarnessPromptGuidesManagedArtifactParts(t *testing.T) {
 		"Never edit the server-owned swarm-artifact.json",
 		"retain the exact draft and repair source through its authorized handle",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("master prompt missing managed artifact parts guidance %q", want)
+		if !strings.Contains(help, want) {
+			t.Fatalf("artifact help missing animation parts guidance %q", want)
 		}
 	}
 }
 
-func TestMasterHarnessPromptGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t *testing.T) {
-	prompt := masterHarnessPrompt("/workspace")
+func TestVideoHelpGuidesNormalizedHTMLStillExportAndPendingVideoPlan(t *testing.T) {
+	help := tool.VideoHelpText()
 	for _, want := range []string{
-		"normalized swarm.capture/v1 contract",
-		"id swarm-capture-manifest",
-		"globalThis.__SWARM_CAPTURE_V1__",
-		"data-swarm-capture-ui",
-		"data-swarm-capture-blocking",
-		"action=export_html_stills",
-		"complete exact session_id, collection_id, variant_id, and event_seq",
-		"managed image/png variants",
-		"#swarm-storyboard-manifest",
-		"swarm.storyboard/v1",
-		"non-empty filming_requirements",
-		"storyboard_handoff",
-		"manage_video import_storyboard",
-		"Do not stop after HTML authoring or still export",
-		"never accept or start final rendering for the user while pending storyboard placeholders remain",
-		"manage_video inspect_composition",
+		"convert_artifact_v2",
+		"convert_artifact_v3",
+		"propose_plan",
+		"create_edit_proposal",
+		"inspect_composition",
 		"list_source_roots and browse_source",
-		"exact expected_revision_id",
 		"update_composition",
-		"use inspect_frames on the exact working revision",
-		"AI must never accept the proposal or start final rendering",
+		"AI must never accept them or start final rendering",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("master prompt missing HTML still workflow guidance %q", want)
+		if !strings.Contains(help, want) {
+			t.Fatalf("video help missing workflow guidance %q", want)
 		}
 	}
 }
 
-// Requirement: masterHarnessPrompt distinguishes deterministic native preview
-// from live autoplay and retains canonical timing/manifest authority. This narrow
-// guidance test does not establish runtime seek or pixel-stability evidence.
-func TestMasterHarnessPromptGuidesDeterministicHTMLAnimationExport(t *testing.T) {
-	prompt := masterHarnessPrompt("/workspace")
+func TestArtifactHelpGuidesDeterministicHTMLAnimationExport(t *testing.T) {
+	help := tool.ArtifactHelpText("animation")
 	for _, want := range []string{
 		"exactly one #swarm-animation-manifest",
 		"application/json, version swarm.animation/v1",
-		"duration_ms >=100, fps 1–60, ceil(duration_ms*fps/1000) <=36000 at 1920x1080",
+		"duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080",
 		"matching ready()",
-		"acknowledging time_ms",
-		"preserve normal controls/autoplay outside capture",
-		"renderer-selected deterministic seek, not wall-clock autoplay",
-		"seek(ms) must pause every rAF/timer autoplay source",
+		"seek must pause all rAF/timers and deterministically render the exact timestamp",
 		"Never edit the server-owned swarm-artifact.json",
-		"Omit parts for one whole-animation midpoint sample",
-		"even without explicit temporal Parts",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("master prompt missing HTML animation workflow guidance %q", want)
+		if !strings.Contains(help, want) {
+			t.Fatalf("artifact help missing HTML animation workflow guidance %q", want)
 		}
 	}
 }
 
-func TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting(t *testing.T) {
-	prompt := masterHarnessPrompt("/workspace")
+func TestArtifactHelpGuidesVideoGenerationAudioAndSoundDirecting(t *testing.T) {
+	help := tool.ArtifactHelpText("video")
 	for _, want := range []string{
 		"video models like Veo 3.1 natively generate audio and video in one pass; leaving sound unprompted causes hallucinated audio",
 		"Always direct the soundscape:",
@@ -294,14 +274,14 @@ func TestMasterHarnessPromptGuidesVideoGenerationAudioAndSoundDirecting(t *testi
 		"Never use quotation marks in video prompts unless spoken dialogue is explicitly requested",
 		"Ambient noise: near-total silence, dead room tone, no background music, no dialogue",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("master prompt missing video audio guidance %q", want)
+		if !strings.Contains(help, want) {
+			t.Fatalf("artifact help missing video audio guidance %q", want)
 		}
 	}
 }
 
-func TestMasterHarnessPromptGuidesVideoChainingAndAudioOverride(t *testing.T) {
-	prompt := masterHarnessPrompt("/workspace")
+func TestArtifactHelpGuidesVideoChainingAndAudioOverride(t *testing.T) {
+	help := tool.ArtifactHelpText("video")
 	for _, want := range []string{
 		"For multi-part video generation, chaining, and audio continuity across multiple clips:",
 		"chain_from with the previous video's exact ready reference",
@@ -309,14 +289,14 @@ func TestMasterHarnessPromptGuidesVideoChainingAndAudioOverride(t *testing.T) {
 		"audio_mode ('mix_ducked' to layer continuous music at 100% with ducked native Foley sound effects at 35%, or 'override' for pure music replacement)",
 		"manage_artifact action=extract_video_frame with frame='last' or 'first'",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("master prompt missing video chaining guidance %q", want)
+		if !strings.Contains(help, want) {
+			t.Fatalf("artifact help missing video chaining guidance %q", want)
 		}
 	}
 }
 
-func TestMasterHarnessPromptGuidesAudioGenerationAndMultipleSoundClips(t *testing.T) {
-	prompt := masterHarnessPrompt("/workspace")
+func TestArtifactHelpGuidesAudioGenerationAndMultipleSoundClips(t *testing.T) {
+	help := tool.ArtifactHelpText("audio")
 	for _, want := range []string{
 		"When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio",
 		"The AI can generate multiple sound clips or audio variations in ONE tool call:",
@@ -325,8 +305,25 @@ func TestMasterHarnessPromptGuidesAudioGenerationAndMultipleSoundClips(t *testin
 		"Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly",
 		"To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq",
 	} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("artifact help missing audio generation guidance %q", want)
+		}
+	}
+}
+
+func TestMasterHarnessPromptGuidesSpecializedToolHelp(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Specialized domain tools return their own workflow instructions and schemas on demand:",
+		"manage_artifact action=\"help\"",
+		"manage_video action=\"help\"",
+		"manage-theme action=\"inspect\"",
+		"manage-skill action=\"inspect\"",
+		"manage_environments action=\"list\"",
+		"manage_deployments action=\"ensure\"",
+	} {
 		if !strings.Contains(prompt, want) {
-			t.Fatalf("master prompt missing audio generation guidance %q", want)
+			t.Fatalf("master prompt missing specialized tool help guidance %q", want)
 		}
 	}
 }

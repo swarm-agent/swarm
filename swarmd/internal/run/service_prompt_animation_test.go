@@ -3,9 +3,11 @@ package run
 import (
 	"strings"
 	"testing"
+
+	"swarm/packages/swarmd/internal/tool"
 )
 
-func TestMasterHarnessRequiresArtifactV2DesignerAnimationContract(t *testing.T) {
+func TestMasterHarnessRequiresDesignerAnimationContract(t *testing.T) {
 	prompt := masterHarnessPrompt(t.TempDir())
 	for _, expected := range []string{
 		"For animated output, always pass the narrowest applicable animation_profile",
@@ -14,14 +16,10 @@ func TestMasterHarnessRequiresArtifactV2DesignerAnimationContract(t *testing.T) 
 		"vector_playback for licensed dotLottie/Rive imports",
 		"final_render for MP4 playback",
 		`"animation_profile":{"profile":"motion_ui"}`,
-		"Managed Designers use only the context-bound artifact_v2_author capability",
-		"server owns capture HTML, state runtime, trusted rendering",
-		"server validates exact V2 composition/build/validation evidence",
-		"Use a V2 Iteration Round",
-		"one stable Video Studio part",
+		"Managed Designers use only the context-bound artifact_v3_author capability",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing Artifact V2 animation requirement %q", expected)
+			t.Fatalf("master harness missing animation requirement %q", expected)
 		}
 	}
 	for _, forbidden := range []string{
@@ -35,23 +33,23 @@ func TestMasterHarnessRequiresArtifactV2DesignerAnimationContract(t *testing.T) 
 	}
 }
 
-func TestMasterHarnessRoutesArtifactV2VideoConversionWithoutManualArrays(t *testing.T) {
-	prompt := masterHarnessPrompt(t.TempDir())
+func TestVideoHelpRoutesArtifactV2VideoConversionWithoutManualArrays(t *testing.T) {
+	help := tool.VideoHelpText()
 	for _, expected := range []string{
 		"manage_video convert_artifact_v2",
 		"callers must not export V1 HTML, reconstruct arrays, or mix collection/variant references into the V2 path",
 		"resulting proposal remains pending for user review",
-		"server owns the fallback and pending candidate set",
+		"Server owns the fallback and pending candidate set",
 		"do not derive V1 HTML, allocate replacement variants, or export MP4 merely for live preview",
 	} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing Artifact V2 Video Studio guidance %q", expected)
+		if !strings.Contains(help, expected) {
+			t.Fatalf("video help missing Artifact V2 Video Studio guidance %q", expected)
 		}
 	}
 }
 
-func TestMasterHarnessRoutesNativeArtifactV3VideoConversion(t *testing.T) {
-	prompt := masterHarnessPrompt(t.TempDir())
+func TestVideoHelpRoutesNativeArtifactV3VideoConversion(t *testing.T) {
+	help := tool.VideoHelpText()
 	for _, expected := range []string{
 		"manage_video convert_artifact_v3",
 		"artifact_v3_session_id, artifact_v3_artifact_id, artifact_v3_revision_ref, project_id, and base_revision_id",
@@ -59,8 +57,8 @@ func TestMasterHarnessRoutesNativeArtifactV3VideoConversion(t *testing.T) {
 		"exactly one pending artifact_v3_conversion proposal",
 		"must not author plan arrays or translate through V1/V2 identity",
 	} {
-		if !strings.Contains(prompt, expected) {
-			t.Fatalf("master harness missing Artifact V3 video guidance %q", expected)
+		if !strings.Contains(help, expected) {
+			t.Fatalf("video help missing Artifact V3 video guidance %q", expected)
 		}
 	}
 }

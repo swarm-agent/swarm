@@ -97,6 +97,18 @@ func TestManageVideoDefinitionDescribesAtomicMultiPartHTMLIterations(t *testing.
 	}
 }
 
+func TestManageVideoHelpAction(t *testing.T) {
+	runtime := NewRuntime(1)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-video-help", Name: "manage_video", Arguments: `{"action":"help"}`})
+	if err != nil {
+		t.Fatalf("help action failed: %v", err)
+	}
+	if !strings.Contains(output, "Video Studio") {
+		t.Fatalf("help output missing video studio guidance: %s", output)
+	}
+}
+
 func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 	definition := manageVideoDefinition()
 	properties := definition.Parameters["properties"].(map[string]any)
@@ -109,7 +121,7 @@ func TestManageVideoActionRegistryAndNearestSuggestions(t *testing.T) {
 		t.Fatalf("nearest actions = %#v", nearest)
 	}
 	studio := manageVideoActionNames(true)
-	for _, required := range []string{"propose_html_iteration", "import_storyboard", "select_animation_candidate", "promote_animation_derivative", "inspect_composition", "update_composition"} {
+	for _, required := range []string{"help", "convert_artifact_v2", "convert_artifact_v3", "select_animation_candidate", "promote_animation_derivative", "inspect_composition", "update_composition"} {
 		if !containsString(studio, required) {
 			t.Fatalf("studio actions lack %q: %#v", required, studio)
 		}

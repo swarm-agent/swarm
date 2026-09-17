@@ -113,6 +113,7 @@ var manageVideoActionRegistry = []manageVideoActionSpec{
 	{"start_render", "Video render started", "Starting video render", false},
 	{"render_status", "Render status updated", "Checking render progress", true},
 	{"cancel_render", "Video render cancelled", "Cancelling video render", true},
+	{"help", "Video help ready", "Reading video documentation", true},
 }
 
 func manageVideoActionNames(studio bool) []string {
@@ -344,13 +345,19 @@ func manageVideoCaptionsSchema() map[string]any {
 }
 
 func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	if action == "help" {
+		response := map[string]any{"tool": "manage_video", "action": "help", "status": "ok", "instructions": videoHelpText()}
+		raw, _ := json.Marshal(response)
+		return string(raw), nil
+	}
 	if r == nil || r.sessions == nil {
 		return "", errors.New("manage_video service is not configured")
 	}
 	if !scope.Principal.Valid() || strings.TrimSpace(scope.SessionID) == "" {
 		return "", errors.New("manage_video requires authenticated session run context")
 	}
-	action := strings.ToLower(strings.TrimSpace(asString(args["action"])))
+	action = strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	requestedAction := action
 	if action == "propose_plan" {
 		// Providers get purpose-specific actions while storage continues to use
@@ -483,10 +490,11 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["message_id"] = run.MessageID
 	}
 	switch action {
-	case "capabilities":
+	case "capabilities", "help":
 		response["studio"] = studio
 		response["allowed_actions"] = allowedActions
-		response["read_only_actions"] = []string{"capabilities", "inspect_context", "inspect_frames", "list_source_roots", "browse_source", "inspect_attachments", "status", "read_transcript", "read_audio_analysis", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "inspect_composition", "proposal_status", "recommend_render_settings", "render_status"}
+		response["read_only_actions"] = []string{"capabilities", "help", "inspect_context", "inspect_frames", "list_source_roots", "browse_source", "inspect_attachments", "status", "read_transcript", "read_audio_analysis", "read_project", "get_project", "list_projects", "inspect_accepted_cut", "inspect_composition", "proposal_status", "recommend_render_settings", "render_status"}
+		response["instructions"] = videoHelpText()
 	case "inspect_context":
 		response["studio"] = studio
 		response["allowed_actions"] = allowedActions
@@ -2320,4 +2328,37 @@ func boundedUTF8(value string, maxBytes int) (string, bool) {
 		value = value[:len(value)-1]
 	}
 	return value, true
+}
+
+func VideoHelpText() string {
+	return videoHelpText()
+}
+
+func videoHelpText() string {
+	return `Video Studio & Media Management Contracts:
+1. Inspection & Discovery:
+   - action="capabilities" or "help": list allowed actions and workflows.
+   - action="inspect_context": inspects project, revision, and selection state.
+   - action="inspect_frames": sample exact PNG frames (pass timestamps_ms or ranges).
+   - list_source_roots and browse_source to discover registered audio and video sources.
+   - action="start_transcription", "read_transcript", "read_audio_analysis": word-timed speech transcripts and audio waveforms.
+2. Projects & Timelines:
+   - action="create_project": create a project (pass title, optional initial_timeline with clips).
+     When registered soundtrack audio must share the initial part playhead, include one exact trimmed source_audio clip here; the returned base revision owns that audio and a subsequent propose_plan preserves it.
+   - action="read_project", "get_project", "list_projects": retrieve video project state.
+   - action="restore_revision", "create_revision": manage timeline revisions.
+3. Edit Proposals & Operations:
+   - action="create_edit_proposal": submit typed add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision.
+     Operations: add_clip, update_clip, replace_clip, remove_clip, trim_clip, move_clip, set_volume, set_mute, set_captions, replace_source.
+     Soundtrack clips: use source_kind="source_audio" with audio_source carrying source_fingerprint and fingerprint_version. Copy the complete exact audio object into a source_audio clip; never pass a host path. Soundtrack proposals remain pending for explicit user acceptance, and AI must never accept them or start final rendering.
+   - action="propose_plan": initial visual plan proposal (base_revision_id, plan.kind="initial", parts array with visuals and captions).
+   - Convert a compatible exact Artifact V2 storyboard or motion Published Head to Video Studio only with manage_video convert_artifact_v2. The server validates exact V2 composition/build/validation evidence and constructs storyboard stills or animation candidates and fallback media; callers must not export V1 HTML, reconstruct arrays, or mix collection/variant references into the V2 path. The resulting proposal remains pending for user review and cannot accept itself or start final rendering. Server owns the fallback and pending candidate set; do not derive V1 HTML, allocate replacement variants, or export MP4 merely for live preview.
+   - Convert an exact selected native Artifact V3 HTML revision to Video Studio only with manage_video convert_artifact_v3. Supply its exact artifact_v3_session_id, artifact_v3_artifact_id, artifact_v3_revision_ref, project_id, and base_revision_id. The server authenticates the selected Git head plus build/validation evidence, injects deterministic animation timing only into ephemeral render bytes, creates the fallback and silent MP4, and submits exactly one pending artifact_v3_conversion proposal; callers must not author plan arrays or translate through V1/V2 identity.
+   - For managed pre-production storyboards, use Artifact V2 storyboard section and catalog parts through managed Designer authoring. Stable ordered parts carry filming requirements, production state, capture-state identity, and optional spatial composition; the server owns capture HTML, state runtime, trusted rendering, exact still lineage, and the pending Video Studio adapter.
+   - action="inspect_composition", "update_composition": inspect resolved slots and update spatial compositions.
+   - action="select_animation_candidate", "promote_animation_derivative": manage HTML animation alternatives.
+     Immediate live Video Studio preview: selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead; no HTML-to-MP4 export is needed for preview. Export only when durable acceptance/promotion or final rendering requires an MP4 derivative; never replace a durable timeline artifact_ref with text/html.
+4. Renders:
+   - action="recommend_render_settings": review server-allowlisted render qualities (preview, standard, high, master) and fps (30, 60).
+   - action="start_render", "render_status", "cancel_render": server-owned final MP4 render execution. AI cannot accept a proposal or start a final render.`
 }

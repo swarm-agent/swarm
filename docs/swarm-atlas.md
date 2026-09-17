@@ -2098,3 +2098,18 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `(cd swarmd && go build ./...)` passes cleanly across all packages.
   - `bash scripts/check-atlas-sync.sh` passes.
 
+### Progressive Tool Help and Master Prompt Subsystem Decoupling (2026-09-17)
+
+- **Progressive Tool Help Architecture (`swarmd/internal/tool/runtime_manage_video.go`, `runtime_manage_artifact.go`):**
+  - Added `action="help"` to `manage_video` returning complete Video Studio, timeline, storyboard conversion (`convert_artifact_v2`, `convert_artifact_v3`), soundtrack clip, and render workflow contracts.
+  - Enhanced `manage_artifact action="help"` topics (`video`, `audio`, `animation`, `narration`) with exhaustive prompting guidelines (Veo 3.1 cinematography, sound direction, Lyria multi-clip audio, Three.js motion manifests, and chaining workflows).
+- **Master Harness Prompt Decoupling (`swarmd/internal/run/service_prompt.go`):**
+  - Decoupled 20+ KB of specialized domain manuals from global `masterHarnessPromptWithScope`, directing models to query specialized tools on demand via `action="help"`.
+  - Replaced monolithic 3.5 KB Task Program example with a compact 2-stage example, preserving Coder validation contracts.
+- **Validation:**
+  - `(cd swarmd && go test ./internal/run -run "TestMasterHarnessPrompt|TestArtifactHelp|TestVideoHelp")` passes.
+  - `(cd swarmd && go test ./internal/tool -run "TestManageVideoHelpAction|TestManageArtifactHelpAction")` passes.
+  - `scripts/run-critical-tests.sh fast` and `scripts/run-critical-tests.sh agents` pass.
+  - `bash scripts/check-atlas-sync.sh` passes.
+
+

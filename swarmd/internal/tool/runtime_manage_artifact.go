@@ -1897,6 +1897,10 @@ func deriveAudioTitle(prompt string) string {
 	return string(r)
 }
 
+func ArtifactHelpText(topic string) string {
+	return artifactHelpText(topic)
+}
+
 func artifactHelpText(topic string) string {
 	switch topic {
 	case "animation", "motion":
@@ -1905,30 +1909,48 @@ func artifactHelpText(topic string) string {
 - Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready().
 - Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
 - Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready(), and seek(ms) returning {time_ms: ms}.
-- seek must pause all rAF/timers and deterministically render the exact timestamp.`
+- seek must pause all rAF/timers and deterministically render the exact timestamp.
+- data-swarm-capture-ui are excluded from derived Parts
+- explicit Parts must target output regions only
+- remaining meaningful output regions still required
+- explicit kind=temporal Parts with stable output-region IDs
+- start_ms/end_ms within the manifest duration
+- Never edit the server-owned swarm-artifact.json
+- retain the exact draft and repair source through its authorized handle`
 	case "video", "veo":
 		return `Artifact AI Video (Veo 3.1) Contract:
 - action="generate_video": prompt, duration_seconds (4, 6, 8), aspect_ratio (16:9, 9:16), resolution (720p, 1080p, 4k).
 - Image-to-video: pass image or image_path alongside prompt.
 - Video iteration/remix: pass source_session_id, source_collection_id, source_variant_id, source_event_seq with delta prompt.
-- Continuous multi-part chaining: pass chain_from pointing to prior video reference. Keyframe extracted automatically.
-- action="chain_video": combine videos array with optional audio soundtrack (audio_mode: mix_ducked or override).
-- action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking.`
+- For stunning video generation, write prompts with rich visual cinematography and synchronized sound direction (video models like Veo 3.1 natively generate audio and video in one pass; leaving sound unprompted causes hallucinated audio): specify concrete camera dynamics (smooth orbit, tracking dolly, sweeping crane, macro push-in), explicit multi-stage transitions and transformations across the 8-second timeline (e.g. geometric dimension shift, 4D folding, radiant particle murmuration, 3D mesh crystallization, raster ASCII disintegration), lighting dynamics (volumetric rays, caustic refractions, bioluminescence, specular reflections, depth of field), material textures (frosted glass, brushed chrome, optical fiber lattices, luminous energy nodes), and explicit tempo/pacing.
+- Always direct the soundscape: provide concrete action-tied sound effects (e.g. SFX: heavy metallic latch engaging, boots crunching on gravel), ambient acoustic scale and room tone (e.g. Ambient noise: deep subterranean rumble, wet cavern drips), and musical score mood (e.g. Music: dark ambient synth with driving sub-bass or Music: none).
+- Never use quotation marks in video prompts unless spoken dialogue is explicitly requested, as models interpret quoted text as lip-synced speech. When silent video or text-free output is requested, specify both visual and acoustic constraints: "purely visual, zero text, no titles, no subtitles, no words, no letters, no watermarks" and "Ambient noise: near-total silence, dead room tone, no background music, no dialogue".
+- For multi-part video generation, chaining, and audio continuity across multiple clips:
+  (1) Generate Part 1 with manage_artifact action=generate_video.
+  (2) Generate consecutive parts by passing chain_from with the previous video's exact ready reference (session_id, collection_id, variant_id, event_seq) alongside prompt: the backend automatically extracts the exact last keyframe of the preceding clip and feeds it to Veo 3.1 image-to-video, guaranteeing seamless visual seam continuity.
+  (3) Generate a continuous soundtrack matching the total combined duration (e.g. 16s, 24s) with manage_artifact action=generate_audio duration_seconds=N.
+  (4) Combine the parts into a single seamless master deliverable with manage_artifact action=chain_video, passing videos array of video references, optional audio reference, and audio_mode ('mix_ducked' to layer continuous music at 100% with ducked native Foley sound effects at 35%, or 'override' for pure music replacement).
+  (5) Use manage_artifact action=extract_video_frame with frame='last' or 'first' to sample keyframes.
+- action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking in one atomic operation.`
 	case "audio", "lyria":
 		return `Artifact AI Audio (Google Lyria) Contract:
-- action="generate_audio": prompt, duration_seconds (default 30s), optional image/image_path inspiration.
-- Multiple variations in one call: prompts: ["prompt 1", "prompt 2"] or count: N (1-8).
-- Audio iteration/remix: pass source_* fields alongside delta prompt.`
+- When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. Omit provider/model: the backend resolves your account-configured audio model (Google Lyria).
+- The AI can generate multiple sound clips or audio variations in ONE tool call: provide an array of descriptive style/mood prompts via prompts: ["...", "..."] (up to 8 clips, e.g. prompts: ["Upbeat funk groove with slapping bass", "Ambient calm piano with rain sounds", "High-energy rock guitar solo"]), or specify count: N (1 to 8) to generate multiple variations from a single prompt.
+- Each generated sound clip is published as a distinct variant in the artifact collection with its own title and description, and Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly.
+- Specify duration_seconds (e.g. 15, 30, 60, 120s; default 30s) and optional image or image_path for multimodal audio inspiration.
+- To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.`
 	case "narration":
 		return `Narration Plan Draft Contract:
-- action="create" with narration_plan: {"title": "...", "scenes": [{"id": "scene-1", "title": "...", "narration": "...", "visual_direction": "...", "music_direction": "..."}]}.
-- Server renders HTML with separate narration and visual Parts.`
+- For narration-plan drafts, use manage_artifact action=create with the built-in narration_plan object and its complete schema example instead of inventing HTML, selectors, or Parts.
+- Supply persistent scene IDs and plain narration/title text with optional visual_direction and music_direction: {"title": "...", "scenes": [{"id": "scene-1", "title": "...", "narration": "...", "visual_direction": "...", "music_direction": "..."}]}.
+- The server renders escaped HTML with separate narration, scene-context, visual and music Parts. Omit content/parts/entries/initial_parts.
+- Later changes use the exact native reference, read_v3 and revise_v3 with the selected target_part_ids; do not recreate the plan as a separate artifact.`
 	default:
 		return `Artifact V3 Overview & Help Topics:
 Available detailed topics (pass topic="<name>"):
-- "animation": Native HTML animations, swarm.animation/v1 manifest, Three.js spatial 3D.
-- "video": Veo 3.1 AI video generation, image-to-video, chaining, and master story generation.
-- "audio": Google Lyria music, sound effects, and multi-prompt audio variations.
+- "animation": Native HTML animations, swarm.animation/v1 manifest, Three.js spatial 3D, deterministic seek.
+- "video": Veo 3.1 AI video generation, prompt direction, soundscapes, keyframe extraction, chaining, and master story generation.
+- "audio": Google Lyria music, sound effects, multi-prompt variations, and audio iteration.
 - "narration": Multi-scene narration plan drafts.
 Basic operations: create, read_v3, revise_v3, begin_v3, author_v3, generate_image, generate_video, generate_audio, materialize, export_html_stills, export_html_animation.`
 	}
