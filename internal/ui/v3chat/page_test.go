@@ -32,6 +32,70 @@ func TestPageConsumeQuitScrollbackJumpRestoresLiveFollowWhilePausedOrBusy(t *tes
 	}
 }
 
+func TestPageScrollClampedToMaxScrollAndNeverExceedsContent(t *testing.T) {
+	store := NewStore()
+	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{
+		Session: client.SessionSummary{ID: "s", Title: "test"},
+		Messages: []client.SessionMessage{
+			{ID: "m1", SessionID: "s", Role: "user", Content: "hello line 1\nhello line 2\nhello line 3\nhello line 4\nhello line 5"},
+			{ID: "m2", SessionID: "s", Role: "assistant", Content: "reply line 1\nreply line 2\nreply line 3\nreply line 4\nreply line 5\nreply line 6\nreply line 7\nreply line 8"},
+		},
+		SnapshotEndpointCursor: "cursor",
+	}})
+	runtime := NewRuntime(&fakeTransport{}, store, nil)
+	page := NewPage(runtime, testPageStyles())
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 10)
+
+	page.Draw(screen)
+	if page.scroll != 0 || !page.follow {
+		t.Fatalf("initial state: scroll=%d follow=%v, want 0 and true", page.scroll, page.follow)
+	}
+	if page.lastMaxScroll <= 0 {
+		t.Fatalf("expected lastMaxScroll > 0 for 80x10 screen with many rows, got %d", page.lastMaxScroll)
+	}
+	maxScroll := page.lastMaxScroll
+
+	// Scroll up beyond maxScroll with WheelUp
+	for i := 0; i < 50; i++ {
+		page.HandleMouse(tcell.NewEventMouse(10, 5, tcell.WheelUp, 0))
+	}
+	if page.scroll != maxScroll {
+		t.Fatalf("scroll after WheelUp = %d, want clamped to maxScroll %d", page.scroll, maxScroll)
+	}
+	if page.follow {
+		t.Fatal("follow should be false when scrolled up")
+	}
+
+	// Immediate response when scrolling down: 1 wheel down decreases scroll by 2
+	page.HandleMouse(tcell.NewEventMouse(10, 5, tcell.WheelDown, 0))
+	if page.scroll != maxScroll-2 {
+		t.Fatalf("scroll after 1 WheelDown = %d, want %d (immediate response, no dead zone)", page.scroll, maxScroll-2)
+	}
+
+	// Home key should clamp to maxScroll, not 1<<30
+	page.HandleKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+	if page.scroll != maxScroll {
+		t.Fatalf("scroll after KeyHome = %d, want %d", page.scroll, maxScroll)
+	}
+
+	// Down arrow immediately decrements from maxScroll
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if page.scroll != maxScroll-1 {
+		t.Fatalf("scroll after KeyDown = %d, want %d", page.scroll, maxScroll-1)
+	}
+
+	// End key returns to live bottom
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone))
+	if page.scroll != 0 || !page.follow {
+		t.Fatalf("after KeyEnd: scroll=%d follow=%v, want 0 and true", page.scroll, page.follow)
+	}
+}
+
 func TestPageHeaderAndLiveOverlayRenderFromStore(t *testing.T) {
 	store := NewStore()
 	store.Dispatch(HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s", Title: "before"}, SnapshotEndpointCursor: "cursor"}})

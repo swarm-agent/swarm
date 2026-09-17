@@ -2140,4 +2140,23 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `scripts/run-critical-tests.sh fast` and `scripts/run-critical-tests.sh agents` pass.
   - `bash scripts/check-atlas-sync.sh` passes.
 
+### TUI Provider Filtering Alignment and Terminal Scrolling Clamping (2026-09-17)
+
+- **TUI Agent Model Provider and Model Filtering Alignment (`internal/app/app.go`):**
+  - Updated `mapCanonicalAgentModelSettings` in `internal/app/app.go` to filter selectable provider and model options in the TUI `/agents` modal against `status.Ready && status.Runnable`, aligning TUI behavior with Desktop (`chat-queries.ts`).
+  - Preserved current agent model assignments even if currently unauthenticated, ensuring active configurations remain inspectable and modifiable.
+- **Terminal Mouse Capture Default and Transcript Scrolling Clamping (`internal/app/config.go`, `internal/ui/v3chat/page.go`, `swarmd/internal/store/pebble/ui_chat_settings_store.go`):**
+  - Updated `DefaultUISettingsRecord` and `defaultAppConfig` to enable mouse capture by default (`MouseEnabled: true`), ensuring terminal emulators pass wheel/trackpad scroll events directly to the TUI rather than scrolling into the host shell scrollback buffer. Added `envMouseEnabled` parsing `SWARM_MOUSE`.
+  - Updated `v3chat/page.go` to calculate `maxScroll = maxInt(0, len(rows)-transcriptHeight)` during rendering and clamp `p.scroll` strictly within `[0, maxScroll]`, tracking `p.lastMaxScroll` and eliminating dead zones, lag, and unbounded scroll accumulation. Replaced `1 << 30` in `KeyJumpHome` with `p.lastMaxScroll`.
+  - Set smooth 2-line step for mouse wheel ticks with immediate bounds clamping and auto-follow resumption at `scroll == 0`.
+- **Validation:**
+  - Added unit test `TestMapCanonicalAgentModelSettingsFiltersUnauthedProviders` in `internal/app/agents_modal_canonical_test.go`.
+  - Added unit tests `TestEnvMouseEnabled` and `TestDefaultAppConfigMouseEnabled` in `internal/app/config_test.go`.
+  - Added unit test `TestPageScrollClampedToMaxScrollAndNeverExceedsContent` in `internal/ui/v3chat/page_test.go`.
+  - `(cd swarmd && go test -v ./internal/store/pebble -run TestUISettings)` passes.
+  - `go test -v ./internal/app -run 'Test(MapCanonical|EnvMouse|DefaultAppConfigMouse)'` passes.
+  - `go test -v ./internal/ui/v3chat -run TestPageScrollClampedToMaxScrollAndNeverExceedsContent` passes.
+  - `bash scripts/check-atlas-sync.sh` passes.
+
+
 

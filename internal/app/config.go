@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -104,7 +105,7 @@ func defaultAppConfig() AppConfig {
 			},
 		},
 		Input: InputConfig{
-			MouseEnabled: false,
+			MouseEnabled: true,
 			Keybinds:     nil,
 		},
 		UI: UIConfig{
@@ -147,7 +148,20 @@ func loadAppConfig(api *client.API) (AppConfig, error) {
 	if startupErr == nil {
 		applyStartupConfig(&cfg, startupCfg)
 	}
+	if env := os.Getenv("SWARM_MOUSE"); env != "" {
+		cfg.Input.MouseEnabled = envMouseEnabled(env)
+	}
 	return cfg, nil
+}
+
+func envMouseEnabled(raw string) bool {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyStartupConfig(cfg *AppConfig, startupCfg startupconfig.FileConfig) {

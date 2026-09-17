@@ -363,8 +363,11 @@ func (p *Page) handleAskUserPermissionKeyLocked(record client.PermissionRecord, 
 	// Keep long wrapped questions readable without changing the selected answer.
 	switch ev.Key() {
 	case tcell.KeyPgUp:
-		p.follow = false
 		p.scroll += 8
+		if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+			p.scroll = p.lastMaxScroll
+		}
+		p.follow = p.scroll == 0
 		return PageActionNone
 	case tcell.KeyPgDn:
 		p.scroll = maxInt(0, p.scroll-8)

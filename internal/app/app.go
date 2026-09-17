@@ -6982,21 +6982,35 @@ func mapWorkspaceModalEntries(entries []client.WorkspaceEntry) []ui.WorkspaceMod
 }
 
 func mapCanonicalAgentModelSettings(settings client.AgentModelSettings, resolved providerModelResolverResult) ui.AgentsModalData {
+	isProviderAuthed := func(providerID string) bool {
+		if len(resolved.ProviderStatuses) == 0 {
+			return true
+		}
+		status, ok := resolved.ProviderStatuses[providerID]
+		return ok && status.Ready && status.Runnable
+	}
+
 	modelsByProvider := make(map[string][]string, len(resolved.ModelsByProvider))
 	for provider, models := range resolved.ModelsByProvider {
 		provider = normalizeModelProviderID(provider)
-		if provider != "" {
+		if provider != "" && isProviderAuthed(provider) {
 			modelsByProvider[provider] = append([]string(nil), models...)
 		}
 	}
 	catalog := make(map[string]client.ModelCatalogRecord, len(resolved.CatalogByKey))
 	for key, record := range resolved.CatalogByKey {
 		key = strings.ToLower(strings.TrimSpace(key))
-		if key != "" {
+		if key != "" && isProviderAuthed(normalizeModelProviderID(record.Provider)) {
 			catalog[key] = record
 		}
 	}
-	providers := append([]string(nil), resolved.ProviderIDs...)
+	providers := make([]string, 0, len(resolved.ProviderIDs))
+	for _, providerID := range resolved.ProviderIDs {
+		providerID = normalizeModelProviderID(providerID)
+		if providerID != "" && isProviderAuthed(providerID) {
+			providers = append(providers, providerID)
+		}
+	}
 	assignments := []client.AgentModelAssignment{
 		settings.Swarm.Action,
 		settings.Swarm.Plan,
@@ -7014,6 +7028,10 @@ func mapCanonicalAgentModelSettings(settings client.AgentModelSettings, resolved
 		providers = append(providers, provider)
 		if modelID := strings.TrimSpace(assignment.Model); modelID != "" {
 			modelsByProvider[provider] = append(modelsByProvider[provider], modelID)
+		}
+		key := modelEntryKey(provider, assignment.Model)
+		if record, ok := resolved.CatalogByKey[key]; ok {
+			catalog[key] = record
 		}
 	}
 	providers = dedupeModelValues(providers)
