@@ -22,6 +22,8 @@ export interface SessionUsageDashboardSummary {
   codex_nominal_cost_usd: number
   total_turns: number
   total_sessions: number
+  active_sessions?: number
+  archived_sessions?: number
   total_media_calls: number
   media_cost_usd: number
 }
@@ -113,6 +115,7 @@ export interface SessionUsageSessionItem {
   cost_usd: number
   turn_count: number
   last_active_at: number
+  archived?: boolean
 }
 
 export interface SessionUsageDashboardMeta {
@@ -128,6 +131,8 @@ export interface FetchUsageParams {
   sessionId?: string
   startDate?: string
   endDate?: string
+  archivedMode?: 'include' | 'exclude' | 'only' | 'all' | 'active' | 'archived'
+  sessionLimit?: number
 }
 
 export interface SessionUsageLimits {
@@ -179,6 +184,8 @@ export async function fetchSessionUsageDashboard(
   if (params?.sessionId) query.set('session_id', params.sessionId)
   if (params?.startDate) query.set('start_date', params.startDate)
   if (params?.endDate) query.set('end_date', params.endDate)
+  if (params?.archivedMode) query.set('archived_mode', params.archivedMode)
+  if (params?.sessionLimit) query.set('session_limit', String(params.sessionLimit))
 
   const queryString = query.toString()
   const endpoint = queryString ? `/v3/usage?${queryString}` : '/v3/usage'

@@ -6,6 +6,7 @@ import { fetchSessionUsageDashboard } from './services/usage-api'
 const pageSource = readFileSync(new URL('./pages/usage-page.tsx', import.meta.url), 'utf8')
 const routerSource = readFileSync(new URL('../../../app/router.tsx', import.meta.url), 'utf8')
 const sidebarSource = readFileSync(new URL('../layout/desktop-app-page.tsx', import.meta.url), 'utf8')
+const tableSource = readFileSync(new URL('./components/usage-sessions-table.tsx', import.meta.url), 'utf8')
 
 test('Router registers /usage and /$workspaceSlug/usage routes with reserved segments', () => {
   assert.match(routerSource, /path: '\/usage'/)
@@ -136,6 +137,59 @@ test('fetchSessionUsageDashboard queries /v3/usage with parameters', async () =>
     assert.strictEqual(res.summary.total_tokens, 150000)
     assert.strictEqual(res.summary.cached_tokens, 40000)
     assert.match(capturedURL, /\/v3\/usage\?time_range=7d&provider=google/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('UsageSessionsTable renders All, Active, Archived filters and Archived badge indicator', () => {
+  assert.match(tableSource, /statusFilter/)
+  assert.match(tableSource, /setStatusFilter\('all'\)/)
+  assert.match(tableSource, /setStatusFilter\('active'\)/)
+  assert.match(tableSource, /setStatusFilter\('archived'\)/)
+  assert.match(tableSource, /item\.archived/)
+  assert.match(tableSource, /Archived/)
+})
+
+test('fetchSessionUsageDashboard supports archivedMode and sessionLimit parameters', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    let capturedURL = ''
+    globalThis.fetch = async (input: RequestInfo | URL) => {
+      capturedURL = String(input)
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          summary: {
+            total_tokens: 0,
+            total_turns: 0,
+            total_sessions: 2,
+            active_sessions: 1,
+            archived_sessions: 1,
+          },
+          daily: [],
+          by_provider: [],
+          by_model: [],
+          media: { total_count: 0, recent_items: [] },
+          recent_sessions: [
+            { session_id: 's-1', title: 'Active 1', archived: false },
+            { session_id: 's-2', title: 'Archived 1', archived: true },
+          ],
+          meta: { time_range: '30d' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    const res = await fetchSessionUsageDashboard({
+      timeRange: '30d',
+      archivedMode: 'active',
+      sessionLimit: 25,
+    })
+    assert.strictEqual(res.ok, true)
+    assert.strictEqual(res.summary.active_sessions, 1)
+    assert.strictEqual(res.summary.archived_sessions, 1)
+    assert.match(capturedURL, /archived_mode=active/)
+    assert.match(capturedURL, /session_limit=25/)
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -260,7 +260,9 @@ export function UsagePage() {
                   {summary?.total_turns ?? 0}
                 </div>
                 <div className="text-[10px] text-[var(--app-text-subtle)] truncate">
-                  Across {summary?.total_sessions ?? 0} active sessions
+                  {summary?.active_sessions !== undefined && summary?.archived_sessions !== undefined && summary.archived_sessions > 0
+                    ? `${summary.active_sessions} active · ${summary.archived_sessions} archived`
+                    : `Across ${summary?.total_sessions ?? 0} sessions`}
                 </div>
               </Card>
             </div>
@@ -313,7 +315,7 @@ export function UsagePage() {
                     { id: 'overview', label: 'Providers Overview' },
                     { id: 'models', label: `Models (${data.by_model.length})` },
                     { id: 'media', label: `Media Gen (${data.media.total_count})` },
-                    { id: 'sessions', label: `Active Sessions (${data.recent_sessions.length})` },
+                    { id: 'sessions', label: `Sessions (${data.recent_sessions.length})` },
                   ] as const
                 ).map((tab) => (
                   <button
@@ -351,7 +353,7 @@ export function UsagePage() {
                   </div>
                   <div className="space-y-3">
                     <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-                      Recent Active Sessions
+                      Recent Sessions
                     </h4>
                     <UsageSessionsTable
                       sessions={data.recent_sessions.slice(0, 5)}

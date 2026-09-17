@@ -36,6 +36,8 @@ type SessionUsageDashboardSummary struct {
 	CodexNominalCostUSD float64 `json:"codex_nominal_cost_usd"`
 	TotalTurns          int     `json:"total_turns"`
 	TotalSessions       int     `json:"total_sessions"`
+	ActiveSessions      int     `json:"active_sessions"`
+	ArchivedSessions    int     `json:"archived_sessions"`
 	TotalMediaCalls     int     `json:"total_media_calls"`
 	MediaCostUSD        float64 `json:"media_cost_usd"`
 }
@@ -127,6 +129,7 @@ type SessionUsageSessionItem struct {
 	CostUSD        float64 `json:"cost_usd"`
 	TurnCount      int     `json:"turn_count"`
 	LastActiveAt   int64   `json:"last_active_at"`
+	Archived       bool    `json:"archived"`
 }
 
 type SessionUsageDashboardMeta struct {
@@ -167,6 +170,31 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	providerFilter := strings.ToLower(strings.TrimSpace(query.Get("provider")))
 	modelFilter := strings.ToLower(strings.TrimSpace(query.Get("model")))
 	sessionFilter := strings.TrimSpace(query.Get("session_id"))
+	archivedMode := strings.ToLower(strings.TrimSpace(query.Get("archived_mode")))
+	if archivedMode == "" {
+		if a := strings.ToLower(strings.TrimSpace(query.Get("archived"))); a != "" {
+			if a == "true" || a == "1" || a == "only" {
+				archivedMode = "only"
+			} else if a == "false" || a == "0" {
+				archivedMode = "exclude"
+			}
+		}
+	}
+	switch archivedMode {
+	case "active", "exclude":
+		archivedMode = "exclude"
+	case "archived", "only":
+		archivedMode = "only"
+	default:
+		archivedMode = "include"
+	}
+
+	sessionLimit := 50
+	if rawSessionLimit := strings.TrimSpace(query.Get("session_limit")); rawSessionLimit != "" {
+		if parsed, err := strconv.Atoi(rawSessionLimit); err == nil && parsed > 0 {
+			sessionLimit = parsed
+		}
+	}
 
 	now := time.Now().UTC()
 	var cutoffTime int64
@@ -213,14 +241,39 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mediaVariants, _ := s.sessions.ListAllMediaArtifactVariants(principal.AccountScopeID, 2000)
-	sessionsList, _ := s.sessions.Store().ListSessionsForAccount(principal.AccountScopeID, 1000)
-	sessionTitleMap := make(map[string]string, len(sessionsList))
-	for _, sess := range sessionsList {
-		title := strings.TrimSpace(sess.Title)
-		if title == "" {
-			title = "Untitled session"
+
+	// Session metadata resolver with point-lookup caching: resolves title and archived
+	// state on-demand for active/participating sessions without performing a full-table
+	// account scan across all sessions and lifecycles in Pebble.
+	type sessionMeta struct {
+		title    string
+		archived bool
+	}
+	sessionMetaCache := make(map[string]sessionMeta)
+	resolveSessionMeta := func(sessionID string) sessionMeta {
+		if meta, ok := sessionMetaCache[sessionID]; ok {
+			return meta
 		}
-		sessionTitleMap[sess.ID] = title
+		var meta sessionMeta
+		store := s.sessions.Store()
+		if store != nil {
+			if sess, ok, err := store.GetSession(sessionID); err == nil && ok {
+				meta.title = strings.TrimSpace(sess.Title)
+				meta.archived = false
+			} else if tombstone, ok, err := store.GetV3SessionTombstone(sessionID); err == nil && ok && tombstone.Archived && !tombstone.Deleted {
+				meta.title = strings.TrimSpace(tombstone.Session.Title)
+				meta.archived = true
+			}
+		}
+		if meta.title == "" {
+			if len(sessionID) > 8 {
+				meta.title = "Session " + sessionID[:8]
+			} else {
+				meta.title = "Session " + sessionID
+			}
+		}
+		sessionMetaCache[sessionID] = meta
+		return meta
 	}
 
 	// 2. Build model pricing lookup from catalog
@@ -351,13 +404,8 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		// Session usage
 		sessItem, exists := sessionUsageMap[rec.SessionID]
 		if !exists {
-			sessTitle := sessionTitleMap[rec.SessionID]
-			if sessTitle == "" {
-				sessTitle = "Session " + rec.SessionID[:min(8, len(rec.SessionID))]
-			}
 			sessItem = &SessionUsageSessionItem{
 				SessionID:    rec.SessionID,
-				Title:        sessTitle,
 				Provider:     provID,
 				Model:        modelID,
 				LastActiveAt: ts,
@@ -378,6 +426,14 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	summary.TotalSessions = len(uniqueSessions)
+	for sid := range uniqueSessions {
+		meta := resolveSessionMeta(sid)
+		if meta.archived {
+			summary.ArchivedSessions++
+		} else {
+			summary.ActiveSessions++
+		}
+	}
 
 	// 4. Process media generation calls
 	var mediaSummary SessionUsageMediaSummary
@@ -491,13 +547,22 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 
 	sessionList := make([]SessionUsageSessionItem, 0, len(sessionUsageMap))
 	for _, item := range sessionUsageMap {
+		meta := resolveSessionMeta(item.SessionID)
+		item.Title = meta.title
+		item.Archived = meta.archived
+		if archivedMode == "exclude" && item.Archived {
+			continue
+		}
+		if archivedMode == "only" && !item.Archived {
+			continue
+		}
 		sessionList = append(sessionList, *item)
 	}
 	sort.Slice(sessionList, func(i, j int) bool {
 		return sessionList[i].LastActiveAt > sessionList[j].LastActiveAt
 	})
-	if len(sessionList) > 50 {
-		sessionList = sessionList[:50]
+	if len(sessionList) > sessionLimit {
+		sessionList = sessionList[:sessionLimit]
 	}
 
 	// Calculate session counts per provider

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -334,5 +335,181 @@ func TestCalculateTurnCostFormulas(t *testing.T) {
 	}
 	if nominalCodex <= 0 {
 		t.Errorf("Codex nominal cost should be > 0, got %f", nominalCodex)
+	}
+}
+
+func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	now := time.Now().UTC().UnixMilli()
+
+	// 1. Create active session with usage
+	activeID := "sess_active_1"
+	_, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      activeID,
+		Title:          "Active Project Analysis",
+		AccountScopeID: testPrincipal().AccountScopeID,
+		UserID:         testPrincipal().UserID,
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "test-ws",
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatalf("create active session: %v", err)
+	}
+	_, _, _, err = sessionSvc.RecordTurnUsage(activeID, pebblestore.SessionTurnUsageSnapshot{
+		SessionID:      activeID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		UserID:         testPrincipal().UserID,
+		RunID:          "run-act-1",
+		Provider:       "google",
+		Model:          "gemini-3.8-flash",
+		Source:         "google_api_usage",
+		InputTokens:    20000,
+		OutputTokens:   1000,
+		TotalTokens:    21000,
+		CreatedAt:      now - 2000,
+		UpdatedAt:      now - 2000,
+	})
+	if err != nil {
+		t.Fatalf("record active turn: %v", err)
+	}
+
+	// 2. Create another session, record usage, then archive it
+	archivedID := "sess_archived_1"
+	_, _, err = sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      archivedID,
+		Title:          "Legacy Archived Investigation",
+		AccountScopeID: testPrincipal().AccountScopeID,
+		UserID:         testPrincipal().UserID,
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "test-ws",
+		Preference:     &pebblestore.ModelPreference{Provider: "anthropic", Model: "claude-sonnet-5", Thinking: "medium"},
+	})
+	if err != nil {
+		t.Fatalf("create archived session: %v", err)
+	}
+	_, _, _, err = sessionSvc.RecordTurnUsage(archivedID, pebblestore.SessionTurnUsageSnapshot{
+		SessionID:      archivedID,
+		AccountScopeID: testPrincipal().AccountScopeID,
+		UserID:         testPrincipal().UserID,
+		RunID:          "run-arch-1",
+		Provider:       "anthropic",
+		Model:          "claude-sonnet-5",
+		Source:         "anthropic_api_usage",
+		InputTokens:    30000,
+		OutputTokens:   1500,
+		TotalTokens:    31500,
+		CreatedAt:      now - 1000,
+		UpdatedAt:      now - 1000,
+	})
+	if err != nil {
+		t.Fatalf("record archived turn: %v", err)
+	}
+	if err := sessionSvc.ArchiveSession(archivedID); err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+
+	// 3. Create 50 dummy sessions with no usage to ensure large session counts don't slow down or interfere
+	for i := 0; i < 50; i++ {
+		dummyID := fmt.Sprintf("sess_dummy_%d", i)
+		_, _, err = sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+			SessionID:      dummyID,
+			Title:          fmt.Sprintf("Dummy Idle Session %d", i),
+			AccountScopeID: testPrincipal().AccountScopeID,
+			UserID:         testPrincipal().UserID,
+			WorkspacePath:  t.TempDir(),
+			WorkspaceName:  "test-ws",
+			Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "medium"},
+		})
+		if err != nil {
+			t.Fatalf("create dummy session %d: %v", i, err)
+		}
+	}
+
+	// 4. Test default GET /v3/usage (includes both active and archived)
+	reqAll := httptest.NewRequest(http.MethodGet, "/v3/usage?time_range=30d", nil)
+	wAll := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wAll, withTestPrincipal(reqAll))
+	if wAll.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", wAll.Code, wAll.Body.String())
+	}
+	var respAll SessionUsageDashboardResponse
+	if err := json.Unmarshal(wAll.Body.Bytes(), &respAll); err != nil {
+		t.Fatalf("unmarshal respAll: %v", err)
+	}
+
+	if respAll.Summary.TotalSessions != 2 {
+		t.Fatalf("expected 2 total sessions with usage, got %d", respAll.Summary.TotalSessions)
+	}
+	if respAll.Summary.ActiveSessions != 1 {
+		t.Fatalf("expected 1 active session, got %d", respAll.Summary.ActiveSessions)
+	}
+	if respAll.Summary.ArchivedSessions != 1 {
+		t.Fatalf("expected 1 archived session, got %d", respAll.Summary.ArchivedSessions)
+	}
+	if len(respAll.RecentSessions) != 2 {
+		t.Fatalf("expected 2 recent sessions, got %d", len(respAll.RecentSessions))
+	}
+
+	foundActive := false
+	foundArchived := false
+	for _, sess := range respAll.RecentSessions {
+		if sess.SessionID == activeID {
+			foundActive = true
+			if sess.Archived {
+				t.Fatalf("expected session %s to not be archived", activeID)
+			}
+			if sess.Title != "Active Project Analysis" {
+				t.Fatalf("expected title 'Active Project Analysis', got %q", sess.Title)
+			}
+		}
+		if sess.SessionID == archivedID {
+			foundArchived = true
+			if !sess.Archived {
+				t.Fatalf("expected session %s to be archived", archivedID)
+			}
+			if sess.Title != "Legacy Archived Investigation" {
+				t.Fatalf("expected title 'Legacy Archived Investigation', got %q", sess.Title)
+			}
+		}
+	}
+	if !foundActive || !foundArchived {
+		t.Fatalf("expected both active and archived session found: active=%v, archived=%v", foundActive, foundArchived)
+	}
+
+	// 5. Test GET /v3/usage?archived_mode=active (only active)
+	reqActive := httptest.NewRequest(http.MethodGet, "/v3/usage?archived_mode=active", nil)
+	wActive := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wActive, withTestPrincipal(reqActive))
+	if wActive.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wActive.Code)
+	}
+	var respActive SessionUsageDashboardResponse
+	if err := json.Unmarshal(wActive.Body.Bytes(), &respActive); err != nil {
+		t.Fatalf("unmarshal respActive: %v", err)
+	}
+	if len(respActive.RecentSessions) != 1 {
+		t.Fatalf("expected 1 session with archived_mode=active, got %d", len(respActive.RecentSessions))
+	}
+	if respActive.RecentSessions[0].SessionID != activeID || respActive.RecentSessions[0].Archived {
+		t.Fatalf("expected active session %s, got %+v", activeID, respActive.RecentSessions[0])
+	}
+
+	// 6. Test GET /v3/usage?archived_mode=only (only archived)
+	reqArchived := httptest.NewRequest(http.MethodGet, "/v3/usage?archived_mode=only", nil)
+	wArchived := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wArchived, withTestPrincipal(reqArchived))
+	if wArchived.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wArchived.Code)
+	}
+	var respArchived SessionUsageDashboardResponse
+	if err := json.Unmarshal(wArchived.Body.Bytes(), &respArchived); err != nil {
+		t.Fatalf("unmarshal respArchived: %v", err)
+	}
+	if len(respArchived.RecentSessions) != 1 {
+		t.Fatalf("expected 1 session with archived_mode=only, got %d", len(respArchived.RecentSessions))
+	}
+	if respArchived.RecentSessions[0].SessionID != archivedID || !respArchived.RecentSessions[0].Archived {
+		t.Fatalf("expected archived session %s, got %+v", archivedID, respArchived.RecentSessions[0])
 	}
 }

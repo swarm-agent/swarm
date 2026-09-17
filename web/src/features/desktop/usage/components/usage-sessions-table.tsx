@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ArrowUpRight, MessageSquare, Search } from 'lucide-react'
+import { Archive, ArrowUpRight, MessageSquare, Search } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Input } from '../../../../components/ui/input'
 import type { SessionUsageSessionItem } from '../services/usage-api'
@@ -7,22 +7,43 @@ import type { SessionUsageSessionItem } from '../services/usage-api'
 interface UsageSessionsTableProps {
   sessions: SessionUsageSessionItem[]
   onOpenSession?: (sessionId: string) => void
+  title?: string
 }
 
-export function UsageSessionsTable({ sessions, onOpenSession }: UsageSessionsTableProps) {
+export function UsageSessionsTable({ sessions, onOpenSession, title = 'Sessions Usage' }: UsageSessionsTableProps) {
   const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'archived'>('all')
+
+  const counts = useMemo(() => {
+    let active = 0
+    let archived = 0
+    for (const s of sessions) {
+      if (s.archived) {
+        archived++
+      } else {
+        active++
+      }
+    }
+    return { all: sessions.length, active, archived }
+  }, [sessions])
 
   const filtered = useMemo(() => {
-    if (!search.trim()) return sessions
+    let result = sessions
+    if (statusFilter === 'active') {
+      result = result.filter((s) => !s.archived)
+    } else if (statusFilter === 'archived') {
+      result = result.filter((s) => s.archived)
+    }
+    if (!search.trim()) return result
     const q = search.toLowerCase().trim()
-    return sessions.filter(
+    return result.filter(
       (s) =>
         s.title.toLowerCase().includes(q) ||
         s.session_id.toLowerCase().includes(q) ||
         s.model.toLowerCase().includes(q) ||
         s.provider.toLowerCase().includes(q)
     )
-  }, [sessions, search])
+  }, [sessions, statusFilter, search])
 
   const formatRelativeTime = (ts: number): string => {
     if (!ts) return ''
@@ -36,11 +57,53 @@ export function UsageSessionsTable({ sessions, onOpenSession }: UsageSessionsTab
   return (
     <Card className="overflow-hidden p-0">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)] p-4">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-[var(--app-text)]">Active Sessions Usage</h3>
-          <span className="rounded-full bg-[var(--app-surface-hover)] px-2 py-0.5 text-xs text-[var(--app-text-muted)]">
-            {sessions.length} sessions
-          </span>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold text-[var(--app-text)]">{title}</h3>
+            <span className="rounded-full bg-[var(--app-surface-hover)] px-2 py-0.5 text-xs text-[var(--app-text-muted)]">
+              {filtered.length === sessions.length
+                ? `${sessions.length} sessions`
+                : `${filtered.length} of ${sessions.length}`}
+            </span>
+          </div>
+
+          {/* Status filter buttons: All, Active, Archived */}
+          <div className="inline-flex rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs font-medium">
+            <button
+              type="button"
+              onClick={() => setStatusFilter('all')}
+              className={`rounded-md px-2.5 py-1 transition-colors ${
+                statusFilter === 'all'
+                  ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              }`}
+            >
+              All ({counts.all})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('active')}
+              className={`rounded-md px-2.5 py-1 transition-colors ${
+                statusFilter === 'active'
+                  ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              }`}
+            >
+              Active ({counts.active})
+            </button>
+            <button
+              type="button"
+              onClick={() => setStatusFilter('archived')}
+              className={`rounded-md px-2.5 py-1 transition-colors flex items-center gap-1 ${
+                statusFilter === 'archived'
+                  ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              }`}
+            >
+              <Archive size={11} className="opacity-70" />
+              Archived ({counts.archived})
+            </button>
+          </div>
         </div>
 
         <div className="relative w-full max-w-xs">
@@ -92,6 +155,12 @@ export function UsageSessionsTable({ sessions, onOpenSession }: UsageSessionsTab
                         <span className="font-medium text-[var(--app-text)] group-hover:text-[var(--app-primary)] transition-colors truncate max-w-xs">
                           {item.title}
                         </span>
+                        {item.archived && (
+                          <span className="inline-flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.2 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0">
+                            <Archive size={10} />
+                            Archived
+                          </span>
+                        )}
                         <ArrowUpRight
                           size={12}
                           className="text-[var(--app-text-subtle)] opacity-0 group-hover:opacity-100 transition-opacity"
