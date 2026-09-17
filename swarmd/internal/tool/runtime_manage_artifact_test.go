@@ -1327,3 +1327,15 @@ func TestManageArtifactCreateCarriesAuthenticatedSourceLineage(t *testing.T) {
 		t.Fatalf("derived input = %+v", authority.created)
 	}
 }
+
+func TestManageArtifactHelpAction(t *testing.T) {
+	runtime := NewRuntime(1)
+	ctx, scope := artifactToolContext()
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-help", Name: "manage_artifact", Arguments: `{"action":"help","topic":"animation"}`})
+	if err != nil {
+		t.Fatalf("help action failed: %v", err)
+	}
+	if !strings.Contains(output, "swarm.animation/v1") {
+		t.Fatalf("help output missing animation manifest guidance: %s", output)
+	}
+}

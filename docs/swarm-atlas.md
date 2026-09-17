@@ -2078,3 +2078,21 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `python3 scripts/test-gcp-release-workflow.py` (3 tests pass).
   - `bash scripts/check-atlas-sync.sh` passes.
   - `bash scripts/check-precommit.sh` passes.
+
+### Harness Prompt and Tool Schema Context Optimization (2026-09-17)
+
+- **Harness Prompt Optimization (`swarmd/internal/run/service_prompt.go`, `service_prompt_mode_test.go`):**
+  - Purged dead `manage_todos` echoes and guidance references from master harness prompt.
+  - Converted verbose feedback classification and plan routing prose into a dense Markdown decision table covering Inquiry, Localized Additive Patch, Checklist Replacement, Checkpoint Redefinition, Independent Shippable Work, and Whole-Plan Replacement.
+  - Reconciled prompt assertion tests in `service_prompt_mode_test.go`.
+- **Tool Schema De-nesting & Optimization (`swarmd/internal/tool/runtime.go`, `automation_v2_schema.go`, `runtime_manage_artifact.go`):**
+  - Streamlined `AutomationV2AuthoringInstructions` duplicate description text in `sessionPlanAutomationV2ToolSchema()`.
+  - De-nested recursive schemas in `plan_manage`, `exit_plan_mode`, and `task` definitions (`taskProgramDefinitionToolSchema`).
+  - Added modular `action="help"` with optional `topic` parameter to `manage_artifact` for progressive tool help (covering animation, video, audio, and narration contracts) while keeping tool definitions and parameter descriptions lean and under bounded context budgets.
+  - Added unit test `TestManageArtifactHelpAction` in `runtime_manage_artifact_test.go`.
+- **Validation:**
+  - `(cd swarmd && go test ./internal/run -run "TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned")` passes.
+  - `(cd swarmd && go test ./internal/tool -run "TestPlanManage|TestExitPlanMode|TestTask|TestManageArtifactHelpAction")` passes.
+  - `(cd swarmd && go build ./...)` passes cleanly across all packages.
+  - `bash scripts/check-atlas-sync.sh` passes.
+

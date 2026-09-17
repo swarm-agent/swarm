@@ -259,7 +259,8 @@ func manageArtifactDefinition() Definition {
 			"properties": map[string]any{
 				"artifact_id":  map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
 				"resume_draft": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":       map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). Pass chain_from (or source_* with chain=true) to automatically extract the last keyframe and generate seamless continuous chained video. generate_video_story (or generate_video with scenes array): generates multi-part chained video end-to-end in ONE call, automatically extracting keyframes between scenes, generating continuous Lyria soundtrack, and concatenating with Foley ducking. extract_video_frame extracts a PNG keyframe (frame: last, first, or timestamp_ms) from a video artifact. chain_video concatenates multiple video artifacts and optionally overrides or mixes continuous soundtrack audio (audio_mode: override, mix_ducked, or native) into a master video artifact. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
+				"action":       map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan or complete text/html. read_v3 returns HTML and Parts. revise_v3 publishes candidate revisions. begin_v3/author_v3 handle incremental native authoring. generate_image/video/audio creates AI media assets. Supports search, materialize/materialize_batch, and publish_workspace. Pass action='help' with optional topic (animation, video, audio, narration) for detailed authoring specifications."},
+				"topic":        map[string]any{"type": "string", "description": "Optional topic for action=help (e.g. animation, video, audio, narration)."},
 				"scenes": map[string]any{
 					"type":        "array",
 					"minItems":    2,
@@ -333,7 +334,20 @@ func manageArtifactDefinition() Definition {
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
 				"draft_handle":           map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "grant_id": map[string]any{"type": "string"}}, "required": []string{"session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"}, "additionalProperties": false},
-				"operation":              artifactV3AuthorDefinition().Parameters,
+				"operation": map[string]any{
+					"type":        "object",
+					"description": "Artifact V3 authoring operation (inspect_context, read_file, edit_file, build_preview, finish_turn, etc.).",
+					"properties": map[string]any{
+						"action":      map[string]any{"type": "string", "enum": []string{"inspect_context", "list_files", "read_file", "create_file", "edit_file", "rename_file", "delete_file", "diff", "build_preview", "finish_turn", "reconcile_parts"}},
+						"path":        map[string]any{"type": "string"},
+						"old_string":  map[string]any{"type": "string"},
+						"new_string":  map[string]any{"type": "string"},
+						"content":     map[string]any{"type": "string"},
+						"to_path":     map[string]any{"type": "string"},
+						"replace_all": map[string]any{"type": "boolean"},
+					},
+					"required": []string{"action"},
+				},
 				"narration_plan":         artifactNarrationPlanToolSchema(),
 				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
 				"text_edits":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "properties": map[string]any{"old_string": map[string]any{"type": "string", "minLength": 1}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []string{"old_string", "new_string"}, "additionalProperties": false}, "description": "Ordered exact UTF-8 replacements for derive_text. By default each old_string must occur exactly once; replace_all requires at least one occurrence. Bytes outside matched spans are preserved exactly."},
@@ -441,11 +455,15 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
 	switch actionName {
+	case "help":
+		topic := strings.ToLower(strings.TrimSpace(asString(args["topic"])))
+		response["topic"] = topic
+		response["help"] = artifactHelpText(topic)
 	case "image_capabilities":
 		capabilities, err := r.managedImageCapabilities(principal.AccountScopeID)
 		if err != nil {
@@ -1877,6 +1895,43 @@ func deriveAudioTitle(prompt string) string {
 	r := []rune(clean)
 	r[0] = unicode.ToUpper(r[0])
 	return string(r)
+}
+
+func artifactHelpText(topic string) string {
+	switch topic {
+	case "animation", "motion":
+		return `Artifact Animation & Motion Contract:
+- Direct native HTML accepts animation_profile motion_ui or spatial_3d (pinned offline Three.js; import from 'three' in module script).
+- Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready().
+- Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
+- Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready(), and seek(ms) returning {time_ms: ms}.
+- seek must pause all rAF/timers and deterministically render the exact timestamp.`
+	case "video", "veo":
+		return `Artifact AI Video (Veo 3.1) Contract:
+- action="generate_video": prompt, duration_seconds (4, 6, 8), aspect_ratio (16:9, 9:16), resolution (720p, 1080p, 4k).
+- Image-to-video: pass image or image_path alongside prompt.
+- Video iteration/remix: pass source_session_id, source_collection_id, source_variant_id, source_event_seq with delta prompt.
+- Continuous multi-part chaining: pass chain_from pointing to prior video reference. Keyframe extracted automatically.
+- action="chain_video": combine videos array with optional audio soundtrack (audio_mode: mix_ducked or override).
+- action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking.`
+	case "audio", "lyria":
+		return `Artifact AI Audio (Google Lyria) Contract:
+- action="generate_audio": prompt, duration_seconds (default 30s), optional image/image_path inspiration.
+- Multiple variations in one call: prompts: ["prompt 1", "prompt 2"] or count: N (1-8).
+- Audio iteration/remix: pass source_* fields alongside delta prompt.`
+	case "narration":
+		return `Narration Plan Draft Contract:
+- action="create" with narration_plan: {"title": "...", "scenes": [{"id": "scene-1", "title": "...", "narration": "...", "visual_direction": "...", "music_direction": "..."}]}.
+- Server renders HTML with separate narration and visual Parts.`
+	default:
+		return `Artifact V3 Overview & Help Topics:
+Available detailed topics (pass topic="<name>"):
+- "animation": Native HTML animations, swarm.animation/v1 manifest, Three.js spatial 3D.
+- "video": Veo 3.1 AI video generation, image-to-video, chaining, and master story generation.
+- "audio": Google Lyria music, sound effects, and multi-prompt audio variations.
+- "narration": Multi-scene narration plan drafts.
+Basic operations: create, read_v3, revise_v3, begin_v3, author_v3, generate_image, generate_video, generate_audio, materialize, export_html_stills, export_html_animation.`
+	}
 }
 
 func (r *Runtime) resolveVideoImageInput(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, raw any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {

@@ -9,7 +9,7 @@ const AutomationV2AuthoringInstructions = WorkerV2AuthoringInstructions
 
 func sessionPlanAutomationV2ToolSchema() map[string]any {
 	str := func(values ...string) map[string]any { return map[string]any{"type": "string", "enum": values} }
-	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"schema_version", "schedule", "missed", "overlap", "activate_on_accept"}, "description": AutomationV2AuthoringInstructions, "properties": map[string]any{
+	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"schema_version", "schedule", "missed", "overlap", "activate_on_accept"}, "description": "Worker V2 / Automation V2 schedule specification.", "properties": map[string]any{
 		"schema_version": map[string]any{"type": "integer", "enum": []int{2}},
 		"schedule":       map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{"kind": str("interval", "cron"), "interval_seconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 31622400}, "cron": map[string]any{"type": "string"}, "timezone": map[string]any{"type": "string"}}},
 		"missed":         str("skip", "coalesce"), "overlap": str("serialize", "independent"), "activate_on_accept": map[string]any{"type": "boolean", "enum": []bool{true}},
