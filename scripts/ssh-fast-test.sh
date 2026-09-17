@@ -109,6 +109,16 @@ if systemctl --user cat "${service_unit}" >/dev/null 2>&1; then
   esac
   exit 0
 fi
+if [ "$(id -u)" -eq 0 ]; then
+  case "${action}" in
+    status) systemctl --no-pager --full status "${service_unit}" | sed -n '1,18p' ;;
+    stop) systemctl stop "${service_unit}" ;;
+    reload) systemctl daemon-reload ;;
+    restart) systemctl restart "${service_unit}" ;;
+    *) printf 'ssh-fast-test: unsupported service action: %s\n' "${action}" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
 if [ "${service_unit}" != 'swarm.service' ]; then
   printf 'ssh-fast-test: system service must use the fixed swarm.service unit\n' >&2
   exit 1
@@ -446,7 +456,15 @@ case "$*" in
   'stop swarm.service') action='swarm-service-stop' ;;
   *) printf 'ssh-fast-test: rebuild requested unsupported system service action\n' >&2; exit 1 ;;
 esac
-exec /usr/bin/sudo -n "${admin_broker}" "${action}"
+if [ -x "${admin_broker}" ]; then
+  exec /usr/bin/sudo -n "${admin_broker}" "${action}"
+else
+  case "${action}" in
+    swarm-service-reload) exec systemctl daemon-reload ;;
+    swarm-service-restart) exec systemctl restart swarm.service ;;
+    swarm-service-stop) exec systemctl stop swarm.service ;;
+  esac
+fi
 SUDO_SHIM
 chmod 0700 "${sudo_shim_dir}/sudo"
 SWARM_SKIP_SYSTEMD_UNIT=1 PATH="${sudo_shim_dir}:${PATH}" ./rebuild f
