@@ -3729,6 +3729,7 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopV3ArtifactV3Studio
         artifact={selectedArtifactV3}
+        soundtracks={sessionArtifacts}
         onNavigate={setSelectedArtifactV3}
         onRepairDraft={(artifact) => {
           if (artifact.ownerSessionId !== normalizedSessionId) return;
