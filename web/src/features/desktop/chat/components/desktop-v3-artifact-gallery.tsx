@@ -41,6 +41,7 @@ import {
   fetchDesktopV3ArtifactCollectionBundle,
   fetchDesktopV3ArtifactDownload,
   fetchDesktopV3ArtifactCatalogResult,
+  desktopV3ArtifactDirectContentURL,
   fetchDesktopV3ArtifactPreviewAccess,
   fetchDesktopV3ArtifactTextPreview,
   preflightDesktopV3ArtifactDirectContent,
@@ -357,6 +358,9 @@ export function DesktopV3ArtifactGallery({
   const [iterationTimeMs, setIterationTimeMs] = useState(0)
   const [iterationPlaying, setIterationPlaying] = useState(false)
   const [iterationPlayerReadyVersion, setIterationPlayerReadyVersion] = useState(0)
+  const [selectedSoundtrackId, setSelectedSoundtrackId] = useState('')
+  const [soundtrackURL, setSoundtrackURL] = useState('')
+  const soundtrackAudioRef = useRef<HTMLAudioElement | null>(null)
   const [actionPending, setActionPending] = useState<'add' | 'use' | 'ask-part' | 'apply-parts' | 'iterate-part' | 'iterate-section' | 'next-section' | 'export-video-stills' | 'swarm-video' | 'download-collection' | 'reveal-artifact' | 'reveal-collection' | ''>('')
   const [actionError, setActionError] = useState('')
   const [actionConfirmation, setActionConfirmation] = useState('')
@@ -377,6 +381,35 @@ export function DesktopV3ArtifactGallery({
   const iterationPlaybackStartMsRef = useRef(0)
   const iterationTimeMsRef = useRef(0)
   const iterationLastUIUpdateRef = useRef(0)
+
+  const availableSoundtracks = useMemo(() => {
+    return artifacts.filter((a) => (a.mediaType.startsWith('audio/') || a.kind === 'audio') && a.status === 'ready')
+  }, [artifacts])
+
+  const activeSoundtrack = useMemo(() => {
+    if (selectedSoundtrackId === 'none') return null
+    if (selectedSoundtrackId) {
+      const match = availableSoundtracks.find((a) => a.artifactId === selectedSoundtrackId)
+      if (match) return match
+    }
+    return availableSoundtracks[0] ?? null
+  }, [availableSoundtracks, selectedSoundtrackId])
+
+  useEffect(() => {
+    if (!activeSoundtrack) {
+      setSoundtrackURL('')
+      return undefined
+    }
+    const controller = new AbortController()
+    void preflightDesktopV3ArtifactDirectContent(activeSoundtrack, controller.signal)
+      .then((url) => {
+        if (!controller.signal.aborted) setSoundtrackURL(url)
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSoundtrackURL(desktopV3ArtifactDirectContentURL(activeSoundtrack))
+      })
+    return () => controller.abort()
+  }, [activeSoundtrack])
   const iterationSeekAcknowledgerRef = useRef<DesktopV3ArtifactSeekAcknowledger | null>(null)
   if (!iterationSeekAcknowledgerRef.current) {
     iterationSeekAcknowledgerRef.current = new DesktopV3ArtifactSeekAcknowledger((timeMs) => sendAnimationMessage('seek', timeMs))
@@ -716,6 +749,7 @@ export function DesktopV3ArtifactGallery({
   }, [open, previewRetry, selectedAnimationActive, selected?.artifactId, selected?.content, selected?.mediaType, selected?.previewable, selected?.sessionId, selected?.sourceRef, selected?.status])
 
   const selectArtifact = (artifact: DesktopV3ArtifactGalleryEntry, navigate = true) => {
+    if (iterationPlaying) pauseIteration()
     setOverviewCollectionKey('')
     setSelectedId(artifactSelectionKey(artifact))
     if (navigate) onArtifactNavigate?.(artifact)
@@ -827,6 +861,9 @@ export function DesktopV3ArtifactGallery({
     iterationTimeMsRef.current = bounded
     setIterationTimeMs(bounded)
     syncIterationSectionToTime(bounded)
+    if (soundtrackAudioRef.current && Math.abs(soundtrackAudioRef.current.currentTime - bounded / 1000) > 0.05) {
+      soundtrackAudioRef.current.currentTime = bounded / 1000
+    }
   }
 
   function pauseIteration() {
@@ -834,6 +871,7 @@ export function DesktopV3ArtifactGallery({
     iterationPlaybackFrameRef.current = null
     iterationSeekAcknowledgerRef.current?.setOnSettled(null)
     setIterationPlaying(false)
+    if (soundtrackAudioRef.current) soundtrackAudioRef.current.pause()
     seekIteration(iterationTimeMsRef.current)
   }
 
@@ -850,12 +888,20 @@ export function DesktopV3ArtifactGallery({
       iterationPlaybackStartedAtRef.current = performance.now()
       iterationLastUIUpdateRef.current = 0
       setIterationPlaying(true)
+      if (soundtrackAudioRef.current && soundtrackURL) {
+        soundtrackAudioRef.current.currentTime = startMs / 1000
+        soundtrackAudioRef.current.play().catch(() => {})
+      }
       const tick = (now: number) => {
-        const nextMs = iterationPlaybackStartMsRef.current + (now - iterationPlaybackStartedAtRef.current)
+        let nextMs = iterationPlaybackStartMsRef.current + (now - iterationPlaybackStartedAtRef.current)
+        if (soundtrackAudioRef.current && !soundtrackAudioRef.current.paused && soundtrackAudioRef.current.currentTime > 0) {
+          nextMs = Math.round(soundtrackAudioRef.current.currentTime * 1000)
+        }
         if (nextMs >= section.endMs) {
           seekIteration(section.endMs)
           setIterationPlaying(false)
           iterationPlaybackFrameRef.current = null
+          if (soundtrackAudioRef.current) soundtrackAudioRef.current.pause()
           return
         }
         queueAnimationSeek(nextMs)
@@ -1567,7 +1613,21 @@ export function DesktopV3ArtifactGallery({
                       </div>
                     </div>
                   ) : null}
-                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? <iframe ref={animationFrameRef} key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onLoad={() => requestIterationDescription(artifactSelectionKey(selected))} onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} /> : null}
+                  {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/html' && previewURL ? (
+                    <>
+                      <iframe ref={animationFrameRef} key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="allow-scripts" allow="autoplay" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onLoad={() => requestIterationDescription(artifactSelectionKey(selected))} onError={() => setPreviewError('The secure animation runtime could not load this artifact. Access may have expired or the artifact may be incompatible with preview policy.')} />
+                      {soundtrackURL ? (
+                        <audio
+                          ref={soundtrackAudioRef}
+                          key={soundtrackURL}
+                          src={soundtrackURL}
+                          preload="auto"
+                          className="hidden"
+                          data-artifact-soundtrack-overlay
+                        />
+                      ) : null}
+                    </>
+                  ) : null}
                   {iterationDescriptor && !previewLoading && !previewError && !previewFullscreen ? <button type="button" className="absolute bottom-3 left-1/2 z-20 inline-flex h-10 -translate-x-1/2 items-center gap-2 rounded-full border border-white/20 bg-black/75 px-4 text-xs font-semibold text-white shadow-lg backdrop-blur hover:bg-black/90 md:left-[calc(50%+9rem)] xl:left-[calc(50%+10rem)]" aria-label={iterationPlaying ? 'Pause animated artifact' : `Play animated artifact from ${iterationSection?.label || 'current position'}`} onClick={playIterationSection} data-artifact-primary-playback>{iterationPlaying ? <Pause size={15} /> : <Play size={15} />}{iterationPlaying ? 'Pause' : iterationTimeMs > 0 ? `Play from ${iterationSection?.label || 'here'}` : 'Play animation'}</button> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'application/pdf' && previewURL ? <iframe key={`${previewURL}:${previewRetry}`} title={selected.label} src={previewURL} sandbox="" referrerPolicy="no-referrer" className="h-full min-h-0 w-full border-0 bg-white" onError={() => setPreviewError('The browser could not load this PDF.')} /> : null}
                   {!previewLoading && !previewError && selectedAnimationActive && selected.mediaType === 'text/markdown' && previewText ? <div className="mx-auto max-w-4xl rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-5"><ChatMarkdown content={previewText} /></div> : null}
@@ -1594,6 +1654,29 @@ export function DesktopV3ArtifactGallery({
                     <button type="button" className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90" aria-label={iterationPlaying ? 'Pause whole artifact' : 'Play whole artifact from current position'} onClick={playIterationSection}>{iterationPlaying ? <Pause size={14} /> : <Play size={14} />}<span>{iterationPlaying ? 'Pause' : iterationTimeMs > 0 ? 'Play from here' : 'Play'}</span></button>
                     <input type="range" min={0} max={iterationDescriptor.durationMs} step={1} value={Math.min(iterationDescriptor.durationMs, Math.max(0, iterationTimeMs))} aria-label="Whole artifact timeline" className="w-full min-w-0 accent-[var(--app-primary)] lg:min-w-40 lg:flex-1" onChange={(event) => { if (iterationPlaying) pauseIteration(); seekIteration(Number(event.target.value)) }} />
                     <span className="shrink-0 font-mono text-[10px] text-[var(--app-text-muted)]">{formatDesktopV3ArtifactIterationTime(iterationTimeMs)}</span>
+                    {availableSoundtracks.length > 0 ? (
+                      <div className="inline-flex items-center gap-1.5 shrink-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs" data-artifact-soundtrack-picker>
+                        <Music size={13} className="text-[var(--app-primary)] shrink-0" aria-hidden="true" />
+                        <select
+                          value={selectedSoundtrackId || activeSoundtrack?.artifactId || ''}
+                          onChange={(event) => {
+                            const nextId = event.target.value
+                            setSelectedSoundtrackId(nextId)
+                            if (iterationPlaying) pauseIteration()
+                          }}
+                          className="bg-transparent text-[11px] font-medium text-[var(--app-text)] focus:outline-none cursor-pointer max-w-44 truncate"
+                          aria-label="Select soundtrack overlay"
+                          title="Synchronize soundtrack audio with animation playback"
+                        >
+                          {availableSoundtracks.map((audio) => (
+                            <option key={audio.artifactId} value={audio.artifactId} className="bg-[var(--app-surface)] text-[var(--app-text)]">
+                              {audio.label || audio.filename || 'Soundtrack'}
+                            </option>
+                          ))}
+                          <option value="none" className="bg-[var(--app-surface)] text-[var(--app-text-muted)]">No soundtrack (silent)</option>
+                        </select>
+                      </div>
+                    ) : null}
                     <button type="button" className="col-span-3 inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary-soft)] px-3 text-xs font-semibold text-[var(--app-primary)] hover:opacity-90 disabled:opacity-50 lg:col-auto lg:h-8 lg:w-auto lg:shrink-0" disabled={!iterationRoundSourceArtifact || !onIterateSection || Boolean(actionPending)} onClick={() => void requestSectionIteration()} data-artifact-iterate-section>{actionPending === 'iterate-section' ? <Loader2 className="size-3 animate-spin" /> : <Sparkles size={13} />}More alternatives</button>
                     {nextIterationSection ? <button type="button" className="col-span-3 inline-flex h-9 w-full min-w-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--app-primary)] px-3 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50 lg:col-auto lg:h-8 lg:w-auto lg:shrink-0" disabled={!activeIterationAlternative || !onIterateSection || Boolean(actionPending)} onClick={() => void requestNextSectionIteration()} data-artifact-next-section>{actionPending === 'next-section' ? <Loader2 className="size-3 animate-spin" /> : <ChevronRight size={13} />}Continue to {nextIterationSection.label}</button> : null}
                   </div>

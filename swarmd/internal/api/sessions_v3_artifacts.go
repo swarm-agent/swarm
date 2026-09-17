@@ -44,7 +44,7 @@ const (
 	// srcdoc frames, and same-artifact package resources are supported; outbound
 	// connections, forms, objects, and top-level navigation remain unavailable.
 	sessionsV3ArtifactPreviewHTMLCSP           = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' data: blob:; connect-src 'none'; worker-src blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
-	sessionsV3ArtifactPreviewPermissionsPolicy = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
+	sessionsV3ArtifactPreviewPermissionsPolicy = "accelerometer=(), ambient-light-sensor=(), autoplay=*, bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
 )
 
 type sessionsV3ArtifactPreviewTokenClaims struct {
