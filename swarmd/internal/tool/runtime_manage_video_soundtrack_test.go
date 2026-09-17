@@ -34,8 +34,9 @@ func TestManageVideoDefinitionExposesTypedSoundtrackProposalContract(t *testing.
 			t.Fatalf("manage_video soundtrack schema exposes forbidden path field %q", forbidden)
 		}
 	}
+	help := videoHelpText()
 	for _, guidance := range []string{"complete exact audio", "registered soundtrack audio must share the initial part playhead", "create_project initial_timeline", "cannot accept a proposal or start a final render"} {
-		if !strings.Contains(definition.Description, guidance) {
+		if !strings.Contains(help, guidance) {
 			t.Fatalf("manage_video soundtrack guidance lacks %q", guidance)
 		}
 	}

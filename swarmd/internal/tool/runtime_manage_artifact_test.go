@@ -557,6 +557,7 @@ func TestManageArtifactReadQuotaErrorsAreActionableAndDoNotClaimUnavailability(t
 
 func TestManageArtifactRetrievalContractSurfacesCompleteReadyReference(t *testing.T) {
 	definition := manageArtifactDefinition()
+	workflowHelp := artifactHelpText("workflow")
 	for _, requiredInstruction := range []string{
 		"prior-session artifact library without scanning transcripts or storage folders",
 		"next_cursor is an opaque continuation that must be passed back unchanged as cursor",
@@ -570,8 +571,8 @@ func TestManageArtifactRetrievalContractSurfacesCompleteReadyReference(t *testin
 		"use publish_workspace to publish the finished file or package",
 		"copy the original exact reference into source_session_id",
 	} {
-		if !strings.Contains(definition.Description, requiredInstruction) {
-			t.Fatalf("definition does not explain %q: %s", requiredInstruction, definition.Description)
+		if !strings.Contains(workflowHelp, requiredInstruction) {
+			t.Fatalf("workflow help does not explain %q: %s", requiredInstruction, workflowHelp)
 		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
@@ -1337,5 +1338,13 @@ func TestManageArtifactHelpAction(t *testing.T) {
 	}
 	if !strings.Contains(output, "swarm.animation/v1") {
 		t.Fatalf("help output missing animation manifest guidance: %s", output)
+	}
+
+	workflowOutput, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-help-wf", Name: "manage_artifact", Arguments: `{"action":"help","topic":"workflow"}`})
+	if err != nil {
+		t.Fatalf("workflow help action failed: %v", err)
+	}
+	if !strings.Contains(workflowOutput, "resume_draft") || !strings.Contains(workflowOutput, "publish_workspace") {
+		t.Fatalf("help output missing workflow guidance: %s", workflowOutput)
 	}
 }

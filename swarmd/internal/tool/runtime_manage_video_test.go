@@ -42,10 +42,10 @@ func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 }
 
 func TestManageVideoDefinitionDescribesStoryboardFirstPreProductionWorkflow(t *testing.T) {
-	definition := manageVideoDefinition()
+	help := videoHelpText()
 	for _, required := range []string{"prefer a self-contained HTML swarm.storyboard/v1 source", "export_html_stills", "import_storyboard", "filming requirements", "still remains the visible placeholder", "plan.kind=revision", "Do not stop after HTML authoring or still export", "storyboard parts remain pending"} {
-		if !strings.Contains(definition.Description, required) {
-			t.Fatalf("manage_video description lacks storyboard workflow %q", required)
+		if !strings.Contains(help, required) {
+			t.Fatalf("manage_video help lacks storyboard workflow %q", required)
 		}
 	}
 }
@@ -187,10 +187,11 @@ func TestManageVideoDefinitionExposesAdaptiveJobInstructions(t *testing.T) {
 }
 
 func TestManageVideoDefinitionExposesSourceNavigationWorkflow(t *testing.T) {
-	definition := manageVideoDefinition()
-	if !strings.Contains(definition.Description, "trusted video and audio sources") || !strings.Contains(definition.Description, "registered source-media folders") || !strings.Contains(definition.Description, "selected opaque video or audio references") || !strings.Contains(definition.Description, "triggering-message video attachments") {
-		t.Fatalf("description does not expose source workflow: %s", definition.Description)
+	help := videoHelpText()
+	if !strings.Contains(help, "trusted video and audio sources") || !strings.Contains(help, "registered source-media folders") || !strings.Contains(help, "selected opaque video or audio references") || !strings.Contains(help, "triggering-message video attachments") {
+		t.Fatalf("help does not expose source workflow: %s", help)
 	}
+	definition := manageVideoDefinition()
 	raw, err := json.Marshal(definition.Parameters)
 	if err != nil {
 		t.Fatal(err)
@@ -541,12 +542,13 @@ func TestManageVideoConvertArtifactV3UsesExactNativeIdentity(t *testing.T) {
 }
 
 func TestManageVideoDefinitionExposesProjectAndRenderWorkflow(t *testing.T) {
-	definition := manageVideoDefinition()
+	help := videoHelpText()
 	for _, required := range []string{"One-shot initial-plan workflow", "create_project without initial_timeline", "propose_plan creates only a pending whole-plan review object"} {
-		if !strings.Contains(definition.Description, required) {
-			t.Fatalf("manage_video description lacks %q: %s", required, definition.Description)
+		if !strings.Contains(help, required) {
+			t.Fatalf("manage_video help lacks %q: %s", required, help)
 		}
 	}
+	definition := manageVideoDefinition()
 	raw, err := json.Marshal(definition.Parameters)
 	if err != nil {
 		t.Fatal(err)

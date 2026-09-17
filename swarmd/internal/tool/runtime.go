@@ -1413,7 +1413,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-theme",
-			Description: "Inspect and manage builtin/custom themes. create_batch previews or creates up to 8 themes in one confirmation-safe call for comparison, with optional apply_theme_id selection. Create requires theme_id (or content.id), name (or content.name), and content.palette (or base_theme_id for inherited palette). Mutating actions preview unless confirm=true. create/update can atomically apply with apply_to=workspace|account|global|none; workspace apply defaults to the saved source workspace, not the managed execution worktree; explicit workspace paths must resolve to exact saved workspace roots.",
+			Description: "Inspect and manage builtin/custom themes. Call action='inspect' for palette fields, theme specifications, and supported actions.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1699,7 +1699,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm (fast parallel alternatives or independent trials; internal explore strategy remains implicit for backward compatibility). Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. In regular mode, use the structured launches array; Do not embed launch JSON as text embedded in prompt. Designer requires explicitly requested multiple UI/design iterations or variants (prohibited for ordinary UI work and single-design requests); workspace Designers share the parent checkout with read/search/find/list and write/edit (no Bash or Git) on distinct non-overlapping workspace-relative scopes, while managed Designers produce ordinary reusable artifacts. Approved-checkpoint starts omit program and max_concurrency because the runtime loads the canonical definition. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode uses the same subagent policy: agent_type and count generate the wave; omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Idea Swarms send the same question directly without Router.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm (fast parallel alternatives or independent trials). Every spawn call requires a non-empty prompt. In regular mode, use the launches array. In swarm mode, specify agent_type and count.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
