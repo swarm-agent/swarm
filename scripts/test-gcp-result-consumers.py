@@ -12,6 +12,7 @@ import io
 import json
 from pathlib import Path
 import tarfile
+import tempfile
 import unittest
 
 
@@ -204,6 +205,81 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(s.relay.Invalid): s.archive_info(archive(root + '/../escape'), 'v1.2.3', inputs)
         inputs['source_sha'] = B
         with self.assertRaises(s.relay.Invalid): s.archive_info(archive(), 'v1.2.3', inputs)
+
+    def test_consume_v2_intake_stages_files_and_attestation_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / 'dist'
+            gh_output = tmp_path / 'gh_out'
+            gh_output.touch()
+
+            version = 'v1.2.3'
+            root = f'swarm-{version}-linux-amd64'
+            info = f'version={version}\ncommit={A}\nactor=local\nref=detached\nbuilt_at=2026-01-01T00:00:00Z\n'.encode()
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+                for name, raw in {root + '/build-info.txt': info, root + '/install.sh': b'x', root + '/linux-amd64/root/swarm': b'x', root + '/linux-amd64/swarmd/swarmd': b'x'}.items():
+                    member = tarfile.TarInfo(name)
+                    member.mode, member.size = 0o644, len(raw)
+                    tar.addfile(member, io.BytesIO(raw))
+            archive_raw = buf.getvalue()
+            archive_digest = s.digest(archive_raw)
+            checksum_raw = (archive_digest + f'  swarm-{version}-linux-amd64.tar.gz\n').encode()
+
+            check_doc = {
+                'schema': 'swarm.gcp.check-result/v1', 'repository_id': 7,
+                'head_sha': A, 'base_sha': B, 'execution_sha': A,
+                'source_tree': T, 'execution_tree': T, 'input_digest': 'd' * 64,
+                'run_id': 'run-1', 'context': 'release-candidate',
+                'stages': [{'id': 'build', 'status': 'passed'}],
+                'state': 'passed', 'cleanup_verified': True, 'phase': 'execution',
+                'pull_number': 0, 'event_name': 'push'
+            }
+            check = {
+                'id': 10, 'app': {'id': 42}, 'name': 'release-candidate',
+                'head_sha': A, 'status': 'completed', 'conclusion': 'success',
+                'output': {'text': json.dumps(check_doc)}
+            }
+            env = {
+                'GITHUB_REPOSITORY': 'example/project', 'GITHUB_TOKEN': 'fake',
+                'GITHUB_SHA': A, 'GITHUB_REF': 'refs/heads/main', 'GITHUB_EVENT_NAME': 'push',
+                'GCP_CHECK_APP_ID': '42', 'GCP_CHECK_CONTEXT': 'build-main',
+                'GCP_RELEASE_VERSION': version,
+                'GCP_WORKLOAD_IDENTITY_PROVIDER': 'projects/123/locations/global/workloadIdentityPools/pool/providers/provider',
+                'GCP_READ_SERVICE_ACCOUNT': 'reader@example-project.iam.gserviceaccount.com',
+                'GCP_ALLOWED_BUCKETS': '[\"example-release\"]',
+                'GCP_OUTPUT_DIR': str(out_dir), 'GITHUB_OUTPUT': str(gh_output),
+                'GITHUB_RUN_ID': '99'
+            }
+            event = {'repository': {'id': 7}, 'before': B, 'after': A, 'ref': 'refs/heads/main'}
+
+            def github_transport(url, headers):
+                if '/git/commits/' in url:
+                    return json.dumps({'tree': {'sha': T}, 'parents': [{'sha': B}]}).encode()
+                elif '/check-runs' in url:
+                    return json.dumps({'total_count': 1, 'check_runs': [check]}).encode()
+                else:
+                    return json.dumps({'id': 7}).encode()
+
+            google = object.__new__(s.Google)
+            google.buckets = ['example-release']
+            def gcs_transport(url, headers, limit):
+                if '.sha256' in url:
+                    return checksum_raw
+                return archive_raw
+            google.transport = gcs_transport
+            google.token = 'fake'
+
+            s.consume(env, event, google=google, transport=github_transport)
+
+            self.assertTrue((out_dir / f'swarm-{version}-linux-amd64.tar.gz').is_file())
+            self.assertTrue((out_dir / f'swarm-{version}-linux-amd64.tar.gz.sha256').is_file())
+            self.assertTrue((out_dir / 'build-info.txt').is_file())
+            self.assertTrue((out_dir / 'gcp-qualification-evidence.json').is_file())
+            self.assertTrue((out_dir / 'gcp-release-manifest.json').is_file())
+            self.assertTrue((out_dir / 'gcp-build-provenance.json').is_file())
+            self.assertTrue((out_dir / 'promotion-predicate.json').is_file())
+            self.assertIn(f'version={version}', gh_output.read_text())
 
 
 if __name__ == '__main__':

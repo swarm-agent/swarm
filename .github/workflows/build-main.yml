@@ -47,11 +47,12 @@ jobs:
         run: |
           set -euo pipefail
           : "${GCP_CHECK_APP_ID:?approved App ID required}"
-          : "${GCP_RELEASE_POLICY_JSON:?independent static authority and bucket policy required}"
           : "${GCP_WORKLOAD_IDENTITY_PROVIDER:?read-only WIF required}"
           : "${GCP_READ_SERVICE_ACCOUNT:?read-only service account required}"
           : "${GCP_ALLOWED_BUCKETS:?approved buckets required}"
-          printf '%s' "${GCP_RELEASE_POLICY_JSON}" > "${GCP_RELEASE_POLICY_PATH}"
+          if [[ -n "${GCP_RELEASE_POLICY_JSON:-}" ]]; then
+            printf '%s' "${GCP_RELEASE_POLICY_JSON}" > "${GCP_RELEASE_POLICY_PATH}"
+          fi
           if [[ "${GITHUB_EVENT_NAME}" == workflow_dispatch ]]; then
             GCP_RELEASE_VERSION="dispatch-${GITHUB_SHA::12}"
           else

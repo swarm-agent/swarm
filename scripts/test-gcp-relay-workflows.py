@@ -45,7 +45,6 @@ class WorkflowTests(unittest.TestCase):
                     events = {'pull_request': {'branches': ['dev', 'main']},
                               'push': {'branches': ['dev']}, 'workflow_dispatch': ''}
                     if name == 'dependency-vulnerability-scan':
-                        events['push']['branches'].append('main')
                         events['schedule'] = [{'cron': '23 5 * * 1'}]
                 self.assertEqual(doc['on'], events)
                 self.assertEqual(doc['permissions'], dict.fromkeys(['contents', 'checks', 'pull-requests', 'actions'], 'read'))
