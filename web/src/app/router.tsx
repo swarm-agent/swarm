@@ -13,7 +13,6 @@ const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/des
 const IntegrationsPage = withStartupScreen(lazy(() => import('../features/desktop/integrations/pages/integrations-page').then((module) => ({ default: module.IntegrationsPage }))))
 const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/video-tool-page').then((module) => ({ default: module.VideoToolPage }))))
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
-const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments'])
 const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments'])
@@ -263,7 +262,14 @@ const workspaceWorkersRoute = createRoute({
   path: '/$workspaceSlug/workers',
   parseParams: validateWorkspaceParams,
   validateSearch: validateWorkspaceSessionSearch,
-  component: AutomationToolPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: '/$workspaceSlug',
+      params: { workspaceSlug: params.workspaceSlug },
+      replace: true,
+    })
+  },
+  component: () => null,
 })
 
 const workspaceWorkersDetailRoute = createRoute({
@@ -271,7 +277,14 @@ const workspaceWorkersDetailRoute = createRoute({
   path: '/$workspaceSlug/workers/$workerId',
   parseParams: validateWorkspaceWorkerParams,
   validateSearch: validateWorkspaceSessionSearch,
-  component: AutomationToolPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: '/$workspaceSlug',
+      params: { workspaceSlug: params.workspaceSlug },
+      replace: true,
+    })
+  },
+  component: () => null,
 })
 
 const workspaceWorkerDetailRoute = createRoute({
@@ -279,7 +292,14 @@ const workspaceWorkerDetailRoute = createRoute({
   path: '/$workspaceSlug/worker/$workerId',
   parseParams: validateWorkspaceWorkerParams,
   validateSearch: validateWorkspaceSessionSearch,
-  component: AutomationToolPage,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: '/$workspaceSlug',
+      params: { workspaceSlug: params.workspaceSlug },
+      replace: true,
+    })
+  },
+  component: () => null,
 })
 
 const workspaceAutomationsRoute = createRoute({
@@ -287,11 +307,10 @@ const workspaceAutomationsRoute = createRoute({
   path: '/$workspaceSlug/automations',
   parseParams: validateWorkspaceParams,
   validateSearch: validateWorkspaceSessionSearch,
-  beforeLoad: ({ params, search }) => {
+  beforeLoad: ({ params }) => {
     throw redirect({
-      to: '/$workspaceSlug/workers',
+      to: '/$workspaceSlug',
       params: { workspaceSlug: params.workspaceSlug },
-      search,
       replace: true,
     })
   },

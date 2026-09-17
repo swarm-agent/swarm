@@ -14,6 +14,13 @@ import (
 
 const AutomationsV2Path = "/v3/automations/v2"
 
+var automationsEnabled = false
+
+func (s *Server) handleAutomationsDisabled(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeError(w, http.StatusNotFound, errors.New("automations disabled"))
+}
+
 type automationV2Request struct {
 	Generation  uint64                     `json:"generation,omitempty"`
 	Action      string                     `json:"action"`
@@ -32,6 +39,10 @@ func automationV2Error(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
+	if !automationsEnabled {
+		s.handleAutomationsDisabled(w, r)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	p, ok := PrincipalFromRequest(r)
 	if !ok || !p.Valid() {

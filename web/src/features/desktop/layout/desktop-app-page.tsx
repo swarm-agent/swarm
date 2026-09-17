@@ -69,11 +69,7 @@ import {
   type SidebarSessionNodeKind,
 } from './sidebar-session-lineage'
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
-import { AutomationProgressView } from '../tools/automations/automation-progress'
-import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
-import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
-import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
-import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
 import { selectSession } from '../state/desktop-v3-cache-wire'
 import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
@@ -1462,6 +1458,9 @@ function sessionAllowsManualSidebarPin(session: DesktopSessionRecord): boolean {
 
 export function sessionSidebarDisplayGroup(session: DesktopSessionRecord): SidebarSessionGroupID {
   const group = sessionSidebarGroup(session)
+  if (group === 'automation') {
+    return 'active_chats'
+  }
   if (group === 'active_chats' && sessionManuallyPinnedInSidebar(session)) {
     return 'pinned'
   }
@@ -1861,34 +1860,14 @@ interface SessionRowProps {
   onOpenAutomations?: () => void
 }
 
-const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onDelete, onOpenAutomations }: SessionRowProps) {
-  const navigate = useNavigate()
+const SessionRow = memo(function SessionRow({ active, now, session: initialSession, workspaceSlug, depth = 0, childLabel = null, childAssignmentLabel = null, childKind = 'root', selectionEligible: selectionEligibleOverride, agentSummary, agentsExpanded, compactingStartedAt = null, pendingAction = null, selectionMode = false, selectionGroup, selected = false, onSelect, onEnterSelectionMode, onToggleSelected, onPrefetch, onToggleAgents, onTogglePinned, onArchive, onRename, onDelete }: SessionRowProps) {
   const session = initialSession
-  const automation = useDesktopV3CacheSelector(state => {
-    const record = state.sessionsById[session.id]
-    return record?.kind === 'full' ? record.session.automation : undefined
-  })
-  const automationV2 = useDesktopV3CacheSelector(state => selectAutomationV2Identity(state, session.id))
-  useEffect(() => {
-    // Sidebar bootstrap carries permission summaries, not every review payload.
-    // Hydrate once when pending identity is unknown; no timer or title inference.
-    if (session.pendingPermissionCount > 0 && !session.pendingPermissions.length) void desktopAutomationV2.reconcileSession(session.id).catch(() => { /* Canonical sidebar retains its pending/error state; explicit refresh can retry. */ })
-  }, [session.id, session.pendingPermissionCount, session.pendingPermissions.length])
   const compactingActive = typeof compactingStartedAt === 'number' && compactingStartedAt > 0
   const activeSession = compactingActive || sessionIsActive(session)
   const backgroundInfo = sessionBackgroundInfo(session)
   const rowWorkspaceSlug = typeof workspaceSlug === 'function' ? workspaceSlug(session) : workspaceSlug
   const rowType = sessionSidebarRowType(session)
-  const sessionFullRec = useDesktopV3CacheSelector(state => state.sessionsById[session.id])
-  const workerRecordFromCache = useDesktopV3CacheSelector(state => {
-    for (const page of Object.values(state.automationV2Pages ?? {})) {
-      const match = page.data?.records?.find(r => r.session_id === session.id)
-      if (match) return match
-    }
-    return undefined
-  })
-  const isPlanRow = !automation && !automationV2 && rowType === 'plan_session'
-  const isAutomationRow = Boolean(automationV2 === 'accepted' || automation)
+  const isPlanRow = rowType === 'plan_session'
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -1922,7 +1901,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     : activeSession
       ? sessionActivityLabel(session)
       : sessionMeta(session) || ''
-  const rightSideLabel = hasPendingPermission || isPlanRow || automationV2 ? '' : singleStatusLabel
+  const rightSideLabel = hasPendingPermission || isPlanRow ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const showStatusCircle = activeSession || statusTone === 'error'
   const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
@@ -2164,18 +2143,12 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     onFocus: () => onPrefetch(session.id),
     className: cn(
       'group relative grid w-full min-w-0 max-w-full box-border rounded-md border text-left outline-none transition-[background-color,border-color,box-shadow,transform] overflow-hidden',
-      isAutomationRow
-        ? 'rounded-md border-[var(--app-border)]/55 bg-[var(--app-surface)]/60 p-2 gap-1 shadow-xs hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'
-        : isPlanRow
-          ? 'gap-1.5 px-2.5 py-2'
-          : 'gap-1 px-2.5 py-1.5',
+      isPlanRow
+        ? 'gap-1.5 px-2.5 py-2'
+        : 'gap-1 px-2.5 py-1.5',
       active
-        ? isAutomationRow
-          ? 'border-[var(--app-border-accent)] bg-[var(--app-surface-active)]/50 ring-1 ring-[var(--app-border-accent)]'
-          : 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
-        : !isAutomationRow
-          ? 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]'
-          : null,
+        ? 'border-[var(--app-border-accent)] bg-[var(--app-surface)]/45 shadow-[0_0_0_1px_color-mix(in_oklab,var(--app-border-accent)_20%,transparent)]'
+        : 'border-transparent bg-[var(--app-surface)]/45 hover:-translate-y-px hover:border-[var(--app-border)] hover:bg-[var(--app-surface-hover)] hover:shadow-[0_10px_24px_rgba(0,0,0,0.10)]',
       pendingPermissionAlertActive ? 'border-transparent bg-[var(--app-warning-bg)] hover:border-transparent hover:bg-[var(--app-warning-bg)]' : null,
       isNestedSession ? 'ml-0 rounded-sm border-transparent bg-[var(--app-bg-alt)]/20 py-1 pl-1 pr-2 hover:translate-y-0 hover:border-transparent hover:bg-[var(--app-surface)]/25 hover:shadow-[0_6px_16px_rgba(0,0,0,0.06)]' : null,
       isNestedSession && active ? 'border-transparent bg-[var(--app-surface)]/30' : null,
@@ -2231,25 +2204,14 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                   {renameError ? <span className="block truncate text-[9px] text-[var(--app-error)]">{renameError}</span> : null}
                 </form>
               ) : (
-                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)] flex items-center gap-1.5', isNestedSession ? 'text-[12px]' : isAutomationRow ? 'text-[12px] font-semibold tracking-[-0.01em]' : 'text-[13px]')}>
-                  {isAutomationRow ? (
-                    <RefreshCcw
-                      size={12}
-                      className={cn(
-                        'shrink-0',
-                        activeSession ? 'text-[var(--app-success)]' : 'text-[var(--app-primary)]',
-                      )}
-                      aria-hidden="true"
-                    />
-                  ) : null}
+                <span className={cn('min-w-0 flex-1 truncate font-medium text-[var(--app-text)] flex items-center gap-1.5', isNestedSession ? 'text-[12px]' : 'text-[13px]')}>
                   <span className="min-w-0 truncate">
-                    {automationV2 === 'pending' ? 'Plan · ' : ''}{rowTitle}
+                    {rowTitle}
                   </span>
                 </span>
               )}
 
             </div>
-            {automation && <AutomationProgressView workspaceId={automation.workspace_id} id={automation.automation_id} compact />}
           </div>
         </div>
         <span className="inline-flex shrink-0 items-center justify-end gap-1.5 text-[10px] leading-4 text-[var(--app-text-muted)]">
@@ -2301,37 +2263,26 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           ) : null}
         </span>
       </div>
-      {automationV2 ? (
-        <AutomationV2SidebarMetadata
-          sessionId={session.id}
-          identity={automationV2}
-          now={now}
-          needsApproval={hasPendingPermission}
-          workspaceSlug={rowWorkspaceSlug}
-          onNavigateToAutomations={onOpenAutomations}
-        />
-      ) : (
-        <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
-          <span className="flex min-w-0 items-center gap-1.5">
-            {childIdentityLabel ? (
-              <>
-                <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
-                <span aria-hidden="true">·</span>
-              </>
-            ) : null}
-            <span className="min-w-0 truncate">{workspaceLabel}</span>
-            {showBranchLabel ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="min-w-0 truncate">{branchLabel}</span>
-              </>
-            ) : null}
-          </span>
-          <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
-            {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
-          </span>
-        </div>
-      )}
+      <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
+        <span className="flex min-w-0 items-center gap-1.5">
+          {childIdentityLabel ? (
+            <>
+              <span className="shrink-0 font-medium text-[var(--app-primary)]">↳ {childIdentityLabel}</span>
+              <span aria-hidden="true">·</span>
+            </>
+          ) : null}
+          <span className="min-w-0 truncate">{workspaceLabel}</span>
+          {showBranchLabel ? (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="min-w-0 truncate">{branchLabel}</span>
+            </>
+          ) : null}
+        </span>
+        <span className="ml-auto inline-flex shrink-0 items-center justify-end gap-1 text-right tabular-nums text-[var(--app-text-muted)]">
+          {rowTimerLabel ? <span>{rowTimerLabel}</span> : null}
+        </span>
+      </div>
 
       {showPlanProgressBar ? (
         <div className="flex min-w-0 items-center gap-2 text-[10px] leading-4 text-[var(--app-text-subtle)]">
@@ -2353,36 +2304,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
       ) : null}
     </>
   )
-
-  if (isAutomationRow) {
-    const workerId = (sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2?.automation_id) || workerRecordFromCache?.automation_id || (session as any).automation_v2?.automation_id || session.id
-    return (
-      <Link
-        to="/$workspaceSlug/workers/$workerId"
-        params={{ workspaceSlug: rowWorkspaceSlug, workerId }}
-        {...linkProps}
-        title={`Open worker: ${rowTitle}`}
-        aria-label={`Open worker: ${rowTitle}`}
-        data-testid="sidebar-worker-link"
-        onClick={(event: React.MouseEvent) => {
-          if (event.defaultPrevented || event.button !== 0) return
-          if (selectionMode && selectionEligible) {
-            event.preventDefault()
-            onToggleSelected?.(session.id, event.shiftKey)
-            return
-          }
-          if (event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return
-          event.preventDefault()
-          void navigate({
-            to: '/$workspaceSlug/workers/$workerId',
-            params: { workspaceSlug: rowWorkspaceSlug, workerId },
-          })
-        }}
-      >
-        {rowContent}
-      </Link>
-    )
-  }
 
   return (
     <Link
@@ -2503,9 +2424,7 @@ export function sidebarVisibleGroupNodes(
 }
 
 function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX.Element[] | null {
-  const automationCounts = selectAutomationSummaryCounts(getDesktopV3CacheSnapshot(), input.workspaceId)
-  const hasAutomationWork = Boolean(automationCounts && automationCounts.total > 0)
-  if (input.nodes.length === 0 && !hasAutomationWork) return null
+  if (input.nodes.length === 0) return null
   const grouped = new Map<SidebarSessionGroupID, SidebarSessionNode[]>()
   for (const group of SIDEBAR_SESSION_GROUPS) {
     grouped.set(group.id, [])
@@ -2519,13 +2438,12 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
   }
   return SIDEBAR_SESSION_GROUPS.flatMap((group) => {
     const nodes = grouped.get(group.id) ?? []
-    const isAutomationGroup = group.id === 'automation'
-    if (nodes.length === 0 && (!isAutomationGroup || !hasAutomationWork)) return []
+    if (group.id === 'automation' || nodes.length === 0) return []
     const collapsed = input.collapsedGroups[group.id]
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
-    const rootCount = Math.max(nodes.filter((node) => node.depth === 0).length, isAutomationGroup && hasAutomationWork ? (automationCounts?.total ?? 0) : 0)
-    const limit = isAutomationGroup ? SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT : SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
-    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && rootCount > limit
+    const rootCount = nodes.filter((node) => node.depth === 0).length
+    const limit = SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
+    const hasOverflow = group.id === 'needs_review' && rootCount > limit
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
     const hiddenRootCount = Math.max(0, rootCount - limit)
     const collapseControl = (
@@ -2540,7 +2458,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
       </button>
     )
     const groupControls = (
-      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || isAutomationGroup || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
+      <div className={`ml-auto flex items-center gap-1 normal-case tracking-normal transition-opacity ${group.id === 'needs_review' || input.selectionMode ? 'opacity-100' : 'opacity-0 group-hover/section:opacity-100 group-focus-within/section:opacity-100'}`}>
             {sidebarShouldShowReviewAction(group.id, input.selectionMode) ? (
               <>
                 <button
@@ -2577,19 +2495,6 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                 <button type="button" onClick={input.onClearSelection}>Clear</button>
                 <button type="button" disabled={input.bulkArchivePending || input.selectedRootIDs.size === 0} className="rounded bg-[var(--app-primary)] px-1.5 py-0.5 text-[var(--app-primary-text)] disabled:opacity-50" onClick={input.onBulkArchive}>Archive</button>
               </>
-            ) : null}
-            {isAutomationGroup && input.onOpenAutomations ? (
-              <button
-                type="button"
-                className={input.presentation === 'mobile'
-                  ? 'inline-flex min-h-11 touch-manipulation items-center gap-1 rounded-xl border border-[var(--app-border)] px-3 text-xs font-semibold text-[var(--app-text-muted)] active:bg-[var(--app-surface-hover)] active:text-[var(--app-text)]'
-                  : 'inline-flex h-5 items-center gap-1 rounded border border-[var(--app-border)] px-1.5 text-[9px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] hover:border-[var(--app-border-strong)]'}
-                aria-label="Open top-down Workers view"
-                title="Open top-down Workers view"
-                onClick={input.onOpenAutomations}
-              >
-                <span>View</span>
-              </button>
             ) : null}
       </div>
     )
@@ -2628,98 +2533,7 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
             {groupControls}
           </div>
         )}
-        {collapsed ? (
-          isAutomationGroup ? (
-            <AutomationSidebarCompactCard
-              workspaceId={input.workspaceId}
-              workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined}
-              rootCount={rootCount}
-              onExpand={() => input.onToggleGroupCollapsed(group.id)}
-              onOpenAutomations={input.onOpenAutomations}
-            />
-          ) : null
-        ) : isAutomationGroup ? (
-          <AutomationSidebarExpandedContainer
-            workspaceId={input.workspaceId}
-            workspaceSlug={typeof input.workspaceSlug === 'string' ? input.workspaceSlug : undefined}
-            rootCount={rootCount}
-            onCollapse={() => input.onToggleGroupCollapsed(group.id)}
-            onOpenAutomations={input.onOpenAutomations}
-          >
-            <div className="grid w-full min-w-0 max-w-full gap-1">
-              {visibleNodes.length > 0 ? (
-                sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
-                  const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
-                  return (
-                    <div
-                      key={taskCallId ? `task:${taskCallId}` : taskGroup[0]?.session.id}
-                      data-sidebar-task-group={taskCallId || undefined}
-                      className={cn('grid w-full min-w-0 max-w-full gap-1', taskCallId && taskGroup.length > 1 ? 'rounded-md border border-[var(--app-border)]/45 bg-[var(--app-bg-alt)]/15 p-1' : null)}
-                    >
-                      {taskGroup.map((node) => (
-                        <SessionRow
-                          key={node.session.id}
-                          active={input.routeSessionId === node.session.id || (Boolean(input.routeAutomationSessionId) && (input.routeAutomationSessionId === node.session.id || input.routeAutomationSessionId === (node.session as any).automation_v2?.automation_id))}
-                          now={input.now}
-                          session={node.session}
-                          workspaceSlug={input.workspaceSlug}
-                          depth={node.depth}
-                          childLabel={node.label}
-                          childAssignmentLabel={node.assignmentLabel}
-                          childKind={node.kind}
-                          agentSummary={input.agentSummaries.get(node.session.id) ?? EMPTY_SESSION_AGENT_SUMMARY}
-                          agentsExpanded={Boolean(input.expandedAgentSessions[node.session.id]) || nodeContainsDescendantSession(node, input.routeSessionId || undefined)}
-                          compactingStartedAt={input.compactingSession?.sessionId === node.session.id ? input.compactingSession.startedAt : null}
-                          pendingAction={input.pendingActions[node.session.id] ?? null}
-                          selectionMode={input.selectionMode && input.masterSelectionGroup === group.id}
-                          selectionGroup={group.id}
-                          selected={input.selectedRootIDs.has(node.session.id)}
-                          onSelect={input.onSelect}
-                          onEnterSelectionMode={input.onEnterSelectionMode}
-                          onToggleSelected={input.onToggleSelected}
-                          onPrefetch={input.onPrefetch}
-                          onToggleAgents={input.onToggleAgents}
-                          onTogglePinned={input.onTogglePinned}
-                          onArchive={input.onArchive}
-                          onRename={input.onRename}
-                          onDelete={input.onDelete}
-                          onOpenAutomations={input.onOpenAutomations}
-                        />
-                      ))}
-                    </div>
-                  )
-                })
-              ) : (
-                <div className="flex items-center justify-between rounded-lg border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)]/30 px-2.5 py-1.5 text-[11px] text-[var(--app-text-muted)]">
-                  <span>{automationCounts?.total ?? 0} active {automationCounts?.total === 1 ? 'worker' : 'workers'}</span>
-                  {input.onOpenAutomations ? (
-                    <button
-                      type="button"
-                      onClick={input.onOpenAutomations}
-                      className="font-medium text-[var(--app-primary)] hover:underline cursor-pointer"
-                    >
-                      Open workers →
-                    </button>
-                  ) : null}
-                </div>
-              )}
-              {hasOverflow ? (
-                <div className="flex w-full min-w-0 max-w-full items-center gap-1.5 pt-0.5">
-                  <button
-                    type="button"
-                    className="flex flex-1 min-w-0 min-h-7 items-center justify-center gap-1 rounded px-2 text-[10px] font-medium text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
-                    aria-label={overflowExpanded ? `Show fewer ${group.label} sessions` : `Show ${hiddenRootCount} more ${group.label} sessions`}
-                    aria-expanded={overflowExpanded}
-                    onClick={() => input.onToggleGroupOverflow(group.id)}
-                  >
-                    <ChevronDown size={14} className={cn('transition-transform shrink-0', overflowExpanded && 'rotate-180')} />
-                    <span className="truncate">{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </AutomationSidebarExpandedContainer>
-        ) : (
+        {collapsed ? null : (
           <div className="grid gap-1">
             {sidebarTaskCallPresentationGroups(visibleNodes).map((taskGroup) => {
               const taskCallId = taskGroup[0]?.taskCallId?.trim() ?? ''
@@ -2774,17 +2588,6 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
                   <ChevronDown size={14} className={cn('transition-transform', overflowExpanded && 'rotate-180')} />
                   <span>{overflowExpanded ? 'Show fewer' : `${hiddenRootCount} more`}</span>
                 </button>
-                {isAutomationGroup && input.onOpenAutomations ? (
-                  <button
-                    type="button"
-                    className="flex min-h-7 items-center justify-center gap-1 rounded border border-[var(--app-border)]/50 bg-[var(--app-surface-subtle)]/30 px-2 text-[10px] font-medium text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)]"
-                    aria-label="Open top-down Workers view"
-                    title="Open top-down Workers view"
-                    onClick={input.onOpenAutomations}
-                  >
-                    <span>All ({rootCount}) →</span>
-                  </button>
-                ) : null}
               </div>
             ) : null}
           </div>
@@ -3840,20 +3643,6 @@ export function DesktopAppPage() {
 
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
-
-    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
-    if (automationIdentity === 'accepted') {
-      const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
-      const workerId = (sessionRec?.kind === 'full' && sessionRec.session.automation_v2?.automation_id) || normalizedSessionId
-      void navigate({
-        to: '/$workspaceSlug/workers/$workerId',
-        params: {
-          workspaceSlug,
-          workerId,
-        },
-      })
-      return true
-    }
 
     void navigate({
       to: '/$workspaceSlug/$sessionId',
@@ -5672,25 +5461,6 @@ export function DesktopAppPage() {
                     >
                       <Film size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Studio</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                      onClick={() => {
-                        if (!topWorkspaceSlug) return
-                        setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
-                      }}
-                      disabled={!topWorkspaceSlug}
-                      aria-label="Open Workers"
-                      aria-current={isWorkersRoute ? 'page' : undefined}
-                      title="Workers"
-                    >
-                      <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
-                      <span className="flex min-w-0 items-center justify-between gap-1.5">
-                        <span className="min-w-0 truncate">Workers</span>
-                        <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
-                      </span>
                     </button>
                     <button
                       type="button"

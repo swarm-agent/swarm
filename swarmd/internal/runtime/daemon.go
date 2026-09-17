@@ -1101,12 +1101,14 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
-	// Start only V2, after listeners succeed; never migrate or execute V1 records.
-	if d.automationV2Scheduler != nil {
-		if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {
-			return err
+	// Automations scheduler disabled for launch; background loop is not started.
+	/*
+		if d.automationV2Scheduler != nil {
+			if err := d.StartAutomationV2Scheduling(context.Background()); err != nil {
+				return err
+			}
 		}
-	}
+	*/
 	return d.waitForShutdown()
 }
 
