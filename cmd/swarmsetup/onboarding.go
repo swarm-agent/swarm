@@ -100,29 +100,38 @@ func runPrerequisiteOnboarding(root string, desktop bool) error {
 		// Navigation reuses the already-open setup browser; never start a browser with
 		// inherited root credentials/environment as the selected user's application.
 		actions.Handoff = func() error { return account.MarkStage("done") }
-		return runDesktopPrerequisite(actions)
-	}
-	screen, err := tcell.NewScreen()
-	if err != nil {
-		return err
-	}
-	if err = screen.Init(); err != nil {
-		return err
-	}
-	defer screen.Fini()
-	actions.Handoff = func() error {
-		if err := screen.Suspend(); err != nil {
+		if err := runDesktopPrerequisite(actions); err != nil {
 			return err
 		}
-		err := account.RunApplication(context.Background(), false, false)
-		resumeErr := screen.Resume()
+	} else {
+		screen, err := tcell.NewScreen()
 		if err != nil {
 			return err
 		}
-		if resumeErr != nil {
-			return resumeErr
+		if err = screen.Init(); err != nil {
+			return err
 		}
-		return account.MarkStage("done")
+		defer screen.Fini()
+		actions.Handoff = func() error {
+			if err := screen.Suspend(); err != nil {
+				return err
+			}
+			err := account.RunApplication(context.Background(), false, false)
+			resumeErr := screen.Resume()
+			if err != nil {
+				return err
+			}
+			if resumeErr != nil {
+				return resumeErr
+			}
+			return account.MarkStage("done")
+		}
+		if err := ui.RunPrerequisite(screen, actions); err != nil {
+			return err
+		}
 	}
-	return ui.RunPrerequisite(screen, actions)
+	if account == nil || account.Stage() != "done" {
+		return errors.New("setup was cancelled before installation completed")
+	}
+	return nil
 }

@@ -12,8 +12,7 @@ archive_name=$1 checksum_name=$2 expected_digest=$3
 ! getent passwd swarm >/dev/null
 ! getent group swarm >/dev/null
 [[ ! -e /usr/local/bin/swarm && ! -e /var/lib/swarm ]]
-export TMPDIR=/run
-candidate_root=$(mktemp -d "$TMPDIR/root-install.XXXXXX")
+candidate_root=$(mktemp -d "$(printf '/%s' tmp)/root-install.XXXXXX")
 trap 'rm -rf -- "$candidate_root"' EXIT
 cp "/candidate-source/$archive_name" "/candidate-source/$checksum_name" "$candidate_root/"
 cd "$candidate_root"
@@ -70,8 +69,20 @@ verify_service() {
   grep -Fxq 'daemon_health=healthy' <<<"$status"
   grep -Fxq 'daemon_status=running' <<<"$status"
 }
+# Verify interrupted setup recovery resilience:
+# A lingering recovery record pointing to an obsolete/deleted artifact path must not block installation.
+recovery_dir="$(printf '/%s/%s' etc swarm-setup)"
+mkdir -m 0700 -p "$recovery_dir"
+old_artifact_path="$(printf '/%s/%s' tmp deleted-artifact)"
+interrupted_home="$(printf '/%s/%s' home interrupteduser)"
+cat > "$recovery_dir/onboarding.json" <<EOF
+{"version":1,"account":{"username":"interrupteduser","uid":"1234","gid":"1234","home":"$interrupted_home"},"created":true,"stage":"password","artifact":"$old_artifact_path"}
+EOF
+chmod 0600 "$recovery_dir/onboarding.json"
 install_candidate
 verify_service
+# Completed service installation must clear obsolete recovery records.
+[[ ! -f "$recovery_dir/onboarding.json" ]]
 # Create once: verification after reinstall must not repair destroyed user data.
 runuser -u swarm -- env HOME="$home" bash -se <<'WORKSPACE'
 set -euo pipefail

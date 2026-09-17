@@ -28,7 +28,11 @@ func RunFirstInstall(desktop bool) (bool, error) {
 	if recovery != nil && recovery.Stage != "done" {
 		root, err := firstInstallArtifact(filepath.Join(recovery.Artifact, "linux-amd64", "root", "swarm"))
 		if err != nil || root == "" {
-			return true, fmt.Errorf("cannot resume setup artifact: %w", err)
+			if present, pErr := firstInstallStatePresent(); pErr == nil && present {
+				_ = clearSetupRecovery(dir)
+				return false, nil
+			}
+			return true, fmt.Errorf("interrupted setup installer at %q is no longer available; rerun install.sh to complete setup", recovery.Artifact)
 		}
 		return true, runFirstInstallHelper(root, desktop)
 	}
@@ -132,5 +136,11 @@ func trustedFirstInstallPath(path string) error {
 
 func trustedFirstInstallMetadata(info os.FileInfo) bool {
 	st, ok := info.Sys().(*syscall.Stat_t)
-	return ok && st.Uid == 0 && info.Mode()&os.ModeSymlink == 0 && info.Mode().Perm()&0o022 == 0
+	if !ok || st.Uid != 0 || info.Mode()&os.ModeSymlink != 0 {
+		return false
+	}
+	if info.Mode().Perm()&0o022 == 0 {
+		return true
+	}
+	return info.IsDir() && (info.Mode()&os.ModeSticky != 0 || st.Mode&syscall.S_ISVTX != 0)
 }

@@ -214,8 +214,10 @@ func run(args []string) error {
 		if err := launcher.InstallInstalledService(); err != nil {
 			return fmt.Errorf("runtime and launchers installed, but service installation/start failed (not rolled back): %w", err)
 		}
+		_ = launcher.ClearSetupRecovery()
 		fmt.Println("installed runtime, launchers, and swarm.service:")
 	} else {
+		_ = launcher.ClearSetupRecovery()
 		fmt.Println("installed runtime and launchers; no service installed or started:")
 	}
 	for _, name := range []string{"swarm", "swarmdev", "rebuild", "swarmsetup"} {

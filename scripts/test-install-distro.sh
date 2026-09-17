@@ -219,8 +219,8 @@ sudoers_dir="\$(printf '/%s/%s' etc sudoers.d)"
 printf 'swarmtest ALL=(ALL) NOPASSWD:ALL\n' >"\${sudoers_dir}/swarmtest"
 chmod 0440 "\${sudoers_dir}/swarmtest"
 user_home="\$(getent passwd swarmtest | cut -d: -f6)"
-download_root="\${user_home}/Downloads/swarm-candidate"
-install -o swarmtest -g swarmtest -d "\${user_home}/Downloads" "\${download_root}"
+download_root="\$(printf '/%s/%s' tmp swarm-candidate)"
+install -o swarmtest -g swarmtest -d "\${download_root}"
 sudo -u swarmtest curl -fsSL "http://host.containers.internal:${candidate_port}/${archive_name}" -o "\${download_root}/${archive_name}"
 sudo -u swarmtest curl -fsSL "http://host.containers.internal:${candidate_port}/${checksum_name}" -o "\${download_root}/${checksum_name}"
 (
@@ -244,6 +244,10 @@ grep -Fxq 'daemon_health=healthy' <<<"\${status_output}"
 sudo -u swarmtest /usr/local/bin/swarm --help >/dev/null
 test "\$(stat -c %u /usr/local/share/swarm)" = "\$(id -u swarmtest)"
 test "\$(stat -c %g /usr/local/share/swarm)" = "\$(id -g swarmtest)"
+sudo -u swarmtest env -u TMPDIR HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
+  "\${artifact_root}/install.sh" --artifact-root "\${artifact_root}" --service --yes --install-user swarmtest
+systemctl is-active --quiet swarm.service
+test "\$(stat -c %u /usr/local/share/swarm)" = "\$(id -u swarmtest)"
 EOF
 
 printf 'distro=%s\nimage=%s\ncandidate_archive=%s\ncandidate_sha256=%s\ncandidate_download=passed\nmandatory_git_precondition=missing\nmandatory_git_provisioning=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n' "${DISTRO}" "${IMAGE}" "${archive_name}" "${expected_digest}"
