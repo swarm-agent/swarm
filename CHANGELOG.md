@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix GCP-built release archive intake in build-main without retired Astra dependencies, and scope dependency-vulnerability-scan push triggers to dev to prevent push-to-main timeouts. Docs impact: none.
+
 - Verify qualification test suites using Google Gemini 3.6 Flash (thinking: low) with ephemeral IP-locked credentials, per-agent model settings, sequenced live runners, and push check receipts. Docs impact: none.
 
 - Authorize in-worktree Git tools (git_status, git_diff, git_add, git_commit, git_init) under default auto-mode policy and unignore task-program-probes in git. Docs impact: none.
