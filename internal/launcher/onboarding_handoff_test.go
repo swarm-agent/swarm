@@ -280,3 +280,59 @@ func TestSetupRecoveryPublication(t *testing.T) {
 		t.Fatal("scratch publication leaked")
 	}
 }
+
+func TestResumeOnboardingAccountArtifactUpdateAndAccountCleanup(t *testing.T) {
+	dir := t.TempDir()
+	u, ops := handoffAccountOps()
+	r := setupRecovery{Version: 1, Account: selectedAccount(u), Created: true, Stage: "password", Artifact: "/tmp/old-artifact"}
+	trust := func(string) error { return nil }
+	metadata := func(os.FileInfo) bool { return true }
+	if err := saveSetupRecoveryWithTrust(dir, r, trust); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Resuming with a new valid artifact should adopt it and update recovery on disk.
+	validateValid := func(path string) (string, error) {
+		return path, nil
+	}
+	acct, err := resumeOnboardingAccount("/tmp/new-artifact", dir, ops, validateValid, trust, metadata)
+	if err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	if acct == nil || acct.recovery.Artifact != "/tmp/new-artifact" {
+		t.Fatalf("artifact not updated, got: %v", acct.recovery)
+	}
+	loaded, err := readSetupRecoveryWithTrust(dir, trust, metadata)
+	if err != nil || loaded.Artifact != "/tmp/new-artifact" {
+		t.Fatalf("persisted artifact not updated: %v, loaded=%v", err, loaded)
+	}
+
+	// 2. Resuming with an invalid artifact should be rejected.
+	validateInvalid := func(path string) (string, error) {
+		return "", errors.New("invalid artifact bundle")
+	}
+	if _, err := resumeOnboardingAccount("/tmp/bad-artifact", dir, ops, validateInvalid, trust, metadata); err == nil {
+		t.Fatal("expected error on invalid replacement artifact")
+	}
+
+	// 3. Stage "account" when user does not exist should clean up recovery record.
+	r.Stage = "account"
+	r.Account.Username = "missinguser"
+	if err := saveSetupRecoveryWithTrust(dir, r, trust); err != nil {
+		t.Fatal(err)
+	}
+	missingOps := ops
+	missingOps.lookup = func(name string) (*user.User, error) {
+		return nil, user.UnknownUserError(name)
+	}
+	acctMissing, err := resumeOnboardingAccount("/tmp/new-artifact", dir, missingOps, validateValid, trust, metadata)
+	if err != nil {
+		t.Fatalf("expected nil error on missing user cleanup, got: %v", err)
+	}
+	if acctMissing != nil {
+		t.Fatal("expected nil account on missing user cleanup")
+	}
+	if loaded, _ := readSetupRecoveryWithTrust(dir, trust, metadata); loaded != nil {
+		t.Fatal("expected recovery record to be removed for missing user")
+	}
+}

@@ -28,7 +28,11 @@ func RunFirstInstall(desktop bool) (bool, error) {
 	if recovery != nil && recovery.Stage != "done" {
 		root, err := firstInstallArtifact(filepath.Join(recovery.Artifact, "linux-amd64", "root", "swarm"))
 		if err != nil || root == "" {
-			return true, fmt.Errorf("cannot resume setup artifact: %w", err)
+			if present, pErr := firstInstallStatePresent(); pErr == nil && present {
+				_ = clearSetupRecovery(dir)
+				return false, nil
+			}
+			return true, fmt.Errorf("interrupted setup installer at %q is no longer available; rerun install.sh to complete setup", recovery.Artifact)
 		}
 		return true, runFirstInstallHelper(root, desktop)
 	}

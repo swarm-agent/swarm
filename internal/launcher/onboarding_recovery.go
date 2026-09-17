@@ -150,12 +150,34 @@ func LockOnboarding() (func(), error) {
 	return func() { f.Close() }, nil
 }
 
+func clearSetupRecovery(dir string) error {
+	path := filepath.Join(dir, "onboarding.json")
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func ClearSetupRecovery() error {
+	dir, err := setupRecoveryDir()
+	if err != nil {
+		return err
+	}
+	return clearSetupRecovery(dir)
+}
+
 func ResumeOnboardingAccount(artifact string) (*OnboardingAccount, error) {
 	dir, err := setupRecoveryDir()
 	if err != nil {
 		return nil, err
 	}
-	r, err := readSetupRecovery(dir)
+	return resumeOnboardingAccount(artifact, dir, defaultInstallAccountOps(), func(path string) (string, error) {
+		return firstInstallArtifact(filepath.Join(path, "linux-amd64", "root", "swarm"))
+	}, trustedFirstInstallPath, trustedFirstInstallMetadata)
+}
+
+func resumeOnboardingAccount(artifact, dir string, ops installAccountOps, validateArtifact func(string) (string, error), trust func(string) error, metadata func(os.FileInfo) bool) (*OnboardingAccount, error) {
+	r, err := readSetupRecoveryWithTrust(dir, trust, metadata)
 	if err != nil || r == nil {
 		return nil, err
 	}
@@ -163,12 +185,32 @@ func ResumeOnboardingAccount(artifact string) (*OnboardingAccount, error) {
 		return nil, errors.New("device setup already completed; use the installed application")
 	}
 	if r.Artifact != artifact {
-		return nil, errors.New("interrupted setup belongs to a different artifact; refusing replacement")
+		root, err := validateArtifact(artifact)
+		if err != nil || root == "" {
+			return nil, fmt.Errorf("interrupted setup belongs to a different artifact; refusing replacement: %w", err)
+		}
+		r.Artifact = root
+		if err := saveSetupRecoveryWithTrust(dir, *r, trust); err != nil {
+			return nil, fmt.Errorf("save updated setup artifact: %w", err)
+		}
 	}
 	if r.Stage == "account" {
-		return nil, errors.New("account creation was interrupted before identity verification; administrator must inspect the partial account before continuing")
+		u, lookupErr := ops.lookup(r.Account.Username)
+		var unknown user.UnknownUserError
+		if errors.As(lookupErr, &unknown) {
+			_ = clearSetupRecovery(dir)
+			return nil, nil
+		}
+		if lookupErr == nil && u != nil {
+			r.Account = selectedAccount(u)
+			r.Created = true
+			r.Stage = "password"
+			_ = saveSetupRecoveryWithTrust(dir, *r, trust)
+		} else {
+			return nil, errors.New("account creation was interrupted before identity verification; administrator must inspect the partial account before continuing")
+		}
 	}
-	return resumeSetupAccount(r, defaultInstallAccountOps())
+	return resumeSetupAccount(r, ops)
 }
 
 func resumeSetupAccount(r *setupRecovery, ops installAccountOps) (*OnboardingAccount, error) {
