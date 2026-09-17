@@ -835,6 +835,21 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 	if destRes["deployment_id"] != deploymentID {
 		t.Errorf("unexpected destroy result: %v", destRes)
 	}
+
+	// 10. Action: reap
+	reapArgs := map[string]any{
+		"action":       "reap",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_deployments", reapArgs)
+	if err != nil {
+		t.Fatalf("manage_deployments reap failed: %v", err)
+	}
+	var reapRes map[string]any
+	_ = json.Unmarshal([]byte(out), &reapRes)
+	if reapRes["status"] != "ok" {
+		t.Errorf("expected reap status ok, got %v", reapRes["status"])
+	}
 }
 
 // TestEnvironmentsTool_WorkspaceIsolation verifies strict multi-workspace containment.
