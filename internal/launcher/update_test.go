@@ -98,9 +98,7 @@ func TestExtractTarGzRejectsOversizedFileBeforeWriting(t *testing.T) {
 	if err := tw.WriteHeader(&tar.Header{Name: "swarm-v1.2.3/huge", Mode: 0o644, Size: maxUpdateFileBytes + 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
+	_ = tw.Close()
 	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}

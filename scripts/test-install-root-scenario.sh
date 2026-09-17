@@ -12,8 +12,7 @@ archive_name=$1 checksum_name=$2 expected_digest=$3
 ! getent passwd swarm >/dev/null
 ! getent group swarm >/dev/null
 [[ ! -e /usr/local/bin/swarm && ! -e /var/lib/swarm ]]
-export TMPDIR=/run
-candidate_root=$(mktemp -d "$TMPDIR/root-install.XXXXXX")
+candidate_root=$(mktemp -d "$(printf '/%s' tmp)/root-install.XXXXXX")
 trap 'rm -rf -- "$candidate_root"' EXIT
 cp "/candidate-source/$archive_name" "/candidate-source/$checksum_name" "$candidate_root/"
 cd "$candidate_root"

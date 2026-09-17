@@ -25,6 +25,9 @@ func TestFirstInstallTrust(t *testing.T) {
 		{"group writable", 0, 0775, false},
 		{"world writable", 0, 0777, false},
 		{"symlink", 0, os.ModeSymlink | 0755, false},
+		{"root sticky world-writable directory", 0, os.ModeDir | os.ModeSticky | 0777, true},
+		{"nonroot sticky world-writable directory", 1000, os.ModeDir | os.ModeSticky | 0777, false},
+		{"root sticky world-writable regular file", 0, os.ModeSticky | 0777, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := trustedFirstInstallMetadata(firstInstallInfo{tc.mode, tc.uid}); got != tc.want {
@@ -44,10 +47,22 @@ func (i firstInstallInfo) Size() int64        { return 0 }
 func (i firstInstallInfo) Mode() os.FileMode  { return i.mode }
 func (i firstInstallInfo) ModTime() time.Time { return time.Time{} }
 func (i firstInstallInfo) IsDir() bool        { return i.mode.IsDir() }
-func (i firstInstallInfo) Sys() any           { return &syscall.Stat_t{Uid: i.uid} }
+func (i firstInstallInfo) Sys() any {
+	var mode uint32
+	if i.mode&os.ModeSticky != 0 {
+		mode |= syscall.S_ISVTX
+	}
+	return &syscall.Stat_t{Uid: i.uid, Mode: mode}
+}
 
 // Requirement: ordinary installed launchers and incomplete native bundles must
 // not be treated as runnable installers; rejection must not create state.
+func TestFirstInstallTrustedPathAcceptsTmp(t *testing.T) {
+	if err := trustedFirstInstallPath("/tmp"); err != nil {
+		t.Fatalf("trustedFirstInstallPath(/tmp) failed: %v", err)
+	}
+}
+
 func TestFirstInstallArtifactAdmission(t *testing.T) {
 	root := t.TempDir()
 	if got, err := firstInstallArtifact(filepath.Join(root, "libexec", "swarm")); err != nil || got != "" {
