@@ -15,15 +15,15 @@ import (
 )
 
 type SessionUsageDashboardResponse struct {
-	OK             bool                           `json:"ok"`
-	Summary        SessionUsageDashboardSummary   `json:"summary"`
-	Daily          []SessionUsageDailyItem        `json:"daily"`
-	ByProvider     []SessionUsageProviderItem     `json:"by_provider"`
-	ByModel        []SessionUsageModelItem        `json:"by_model"`
-	Media          SessionUsageMediaSummary       `json:"media"`
-	RecentSessions []SessionUsageSessionItem      `json:"recent_sessions"`
-	Limits         SessionUsageLimitsStatus       `json:"limits"`
-	Meta           SessionUsageDashboardMeta      `json:"meta"`
+	OK             bool                         `json:"ok"`
+	Summary        SessionUsageDashboardSummary `json:"summary"`
+	Daily          []SessionUsageDailyItem      `json:"daily"`
+	ByProvider     []SessionUsageProviderItem   `json:"by_provider"`
+	ByModel        []SessionUsageModelItem      `json:"by_model"`
+	Media          SessionUsageMediaSummary     `json:"media"`
+	RecentSessions []SessionUsageSessionItem    `json:"recent_sessions"`
+	Limits         SessionUsageLimitsStatus     `json:"limits"`
+	Meta           SessionUsageDashboardMeta    `json:"meta"`
 }
 
 type SessionUsageDashboardSummary struct {
@@ -136,12 +136,12 @@ type SessionUsageDashboardMeta struct {
 }
 
 type catalogPricingLookup struct {
-	InputPrice    float64
-	OutputPrice   float64
-	CachedPrice   float64
-	HasCached     bool
-	IsFree        bool
-	DisplayName   string
+	InputPrice  float64
+	OutputPrice float64
+	CachedPrice float64
+	HasCached   bool
+	IsFree      bool
+	DisplayName string
 }
 
 func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
@@ -547,21 +547,21 @@ func (s *Server) buildPricingMap() map[string]catalogPricingLookup {
 
 	// Baseline fallback pricing for key flagship models in case catalog is unavailable
 	baselinePricing := map[string]catalogPricingLookup{
-		"google:gemini-3.8-flash":   {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
-		"google:gemini-3.7-flash":   {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
-		"google:gemini-3.6-flash":   {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
-		"google:gemini-3.5-flash-lite": {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
-		"google:gemini-omni-1.1-flash": {InputPrice: 1.50, OutputPrice: 9.00, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini Omni 1.1 Flash"},
-		"anthropic:claude-fable-5-1": {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 1.0, HasCached: true, DisplayName: "Claude Fable 5.1"},
-		"anthropic:claude-sonnet-5":  {InputPrice: 2.0, OutputPrice: 10.0, CachedPrice: 0.2, HasCached: true, DisplayName: "Claude Sonnet 5"},
-		"anthropic:claude-opus-5":    {InputPrice: 5.0, OutputPrice: 25.0, CachedPrice: 0.5, HasCached: true, DisplayName: "Claude Opus 5"},
-		"openai:gpt-6-astra":         {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 5.0, HasCached: true, DisplayName: "GPT-6 Astra"},
-		"openai:gpt-5.6-sol":         {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.6 Sol"},
-		"openai:gpt-5.6-luna":        {InputPrice: 1.0, OutputPrice: 6.0, CachedPrice: 0.5, HasCached: true, DisplayName: "GPT-5.6 Luna"},
-		"openai:gpt-5.6-terra":       {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.6 Terra"},
-		"openai:gpt-5.5":             {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.5"},
-		"openai:gpt-5.4":             {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.4"},
-		"openai:gpt-5.4-mini":        {InputPrice: 0.75, OutputPrice: 4.5, CachedPrice: 0.375, HasCached: true, DisplayName: "GPT-5.4 Mini"},
+		"google:gemini-3.8-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
+		"google:gemini-3.7-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
+		"google:gemini-3.6-flash":       {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
+		"google:gemini-3.5-flash-lite":  {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
+		"google:gemini-omni-1.1-flash":  {InputPrice: 1.50, OutputPrice: 9.00, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini Omni 1.1 Flash"},
+		"anthropic:claude-fable-5-1":    {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 1.0, HasCached: true, DisplayName: "Claude Fable 5.1"},
+		"anthropic:claude-sonnet-5":     {InputPrice: 2.0, OutputPrice: 10.0, CachedPrice: 0.2, HasCached: true, DisplayName: "Claude Sonnet 5"},
+		"anthropic:claude-opus-5":       {InputPrice: 5.0, OutputPrice: 25.0, CachedPrice: 0.5, HasCached: true, DisplayName: "Claude Opus 5"},
+		"openai:gpt-6-astra":            {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 5.0, HasCached: true, DisplayName: "GPT-6 Astra"},
+		"openai:gpt-5.6-sol":            {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.6 Sol"},
+		"openai:gpt-5.6-luna":           {InputPrice: 1.0, OutputPrice: 6.0, CachedPrice: 0.5, HasCached: true, DisplayName: "GPT-5.6 Luna"},
+		"openai:gpt-5.6-terra":          {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.6 Terra"},
+		"openai:gpt-5.5":                {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.5"},
+		"openai:gpt-5.4":                {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.4"},
+		"openai:gpt-5.4-mini":           {InputPrice: 0.75, OutputPrice: 4.5, CachedPrice: 0.375, HasCached: true, DisplayName: "GPT-5.4 Mini"},
 		"fireworks:deepseek-v4p1-flash": {InputPrice: 0.22, OutputPrice: 0.66, CachedPrice: 0.11, HasCached: true, DisplayName: "DeepSeek V4.1 Flash"},
 		"fireworks:glm-5p3-flash":       {InputPrice: 0.15, OutputPrice: 0.50, CachedPrice: 0.075, HasCached: true, DisplayName: "GLM 5.3 Flash"},
 	}

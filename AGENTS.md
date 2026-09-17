@@ -169,24 +169,24 @@ Prefer maintained scripts over one-off replacements:
 - `./scripts/session-dump-via-api.sh <session-url>` — canonical same-machine development session dump through the authenticated Desktop API passthrough. Do not inspect the local Pebble database directly.
 - `./scripts/check-precommit.sh`, `./scripts/check-launch-readiness.sh`, and release verification scripts — public/release gates.
 
-### Local Candidate Testbench & Operator Scripts (`/home/roy/work`)
+### Local Candidate Testbench & Operator Scripts (`~/work`)
 
-When testing, evaluating, or executing candidate testbenches, the AI should use the dedicated operator testbench environment in `/home/roy/work`:
+When testing, evaluating, or executing candidate testbenches, the AI should use the dedicated operator testbench environment in `~/work`:
 
-- **Testbench Runner**: `/home/roy/work/run-testbench.sh`
-- **Environment Configuration**: `/home/roy/work/gemini-testbench.env` (dedicated Google Gemini key locked to generativelanguage.googleapis.com and host IP, with a 2,000 requests/day Cloud Quota cap).
+- **Testbench Runner**: `~/work/run-testbench.sh`
+- **Environment Configuration**: `~/work/gemini-testbench.env` (dedicated Google Gemini key locked to generativelanguage.googleapis.com and host IP, with a 2,000 requests/day Cloud Quota cap).
 - **Isolated Ports**: API `18080`, Desktop `18081` (never touches host services on `7781`/`7777` or `5555`).
-- **Dynamic Worktree Resolution**: Automatically builds and runs against the current active worktree or repository (defaults to `/home/roy/swarm-go`, overridable with `SWARM_WORKTREE=/path/to/worktree`).
+- **Dynamic Worktree Resolution**: Automatically builds and runs against the current active worktree or repository (defaults to `~/swarm-go`, overridable with `SWARM_WORKTREE=/path/to/worktree`).
 - **1-Hour Lease & Auto-Shutdown Lifecycle**:
-  - **Start**: `/home/roy/work/run-testbench.sh start [lease_seconds]` starts the candidate daemon and acquires a 1-hour lease (3,600s default) with an automatic background shutdown watcher.
-  - **Status**: `/home/roy/work/run-testbench.sh status` displays candidate worktree, process PID, desktop/API URLs, active lease countdown, and watcher status.
-  - **Lease / Renew**: `/home/roy/work/run-testbench.sh lease [duration_seconds]` extends or renews the lease for another 1 hour (3600s) or custom duration.
-  - **Stop / Turn-Down**: `/home/roy/work/run-testbench.sh stop` immediately stops the daemon and releases the lease.
+  - **Start**: `~/work/run-testbench.sh start [lease_seconds]` starts the candidate daemon and acquires a 1-hour lease (3,600s default) with an automatic background shutdown watcher.
+  - **Status**: `~/work/run-testbench.sh status` displays candidate worktree, process PID, desktop/API URLs, active lease countdown, and watcher status.
+  - **Lease / Renew**: `~/work/run-testbench.sh lease [duration_seconds]` extends or renews the lease for another 1 hour (3600s) or custom duration.
+  - **Stop / Turn-Down**: `~/work/run-testbench.sh stop` immediately stops the daemon and releases the lease.
   - **Auto-Turn-Down Safety**: If an AI agent or test session exits, crashes, or forgets to turn down the testbench, the background watcher automatically shuts down the daemon when the 1-hour lease expires, releasing ports and Pebble database locks.
 - **Worker & Matrix Tests**:
-  - `/home/roy/work/run-testbench.sh test-worker`: starts the testbench and executes `/home/roy/work/test-worker-e2e.mjs`.
-  - `node /home/roy/work/test-worker-matrix.mjs`: comprehensive automation matrix tests.
-  - After test execution, always turn down the testbench with `/home/roy/work/run-testbench.sh stop`.
+  - `~/work/run-testbench.sh test-worker`: starts the testbench and executes `~/work/test-worker-e2e.mjs`.
+  - `node ~/work/test-worker-matrix.mjs`: comprehensive automation matrix tests.
+  - After test execution, always turn down the testbench with `~/work/run-testbench.sh stop`.
 
 Use each script’s `--help`. Do not manually reproduce a script’s contract, hardcode remote paths, pass raw secrets on command lines, or substitute an unrequested host/helper.
 
