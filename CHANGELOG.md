@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Accept root-owned sticky world-writable directories (such as `/tmp`) for first-install artifact validation, and prevent root installer lockout by adopting new artifact roots on resume, cleaning up interrupted account creation, and clearing obsolete recovery records upon service install. Docs impact: none.
+
 - Fix GCP-built release archive intake in build-main without retired Astra dependencies, and scope dependency-vulnerability-scan push triggers to dev to prevent push-to-main timeouts. Docs impact: none.
 
 - Verify qualification test suites using Google Gemini 3.6 Flash (thinking: low) with ephemeral IP-locked credentials, per-agent model settings, sequenced live runners, and push check receipts. Docs impact: none.
