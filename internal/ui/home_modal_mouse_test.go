@@ -95,7 +95,7 @@ func TestAgentsModalMouseOpensCanonicalAgentEditor(t *testing.T) {
 	screen := newModalMouseTestScreen(t, 110, 36)
 	defer screen.Fini()
 	p.drawAgentsModal(screen)
-	target := findClickTarget(t, p.agentsModalTargets, "agents-agent", 2)
+	target := findClickTarget(t, p.agentsModalTargets, "agents-agent", 1)
 	p.HandleMouse(tcell.NewEventMouse(target.Rect.X, target.Rect.Y, tcell.Button1, 0))
 	if got := p.selectedAgentsModalName(); got != "finder" {
 		t.Fatalf("selected agent = %q, want finder", got)

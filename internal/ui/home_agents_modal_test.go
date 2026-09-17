@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -281,5 +282,219 @@ func TestAgentsModalRenderHasNoProfileOrPolicyWorkflow(t *testing.T) {
 		if strings.Contains(text, rejected) {
 			t.Fatalf("render retained %q workflow:\n%s", rejected, text)
 		}
+	}
+}
+
+func testManyModelsAgentsData(modelCount int) AgentsModalData {
+	models := make([]string, modelCount)
+	catalog := make(map[string]client.ModelCatalogRecord, modelCount)
+	for i := 0; i < modelCount; i++ {
+		name := fmt.Sprintf("model-%02d", i+1)
+		models[i] = name
+		catalog["codex/"+name] = client.ModelCatalogRecord{
+			Provider:        "codex",
+			Model:           name,
+			ThinkingOptions: []string{"off", "high"},
+		}
+	}
+	assignment := client.AgentModelAssignment{
+		Provider: "codex",
+		Model:    models[0],
+		Thinking: "high",
+	}
+	return AgentsModalData{
+		Settings: client.AgentModelSettings{
+			Swarm: client.SwarmAgentModelAssignments{
+				Action: assignment,
+				Plan:   assignment,
+			},
+			SystemAgents: client.SystemAgentModelAssignments{
+				Compact:  assignment,
+				Finder:   assignment,
+				Coder:    assignment,
+				Designer: assignment,
+				Router:   assignment,
+			},
+		},
+		Providers:        []string{"codex"},
+		ModelsByProvider: map[string][]string{"codex": models},
+		ModelCatalog:     catalog,
+	}
+}
+
+func renderAgentsModalScreen(page *HomePage, w, h int) string {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		panic(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(w, h)
+	page.drawAgentsModal(screen)
+	screen.Show()
+	cells, width, _ := screen.GetContents()
+	var rendered strings.Builder
+	for i, cell := range cells {
+		if i > 0 && i%width == 0 {
+			rendered.WriteByte('\n')
+		}
+		if len(cell.Runes) > 0 {
+			rendered.WriteRune(cell.Runes[0])
+		} else {
+			rendered.WriteByte(' ')
+		}
+	}
+	return rendered.String()
+}
+
+func TestAgentsModalModelListScrollsDownToBottomWhenManyModels(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(testManyModelsAgentsData(40))
+
+	// Navigate to Fields -> Model field
+	page.agentsModal.Focus = agentsModalFocusFields
+	page.agentsModal.SelectedField = 1 // Model field
+
+	// Press Enter to start editing the Model field
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if !page.agentsModal.EditingField {
+		t.Fatal("expected EditingField to be true after Enter on Model field")
+	}
+	if got := page.agentsModal.EditingOption; got != "model-01" {
+		t.Fatalf("initial editing option = %q, want model-01", got)
+	}
+
+	// Render on a 30-row screen
+	text := renderAgentsModalScreen(page, 100, 30)
+	if !strings.Contains(text, "model-01") {
+		t.Fatalf("expected model-01 visible initially:\n%s", text)
+	}
+	if strings.Contains(text, "model-40") {
+		t.Fatalf("model-40 should not be visible initially before scrolling:\n%s", text)
+	}
+
+	// Press Down repeatedly to scroll down to the bottom
+	for i := 0; i < 50; i++ {
+		page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	}
+
+	// Must be clamped at the bottom model (model-40)
+	if got := page.agentsModal.EditingOption; got != "model-40" {
+		t.Fatalf("after pressing Down to bottom, got %q, want model-40", got)
+	}
+
+	// Render at bottom: model-40 must be visible and selected with "> model-40"
+	textAtBottom := renderAgentsModalScreen(page, 100, 30)
+	if !strings.Contains(textAtBottom, "model-40") {
+		t.Fatalf("expected model-40 to be visible when scrolled to bottom:\n%s", textAtBottom)
+	}
+	if !strings.Contains(textAtBottom, "> model-40") {
+		t.Fatalf("expected model-40 to be selected with '> model-40':\n%s", textAtBottom)
+	}
+	if strings.Contains(textAtBottom, "    model-01") || strings.Contains(textAtBottom, "  > model-01") {
+		t.Fatalf("model-01 should not be visible in options list when scrolled all the way to bottom:\n%s", textAtBottom)
+	}
+
+	// Press Down again: must stay at bottom and keep model-40 visible
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if got := page.agentsModal.EditingOption; got != "model-40" {
+		t.Fatalf("pressing Down at bottom should stay at model-40, got %q", got)
+	}
+	textStillAtBottom := renderAgentsModalScreen(page, 100, 30)
+	if !strings.Contains(textStillAtBottom, "> model-40") {
+		t.Fatalf("expected model-40 still visible and selected:\n%s", textStillAtBottom)
+	}
+
+	// Press Up: moves to model-39
+	page.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModNone))
+	if got := page.agentsModal.EditingOption; got != "model-39" {
+		t.Fatalf("after Up, got %q, want model-39", got)
+	}
+
+	// Press Home: jumps to top (model-01)
+	page.HandleKey(tcell.NewEventKey(tcell.KeyHome, 0, tcell.ModNone))
+	if got := page.agentsModal.EditingOption; got != "model-01" {
+		t.Fatalf("after Home, got %q, want model-01", got)
+	}
+	textAtTop := renderAgentsModalScreen(page, 100, 30)
+	if !strings.Contains(textAtTop, "> model-01") {
+		t.Fatalf("expected model-01 visible and selected after Home:\n%s", textAtTop)
+	}
+
+	// Press End: jumps back to bottom (model-40)
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnd, 0, tcell.ModNone))
+	if got := page.agentsModal.EditingOption; got != "model-40" {
+		t.Fatalf("after End, got %q, want model-40", got)
+	}
+	textAtEnd := renderAgentsModalScreen(page, 100, 30)
+	if !strings.Contains(textAtEnd, "> model-40") {
+		t.Fatalf("expected model-40 visible and selected after End:\n%s", textAtEnd)
+	}
+
+	// Press Enter to commit selection
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if page.agentsModal.EditingField {
+		t.Fatal("expected EditingField to be false after Enter")
+	}
+	assignment := page.selectedAgentsModalAssignment()
+	if assignment.Model != "model-40" {
+		t.Fatalf("committed model = %q, want model-40", assignment.Model)
+	}
+}
+
+func TestAgentsModalModelListOpensWithCurrentModelScrolledIntoView(t *testing.T) {
+	data := testManyModelsAgentsData(40)
+	data.Settings.Swarm.Action.Model = "model-35" // Model near bottom
+
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(data)
+
+	page.agentsModal.Focus = agentsModalFocusFields
+	page.agentsModal.SelectedField = 1 // Model field
+
+	// Open field edit
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	if got := page.agentsModal.EditingOption; got != "model-35" {
+		t.Fatalf("editing option = %q, want model-35", got)
+	}
+
+	// Render: model-35 must be scrolled into view immediately
+	text := renderAgentsModalScreen(page, 100, 30)
+	if !strings.Contains(text, "> model-35") {
+		t.Fatalf("expected model-35 to be visible and selected upon opening edit:\n%s", text)
+	}
+}
+
+func TestAgentsModalModelListMouseWheelScroll(t *testing.T) {
+	page := NewHomePage(model.EmptyHome())
+	page.ShowAgentsModal()
+	page.SetAgentsModalData(testManyModelsAgentsData(40))
+
+	page.agentsModal.Focus = agentsModalFocusFields
+	page.agentsModal.SelectedField = 1
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+
+	// Initial option: model-01
+	if got := page.agentsModal.EditingOption; got != "model-01" {
+		t.Fatalf("initial option = %q, want model-01", got)
+	}
+
+	// Wheel down: advances by 3
+	page.HandleMouse(tcell.NewEventMouse(50, 15, tcell.WheelDown, 0))
+	if got := page.agentsModal.EditingOption; got != "model-04" {
+		t.Fatalf("after WheelDown, option = %q, want model-04", got)
+	}
+
+	// Wheel down again
+	page.HandleMouse(tcell.NewEventMouse(50, 15, tcell.WheelDown, 0))
+	if got := page.agentsModal.EditingOption; got != "model-07" {
+		t.Fatalf("after second WheelDown, option = %q, want model-07", got)
+	}
+
+	// Wheel up: scrolls back by 3
+	page.HandleMouse(tcell.NewEventMouse(50, 15, tcell.WheelUp, 0))
+	if got := page.agentsModal.EditingOption; got != "model-04" {
+		t.Fatalf("after WheelUp, option = %q, want model-04", got)
 	}
 }
