@@ -991,7 +991,11 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, os.FileMode(hdr.Mode).Perm()); err != nil {
+			dirMode := (os.FileMode(hdr.Mode).Perm() | 0755) &^ 0022
+			if err := os.MkdirAll(targetPath, dirMode); err != nil {
+				return "", err
+			}
+			if err := os.Chmod(targetPath, dirMode); err != nil {
 				return "", err
 			}
 		case tar.TypeReg, tar.TypeRegA:
@@ -1002,7 +1006,13 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return "", err
 			}
-			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode).Perm())
+			fileMode := os.FileMode(hdr.Mode).Perm() &^ 0022
+			if os.FileMode(hdr.Mode).Perm()&0111 != 0 {
+				fileMode |= 0755 &^ 0022
+			} else {
+				fileMode |= 0644 &^ 0022
+			}
+			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fileMode)
 			if err != nil {
 				return "", err
 			}
@@ -1010,6 +1020,10 @@ func extractTarGz(archivePath, targetDir string) (string, error) {
 			if copyErr != nil || written != hdr.Size {
 				_ = file.Close()
 				return "", fmt.Errorf("extract archive entry %q: copied %d of %d bytes: %w", name, written, hdr.Size, copyErr)
+			}
+			if err := file.Chmod(fileMode); err != nil {
+				_ = file.Close()
+				return "", err
 			}
 			if err := file.Close(); err != nil {
 				return "", err
