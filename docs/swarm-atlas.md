@@ -371,6 +371,7 @@ All listed routes are registered by the eight `register*Routes` methods called b
 | `/v3/sessions/{id}/video/artifact-v3/media` | `handleSessionV3VideoSubpath` → `videoproject.ReadArtifactV3Media` → native immutable revision/receipt authority; Desktop `artifactV3VideoMediaUrl` and canvas player | authenticated source-session/account/user, exact V3 reference JSON, GET/HEAD/range, private no-store, nosniff; no collection/variant alias; **current, native playback proved** | `sessions_v3_video_native_media_test.go` checks ranged bytes, HEAD and malformed/foreign rejection without media reads; `runtime/artifact_v3_runtime_test.go` checks receipt substitution and A→B/restart lifetime; Desktop `video-native-v3.spec.ts` checks native mapping |
 | `/v3/sessions/{id}/video/projects/{project}/render`, `/v3/sessions/{id}/video/render-jobs`, `/v3/sessions/{id}/video/render-jobs/{job}{,/cancel}`, project `/render-jobs` | `handleSessionV3VideoSubpath` / `handleSessionV3VideoProjectDetail` → `videoproject.Service` and `videorender.Service`; Video Studio render dialog/center | authenticated account + user + session/project/revision; durable V3 queued/rendering/terminal lifecycle, allowlisted quality/FPS, bounded concurrent background execution, list/status/ETA/cancel/recovery and exact ready derivative reuse; **current** | `sessions_v3_video_projects_test.go`, `videoproject/service_test.go`, `videorender/service_test.go`, `htmlcapture/animation_test.go`, Desktop `video-render-center.spec.ts` and `video-tool-page.static.spec.ts` |
 | `/v3/sessions:{reconnect,discover,search,archive,review-worktrees,unarchive,delete}`, `/v3/subagents:stop` | specialized V3 lifecycle handlers; clients and task UI. Review-worktrees: `handleSessionsV3ReviewWorktrees` → `catalogSessionsV3ReviewWorktrees` for mutation-free `catalog_only` navigation, or full classification/promotion; Desktop `review-worktrees-api.ts` scopes integration/archive enrichment to selected IDs | account/session; **current**; catalog rows are `inspection_pending` with no actions or source HEAD, and unknown checkout status | matching `sessions_v3_*_test.go`; new `sessions_v3_review_catalog_test.go` principal/mutation denial, unchanged session, and four-worker bounds; wire scope assertions in `review-worktrees-api.spec.ts` (not executed for this change) |
+| `/v3/usage`, `/v3/sessions:usage` | `handleSessionsV3Usage` → `session.Service.ListAllTurnUsage`, `ListAllUsageSummaries`, `ListAllMediaArtifactVariants`; Desktop Usage & Analytics dashboard | authenticated account + principal; aggregate token telemetry, daily rollups, model/provider distribution, prompt cache discounts, media generation (image/video/audio) breakdown, and recent sessions; Codex marked as subscription ($0 billed) with nominal tracking; **current** | `sessions_v3_usage_dashboard_test.go`, `session_usage_store_test.go`, Desktop `usage-dashboard.spec.ts` |
 | `/v3/automations/v2`, `/v3/automations/v2/{proposal,review,accept,decline,control,progress}` | `server_routes.go` → `handleAutomationsDisabled` | **Disabled for launch**; endpoints return 404 with `automations disabled`; background V2 scheduler loop is disabled; tools and UI navigation removed | `automations_v2_test.go` asserts all V2 routes return 404 disabled |
 | `/v3/automations`, `/v3/automations/approve`, `/v3/automations/revoke` | `server_routes.go` → `handleAutomationsDisabled` | **Disabled for launch**; endpoints return 404 with `automations disabled`; V1 paths remain non-operational | `automations_test.go` asserts all V1 routes return 404 disabled |
 | `/v3/artifacts` | session artifact handler; Desktop artifact gallery/tools | principal/session lineage; **current** | `sessions_v3_artifacts_test.go`, artifact contract tests |
@@ -2077,6 +2078,29 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
 - **Validation:**
   - `python3 scripts/test-gcp-relay-workflows.py` (5 tests pass).
   - `python3 scripts/test-gcp-result-consumers.py` (11 tests pass).
+
+### Session Usage Dashboard & Aggregate Telemetry API (2026-09-17)
+
+- **Aggregate Session Usage & Telemetry API (`swarmd/internal/api/sessions_v3_usage_dashboard.go`, `server_routes.go`):**
+  - Added `GET /v3/usage` and `GET /v3/sessions:usage` endpoint handlers (`handleSessionsV3Usage`) providing account-scoped aggregate session usage telemetry, daily rollups with token metrics, provider and model groupings, media generation telemetry (image, video, audio), and recent active session listings.
+  - Implemented provider-aware pricing formula using embedded model snapshot catalog: computes uncached input vs prompt cache discounts (Anthropic 90%, Google 75%, OpenAI/OpenRouter 50%), output rates, and thinking tokens.
+  - Treated Codex as a ChatGPT subscription service ($0.00 billed direct cost) with separate nominal API equivalent tracking.
+- **Pebble Store Aggregate Listing (`swarmd/internal/store/pebble/session_usage_store.go`, `session_artifact_store.go`, `session/service.go`):**
+  - Added `ListAllTurnUsage(accountScopeID, limit)` and `ListAllUsageSummaries(accountScopeID, limit)` on `SessionStore` and `session.Service`.
+  - Added `ListAllMediaArtifactVariants(accountScopeID, limit)` on `SessionStore` and `session.Service` to query ready image, video, and audio artifact generations.
+- **Desktop Frontend Usage Dashboard (`web/src/features/desktop/usage/`, `web/src/app/router.tsx`, `desktop-app-page.tsx`):**
+  - Built interactive SVG chart `UsageChartTokens` supporting stacked token breakdown (uncached input, cached input, output, thinking), total volume, and daily cost views with interactive hover tooltips.
+  - Built provider cards `UsageProviderCards` highlighting token share and ChatGPT subscription ($0 billed) badges.
+  - Built searchable, sortable `UsageModelsTable` breaking down per-model tokens, prompt cache %, output, and costs.
+  - Built `UsageMediaSection` highlighting image, video, and audio generations and their estimated costs.
+  - Built `UsageSessionsTable` linking directly to active session routes.
+  - Integrated `/usage` and `/$workspaceSlug/usage` into router and added `Usage` to Desktop sidebar navigation.
+- **Validation:**
+  - `cd swarmd && go test -v -run 'TestSessionsV3UsageDashboard|TestCalculateTurnCostFormulas' ./internal/api` (passed).
+  - `cd swarmd && go test -v -run 'TestSessionStoreListAllTurnUsageAndSummaries' ./internal/store/pebble` (passed).
+  - `cd web && pnpm exec tsc --noEmit` (passed).
+  - `cd web && node --import tsx --test ./src/features/desktop/usage/usage-dashboard.spec.ts` (passed).
+  - `cd web && npm run test:critical` (passed 80/80).
   - `python3 scripts/test-gcp-release-workflow.py` (3 tests pass).
   - `bash scripts/check-atlas-sync.sh` passes.
   - `bash scripts/check-precommit.sh` passes.

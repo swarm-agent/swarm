@@ -1688,6 +1688,27 @@ func (s *Service) ListTurnUsage(sessionID string, limit int) ([]pebblestore.Sess
 	return s.store.ListTurnUsage(sessionID, limit)
 }
 
+func (s *Service) ListAllTurnUsage(accountScopeID string, limit int) ([]pebblestore.SessionTurnUsageSnapshot, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListAllTurnUsage(accountScopeID, limit)
+}
+
+func (s *Service) ListAllUsageSummaries(accountScopeID string, limit int) ([]pebblestore.SessionUsageSummary, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListAllUsageSummaries(accountScopeID, limit)
+}
+
+func (s *Service) ListAllMediaArtifactVariants(accountScopeID string, limit int) ([]pebblestore.SessionArtifactVariant, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	return s.store.ListAllMediaArtifactVariants(accountScopeID, limit)
+}
+
 type PlanSaveMetadata struct {
 	UpdateSummary       string
 	UpdateScope         string

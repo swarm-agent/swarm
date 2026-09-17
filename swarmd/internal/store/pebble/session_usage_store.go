@@ -162,6 +162,75 @@ func (s *SessionStore) ListTurnUsage(sessionID string, limit int) ([]SessionTurn
 	return out, nil
 }
 
+func (s *SessionStore) ListAllTurnUsage(accountScopeID string, limit int) ([]SessionTurnUsageSnapshot, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	const iterateAll = int(^uint(0) >> 1)
+	out := make([]SessionTurnUsageSnapshot, 0, 128)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	err := s.store.IteratePrefix("session_turn_usage/", iterateAll, func(_ string, value []byte) error {
+		var record SessionTurnUsageSnapshot
+		if err := json.Unmarshal(value, &record); err != nil {
+			return err
+		}
+		if strings.TrimSpace(record.SessionID) == "" || strings.TrimSpace(record.RunID) == "" {
+			return nil
+		}
+		if accountScopeID != "" && strings.TrimSpace(record.AccountScopeID) != "" && strings.TrimSpace(record.AccountScopeID) != accountScopeID {
+			return nil
+		}
+		out = append(out, record)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UpdatedAt == out[j].UpdatedAt {
+			return out[i].RunID > out[j].RunID
+		}
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *SessionStore) ListAllUsageSummaries(accountScopeID string, limit int) ([]SessionUsageSummary, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	const iterateAll = int(^uint(0) >> 1)
+	out := make([]SessionUsageSummary, 0, 64)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	err := s.store.IteratePrefix("session_usage_summary/", iterateAll, func(_ string, value []byte) error {
+		var summary SessionUsageSummary
+		if err := json.Unmarshal(value, &summary); err != nil {
+			return err
+		}
+		if strings.TrimSpace(summary.SessionID) == "" {
+			return nil
+		}
+		if accountScopeID != "" && strings.TrimSpace(summary.AccountScopeID) != "" && strings.TrimSpace(summary.AccountScopeID) != accountScopeID {
+			return nil
+		}
+		out = append(out, summary)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt > out[j].UpdatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (s *SessionStore) PutUsageSummary(summary SessionUsageSummary) error {
 	summary.UserID = strings.TrimSpace(summary.UserID)
 	summary.AccountScopeID = strings.TrimSpace(summary.AccountScopeID)
