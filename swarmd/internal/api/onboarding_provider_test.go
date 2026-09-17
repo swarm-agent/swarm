@@ -190,6 +190,142 @@ func TestOnboardingProviderCredentialRejectsLaterCredentialWithoutOverwritingPre
 	}
 }
 
+func TestOnboardingProviderCredentialReaddAfterDeletionSucceedsWithExistingSettings(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	firstStatus, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "openai",
+		Type:     "api",
+		APIKey:   "sk-first",
+	})
+	if err != nil {
+		t.Fatalf("accept first onboarding credential: %v", err)
+	}
+	if !firstStatus.Active || firstStatus.AutoDefaults == nil || !firstStatus.AutoDefaults.Applied {
+		t.Fatalf("first onboarding credential status = %+v", firstStatus)
+	}
+
+	_, _, err = server.auth.DeleteCredentialForAccount(principal.AccountScopeID, "openai", firstStatus.ID)
+	if err != nil {
+		t.Fatalf("delete credential: %v", err)
+	}
+
+	readdStatus, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "openai",
+		Type:     "api",
+		APIKey:   "sk-second",
+	})
+	if err != nil {
+		t.Fatalf("re-adding onboarding credential after deletion failed: %v", err)
+	}
+	if !readdStatus.Active {
+		t.Fatalf("re-added credential was not active: %+v", readdStatus)
+	}
+	if readdStatus.AutoDefaults == nil || !readdStatus.AutoDefaults.Applied {
+		t.Fatalf("re-added credential missing auto defaults: %+v", readdStatus.AutoDefaults)
+	}
+
+	creds, err := server.auth.ListCredentialsForAccount(principal.AccountScopeID, "openai", "", 200)
+	if err != nil {
+		t.Fatalf("list credentials: %v", err)
+	}
+	if creds.Total != 1 || len(creds.Records) != 1 || creds.Records[0].ID != readdStatus.ID {
+		t.Fatalf("expected 1 active credential, got %+v", creds)
+	}
+}
+
+func TestAuthCredentialsEndpointReaddAfterDeletionSucceedsWithExistingSettings(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	firstStatus, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "openai",
+		Type:     "api",
+		APIKey:   "sk-first",
+	})
+	if err != nil {
+		t.Fatalf("accept first onboarding credential: %v", err)
+	}
+
+	_, _, err = server.auth.DeleteCredentialForAccount(principal.AccountScopeID, "openai", firstStatus.ID)
+	if err != nil {
+		t.Fatalf("delete credential: %v", err)
+	}
+
+	payload := map[string]any{
+		"provider": "openai",
+		"type":     "api",
+		"api_key":  "sk-readd-endpoint",
+		"active":   true,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:5555/v1/auth/credentials", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/auth/credentials status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var status auth.CredentialStatus
+	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !status.Active || status.AutoDefaults == nil || !status.AutoDefaults.Applied {
+		t.Fatalf("re-added credential was not activated and hydrated: %+v", status)
+	}
+}
+
+func TestOnboardingProviderCredentialSwitchProviderAfterDeletionHydratesNewProvider(t *testing.T) {
+	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
+	ctx := identity.ContextWithPrincipal(context.Background(), principal)
+
+	// Manually seed existing settings pointing to another provider (e.g. "anthropic") that has no credentials
+	if _, err := server.agentModelSettingsStore.PutForAccount(pebblestore.AgentModelSettingsRecord{
+		AccountScopeID: principal.AccountScopeID,
+		Swarm: pebblestore.SwarmAgentModelAssignments{
+			Action: pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-5-sonnet", Thinking: "medium"},
+			Plan:   pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-5-sonnet", Thinking: "high"},
+		},
+		SystemAgents: pebblestore.SystemAgentModelAssignments{
+			Compact:  pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-haiku", Thinking: "low"},
+			Finder:   pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-haiku", Thinking: "medium"},
+			Coder:    pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-5-sonnet", Thinking: "high"},
+			Designer: pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-5-sonnet", Thinking: "medium"},
+			Router:   pebblestore.AgentModelAssignment{Provider: "anthropic", Model: "claude-3-haiku", Thinking: "low"},
+		},
+		UpdatedAt: 1,
+	}); err != nil {
+		t.Fatalf("seed old settings: %v", err)
+	}
+
+	// Onboarding with "openai" when old provider "anthropic" has 0 credentials should rehydrate defaults for "openai"
+	status, err := server.acceptFirstOnboardingProviderCredential(context.Background(), principal, onboardingProviderCredentialRequest{
+		Provider: "openai",
+		Type:     "api",
+		APIKey:   "sk-new-provider",
+	})
+	if err != nil {
+		t.Fatalf("accept onboarding credential for new provider failed: %v", err)
+	}
+	if !status.Active || status.AutoDefaults == nil || !status.AutoDefaults.Applied {
+		t.Fatalf("status = %+v", status)
+	}
+	if status.AutoDefaults.Provider != "openai" {
+		t.Fatalf("expected provider to be openai, got %q", status.AutoDefaults.Provider)
+	}
+
+	settings, err := server.agentModelSettings.Get(ctx)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings.Swarm.Action.Provider != "openai" {
+		t.Fatalf("expected Swarm.Action.Provider to be updated to openai, got %q", settings.Swarm.Action.Provider)
+	}
+}
+
 func TestOnboardingProviderCredentialPreservesExistingModelProfileAndDefault(t *testing.T) {
 	server, principal := newOnboardingProviderCredentialTestServer(t, onboardingProviderTestAdapter{id: "openai", ready: true, connected: true, message: "ok"})
 	ctx := identity.ContextWithPrincipal(context.Background(), principal)

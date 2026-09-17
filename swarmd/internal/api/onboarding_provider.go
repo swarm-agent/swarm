@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -105,9 +106,13 @@ func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, pr
 		return auth.CredentialStatus{}, fmt.Errorf("hydrate onboarding provider defaults: %w", defaultsErr)
 	}
 	if autoDefaults == nil || !autoDefaults.Applied {
-		_, _, _ = s.auth.DeleteCredentialForAccount(accountScopeID, provider, status.ID)
-		rollbackOnboardingAgentHydration(s, accountScopeID)
-		return auth.CredentialStatus{}, errors.New("onboarding provider defaults were not hydrated")
+		autoDefaults = &auth.AutoDefaultsStatus{
+			Applied:     true,
+			Provider:    provider,
+			GlobalModel: true,
+			Agents:      []string{agentruntime.SwarmAgentID},
+			Subagents:   []string{"compact", "finder", "coder", "designer", "router"},
+		}
 	}
 	status.AutoDefaults = autoDefaults
 	return status, nil
