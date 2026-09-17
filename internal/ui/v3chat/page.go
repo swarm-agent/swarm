@@ -878,9 +878,6 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.resetCommandPaletteOptionSelectionLocked()
 	case ev.Key() == tcell.KeyF2:
 		p.openModelPickerLocked()
-	case ev.Key() == tcell.KeyCtrlR:
-		// Recovery scope is already retained by the runtime's hydrated session.
-		go p.Recover("", "")
 	case ev.Key() == tcell.KeyCtrlP:
 		return PageActionOpenCurrentPlan
 	case ev.Key() == tcell.KeyRune:
@@ -1644,7 +1641,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	statusLine := ""
 	statusStyle := styles.Muted
 	if stale {
-		statusLine = "stale • Ctrl-R to rehydrate • " + reason
+		if reason != "" {
+			statusLine = "stale • rehydrating… • " + reason
+		} else {
+			statusLine = "stale • rehydrating…"
+		}
 		statusStyle = styles.Warning
 	} else if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
 		statusLine = routedDraftStatusLine(draft)

@@ -14,30 +14,31 @@ import (
 )
 
 type fakeTransport struct {
-	mu                 sync.Mutex
-	calls              []string
-	createRequests     []client.SessionCreateOptions
-	created            client.SessionV3Hydrated
-	result             client.SessionV3MessageResult
-	streamBlock        chan struct{}
-	streamFrames       []client.V3RealtimeFrame
-	streamOptions      []client.V3RealtimeResumeOptions
-	hydrateCount       int
-	preference         client.ModelResolved
-	mode               client.SessionV3ModeResult
-	modeRequest        string
-	providers          []client.ProviderStatus
-	catalog            map[string][]client.ModelCatalogRecord
-	preferenceRequest  map[string]any
-	resolvedPermission client.PermissionRecord
-	permissionExplain  client.PermissionExplain
-	messageRequest     client.SessionV3MessageOptions
-	routedRequests     []client.RoutedSessionV3StartRequest
-	routedResponses    []client.RoutedSessionV3StartResponse
-	routedErrors       []error
-	compactRequest     client.SessionV3CompactOptions
-	compactSessionID   string
-	permissionRequest  struct {
+	mu                  sync.Mutex
+	calls               []string
+	createRequests      []client.SessionCreateOptions
+	created             client.SessionV3Hydrated
+	result              client.SessionV3MessageResult
+	streamBlock         chan struct{}
+	streamFrames        []client.V3RealtimeFrame
+	consumeStreamFrames bool
+	streamOptions       []client.V3RealtimeResumeOptions
+	hydrateCount        int
+	preference          client.ModelResolved
+	mode                client.SessionV3ModeResult
+	modeRequest         string
+	providers           []client.ProviderStatus
+	catalog             map[string][]client.ModelCatalogRecord
+	preferenceRequest   map[string]any
+	resolvedPermission  client.PermissionRecord
+	permissionExplain   client.PermissionExplain
+	messageRequest      client.SessionV3MessageOptions
+	routedRequests      []client.RoutedSessionV3StartRequest
+	routedResponses     []client.RoutedSessionV3StartResponse
+	routedErrors        []error
+	compactRequest      client.SessionV3CompactOptions
+	compactSessionID    string
+	permissionRequest   struct {
 		sessionID         string
 		permissionID      string
 		action            string
@@ -101,8 +102,14 @@ func (f *fakeTransport) StreamV3Realtime(ctx context.Context, options client.V3R
 	if options.OnResumeSent != nil {
 		options.OnResumeSent()
 	}
+	f.mu.Lock()
+	frames := append([]client.V3RealtimeFrame(nil), f.streamFrames...)
+	if f.consumeStreamFrames {
+		f.streamFrames = nil
+	}
+	f.mu.Unlock()
 	f.record("ready")
-	for _, frame := range f.streamFrames {
+	for _, frame := range frames {
 		onFrame(frame)
 	}
 	if f.streamBlock == nil {
@@ -779,4 +786,40 @@ func TestStopUnblocksSignalDrivenStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.Stop()
+}
+
+func TestAutoRecoverOnDurableCursorError(t *testing.T) {
+	transport := &fakeTransport{
+		created: client.SessionV3Hydrated{
+			Session:                client.SessionSummary{ID: "session-1"},
+			SnapshotEndpointCursor: "fresh-cursor",
+		},
+		streamFrames: []client.V3RealtimeFrame{
+			{Kind: "cursor.error", Error: "expired cursor"},
+		},
+		consumeStreamFrames: true,
+	}
+	runtime := NewRuntime(transport, nil, nil)
+	defer runtime.Stop()
+	if err := runtime.Hydrate(context.Background(), "session-1", "/workspace", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	recovered := false
+	for time.Now().Before(deadline) {
+		transport.mu.Lock()
+		hydrates := transport.hydrateCount
+		transport.mu.Unlock()
+		if hydrates >= 2 {
+			recovered = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !recovered {
+		t.Fatal("runtime did not auto-recover on cursor.error")
+	}
 }

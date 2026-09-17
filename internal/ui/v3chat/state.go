@@ -789,28 +789,21 @@ func applyLivePatch(state State, patch *client.V3RealtimeLivePatch) State {
 	if patch.LiveSeqEnd <= current.LiveSeqEnd {
 		return state
 	}
-	if current.LiveSeqEnd != 0 && (patch.LiveSeqStart != current.LiveSeqEnd+1 || patch.OffsetStart != current.OffsetEnd) {
-		state.Connection = ConnectionStale
-		state.NeedsRehydrate = true
-		state.StaleReason = "live patch continuity gap"
-		return state
-	}
-	if current.LiveSeqEnd == 0 && patch.OffsetStart != 0 {
-		state.Connection = ConnectionStale
-		state.NeedsRehydrate = true
-		state.StaleReason = "live patch initial offset gap"
-		return state
-	}
 	if len(current.Text)+len(patch.Text) > maxLiveSegmentBytes {
-		state.Connection = ConnectionStale
-		state.NeedsRehydrate = true
-		state.StaleReason = "live patch memory limit exceeded"
 		return state
 	}
 	current.RunID = strings.TrimSpace(patch.RunID)
 	current.StreamID = strings.TrimSpace(patch.StreamID)
 	current.CreatedAt = firstPositiveInt64(current.CreatedAt, patch.RecordedAt)
-	current.Text += patch.Text
+	if current.LiveSeqEnd == 0 || patch.OffsetStart >= current.OffsetEnd {
+		current.Text += patch.Text
+	} else if patch.OffsetEnd > current.OffsetEnd {
+		overlap := current.OffsetEnd - patch.OffsetStart
+		textBytes := []byte(patch.Text)
+		if overlap < uint64(len(textBytes)) {
+			current.Text += string(textBytes[overlap:])
+		}
+	}
 	current.LiveSeqEnd = patch.LiveSeqEnd
 	current.OffsetEnd = patch.OffsetEnd
 	state.Live[key] = current

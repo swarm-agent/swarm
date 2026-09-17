@@ -635,19 +635,52 @@ func TestReducerBoundsResidentMessagesAndLiveText(t *testing.T) {
 		t.Fatalf("resident message bound = %d first=%#v", len(state.Messages), state.Messages[0])
 	}
 	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 1, LiveSeqEnd: 1, OffsetStart: 0, OffsetEnd: maxLiveSegmentBytes + 1, Text: strings.Repeat("x", maxLiveSegmentBytes+1)}}})
-	if !state.NeedsRehydrate || state.StaleReason != "live patch memory limit exceeded" || len(state.Live) != 0 {
+	if state.NeedsRehydrate || state.Connection == ConnectionStale || len(state.Live) != 0 {
 		t.Fatalf("oversized live state = %#v", state)
 	}
 }
 
-func TestLivePatchGapAndCursorErrorRequireExplicitRehydrate(t *testing.T) {
+func TestLivePatchGapToleratedAndCursorErrorRequiresRehydrate(t *testing.T) {
 	state := Reduce(NewState(), RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 2, LiveSeqEnd: 2, OffsetStart: 1, OffsetEnd: 2, Text: "x"}}})
-	if !state.NeedsRehydrate || state.Connection != ConnectionStale {
+	if state.NeedsRehydrate || state.Connection == ConnectionStale || state.Live["r:out"].Text != "x" {
 		t.Fatalf("live gap state = %#v", state)
 	}
 	state = Reduce(state, HydrateAction{Snapshot: client.SessionV3Hydrated{Session: client.SessionSummary{ID: "s"}, SnapshotEndpointCursor: "fresh"}})
 	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "cursor.error", Error: "expired"}})
 	if !state.NeedsRehydrate || state.StaleReason != "expired" {
 		t.Fatalf("cursor state = %#v", state)
+	}
+}
+
+func TestLivePatchInitialOffsetGapAndOverlapStreamProperly(t *testing.T) {
+	state := NewState()
+	// Initial offset gap (joined mid-stream with OffsetStart > 0)
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 5, LiveSeqEnd: 5, OffsetStart: 20, OffsetEnd: 27, Text: "partial"}}})
+	if state.NeedsRehydrate || state.Connection == ConnectionStale {
+		t.Fatalf("initial offset gap must not set stale: %#v", state)
+	}
+	if got := state.Live["r:out"].Text; got != "partial" {
+		t.Fatalf("live text = %q, want partial", got)
+	}
+
+	// Normal contiguous append
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 6, LiveSeqEnd: 6, OffsetStart: 27, OffsetEnd: 32, Text: " text"}}})
+	if got := state.Live["r:out"].Text; got != "partial text" {
+		t.Fatalf("live text = %q, want partial text", got)
+	}
+
+	// Overlapping append (coalesced patch starting before current.OffsetEnd)
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 6, LiveSeqEnd: 7, OffsetStart: 27, OffsetEnd: 37, Text: " text more"}}})
+	if got := state.Live["r:out"].Text; got != "partial text more" {
+		t.Fatalf("live text = %q, want partial text more", got)
+	}
+
+	// Continuity gap (missing offsets)
+	state = Reduce(state, RealtimeFrameAction{Frame: client.V3RealtimeFrame{Kind: "live.patch", Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "out", LiveSeqStart: 10, LiveSeqEnd: 10, OffsetStart: 50, OffsetEnd: 55, Text: " done"}}})
+	if state.NeedsRehydrate || state.Connection == ConnectionStale {
+		t.Fatalf("continuity gap must not set stale: %#v", state)
+	}
+	if got := state.Live["r:out"].Text; got != "partial text more done" {
+		t.Fatalf("live text = %q, want partial text more done", got)
 	}
 }

@@ -2114,6 +2114,17 @@ func TestEscapeReturnsHomeWithoutActiveRun(t *testing.T) {
 	}
 }
 
+func TestCtrlRIgnoredAndNotIntercepted(t *testing.T) {
+	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
+	defer page.Close()
+	if action := page.HandleKey(tcell.NewEventKey(tcell.KeyCtrlR, 0, tcell.ModCtrl)); action != PageActionNone {
+		t.Fatalf("Ctrl-R action = %v, want PageActionNone", action)
+	}
+	if page.busy {
+		t.Fatal("Ctrl-R must not set page busy or start recovery")
+	}
+}
+
 func TestCanonicalFooterFallsBackToLocalOnlyWithoutResolvedRouteIdentity(t *testing.T) {
 	page := NewPage(NewRuntime(&fakeTransport{}, NewStore(), nil), testPageStyles())
 	screen := tcell.NewSimulationScreen("UTF-8")
