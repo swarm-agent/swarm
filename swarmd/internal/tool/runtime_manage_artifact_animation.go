@@ -172,7 +172,7 @@ func (r *Runtime) prepareHTMLAnimationExport(ctx context.Context, principal arti
 	prepared.Input = artifact.CreateInput{
 		RequestID:    captureOpaqueID("request-export-html-animation", principal.SessionID, callID, ref, "mp4"),
 		CollectionID: collectionID, CollectionName: "HTML animation render", VariantID: variantID,
-		Filename: "html-animation.mp4", MediaType: "video/mp4", Role: pebblestore.SessionArtifactRoleRenderOnly,
+		Filename: "html-animation.mp4", MediaType: "video/mp4",
 		Presentation:       pebblestore.SessionArtifactPresentation{Kind: "video", Label: "HTML animation", Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
 		OutputRequirements: requirements, AnimationProfile: profile, Parts: animationTemporalParts(files[entry], int64(manifest.DurationMS)),
 		SourceSessionID: ref.SessionID, SourceCollectionID: ref.CollectionID, SourceVariantID: ref.VariantID, SourceEventSeq: ref.EventSeq,

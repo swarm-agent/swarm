@@ -21,7 +21,7 @@ export function UsageChartTokens({ daily, selectedDate, onSelectDate }: UsageCha
   const maxVal = useMemo(() => {
     if (items.length === 0) return 1
     if (metric === 'cost') {
-      const maxCost = Math.max(...items.map((d) => d.cost_usd))
+      const maxCost = Math.max(...items.map((d) => d.cost_usd + (d.media_cost_usd || 0)))
       return maxCost > 0 ? maxCost : 1
     }
     const maxTokens = Math.max(...items.map((d) => d.total_tokens))
@@ -183,7 +183,7 @@ export function UsageChartTokens({ daily, selectedDate, onSelectDate }: UsageCha
                 const isSelected = selectedDate === item.date
 
                 if (metric === 'cost') {
-                  const dayCost = item.cost_usd
+                  const dayCost = item.cost_usd + (item.media_cost_usd || 0)
                   const height = Math.max(2, (dayCost / maxVal) * innerHeight)
                   const y = padding.top + innerHeight - height
                   return (
@@ -418,20 +418,14 @@ export function UsageChartTokens({ daily, selectedDate, onSelectDate }: UsageCha
                   <div className="border-t border-[var(--app-border)] pt-1 flex justify-between gap-4 font-medium text-[var(--app-text)]">
                     <span>Estimated Cost:</span>
                     <span className="font-mono text-emerald-500">
-                      ${hoveredItem.cost_usd.toFixed(4)}
+                      ${(hoveredItem.cost_usd + (hoveredItem.media_cost_usd || 0)).toFixed(4)}
                     </span>
                   </div>
                   {hoveredItem.media_calls > 0 && (
-                    <>
-                      <div className="flex justify-between gap-4 text-xs text-[var(--app-text-muted)]">
-                        <span>Tokens:</span>
-                        <span>${(hoveredItem.token_cost_usd ?? Math.max(0, hoveredItem.cost_usd - hoveredItem.media_cost_usd)).toFixed(4)}</span>
-                      </div>
-                      <div className="flex justify-between gap-4 text-xs text-[var(--app-text-muted)]">
-                        <span>Media Gen:</span>
-                        <span>{hoveredItem.media_calls} calls (${hoveredItem.media_cost_usd.toFixed(2)})</span>
-                      </div>
-                    </>
+                    <div className="flex justify-between gap-4 text-xs text-[var(--app-text-muted)]">
+                      <span>Media Gen:</span>
+                      <span>{hoveredItem.media_calls} calls (${hoveredItem.media_cost_usd.toFixed(2)})</span>
+                    </div>
                   )}
                 </div>
               </div>

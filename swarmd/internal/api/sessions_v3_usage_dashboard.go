@@ -32,7 +32,6 @@ type SessionUsageDashboardSummary struct {
 	OutputTokens        int64   `json:"output_tokens"`
 	CachedTokens        int64   `json:"cached_tokens"`
 	ThinkingTokens      int64   `json:"thinking_tokens"`
-	TokenCostUSD        float64 `json:"token_cost_usd"`
 	TotalCostUSD        float64 `json:"total_cost_usd"`
 	CodexNominalCostUSD float64 `json:"codex_nominal_cost_usd"`
 	TotalTurns          int     `json:"total_turns"`
@@ -52,7 +51,6 @@ type SessionUsageDailyItem struct {
 	CachedTokens        int64            `json:"cached_tokens"`
 	ThinkingTokens      int64            `json:"thinking_tokens"`
 	CostUSD             float64          `json:"cost_usd"`
-	TokenCostUSD        float64          `json:"token_cost_usd"`
 	CodexNominalCostUSD float64          `json:"codex_nominal_cost_usd"`
 	Turns               int              `json:"turns"`
 	MediaCalls          int              `json:"media_calls"`
@@ -69,9 +67,6 @@ type SessionUsageProviderItem struct {
 	CachedTokens        int64    `json:"cached_tokens"`
 	ThinkingTokens      int64    `json:"thinking_tokens"`
 	CostUSD             float64  `json:"cost_usd"`
-	TokenCostUSD        float64  `json:"token_cost_usd"`
-	MediaCostUSD        float64  `json:"media_cost_usd"`
-	MediaCalls          int      `json:"media_calls"`
 	CodexNominalCostUSD float64  `json:"codex_nominal_cost_usd"`
 	IsSubscription      bool     `json:"is_subscription"`
 	Turns               int      `json:"turns"`
@@ -89,9 +84,6 @@ type SessionUsageModelItem struct {
 	CachedTokens          int64   `json:"cached_tokens"`
 	ThinkingTokens        int64   `json:"thinking_tokens"`
 	CostUSD               float64 `json:"cost_usd"`
-	TokenCostUSD          float64 `json:"token_cost_usd"`
-	MediaCostUSD          float64 `json:"media_cost_usd"`
-	MediaCalls            int     `json:"media_calls"`
 	CodexNominalCostUSD   float64 `json:"codex_nominal_cost_usd"`
 	Turns                 int     `json:"turns"`
 	Sessions              int     `json:"sessions"`
@@ -329,7 +321,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		summary.OutputTokens += rec.OutputTokens
 		summary.CachedTokens += rec.CacheReadTokens
 		summary.ThinkingTokens += rec.ThinkingTokens
-		summary.TokenCostUSD += costUSD
 		summary.TotalCostUSD += costUSD
 		summary.CodexNominalCostUSD += codexNominalUSD
 		summary.TotalTurns++
@@ -352,7 +343,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		dayItem.OutputTokens += rec.OutputTokens
 		dayItem.CachedTokens += rec.CacheReadTokens
 		dayItem.ThinkingTokens += rec.ThinkingTokens
-		dayItem.TokenCostUSD += costUSD
 		dayItem.CostUSD += costUSD
 		dayItem.CodexNominalCostUSD += codexNominalUSD
 		dayItem.Turns++
@@ -374,7 +364,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		provItem.OutputTokens += rec.OutputTokens
 		provItem.CachedTokens += rec.CacheReadTokens
 		provItem.ThinkingTokens += rec.ThinkingTokens
-		provItem.TokenCostUSD += costUSD
 		provItem.CostUSD += costUSD
 		provItem.CodexNominalCostUSD += codexNominalUSD
 		provItem.Turns++
@@ -408,7 +397,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		mItem.OutputTokens += rec.OutputTokens
 		mItem.CachedTokens += rec.CacheReadTokens
 		mItem.ThinkingTokens += rec.ThinkingTokens
-		mItem.TokenCostUSD += costUSD
 		mItem.CostUSD += costUSD
 		mItem.CodexNominalCostUSD += codexNominalUSD
 		mItem.Turns++
@@ -484,67 +472,26 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if !pebblestore.IsAIGeneratedMedia(v) {
-			continue
-		}
-
 		mt := strings.ToLower(v.MediaType)
 		var kind string
+		var cost float64
 		if strings.HasPrefix(mt, "image/") {
 			kind = "image"
-		} else if strings.HasPrefix(mt, "video/") {
-			kind = "video"
-		} else if strings.HasPrefix(mt, "audio/") {
-			kind = "audio"
-		} else {
-			continue
-		}
-
-		var cost float64
-		if v.EstimatedCostUSD > 0 {
-			cost = v.EstimatedCostUSD
-		} else {
-			res := ""
-			if v.OutputRequirements != nil {
-				res = v.OutputRequirements.PresetID
-				if res == "" && v.OutputRequirements.Width > 0 {
-					if v.OutputRequirements.Width >= 3840 {
-						res = "4k"
-					} else if v.OutputRequirements.Width >= 1920 {
-						res = "1080p"
-					} else {
-						res = "720p"
-					}
-				}
-			}
-			if res == "" && v.Presentation.Width > 0 {
-				if v.Presentation.Width >= 3840 {
-					res = "4k"
-				} else if v.Presentation.Width >= 1920 {
-					res = "1080p"
-				} else {
-					res = "720p"
-				}
-			}
-			if res == "" {
-				descLower := strings.ToLower(v.Presentation.Description)
-				labelLower := strings.ToLower(v.Presentation.Label)
-				if strings.Contains(descLower, "8k") || strings.Contains(descLower, "4k") || strings.Contains(labelLower, "4k") || v.Size > 32<<20 {
-					res = "4k"
-				}
-			}
-			cost = pebblestore.CalculateBaselineMediaCost(v.MediaType, v.ModelID, res, 8)
-		}
-
-		if kind == "image" {
+			cost = 0.04
 			mediaSummary.ImageCount++
 			mediaSummary.ImageCostUSD += cost
-		} else if kind == "video" {
+		} else if strings.HasPrefix(mt, "video/") {
+			kind = "video"
+			cost = 1.20
 			mediaSummary.VideoCount++
 			mediaSummary.VideoCostUSD += cost
-		} else if kind == "audio" {
+		} else if strings.HasPrefix(mt, "audio/") {
+			kind = "audio"
+			cost = 0.08
 			mediaSummary.AudioCount++
 			mediaSummary.AudioCostUSD += cost
+		} else {
+			continue
 		}
 
 		mediaSummary.TotalCount++
@@ -578,7 +525,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		if exists {
 			dayItem.MediaCalls++
 			dayItem.MediaCostUSD += cost
-			dayItem.CostUSD += cost
 		} else {
 			dayStart := time.Date(time.UnixMilli(ts).UTC().Year(), time.UnixMilli(ts).UTC().Month(), time.UnixMilli(ts).UTC().Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
 			dailyMap[dayKey] = &SessionUsageDailyItem{
@@ -586,97 +532,13 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 				Timestamp:    dayStart,
 				MediaCalls:   1,
 				MediaCostUSD: cost,
-				CostUSD:      cost,
 				ModelsUsed:   make(map[string]int64),
 			}
-			dayItem = dailyMap[dayKey]
-		}
-		if v.ModelID != "" {
-			dayItem.ModelsUsed[v.ModelID]++
-		}
-
-		// Also attach media cost and calls to provider bin
-		provID := strings.ToLower(strings.TrimSpace(v.ProviderID))
-		if provID == "" {
-			if strings.Contains(v.ModelID, "veo") || strings.Contains(v.ModelID, "lyria") || strings.Contains(v.ModelID, "imagen") {
-				provID = "google"
-			} else {
-				provID = "google"
-			}
-		}
-		provItem, exists := providerMap[provID]
-		if !exists {
-			provItem = &SessionUsageProviderItem{
-				Provider:       provID,
-				DisplayName:    formatProviderDisplayName(provID),
-				IsSubscription: provID == "codex",
-				Models:         []string{},
-			}
-			providerMap[provID] = provItem
-		}
-		provItem.CostUSD += cost
-		provItem.MediaCostUSD += cost
-		provItem.MediaCalls++
-		modelID := strings.TrimSpace(v.ModelID)
-		if modelID == "" {
-			modelID = kind
-		}
-		if !containsUsageString(provItem.Models, modelID) {
-			provItem.Models = append(provItem.Models, modelID)
-		}
-
-		// Also attach media cost and calls to model bin
-		modelKey := provID + ":" + modelID
-		mItem, exists := modelMap[modelKey]
-		if !exists {
-			pInfo := pricingMap[modelKey]
-			if pInfo.DisplayName == "" {
-				pInfo = pricingMap[modelID]
-			}
-			displayName := pInfo.DisplayName
-			if displayName == "" {
-				displayName = formatModelDisplayName(modelID)
-			}
-			mItem = &SessionUsageModelItem{
-				Model:       modelID,
-				Provider:    provID,
-				DisplayName: displayName,
-			}
-			modelMap[modelKey] = mItem
-		}
-		mItem.CostUSD += cost
-		mItem.MediaCostUSD += cost
-		mItem.MediaCalls++
-		mItem.Turns++
-
-		// Also attach media cost to session item
-		sessItem, exists := sessionUsageMap[v.SessionID]
-		if exists {
-			sessItem.CostUSD += cost
-			if sessItem.Provider == "" {
-				sessItem.Provider = provID
-			}
-			if sessItem.Model == "" {
-				sessItem.Model = modelID
-			}
-		} else {
-			meta := resolveSessionMeta(v.SessionID)
-			sessItem = &SessionUsageSessionItem{
-				SessionID:    v.SessionID,
-				Title:        meta.title,
-				Archived:     meta.archived,
-				Provider:     provID,
-				Model:        modelID,
-				LastActiveAt: ts,
-				CostUSD:      cost,
-			}
-			sessionUsageMap[v.SessionID] = sessItem
 		}
 	}
 
 	summary.TotalMediaCalls = mediaSummary.TotalCount
 	summary.MediaCostUSD = mediaSummary.TotalCostUSD
-	summary.TotalCostUSD = summary.TokenCostUSD + mediaSummary.TotalCostUSD
 
 	// 5. Convert maps to sorted slices
 	dailyList := make([]SessionUsageDailyItem, 0, len(dailyMap))
@@ -806,37 +668,20 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		sessionList = sessionList[:sessionLimit]
 	}
 
-	// Calculate session counts per provider and model
+	// Calculate session counts per provider
 	provSessionSet := make(map[string]map[string]struct{})
-	modelSessionSet := make(map[string]map[string]struct{})
 	for _, item := range sessionList {
 		if provSessionSet[item.Provider] == nil {
 			provSessionSet[item.Provider] = make(map[string]struct{})
 		}
 		provSessionSet[item.Provider][item.SessionID] = struct{}{}
-		if modelSessionSet[item.Model] == nil {
-			modelSessionSet[item.Model] = make(map[string]struct{})
-		}
-		modelSessionSet[item.Model][item.SessionID] = struct{}{}
 	}
 	for i := range providerList {
 		providerList[i].Sessions = len(provSessionSet[providerList[i].Provider])
 	}
-	for i := range modelList {
-		modelList[i].Sessions = len(modelSessionSet[modelList[i].Model])
-	}
 
 	limitRec, _, _ := s.sessions.GetUsageLimit(principal.AccountScopeID)
 	todayCost, todayTokens, _ := s.sessions.GetTodayUsageTotal(principal.AccountScopeID)
-	todayKey := time.Now().UTC().Format("2006-01-02")
-	if dayItem, ok := dailyMap[todayKey]; ok {
-		if dayItem.CostUSD > todayCost {
-			todayCost = dayItem.CostUSD
-		}
-		if dayItem.TotalTokens > todayTokens {
-			todayTokens = dayItem.TotalTokens
-		}
-	}
 	limitExceeded := limitRec.Enabled && limitRec.DailyCostLimitUSD > 0 && todayCost >= limitRec.DailyCostLimitUSD
 
 	writeJSON(w, http.StatusOK, SessionUsageDashboardResponse{
@@ -870,31 +715,23 @@ func (s *Server) buildPricingMap() map[string]catalogPricingLookup {
 
 	// Baseline fallback pricing for key flagship models in case catalog is unavailable
 	baselinePricing := map[string]catalogPricingLookup{
-		"google:veo-3.1-generate-preview": {DisplayName: "Google Veo 3.1"},
-		"google:veo-2.0-generate-001":     {DisplayName: "Google Veo 2.0"},
-		"google:lyria":                    {DisplayName: "Google Lyria"},
-		"google:imagen-3.0-generate-002":  {DisplayName: "Google Imagen 3"},
-		"google:gemini-3.8-flash":         {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
-		"google:gemini-3.7-flash":         {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
-		"google:gemini-3.6-flash":         {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.15, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
-		"google:gemini-3.5-flash-lite":    {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
-		"google:gemini-3.5-flash":         {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 3.5 Flash"},
-		"google:gemini-3.1-pro-preview":   {InputPrice: 2.00, OutputPrice: 12.0, CachedPrice: 0.20, HasCached: true, DisplayName: "Gemini 3.1 Pro Preview"},
-		"google:gemini-2.5-flash":         {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 2.5 Flash"},
-		"google:gemini-2.5-pro":           {InputPrice: 1.25, OutputPrice: 10.0, CachedPrice: 0.125, HasCached: true, DisplayName: "Gemini 2.5 Pro"},
-		"google:gemini-omni-1.1-flash":    {InputPrice: 1.50, OutputPrice: 9.00, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini Omni 1.1 Flash"},
-		"anthropic:claude-fable-5-1":      {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 1.0, HasCached: true, DisplayName: "Claude Fable 5.1"},
-		"anthropic:claude-sonnet-5":       {InputPrice: 2.0, OutputPrice: 10.0, CachedPrice: 0.2, HasCached: true, DisplayName: "Claude Sonnet 5"},
-		"anthropic:claude-opus-5":         {InputPrice: 5.0, OutputPrice: 25.0, CachedPrice: 0.5, HasCached: true, DisplayName: "Claude Opus 5"},
-		"openai:gpt-6-astra":              {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 5.0, HasCached: true, DisplayName: "GPT-6 Astra"},
-		"openai:gpt-5.6-sol":              {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.6 Sol"},
-		"openai:gpt-5.6-luna":             {InputPrice: 1.0, OutputPrice: 6.0, CachedPrice: 0.5, HasCached: true, DisplayName: "GPT-5.6 Luna"},
-		"openai:gpt-5.6-terra":            {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.6 Terra"},
-		"openai:gpt-5.5":                  {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.5"},
-		"openai:gpt-5.4":                  {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.4"},
-		"openai:gpt-5.4-mini":             {InputPrice: 0.75, OutputPrice: 4.5, CachedPrice: 0.375, HasCached: true, DisplayName: "GPT-5.4 Mini"},
-		"fireworks:deepseek-v4p1-flash":   {InputPrice: 0.22, OutputPrice: 0.66, CachedPrice: 0.11, HasCached: true, DisplayName: "DeepSeek V4.1 Flash"},
-		"fireworks:glm-5p3-flash":         {InputPrice: 0.15, OutputPrice: 0.50, CachedPrice: 0.075, HasCached: true, DisplayName: "GLM 5.3 Flash"},
+		"google:gemini-3.8-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
+		"google:gemini-3.7-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
+		"google:gemini-3.6-flash":       {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
+		"google:gemini-3.5-flash-lite":  {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
+		"google:gemini-omni-1.1-flash":  {InputPrice: 1.50, OutputPrice: 9.00, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini Omni 1.1 Flash"},
+		"anthropic:claude-fable-5-1":    {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 1.0, HasCached: true, DisplayName: "Claude Fable 5.1"},
+		"anthropic:claude-sonnet-5":     {InputPrice: 2.0, OutputPrice: 10.0, CachedPrice: 0.2, HasCached: true, DisplayName: "Claude Sonnet 5"},
+		"anthropic:claude-opus-5":       {InputPrice: 5.0, OutputPrice: 25.0, CachedPrice: 0.5, HasCached: true, DisplayName: "Claude Opus 5"},
+		"openai:gpt-6-astra":            {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 5.0, HasCached: true, DisplayName: "GPT-6 Astra"},
+		"openai:gpt-5.6-sol":            {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.6 Sol"},
+		"openai:gpt-5.6-luna":           {InputPrice: 1.0, OutputPrice: 6.0, CachedPrice: 0.5, HasCached: true, DisplayName: "GPT-5.6 Luna"},
+		"openai:gpt-5.6-terra":          {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.6 Terra"},
+		"openai:gpt-5.5":                {InputPrice: 5.0, OutputPrice: 30.0, CachedPrice: 2.5, HasCached: true, DisplayName: "GPT-5.5"},
+		"openai:gpt-5.4":                {InputPrice: 2.5, OutputPrice: 15.0, CachedPrice: 1.25, HasCached: true, DisplayName: "GPT-5.4"},
+		"openai:gpt-5.4-mini":           {InputPrice: 0.75, OutputPrice: 4.5, CachedPrice: 0.375, HasCached: true, DisplayName: "GPT-5.4 Mini"},
+		"fireworks:deepseek-v4p1-flash": {InputPrice: 0.22, OutputPrice: 0.66, CachedPrice: 0.11, HasCached: true, DisplayName: "DeepSeek V4.1 Flash"},
+		"fireworks:glm-5p3-flash":       {InputPrice: 0.15, OutputPrice: 0.50, CachedPrice: 0.075, HasCached: true, DisplayName: "GLM 5.3 Flash"},
 	}
 	for k, v := range baselinePricing {
 		out[k] = v
@@ -1083,36 +920,6 @@ func formatProviderDisplayName(prov string) string {
 			return "Unknown"
 		}
 		return strings.ToUpper(prov[:1]) + prov[1:]
-	}
-}
-
-func formatModelDisplayName(model string) string {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case "veo-3.1-generate-preview", "veo-3.1":
-		return "Google Veo 3.1"
-	case "veo-2.0-generate-001", "veo-2.0":
-		return "Google Veo 2.0"
-	case "lyria":
-		return "Google Lyria"
-	case "imagen-3.0-generate-002", "imagen-3.0":
-		return "Google Imagen 3"
-	case "video":
-		return "Video Generation"
-	case "image":
-		return "Image Generation"
-	case "audio":
-		return "Audio Generation"
-	default:
-		if model == "" {
-			return "Unknown Model"
-		}
-		parts := strings.Split(model, "-")
-		for i, p := range parts {
-			if len(p) > 0 {
-				parts[i] = strings.ToUpper(p[:1]) + p[1:]
-			}
-		}
-		return strings.Join(parts, " ")
 	}
 }
 

@@ -42,11 +42,7 @@ var baselinePricingTable = map[string]ModelBaselinePricing{
 	"anthropic:claude-3-5-sonnet":   {InputPricePerMillion: 3.0, OutputPricePerMillion: 15.0, CachedInputPricePerMillion: 0.30, HasCached: true},
 	"anthropic:claude-3-5-haiku":    {InputPricePerMillion: 0.80, OutputPricePerMillion: 4.0, CachedInputPricePerMillion: 0.08, HasCached: true},
 	"google:gemini-3.8-flash":       {InputPricePerMillion: 0.15, OutputPricePerMillion: 0.60, CachedInputPricePerMillion: 0.0375, HasCached: true},
-	"google:gemini-3.7-flash":       {InputPricePerMillion: 0.75, OutputPricePerMillion: 3.75, CachedInputPricePerMillion: 0.075, HasCached: true},
 	"google:gemini-3.6-flash":       {InputPricePerMillion: 0.075, OutputPricePerMillion: 0.30, CachedInputPricePerMillion: 0.01875, HasCached: true},
-	"google:gemini-3.5-flash-lite":  {InputPricePerMillion: 0.30, OutputPricePerMillion: 2.50, CachedInputPricePerMillion: 0.03, HasCached: true},
-	"google:gemini-3.5-flash":       {InputPricePerMillion: 0.30, OutputPricePerMillion: 2.50, CachedInputPricePerMillion: 0.03, HasCached: true},
-	"google:gemini-3.1-pro-preview": {InputPricePerMillion: 2.00, OutputPricePerMillion: 12.0, CachedInputPricePerMillion: 0.20, HasCached: true},
 	"google:gemini-2.5-flash":       {InputPricePerMillion: 0.075, OutputPricePerMillion: 0.30, CachedInputPricePerMillion: 0.01875, HasCached: true},
 	"google:gemini-2.5-pro":         {InputPricePerMillion: 1.25, OutputPricePerMillion: 5.00, CachedInputPricePerMillion: 0.3125, HasCached: true},
 	"google:gemini-1.5-flash":       {InputPricePerMillion: 0.075, OutputPricePerMillion: 0.30, CachedInputPricePerMillion: 0.01875, HasCached: true},
@@ -98,180 +94,6 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 	totalOutput := outputTokens + thinkingTokens
 	cost += (float64(totalOutput) / 1_000_000.0) * pricing.OutputPricePerMillion
 	return cost
-}
-
-// CalculateBaselineMediaCost computes estimated cost in USD based on media type, model ID, resolution, and duration.
-func CalculateBaselineMediaCost(mediaType, modelID, resolution string, durationSeconds int) float64 {
-	mt := strings.ToLower(strings.TrimSpace(mediaType))
-	model := strings.ToLower(strings.TrimSpace(modelID))
-	res := strings.ToLower(strings.TrimSpace(resolution))
-
-	if strings.HasPrefix(mt, "video/") || strings.Contains(model, "veo") || strings.Contains(model, "omni") {
-		if durationSeconds <= 0 {
-			durationSeconds = 8
-		}
-		if strings.Contains(model, "fast") {
-			if strings.Contains(res, "4k") {
-				return float64(durationSeconds) * 0.30
-			}
-			if strings.Contains(res, "1080") {
-				return float64(durationSeconds) * 0.12
-			}
-			return float64(durationSeconds) * 0.10
-		}
-		if strings.Contains(model, "lite") {
-			if strings.Contains(res, "1080") {
-				return float64(durationSeconds) * 0.08
-			}
-			return float64(durationSeconds) * 0.05
-		}
-		if strings.Contains(model, "omni") {
-			return 0.80
-		}
-		// Standard Veo 3.1 default
-		if strings.Contains(res, "4k") {
-			return float64(durationSeconds) * 0.60
-		}
-		return float64(durationSeconds) * 0.40
-	}
-
-	if strings.HasPrefix(mt, "audio/") || strings.Contains(model, "lyria") {
-		if strings.Contains(model, "clip") {
-			return 0.04
-		}
-		return 0.08
-	}
-
-	if strings.HasPrefix(mt, "image/") || strings.Contains(model, "banana") || strings.Contains(model, "image") {
-		if strings.Contains(model, "pro") {
-			if strings.Contains(res, "4k") {
-				return 0.24
-			}
-			return 0.134
-		}
-		if strings.Contains(model, "lite") {
-			return 0.0336
-		}
-		if strings.Contains(model, "2") || strings.Contains(model, "3.1") {
-			if strings.Contains(res, "4k") {
-				return 0.151
-			}
-			if strings.Contains(res, "2k") {
-				return 0.101
-			}
-			if strings.Contains(res, "0.5k") {
-				return 0.045
-			}
-			return 0.067
-		}
-		if strings.Contains(model, "flash") || strings.Contains(model, "banana") {
-			return 0.039
-		}
-		return 0.04
-	}
-
-	return 0.0
-}
-
-// ExtractMediaPricingFromCatalog extracts estimated cost from raw catalog pricing JSON.
-func ExtractMediaPricingFromCatalog(catalogPricing []byte, mediaType, modelID, resolution string, durationSeconds int) (float64, bool) {
-	if len(catalogPricing) == 0 {
-		return 0, false
-	}
-	var p struct {
-		Billing struct {
-			Lines []struct {
-				Kind       string         `json:"kind"`
-				Billable   string         `json:"billable"`
-				Unit       string         `json:"unit"`
-				PriceUSD   float64        `json:"price_usd"`
-				Variant    string         `json:"variant"`
-				Conditions map[string]any `json:"conditions"`
-			} `json:"lines"`
-		} `json:"billing"`
-		VideoOutput float64 `json:"video_output"`
-		MusicOutput float64 `json:"music_output"`
-		AudioOutput float64 `json:"audio_output"`
-		Prompt      float64 `json:"prompt"`
-	}
-	if err := json.Unmarshal(catalogPricing, &p); err != nil {
-		return 0, false
-	}
-
-	mt := strings.ToLower(strings.TrimSpace(mediaType))
-	res := strings.ToLower(strings.TrimSpace(resolution))
-	model := strings.ToLower(strings.TrimSpace(modelID))
-
-	if strings.HasPrefix(mt, "video/") || mt == "video" {
-		if durationSeconds <= 0 {
-			durationSeconds = 8
-		}
-		for _, line := range p.Billing.Lines {
-			if strings.EqualFold(line.Billable, "video_output") && strings.EqualFold(line.Unit, "second") {
-				if res != "" && strings.Contains(strings.ToLower(line.Variant), res) {
-					return line.PriceUSD * float64(durationSeconds), true
-				}
-			}
-		}
-		for _, line := range p.Billing.Lines {
-			if strings.EqualFold(line.Billable, "video_output") && strings.EqualFold(line.Unit, "second") {
-				return line.PriceUSD * float64(durationSeconds), true
-			}
-		}
-		if p.VideoOutput > 0 {
-			return p.VideoOutput, true
-		}
-	}
-
-	if strings.HasPrefix(mt, "audio/") || mt == "audio" {
-		for _, line := range p.Billing.Lines {
-			if strings.EqualFold(line.Billable, "song") || strings.EqualFold(line.Billable, "audio_output") || strings.EqualFold(line.Billable, "music_output") {
-				if strings.EqualFold(line.Unit, "song") || strings.EqualFold(line.Unit, "generation") {
-					if strings.Contains(model, "clip") && strings.Contains(strings.ToLower(line.Variant), "clip") {
-						return line.PriceUSD, true
-					}
-					if !strings.Contains(model, "clip") && !strings.Contains(strings.ToLower(line.Variant), "clip") {
-						return line.PriceUSD, true
-					}
-				}
-			}
-		}
-		for _, line := range p.Billing.Lines {
-			if (strings.EqualFold(line.Billable, "song") || strings.EqualFold(line.Billable, "audio_output")) && line.PriceUSD > 0 {
-				return line.PriceUSD, true
-			}
-		}
-		if p.MusicOutput > 0 {
-			return p.MusicOutput, true
-		}
-		if p.AudioOutput > 0 {
-			return p.AudioOutput, true
-		}
-	}
-
-	if strings.HasPrefix(mt, "image/") || mt == "image" {
-		for _, line := range p.Billing.Lines {
-			if strings.EqualFold(line.Billable, "image_output") {
-				if line.Kind == "equivalent_cost" || strings.EqualFold(line.Unit, "image") {
-					if res != "" && strings.Contains(strings.ToLower(line.Variant), res) {
-						return line.PriceUSD, true
-					}
-				}
-			}
-		}
-		for _, line := range p.Billing.Lines {
-			if strings.EqualFold(line.Billable, "image_output") {
-				if (line.Kind == "equivalent_cost" || strings.EqualFold(line.Unit, "image")) && line.PriceUSD > 0 {
-					return line.PriceUSD, true
-				}
-				if strings.EqualFold(line.Unit, "megapixel") && line.PriceUSD > 0 {
-					return line.PriceUSD, true
-				}
-			}
-		}
-	}
-
-	return 0, false
 }
 
 // GetUsageLimit retrieves the configured daily usage limit for an account.
@@ -399,110 +221,35 @@ func (s *SessionStore) GetTodayUsageTotal(accountScopeID string) (float64, int64
 	accountScopeID = strings.TrimSpace(accountScopeID)
 
 	acc, found, err := s.GetDailyUsageAccumulator(accountScopeID, todayDate)
-	if err != nil {
-		found = false
+	if err == nil && found {
+		return acc.TotalCostUSD, acc.TotalTokens, nil
 	}
 
-	// Compute today's usage from turns and media
+	// Recompute from turns for today if accumulator not yet present
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
 	turns, err := s.ListAllTurnUsage(accountScopeID, 10000)
-	if err != nil && !found {
+	if err != nil {
 		return 0, 0, err
 	}
 
-	var turnsCost float64
-	var computedTokens int64
-	turnCount := 0
-	if err == nil {
-		for _, rec := range turns {
-			ts := rec.CreatedAt
-			if ts <= 0 {
-				ts = rec.UpdatedAt
-			}
-			if ts < startOfDay {
-				continue
-			}
-			cost := rec.EstimatedCostUSD
-			if cost <= 0 {
-				cost = CalculateBaselineCost(rec.Provider, rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheReadTokens, rec.ThinkingTokens)
-			}
-			turnsCost += cost
-			computedTokens += rec.TotalTokens
-			turnCount++
-		}
-	}
-
-	var mediaCost float64
-	media, err := s.ListAllMediaArtifactVariants(accountScopeID, 2000)
-	if err == nil {
-		for _, v := range media {
-			ts := v.CreatedAt
-			if ts < startOfDay {
-				continue
-			}
-			if !IsAIGeneratedMedia(v) {
-				continue
-			}
-			cost := v.EstimatedCostUSD
-			if cost <= 0 {
-				res := ""
-				if v.OutputRequirements != nil {
-					res = v.OutputRequirements.PresetID
-					if res == "" && v.OutputRequirements.Width > 0 {
-						if v.OutputRequirements.Width >= 3840 {
-							res = "4k"
-						} else if v.OutputRequirements.Width >= 1920 {
-							res = "1080p"
-						} else {
-							res = "720p"
-						}
-					}
-				}
-				if res == "" && v.Presentation.Width > 0 {
-					if v.Presentation.Width >= 3840 {
-						res = "4k"
-					} else if v.Presentation.Width >= 1920 {
-						res = "1080p"
-					} else {
-						res = "720p"
-					}
-				}
-				if res == "" {
-					descLower := strings.ToLower(v.Presentation.Description)
-					labelLower := strings.ToLower(v.Presentation.Label)
-					if strings.Contains(descLower, "8k") || strings.Contains(descLower, "4k") || strings.Contains(labelLower, "4k") || v.Size > 32<<20 {
-						res = "4k"
-					}
-				}
-				cost = CalculateBaselineMediaCost(v.MediaType, v.ModelID, res, 8)
-			}
-			mediaCost += cost
-		}
-	}
-
 	var totalCost float64
-	if turnsCost > 0 {
-		totalCost = turnsCost + mediaCost
-	} else if found && acc.TotalCostUSD > 0 {
-		if mediaCost == 0 {
-			totalCost = acc.TotalCostUSD
-		} else if acc.TotalCostUSD >= mediaCost {
-			totalCost = acc.TotalCostUSD
-		} else {
-			totalCost = acc.TotalCostUSD + mediaCost
+	var totalTokens int64
+	turnCount := 0
+	for _, rec := range turns {
+		ts := rec.CreatedAt
+		if ts <= 0 {
+			ts = rec.UpdatedAt
 		}
-	} else {
-		totalCost = mediaCost
-	}
-
-	totalTokens := computedTokens
-	if found {
-		if acc.TotalTokens > totalTokens {
-			totalTokens = acc.TotalTokens
+		if ts < startOfDay {
+			continue
 		}
-		if acc.TurnCount > turnCount {
-			turnCount = acc.TurnCount
+		cost := rec.EstimatedCostUSD
+		if cost <= 0 {
+			cost = CalculateBaselineCost(rec.Provider, rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheReadTokens, rec.ThinkingTokens)
 		}
+		totalCost += cost
+		totalTokens += rec.TotalTokens
+		turnCount++
 	}
 
 	acc = DailyUsageAccumulator{

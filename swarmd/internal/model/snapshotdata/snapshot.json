@@ -2,9 +2,9 @@
   "schema_version": "2026-08-14.2",
   "api_version": "v1",
   "snapshot_schema_version": "2026-08-14.2",
-  "snapshot_id": "swarm-models-v1-5eed3540a5c5376e",
-  "snapshot_version": "5eed3540a5c5376e",
-  "generated_at": "2026-09-18T09:46:13.803Z",
+  "snapshot_id": "swarm-models-v1-509b5ba697355d46",
+  "snapshot_version": "509b5ba697355d46",
+  "generated_at": "2026-09-14T09:43:11.045Z",
   "model_count": 734,
   "provider_count": 7,
   "hydrated_provider_count": 6,
@@ -3406,7 +3406,7 @@
           "source_id": "anthropic_fable_5_1_docs",
           "source_url": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
           "source_kind": "official_docs",
-          "fetched_at": "2026-09-18T09:46:13.803Z",
+          "fetched_at": "2026-09-14T09:43:11.045Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -3832,7 +3832,7 @@
         "reviewed_at": null,
         "notes": "Anthropic entry hydrated from first-party model docs pending Models API visibility verification. Claude API service-tier metadata is mapped for Swarm off/fast/batch where documented; provider Fast Mode is represented separately as serving.fast_mode; and Claude thinking controls and token pricing are mapped from first-party docs."
       },
-      "updated_at": "2026-09-18T09:46:13.803Z",
+      "updated_at": "2026-09-14T09:43:11.045Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -35819,8 +35819,6 @@
       },
       "parameters": {
         "supported_parameters": [
-          "aspect_ratio",
-          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -36091,12 +36089,9 @@
             "status": "verified",
             "api_surface": "generate_content",
             "managed_image_tool": {
-              "supported": true,
-              "client_setting_names": [
-                "aspect_ratio",
-                "image_size"
-              ],
-              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
             },
             "settings": {
               "image_size": {
@@ -36126,6 +36121,8 @@
                   "3:2",
                   "3:4",
                   "4:3",
+                  "4:5",
+                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -36136,6 +36133,8 @@
                   "3:2",
                   "3:4",
                   "4:3",
+                  "4:5",
+                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -36552,8 +36551,6 @@
       },
       "parameters": {
         "supported_parameters": [
-          "aspect_ratio",
-          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -36822,12 +36819,9 @@
             "status": "verified",
             "api_surface": "generate_content",
             "managed_image_tool": {
-              "supported": true,
-              "client_setting_names": [
-                "aspect_ratio",
-                "image_size"
-              ],
-              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
             },
             "settings": {
               "image_size": {
@@ -36855,20 +36849,32 @@
                 "provider_parameter": "generationConfig.imageConfig.aspectRatio",
                 "supported_values": [
                   "1:1",
+                  "1:4",
+                  "1:8",
                   "2:3",
                   "3:2",
                   "3:4",
+                  "4:1",
                   "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
                   "9:16",
                   "16:9",
                   "21:9"
                 ],
                 "provider_documented_values": [
                   "1:1",
+                  "1:4",
+                  "1:8",
                   "2:3",
                   "3:2",
                   "3:4",
+                  "4:1",
                   "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -37713,9 +37719,7 @@
       },
       "parameters": {
         "supported_parameters": [
-          "aspect_ratio",
           "generationConfig.thinkingConfig.thinkingLevel",
-          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -37978,12 +37982,9 @@
             "status": "verified",
             "api_surface": "generate_content",
             "managed_image_tool": {
-              "supported": true,
-              "client_setting_names": [
-                "aspect_ratio",
-                "image_size"
-              ],
-              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
+              "supported": false,
+              "client_setting_names": [],
+              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
             },
             "settings": {
               "image_size": {
@@ -38009,6 +38010,8 @@
                   "3:2",
                   "3:4",
                   "4:3",
+                  "4:5",
+                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -38019,6 +38022,8 @@
                   "3:2",
                   "3:4",
                   "4:3",
+                  "4:5",
+                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"

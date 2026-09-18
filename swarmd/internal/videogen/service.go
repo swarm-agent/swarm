@@ -2,6 +2,7 @@ package videogen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -255,7 +256,7 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	}
 
 	catalogPricing := s.resolveModelPricing(providerID, modelID)
-	cost, summary := EstimateVideoCost(providerID, modelID, resolution, durationSeconds, isIteration, catalogPricing)
+	cost, summary := EstimateVideoCost(providerID, modelID, durationSeconds, isIteration, catalogPricing)
 	result.EstimatedCostUSD = cost
 	result.PricingSummary = summary
 	return result, nil
@@ -406,28 +407,40 @@ func (s *Service) resolveModelPricing(providerID, modelID string) []byte {
 	return nil
 }
 
-func EstimateVideoCost(providerID, modelID, resolution string, durationSeconds int, isIteration bool, catalogPricing []byte) (float64, string) {
-	if durationSeconds <= 0 {
-		durationSeconds = 8
-	}
-	if isIteration && isOmniModel(modelID) {
-		return 0.05, "$0.05 per conversational edit (Gemini Omni Flash)"
-	}
+func EstimateVideoCost(providerID, modelID string, durationSeconds int, isIteration bool, catalogPricing []byte) (float64, string) {
 	if len(catalogPricing) > 0 {
-		if cost, ok := pebblestore.ExtractMediaPricingFromCatalog(catalogPricing, "video", modelID, resolution, durationSeconds); ok && cost > 0 {
-			ratePerSec := cost / float64(durationSeconds)
-			return cost, fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (%s catalog)", ratePerSec, cost, durationSeconds, modelID)
+		var p struct {
+			VideoOutput float64 `json:"video_output"`
+			Prompt      float64 `json:"prompt"`
+		}
+		if err := json.Unmarshal(catalogPricing, &p); err == nil {
+			if p.VideoOutput > 0 {
+				return p.VideoOutput, fmt.Sprintf("$%.2f per generation (catalog)", p.VideoOutput)
+			}
+			if p.Prompt > 0 {
+				return p.Prompt, fmt.Sprintf("$%.2f per generation (catalog)", p.Prompt)
+			}
 		}
 	}
 
-	cost := pebblestore.CalculateBaselineMediaCost("video", modelID, resolution, durationSeconds)
-	if cost > 0 {
-		ratePerSec := cost / float64(durationSeconds)
-		return cost, fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (%s)", ratePerSec, cost, durationSeconds, modelID)
+	if !isIteration && (strings.Contains(strings.ToLower(modelID), "veo") || (providerID == ProviderGoogleGemini && !isOmniModel(modelID))) {
+		if durationSeconds <= 0 {
+			durationSeconds = 8
+		}
+		costPerSecond := 0.07
+		total := float64(durationSeconds) * costPerSecond
+		return total, fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (Google Veo)", costPerSecond, total, durationSeconds)
+	}
+
+	if isIteration || isOmniModel(modelID) {
+		cost := 0.05
+		return cost, "$0.05 per conversational edit (Gemini Omni Flash)"
 	}
 
 	if providerID == ProviderOpenRouter {
-		return 0.30, "$0.30 per generation (OpenRouter estimated)"
+		cost := 0.30
+		return cost, "$0.30 per generation (OpenRouter estimated)"
 	}
-	return 0.40 * float64(durationSeconds), fmt.Sprintf("$0.40/sec ($%.2f for %ds) (estimated)", 0.40*float64(durationSeconds), durationSeconds)
+
+	return 0.10, "$0.10 per generation (estimated)"
 }

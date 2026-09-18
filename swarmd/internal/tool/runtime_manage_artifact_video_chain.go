@@ -468,7 +468,6 @@ func (r *Runtime) extractVideoFrame(
 		MediaType:             "image/png",
 		Presentation:          presentation,
 		Body:                  pngBytes,
-		Role:                  pebblestore.SessionArtifactRoleKeyframe,
 		AutoAccept:            true,
 	}
 
@@ -720,7 +719,6 @@ func (r *Runtime) chainVideo(
 		MediaType:             "video/mp4",
 		Presentation:          presentation,
 		Body:                  masterBytes,
-		Role:                  pebblestore.SessionArtifactRoleChainedVideo,
 		AutoAccept:            true,
 	}
 

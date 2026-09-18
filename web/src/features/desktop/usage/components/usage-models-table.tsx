@@ -113,7 +113,6 @@ export function UsageModelsTable({ models }: UsageModelsTableProps) {
             ) : (
               filtered.map((item) => {
                 const isCodex = item.provider === 'codex'
-                const isMediaOnly = item.total_tokens === 0 && (item.media_calls ?? 0) > 0
                 const uncached = Math.max(0, item.input_tokens - item.cached_tokens)
                 const cachePct = item.input_tokens > 0 ? (item.cached_tokens / item.input_tokens) * 100 : 0
 
@@ -122,27 +121,17 @@ export function UsageModelsTable({ models }: UsageModelsTableProps) {
                     <td className="py-2.5 pl-4 pr-3">
                       <div className="font-medium text-[var(--app-text)]">{item.display_name || item.model}</div>
                       <div className="text-[10px] text-[var(--app-text-subtle)] font-mono">
-                        {item.provider} · {item.model}{isMediaOnly ? ' (media)' : ''}
+                        {item.provider} · {item.model}
                       </div>
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono font-medium text-[var(--app-text)]">
-                      {isMediaOnly ? (
-                        <span className="text-[11px] text-[var(--app-text-muted)]">{item.media_calls} {item.media_calls === 1 ? 'gen' : 'gens'}</span>
-                      ) : (
-                        item.total_tokens.toLocaleString()
-                      )}
+                      {item.total_tokens.toLocaleString()}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-[var(--app-text-muted)]">
-                      {isMediaOnly ? (
-                        <span className="text-[var(--app-text-subtle)]">—</span>
-                      ) : (
-                        uncached.toLocaleString()
-                      )}
+                      {uncached.toLocaleString()}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono">
-                      {isMediaOnly ? (
-                        <span className="text-[var(--app-text-subtle)]">—</span>
-                      ) : item.cached_tokens > 0 ? (
+                      {item.cached_tokens > 0 ? (
                         <span className="text-emerald-600 dark:text-emerald-400">
                           {item.cached_tokens.toLocaleString()} ({cachePct.toFixed(0)}%)
                         </span>
@@ -151,11 +140,7 @@ export function UsageModelsTable({ models }: UsageModelsTableProps) {
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-[var(--app-text-muted)]">
-                      {isMediaOnly ? (
-                        <span className="text-[var(--app-text-subtle)]">—</span>
-                      ) : (
-                        item.output_tokens.toLocaleString()
-                      )}
+                      {item.output_tokens.toLocaleString()}
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-[var(--app-text-muted)]">
                       {item.turns.toLocaleString()}

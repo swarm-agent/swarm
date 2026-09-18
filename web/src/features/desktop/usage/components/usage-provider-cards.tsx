@@ -48,7 +48,6 @@ export function UsageProviderCards({
                 </div>
                 <p className="text-[11px] text-[var(--app-text-muted)]">
                   {item.sessions} {item.sessions === 1 ? 'session' : 'sessions'} · {item.turns} turns
-                  {item.media_calls ? ` · ${item.media_calls} media` : ''}
                 </p>
               </div>
 
@@ -57,16 +56,9 @@ export function UsageProviderCards({
                   Subscription ($0 billed)
                 </Badge>
               ) : (
-                <div className="text-right">
-                  <span className="shrink-0 font-mono text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-                    ${item.cost_usd.toFixed(2)}
-                  </span>
-                  {item.media_cost_usd && item.media_cost_usd > 0 ? (
-                    <div className="text-[10px] text-[var(--app-text-subtle)] font-mono">
-                      Tokens: ${(item.token_cost_usd ?? Math.max(0, item.cost_usd - item.media_cost_usd)).toFixed(2)} · Media: ${item.media_cost_usd.toFixed(2)}
-                    </div>
-                  ) : null}
-                </div>
+                <span className="shrink-0 font-mono text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                  ${item.cost_usd.toFixed(2)}
+                </span>
               )}
             </div>
 

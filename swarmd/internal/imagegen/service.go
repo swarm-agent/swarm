@@ -145,13 +145,9 @@ type ManagedImageSource struct {
 // ManagedImage is an in-memory provider result ready for direct publication by
 // the artifact authority. It intentionally contains no workspace or storage path.
 type ManagedImage struct {
-	Bytes            []byte
-	MediaType        string
-	RevisedPrompt    string
-	EstimatedCostUSD float64
-	Provider         string
-	Model            string
-	PricingSummary   string
+	Bytes         []byte
+	MediaType     string
+	RevisedPrompt string
 }
 
 type ModelSelection struct {
@@ -637,15 +633,7 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if err != nil {
 			return ManagedImage{}, err
 		}
-		img, err := managedImageFromCodex(completed[0])
-		if err != nil {
-			return ManagedImage{}, err
-		}
-		img.Provider = selection.Provider
-		img.Model = selection.Model
-		img.EstimatedCostUSD = 0.0
-		img.PricingSummary = "$0.00 (Codex OAuth subscription)"
-		return img, nil
+		return managedImageFromCodex(completed[0])
 	case ProviderGoogleGemini:
 		if s.geminiImageClient == nil || s.authStore == nil {
 			return ManagedImage{}, errors.New("Gemini image provider is not configured")
@@ -668,17 +656,7 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if err != nil {
 			return ManagedImage{}, err
 		}
-		img, err := managedImageFromCodex(completed[0])
-		if err != nil {
-			return ManagedImage{}, err
-		}
-		catalogPricing := s.resolveModelPricing(selection.Provider, selection.Model)
-		cost, summary := EstimateImageCost(selection.Provider, selection.Model, googleImageSize, catalogPricing)
-		img.Provider = selection.Provider
-		img.Model = selection.Model
-		img.EstimatedCostUSD = cost
-		img.PricingSummary = summary
-		return img, nil
+		return managedImageFromCodex(completed[0])
 	default:
 		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
 	}
@@ -689,41 +667,6 @@ func cloneManagedImageSource(source *ManagedImageSource) *ManagedImageSource {
 		return nil
 	}
 	return &ManagedImageSource{Bytes: append([]byte(nil), source.Bytes...), MediaType: strings.TrimSpace(source.MediaType)}
-}
-
-func (s *Service) resolveModelPricing(providerID, modelID string) []byte {
-	if s == nil || s.modelCatalog == nil {
-		return nil
-	}
-	records, err := s.modelCatalog.ListCatalog(providerID, 200)
-	if err != nil {
-		return nil
-	}
-	for _, rec := range records {
-		if strings.EqualFold(rec.Model, modelID) && len(rec.Pricing) > 0 {
-			return rec.Pricing
-		}
-	}
-	return nil
-}
-
-// EstimateImageCost returns the estimated cost in USD and a user-friendly pricing summary.
-func EstimateImageCost(providerID, modelID, imageSize string, catalogPricing []byte) (float64, string) {
-	if len(catalogPricing) > 0 {
-		if cost, ok := pebblestore.ExtractMediaPricingFromCatalog(catalogPricing, "image", modelID, imageSize, 0); ok && cost > 0 {
-			return cost, fmt.Sprintf("$%.4f per image (%s catalog)", cost, modelID)
-		}
-	}
-
-	cost := pebblestore.CalculateBaselineMediaCost("image", modelID, imageSize, 0)
-	if cost > 0 {
-		return cost, fmt.Sprintf("$%.4f per image (%s)", cost, modelID)
-	}
-
-	if providerID == ProviderCodexOpenAI {
-		return 0.0, "$0.00 (Codex OAuth subscription)"
-	}
-	return 0.04, "$0.04 per image (estimated)"
 }
 
 func managedCodexImageSize(req ManagedGenerateRequest) string {

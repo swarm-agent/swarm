@@ -2173,9 +2173,6 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Added automatic capability token resolution in `generateManagedImageArtifact`: when `capability_token` is omitted and the configured model provides a verified capability token, the runtime auto-populates `req.CapabilityToken`, enabling zero-instruction direct image generation without unnecessary error rounds.
 - **Session Mode Normalization (`swarmd/internal/session/service.go`):**
   - Updated `NormalizeMode` and `IsValidMode` in `swarmd/internal/session/service.go` to recognize `auto+...` permission-bypass modes as `ModeAuto` instead of falling back to `ModePlan`.
-- **Artifact Role Validation for AI Generated Media (`swarmd/internal/store/pebble/session_artifact_store.go`, `swarmd/internal/artifact/authority.go`):**
-  - Added `IsValidArtifactRole` validating defined artifact roles (`SessionArtifactRoleAIGenerated`, `SessionArtifactRoleRenderOnly`, etc.) in `session_artifact_store.go`.
-  - Updated `authority.go` `Reserve()` and `create()` validation to use `pebblestore.IsValidArtifactRole`, ensuring generated media artifacts created with role `ai_generated` are accepted.
 - **Harness Prompt Examples and Guidance (`swarmd/internal/run/service_prompt.go`):**
   - Added explicit image generation guidance under `Managed Artifacts & Verification` explaining the `image_capabilities` discovery and token flow for Google Gemini image generation.
   - Added concrete `manage_artifact (image capabilities)` and `manage_artifact (generate image)` JSON invocation examples under `Tool examples`.
@@ -2183,8 +2180,7 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Added unit test `TestManageArtifactGenerateImageAcceptsTitleAndAutoPopulatesCapabilityToken` in `swarmd/internal/tool/runtime_manage_artifact_test.go`.
   - Added unit test `TestNormalizeMode` in `swarmd/internal/session/mode_reentry_test.go`.
   - Verified `TestManageArtifactImageCapabilitiesExposeConfiguredSnapshotOptions` and all `TestManageArtifact*Image` tests pass.
-  - Added unit test `TestAuthoritySupportsAIGeneratedRole` in `swarmd/internal/artifact/authority_test.go`.
-  - `(cd swarmd && go test -v ./internal/artifact)` passes.
+  - `(cd swarmd && go test -v ./internal/tool -run 'TestManageArtifact.*Image')` passes.
   - `(cd swarmd && go test -v ./internal/run -run 'Test(ContextTokenBenchmark|MasterHarnessPrompt|BuildInput)')` passes.
   - `scripts/run-critical-tests.sh fast` passes.
   - `bash scripts/check-atlas-sync.sh` passes.

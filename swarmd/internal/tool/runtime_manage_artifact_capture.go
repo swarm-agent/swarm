@@ -123,7 +123,7 @@ func (r *Runtime) exportHTMLStills(ctx context.Context, principal artifact.Princ
 		variantID := captureOpaqueID("variant", principal.SessionID, callID, ref, capture.StateID)
 		input := artifact.CreateInput{
 			RequestID:    captureOpaqueID("request-export-html-stills", principal.SessionID, stateCallID, ref, capture.StateID),
-			CollectionID: collectionID, VariantID: variantID, Filename: "capture-" + capture.StateID + ".png", MediaType: "image/png", Role: pebblestore.SessionArtifactRoleRenderOnly,
+			CollectionID: collectionID, VariantID: variantID, Filename: "capture-" + capture.StateID + ".png", MediaType: "image/png",
 			Presentation:       pebblestore.SessionArtifactPresentation{Kind: "image", Label: capture.StateID, Previewable: true, Width: htmlcapture.Width, Height: htmlcapture.Height},
 			OutputRequirements: requirements,
 			SourceSessionID:    ref.SessionID, SourceCollectionID: ref.CollectionID, SourceVariantID: ref.VariantID, SourceEventSeq: ref.EventSeq,

@@ -198,98 +198,7 @@ type SessionArtifactStep struct {
 	EventSeq         uint64                              `json:"event_seq"`
 }
 
-const (
-	SessionArtifactRoleRenderOnly   = "render_only"
-	SessionArtifactRoleChainedVideo = "chained_video"
-	SessionArtifactRoleKeyframe     = "keyframe"
-	SessionArtifactRoleVideoRender  = "video_render"
-	SessionArtifactRoleAIGenerated  = "ai_generated"
-	SessionArtifactRoleWorkspacePub = "workspace_publication"
-)
-
-// IsValidArtifactRole validates whether an artifact role is supported.
-func IsValidArtifactRole(role string) bool {
-	switch strings.TrimSpace(role) {
-	case SessionArtifactRoleRenderOnly,
-		SessionArtifactRoleChainedVideo,
-		SessionArtifactRoleKeyframe,
-		SessionArtifactRoleVideoRender,
-		SessionArtifactRoleAIGenerated,
-		SessionArtifactRoleWorkspacePub:
-		return true
-	default:
-		return false
-	}
-}
-
-// IsAIGeneratedMedia determines whether a session artifact variant represents a paid
-// external AI generation call (e.g. Veo, Lyria, Nano Banana/Imagen/FLUX) vs. a local
-// host operation (e.g. FFmpeg concatenation/keyframe extraction, Video Studio render, HTML capture, workspace publication).
-func IsAIGeneratedMedia(v SessionArtifactVariant) bool {
-	// If variant has an explicit non-AI role, it is never billable AI media.
-	switch v.Role {
-	case SessionArtifactRoleRenderOnly,
-		SessionArtifactRoleChainedVideo,
-		SessionArtifactRoleKeyframe,
-		SessionArtifactRoleVideoRender,
-		SessionArtifactRoleWorkspacePub:
-		return false
-	case SessionArtifactRoleAIGenerated:
-		return true
-	}
-
-	// Video Studio timeline project frame inspection or render export
-	if v.Lineage.VideoProjectID != "" || v.Lineage.VideoRevisionID != "" {
-		return false
-	}
-
-	// If explicit model and provider are set from an AI generation service
-	if v.ModelID != "" && v.ProviderID != "" {
-		return true
-	}
-
-	// Historical heuristics for variants created before explicit role/model tagging:
-	desc := strings.ToLower(v.Presentation.Description)
-	label := strings.ToLower(v.Presentation.Label)
-	fn := strings.ToLower(v.Filename)
-
-	// Local FFmpeg keyframe extractions
-	if strings.Contains(desc, "extracted keyframe") ||
-		strings.Contains(desc, "visual evidence for exact revision") ||
-		label == "video last keyframe" ||
-		label == "video first frame" ||
-		strings.HasSuffix(label, "climax keyframe") ||
-		fn == "chained-master-keyframe.png" ||
-		fn == "generated-video-keyframe.png" ||
-		strings.HasPrefix(fn, "frame_") {
-		return false
-	}
-
-	// Local FFmpeg chained video assemblies
-	if strings.HasPrefix(desc, "chained multi-part video") ||
-		fn == "chained-master.mp4" {
-		return false
-	}
-
-	// Workspace publications / local file imports
-	if strings.HasPrefix(v.CollectionID, "collection-workspace-") ||
-		v.CollectionID == "package-preview" ||
-		strings.HasSuffix(fn, ".wav") ||
-		strings.HasSuffix(fn, ".zip") {
-		return false
-	}
-
-	// AI media types (video/mp4, audio/mp3, image/png)
-	mt := strings.ToLower(v.MediaType)
-	if strings.HasPrefix(mt, "video/") || strings.HasPrefix(mt, "audio/") {
-		return true
-	}
-	if strings.HasPrefix(mt, "image/") {
-		return true
-	}
-
-	return false
-}
+const SessionArtifactRoleRenderOnly = "render_only"
 
 type SessionArtifactProgress struct {
 	Stage                string  `json:"stage"`
@@ -335,15 +244,12 @@ type SessionArtifactVariant struct {
 	AutoAccept            bool                               `json:"auto_accept,omitempty"`
 	ProjectionReservation bool                               `json:"projection_reservation,omitempty"`
 	// Parts is legacy locator-only review metadata. It cannot prove part bytes.
-	Parts            []SessionArtifactPart           `json:"parts,omitempty"`
-	PartDefinitions  []SessionArtifactPartDefinition `json:"part_definitions,omitempty"`
-	Composition      *SessionArtifactComposition     `json:"composition,omitempty"`
-	ModelID          string                          `json:"model_id,omitempty"`
-	ProviderID       string                          `json:"provider_id,omitempty"`
-	EstimatedCostUSD float64                         `json:"estimated_cost_usd,omitempty"`
-	CreatedAt        int64                           `json:"created_at"`
-	UpdatedAt        int64                           `json:"updated_at"`
-	EventSeq         uint64                          `json:"event_seq"`
+	Parts           []SessionArtifactPart           `json:"parts,omitempty"`
+	PartDefinitions []SessionArtifactPartDefinition `json:"part_definitions,omitempty"`
+	Composition     *SessionArtifactComposition     `json:"composition,omitempty"`
+	CreatedAt       int64                           `json:"created_at"`
+	UpdatedAt       int64                           `json:"updated_at"`
+	EventSeq        uint64                          `json:"event_seq"`
 }
 
 type SessionArtifactCollection struct {
@@ -1402,7 +1308,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if len(variant.Filename) > 255 || len(variant.MediaType) > 255 || len(variant.Role) > 64 || len(variant.FailureCode) > 128 {
 			return errors.New("artifact variant metadata exceeds bounds")
 		}
-		if variant.Role != "" && !IsValidArtifactRole(variant.Role) {
+		if variant.Role != "" && variant.Role != SessionArtifactRoleRenderOnly {
 			return errors.New("artifact variant role is unsupported")
 		}
 		if variant.FailureCode != "" {
@@ -2510,15 +2416,6 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	}
 	if incoming.Parts != nil {
 		next.Parts = append([]SessionArtifactPart(nil), incoming.Parts...)
-	}
-	if incoming.ModelID != "" {
-		next.ModelID = incoming.ModelID
-	}
-	if incoming.ProviderID != "" {
-		next.ProviderID = incoming.ProviderID
-	}
-	if incoming.EstimatedCostUSD > 0 {
-		next.EstimatedCostUSD = incoming.EstimatedCostUSD
 	}
 	if incoming.Composition != nil {
 		composition := *incoming.Composition
