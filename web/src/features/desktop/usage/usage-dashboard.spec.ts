@@ -42,6 +42,12 @@ test('UsagePage stacks Top Models and Recent Sessions as full-width rows in Over
   assert.doesNotMatch(pageSource, /grid-cols-1 gap-6 lg:grid-cols-2/)
 })
 
+test('UsagePage computes billedCost directly from summary.total_cost_usd without double-counting media', () => {
+  assert.match(pageSource, /const billedCost = summary\?\.total_cost_usd \?\? 0/)
+  assert.match(pageSource, /const tokenCost = summary\?\.token_cost_usd/)
+  assert.match(pageSource, /Tokens: \$\{tokenCost\.toFixed\(2\)\} · Media: \$\{mediaCost\.toFixed\(2\)\}/)
+})
+
 test('fetchSessionUsageDashboard queries /v3/usage with parameters', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -57,6 +63,7 @@ test('fetchSessionUsageDashboard queries /v3/usage with parameters', async () =>
             output_tokens: 10000,
             cached_tokens: 40000,
             thinking_tokens: 2000,
+            token_cost_usd: 0.08,
             total_cost_usd: 0.12,
             codex_nominal_cost_usd: 0.50,
             total_turns: 5,
@@ -143,6 +150,9 @@ test('fetchSessionUsageDashboard queries /v3/usage with parameters', async () =>
     assert.strictEqual(res.ok, true)
     assert.strictEqual(res.summary.total_tokens, 150000)
     assert.strictEqual(res.summary.cached_tokens, 40000)
+    assert.strictEqual(res.summary.token_cost_usd, 0.08)
+    assert.strictEqual(res.summary.total_cost_usd, 0.12)
+    assert.strictEqual(res.summary.media_cost_usd, 0.04)
     assert.match(capturedURL, /\/v3\/usage\?time_range=7d&provider=google/)
   } finally {
     globalThis.fetch = originalFetch

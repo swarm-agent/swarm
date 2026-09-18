@@ -320,15 +320,15 @@ type SessionArtifactVariant struct {
 	AutoAccept            bool                               `json:"auto_accept,omitempty"`
 	ProjectionReservation bool                               `json:"projection_reservation,omitempty"`
 	// Parts is legacy locator-only review metadata. It cannot prove part bytes.
-	Parts           []SessionArtifactPart           `json:"parts,omitempty"`
-	PartDefinitions []SessionArtifactPartDefinition `json:"part_definitions,omitempty"`
-	Composition     *SessionArtifactComposition     `json:"composition,omitempty"`
+	Parts            []SessionArtifactPart           `json:"parts,omitempty"`
+	PartDefinitions  []SessionArtifactPartDefinition `json:"part_definitions,omitempty"`
+	Composition      *SessionArtifactComposition     `json:"composition,omitempty"`
 	ModelID          string                          `json:"model_id,omitempty"`
 	ProviderID       string                          `json:"provider_id,omitempty"`
 	EstimatedCostUSD float64                         `json:"estimated_cost_usd,omitempty"`
-	CreatedAt       int64                           `json:"created_at"`
-	UpdatedAt       int64                           `json:"updated_at"`
-	EventSeq        uint64                          `json:"event_seq"`
+	CreatedAt        int64                           `json:"created_at"`
+	UpdatedAt        int64                           `json:"updated_at"`
+	EventSeq         uint64                          `json:"event_seq"`
 }
 
 type SessionArtifactCollection struct {

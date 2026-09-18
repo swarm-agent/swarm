@@ -399,38 +399,40 @@ func (s *SessionStore) GetTodayUsageTotal(accountScopeID string) (float64, int64
 	accountScopeID = strings.TrimSpace(accountScopeID)
 
 	acc, found, err := s.GetDailyUsageAccumulator(accountScopeID, todayDate)
-	if err == nil && found {
-		return acc.TotalCostUSD, acc.TotalTokens, nil
+	if err != nil {
+		found = false
 	}
 
-	// Recompute from turns for today if accumulator not yet present
+	// Compute today's usage from turns and media
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
 	turns, err := s.ListAllTurnUsage(accountScopeID, 10000)
-	if err != nil {
+	if err != nil && !found {
 		return 0, 0, err
 	}
 
-	var totalCost float64
-	var totalTokens int64
+	var turnsCost float64
+	var computedTokens int64
 	turnCount := 0
-	for _, rec := range turns {
-		ts := rec.CreatedAt
-		if ts <= 0 {
-			ts = rec.UpdatedAt
+	if err == nil {
+		for _, rec := range turns {
+			ts := rec.CreatedAt
+			if ts <= 0 {
+				ts = rec.UpdatedAt
+			}
+			if ts < startOfDay {
+				continue
+			}
+			cost := rec.EstimatedCostUSD
+			if cost <= 0 {
+				cost = CalculateBaselineCost(rec.Provider, rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheReadTokens, rec.ThinkingTokens)
+			}
+			turnsCost += cost
+			computedTokens += rec.TotalTokens
+			turnCount++
 		}
-		if ts < startOfDay {
-			continue
-		}
-		cost := rec.EstimatedCostUSD
-		if cost <= 0 {
-			cost = CalculateBaselineCost(rec.Provider, rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheReadTokens, rec.ThinkingTokens)
-		}
-		totalCost += cost
-		totalTokens += rec.TotalTokens
-		turnCount++
 	}
 
-	// Also aggregate media generation artifacts created today
+	var mediaCost float64
 	media, err := s.ListAllMediaArtifactVariants(accountScopeID, 2000)
 	if err == nil {
 		for _, v := range media {
@@ -474,7 +476,32 @@ func (s *SessionStore) GetTodayUsageTotal(accountScopeID string) (float64, int64
 				}
 				cost = CalculateBaselineMediaCost(v.MediaType, v.ModelID, res, 8)
 			}
-			totalCost += cost
+			mediaCost += cost
+		}
+	}
+
+	var totalCost float64
+	if turnsCost > 0 {
+		totalCost = turnsCost + mediaCost
+	} else if found && acc.TotalCostUSD > 0 {
+		if mediaCost == 0 {
+			totalCost = acc.TotalCostUSD
+		} else if acc.TotalCostUSD >= mediaCost {
+			totalCost = acc.TotalCostUSD
+		} else {
+			totalCost = acc.TotalCostUSD + mediaCost
+		}
+	} else {
+		totalCost = mediaCost
+	}
+
+	totalTokens := computedTokens
+	if found {
+		if acc.TotalTokens > totalTokens {
+			totalTokens = acc.TotalTokens
+		}
+		if acc.TurnCount > turnCount {
+			turnCount = acc.TurnCount
 		}
 	}
 

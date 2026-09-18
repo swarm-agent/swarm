@@ -369,3 +369,89 @@ func TestSessionsV3UsageLimits_MediaGenerationFactorsIntoDailyLimit(t *testing.T
 		t.Fatalf("expected limitCost $3.00, got %f", limitCost)
 	}
 }
+
+func TestSessionsV3UsageLimits_ReconcilesMediaIntoTodayCost(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	now := time.Now().UTC().UnixMilli()
+	principal := testPrincipal()
+
+	// 1. Create session and record a turn with $0.50 cost
+	sessionID := "sess_reconcile_limits"
+	_, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      sessionID,
+		Title:          "Reconcile Media Limits Test",
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		WorkspacePath:  t.TempDir(),
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "high"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, _, _, err = sessionSvc.RecordTurnUsage(sessionID, pebblestore.SessionTurnUsageSnapshot{
+		SessionID:        sessionID,
+		AccountScopeID:   principal.AccountScopeID,
+		UserID:           principal.UserID,
+		RunID:            "run-rec-1",
+		Provider:         "google",
+		Model:            "gemini-3.8-flash",
+		EstimatedCostUSD: 0.50,
+		TotalTokens:      10000,
+		CreatedAt:        now - 1000,
+		UpdatedAt:        now - 1000,
+	})
+	if err != nil {
+		t.Fatalf("record turn usage: %v", err)
+	}
+
+	// 2. Put an AI media variant created today ($3.20)
+	mediaVariant := pebblestore.SessionArtifactVariant{
+		Version:          1,
+		ID:               "art-vid-rec-limits",
+		CollectionID:     "col-1",
+		SessionID:        sessionID,
+		AccountScopeID:   principal.AccountScopeID,
+		Status:           pebblestore.SessionArtifactStatusReady,
+		MediaType:        "video/mp4",
+		ModelID:          "veo-3.1-generate-preview",
+		EstimatedCostUSD: 3.20,
+		CreatedAt:        now,
+	}
+	if err := sessionSvc.Store().PutArtifactVariant(mediaVariant); err != nil {
+		t.Fatalf("put media variant: %v", err)
+	}
+
+	// 3. Query GET /v3/usage/limits
+	req := httptest.NewRequest(http.MethodGet, "/v3/usage/limits", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, withTestPrincipal(req))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var limResp SessionUsageLimitsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &limResp); err != nil {
+		t.Fatalf("unmarshal limits resp: %v", err)
+	}
+	if limResp.Limits.TodayCostUSD < 3.69 || limResp.Limits.TodayCostUSD > 3.71 {
+		t.Fatalf("expected today cost to combine turn ($0.50) and media ($3.20) = $3.70, got %f", limResp.Limits.TodayCostUSD)
+	}
+
+	// 4. Query GET /v3/usage dashboard and verify Limits matches
+	reqDash := httptest.NewRequest(http.MethodGet, "/v3/usage?time_range=today", nil)
+	wDash := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wDash, withTestPrincipal(reqDash))
+	if wDash.Code != http.StatusOK {
+		t.Fatalf("expected 200 from dashboard, got %d: %s", wDash.Code, wDash.Body.String())
+	}
+	var dashResp SessionUsageDashboardResponse
+	if err := json.Unmarshal(wDash.Body.Bytes(), &dashResp); err != nil {
+		t.Fatalf("unmarshal dashboard resp: %v", err)
+	}
+	if dashResp.Limits.TodayCostUSD < 3.69 || dashResp.Limits.TodayCostUSD > 3.71 {
+		t.Fatalf("expected dashboard limits today cost to be $3.70, got %f", dashResp.Limits.TodayCostUSD)
+	}
+	if dashResp.Summary.TotalCostUSD < 3.69 || dashResp.Summary.TotalCostUSD > 3.71 {
+		t.Fatalf("expected dashboard summary total cost to be $3.70, got %f", dashResp.Summary.TotalCostUSD)
+	}
+}

@@ -216,11 +216,15 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 	if resp.Summary.MediaCostUSD <= 0 {
 		t.Fatalf("expected positive media cost, got %f", resp.Summary.MediaCostUSD)
 	}
+	if resp.Summary.TokenCostUSD <= 0 {
+		t.Fatalf("expected positive token cost, got %f", resp.Summary.TokenCostUSD)
+	}
 	if resp.Summary.TotalCostUSD <= 0 {
 		t.Fatalf("expected positive total cost, got %f", resp.Summary.TotalCostUSD)
 	}
-	if resp.Summary.TotalCostUSD < resp.Summary.MediaCostUSD {
-		t.Fatalf("expected total cost (%f) to be at least media cost (%f)", resp.Summary.TotalCostUSD, resp.Summary.MediaCostUSD)
+	expectedTotal := resp.Summary.TokenCostUSD + resp.Summary.MediaCostUSD
+	if resp.Summary.TotalCostUSD < expectedTotal-0.001 || resp.Summary.TotalCostUSD > expectedTotal+0.001 {
+		t.Fatalf("expected total cost (%f) to equal token cost (%f) + media cost (%f)", resp.Summary.TotalCostUSD, resp.Summary.TokenCostUSD, resp.Summary.MediaCostUSD)
 	}
 	if resp.Summary.CodexNominalCostUSD <= 0 {
 		t.Fatalf("expected positive Codex nominal cost, got %f", resp.Summary.CodexNominalCostUSD)
@@ -276,6 +280,12 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 			googleFound = true
 			if p.CostUSD <= 0 {
 				t.Fatalf("expected positive Google cost, got %f", p.CostUSD)
+			}
+			if p.MediaCalls <= 0 {
+				t.Fatalf("expected positive Google media calls, got %d", p.MediaCalls)
+			}
+			if p.MediaCostUSD <= 0 {
+				t.Fatalf("expected positive Google media cost, got %f", p.MediaCostUSD)
 			}
 		}
 	}
@@ -664,35 +674,35 @@ func TestSessionsV3UsageDashboard_MediaAccountingExcludesLocalAndPrices4K(t *tes
 	variants := []pebblestore.SessionArtifactVariant{
 		// 1. Veo 1080p clip (8 seconds) -> $3.20
 		{
-			Version:          1,
-			ID:               "art-veo-1080",
-			SessionID:        sessionID,
-			AccountScopeID:   principal.AccountScopeID,
-			Status:           pebblestore.SessionArtifactStatusReady,
-			MediaType:        "video/mp4",
-			Filename:         "generated-video.mp4",
-			ModelID:          "veo-3.1-generate-preview",
-			ProviderID:       "google",
-			EstimatedCostUSD: 3.20,
-			Presentation:     pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Part 1 - 1080p", Width: 1920, Height: 1080},
+			Version:            1,
+			ID:                 "art-veo-1080",
+			SessionID:          sessionID,
+			AccountScopeID:     principal.AccountScopeID,
+			Status:             pebblestore.SessionArtifactStatusReady,
+			MediaType:          "video/mp4",
+			Filename:           "generated-video.mp4",
+			ModelID:            "veo-3.1-generate-preview",
+			ProviderID:         "google",
+			EstimatedCostUSD:   3.20,
+			Presentation:       pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Part 1 - 1080p", Width: 1920, Height: 1080},
 			OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "1080p", Width: 1920, Height: 1080},
-			CreatedAt:        now - 5000,
+			CreatedAt:          now - 5000,
 		},
 		// 2. Veo 4K clip (8 seconds) -> $4.80
 		{
-			Version:          1,
-			ID:               "art-veo-4k",
-			SessionID:        sessionID,
-			AccountScopeID:   principal.AccountScopeID,
-			Status:           pebblestore.SessionArtifactStatusReady,
-			MediaType:        "video/mp4",
-			Filename:         "generated-video.mp4",
-			ModelID:          "veo-3.1-generate-preview",
-			ProviderID:       "google",
-			EstimatedCostUSD: 4.80,
-			Presentation:     pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Part 2 - 4K Master", Width: 3840, Height: 2160},
+			Version:            1,
+			ID:                 "art-veo-4k",
+			SessionID:          sessionID,
+			AccountScopeID:     principal.AccountScopeID,
+			Status:             pebblestore.SessionArtifactStatusReady,
+			MediaType:          "video/mp4",
+			Filename:           "generated-video.mp4",
+			ModelID:            "veo-3.1-generate-preview",
+			ProviderID:         "google",
+			EstimatedCostUSD:   4.80,
+			Presentation:       pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Part 2 - 4K Master", Width: 3840, Height: 2160},
 			OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "4k", Width: 3840, Height: 2160},
-			CreatedAt:        now - 4000,
+			CreatedAt:          now - 4000,
 		},
 		// 3. Lyria audio soundtrack -> $0.08
 		{

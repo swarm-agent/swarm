@@ -18,6 +18,7 @@ export interface SessionUsageDashboardSummary {
   output_tokens: number
   cached_tokens: number
   thinking_tokens: number
+  token_cost_usd?: number
   total_cost_usd: number
   codex_nominal_cost_usd: number
   total_turns: number
@@ -37,6 +38,7 @@ export interface SessionUsageDailyItem {
   cached_tokens: number
   thinking_tokens: number
   cost_usd: number
+  token_cost_usd?: number
   codex_nominal_cost_usd: number
   turns: number
   media_calls: number
@@ -53,6 +55,9 @@ export interface SessionUsageProviderItem {
   cached_tokens: number
   thinking_tokens: number
   cost_usd: number
+  token_cost_usd?: number
+  media_cost_usd?: number
+  media_calls?: number
   codex_nominal_cost_usd: number
   is_subscription: boolean
   turns: number
@@ -70,6 +75,9 @@ export interface SessionUsageModelItem {
   cached_tokens: number
   thinking_tokens: number
   cost_usd: number
+  token_cost_usd?: number
+  media_cost_usd?: number
+  media_calls?: number
   codex_nominal_cost_usd: number
   turns: number
   sessions: number

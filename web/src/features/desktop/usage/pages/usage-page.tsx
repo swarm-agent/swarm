@@ -95,7 +95,9 @@ export function UsagePage() {
   const totalTokens = summary?.total_tokens ?? 0
   const cacheTokens = summary?.cached_tokens ?? 0
   const cachePct = totalTokens > 0 ? (cacheTokens / totalTokens) * 100 : 0
-  const billedCost = summary ? summary.total_cost_usd + summary.media_cost_usd : 0
+  const billedCost = summary?.total_cost_usd ?? 0
+  const tokenCost = summary?.token_cost_usd ?? (summary ? Math.max(0, summary.total_cost_usd - summary.media_cost_usd) : 0)
+  const mediaCost = summary?.media_cost_usd ?? 0
 
   return (
     <div className="absolute inset-0 overflow-y-auto bg-[var(--app-bg)] text-[var(--app-text)]">
@@ -214,7 +216,7 @@ export function UsagePage() {
                   </span>
                 </div>
                 <div className="text-[10px] text-[var(--app-text-subtle)] truncate">
-                  Tokens: ${summary?.total_cost_usd.toFixed(2)} · Media: ${summary?.media_cost_usd.toFixed(2)}
+                  Tokens: ${tokenCost.toFixed(2)} · Media: ${mediaCost.toFixed(2)}
                 </div>
               </Card>
 

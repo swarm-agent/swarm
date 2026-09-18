@@ -244,6 +244,70 @@ func TestGetTodayUsageTotalWithMedia(t *testing.T) {
 	}
 }
 
+func TestGetTodayUsageTotalReconcilesExistingAccumulatorWithMedia(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-reconcile-media.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	sessionStore := NewSessionStore(db)
+	accountID := "acct-reconcile"
+	now := time.Now().UTC().UnixMilli()
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// 1. Existing accumulator with $1.50 from earlier turns
+	acc := DailyUsageAccumulator{
+		AccountScopeID: accountID,
+		Date:           today,
+		TotalCostUSD:   1.50,
+		TotalTokens:    50000,
+		TurnCount:      3,
+		UpdatedAt:      now - 10000,
+	}
+	if err := sessionStore.PutDailyUsageAccumulator(acc); err != nil {
+		t.Fatalf("put accumulator: %v", err)
+	}
+
+	// 2. Add an AI media variant created today ($4.80)
+	v := SessionArtifactVariant{
+		Version:          1,
+		ID:               "art-vid-reconcile",
+		CollectionID:     "col-1",
+		SessionID:        "sess-1",
+		AccountScopeID:   accountID,
+		Status:           SessionArtifactStatusReady,
+		MediaType:        "video/mp4",
+		ModelID:          "veo-3.1-generate-preview",
+		EstimatedCostUSD: 4.80,
+		CreatedAt:        now,
+	}
+	if err := sessionStore.PutArtifactVariant(v); err != nil {
+		t.Fatalf("put artifact variant: %v", err)
+	}
+
+	// 3. GetTodayUsageTotal must combine the existing turn cost ($1.50) with the media ($4.80) = $6.30
+	totalCost, tokens, err := sessionStore.GetTodayUsageTotal(accountID)
+	if err != nil {
+		t.Fatalf("GetTodayUsageTotal: %v", err)
+	}
+	if totalCost < 6.29 || totalCost > 6.31 {
+		t.Fatalf("expected combined today cost $6.30, got %f", totalCost)
+	}
+	if tokens != 50000 {
+		t.Fatalf("expected 50000 tokens, got %d", tokens)
+	}
+
+	// 4. Verify the accumulator was updated in Pebble
+	updatedAcc, found, err := sessionStore.GetDailyUsageAccumulator(accountID, today)
+	if err != nil || !found {
+		t.Fatalf("get updated accumulator: found=%v, err=%v", found, err)
+	}
+	if updatedAcc.TotalCostUSD < 6.29 || updatedAcc.TotalCostUSD > 6.31 {
+		t.Fatalf("expected accumulator total $6.30, got %f", updatedAcc.TotalCostUSD)
+	}
+}
+
 func TestIsAIGeneratedMedia(t *testing.T) {
 	cases := []struct {
 		name     string
