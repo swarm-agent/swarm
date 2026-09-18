@@ -149,6 +149,15 @@ test('UsageSessionsTable renders All, Active, Archived filters and Archived badg
   assert.match(tableSource, /setStatusFilter\('archived'\)/)
   assert.match(tableSource, /item\.archived/)
   assert.match(tableSource, /Archived/)
+  assert.match(tableSource, /hideFilters/)
+  assert.match(tableSource, /totalCounts/)
+})
+
+test('UsagePage includes View all sessions navigation and wires archivedModeParam', () => {
+  assert.match(pageSource, /View all sessions →/)
+  assert.match(pageSource, /sessionStatusFilter/)
+  assert.match(pageSource, /archivedModeParam/)
+  assert.match(pageSource, /hideFilters/)
 })
 
 test('fetchSessionUsageDashboard supports archivedMode and sessionLimit parameters', async () => {

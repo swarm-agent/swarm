@@ -8,13 +8,37 @@ interface UsageSessionsTableProps {
   sessions: SessionUsageSessionItem[]
   onOpenSession?: (sessionId: string) => void
   title?: string
+  hideFilters?: boolean
+  totalCounts?: { all: number; active: number; archived: number }
+  statusFilter?: 'all' | 'active' | 'archived'
+  onStatusFilterChange?: (filter: 'all' | 'active' | 'archived') => void
 }
 
-export function UsageSessionsTable({ sessions, onOpenSession, title = 'Sessions Usage' }: UsageSessionsTableProps) {
+export function UsageSessionsTable({
+  sessions,
+  onOpenSession,
+  title = 'Sessions Usage',
+  hideFilters = false,
+  totalCounts,
+  statusFilter: controlledStatusFilter,
+  onStatusFilterChange,
+}: UsageSessionsTableProps) {
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'archived'>('all')
+  const [internalStatusFilter, setInternalStatusFilter] = useState<'all' | 'active' | 'archived'>('all')
+
+  const activeFilter = controlledStatusFilter ?? internalStatusFilter
+  const setStatusFilter = (filter: 'all' | 'active' | 'archived') => {
+    if (onStatusFilterChange) {
+      onStatusFilterChange(filter)
+    } else {
+      setInternalStatusFilter(filter)
+    }
+  }
 
   const counts = useMemo(() => {
+    if (totalCounts) {
+      return totalCounts
+    }
     let active = 0
     let archived = 0
     for (const s of sessions) {
@@ -25,14 +49,17 @@ export function UsageSessionsTable({ sessions, onOpenSession, title = 'Sessions 
       }
     }
     return { all: sessions.length, active, archived }
-  }, [sessions])
+  }, [sessions, totalCounts])
 
   const filtered = useMemo(() => {
     let result = sessions
-    if (statusFilter === 'active') {
-      result = result.filter((s) => !s.archived)
-    } else if (statusFilter === 'archived') {
-      result = result.filter((s) => s.archived)
+    // If filtering is handled client-side (or within current session array)
+    if (!controlledStatusFilter) {
+      if (activeFilter === 'active') {
+        result = result.filter((s) => !s.archived)
+      } else if (activeFilter === 'archived') {
+        result = result.filter((s) => s.archived)
+      }
     }
     if (!search.trim()) return result
     const q = search.toLowerCase().trim()
@@ -43,7 +70,7 @@ export function UsageSessionsTable({ sessions, onOpenSession, title = 'Sessions 
         s.model.toLowerCase().includes(q) ||
         s.provider.toLowerCase().includes(q)
     )
-  }, [sessions, statusFilter, search])
+  }, [sessions, activeFilter, controlledStatusFilter, search])
 
   const formatRelativeTime = (ts: number): string => {
     if (!ts) return ''
@@ -68,42 +95,44 @@ export function UsageSessionsTable({ sessions, onOpenSession, title = 'Sessions 
           </div>
 
           {/* Status filter buttons: All, Active, Archived */}
-          <div className="inline-flex rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs font-medium">
-            <button
-              type="button"
-              onClick={() => setStatusFilter('all')}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
-                statusFilter === 'all'
-                  ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
-                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
-              }`}
-            >
-              All ({counts.all})
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter('active')}
-              className={`rounded-md px-2.5 py-1 transition-colors ${
-                statusFilter === 'active'
-                  ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
-                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
-              }`}
-            >
-              Active ({counts.active})
-            </button>
-            <button
-              type="button"
-              onClick={() => setStatusFilter('archived')}
-              className={`rounded-md px-2.5 py-1 transition-colors flex items-center gap-1 ${
-                statusFilter === 'archived'
-                  ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
-                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
-              }`}
-            >
-              <Archive size={11} className="opacity-70" />
-              Archived ({counts.archived})
-            </button>
-          </div>
+          {!hideFilters && (
+            <div className="inline-flex rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setStatusFilter('all')}
+                className={`rounded-md px-2.5 py-1 transition-colors ${
+                  activeFilter === 'all'
+                    ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                }`}
+              >
+                All ({counts.all})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('active')}
+                className={`rounded-md px-2.5 py-1 transition-colors ${
+                  activeFilter === 'active'
+                    ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                }`}
+              >
+                Active ({counts.active})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('archived')}
+                className={`rounded-md px-2.5 py-1 transition-colors flex items-center gap-1 ${
+                  activeFilter === 'archived'
+                    ? 'bg-[var(--app-primary)] text-[var(--app-primary-foreground)]'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                }`}
+              >
+                <Archive size={11} className="opacity-70" />
+                Archived ({counts.archived})
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="relative w-full max-w-xs">

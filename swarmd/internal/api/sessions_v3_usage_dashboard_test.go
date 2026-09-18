@@ -438,17 +438,17 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 		t.Fatalf("unmarshal respAll: %v", err)
 	}
 
-	if respAll.Summary.TotalSessions != 2 {
-		t.Fatalf("expected 2 total sessions with usage, got %d", respAll.Summary.TotalSessions)
+	if respAll.Summary.TotalSessions != 52 {
+		t.Fatalf("expected 52 total sessions, got %d", respAll.Summary.TotalSessions)
 	}
-	if respAll.Summary.ActiveSessions != 1 {
-		t.Fatalf("expected 1 active session, got %d", respAll.Summary.ActiveSessions)
+	if respAll.Summary.ActiveSessions != 51 {
+		t.Fatalf("expected 51 active sessions, got %d", respAll.Summary.ActiveSessions)
 	}
 	if respAll.Summary.ArchivedSessions != 1 {
 		t.Fatalf("expected 1 archived session, got %d", respAll.Summary.ArchivedSessions)
 	}
-	if len(respAll.RecentSessions) != 2 {
-		t.Fatalf("expected 2 recent sessions, got %d", len(respAll.RecentSessions))
+	if len(respAll.RecentSessions) == 0 {
+		t.Fatalf("expected recent sessions, got 0")
 	}
 
 	foundActive := false
@@ -488,11 +488,20 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 	if err := json.Unmarshal(wActive.Body.Bytes(), &respActive); err != nil {
 		t.Fatalf("unmarshal respActive: %v", err)
 	}
-	if len(respActive.RecentSessions) != 1 {
-		t.Fatalf("expected 1 session with archived_mode=active, got %d", len(respActive.RecentSessions))
+	if len(respActive.RecentSessions) == 0 {
+		t.Fatalf("expected active sessions, got 0")
 	}
-	if respActive.RecentSessions[0].SessionID != activeID || respActive.RecentSessions[0].Archived {
-		t.Fatalf("expected active session %s, got %+v", activeID, respActive.RecentSessions[0])
+	foundActiveInActive := false
+	for _, s := range respActive.RecentSessions {
+		if s.Archived {
+			t.Fatalf("expected only active sessions with archived_mode=active, found archived %s", s.SessionID)
+		}
+		if s.SessionID == activeID {
+			foundActiveInActive = true
+		}
+	}
+	if !foundActiveInActive {
+		t.Fatalf("expected active session %s in active list", activeID)
 	}
 
 	// 6. Test GET /v3/usage?archived_mode=only (only archived)
@@ -511,5 +520,73 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 	}
 	if respArchived.RecentSessions[0].SessionID != archivedID || !respArchived.RecentSessions[0].Archived {
 		t.Fatalf("expected archived session %s, got %+v", archivedID, respArchived.RecentSessions[0])
+	}
+
+	// 7. Test archived session with lifetime SessionUsageSummary (no turn records in current window)
+	legacyArchivedID := "sess_legacy_archived_2"
+	_, _, err = sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      legacyArchivedID,
+		Title:          "Historical Deep Analysis",
+		AccountScopeID: testPrincipal().AccountScopeID,
+		UserID:         testPrincipal().UserID,
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "test-ws",
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
+	})
+	if err != nil {
+		t.Fatalf("create legacy archived session: %v", err)
+	}
+	if err := sessionSvc.Store().PutUsageSummary(pebblestore.SessionUsageSummary{
+		SessionID:        legacyArchivedID,
+		AccountScopeID:   testPrincipal().AccountScopeID,
+		UserID:           testPrincipal().UserID,
+		Provider:         "google",
+		Model:            "gemini-3.8-flash",
+		TotalTokens:      75000,
+		InputTokens:      70000,
+		OutputTokens:     5000,
+		TurnCount:        10,
+		EstimatedCostUSD: 0.05,
+		UpdatedAt:        now - 50000000,
+	}); err != nil {
+		t.Fatalf("put legacy usage summary: %v", err)
+	}
+	if err := sessionSvc.ArchiveSession(legacyArchivedID); err != nil {
+		t.Fatalf("archive legacy session: %v", err)
+	}
+
+	reqArchived2 := httptest.NewRequest(http.MethodGet, "/v3/usage?archived_mode=only", nil)
+	wArchived2 := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wArchived2, withTestPrincipal(reqArchived2))
+	if wArchived2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", wArchived2.Code)
+	}
+	var respArchived2 SessionUsageDashboardResponse
+	if err := json.Unmarshal(wArchived2.Body.Bytes(), &respArchived2); err != nil {
+		t.Fatalf("unmarshal respArchived2: %v", err)
+	}
+	if len(respArchived2.RecentSessions) != 2 {
+		t.Fatalf("expected 2 archived sessions with archived_mode=only, got %d", len(respArchived2.RecentSessions))
+	}
+	foundLegacy := false
+	for _, s := range respArchived2.RecentSessions {
+		if s.SessionID == legacyArchivedID {
+			foundLegacy = true
+			if !s.Archived {
+				t.Fatalf("expected session %s to be marked archived", legacyArchivedID)
+			}
+			if s.Title != "Historical Deep Analysis" {
+				t.Fatalf("expected title 'Historical Deep Analysis', got %q", s.Title)
+			}
+			if s.TotalTokens != 75000 {
+				t.Fatalf("expected 75000 total tokens from lifetime summary, got %d", s.TotalTokens)
+			}
+			if s.TurnCount != 10 {
+				t.Fatalf("expected 10 turns from lifetime summary, got %d", s.TurnCount)
+			}
+		}
+	}
+	if !foundLegacy {
+		t.Fatalf("expected legacy archived session %s in response", legacyArchivedID)
 	}
 }

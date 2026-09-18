@@ -425,13 +425,33 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 			sessItem.Model = modelID
 		}
 	}
-	summary.TotalSessions = len(uniqueSessions)
-	for sid := range uniqueSessions {
-		meta := resolveSessionMeta(sid)
-		if meta.archived {
-			summary.ArchivedSessions++
-		} else {
-			summary.ActiveSessions++
+	// Calculate session counts from fast library summary index if available,
+	// ensuring all active and archived sessions in the account are counted accurately.
+	searchLimit := sessionLimit
+	if searchLimit < 100 {
+		searchLimit = 100
+	}
+	searchOpts := pebblestore.V3SessionSearchOptions{
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		Global:         true,
+		ArchivedMode:   archivedMode,
+		Limit:          searchLimit,
+	}
+	searchResult, searchErr := s.sessions.SearchSessions(searchOpts)
+	if searchErr == nil && (searchResult.Summary.ActiveConversationCount > 0 || searchResult.Summary.ArchivedConversationCount > 0) {
+		summary.ActiveSessions = searchResult.Summary.ActiveConversationCount
+		summary.ArchivedSessions = searchResult.Summary.ArchivedConversationCount
+		summary.TotalSessions = summary.ActiveSessions + summary.ArchivedSessions
+	} else {
+		summary.TotalSessions = len(uniqueSessions)
+		for sid := range uniqueSessions {
+			meta := resolveSessionMeta(sid)
+			if meta.archived {
+				summary.ArchivedSessions++
+			} else {
+				summary.ActiveSessions++
+			}
 		}
 	}
 
@@ -545,9 +565,68 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		return modelList[i].TotalTokens > modelList[j].TotalTokens
 	})
 
-	sessionList := make([]SessionUsageSessionItem, 0, len(sessionUsageMap))
-	for _, item := range sessionUsageMap {
-		meta := resolveSessionMeta(item.SessionID)
+	seenSessionIDs := make(map[string]struct{})
+	sessionList := make([]SessionUsageSessionItem, 0, len(searchResult.Items)+len(sessionUsageMap))
+
+	// 1. Populate from fast indexed search results (guarantees active sessions in view
+	// and archived sessions in library are retrieved with O(1) usage lookup).
+	if searchErr == nil {
+		for _, sItem := range searchResult.Items {
+			seenSessionIDs[sItem.ID] = struct{}{}
+			if usageItem, exists := sessionUsageMap[sItem.ID]; exists {
+				meta := resolveSessionMeta(sItem.ID)
+				usageItem.Title = meta.title
+				usageItem.Archived = meta.archived
+				sessionList = append(sessionList, *usageItem)
+			} else {
+				// Session had no turns in this specific time window; pull canonical lifetime usage summary
+				item := SessionUsageSessionItem{
+					SessionID:    sItem.ID,
+					Title:        sItem.Title,
+					Archived:     sItem.Archived,
+					LastActiveAt: sItem.UpdatedAt,
+				}
+				if store := s.sessions.Store(); store != nil {
+					if lSummary, hasSummary, _ := store.GetUsageSummary(sItem.ID); hasSummary && lSummary.TotalTokens > 0 {
+						item.TotalTokens = lSummary.TotalTokens
+						item.InputTokens = lSummary.InputTokens
+						item.OutputTokens = lSummary.OutputTokens
+						item.CachedTokens = lSummary.CacheReadTokens
+						item.ThinkingTokens = lSummary.ThinkingTokens
+						item.TurnCount = lSummary.TurnCount
+						item.Provider = lSummary.Provider
+						item.Model = lSummary.Model
+						item.CostUSD = lSummary.EstimatedCostUSD
+						if item.CostUSD <= 0 {
+							pKey := item.Provider + ":" + item.Model
+							pInfo := pricingMap[pKey]
+							if pInfo.DisplayName == "" {
+								pInfo = pricingMap[item.Model]
+							}
+							if pInfo.InputPrice > 0 || pInfo.OutputPrice > 0 {
+								item.CostUSD = (float64(item.InputTokens)*pInfo.InputPrice + float64(item.OutputTokens)*pInfo.OutputPrice) / 1_000_000.0
+							}
+						}
+						if lSummary.UpdatedAt > item.LastActiveAt {
+							item.LastActiveAt = lSummary.UpdatedAt
+						}
+					}
+				}
+				if item.Title == "" {
+					meta := resolveSessionMeta(sItem.ID)
+					item.Title = meta.title
+				}
+				sessionList = append(sessionList, item)
+			}
+		}
+	}
+
+	// 2. Also append any sessions with turn usage in the time window not caught in top search items
+	for sid, item := range sessionUsageMap {
+		if _, seen := seenSessionIDs[sid]; seen {
+			continue
+		}
+		meta := resolveSessionMeta(sid)
 		item.Title = meta.title
 		item.Archived = meta.archived
 		if archivedMode == "exclude" && item.Archived {
@@ -558,7 +637,31 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 		sessionList = append(sessionList, *item)
 	}
+
+	// Apply session, provider, model filters to the session list
+	if sessionFilter != "" || providerFilter != "" || modelFilter != "" {
+		filtered := make([]SessionUsageSessionItem, 0, len(sessionList))
+		for _, s := range sessionList {
+			if sessionFilter != "" && s.SessionID != sessionFilter {
+				continue
+			}
+			if providerFilter != "" && !strings.EqualFold(s.Provider, providerFilter) {
+				continue
+			}
+			if modelFilter != "" && !strings.Contains(strings.ToLower(s.Model), modelFilter) {
+				continue
+			}
+			filtered = append(filtered, s)
+		}
+		sessionList = filtered
+	}
+
 	sort.Slice(sessionList, func(i, j int) bool {
+		hasUsageI := sessionList[i].TotalTokens > 0 || sessionList[i].TurnCount > 0
+		hasUsageJ := sessionList[j].TotalTokens > 0 || sessionList[j].TurnCount > 0
+		if hasUsageI != hasUsageJ {
+			return hasUsageI
+		}
 		return sessionList[i].LastActiveAt > sessionList[j].LastActiveAt
 	})
 	if len(sessionList) > sessionLimit {

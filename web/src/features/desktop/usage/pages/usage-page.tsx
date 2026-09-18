@@ -31,8 +31,16 @@ export function UsagePage() {
   const [timeRange, setTimeRange] = useState<UsageTimeRange>('30d')
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [sessionStatusFilter, setSessionStatusFilter] = useState<'all' | 'active' | 'archived'>('all')
 
   const workspaceSlug = params.workspaceSlug ?? ''
+
+  const archivedModeParam =
+    activeTab === 'sessions' && sessionStatusFilter !== 'all'
+      ? sessionStatusFilter === 'active'
+        ? ('exclude' as const)
+        : ('only' as const)
+      : undefined
 
   // Query usage data
   const {
@@ -42,12 +50,14 @@ export function UsagePage() {
     error,
     refetch,
   } = useQuery({
-    queryKey: ['session-usage-dashboard', timeRange, selectedProvider],
+    queryKey: ['session-usage-dashboard', timeRange, selectedProvider, archivedModeParam],
     queryFn: ({ signal }) =>
       fetchSessionUsageDashboard(
         {
           timeRange,
           provider: selectedProvider || undefined,
+          archivedMode: archivedModeParam,
+          sessionLimit: 100,
         },
         signal,
       ),
@@ -352,12 +362,23 @@ export function UsagePage() {
                     <UsageModelsTable models={data.by_model.slice(0, 5)} />
                   </div>
                   <div className="space-y-3">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-                      Recent Sessions
-                    </h4>
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                        Recent Sessions
+                      </h4>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('sessions')}
+                        className="text-xs font-medium text-[var(--app-primary)] hover:underline"
+                      >
+                        View all sessions →
+                      </button>
+                    </div>
                     <UsageSessionsTable
                       sessions={data.recent_sessions.slice(0, 5)}
                       onOpenSession={handleOpenSession}
+                      hideFilters
+                      title="Recent Sessions"
                     />
                   </div>
                 </div>
@@ -375,6 +396,20 @@ export function UsagePage() {
               <UsageSessionsTable
                 sessions={data.recent_sessions}
                 onOpenSession={handleOpenSession}
+                statusFilter={sessionStatusFilter}
+                onStatusFilterChange={setSessionStatusFilter}
+                totalCounts={{
+                  all: data.summary.total_sessions,
+                  active: data.summary.active_sessions ?? 0,
+                  archived: data.summary.archived_sessions ?? 0,
+                }}
+                title={
+                  sessionStatusFilter === 'archived'
+                    ? 'Archived Sessions'
+                    : sessionStatusFilter === 'active'
+                    ? 'Active Sessions'
+                    : 'All Sessions'
+                }
               />
             )}
           </>
