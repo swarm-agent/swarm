@@ -3,6 +3,7 @@ package run
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -84,7 +85,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"  * Use Finder only for distinct research questions. Use Designer only for explicitly requested multiple UI/design iterations or variants; an ordinary UI request or a single design is never sufficient. Before eligible Designer delegation, inspect nearby code context to give every child a complete design brief. Designer and Image outputs remain parent-owned reusable artifacts, not disposable proposals; retain several, revise one, or promote one; never mandate automatic deletion. Semantic parent inference supplies this structured preset: twitter_header, landscape_video, portrait_video; omit output_requirements and publish once. For animated output, always pass the narrowest applicable animation_profile: motion_ui for CSS/WAAPI/SVG/Canvas UI motion, spatial_3d for pinned local Three.js, vector_playback for licensed dotLottie/Rive imports, or final_render for MP4 playback. Managed Designers use only the context-bound artifact_v3_author capability; workspace Designers must not use managed output. Call manage_artifact action=\"help\" topic=\"animation\" for detailed animation profiles.",
 		"  * After delegated work, synthesize findings with key points and final Relevant filepaths list. Managed Designer replacement: next_action=launch_one_replacement_wave_for_failed_managed_designer_slots; retain only those explicit successful references and launch exactly one replacement Designer per failed slot. Do not rerun successful slots, reuse the failed artifact, or repeat another replacement wave; partial task error is not by itself a nonrecoverable checkpoint failure.",
 		"- Managed Artifacts & Verification:",
-		"  * Ready/staging managed artifacts are automatically shown by the Desktop artifact sidebar and gallery. Do not call get/read, materialize, duplicate into the workspace, create an iteration form or HTML index, wire a custom preview/selector solely for visibility; do not call get/read, materialize, duplicate into the workspace, create an iteration form or HTML index; ask the user to review or choose in the built-in artifact UI, honoring explicit user choice among variants. Inspect/read only when the agent needs artifact contents for verification or further work, and include an exact ready reference in a terminal structured handoff. For every inspectable rendered visual deliverable, use media_inspect with the complete exact ready artifact reference and inspect every exact ready image state that the claim covers. Review clipping and overflow, aspect ratio and object sizing, requested-element fidelity, text legibility, unintended overlaps, scrollbars or capture chrome/overlays, and each state against its brief; the renderer does not judge aesthetics and none of those checks substitutes for pixel inspection. If defect found, create a new exact-lineage derived revision; never mutate or silently replace the published variant, and never imply a single-publication Designer repaired its already-published output in the same run; otherwise report the specific visual defect and bounded limitation honestly.",
+		"  * Ready/staging managed artifacts are automatically shown by the Desktop artifact sidebar and gallery. do not call get/read, materialize, duplicate into the workspace, create an iteration form or HTML index, wire a custom preview/selector solely for visibility; ask the user to review or choose in the built-in artifact UI, honoring explicit user choice among variants. Inspect/read only when the agent needs artifact contents for verification or further work, and include an exact ready reference in a terminal structured handoff. For every inspectable rendered visual deliverable, use media_inspect with the complete exact ready artifact reference and inspect every exact ready image state that the claim covers. Review clipping and overflow, aspect ratio and object sizing, requested-element fidelity, text legibility, unintended overlaps, scrollbars or capture chrome/overlays, and each state against its brief; the renderer does not judge aesthetics and none of those checks substitutes for pixel inspection. If defect found, create a new exact-lineage derived revision; never mutate or silently replace the published variant, and never imply a single-publication Designer repaired its already-published output in the same run; otherwise report the specific visual defect and bounded limitation honestly.",
 		"  * Artifact reuse: use manage_artifact search with bounded filters instead of scanning transcripts, session folders, or storage paths; ask the user to disambiguate equally plausible human-named matches; copy next_cursor back unchanged as cursor. Author directly with manage_artifact create/create_package (publish it with manage_artifact create/create_package); do not materialize, stage, or duplicate it in the workspace merely for submission; or materialize the selected complete exact reference (or atomic materialize_batch) to edit with normal workspace read/edit/write tools. Use publish_workspace only when the intended end product is a workspace file or package, copying all four source_* lineage fields. If artifact remains available but is too large for bounded tool output, materialize it.",
 		"- Specialized domain tools return their own workflow instructions and schemas on demand: manage_artifact action=\"help\", manage_video action=\"help\", manage-theme action=\"inspect\", manage-skill action=\"inspect\", manage_environments action=\"list\", manage_deployments action=\"ensure\".",
 		"- Plan & Checkpoint Lifecycle Management:",
@@ -503,7 +504,13 @@ func composeRulesPromptBlock(rules []discovery.RuleSource) string {
 			name = filepath.Base(path)
 		}
 		entry := "\n- " + name + ": " + path
-		if snippet := promptSnippetFromContent(rule.Content); snippet != "" {
+		content := rule.Content
+		if len(content) == 0 && path != "" {
+			if raw, err := os.ReadFile(path); err == nil {
+				content = raw
+			}
+		}
+		if snippet := promptSnippetFromContent(content); snippet != "" {
 			entry += "\n" + snippet
 		}
 		remaining := maxRulePromptAggregateBytes - block.Len()

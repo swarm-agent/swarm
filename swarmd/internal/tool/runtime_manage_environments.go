@@ -16,93 +16,33 @@ func manageEnvironmentsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_environments",
-		Description: "List, get, create, update, delete, set default testbench, export, and import reusable environment definitions. Environment definitions are static and contain no ephemeral runtime state; they specify container configuration, source provisioning strategy, and preferred connection.",
+		Description: "Environment definition manager (list, get, create, update, delete, set_default_test, export, import). Call action='help' for schema.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
-					"type":        "string",
-					"description": "Action: list|get|create|update|delete|set_default_test|export|import",
-					"enum":        []string{"list", "get", "create", "update", "delete", "set_default_test", "export", "import"},
+					"type": "string",
+					"enum": []string{"list", "get", "create", "update", "delete", "set_default_test", "export", "import"},
 				},
-				"workspace_path": map[string]any{
-					"type":        "string",
-					"description": "Optional workspace path; defaults to current/active workspace scope",
-				},
-				"id": map[string]any{
-					"type":        "string",
-					"description": "Environment ID for get/update/delete/set_default_test/export, or explicit ID for create",
-				},
-				"environment_id": map[string]any{
-					"type":        "string",
-					"description": "Alias for id",
-				},
-				"name": map[string]any{
-					"type":        "string",
-					"description": "Display name of the environment",
-				},
-				"description": map[string]any{
-					"type":        "string",
-					"description": "Optional description of the environment",
-				},
-				"mode": map[string]any{
-					"type":        "string",
-					"description": "Environment mode: attached|deployable (default deployable)",
-					"enum":        []string{"attached", "deployable"},
-				},
-				"role": map[string]any{
-					"type":        "string",
-					"description": "Environment role: development|testing|build|custom (default testing)",
-					"enum":        []string{"development", "testing", "build", "custom"},
-				},
-				"preferred_connection_id": map[string]any{
-					"type":        "string",
-					"description": "Optional preferred Connection ID for this environment (Tier 2 connection resolution)",
-				},
-				"image": map[string]any{
-					"type":        "string",
-					"description": "Container image (e.g. golang:1.24, node:20, ubuntu:22.04)",
-				},
-				"container": map[string]any{
-					"type":        "object",
-					"description": "Container specification. Call action='help' for schema.",
-				},
-				"provisioning": map[string]any{
-					"type":        "object",
-					"description": "Workspace source provisioning strategy. Call action='help' for schema.",
-				},
-				"deployment_policy": map[string]any{
-					"type":        "object",
-					"description": "Deployment policy. Call action='help' for schema.",
-				},
-				"health_check": map[string]any{
-					"type":        "object",
-					"description": "Health check definition. Call action='help' for schema.",
-				},
-				"resources": map[string]any{
-					"type":        "object",
-					"description": "Resource limits. Call action='help' for schema.",
-				},
-				"labels": map[string]any{
-					"type":        "object",
-					"description": "Metadata labels. Call action='help' for schema.",
-				},
-				"set_default_test": map[string]any{
-					"type":        "boolean",
-					"description": "If true, sets this as default test environment",
-				},
-				"json": map[string]any{
-					"type":        "string",
-					"description": "JSON representation for import action",
-				},
-				"environment": map[string]any{
-					"type":        "object",
-					"description": "Complete environment definition object. Call action='help' for schema.",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum environments to list",
-				},
+				"workspace_path":          map[string]any{"type": "string"},
+				"id":                      map[string]any{"type": "string", "description": "Environment ID"},
+				"environment_id":          map[string]any{"type": "string", "description": "Alias for id"},
+				"name":                    map[string]any{"type": "string", "description": "Display name"},
+				"description":             map[string]any{"type": "string"},
+				"mode":                    map[string]any{"type": "string", "enum": []string{"attached", "deployable"}},
+				"role":                    map[string]any{"type": "string", "enum": []string{"development", "testing", "build", "custom"}},
+				"preferred_connection_id": map[string]any{"type": "string"},
+				"image":                   map[string]any{"type": "string"},
+				"container":               map[string]any{"type": "object"},
+				"provisioning":            map[string]any{"type": "object"},
+				"deployment_policy":       map[string]any{"type": "object"},
+				"health_check":            map[string]any{"type": "object"},
+				"resources":               map[string]any{"type": "object"},
+				"labels":                  map[string]any{"type": "object"},
+				"set_default_test":        map[string]any{"type": "boolean"},
+				"json":                    map[string]any{"type": "string"},
+				"environment":             map[string]any{"type": "object"},
+				"limit":                   map[string]any{"type": "integer"},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": false,

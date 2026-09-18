@@ -3552,6 +3552,11 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		}
 		if documentPatch != nil && isTrustedSubtaskResumeAction(action) {
 			if lifecycleRun.Inline {
+				if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr == nil && ok && plan.Document != nil {
+					if plan.Document.ExecutionState != nil && plan.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+						return "", errors.New("cannot add or update subtasks on a plan awaiting review; wait for user feedback or call transition_checkpoint_boundary for new work")
+					}
+				}
 				if err := applyTrustedSubtaskResumeOwnership(documentPatch, lifecycleRun); err != nil {
 					return "", err
 				}

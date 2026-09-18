@@ -34,23 +34,23 @@ const (
 )
 
 func manageSessionsDefinition() Definition {
-	return Definition{Type: "function", Name: "manage-sessions", Description: "Use only when the user explicitly asks for durable V3 sessions (list_by_state up to 200 sessions, review_worktrees, around, up to 50 sessions with one approval for the batch; new session means deploy; task tool only; never instructions). Never automatically escalate to search_mode=durable_log unless the user explicitly asks for raw database or technical inspection. Results render as cards; do not repeat.", Parameters: map[string]any{
+	return Definition{Type: "function", Name: "manage-sessions", Description: "Durable V3 session manager (deploy, list, commit, archive, unarchive, search). Card results render automatically.", Parameters: map[string]any{
 		"type": "object", "required": []string{"action"}, "additionalProperties": true,
 		"properties": map[string]any{
-			"action":                    map[string]any{"type": "string", "description": "inspect|list|list_by_state|review_worktrees|search|get|read_messages|git_status|commit|archive|unarchive|deploy|create|stop|pause|send_message|compact. list_by_state auto-pages up to 200 matching sessions. review_worktrees reviews managed branches. commit commits session work. Archive/unarchive support up to 50 sessions; deploy supports up to 8 proposals."},
-			"commits":                   map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxBatch, "description": "Batch commit up to 10 sessions.", "items": map[string]any{"type": "object", "required": []string{"session_id", "message"}, "additionalProperties": false, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}}},
-			"proposals":                 map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxDeployBatch, "description": "Deploy proposals (first proposal selected by default).", "items": map[string]any{"type": "object", "required": []string{"prompt"}, "additionalProperties": false, "properties": map[string]any{"title": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}, "mode": map[string]any{"type": "string", "enum": []string{"auto"}}, "agent": map[string]any{"type": "string"}, "workspace_path": map[string]any{"type": "string"}, "worktree_name": map[string]any{"type": "string", "description": "Short Swarm-authored worktree seed resolved by server."}}}},
-			"prompt":                    map[string]any{"type": "string", "description": "Prompt for create/send_message."},
-			"title":                     map[string]any{"type": "string", "description": "Session title."},
+			"action":                    map[string]any{"type": "string", "description": "inspect|list|list_by_state|review_worktrees|search|get|read_messages|git_status|commit|archive|unarchive|deploy|create|stop|pause|send_message|compact"},
+			"commits":                   map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxBatch, "description": "Batch commit up to 10 sessions ({session_id, message}).", "items": map[string]any{"type": "object", "required": []string{"session_id", "message"}, "additionalProperties": false, "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "message": map[string]any{"type": "string"}}}},
+			"proposals":                 map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxDeployBatch, "description": "Deploy proposals (first selected by default).", "items": map[string]any{"type": "object", "required": []string{"prompt"}, "additionalProperties": false, "properties": map[string]any{"title": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}, "mode": map[string]any{"type": "string", "enum": []string{"auto"}}, "agent": map[string]any{"type": "string"}, "workspace_path": map[string]any{"type": "string"}, "worktree_name": map[string]any{"type": "string"}}}},
+			"prompt":                    map[string]any{"type": "string"},
+			"title":                     map[string]any{"type": "string"},
 			"session_id":                map[string]any{"type": "string"},
-			"session_ids":               map[string]any{"type": "array", "maxItems": manageSessionsMaxMutationBatch, "description": "For archive or unarchive, pass up to 50 session IDs.", "items": map[string]any{"type": "string"}},
-			"query":                     map[string]any{"type": "string", "description": "Search query."},
-			"search_mode":               map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}, "description": "Search source (never auto-upgrade)."},
-			"state":                     map[string]any{"type": "string", "description": "Lifecycle state filter for list_by_state."},
-			"workspace_path":            map[string]any{"type": "string", "description": "Workspace path."},
+			"session_ids":               map[string]any{"type": "array", "maxItems": manageSessionsMaxMutationBatch, "description": "For archive/unarchive (up to 50 IDs)", "items": map[string]any{"type": "string"}},
+			"query":                     map[string]any{"type": "string"},
+			"search_mode":               map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}},
+			"state":                     map[string]any{"type": "string"},
+			"workspace_path":            map[string]any{"type": "string"},
 			"cursor":                    map[string]any{"type": "string"},
 			"limit":                     map[string]any{"type": "integer"},
-			"expected_updated_at_by_id": map[string]any{"type": "object", "description": "For bulk archive or unarchive: map session ID to updated_at.", "maxProperties": manageSessionsMaxMutationBatch, "additionalProperties": map[string]any{"type": "integer"}},
+			"expected_updated_at_by_id": map[string]any{"type": "object", "maxProperties": manageSessionsMaxMutationBatch, "additionalProperties": map[string]any{"type": "integer"}},
 		},
 	}}
 }

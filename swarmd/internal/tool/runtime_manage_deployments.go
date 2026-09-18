@@ -19,93 +19,33 @@ func manageDeploymentsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_deployments",
-		Description: "Manage runtime deployment instances of environments: list, get, ensure (acquire lease & access), deploy, release (execute release behavior & release lease), stop, destroy, check live health/status, resolve access metadata, and exec commands inside running containers.",
+		Description: "Environment deployment manager (ensure, deploy, release, stop, destroy, check, access, exec). Call action='help' for schema.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
-					"type":        "string",
-					"description": "Action: list|get|ensure|deploy|release|stop|destroy|check|access|exec|reap",
-					"enum":        []string{"list", "get", "ensure", "deploy", "release", "stop", "destroy", "check", "access", "exec", "reap"},
+					"type": "string",
+					"enum": []string{"list", "get", "ensure", "deploy", "release", "stop", "destroy", "check", "access", "exec", "reap"},
 				},
-				"workspace_path": map[string]any{
-					"type":        "string",
-					"description": "Optional workspace path; defaults to current/active workspace scope",
-				},
-				"id": map[string]any{
-					"type":        "string",
-					"description": "Deployment ID for get/stop/destroy/check/access/exec",
-				},
-				"deployment_id": map[string]any{
-					"type":        "string",
-					"description": "Alias for id",
-				},
-				"environment_id": map[string]any{
-					"type":        "string",
-					"description": "Environment ID (required for deploy, and for ensure unless workspace has default test environment)",
-				},
-				"connection_id": map[string]any{
-					"type":        "string",
-					"description": "Optional explicit Connection ID override for deploy/ensure (bypasses Tier 2/3 resolution)",
-				},
-				"name": map[string]any{
-					"type":        "string",
-					"description": "Deployment name for deploy/ensure",
-				},
-				"deployment_name": map[string]any{
-					"type":        "string",
-					"description": "Alias for name",
-				},
-				"consumer_type": map[string]any{
-					"type":        "string",
-					"description": "Consumer type for leasing: session|test_run|worker|custom (default session)",
-					"enum":        []string{"session", "test_run", "worker", "custom"},
-				},
-				"consumer_id": map[string]any{
-					"type":        "string",
-					"description": "Consumer identifier for leasing (defaults to active session ID)",
-				},
-				"consumer_metadata": map[string]any{
-					"type":        "object",
-					"description": "Optional key-value metadata for the lease. Call action='help' for schema.",
-				},
-				"lease_id": map[string]any{
-					"type":        "string",
-					"description": "Lease ID for release action (or get action)",
-				},
-				"reason": map[string]any{
-					"type":        "string",
-					"description": "Reason for release or destroy action",
-				},
-				"ttl_millis": map[string]any{
-					"type":        "integer",
-					"description": "Optional lease time-to-live in milliseconds (0 = held until explicitly released)",
-				},
-				"env_overrides": map[string]any{
-					"type":        "object",
-					"description": "Optional container environment variable overrides. Call action='help' for schema.",
-				},
-				"command": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Command and arguments to execute inside the container for exec action",
-				},
-				"working_dir": map[string]any{
-					"type":        "string",
-					"description": "Working directory inside container for exec action",
-				},
-				"env": map[string]any{
-					"type":        "object",
-					"description": "Container environment variables for exec action. Call action='help' for schema.",
-				},
-				"timeout_ms": map[string]any{
-					"type":        "integer",
-					"description": "Execution timeout in milliseconds for exec action (default 30000)",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum deployments to list",
-				},
+				"workspace_path": map[string]any{"type": "string"},
+				"id":             map[string]any{"type": "string", "description": "Deployment ID"},
+				"deployment_id":  map[string]any{"type": "string", "description": "Alias for id"},
+				"environment_id": map[string]any{"type": "string", "description": "Environment ID"},
+				"connection_id":  map[string]any{"type": "string", "description": "Connection ID override"},
+				"name":           map[string]any{"type": "string", "description": "Deployment name"},
+				"deployment_name": map[string]any{"type": "string", "description": "Alias for name"},
+				"consumer_type":  map[string]any{"type": "string", "enum": []string{"session", "test_run", "worker", "custom"}},
+				"consumer_id":    map[string]any{"type": "string"},
+				"consumer_metadata": map[string]any{"type": "object"},
+				"lease_id":       map[string]any{"type": "string"},
+				"reason":         map[string]any{"type": "string"},
+				"ttl_millis":     map[string]any{"type": "integer"},
+				"env_overrides":  map[string]any{"type": "object"},
+				"command":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Command and args for exec"},
+				"working_dir":    map[string]any{"type": "string"},
+				"env":            map[string]any{"type": "object"},
+				"timeout_ms":     map[string]any{"type": "integer"},
+				"limit":          map[string]any{"type": "integer"},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": false,
