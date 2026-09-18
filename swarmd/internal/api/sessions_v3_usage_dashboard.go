@@ -472,6 +472,10 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if !pebblestore.IsAIGeneratedMedia(v) {
+			continue
+		}
+
 		mt := strings.ToLower(v.MediaType)
 		var kind string
 		if strings.HasPrefix(mt, "image/") {
@@ -499,6 +503,22 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 					} else {
 						res = "720p"
 					}
+				}
+			}
+			if res == "" && v.Presentation.Width > 0 {
+				if v.Presentation.Width >= 3840 {
+					res = "4k"
+				} else if v.Presentation.Width >= 1920 {
+					res = "1080p"
+				} else {
+					res = "720p"
+				}
+			}
+			if res == "" {
+				descLower := strings.ToLower(v.Presentation.Description)
+				labelLower := strings.ToLower(v.Presentation.Label)
+				if strings.Contains(descLower, "8k") || strings.Contains(descLower, "4k") || strings.Contains(labelLower, "4k") || v.Size > 32<<20 {
+					res = "4k"
 				}
 			}
 			cost = pebblestore.CalculateBaselineMediaCost(v.MediaType, v.ModelID, res, 8)
@@ -568,13 +588,11 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		if exists {
 			sessItem.CostUSD += cost
 		} else {
-			sessTitle := sessionTitleMap[v.SessionID]
-			if sessTitle == "" {
-				sessTitle = "Session " + v.SessionID[:min(8, len(v.SessionID))]
-			}
+			meta := resolveSessionMeta(v.SessionID)
 			sessItem = &SessionUsageSessionItem{
 				SessionID:    v.SessionID,
-				Title:        sessTitle,
+				Title:        meta.title,
+				Archived:     meta.archived,
 				Provider:     v.ProviderID,
 				Model:        v.ModelID,
 				LastActiveAt: ts,

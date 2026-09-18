@@ -438,6 +438,9 @@ func (s *SessionStore) GetTodayUsageTotal(accountScopeID string) (float64, int64
 			if ts < startOfDay {
 				continue
 			}
+			if !IsAIGeneratedMedia(v) {
+				continue
+			}
 			cost := v.EstimatedCostUSD
 			if cost <= 0 {
 				res := ""
@@ -451,6 +454,22 @@ func (s *SessionStore) GetTodayUsageTotal(accountScopeID string) (float64, int64
 						} else {
 							res = "720p"
 						}
+					}
+				}
+				if res == "" && v.Presentation.Width > 0 {
+					if v.Presentation.Width >= 3840 {
+						res = "4k"
+					} else if v.Presentation.Width >= 1920 {
+						res = "1080p"
+					} else {
+						res = "720p"
+					}
+				}
+				if res == "" {
+					descLower := strings.ToLower(v.Presentation.Description)
+					labelLower := strings.ToLower(v.Presentation.Label)
+					if strings.Contains(descLower, "8k") || strings.Contains(descLower, "4k") || strings.Contains(labelLower, "4k") || v.Size > 32<<20 {
+						res = "4k"
 					}
 				}
 				cost = CalculateBaselineMediaCost(v.MediaType, v.ModelID, res, 8)

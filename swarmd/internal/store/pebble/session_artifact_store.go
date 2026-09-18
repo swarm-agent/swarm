@@ -198,7 +198,83 @@ type SessionArtifactStep struct {
 	EventSeq         uint64                              `json:"event_seq"`
 }
 
-const SessionArtifactRoleRenderOnly = "render_only"
+const (
+	SessionArtifactRoleRenderOnly   = "render_only"
+	SessionArtifactRoleChainedVideo = "chained_video"
+	SessionArtifactRoleKeyframe     = "keyframe"
+	SessionArtifactRoleVideoRender  = "video_render"
+	SessionArtifactRoleAIGenerated  = "ai_generated"
+	SessionArtifactRoleWorkspacePub = "workspace_publication"
+)
+
+// IsAIGeneratedMedia determines whether a session artifact variant represents a paid
+// external AI generation call (e.g. Veo, Lyria, Nano Banana/Imagen/FLUX) vs. a local
+// host operation (e.g. FFmpeg concatenation/keyframe extraction, Video Studio render, HTML capture, workspace publication).
+func IsAIGeneratedMedia(v SessionArtifactVariant) bool {
+	// If variant has an explicit non-AI role, it is never billable AI media.
+	switch v.Role {
+	case SessionArtifactRoleRenderOnly,
+		SessionArtifactRoleChainedVideo,
+		SessionArtifactRoleKeyframe,
+		SessionArtifactRoleVideoRender,
+		SessionArtifactRoleWorkspacePub:
+		return false
+	case SessionArtifactRoleAIGenerated:
+		return true
+	}
+
+	// Video Studio timeline project frame inspection or render export
+	if v.Lineage.VideoProjectID != "" || v.Lineage.VideoRevisionID != "" {
+		return false
+	}
+
+	// If explicit model and provider are set from an AI generation service
+	if v.ModelID != "" && v.ProviderID != "" {
+		return true
+	}
+
+	// Historical heuristics for variants created before explicit role/model tagging:
+	desc := strings.ToLower(v.Presentation.Description)
+	label := strings.ToLower(v.Presentation.Label)
+	fn := strings.ToLower(v.Filename)
+
+	// Local FFmpeg keyframe extractions
+	if strings.Contains(desc, "extracted keyframe") ||
+		strings.Contains(desc, "visual evidence for exact revision") ||
+		label == "video last keyframe" ||
+		label == "video first frame" ||
+		strings.HasSuffix(label, "climax keyframe") ||
+		fn == "chained-master-keyframe.png" ||
+		fn == "generated-video-keyframe.png" ||
+		strings.HasPrefix(fn, "frame_") {
+		return false
+	}
+
+	// Local FFmpeg chained video assemblies
+	if strings.HasPrefix(desc, "chained multi-part video") ||
+		fn == "chained-master.mp4" {
+		return false
+	}
+
+	// Workspace publications / local file imports
+	if strings.HasPrefix(v.CollectionID, "collection-workspace-") ||
+		v.CollectionID == "package-preview" ||
+		strings.HasSuffix(fn, ".wav") ||
+		strings.HasSuffix(fn, ".zip") {
+		return false
+	}
+
+	// AI media types (video/mp4, audio/mp3, image/png)
+	mt := strings.ToLower(v.MediaType)
+	if strings.HasPrefix(mt, "video/") || strings.HasPrefix(mt, "audio/") {
+		return true
+	}
+	if strings.HasPrefix(mt, "image/") {
+		return true
+	}
+
+	return false
+}
 
 type SessionArtifactProgress struct {
 	Stage                string  `json:"stage"`

@@ -1586,6 +1586,7 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	create.ModelID = generated.Model
 	create.ProviderID = generated.Provider
 	create.EstimatedCostUSD = generated.EstimatedCostUSD
+	create.Role = pebblestore.SessionArtifactRoleAIGenerated
 	variant, err := r.artifactAuthority.Create(ctx, principal, create)
 	if err == nil && generated.EstimatedCostUSD > 0 && r.sessions != nil && principal.AccountScopeID != "" {
 		dateStr := time.Now().UTC().Format("2006-01-02")
@@ -2271,6 +2272,17 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		create.ModelID = generated.Model
 		create.ProviderID = generated.Provider
 		create.EstimatedCostUSD = generated.EstimatedCostUSD
+		create.Role = pebblestore.SessionArtifactRoleAIGenerated
+		if generated.Width > 0 && generated.Height > 0 {
+			presentation.Width = generated.Width
+			presentation.Height = generated.Height
+			create.Presentation = presentation
+		}
+		create.OutputRequirements = &pebblestore.SessionArtifactOutputRequirements{
+			PresetID: resolution,
+			Width:    generated.Width,
+			Height:   generated.Height,
+		}
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
@@ -2616,6 +2628,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 		create.ModelID = generated.Model
 		create.ProviderID = generated.Provider
 		create.EstimatedCostUSD = generated.EstimatedCostUSD
+		create.Role = pebblestore.SessionArtifactRoleAIGenerated
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {

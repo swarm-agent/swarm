@@ -129,6 +129,49 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 			CreatedAt:      now - 1000,
 			UpdatedAt:      now - 1000,
 		},
+		// Local non-billable operations: chained master, keyframe, and video render
+		{
+			Version:        1,
+			ID:             "local-chain-1",
+			SessionID:      sessionID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			Status:         pebblestore.SessionArtifactStatusReady,
+			MediaType:      "video/mp4",
+			Filename:       "chained-master.mp4",
+			Role:           pebblestore.SessionArtifactRoleChainedVideo,
+			Presentation:   pebblestore.SessionArtifactPresentation{Kind: "video", Description: "Chained multi-part video (4 parts, audio mode: mix_ducked)"},
+			Size:           10485760,
+			CreatedAt:      now - 500,
+			UpdatedAt:      now - 500,
+		},
+		{
+			Version:        1,
+			ID:             "local-keyframe-1",
+			SessionID:      sessionID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			Status:         pebblestore.SessionArtifactStatusReady,
+			MediaType:      "image/png",
+			Filename:       "chained-master-keyframe.png",
+			Role:           pebblestore.SessionArtifactRoleKeyframe,
+			Presentation:   pebblestore.SessionArtifactPresentation{Kind: "image", Description: "Extracted keyframe (last) from video"},
+			Size:           524288,
+			CreatedAt:      now - 400,
+			UpdatedAt:      now - 400,
+		},
+		{
+			Version:        1,
+			ID:             "local-render-1",
+			SessionID:      sessionID,
+			AccountScopeID: testPrincipal().AccountScopeID,
+			Status:         pebblestore.SessionArtifactStatusReady,
+			MediaType:      "video/mp4",
+			Filename:       "timeline-render.mp4",
+			Role:           pebblestore.SessionArtifactRoleVideoRender,
+			Lineage:        pebblestore.SessionArtifactLineage{VideoProjectID: "proj-1", VideoRevisionID: "rev-1"},
+			Size:           20971520,
+			CreatedAt:      now - 300,
+			UpdatedAt:      now - 300,
+		},
 	}
 	for _, v := range mediaVariants {
 		if err := sessionSvc.Store().PutArtifactVariant(v); err != nil {
@@ -597,5 +640,137 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 	}
 	if !foundLegacy {
 		t.Fatalf("expected legacy archived session %s in response", legacyArchivedID)
+	}
+}
+
+func TestSessionsV3UsageDashboard_MediaAccountingExcludesLocalAndPrices4K(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	principal := testPrincipal()
+
+	sessionID := "sess_media_accounting_4k"
+	_, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      sessionID,
+		Title:          "Media Accounting 4K Test",
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		WorkspacePath:  t.TempDir(),
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "high"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	now := time.Now().UTC().UnixMilli()
+	variants := []pebblestore.SessionArtifactVariant{
+		// 1. Veo 1080p clip (8 seconds) -> $3.20
+		{
+			Version:          1,
+			ID:               "art-veo-1080",
+			SessionID:        sessionID,
+			AccountScopeID:   principal.AccountScopeID,
+			Status:           pebblestore.SessionArtifactStatusReady,
+			MediaType:        "video/mp4",
+			Filename:         "generated-video.mp4",
+			ModelID:          "veo-3.1-generate-preview",
+			ProviderID:       "google",
+			EstimatedCostUSD: 3.20,
+			Presentation:     pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Part 1 - 1080p", Width: 1920, Height: 1080},
+			OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "1080p", Width: 1920, Height: 1080},
+			CreatedAt:        now - 5000,
+		},
+		// 2. Veo 4K clip (8 seconds) -> $4.80
+		{
+			Version:          1,
+			ID:               "art-veo-4k",
+			SessionID:        sessionID,
+			AccountScopeID:   principal.AccountScopeID,
+			Status:           pebblestore.SessionArtifactStatusReady,
+			MediaType:        "video/mp4",
+			Filename:         "generated-video.mp4",
+			ModelID:          "veo-3.1-generate-preview",
+			ProviderID:       "google",
+			EstimatedCostUSD: 4.80,
+			Presentation:     pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Part 2 - 4K Master", Width: 3840, Height: 2160},
+			OutputRequirements: &pebblestore.SessionArtifactOutputRequirements{PresetID: "4k", Width: 3840, Height: 2160},
+			CreatedAt:        now - 4000,
+		},
+		// 3. Lyria audio soundtrack -> $0.08
+		{
+			Version:          1,
+			ID:               "art-lyria-snd",
+			SessionID:        sessionID,
+			AccountScopeID:   principal.AccountScopeID,
+			Status:           pebblestore.SessionArtifactStatusReady,
+			MediaType:        "audio/mp3",
+			Filename:         "generated-audio.mp3",
+			ModelID:          "lyria-3.5",
+			ProviderID:       "google",
+			EstimatedCostUSD: 0.08,
+			Presentation:     pebblestore.SessionArtifactPresentation{Kind: "audio", Label: "Soundtrack"},
+			CreatedAt:        now - 3000,
+		},
+		// 4. Local FFmpeg chained master -> MUST BE $0.00 and excluded from TotalMediaCalls
+		{
+			Version:        1,
+			ID:             "art-chain-master",
+			SessionID:      sessionID,
+			AccountScopeID: principal.AccountScopeID,
+			Status:         pebblestore.SessionArtifactStatusReady,
+			MediaType:      "video/mp4",
+			Filename:       "chained-master.mp4",
+			Role:           pebblestore.SessionArtifactRoleChainedVideo,
+			Presentation:   pebblestore.SessionArtifactPresentation{Kind: "video", Label: "Chained Master", Description: "Chained multi-part video (4 parts, audio mode: mix_ducked)"},
+			CreatedAt:      now - 2000,
+		},
+		// 5. Local FFmpeg keyframe extraction -> MUST BE $0.00 and excluded from TotalMediaCalls
+		{
+			Version:        1,
+			ID:             "art-keyframe",
+			SessionID:      sessionID,
+			AccountScopeID: principal.AccountScopeID,
+			Status:         pebblestore.SessionArtifactStatusReady,
+			MediaType:      "image/png",
+			Filename:       "chained-master-keyframe.png",
+			Role:           pebblestore.SessionArtifactRoleKeyframe,
+			Presentation:   pebblestore.SessionArtifactPresentation{Kind: "image", Label: "Climax Keyframe", Description: "Extracted keyframe (last) from video"},
+			CreatedAt:      now - 1000,
+		},
+	}
+	for _, v := range variants {
+		if err := sessionSvc.Store().PutArtifactVariant(v); err != nil {
+			t.Fatalf("put variant %s: %v", v.ID, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v3/usage?session_id="+sessionID+"&time_range=all", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, withTestPrincipal(req))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp SessionUsageDashboardResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Verify only genuine AI generations are counted in media calls (2 videos + 1 audio = 3, NOT 5!)
+	if resp.Summary.TotalMediaCalls != 3 {
+		t.Fatalf("expected exactly 3 AI media calls (excluding local chain & keyframe), got %d", resp.Summary.TotalMediaCalls)
+	}
+	if resp.Media.VideoCount != 2 {
+		t.Fatalf("expected 2 video generations, got %d", resp.Media.VideoCount)
+	}
+	if resp.Media.AudioCount != 1 {
+		t.Fatalf("expected 1 audio generation, got %d", resp.Media.AudioCount)
+	}
+	if resp.Media.ImageCount != 0 {
+		t.Fatalf("expected 0 image generations (keyframe is local), got %d", resp.Media.ImageCount)
+	}
+
+	// Expected total media cost: $3.20 (1080p) + $4.80 (4K) + $0.08 (Lyria) = $8.08
+	expectedMediaCost := 8.08
+	if resp.Summary.MediaCostUSD < expectedMediaCost-0.01 || resp.Summary.MediaCostUSD > expectedMediaCost+0.01 {
+		t.Fatalf("expected media cost ~%f, got %f", expectedMediaCost, resp.Summary.MediaCostUSD)
 	}
 }

@@ -460,7 +460,7 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 		variant, err := s.artifacts.CreateFromFile(inspectCtx, artifactPrincipal, artifact.CreateFileInput{CreateInput: artifact.CreateInput{
 			RequestID: fmt.Sprintf("%s:%s:%s:%d:%s", requestID, projectID, revisionID, timestamp, digest), CollectionID: collectionID,
 			CollectionName: project.Title + " frame inspection", CollectionDescription: fmt.Sprintf("Bounded visual evidence for exact revision %s", revisionID), VariantID: variantID,
-			Filename: fmt.Sprintf("frame_%03d_%dms.png", index+1, timestamp), MediaType: "image/png", Presentation: pebblestore.SessionArtifactPresentation{Kind: "image", Label: fmt.Sprintf("Frame at %dms", timestamp), Previewable: true, Width: width, Height: height},
+			Filename: fmt.Sprintf("frame_%03d_%dms.png", index+1, timestamp), MediaType: "image/png", Role: pebblestore.SessionArtifactRoleKeyframe, Presentation: pebblestore.SessionArtifactPresentation{Kind: "image", Label: fmt.Sprintf("Frame at %dms", timestamp), Previewable: true, Width: width, Height: height},
 			VideoProjectID: projectID, VideoRevisionID: revisionID, VideoRevisionEventSeq: revision.EventSeq,
 		}, SourcePath: framePath})
 		if err != nil {
@@ -872,6 +872,7 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 			VariantID:             variantID,
 			Filename:              filename,
 			MediaType:             "video/mp4",
+			Role:                  pebblestore.SessionArtifactRoleVideoRender,
 			Presentation: pebblestore.SessionArtifactPresentation{
 				Kind:        "video",
 				Previewable: true,

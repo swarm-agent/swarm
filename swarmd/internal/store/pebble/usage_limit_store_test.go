@@ -198,4 +198,142 @@ func TestGetTodayUsageTotalWithMedia(t *testing.T) {
 	if cost < 4.79 || cost > 4.81 {
 		t.Fatalf("expected today cost to include media $4.80, got %f", cost)
 	}
+
+	// Seed local non-billable media: chained master video, keyframe, timeline render
+	localChained := SessionArtifactVariant{
+		Version:        1,
+		ID:             "art-vid-chain",
+		CollectionID:   "col-1",
+		SessionID:      "sess-1",
+		AccountScopeID: accountID,
+		Status:         SessionArtifactStatusReady,
+		MediaType:      "video/mp4",
+		Filename:       "chained-master.mp4",
+		Role:           SessionArtifactRoleChainedVideo,
+		Presentation:   SessionArtifactPresentation{Kind: "video", Description: "Chained multi-part video (4 parts)"},
+		CreatedAt:      now,
+	}
+	if err := sessionStore.PutArtifactVariant(localChained); err != nil {
+		t.Fatalf("put local chained video: %v", err)
+	}
+
+	localKeyframe := SessionArtifactVariant{
+		Version:        1,
+		ID:             "art-img-keyframe",
+		CollectionID:   "col-1",
+		SessionID:      "sess-1",
+		AccountScopeID: accountID,
+		Status:         SessionArtifactStatusReady,
+		MediaType:      "image/png",
+		Filename:       "chained-master-keyframe.png",
+		Role:           SessionArtifactRoleKeyframe,
+		Presentation:   SessionArtifactPresentation{Kind: "image", Description: "Extracted keyframe (last) from video"},
+		CreatedAt:      now,
+	}
+	if err := sessionStore.PutArtifactVariant(localKeyframe); err != nil {
+		t.Fatalf("put local keyframe: %v", err)
+	}
+
+	// Total cost must still be $4.80, NOT inflated by the local chained video ($3.20) or keyframe ($0.04)
+	costAfterLocal, _, err := sessionStore.GetTodayUsageTotal(accountID)
+	if err != nil {
+		t.Fatalf("GetTodayUsageTotal after local: %v", err)
+	}
+	if costAfterLocal < 4.79 || costAfterLocal > 4.81 {
+		t.Fatalf("expected cost to remain $4.80 without inflating for local operations, got %f", costAfterLocal)
+	}
+}
+
+func TestIsAIGeneratedMedia(t *testing.T) {
+	cases := []struct {
+		name     string
+		variant  SessionArtifactVariant
+		expected bool
+	}{
+		{
+			name: "AI generated video explicit role",
+			variant: SessionArtifactVariant{
+				Role:      SessionArtifactRoleAIGenerated,
+				MediaType: "video/mp4",
+			},
+			expected: true,
+		},
+		{
+			name: "AI generated video with model and provider",
+			variant: SessionArtifactVariant{
+				MediaType:  "video/mp4",
+				ProviderID: "google",
+				ModelID:    "veo-3.1-generate-preview",
+			},
+			expected: true,
+		},
+		{
+			name: "Local chained video explicit role",
+			variant: SessionArtifactVariant{
+				Role:      SessionArtifactRoleChainedVideo,
+				MediaType: "video/mp4",
+			},
+			expected: false,
+		},
+		{
+			name: "Local chained video filename and description heuristic",
+			variant: SessionArtifactVariant{
+				MediaType:    "video/mp4",
+				Filename:     "chained-master.mp4",
+				Presentation: SessionArtifactPresentation{Description: "Chained multi-part video (4 parts, audio mode: mix_ducked)"},
+			},
+			expected: false,
+		},
+		{
+			name: "Local keyframe explicit role",
+			variant: SessionArtifactVariant{
+				Role:      SessionArtifactRoleKeyframe,
+				MediaType: "image/png",
+			},
+			expected: false,
+		},
+		{
+			name: "Local keyframe filename and description heuristic",
+			variant: SessionArtifactVariant{
+				MediaType:    "image/png",
+				Filename:     "chained-master-keyframe.png",
+				Presentation: SessionArtifactPresentation{Description: "Extracted keyframe (last) from video", Label: "Climax Keyframe"},
+			},
+			expected: false,
+		},
+		{
+			name: "Video Studio project timeline render",
+			variant: SessionArtifactVariant{
+				MediaType: "video/mp4",
+				Lineage:   SessionArtifactLineage{VideoProjectID: "proj-1", VideoRevisionID: "rev-1"},
+			},
+			expected: false,
+		},
+		{
+			name: "Workspace publication",
+			variant: SessionArtifactVariant{
+				MediaType:    "image/png",
+				Role:         SessionArtifactRoleWorkspacePub,
+				CollectionID: "collection-workspace-1",
+			},
+			expected: false,
+		},
+		{
+			name: "HTML animation render only",
+			variant: SessionArtifactVariant{
+				MediaType: "video/mp4",
+				Role:      SessionArtifactRoleRenderOnly,
+			},
+			expected: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsAIGeneratedMedia(tc.variant)
+			if got != tc.expected {
+				t.Errorf("IsAIGeneratedMedia() = %v, want %v", got, tc.expected)
+			}
+		})
+	}
 }
