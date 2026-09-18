@@ -2185,6 +2185,30 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `scripts/run-critical-tests.sh fast` passes.
   - `bash scripts/check-atlas-sync.sh` passes.
 
+### Checkpoint Tool Description and Schema Restoration for Auto-Mode Handoffs (2026-09-18)
+
+- **Checkpoint Tool Schema & Description Restoration (`swarmd/internal/tool/runtime.go`, `runtime_plan_manage_test.go`):**
+  - Restored `checkpoint_title` to `plan_manage` definition parameters, which was omitted during previous schema compression and caused models to omit the title or guess unsupported shapes.
+  - Updated `plan_manage` tool description, `action` description, and `checkpoint` description to explicitly state that `start_session_checkpoint`, `transition_checkpoint_boundary`, and `restart_checkpoint` require top-level arguments (`change_request`, `checkpoint_title`, `tasks`, `acceptance_criteria`, `notes`) rather than wrapping them inside a nested `checkpoint` object.
+  - Warned in `checkpoint` parameter description against nesting checkpoint definition fields inside `checkpoint: {...}`.
+  - Documented in `tasks` and `acceptance_criteria` descriptions that they must be passed at the top level and that at least one acceptance criterion is required.
+  - Added unit test `TestPlanManageDefinitionExposesStartSessionCheckpointContract` in `swarmd/internal/tool/runtime_plan_manage_test.go`.
+- **Checkpoint Invocation Fallback Robustness (`swarmd/internal/run/service_tools.go`, `plan_document_args.go`, `session/plan_lifecycle_service.go`):**
+  - In `service_tools.go`, added safe fallback extraction for `start_session_checkpoint`, `transition_checkpoint_boundary`, and `restart_checkpoint`: when a caller passes a nested `checkpoint` object, top-level missing fields (`change_request`, `title`, `tasks`, `acceptance_criteria`, `notes`) are safely extracted from the nested object instead of failing validation.
+  - In `plan_lifecycle_service.go`, defaulted `acceptanceCriteria` to `[]string{request}` in `StartSessionCheckpoint` when omitted, aligning with `tasks` defaulting and preventing document validation errors when callers omit criteria on single bounded tasks.
+  - In `plan_document_args.go`, registered `"checkpoint"` in accepted arguments for `start_session_checkpoint`.
+  - Added unit test `TestProviderManagedAutoStartSessionCheckpointAcceptsNestedCheckpointObject` in `swarmd/internal/run/plan_manage_execution_test.go`.
+- **Master Harness Prompt Guidance and Tool Example (`swarmd/internal/run/service_prompt.go`):**
+  - Restored explicit self-contained handoff instructions for auto-mode `start_session_checkpoint` in `masterHarnessPromptWithScope`.
+  - Added a concrete `plan_manage start_session_checkpoint exact call shape` example under `Tool examples`.
+- **Validation:**
+  - `(cd swarmd && go test -v ./internal/tool -run "TestPlan|TestToolDefinitionsTokenBudget")` passes.
+  - `(cd swarmd && go test -v ./internal/session -run "TestPlanLifecycleStartSessionCheckpoint")` passes.
+  - `(cd swarmd && go test -v ./internal/run -run "TestProviderManagedAutoStartSessionCheckpoint")` passes.
+  - `scripts/run-critical-tests.sh all` passes.
+  - `bash scripts/check-precommit.sh` passes.
+
+
 
 
 

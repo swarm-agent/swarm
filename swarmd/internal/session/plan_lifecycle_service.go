@@ -465,6 +465,10 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 	if len(tasks) == 0 {
 		tasks = []string{request}
 	}
+	acceptanceCriteria := trimStringSlice(input.AcceptanceCriteria)
+	if len(acceptanceCriteria) == 0 {
+		acceptanceCriteria = []string{request}
+	}
 	doc := &pebblestore.SessionPlanDocument{
 		Title:  title,
 		Status: "approved",
@@ -481,7 +485,7 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 			Status:             PlanCheckpointStatusPending,
 			Objective:          request,
 			Tasks:              tasks,
-			AcceptanceCriteria: trimStringSlice(input.AcceptanceCriteria),
+			AcceptanceCriteria: acceptanceCriteria,
 			Artifacts:          trimPlanArtifacts(input.Artifacts),
 			Notes:              buildCheckpointHandoffNotes(request, input.Notes),
 			SourceMessageID:    strings.TrimSpace(input.SourceMessageID),
