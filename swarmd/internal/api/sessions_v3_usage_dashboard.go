@@ -474,24 +474,45 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 
 		mt := strings.ToLower(v.MediaType)
 		var kind string
-		var cost float64
 		if strings.HasPrefix(mt, "image/") {
 			kind = "image"
-			cost = 0.04
-			mediaSummary.ImageCount++
-			mediaSummary.ImageCostUSD += cost
 		} else if strings.HasPrefix(mt, "video/") {
 			kind = "video"
-			cost = 1.20
-			mediaSummary.VideoCount++
-			mediaSummary.VideoCostUSD += cost
 		} else if strings.HasPrefix(mt, "audio/") {
 			kind = "audio"
-			cost = 0.08
-			mediaSummary.AudioCount++
-			mediaSummary.AudioCostUSD += cost
 		} else {
 			continue
+		}
+
+		var cost float64
+		if v.EstimatedCostUSD > 0 {
+			cost = v.EstimatedCostUSD
+		} else {
+			res := ""
+			if v.OutputRequirements != nil {
+				res = v.OutputRequirements.PresetID
+				if res == "" && v.OutputRequirements.Width > 0 {
+					if v.OutputRequirements.Width >= 3840 {
+						res = "4k"
+					} else if v.OutputRequirements.Width >= 1920 {
+						res = "1080p"
+					} else {
+						res = "720p"
+					}
+				}
+			}
+			cost = pebblestore.CalculateBaselineMediaCost(v.MediaType, v.ModelID, res, 8)
+		}
+
+		if kind == "image" {
+			mediaSummary.ImageCount++
+			mediaSummary.ImageCostUSD += cost
+		} else if kind == "video" {
+			mediaSummary.VideoCount++
+			mediaSummary.VideoCostUSD += cost
+		} else if kind == "audio" {
+			mediaSummary.AudioCount++
+			mediaSummary.AudioCostUSD += cost
 		}
 
 		mediaSummary.TotalCount++
@@ -525,6 +546,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		if exists {
 			dayItem.MediaCalls++
 			dayItem.MediaCostUSD += cost
+			dayItem.CostUSD += cost
 		} else {
 			dayStart := time.Date(time.UnixMilli(ts).UTC().Year(), time.UnixMilli(ts).UTC().Month(), time.UnixMilli(ts).UTC().Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
 			dailyMap[dayKey] = &SessionUsageDailyItem{
@@ -532,13 +554,39 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 				Timestamp:    dayStart,
 				MediaCalls:   1,
 				MediaCostUSD: cost,
+				CostUSD:      cost,
 				ModelsUsed:   make(map[string]int64),
 			}
+			dayItem = dailyMap[dayKey]
+		}
+		if v.ModelID != "" {
+			dayItem.ModelsUsed[v.ModelID]++
+		}
+
+		// Also attach media cost to session item
+		sessItem, exists := sessionUsageMap[v.SessionID]
+		if exists {
+			sessItem.CostUSD += cost
+		} else {
+			sessTitle := sessionTitleMap[v.SessionID]
+			if sessTitle == "" {
+				sessTitle = "Session " + v.SessionID[:min(8, len(v.SessionID))]
+			}
+			sessItem = &SessionUsageSessionItem{
+				SessionID:    v.SessionID,
+				Title:        sessTitle,
+				Provider:     v.ProviderID,
+				Model:        v.ModelID,
+				LastActiveAt: ts,
+				CostUSD:      cost,
+			}
+			sessionUsageMap[v.SessionID] = sessItem
 		}
 	}
 
 	summary.TotalMediaCalls = mediaSummary.TotalCount
 	summary.MediaCostUSD = mediaSummary.TotalCostUSD
+	summary.TotalCostUSD += mediaSummary.TotalCostUSD
 
 	// 5. Convert maps to sorted slices
 	dailyList := make([]SessionUsageDailyItem, 0, len(dailyMap))
@@ -715,10 +763,14 @@ func (s *Server) buildPricingMap() map[string]catalogPricingLookup {
 
 	// Baseline fallback pricing for key flagship models in case catalog is unavailable
 	baselinePricing := map[string]catalogPricingLookup{
-		"google:gemini-3.8-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
-		"google:gemini-3.7-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
-		"google:gemini-3.6-flash":       {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
-		"google:gemini-3.5-flash-lite":  {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
+		"google:gemini-3.8-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
+		"google:gemini-3.7-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
+		"google:gemini-3.6-flash":       {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.15, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
+		"google:gemini-3.5-flash-lite":  {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
+		"google:gemini-3.5-flash":       {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 3.5 Flash"},
+		"google:gemini-3.1-pro-preview": {InputPrice: 2.00, OutputPrice: 12.0, CachedPrice: 0.20, HasCached: true, DisplayName: "Gemini 3.1 Pro Preview"},
+		"google:gemini-2.5-flash":       {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 2.5 Flash"},
+		"google:gemini-2.5-pro":         {InputPrice: 1.25, OutputPrice: 10.0, CachedPrice: 0.125, HasCached: true, DisplayName: "Gemini 2.5 Pro"},
 		"google:gemini-omni-1.1-flash":  {InputPrice: 1.50, OutputPrice: 9.00, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini Omni 1.1 Flash"},
 		"anthropic:claude-fable-5-1":    {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 1.0, HasCached: true, DisplayName: "Claude Fable 5.1"},
 		"anthropic:claude-sonnet-5":     {InputPrice: 2.0, OutputPrice: 10.0, CachedPrice: 0.2, HasCached: true, DisplayName: "Claude Sonnet 5"},

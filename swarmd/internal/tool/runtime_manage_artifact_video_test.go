@@ -49,7 +49,7 @@ func (f *fakeVideoGenerationService) GenerateManagedVideo(ctx context.Context, r
 		res.Provider = "google"
 	}
 	if res.EstimatedCostUSD == 0 && res.PricingSummary == "" {
-		cost, summary := videogen.EstimateVideoCost(res.Provider, res.Model, req.DurationSeconds, req.Source != nil, nil)
+		cost, summary := videogen.EstimateVideoCost(res.Provider, res.Model, req.Resolution, req.DurationSeconds, req.Source != nil, nil)
 		res.EstimatedCostUSD = cost
 		res.PricingSummary = summary
 	}

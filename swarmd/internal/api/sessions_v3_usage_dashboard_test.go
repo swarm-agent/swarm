@@ -176,6 +176,9 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 	if resp.Summary.TotalCostUSD <= 0 {
 		t.Fatalf("expected positive total cost, got %f", resp.Summary.TotalCostUSD)
 	}
+	if resp.Summary.TotalCostUSD < resp.Summary.MediaCostUSD {
+		t.Fatalf("expected total cost (%f) to be at least media cost (%f)", resp.Summary.TotalCostUSD, resp.Summary.MediaCostUSD)
+	}
 	if resp.Summary.CodexNominalCostUSD <= 0 {
 		t.Fatalf("expected positive Codex nominal cost, got %f", resp.Summary.CodexNominalCostUSD)
 	}
@@ -194,6 +197,12 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 			}
 			if d.MediaCalls != 3 {
 				t.Fatalf("expected 3 media calls today, got %d", d.MediaCalls)
+			}
+			if d.MediaCostUSD <= 0 {
+				t.Fatalf("expected positive media cost today, got %f", d.MediaCostUSD)
+			}
+			if d.CostUSD < d.MediaCostUSD {
+				t.Fatalf("expected daily cost (%f) to include media cost (%f)", d.CostUSD, d.MediaCostUSD)
 			}
 			if len(d.ModelsUsed) < 3 {
 				t.Fatalf("expected at least 3 models used today, got %d", len(d.ModelsUsed))

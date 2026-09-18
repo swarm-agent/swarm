@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -1582,7 +1583,15 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if sourceRef != nil {
 		create.SourceSessionID, create.SourceCollectionID, create.SourceVariantID, create.SourceEventSeq = sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq
 	}
-	return r.artifactAuthority.Create(ctx, principal, create)
+	create.ModelID = generated.Model
+	create.ProviderID = generated.Provider
+	create.EstimatedCostUSD = generated.EstimatedCostUSD
+	variant, err := r.artifactAuthority.Create(ctx, principal, create)
+	if err == nil && generated.EstimatedCostUSD > 0 && r.sessions != nil && principal.AccountScopeID != "" {
+		dateStr := time.Now().UTC().Format("2006-01-02")
+		_, _ = r.sessions.IncrementDailyUsage(principal.AccountScopeID, dateStr, generated.EstimatedCostUSD, 0)
+	}
+	return variant, err
 }
 
 type managedVideoArtifactResult struct {
@@ -2259,10 +2268,17 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceVariantID = sourceRef.VariantID
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
+		create.ModelID = generated.Model
+		create.ProviderID = generated.Provider
+		create.EstimatedCostUSD = generated.EstimatedCostUSD
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
+		}
+		if generated.EstimatedCostUSD > 0 && r.sessions != nil && principal.AccountScopeID != "" {
+			dateStr := time.Now().UTC().Format("2006-01-02")
+			_, _ = r.sessions.IncrementDailyUsage(principal.AccountScopeID, dateStr, generated.EstimatedCostUSD, 0)
 		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))
@@ -2597,10 +2613,17 @@ func (r *Runtime) generateManagedAudioArtifact(
 			create.SourceVariantID = sourceRef.VariantID
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
+		create.ModelID = generated.Model
+		create.ProviderID = generated.Provider
+		create.EstimatedCostUSD = generated.EstimatedCostUSD
 
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedAudioArtifactResult{}, fmt.Errorf("publish audio artifact: %w", err)
+		}
+		if generated.EstimatedCostUSD > 0 && r.sessions != nil && principal.AccountScopeID != "" {
+			dateStr := time.Now().UTC().Format("2006-01-02")
+			_, _ = r.sessions.IncrementDailyUsage(principal.AccountScopeID, dateStr, generated.EstimatedCostUSD, 0)
 		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))

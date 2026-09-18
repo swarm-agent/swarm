@@ -90,6 +90,9 @@ type CreateInput struct {
 	IterationIndex        int
 	IterationLabel        string
 	AutoAccept            bool
+	ModelID               string
+	ProviderID            string
+	EstimatedCostUSD      float64
 	Body                  []byte
 }
 
@@ -241,7 +244,7 @@ func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore
 	collectionLineage.SelectedReviewTargetIDs = ""
 	collectionLineage.VideoProjectID, collectionLineage.VideoRevisionID, collectionLineage.VideoRevisionEventSeq = "", "", 0
 	collection := pebblestore.SessionArtifactCollection{ID: input.CollectionID, Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
+	variant := pebblestore.SessionArtifactVariant{ID: input.VariantID, CollectionID: input.CollectionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, ModelID: strings.TrimSpace(input.ModelID), ProviderID: strings.TrimSpace(input.ProviderID), EstimatedCostUSD: input.EstimatedCostUSD}
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr
 	} else if ok {
@@ -345,7 +348,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 		return pebblestore.SessionArtifactVariant{}, err
 	}
 	collection := pebblestore.SessionArtifactCollection{ID: strings.TrimSpace(input.CollectionID), Name: strings.TrimSpace(input.CollectionName), Description: strings.TrimSpace(input.CollectionDescription), Lineage: collectionLineage, Presentation: input.Presentation}
-	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept}
+	variant := pebblestore.SessionArtifactVariant{ID: strings.TrimSpace(input.VariantID), CollectionID: collection.ID, AccountScopeID: principal.AccountScopeID, SessionID: principal.SessionID, Filename: strings.TrimSpace(input.Filename), MediaType: strings.TrimSpace(input.MediaType), Role: strings.TrimSpace(input.Role), Presentation: input.Presentation, OutputRequirements: cloneOutputRequirements(input.OutputRequirements), AnimationProfile: cloneAnimationProfile(input.AnimationProfile), Parts: append([]pebblestore.SessionArtifactPart(nil), input.Parts...), Lineage: lineage, ArtifactStepID: strings.TrimSpace(input.ArtifactStepID), RevisionRoundID: strings.TrimSpace(input.ArtifactStepID), CandidateIndex: input.CandidateIndex, AutoAccept: input.AutoAccept, ModelID: strings.TrimSpace(input.ModelID), ProviderID: strings.TrimSpace(input.ProviderID), EstimatedCostUSD: input.EstimatedCostUSD}
 	existingStaging := false
 	if existing, ok, getErr := a.metadata.GetSessionArtifactVariant(principal.AccountScopeID, principal.SessionID, collection.ID, variant.ID); getErr != nil {
 		return pebblestore.SessionArtifactVariant{}, getErr

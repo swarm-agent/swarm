@@ -311,3 +311,61 @@ func TestSessionsV3UsageLimits_WatcherAndMultiSessionKill(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionsV3UsageLimits_MediaGenerationFactorsIntoDailyLimit(t *testing.T) {
+	_, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	principal := testPrincipal()
+
+	sessionID := "sess_media_limit_test"
+	_, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      sessionID,
+		Title:          "Media Limit Test",
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		WorkspacePath:  t.TempDir(),
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "high"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// 1. Set daily limit to $3.00
+	_, err = sessionSvc.SetUsageLimit(principal.AccountScopeID, 3.00, 0, true)
+	if err != nil {
+		t.Fatalf("set usage limit: %v", err)
+	}
+
+	// Initially not exceeded
+	exceeded, cost, _, err := sessionSvc.CheckDailyLimit(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("check daily limit: %v", err)
+	}
+	if exceeded || cost != 0 {
+		t.Fatalf("expected not exceeded initially, got exceeded=%v cost=%f", exceeded, cost)
+	}
+
+	// 2. Simulate generating a 4K Veo video artifact ($4.80) and incrementing daily usage
+	today := time.Now().UTC().Format("2006-01-02")
+	acc, err := sessionSvc.IncrementDailyUsage(principal.AccountScopeID, today, 4.80, 0)
+	if err != nil {
+		t.Fatalf("increment daily usage: %v", err)
+	}
+	if acc.TotalCostUSD < 4.79 || acc.TotalCostUSD > 4.81 {
+		t.Fatalf("expected accumulator total $4.80, got %f", acc.TotalCostUSD)
+	}
+
+	// 3. Verify CheckDailyLimit is now EXCEEDED because of the media cost!
+	exceeded, currentCost, limitCost, err := sessionSvc.CheckDailyLimit(principal.AccountScopeID)
+	if err != nil {
+		t.Fatalf("CheckDailyLimit after media: %v", err)
+	}
+	if !exceeded {
+		t.Fatalf("expected daily limit to be exceeded by media cost, but was false")
+	}
+	if currentCost < 4.79 || currentCost > 4.81 {
+		t.Fatalf("expected currentCost $4.80, got %f", currentCost)
+	}
+	if limitCost != 3.00 {
+		t.Fatalf("expected limitCost $3.00, got %f", limitCost)
+	}
+}

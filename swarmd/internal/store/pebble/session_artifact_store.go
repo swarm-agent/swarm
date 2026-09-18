@@ -247,6 +247,9 @@ type SessionArtifactVariant struct {
 	Parts           []SessionArtifactPart           `json:"parts,omitempty"`
 	PartDefinitions []SessionArtifactPartDefinition `json:"part_definitions,omitempty"`
 	Composition     *SessionArtifactComposition     `json:"composition,omitempty"`
+	ModelID          string                          `json:"model_id,omitempty"`
+	ProviderID       string                          `json:"provider_id,omitempty"`
+	EstimatedCostUSD float64                         `json:"estimated_cost_usd,omitempty"`
 	CreatedAt       int64                           `json:"created_at"`
 	UpdatedAt       int64                           `json:"updated_at"`
 	EventSeq        uint64                          `json:"event_seq"`
@@ -2416,6 +2419,15 @@ func mergeTerminalArtifactVariant(current, incoming SessionArtifactVariant) Sess
 	}
 	if incoming.Parts != nil {
 		next.Parts = append([]SessionArtifactPart(nil), incoming.Parts...)
+	}
+	if incoming.ModelID != "" {
+		next.ModelID = incoming.ModelID
+	}
+	if incoming.ProviderID != "" {
+		next.ProviderID = incoming.ProviderID
+	}
+	if incoming.EstimatedCostUSD > 0 {
+		next.EstimatedCostUSD = incoming.EstimatedCostUSD
 	}
 	if incoming.Composition != nil {
 		composition := *incoming.Composition

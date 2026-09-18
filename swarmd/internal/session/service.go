@@ -1739,6 +1739,13 @@ func (s *Service) SetUsageLimit(accountScopeID string, limitUSD float64, tokensL
 	return rec, nil
 }
 
+func (s *Service) IncrementDailyUsage(accountScopeID, date string, costUSD float64, tokens int64) (pebblestore.DailyUsageAccumulator, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.DailyUsageAccumulator{}, errors.New("session store is not configured")
+	}
+	return s.store.IncrementDailyUsage(accountScopeID, date, costUSD, tokens)
+}
+
 func (s *Service) GetTodayUsageTotal(accountScopeID string) (float64, int64, error) {
 	if s == nil || s.store == nil {
 		return 0, 0, errors.New("session store is not configured")

@@ -1,29 +1,17 @@
 package audiogen
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // EstimateAudioCost returns the estimated cost in USD and a user-friendly pricing summary.
 func EstimateAudioCost(providerID, modelID string, isIteration bool, catalogPricing []byte) (float64, string) {
 	if len(catalogPricing) > 0 {
-		var p struct {
-			AudioOutput float64 `json:"audio_output"`
-			MusicOutput float64 `json:"music_output"`
-			Prompt      float64 `json:"prompt"`
-		}
-		if err := json.Unmarshal(catalogPricing, &p); err == nil {
-			if p.AudioOutput > 0 {
-				return p.AudioOutput, fmt.Sprintf("$%.2f per generation (catalog)", p.AudioOutput)
-			}
-			if p.MusicOutput > 0 {
-				return p.MusicOutput, fmt.Sprintf("$%.2f per generation (catalog)", p.MusicOutput)
-			}
-			if p.Prompt > 0 {
-				return p.Prompt, fmt.Sprintf("$%.2f per generation (catalog)", p.Prompt)
-			}
+		if cost, ok := pebblestore.ExtractMediaPricingFromCatalog(catalogPricing, "audio", modelID, "", 30); ok && cost > 0 {
+			return cost, fmt.Sprintf("$%.2f per generation (%s catalog)", cost, modelID)
 		}
 	}
 
