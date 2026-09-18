@@ -7,6 +7,24 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+func TestNormalizeMode(t *testing.T) {
+	if NormalizeMode("auto") != ModeAuto {
+		t.Fatalf("NormalizeMode('auto') = %q, want %q", NormalizeMode("auto"), ModeAuto)
+	}
+	if NormalizeMode("auto+bypass_permissions") != ModeAuto {
+		t.Fatalf("NormalizeMode('auto+bypass_permissions') = %q, want %q", NormalizeMode("auto+bypass_permissions"), ModeAuto)
+	}
+	if NormalizeMode("plan") != ModePlan {
+		t.Fatalf("NormalizeMode('plan') = %q, want %q", NormalizeMode("plan"), ModePlan)
+	}
+	if NormalizeMode("unknown") != ModePlan {
+		t.Fatalf("NormalizeMode('unknown') = %q, want %q", NormalizeMode("unknown"), ModePlan)
+	}
+	if !IsValidMode("auto") || !IsValidMode("auto+bypass_permissions") || !IsValidMode("plan") {
+		t.Fatal("IsValidMode failed for valid modes")
+	}
+}
+
 func TestSetModeToPlanAppendsSystemReentryNotification(t *testing.T) {
 	svc, cleanup := newModeReentryTestService(t)
 	defer cleanup()

@@ -2322,7 +2322,11 @@ func isAllowedRole(role string) bool {
 }
 
 func NormalizeMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	clean := strings.ToLower(strings.TrimSpace(mode))
+	if clean == ModeAuto || strings.HasPrefix(clean, ModeAuto+"+") {
+		return ModeAuto
+	}
+	switch clean {
 	case ModeAuto:
 		return ModeAuto
 	default:
@@ -2331,7 +2335,11 @@ func NormalizeMode(mode string) string {
 }
 
 func IsValidMode(mode string) bool {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	clean := strings.ToLower(strings.TrimSpace(mode))
+	if clean == ModeAuto || strings.HasPrefix(clean, ModeAuto+"+") {
+		return true
+	}
+	switch clean {
 	case ModePlan, ModeAuto:
 		return true
 	default:

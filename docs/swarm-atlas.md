@@ -2171,11 +2171,14 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - Exposed `"capability_token"` in `manageArtifactDefinition` parameter properties so models can inspect and pass capability tokens from `action="image_capabilities"`.
   - Added `"title"` and `"label"` to supported parameters for `action="generate_image"`, allowing optional image titles without throwing unsupported field errors and mapping them to presentation/collection metadata.
   - Added automatic capability token resolution in `generateManagedImageArtifact`: when `capability_token` is omitted and the configured model provides a verified capability token, the runtime auto-populates `req.CapabilityToken`, enabling zero-instruction direct image generation without unnecessary error rounds.
+- **Session Mode Normalization (`swarmd/internal/session/service.go`):**
+  - Updated `NormalizeMode` and `IsValidMode` in `swarmd/internal/session/service.go` to recognize `auto+...` permission-bypass modes as `ModeAuto` instead of falling back to `ModePlan`.
 - **Harness Prompt Examples and Guidance (`swarmd/internal/run/service_prompt.go`):**
   - Added explicit image generation guidance under `Managed Artifacts & Verification` explaining the `image_capabilities` discovery and token flow for Google Gemini image generation.
   - Added concrete `manage_artifact (image capabilities)` and `manage_artifact (generate image)` JSON invocation examples under `Tool examples`.
 - **Validation:**
   - Added unit test `TestManageArtifactGenerateImageAcceptsTitleAndAutoPopulatesCapabilityToken` in `swarmd/internal/tool/runtime_manage_artifact_test.go`.
+  - Added unit test `TestNormalizeMode` in `swarmd/internal/session/mode_reentry_test.go`.
   - Verified `TestManageArtifactImageCapabilitiesExposeConfiguredSnapshotOptions` and all `TestManageArtifact*Image` tests pass.
   - `(cd swarmd && go test -v ./internal/tool -run 'TestManageArtifact.*Image')` passes.
   - `(cd swarmd && go test -v ./internal/run -run 'Test(ContextTokenBenchmark|MasterHarnessPrompt|BuildInput)')` passes.
