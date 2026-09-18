@@ -3226,9 +3226,7 @@ function VideoToolCard({ toolMessage, isGroupItem }: { toolMessage: StructuredTo
   );
 }
 
-import { AutomationInstructionProposal } from '../../tools/automations/automation-instruction-proposal';
-import { AutomationProposalCard } from '../../tools/automations/automation-proposal-card';
-import { parseAutomationProposal } from '../../tools/automations/automation-proposal';
+
 
 export function ToolMessageView({
   toolMessage,
@@ -3264,10 +3262,7 @@ export function ToolMessageView({
     && !hasStructuredTaskRows
     && !toolMessage.output.trim()
     && !toolMessage.completedOutput.trim();
-  if (['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
-    const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
-    if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
-  }
+
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
@@ -3338,7 +3333,7 @@ export function ToolMessageView({
       : summary;
   const showPreview = normalizedTool !== 'thinking' || thinkingTagsEnabled;
   if (isExitPlanMode) return <ExitPlanModeToolView toolMessage={toolMessage} />;
-  if (isPlanManage) return <><PlanManageToolView toolMessage={toolMessage} />{toolMessage.state === 'done' && <AutomationInstructionProposal payload={toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput)} />}</>;
+  if (isPlanManage) return <PlanManageToolView toolMessage={toolMessage} />;
   if (isManageWorktree) return <ManageWorktreeCard toolMessage={toolMessage} />;
   if (isManageArtifact) {
     return (

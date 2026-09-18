@@ -366,11 +366,19 @@ func NewArtifactV3AuthorService(root string, repository ArtifactV3AuthorReposito
 }
 
 func artifactV3AuthorDefinition() Definition {
-	return Definition{Type: "function", Name: "artifact_v3_author", Description: "Context-bound whole-project Artifact V3 authoring. Operates on the complete exact base tree with ordinary file operations, repeated server-owned build/browser preview gates, and one final complete candidate. Targets express user intent and do not restrict coherent cross-project edits; only server-locked paths are immutable. Destination, repository, refs, policy, build commands, and output paths are injected and cannot be caller supplied. read_file offset and limit are byte counts, not lines; max_lines is unsupported. Read Content as decoded text: JSON escapes are transport notation, never source bytes. Prefer short unique literal edits rather than copying large escaped script blocks. A rejected edit changes nothing: never add cleanup edits for characters that were only in a rejected request. After a mismatch reread, then correct the exact substring; after successful changes build_preview and finish_turn rather than speculative cleanup.", Parameters: map[string]any{
+	return Definition{Type: "function", Name: "artifact_v3_author", Description: "Context-bound whole-project Artifact V3 authoring. Call action='help' topic='workflow' for authoring instructions.", Parameters: map[string]any{
 		"type": "object", "properties": map[string]any{
 			"action":       map[string]any{"type": "string", "enum": []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish, artifactV3ActionReconcile}},
 			"native_parts": artifactV3NativePartsSchema(),
-			"path":         map[string]any{"type": "string", "maxLength": 512}, "to_path": map[string]any{"type": "string", "maxLength": 512}, "content": map[string]any{"type": "string"}, "old_string": map[string]any{"type": "string", "description": "Exact literal substring from decoded read_file Content, not JSON escape notation. Must match once unless replace_all is true. On mismatch, read again before retrying; no mutation occurs."}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}, "cursor": map[string]any{"type": "string", "maxLength": 1024}, "limit": map[string]any{"type": "integer", "minimum": 1}, "offset": map[string]any{"type": "integer", "minimum": 0},
+			"path":         map[string]any{"type": "string", "maxLength": 512},
+			"to_path":      map[string]any{"type": "string", "maxLength": 512},
+			"content":      map[string]any{"type": "string"},
+			"old_string":   map[string]any{"type": "string", "description": "Exact literal substring to replace."},
+			"new_string":   map[string]any{"type": "string"},
+			"replace_all":  map[string]any{"type": "boolean"},
+			"cursor":       map[string]any{"type": "string", "maxLength": 1024},
+			"limit":        map[string]any{"type": "integer", "minimum": 1},
+			"offset":       map[string]any{"type": "integer", "minimum": 0},
 		}, "required": []string{"action"}, "additionalProperties": false,
 	}}
 }
@@ -412,15 +420,11 @@ func ParseArtifactV3SceneContract(raw any) (*pebblestore.ArtifactV3SceneContract
 
 // Share the exact native Part contract across primary and managed authoring.
 func artifactV3NativePartsSchema() map[string]any {
-	return map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "description": "Complete replacement Parts for initial authoring or explicit whole_project revision intent. Preserve continuing IDs; add/remove/rebind meaningful output locators after editing source. Non-Part policy stays immutable. Run build_preview to resolve browser selectors/states and temporal captures before finish_turn.", "items": map[string]any{
-		"type": "object", "additionalProperties": false, "required": []string{"id", "label", "locator"}, "properties": map[string]any{
-			"id": map[string]any{"type": "string"}, "label": map[string]any{"type": "string"}, "capture_time_ms": map[string]any{"type": "integer", "minimum": 0},
-			"temporal": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"scene_id", "start_ms", "end_ms"}, "properties": map[string]any{"scene_id": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}},
-			"locator": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind"}, "properties": map[string]any{
-				"kind": map[string]any{"type": "string", "enum": []string{"file", "selector", "state", "semantic"}}, "path": map[string]any{"type": "string"}, "value": map[string]any{"type": "string"}, "paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			}},
-		},
-	}}
+	return map[string]any{
+		"type":        "array",
+		"description": "Complete replacement Parts. Call action='help' topic='workflow' for schema.",
+		"items":       map[string]any{"type": "object"},
+	}
 }
 
 func parseArtifactV3NativeParts(raw any) ([]pebblestore.ArtifactV3Part, error) {

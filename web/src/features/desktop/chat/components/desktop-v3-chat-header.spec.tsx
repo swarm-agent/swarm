@@ -119,3 +119,44 @@ test('session workspace row contains one attachment control without runtime meta
   assert.ok(markup.indexOf('</h1>') < markup.indexOf('data-testid="session-workspace-row"'))
   assert.match(markup, /data-testid="desktop-v3-git-branch">agent\/header-fix/)
 })
+
+// Requirement: On mobile, the header title and workspace identity must be constrained
+// with overflow-hidden and truncate so long titles or workspace identities do not overflow
+// horizontally into the new chat / session button or actions.
+test('mobile header constrains title and container with overflow protection before the new chat button', () => {
+  const longTitle = 'A very long conversation title that must truncate cleanly and not run into the new chat button on mobile screens'
+  const editableMarkup = renderToStaticMarkup(
+    <DesktopV3ChatHeader
+      title={longTitle}
+      workspaceName="Frontend Workspace"
+      sessionId="test-session-123"
+      onNewSession={() => {}}
+      onOpenChats={() => {}}
+      sessionActions={actions}
+    />,
+  )
+
+  // Header has the new session button
+  assert.match(editableMarkup, /aria-label="New session"/)
+
+  // Title container has overflow-hidden preventing spill into action controls
+  assert.match(editableMarkup, /class="[^"]*min-w-0 flex-1 overflow-hidden[^"]*"/)
+
+  // Mobile h1 has flex, min-w-0, and overflow-hidden
+  assert.match(editableMarkup, /<h1 class="[^"]*flex min-w-0 items-center overflow-hidden[^"]*"/)
+
+  // Rename button on mobile has max-w-full and truncate
+  assert.match(editableMarkup, /<button[^>]*class="[^"]*max-w-full min-w-0 truncate[^"]*"[^>]*title="A very long conversation title/)
+
+  // Read-only title (no rename) also has block, max-w-full, min-w-0, and truncate
+  const readOnlyMarkup = renderToStaticMarkup(
+    <DesktopV3ChatHeader
+      title={longTitle}
+      workspaceName="Frontend Workspace"
+      onNewSession={() => {}}
+      onOpenChats={() => {}}
+    />,
+  )
+  assert.match(readOnlyMarkup, /<span class="[^"]*block max-w-full min-w-0 truncate[^"]*" title="A very long conversation title/)
+})
+

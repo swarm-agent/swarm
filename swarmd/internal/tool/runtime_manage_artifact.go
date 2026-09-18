@@ -140,247 +140,66 @@ func manageArtifactDefinition() Definition {
 		"properties": map[string]any{
 			"id":          map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
 			"label":       map[string]any{"type": "string", "maxLength": 256},
-			"kind":        map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Locator contract for this review target. temporal requires start_ms/end_ms; spatial requires normalized x/y/width/height; page requires page; state requires state_id; selector requires selector; semantic needs no locator beyond id/label/description."},
-			"description": map[string]any{"type": "string", "maxLength": 2048, "description": "Concise explanation of the actual authored region or section and the changes it can receive."},
-			"start_ms":    map[string]any{"type": "integer", "minimum": 0, "description": "Temporal start in milliseconds; required only for kind=temporal."},
-			"end_ms":      map[string]any{"type": "integer", "minimum": 1, "description": "Exclusive temporal end in milliseconds greater than start_ms; required only for kind=temporal."},
-			"x":           map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized left coordinate; required only for kind=spatial."},
-			"y":           map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized top coordinate; required only for kind=spatial."},
-			"width":       map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Normalized width with x+width <= 1; required only for kind=spatial."},
-			"height":      map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "Normalized height with y+height <= 1; required only for kind=spatial."},
-			"page":        map[string]any{"type": "integer", "minimum": 1, "description": "One-based page number; required only for kind=page."},
-			"state_id":    map[string]any{"type": "string", "maxLength": 128, "description": "Exact authored state identifier; required only for kind=state."},
-			"selector":    map[string]any{"type": "string", "maxLength": 512, "description": "Stable selector for an element in the authored artifact; required only for kind=selector."},
+			"kind":        map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Locator contract: temporal requires start_ms/end_ms; spatial requires normalized x/y/width/height; page requires page; state requires state_id; selector requires selector."},
+			"description": map[string]any{"type": "string", "maxLength": 2048},
 		},
 		"required":             []string{"id", "label", "kind"},
-		"additionalProperties": false,
-	}
-	locator := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"kind":     map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}},
-			"start_ms": map[string]any{"type": "integer", "minimum": 0},
-			"end_ms":   map[string]any{"type": "integer", "minimum": 1},
-			"x":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-			"y":        map[string]any{"type": "number", "minimum": 0, "maximum": 1},
-			"width":    map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
-			"height":   map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 1},
-			"page":     map[string]any{"type": "integer", "minimum": 1},
-			"state_id": map[string]any{"type": "string", "maxLength": 128},
-			"selector": map[string]any{"type": "string", "maxLength": 512},
-		},
-		"required":             []string{"kind"},
-		"additionalProperties": false,
-	}
-	replacementPart := map[string]any{
-		"type": "object", "properties": map[string]any{
-			"part_id":        map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
-			"content":        map[string]any{"type": "string"},
-			"content_base64": map[string]any{"type": "string"},
-			"media_type":     map[string]any{"type": "string", "maxLength": 255},
-			"filename":       map[string]any{"type": "string", "maxLength": 255},
-			"locked":         map[string]any{"type": "boolean"},
-		}, "required": []string{"part_id"}, "additionalProperties": false,
-	}
-	initialPart := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"id":             map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Stable independently replaceable part identity."},
-			"label":          map[string]any{"type": "string", "maxLength": 256},
-			"description":    map[string]any{"type": "string", "maxLength": 2048},
-			"media_type":     map[string]any{"type": "string", "maxLength": 255, "description": "Media type for this part's independently stored immutable bytes."},
-			"content":        map[string]any{"type": "string", "description": "Non-empty UTF-8 bytes for this independent part; mutually exclusive with content_base64."},
-			"content_base64": map[string]any{"type": "string", "description": "Non-empty base64 bytes for this independent part; mutually exclusive with content."},
-			"locator":        locator,
-		},
-		"required":             []string{"id", "label", "media_type"},
-		"additionalProperties": false,
+		"additionalProperties": true,
 	}
 	presentation := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"kind":        map[string]any{"type": "string", "description": "Display kind: download|text|code|image|html|package"},
 			"label":       map[string]any{"type": "string", "maxLength": 256},
-			"description": map[string]any{"type": "string", "maxLength": 2048},
 			"previewable": map[string]any{"type": "boolean"},
-			"width":       map[string]any{"type": "integer", "minimum": 0, "maximum": 100000},
-			"height":      map[string]any{"type": "integer", "minimum": 0, "maximum": 100000},
 		},
-		"additionalProperties": false,
-	}
-	entry := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"name":    map[string]any{"type": "string", "description": "Relative slash-delimited package entry name"},
-			"content": map[string]any{"type": "string", "description": "UTF-8 entry content"},
-		},
-		"required":             []string{"name", "content"},
-		"additionalProperties": false,
-	}
-	partChoice := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"part_id": map[string]any{"type": "string"},
-			"revision": map[string]any{"type": "object", "properties": map[string]any{
-				"artifact_chain_id": map[string]any{"type": "string"}, "part_id": map[string]any{"type": "string"}, "part_revision_id": map[string]any{"type": "string"}, "owner_session_id": map[string]any{"type": "string"}, "digest_sha256": map[string]any{"type": "string"}, "size": map[string]any{"type": "integer", "minimum": 1}, "media_type": map[string]any{"type": "string"},
-			}, "required": []string{"artifact_chain_id", "part_id", "part_revision_id", "owner_session_id", "digest_sha256", "size", "media_type"}, "additionalProperties": false},
-			"revision_event_seq": map[string]any{"type": "integer", "minimum": 1},
-			"locked":             map[string]any{"type": "boolean"},
-		},
-		"required": []string{"part_id", "revision", "revision_event_seq", "locked"}, "additionalProperties": false,
-	}
-	reference := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"session_id":    map[string]any{"type": "string"},
-			"collection_id": map[string]any{"type": "string"},
-			"variant_id":    map[string]any{"type": "string"},
-			"event_seq":     map[string]any{"type": "integer", "minimum": 1},
-		},
-		"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
-		"additionalProperties": false,
-	}
-	artifactV3Reference := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"session_id":   map[string]any{"type": "string"},
-			"artifact_id":  map[string]any{"type": "string"},
-			"revision_ref": map[string]any{"type": "string"},
-		},
-		"required":             []string{"session_id", "artifact_id", "revision_ref"},
-		"additionalProperties": false,
+		"additionalProperties": true,
 	}
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "For a retained failed draft from an earlier terminal run, use resume_v3 with resume_draft (session_id, artifact_id, expected_sequence, expected_projection_seq, expected_head); obtain exact CAS values using draft_status_v3 with the artifact_id already in chat context (no Git revision or raw grant needed). expected_head is required and is empty only before the first publication. This renews the producer grant, invalidates the old handle and requires rebuilding; active producers cannot be rebound. For incremental native artifact edits, call begin_v3 with artifact_v3_reference and target_part_ids, then author_v3 with the returned exact draft_handle and operation object using inspect_context/list_files/read_file/edit_file/diff/build_preview/finish_turn. A fixing create/revise result retains source and current gate diagnostics: repair that handle, never allocate another create. Read decoded Content before literal edits; preserve stable Parts and unrelated bytes. Stop unchanged retries and report expiry/authorization conflicts honestly. Finish only after a current ready build; candidate selection remains explicit. For a narration plan, call action=create with narration_plan using its complete schema example: the server owns escaped HTML and separate narration, scene context, visual and music Parts; do not write markup or invent selectors. For one complete ordinary text/html artifact, call action=create with filename, media_type=text/html, and the full HTML content. Direct native HTML accepts animation_profile motion_ui or spatial_3d (pinned offline Three.js; import from 'three' in a module script, no authored import maps or base URLs) and requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >=100, fps 1–60, ceil(duration_ms*fps/1000) <=36000 at 1920x1080 (15 minutes at 30 FPS fits; lower FPS or split larger jobs)) matching ready(). Semantic regions marked data-swarm-capture-ui are excluded from derived Parts; explicit Parts must target output regions only, never capture controls. Omitted parts produce one whole-animation midpoint sample while retaining other meaningful output regions as required selectors; use explicit temporal Parts for separate scenes. Profiled previews always use renderer-selected deterministic seek, not wall-clock autoplay. Sequential scene Parts use explicit kind=temporal, start_ms/end_ms within the admitted manifest duration, and an id matching their stable HTML region; the server samples each midpoint rather than requiring every scene visible together. Provide globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready(), and seek(ms) returning {time_ms:ms}; seek must pause the shared playhead and deterministically render that time. Keep normal user controls and autoplay functional outside capture. The HTML must expose useful stable regions with IDs on header, main, section, article, nav, aside, or footer; the server derives native Artifact V3 Parts, runs the whole-project build/browser preview gate, and returns an exact V3 revision. Do not substitute generate_image, V1/V2 publication, or Designer delegation for this direct HTML path. Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch. export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states. export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling. Generate one provider-billed image and publish it directly as a ready V3 managed artifact; create and manage other durable artifacts; inspect exact ready references as bounded text/package data or bounded image base64; and explicitly materialize exact references into the trusted workspace. Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous. Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call. For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.",
+		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For ANY artifact creation, revision, or media task, first call action='help' (with optional topic: 'animation', 'video', 'audio', 'narration', 'workflow') to obtain complete schema contracts, examples, and authoring guidelines. Do not substitute generate_image for native HTML documents.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"artifact_id":  map[string]any{"type": "string", "description": "Owned native artifact identity from current chat context, required for source_v3 and draft_status_v3. source_v3 accepts only action and artifact_id; list_v3 needs only action. Both are read-only and session-bound: omit session_id and artifact_v3_reference. Copy the returned exact artifact_v3_source into task."},
-				"resume_draft": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"session_id", "artifact_id", "expected_sequence", "expected_projection_seq", "expected_head"}, "properties": map[string]any{"turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "expected_sequence": map[string]any{"type": "integer", "minimum": 1}, "expected_projection_seq": map[string]any{"type": "integer", "minimum": 1}, "expected_head": map[string]any{"type": "string"}}},
-				"action":       map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete"}, "description": "Artifact operation. create publishes native Artifact V3 from either a structured narration_plan (server-rendered with separate narration Parts) or one complete text/html content document with stable semantic region IDs; these inputs are mutually exclusive and neither is an image action. read_v3 returns the bounded complete HTML and Parts for one exact native V3 revision. revise_v3 takes that exact reference, complete corrected HTML, and target Part IDs, and publishes one exact-base candidate without moving the selected head; optional shared turn_key plus distinct candidate_index values create sibling alternatives from that same base, while one alternatives array enforces that every requested sibling is attempted in one server-owned tool call before provider completion. derive_text applies bounded exact replacements to one exact ready UTF-8 text source and publishes a complete ready derived artifact while preserving every unedited source byte and exact lineage. Focused managed Designers use read_part then publish_part for one selected part, or read_parts then publish_parts for a bounded multi-part selection; those actions are bound entirely to trusted exact composition context and publish one atomic candidate. Supports search, materialize/materialize_batch, and publish_workspace. export_html_stills captures declared swarm.capture/v1 states into managed PNGs. export_html_animation_fallback preflights one swarm.animation/v1 source and publishes its sampled first frame as an exact-lineage render-ready PNG fallback. export_html_animation captures a bounded deterministic swarm.animation/v1 timeline into one silent managed MP4 valid as a managed video timeline clip. generate_video generates or conversationally edits managed AI video artifacts; initial generation routes to your configured video generation model (e.g. Veo 3.1) and remix/iteration with source_* references routes to your configured iteration model (Gemini Omni Flash). Pass chain_from (or source_* with chain=true) to automatically extract the last keyframe and generate seamless continuous chained video. generate_video_story (or generate_video with scenes array): generates multi-part chained video end-to-end in ONE call, automatically extracting keyframes between scenes, generating continuous Lyria soundtrack, and concatenating with Foley ducking. extract_video_frame extracts a PNG keyframe (frame: last, first, or timestamp_ms) from a video artifact. chain_video concatenates multiple video artifacts and optionally overrides or mixes continuous soundtrack audio (audio_mode: override, mix_ducked, or native) into a master video artifact. generate_audio generates or iterates on managed AI music/audio artifacts using Google Lyria; supports prompt, prompts array for multi-style variations, duration_seconds, image/image_path inspiration, and source_* lineage for iteration."},
-				"scenes": map[string]any{
-					"type":        "array",
-					"minItems":    2,
-					"maxItems":    16,
-					"description": "For generate_video_story: ordered list of scene objects ({prompt, title, duration_seconds}) to automatically generate and chain into a master video.",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"prompt":           map[string]any{"type": "string", "description": "Visual scene description and audio direction."},
-							"title":            map[string]any{"type": "string", "description": "Optional scene title."},
-							"duration_seconds": map[string]any{"type": "integer", "description": "Optional scene duration in seconds (default 8s)."},
-						},
-						"required":             []string{"prompt"},
-						"additionalProperties": false,
-					},
-				},
-				"soundtrack": map[string]any{"description": "For generate_video_story: continuous soundtrack prompt string or object ({prompt, audio_mode, foley_volume}) generated via Google Lyria for total story duration."},
-				"script":     map[string]any{"type": "object", "description": "For generate_video_story: script object containing scenes and soundtrack."},
-				"chain_from": map[string]any{"description": "For generate_video: video artifact reference or workspace path from which the last keyframe is automatically extracted to seed continuous image-to-video generation."},
-				"chain":      map[string]any{"type": "boolean", "description": "For generate_video with source_* pointing to a video: when true, extracts last keyframe and chains via image-to-video instead of conversational editing."},
-				"videos": map[string]any{
-					"type":        "array",
-					"minItems":    2,
-					"maxItems":    16,
-					"description": "Ordered array of video artifact references or workspace paths for chain_video.",
-					"items": map[string]any{
-						"anyOf": []any{
-							reference,
-							map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"path": map[string]any{"type": "string", "description": "Clean workspace-relative or absolute video file path."},
-								},
-								"required":             []string{"path"},
-								"additionalProperties": false,
-							},
-							map[string]any{
-								"type":        "string",
-								"description": "Clean workspace-relative or absolute video file path.",
-							},
-						},
-					},
-				},
-				"audio":            map[string]any{"description": "Optional audio artifact reference or workspace path for chain_video continuous soundtrack."},
-				"audio_mode":       map[string]any{"type": "string", "enum": []string{"override", "mix_ducked", "native"}, "description": "Audio mode for chain_video: override (replaces all video audio with soundtrack), mix_ducked (duck native Foley at 35%, overlay soundtrack at 100%), or native (preserves video audio)."},
-				"foley_volume":     map[string]any{"type": "number", "minimum": 0, "maximum": 2, "description": "Optional volume multiplier (0.0 to 2.0, default 0.35) for native audio in mix_ducked mode."},
-				"transition":       map[string]any{"type": "string", "enum": []string{"cut", "crossfade"}, "description": "Optional transition for chain_video: cut (lossless concat, default) or crossfade."},
-				"frame":            map[string]any{"type": "string", "description": "For extract_video_frame: 'last' (default), 'first', or milliseconds timestamp."},
-				"timestamp_ms":     map[string]any{"type": "integer", "minimum": 0, "description": "Optional timestamp in milliseconds for extract_video_frame."},
-				"prompt":           map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt required for generate_image, generate_video, and generate_audio. For a remix or iteration, describe only the requested changes while preserving the attached exact source through all source_* fields."},
-				"prompts":          map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes}, "description": "Optional array of prompts for generating multiple audio variations in one call."},
-				"image":            map[string]any{"description": "Optional image input for generate_video or generate_audio (image inspiration). Accepts a workspace-relative or absolute image file path, a data URI, or an object referencing a workspace path, session asset, or ready artifact."},
-				"image_path":       map[string]any{"type": "string", "description": "Optional workspace file path to an image for generate_video or generate_audio."},
-				"title":            map[string]any{"type": "string", "maxLength": 160, "description": "Optional human-readable title for the generated media (video or audio). If omitted, a descriptive title is automatically derived from the prompt."},
-				"aspect_ratio":     map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio for generate_video: 16:9 or 9:16."},
-				"resolution":       map[string]any{"type": "string", "maxLength": 32, "description": "Optional resolution for generate_video: 720p, 1080p, 4k, or 360p."},
-				"duration_seconds": map[string]any{"type": "integer", "description": "Optional media duration in seconds for video (4, 6, 8) or audio (e.g. 15, 28, 30, 60, 120)."},
-				"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 8, "description": "Optional number of media variants to generate (1 to 8)."},
-				"capability_token": map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for each Google generate_image call, including every repeated remix"},
-				"image_settings": map[string]any{"type": "object", "properties": map[string]any{
-					"size":         map[string]any{"type": "string", "maxLength": 64, "description": "Optional portable output size, for example auto, 1024x1024, 1536x1024, or 1024x1536. The backend adapts it to the configured image provider."},
-					"aspect_ratio": map[string]any{"type": "string", "maxLength": 32, "description": "Optional aspect ratio: 1:1, 2:3, 3:2, 3:4, 4:3, 9:16, 16:9, or 21:9."},
-					"image_size":   map[string]any{"type": "string", "maxLength": 32, "description": "Optional portable resolution tier: 512, 1K, 2K, or 4K. Equivalent square pixel aliases such as 1024x1024, 2048x2048, and 4096x4096 are accepted. The backend translates this for the configured provider."},
-				}, "additionalProperties": false, "description": "Optional provider-neutral image output controls. Omit unless the user requested a size or aspect ratio. The backend resolves the account's configured provider/model and translates these controls; never pass provider or model."},
-				"session_id":             map[string]any{"type": "string", "description": "Authenticated source session. For get/read/materialize/promote of an attached ready artifact, copy this together with collection_id, variant_id, and event_seq from the same returned reference."},
-				"collection_id":          map[string]any{"type": "string", "description": "Opaque collection reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, variant_id, and event_seq from the same returned reference. For standalone generate_image, omit to create a new collection or pass an existing collection to append the generated variant without replacing collection metadata. Required for collection-scoped actions."},
-				"collection_name":        map[string]any{"type": "string", "maxLength": 256},
-				"collection_description": map[string]any{"type": "string", "maxLength": 2048},
-				"variant_id":             map[string]any{"type": "string", "description": "Opaque variant reference. For get/read/materialize/promote of an attached ready artifact, copy this together with session_id, collection_id, and event_seq from the same returned reference; otherwise optional on create."},
-				"filename":               map[string]any{"type": "string", "maxLength": 255},
-				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type for create; optional exact canonical media type filter for list/search discovery"},
-				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content for monolithic create or focused publish_part replacement bytes"},
-				"draft_handle":           map[string]any{"type": "object", "properties": map[string]any{"session_id": map[string]any{"type": "string"}, "artifact_id": map[string]any{"type": "string"}, "turn_id": map[string]any{"type": "string"}, "candidate_id": map[string]any{"type": "string"}, "grant_id": map[string]any{"type": "string"}}, "required": []string{"session_id", "artifact_id", "turn_id", "candidate_id", "grant_id"}, "additionalProperties": false},
-				"operation":              artifactV3AuthorDefinition().Parameters,
-				"narration_plan":         artifactNarrationPlanToolSchema(),
-				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes for focused publish_part; mutually exclusive with content"},
-				"text_edits":             map[string]any{"type": "array", "minItems": 1, "maxItems": 32, "items": map[string]any{"type": "object", "properties": map[string]any{"old_string": map[string]any{"type": "string", "minLength": 1}, "new_string": map[string]any{"type": "string"}, "replace_all": map[string]any{"type": "boolean"}}, "required": []string{"old_string", "new_string"}, "additionalProperties": false}, "description": "Ordered exact UTF-8 replacements for derive_text. By default each old_string must occur exactly once; replace_all requires at least one occurrence. Bytes outside matched spans are preserved exactly."},
-				"part_choices":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": partChoice, "description": "Exact immutable part revisions and desired lock states to combine atomically into one accepted complete composition."},
-				"replacements":           map[string]any{"type": "array", "minItems": 1, "maxItems": pebblestore.SessionArtifactMaxParts, "items": replacementPart, "description": "Canonical publish_parts payload. Include exactly one replacement for every authenticated selected part; publication is one atomic candidate composition."},
-				"entries":                map[string]any{"type": "array", "maxItems": manageArtifactMaxPackageFiles, "items": entry},
-				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": initialPart, "description": "Two or more real independently byte-bearing initial parts for create. Every item has its own stable id, media type, and non-empty content/content_base64. The server owns all chain, composition, and part-revision identities. Mutually exclusive with top-level content, entries, and locator-only parts."},
-				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact. These locators never create or prove independently replaceable bytes. For text/html, omit parts to let the server derive useful targets from swarm.iteration/v1 sections, swarm.capture/v1 states, and stable IDs on semantic HTML regions without splitting or rewriting the file; explicitly supplied parts remain authoritative for the complete revision. Use initial_parts only when independently stored byte payloads are intentionally required."},
-				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": reference, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
-				"state_ids":              map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"}, "description": "Optional bounded declared swarm.capture/v1 state IDs for export_html_stills; omitted exports every manifest state. Caller order never overrides canonical manifest order."},
-				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
-				"presentation":           presentation,
-				"output_requirements":    artifact.OutputRequirementsToolSchema(),
-				"animation_profile":      manageArtifactAnimationProfileToolSchema(),
-				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the authenticated source session from the reusable exact ready attached-artifact reference together with all other source_* fields"},
-				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source collection from the same reusable exact ready reference"},
-				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix or lineage operation, copy the opaque source variant from the same reusable exact ready reference"},
-				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix or lineage operation, copy the exact ready event sequence from the same reusable source reference"},
-				"artifact_v3_reference":  artifactV3Reference,
-				"native_parts":           artifactV3NativePartsSchema(),
-				"scene_contract":         ArtifactV3SceneContractSchema(),
-				"turn_id":                map[string]any{"type": "string"},
-				"candidate_id":           map[string]any{"type": "string"},
-				"expected_head":          map[string]any{"type": "string"},
-				"expected_turn_revision": map[string]any{"type": "integer", "minimum": 1, "description": "Required for select_v3: copy a complete selection_calls entry from source_v3. This equals the turn event_seq, NOT schema version or repository projection_seq. Never omit or guess this CAS value."},
-				"revision_intent":        map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}, "description": "Explicit native revision intent. whole_project omits target_part_ids; focused_parts requires targets."},
-				"target_part_ids":        map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "uniqueItems": true, "description": "Native Artifact V3 Part IDs; required for focused_parts, omitted for whole_project."},
-				"turn_key":               map[string]any{"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$", "description": "Optional lowercase stable key shared by sibling revise_v3 candidates from one exact base. When omitted for a single candidate, the server derives a replay-stable key from trusted run and call identity. Required for alternatives."},
-				"candidate_index":        map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Optional one-based sibling candidate index for revise_v3; defaults to 1."},
-				"alternatives": map[string]any{"type": "array", "minItems": 2, "maxItems": 16, "description": "Optional server-owned multi-candidate revise_v3 request. Every item supplies one complete corrected HTML document and a distinct contiguous candidate_index; the tool preflights all candidates before allocation and returns individual ready, fixing, or failed results without selecting a sibling. Requires turn_key and cannot be combined with top-level content or candidate_index.", "items": map[string]any{"type": "object", "properties": map[string]any{
-					"candidate_index": map[string]any{"type": "integer", "minimum": 1, "maximum": 16},
-					"content":         map[string]any{"type": "string"},
-				}, "required": []string{"candidate_index", "content"}, "additionalProperties": false}},
-				"event_seq":      map[string]any{"type": "integer", "minimum": 1, "description": "Exact ready event sequence. For get/read/materialize/promote/export_html_stills/export_html_animation of an attached ready artifact, copy this together with session_id, collection_id, and variant_id from the same returned reference."},
-				"query":          map[string]any{"type": "string", "maxLength": 1024, "description": "Optional authenticated cross-session metadata search across collection and variant display fields; search results are explicit candidates and ready items carry complete exact references."},
-				"status":         map[string]any{"type": "string", "description": "Optional list/search filter: staging|ready|failed|unavailable"},
-				"created_after":  map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive variant created_at lower bound in Unix milliseconds for cross-session discovery"},
-				"created_before": map[string]any{"type": "integer", "minimum": 0, "description": "Optional inclusive variant created_at upper bound in Unix milliseconds for cross-session discovery"},
-				"cursor":         map[string]any{"type": "string", "description": "Opaque cross-session discovery continuation cursor. Copy next_cursor from the prior search/list response unchanged; never parse or construct it."},
-				"limit":          map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list/search items for this page; use next_cursor/cursor to continue cross-session discovery."},
-				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read for bounded inspection. Text/package entries are capped at 256 KiB; supported ready images are capped at 16 MiB and returned as base64. A response-quota error does not mean the artifact is unavailable; use materialize for workspace use instead of bulk-reading it."},
-				"entry":          map[string]any{"type": "string", "maxLength": 1024, "description": "Optional normalized slash-delimited regular-file entry for application/zip read; omit to return the bounded package manifest. Materialize the package for whole-package workspace work."},
-				"destination":    map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace-relative file or directory destination required for materialize/promote and materialize_batch; overwrite defaults to false."},
-				"overwrite":      map[string]any{"type": "boolean", "description": "Explicitly permit bounded replacement of destination files; defaults to false"},
+				"artifact_id":          map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
+				"resume_draft":         map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
+				"action":               map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
+				"topic":                map[string]any{"type": "string", "description": "Optional topic for action=help (animation, video, audio, narration, workflow)."},
+				"prompt":               map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt for generation. Call action='help' for schema."},
+				"title":                map[string]any{"type": "string", "maxLength": 160, "description": "Human-readable title."},
+				"image_settings":       map[string]any{"type": "object", "properties": map[string]any{"size": map[string]any{"type": "string"}, "aspect_ratio": map[string]any{"type": "string"}, "image_size": map[string]any{"type": "string"}}, "additionalProperties": false, "description": "Optional image settings. Call action='help' for schema."},
+				"session_id":           map[string]any{"type": "string", "description": "Combined with collection_id, variant_id, and event_seq for exact artifact reference."},
+				"collection_id":        map[string]any{"type": "string", "description": "Combined with session_id, variant_id, and event_seq for exact artifact reference."},
+				"variant_id":           map[string]any{"type": "string", "description": "Combined with session_id, collection_id, and event_seq for exact artifact reference."},
+				"filename":             map[string]any{"type": "string", "maxLength": 255},
+				"media_type":           map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type."},
+				"content":              map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content."},
+				"draft_handle":         map[string]any{"type": "object", "description": "Draft handle from begin_v3/create/revise_v3. Call action='help' topic='workflow'."},
+				"operation":            map[string]any{"type": "object", "description": "Artifact V3 authoring operation. Call action='help' topic='workflow'."},
+				"content_base64":       map[string]any{"type": "string", "description": "Bounded base64 replacement bytes."},
+				"initial_parts":        map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Two or more real independently byte-bearing initial parts for create (server owns all chain, composition, part identities). Mutually exclusive with monolithic content. Call action='help' for schema."},
+				"parts":                map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact (never create or prove independently replaceable bytes). For text/html, omit parts to let the server derive useful targets without splitting or rewriting the file; explicitly supplied parts remain authoritative. Use initial_parts only when independently stored bytes are required. Call action='help' for schema."},
+				"references":           map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": map[string]any{"type": "object"}, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
+				"source":               map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
+				"presentation":         presentation,
+				"animation_profile":    map[string]any{"type": "object", "description": "Animation profile: motion_ui, spatial_3d, vector_playback, or final_render. Export actions like export_html_animation and export_html_animation_fallback inherit the exact source artifact's reviewed animation profile; omit this field for exports. See action='help' topic='animation'."},
+				"source_session_id":    map[string]any{"type": "string", "description": "For every image remix, copy source_session_id from the reusable exact reference."},
+				"source_collection_id": map[string]any{"type": "string", "description": "For every image remix, copy source_collection_id from the reusable exact reference."},
+				"source_variant_id":    map[string]any{"type": "string", "description": "For every image remix, copy source_variant_id from the reusable exact reference."},
+				"source_event_seq":     map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix, copy source_event_seq from the reusable exact reference."},
+				"alternatives":         map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Multi-candidate revise_v3 request array ([{candidate_index, content}]). See action='help'."},
+				"event_seq":            map[string]any{"type": "integer", "minimum": 1, "description": "Combined with session_id, collection_id, and variant_id for exact artifact reference."},
+				"query":                map[string]any{"type": "string", "description": "Authenticated cross-session search; ready items return complete exact references."},
+				"status":               map[string]any{"type": "string", "description": "Status filter: staging|ready|failed|unavailable."},
+				"cursor":               map[string]any{"type": "string", "description": "Opaque continuation cursor from next_cursor unchanged; never parse or construct it."},
+				"limit":                map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
+				"max_bytes":            map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize for workspace use instead of bulk-reading it."},
+				"destination":          map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
+				"overwrite":            map[string]any{"type": "boolean", "description": "Permit replacement of destination files; defaults to false."},
 			},
 			"required":             []string{"action"},
-			"additionalProperties": false,
+			"additionalProperties": true,
 		},
 	}
 }
@@ -441,11 +260,15 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
 	switch actionName {
+	case "help":
+		topic := strings.ToLower(strings.TrimSpace(asString(args["topic"])))
+		response["topic"] = topic
+		response["help"] = artifactHelpText(topic)
 	case "image_capabilities":
 		capabilities, err := r.managedImageCapabilities(principal.AccountScopeID)
 		if err != nil {
@@ -1877,6 +1700,88 @@ func deriveAudioTitle(prompt string) string {
 	r := []rune(clean)
 	r[0] = unicode.ToUpper(r[0])
 	return string(r)
+}
+
+func ArtifactHelpText(topic string) string {
+	return artifactHelpText(topic)
+}
+
+func artifactHelpText(topic string) string {
+	switch topic {
+	case "animation", "motion":
+		return `Artifact Animation & Motion Contract:
+- Direct native HTML accepts animation_profile motion_ui or spatial_3d (pinned offline Three.js; import from 'three' in module script).
+- Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready().
+- Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
+- Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready(), and seek(ms) returning {time_ms: ms}.
+- seek must pause all rAF/timers and deterministically render the exact timestamp.
+- data-swarm-capture-ui are excluded from derived Parts
+- explicit Parts must target output regions only
+- remaining meaningful output regions still required
+- explicit kind=temporal Parts with stable output-region IDs
+- start_ms/end_ms within the manifest duration
+- Never edit the server-owned swarm-artifact.json
+- retain the exact draft and repair source through its authorized handle`
+	case "video", "veo":
+		return `Artifact AI Video (Veo 3.1) Contract:
+- action="generate_video": prompt, duration_seconds (4, 6, 8), aspect_ratio (16:9, 9:16), resolution (720p, 1080p, 4k).
+- Image-to-video: pass image or image_path alongside prompt.
+- Video iteration/remix: pass source_session_id, source_collection_id, source_variant_id, source_event_seq with delta prompt.
+- For stunning video generation, write prompts with rich visual cinematography and synchronized sound direction (video models like Veo 3.1 natively generate audio and video in one pass; leaving sound unprompted causes hallucinated audio): specify concrete camera dynamics (smooth orbit, tracking dolly, sweeping crane, macro push-in), explicit multi-stage transitions and transformations across the 8-second timeline (e.g. geometric dimension shift, 4D folding, radiant particle murmuration, 3D mesh crystallization, raster ASCII disintegration), lighting dynamics (volumetric rays, caustic refractions, bioluminescence, specular reflections, depth of field), material textures (frosted glass, brushed chrome, optical fiber lattices, luminous energy nodes), and explicit tempo/pacing.
+- Always direct the soundscape: provide concrete action-tied sound effects (e.g. SFX: heavy metallic latch engaging, boots crunching on gravel), ambient acoustic scale and room tone (e.g. Ambient noise: deep subterranean rumble, wet cavern drips), and musical score mood (e.g. Music: dark ambient synth with driving sub-bass or Music: none).
+- Never use quotation marks in video prompts unless spoken dialogue is explicitly requested, as models interpret quoted text as lip-synced speech. When silent video or text-free output is requested, specify both visual and acoustic constraints: "purely visual, zero text, no titles, no subtitles, no words, no letters, no watermarks" and "Ambient noise: near-total silence, dead room tone, no background music, no dialogue".
+- For multi-part video generation, chaining, and audio continuity across multiple clips:
+  (1) Generate Part 1 with manage_artifact action=generate_video.
+  (2) Generate consecutive parts by passing chain_from with the previous video's exact ready reference (session_id, collection_id, variant_id, event_seq) alongside prompt: the backend automatically extracts the exact last keyframe of the preceding clip and feeds it to Veo 3.1 image-to-video, guaranteeing seamless visual seam continuity.
+  (3) Generate a continuous soundtrack matching the total combined duration (e.g. 16s, 24s) with manage_artifact action=generate_audio duration_seconds=N.
+  (4) Combine the parts into a single seamless master deliverable with manage_artifact action=chain_video, passing videos array of video references, optional audio reference, and audio_mode ('mix_ducked' to layer continuous music at 100% with ducked native Foley sound effects at 35%, or 'override' for pure music replacement).
+  (5) Use manage_artifact action=extract_video_frame with frame='last' or 'first' to sample keyframes.
+- action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking in one atomic operation.`
+	case "audio", "lyria":
+		return `Artifact AI Audio (Google Lyria) Contract:
+- When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. Omit provider/model: the backend resolves your account-configured audio model (Google Lyria).
+- The AI can generate multiple sound clips or audio variations in ONE tool call: provide an array of descriptive style/mood prompts via prompts: ["...", "..."] (up to 8 clips, e.g. prompts: ["Upbeat funk groove with slapping bass", "Ambient calm piano with rain sounds", "High-energy rock guitar solo"]), or specify count: N (1 to 8) to generate multiple variations from a single prompt.
+- Each generated sound clip is published as a distinct variant in the artifact collection with its own title and description, and Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly.
+- Specify duration_seconds (e.g. 15, 30, 60, 120s; default 30s) and optional image or image_path for multimodal audio inspiration.
+- To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.`
+	case "narration":
+		return `Narration Plan Draft Contract:
+- For narration-plan drafts, use manage_artifact action=create with the built-in narration_plan object and its complete schema example instead of inventing HTML, selectors, or Parts.
+- Supply persistent scene IDs and plain narration/title text with optional visual_direction and music_direction.
+- Complete reusable example:
+` + artifactNarrationCreateExample + `
+- The server renders escaped HTML with separate narration, scene-context, visual and music Parts. Omit content/parts/entries/initial_parts.
+- Later changes use the exact native reference, read_v3 and revise_v3 with the selected target_part_ids; do not recreate the plan as a separate artifact.`
+	case "workflow", "lifecycle":
+		return `Artifact V3 Lifecycle & Workflow Contract:
+- For a retained failed draft from an earlier terminal run, use resume_v3 with resume_draft (session_id, artifact_id, expected_sequence, expected_projection_seq, expected_head); obtain exact CAS values using draft_status_v3 with the artifact_id already in chat context (no Git revision or raw grant needed). expected_head is required and is empty only before the first publication. This renews the producer grant, invalidates the old handle and requires rebuilding; active producers cannot be rebound.
+- For incremental native artifact edits, call begin_v3 with artifact_v3_reference and target_part_ids, then author_v3 with the returned exact draft_handle and operation object using inspect_context/list_files/read_file/edit_file/diff/build_preview/finish_turn. A fixing create/revise result retains source and current gate diagnostics: repair that handle, never allocate another create. Read decoded Content before literal edits; preserve stable Parts and unrelated bytes. Stop unchanged retries and report expiry/authorization conflicts honestly. Finish only after a current ready build; candidate selection remains explicit.
+- Before generating or remixing an image, call action=image_capabilities to read the configured model's current snapshot-backed options and capability_token, then pass only listed options plus that token to action=generate_image. A selected ready image is a reusable exact source for repeated edits: on every remix, copy its source_session_id, source_collection_id, source_variant_id, and source_event_seq together with the new edit request; the authenticated artifact authority supplies bounded source bytes directly to a supported provider, so never replace the source with a preview/download or re-prompt from scratch.
+- export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states.
+- export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling.
+- Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous.
+- Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call.
+- For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.`
+	default:
+		return `Artifact V3 Overview & Help Topics:
+For detailed schema contracts and instructions, call action='help' with topic="<name>":
+- "animation": Native HTML animations, swarm.animation/v1 manifest, Three.js spatial 3D, deterministic seek.
+- "video": Veo 3.1 AI video generation, prompt direction, soundscapes, keyframe extraction, chaining, and master story generation.
+- "audio": Google Lyria music, sound effects, multi-prompt variations, and audio iteration.
+- "narration": Multi-scene narration plan drafts.
+- "workflow": Lifecycle, draft repair, CAS tokens, cross-session search, materialization, and workspace publication.
+
+Quick Action References:
+- create (HTML V3): action='create', content='<!doctype html>...', parts=[{id, label, kind: 'temporal|spatial|selector|semantic', description}]. Do NOT substitute generate_image for native HTML documents.
+- create (narration): action='create', narration_plan={title, scenes:[{id, title, narration, visual_direction, music_direction}]}.
+- revise_v3 (candidate revision): action='revise_v3', session_id, artifact_id, content='...', revision_intent='whole_project|focused_parts', target_part_ids=['...'].
+- begin_v3 / author_v3 (incremental repair): begin_v3 returns draft_handle; author_v3 accepts draft_handle and operation={action:'read_file|edit_file|build_preview|finish_turn', path, old_string, new_string}.
+- generate_image: action='generate_image', prompt='...', capability_token='...' (call action='image_capabilities' first).
+- generate_video: action='generate_video', prompt='...', duration_seconds=8, aspect_ratio='16:9'.
+- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), duration_seconds=30.
+- materialize: action='materialize', session_id, collection_id, variant_id, event_seq, destination='path/to/file'.
+- publish_workspace: action='publish_workspace', source='path/to/file', media_type='...'.`
+	}
 }
 
 func (r *Runtime) resolveVideoImageInput(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, raw any) (*videogen.ManagedVideoImage, *pebblestore.SessionArtifactSelectionReference, error) {

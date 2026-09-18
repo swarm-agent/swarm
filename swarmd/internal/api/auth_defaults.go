@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
@@ -28,8 +29,44 @@ func (s *Server) hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivat
 	ctx := identity.ContextWithPrincipal(context.Background(), identity.Principal{
 		Type: identity.PrincipalTypeUser, UserID: strings.TrimSpace(userID), AccountScopeID: accountScopeID,
 	})
-	if _, settingsErr := s.agentModelSettings.Get(ctx); settingsErr == nil {
-		return nil, nil
+	if existing, settingsErr := s.agentModelSettings.Get(ctx); settingsErr == nil {
+		existingProvider := strings.ToLower(strings.TrimSpace(existing.Swarm.Action.Provider))
+		normalizedActivated := strings.ToLower(strings.TrimSpace(activatedProvider))
+		preserveExisting := existingProvider == normalizedActivated
+		if !preserveExisting && existingProvider != "" && s.auth != nil {
+			if existingCreds, credErr := s.auth.ListCredentialsForAccount(accountScopeID, existingProvider, "", 1); credErr == nil && existingCreds.Total > 0 {
+				preserveExisting = true
+			}
+		}
+		if preserveExisting {
+			result, _ := s.agents.EnsureHydratedDefaultsForAccount(accountScopeID)
+			agentsList := result.Agents
+			if len(agentsList) == 0 {
+				agentsList = []string{agentruntime.SwarmAgentID}
+			}
+			providerID := existingProvider
+			if providerID == "" {
+				providerID = normalizedActivated
+			}
+			model := strings.TrimSpace(existing.Swarm.Action.Model)
+			thinking := strings.TrimSpace(existing.Swarm.Action.Thinking)
+			if pref, prefErr := s.model.GetPreferenceForAccount(accountScopeID); prefErr == nil && strings.TrimSpace(pref.Model) != "" {
+				model = strings.TrimSpace(pref.Model)
+				thinking = strings.TrimSpace(pref.Thinking)
+				if strings.TrimSpace(pref.Provider) != "" {
+					providerID = strings.ToLower(strings.TrimSpace(pref.Provider))
+				}
+			}
+			return &auth.AutoDefaultsStatus{
+				Applied:     true,
+				Provider:    providerID,
+				Model:       model,
+				Thinking:    thinking,
+				GlobalModel: true,
+				Agents:      agentsList,
+				Subagents:   []string{"compact", "finder", "coder", "designer", "router"},
+			}, nil
+		}
 	} else if !errors.Is(settingsErr, agentmodelsettings.ErrNotFound) {
 		return nil, fmt.Errorf("read onboarding agent model settings: %w", settingsErr)
 	}

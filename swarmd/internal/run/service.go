@@ -1281,6 +1281,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, fmt.Errorf("session %q not found", sessionID)
 	}
 	sessionResolved = true
+	acctScope := firstNonEmptyString(options.Principal.AccountScopeID, sessionSnapshot.AccountScopeID)
+	if s.sessions != nil {
+		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
+			return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
+		}
+	}
 	targetKind, targetName, agentName, err := s.resolveRunTarget(options)
 	if err != nil {
 		return RunResult{}, err
@@ -2312,6 +2318,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			})
 			if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) {
 				planContextGuard.observe(usageSummaryCopy)
+			}
+			if s.sessions != nil {
+				if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
+					return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
+				}
 			}
 		}
 		if responseReasoningSummary := strings.TrimSpace(response.ReasoningSummary); responseReasoningSummary != "" {

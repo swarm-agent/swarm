@@ -1201,6 +1201,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if usageProvided {
+		if turnUsage.EstimatedCostUSD <= 0 {
+			turnUsage.EstimatedCostUSD = CalculateBaselineCost(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+		}
 		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
 			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 turn usage %q/%q: %w", turnUsage.SessionID, turnUsage.RunID, err)
@@ -1288,6 +1291,17 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	reservationCommitted = true
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
+	}
+	if usageProvided {
+		ts := turnUsage.CreatedAt
+		if ts <= 0 {
+			ts = turnUsage.UpdatedAt
+		}
+		if ts <= 0 {
+			ts = now
+		}
+		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
+		_, _ = s.IncrementDailyUsage(turnUsage.AccountScopeID, dateStr, turnUsage.EstimatedCostUSD, turnUsage.TotalTokens)
 	}
 	v3SuccessfulFreshMutations.Add(1)
 	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))

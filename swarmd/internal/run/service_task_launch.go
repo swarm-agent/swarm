@@ -400,6 +400,12 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	_, hasProgram := args["program"]
 	programID := strings.TrimSpace(mapString(args, "program_id"))
 	action := strings.ToLower(strings.TrimSpace(mapString(args, "action")))
+	if action == "help" {
+		return taskCallArguments{
+			Action:          "help",
+			SourceArguments: args,
+		}, nil
+	}
 	if hasProgram {
 		switch action {
 		case "", "spawn", "start", "run":

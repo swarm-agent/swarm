@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/provider"
@@ -1197,5 +1198,97 @@ func TestDeploymentManager_WorkerAndCustomConsumers(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("ReleaseDeployment for Custom failed: %v", err)
+	}
+}
+
+func TestDeploymentManager_LeaseTTLAndReapExpired(t *testing.T) {
+	h := setupTestHarness(t)
+	ctx := context.Background()
+	accountScope := "test-account-ttl"
+	workspaceID := "ws-ttl-1"
+
+	conn := createTestConnection(t, h.connections, accountScope, workspaceID, "conn-ttl", "Local Docker")
+	env := createTestEnvironment(t, h.environments, accountScope, workspaceID, "env-ttl", conn.ID, true, 2, environments.ReleaseBehaviorRestart)
+
+	// 1. Verify default 1-hour lease TTL is assigned when TTLMillis == 0
+	res1, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "session-default-ttl",
+		TTLMillis:      0, // not specified
+	})
+	if err != nil {
+		t.Fatalf("EnsureDeployment with default TTL failed: %v", err)
+	}
+	if res1.Lease.ExpiresAt <= res1.Lease.AcquiredAt {
+		t.Errorf("expected lease ExpiresAt > AcquiredAt, got %d <= %d", res1.Lease.ExpiresAt, res1.Lease.AcquiredAt)
+	}
+	expectedExpiry := res1.Lease.AcquiredAt + DefaultLeaseTTLMillis
+	diff := res1.Lease.ExpiresAt - expectedExpiry
+	if diff < -1000 || diff > 1000 {
+		t.Errorf("expected lease ExpiresAt ~ %d (+-1s), got %d (diff: %d)", expectedExpiry, res1.Lease.ExpiresAt, diff)
+	}
+
+	// Clean up first lease
+	_, err = h.manager.ReleaseDeployment(ctx, ReleaseDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		LeaseID:        res1.Lease.ID,
+	})
+	if err != nil {
+		t.Fatalf("ReleaseDeployment failed: %v", err)
+	}
+
+	// 2. Test short TTL and ReapExpired
+	resShort, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "session-short-ttl",
+		TTLMillis:      10, // 10ms TTL
+	})
+	if err != nil {
+		t.Fatalf("EnsureDeployment with short TTL failed: %v", err)
+	}
+
+	// Immediately should be held
+	activeLease, isHeld, err := h.manager.GetActiveLease(accountScope, workspaceID, resShort.Deployment.ID)
+	if err != nil || !isHeld || !activeLease.Active {
+		t.Fatalf("expected lease to be held immediately: held=%v, err=%v", isHeld, err)
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(20 * time.Millisecond)
+
+	// GetActiveLease should now report not held
+	_, isHeldAfter, err := h.manager.GetActiveLease(accountScope, workspaceID, resShort.Deployment.ID)
+	if err != nil {
+		t.Fatalf("GetActiveLease error: %v", err)
+	}
+	if isHeldAfter {
+		t.Errorf("expected lease to NOT be held after expiration")
+	}
+
+	// ReapExpired should release the expired lease and trigger ReleaseBehaviorRestart
+	initialStopCalls := atomic.LoadInt32(&h.mockProv.stopCalls)
+	initialStartCalls := atomic.LoadInt32(&h.mockProv.startCalls)
+
+	reaped, err := h.manager.ReapExpired(ctx, accountScope, workspaceID)
+	if err != nil {
+		t.Fatalf("ReapExpired failed: %v", err)
+	}
+	if len(reaped) != 1 {
+		t.Errorf("expected 1 reaped lease, got %d: %v", len(reaped), reaped)
+	}
+
+	// Verify provider restart was executed by release behavior
+	if atomic.LoadInt32(&h.mockProv.stopCalls) <= initialStopCalls {
+		t.Errorf("expected provider.Stop to be called on release restart")
+	}
+	if atomic.LoadInt32(&h.mockProv.startCalls) <= initialStartCalls {
+		t.Errorf("expected provider.Start to be called on release restart")
 	}
 }

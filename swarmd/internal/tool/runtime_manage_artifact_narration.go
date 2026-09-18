@@ -43,7 +43,7 @@ func artifactNarrationPlanToolSchema() map[string]any {
 	}
 	return map[string]any{
 		"type": "object", "additionalProperties": false, "required": []string{"title", "scenes"},
-		"description": "Create only: a built-in narration-plan template, not HTML or Markdown. All fields are plain text. Supply 1–8 scenes with persistent unique lowercase IDs; do not renumber IDs when editing text. Each scene produces separately labeled context and narration Parts, plus separate visual/music Parts when supplied. Omit content, parts, entries and initial_parts: the server owns escaped HTML and selectors. Maximum 128 KiB encoded plan; text fields also bounded in UTF-8 bytes. This authors an editorial draft only, not speech, a storyboard conversion, or a video timeline. Complete reusable manage_artifact call: " + artifactNarrationCreateExample,
+		"description": "Create only: a built-in narration-plan template with title and scenes array. For schema and complete example, call action='help' topic='narration'.",
 		"properties": map[string]any{
 			"title": text(160),
 			"scenes": map[string]any{

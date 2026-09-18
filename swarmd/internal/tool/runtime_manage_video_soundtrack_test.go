@@ -34,20 +34,16 @@ func TestManageVideoDefinitionExposesTypedSoundtrackProposalContract(t *testing.
 			t.Fatalf("manage_video soundtrack schema exposes forbidden path field %q", forbidden)
 		}
 	}
+	help := videoHelpText()
 	for _, guidance := range []string{"complete exact audio", "registered soundtrack audio must share the initial part playhead", "create_project initial_timeline", "cannot accept a proposal or start a final render"} {
-		if !strings.Contains(definition.Description, guidance) {
+		if !strings.Contains(help, guidance) {
 			t.Fatalf("manage_video soundtrack guidance lacks %q", guidance)
 		}
 	}
 }
 
 func TestManageVideoDefinitionExplainsLiveHTMLSoundtrackPreviewBoundary(t *testing.T) {
-	definition := manageVideoDefinition()
-	raw, err := json.Marshal(definition.Parameters)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(raw)
+	help := videoHelpText()
 	for _, expected := range []string{
 		"immediate live Video Studio preview",
 		"selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead",
@@ -55,8 +51,8 @@ func TestManageVideoDefinitionExplainsLiveHTMLSoundtrackPreviewBoundary(t *testi
 		"durable acceptance/promotion or final rendering requires an MP4 derivative",
 		"never replace a durable timeline artifact_ref with text/html",
 	} {
-		if !strings.Contains(text, expected) {
-			t.Fatalf("manage_video live HTML schema guidance lacks %q: %s", expected, text)
+		if !strings.Contains(help, expected) {
+			t.Fatalf("manage_video live HTML help guidance lacks %q", expected)
 		}
 	}
 }

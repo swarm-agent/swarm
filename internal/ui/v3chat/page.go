@@ -84,6 +84,7 @@ type Page struct {
 	pasteActive                  bool
 	pasteBuffer                  []rune
 	scroll                       int
+	lastMaxScroll                int
 	follow                       bool
 	status                       string
 	errText                      string
@@ -176,7 +177,7 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, rowCache: make(map[string]cachedRows), taskProgramCollapsed: make(map[string]bool), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
+	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, lastMaxScroll: -1, rowCache: make(map[string]cachedRows), taskProgramCollapsed: make(map[string]bool), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -765,7 +766,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	case match(KeyMoveUp):
 		if !p.moveCommandPaletteSelectionLocked(-1) {
 			p.scroll++
-			p.follow = false
+			if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+				p.scroll = p.lastMaxScroll
+			}
+			p.follow = p.scroll == 0
 		}
 	case match(KeyMoveDown):
 		if !p.moveCommandPaletteSelectionLocked(1) {
@@ -777,7 +781,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		}
 	case match(KeyPageUp):
 		p.scroll += 8
-		p.follow = false
+		if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+			p.scroll = p.lastMaxScroll
+		}
+		p.follow = p.scroll == 0
 	case match(KeyPageDown):
 		p.scroll -= 8
 		if p.scroll <= 0 {
@@ -785,8 +792,12 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.follow = true
 		}
 	case match(KeyJumpHome):
-		p.scroll = 1 << 30
-		p.follow = false
+		if p.lastMaxScroll >= 0 {
+			p.scroll = p.lastMaxScroll
+		} else {
+			p.scroll = 10000
+		}
+		p.follow = p.scroll == 0
 	case match(KeyJumpEnd):
 		p.scroll = 0
 		p.follow = true
@@ -878,15 +889,15 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 		p.resetCommandPaletteOptionSelectionLocked()
 	case ev.Key() == tcell.KeyF2:
 		p.openModelPickerLocked()
-	case ev.Key() == tcell.KeyCtrlR:
-		// Recovery scope is already retained by the runtime's hydrated session.
-		go p.Recover("", "")
 	case ev.Key() == tcell.KeyCtrlP:
 		return PageActionOpenCurrentPlan
 	case ev.Key() == tcell.KeyRune:
 		if match(KeyMoveUpAlt) {
 			p.scroll++
-			p.follow = false
+			if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+				p.scroll = p.lastMaxScroll
+			}
+			p.follow = p.scroll == 0
 			break
 		}
 		if match(KeyMoveDownAlt) {
@@ -1326,7 +1337,10 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 			p.permissionContentScroll = maxInt(0, p.permissionContentScroll-6)
 		} else {
 			p.scroll += 8
-			p.follow = false
+			if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+				p.scroll = p.lastMaxScroll
+			}
+			p.follow = p.scroll == 0
 		}
 	case tcell.KeyPgDn:
 		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
@@ -1339,8 +1353,12 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
 			p.permissionContentScroll = 0
 		} else {
-			p.scroll = 1 << 30
-			p.follow = false
+			if p.lastMaxScroll >= 0 {
+				p.scroll = p.lastMaxScroll
+			} else {
+				p.scroll = 10000
+			}
+			p.follow = p.scroll == 0
 		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hidePermissionNote {
@@ -1505,15 +1523,18 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			if (isBashPermissionRequest(permission) || isTaskLaunchPermission(permission)) && p.permissionContentMaxScroll > 0 {
 				p.permissionContentScroll = maxInt(0, p.permissionContentScroll-3)
 			} else {
-				p.scroll += 3
-				p.follow = false
+				p.scroll += 2
+				if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+					p.scroll = p.lastMaxScroll
+				}
+				p.follow = p.scroll == 0
 			}
 		}
 		if buttons&tcell.WheelDown != 0 {
 			if (isBashPermissionRequest(permission) || isTaskLaunchPermission(permission)) && p.permissionContentMaxScroll > 0 {
 				p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+3)
 			} else {
-				p.scroll = maxInt(0, p.scroll-3)
+				p.scroll = maxInt(0, p.scroll-2)
 				p.follow = p.scroll == 0
 			}
 		}
@@ -1529,11 +1550,14 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 		}
 	}
 	if buttons&tcell.WheelUp != 0 {
-		p.scroll += 3
-		p.follow = false
+		p.scroll += 2
+		if p.lastMaxScroll >= 0 && p.scroll > p.lastMaxScroll {
+			p.scroll = p.lastMaxScroll
+		}
+		p.follow = p.scroll == 0
 	}
 	if buttons&tcell.WheelDown != 0 {
-		p.scroll -= 3
+		p.scroll -= 2
 		if p.scroll <= 0 {
 			p.scroll = 0
 			p.follow = true
@@ -1644,7 +1668,11 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	statusLine := ""
 	statusStyle := styles.Muted
 	if stale {
-		statusLine = "stale • Ctrl-R to rehydrate • " + reason
+		if reason != "" {
+			statusLine = "stale • rehydrating… • " + reason
+		} else {
+			statusLine = "stale • rehydrating…"
+		}
 		statusStyle = styles.Warning
 	} else if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
 		statusLine = routedDraftStatusLine(draft)
@@ -1695,6 +1723,19 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 			p.mu.Unlock()
 		}
 	}
+	maxScroll := maxInt(0, len(rows)-transcriptHeight)
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	p.mu.Lock()
+	p.scroll = scroll
+	p.lastMaxScroll = maxScroll
+	p.follow = scroll == 0
+	p.mu.Unlock()
+
 	start := len(rows) - transcriptHeight - scroll
 	if start < 0 {
 		start = 0

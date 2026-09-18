@@ -751,6 +751,9 @@ func runGoBuildWithArgs(projectRoot, workDir, goBin, outPath, pkg string, extraA
 		}
 		return fmt.Errorf("go build %s: %w (%s)", pkg, err, trimmed)
 	}
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return fmt.Errorf("chmod built binary %s: %w", outPath, err)
+	}
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return fmt.Errorf("install built binary %s: %w", outPath, err)
 	}
@@ -2246,7 +2249,11 @@ func writeFrontendSourceFingerprint(webDistDir, fingerprint string) error {
 	if fingerprint == "" {
 		return nil
 	}
-	return os.WriteFile(filepath.Join(webDistDir, frontendSourceFingerprintFile), []byte(fingerprint+"\n"), 0o644)
+	path := filepath.Join(webDistDir, frontendSourceFingerprintFile)
+	if err := os.WriteFile(path, []byte(fingerprint+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
 }
 
 func copyDir(sourceDir, targetDir string) error {
@@ -2263,7 +2270,11 @@ func copyDir(sourceDir, targetDir string) error {
 			targetPath = filepath.Join(targetDir, relPath)
 		}
 		if info.IsDir() {
-			return os.MkdirAll(targetPath, info.Mode().Perm())
+			mode := (info.Mode().Perm() | 0755) &^ 0022
+			if err := os.MkdirAll(targetPath, mode); err != nil {
+				return err
+			}
+			return os.Chmod(targetPath, mode)
 		}
 		return copyFile(path, targetPath)
 	})
@@ -2297,7 +2308,13 @@ func copyFile(sourcePath, targetPath string) error {
 		_ = tmpFile.Close()
 		return err
 	}
-	if err := tmpFile.Chmod(info.Mode().Perm()); err != nil {
+	mode := info.Mode().Perm() &^ 0022
+	if info.Mode().Perm()&0111 != 0 {
+		mode |= 0755 &^ 0022
+	} else {
+		mode |= 0644 &^ 0022
+	}
+	if err := tmpFile.Chmod(mode); err != nil {
 		_ = tmpFile.Close()
 		return err
 	}
@@ -2365,7 +2382,7 @@ func writeCompressedDesktopAsset(path string) error {
 	defer sourceFile.Close()
 
 	tempPath := compressedPath + ".tmp"
-	compressedFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, sourceInfo.Mode().Perm())
+	compressedFile, err := os.OpenFile(tempPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -2391,6 +2408,10 @@ func writeCompressedDesktopAsset(path string) error {
 	if copyErr != nil {
 		_ = os.Remove(tempPath)
 		return copyErr
+	}
+	if err := os.Chmod(tempPath, 0o644); err != nil {
+		_ = os.Remove(tempPath)
+		return err
 	}
 	if err := os.Chtimes(tempPath, sourceInfo.ModTime(), sourceInfo.ModTime()); err != nil {
 		_ = os.Remove(tempPath)

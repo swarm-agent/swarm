@@ -16,83 +16,24 @@ func manageConnectionsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_connections",
-		Description: "List, get, create, update, delete, check, and inspect capabilities of environment execution host connections (local Docker or remote SSH).",
+		Description: "List, get, create, update, delete, check, and inspect environment host connections (Docker/SSH).",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action": map[string]any{
-					"type":        "string",
-					"description": "Action: list|get|create|update|delete|check|capabilities|set_default",
-					"enum":        []string{"list", "get", "create", "update", "delete", "check", "capabilities", "set_default"},
-				},
-				"workspace_path": map[string]any{
-					"type":        "string",
-					"description": "Optional workspace path; defaults to current/active workspace scope",
-				},
-				"id": map[string]any{
-					"type":        "string",
-					"description": "Connection ID for get/update/delete/check/capabilities, or explicit ID for create",
-				},
-				"name": map[string]any{
-					"type":        "string",
-					"description": "Display name of the connection",
-				},
-				"description": map[string]any{
-					"type":        "string",
-					"description": "Optional description of the connection",
-				},
-				"kind": map[string]any{
-					"type":        "string",
-					"description": "Connection kind: local_docker|ssh",
-					"enum":        []string{"local_docker", "ssh"},
-				},
-				"host": map[string]any{
-					"type":        "string",
-					"description": "Remote SSH host (hostname or IP address)",
-				},
-				"user": map[string]any{
-					"type":        "string",
-					"description": "Remote SSH user",
-				},
-				"port": map[string]any{
-					"type":        "integer",
-					"description": "Remote SSH port (defaults to 22)",
-				},
-				"is_default": map[string]any{
-					"type":        "boolean",
-					"description": "Whether to set this connection as the workspace default connection",
-				},
-				"set_default": map[string]any{
-					"type":        "boolean",
-					"description": "Alias for is_default",
-				},
-				"ssh_key_path": map[string]any{
-					"type":        "string",
-					"description": "Path to SSH private identity file on host (path only, never key contents)",
-				},
-				"known_hosts_file": map[string]any{
-					"type":        "string",
-					"description": "Path to custom known_hosts file (path only)",
-				},
-				"socket_path": map[string]any{
-					"type":        "string",
-					"description": "Local Docker socket path (e.g. /var/run/docker.sock)",
-				},
-				"docker_host": map[string]any{
-					"type":        "string",
-					"description": "Local Docker host URL (e.g. unix:///var/run/docker.sock)",
-				},
-				"capabilities": map[string]any{
-					"type":        "object",
-					"description": "Optional capability overrides: supports_docker, supports_ssh, supports_direct_mount, supports_port_forward",
-				},
-				"limit": map[string]any{
-					"type":        "integer",
-					"description": "Maximum connections to list",
-				},
+				"action":         map[string]any{"type": "string", "enum": []string{"list", "get", "create", "update", "delete", "check", "capabilities", "set_default"}, "description": "Action: list|get|create|update|delete|check|capabilities|set_default"},
+				"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path"},
+				"id":             map[string]any{"type": "string", "description": "Connection ID"},
+				"name":           map[string]any{"type": "string", "description": "Connection name"},
+				"kind":           map[string]any{"type": "string", "enum": []string{"local_docker", "ssh"}, "description": "local_docker|ssh"},
+				"host":           map[string]any{"type": "string", "description": "SSH host"},
+				"user":           map[string]any{"type": "string", "description": "SSH user"},
+				"port":           map[string]any{"type": "integer", "description": "SSH port (default 22)"},
+				"is_default":     map[string]any{"type": "boolean", "description": "Set as workspace default"},
+				"docker_host":    map[string]any{"type": "string", "description": "Local Docker host URL"},
+				"capabilities":   map[string]any{"type": "object", "description": "Capability overrides. Call action='help' for schema."},
 			},
 			"required":             []string{"action"},
-			"additionalProperties": false,
+			"additionalProperties": true,
 		},
 	}
 }

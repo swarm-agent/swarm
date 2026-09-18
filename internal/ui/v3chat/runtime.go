@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -53,6 +54,10 @@ type Runtime struct {
 
 	workspacePath string
 	cwdPath       string
+
+	stopped      bool
+	recovering   bool
+	reconnecting bool
 }
 
 func NewRuntime(transport Transport, store *Store, wake func()) *Runtime {
@@ -312,6 +317,7 @@ func (r *Runtime) connect(ctx context.Context, startAtCurrent bool) error {
 	streamCtx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	r.mu.Lock()
+	r.stopped = false
 	r.cancel = cancel
 	r.ready = ready
 	r.readyErr = nil
@@ -331,6 +337,7 @@ func (r *Runtime) connect(ctx context.Context, startAtCurrent bool) error {
 			r.signalWake()
 			if next.NeedsRehydrate {
 				cancel()
+				go r.autoRecover()
 			}
 		})
 		if streamCtx.Err() != nil {
@@ -340,7 +347,12 @@ func (r *Runtime) connect(ctx context.Context, startAtCurrent bool) error {
 			r.markReady(err)
 			r.store.Dispatch(ConnectionAction{Status: ConnectionReconnecting, Reason: err.Error()})
 			r.signalWake()
+			go r.autoReconnect()
+			return
 		}
+		r.store.Dispatch(ConnectionAction{Status: ConnectionReconnecting, Reason: "stream closed"})
+		r.signalWake()
+		go r.autoReconnect()
 	}()
 
 	select {
@@ -620,11 +632,95 @@ func (r *Runtime) Stop() {
 		return
 	}
 	r.mu.Lock()
+	r.stopped = true
 	cancel := r.cancel
 	r.cancel = nil
 	r.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+}
+
+func (r *Runtime) autoRecover() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.stopped || r.recovering {
+		r.mu.Unlock()
+		return
+	}
+	r.recovering = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.recovering = false
+		r.mu.Unlock()
+	}()
+
+	for attempt := 0; attempt < 5; attempt++ {
+		r.mu.Lock()
+		stopped := r.stopped
+		r.mu.Unlock()
+		if stopped {
+			return
+		}
+		state := r.store.Snapshot()
+		if !state.NeedsRehydrate || state.Session.ID == "" {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err := r.RecoverStale(ctx, "", "")
+		cancel()
+		if err == nil {
+			return
+		}
+		time.Sleep(time.Duration(150*(attempt+1)) * time.Millisecond)
+	}
+}
+
+func (r *Runtime) autoReconnect() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.stopped || r.reconnecting || r.recovering {
+		r.mu.Unlock()
+		return
+	}
+	r.reconnecting = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.reconnecting = false
+		r.mu.Unlock()
+	}()
+
+	for attempt := 0; attempt < 5; attempt++ {
+		r.mu.Lock()
+		stopped := r.stopped
+		r.mu.Unlock()
+		if stopped {
+			return
+		}
+		time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+		r.mu.Lock()
+		stopped = r.stopped
+		r.mu.Unlock()
+		if stopped {
+			return
+		}
+		state := r.store.Snapshot()
+		if state.NeedsRehydrate {
+			go r.autoRecover()
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := r.Connect(ctx)
+		cancel()
+		if err == nil {
+			return
+		}
 	}
 }
 

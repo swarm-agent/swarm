@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
@@ -1043,6 +1044,56 @@ func (s *SessionStore) ListSessionArtifactVariants(accountScopeID, sessionID, co
 		return nil
 	})
 	return out, err
+}
+
+// PutArtifactVariant persists a session artifact variant for direct testing or storage.
+func (s *SessionStore) PutArtifactVariant(variant SessionArtifactVariant) error {
+	if s == nil || s.store == nil {
+		return errors.New("session store is not configured")
+	}
+	key := KeySessionArtifactVariant(variant.AccountScopeID, variant.SessionID, variant.CollectionID, variant.ID)
+	return s.store.PutJSON(key, variant)
+}
+
+// ListAllMediaArtifactVariants returns bounded media (image, video, audio) variants across sessions.
+func (s *SessionStore) ListAllMediaArtifactVariants(accountScopeID string, limit int) ([]SessionArtifactVariant, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session store is not configured")
+	}
+	if limit <= 0 {
+		limit = 1000
+	}
+	const iterateAll = int(^uint(0) >> 1)
+	out := make([]SessionArtifactVariant, 0, 64)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	prefix := "v3/session_artifact/variants/"
+	if accountScopeID != "" {
+		prefix = fmt.Sprintf("v3/session_artifact/variants/%s/", keyPart(accountScopeID))
+	}
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
+		var variant SessionArtifactVariant
+		if err := json.Unmarshal(value, &variant); err != nil {
+			return err
+		}
+		if variant.Status != SessionArtifactStatusReady {
+			return nil
+		}
+		mt := strings.ToLower(strings.TrimSpace(variant.MediaType))
+		if strings.HasPrefix(mt, "image/") || strings.HasPrefix(mt, "video/") || strings.HasPrefix(mt, "audio/") {
+			out = append(out, variant)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func boundedArtifactListLimit(limit, maximum int) int {

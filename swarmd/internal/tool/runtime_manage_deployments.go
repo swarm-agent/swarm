@@ -25,8 +25,8 @@ func manageDeploymentsDefinition() Definition {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|ensure|deploy|release|stop|destroy|check|access|exec",
-					"enum":        []string{"list", "get", "ensure", "deploy", "release", "stop", "destroy", "check", "access", "exec"},
+					"description": "Action: list|get|ensure|deploy|release|stop|destroy|check|access|exec|reap",
+					"enum":        []string{"list", "get", "ensure", "deploy", "release", "stop", "destroy", "check", "access", "exec", "reap"},
 				},
 				"workspace_path": map[string]any{
 					"type":        "string",
@@ -67,7 +67,7 @@ func manageDeploymentsDefinition() Definition {
 				},
 				"consumer_metadata": map[string]any{
 					"type":        "object",
-					"description": "Optional key-value metadata to record on the lease (e.g. task_id, test_name)",
+					"description": "Optional key-value metadata for the lease. Call action='help' for schema.",
 				},
 				"lease_id": map[string]any{
 					"type":        "string",
@@ -83,7 +83,7 @@ func manageDeploymentsDefinition() Definition {
 				},
 				"env_overrides": map[string]any{
 					"type":        "object",
-					"description": "Optional environment variable overrides for the container",
+					"description": "Optional container environment variable overrides. Call action='help' for schema.",
 				},
 				"command": map[string]any{
 					"type":        "array",
@@ -96,7 +96,7 @@ func manageDeploymentsDefinition() Definition {
 				},
 				"env": map[string]any{
 					"type":        "object",
-					"description": "Environment variables for exec action",
+					"description": "Container environment variables for exec action. Call action='help' for schema.",
 				},
 				"timeout_ms": map[string]any{
 					"type":        "integer",
@@ -141,6 +141,12 @@ func (r *Runtime) executeManageDeployments(ctx context.Context, scope WorkspaceS
 
 	switch actionName {
 	case "list":
+		// Lazily reap expired leases before listing so view reflects active status
+		if reaper, ok := r.deploymentManager.(interface {
+			ReapExpired(ctx context.Context, accountScopeID, workspaceID string) ([]string, error)
+		}); ok {
+			_, _ = reaper.ReapExpired(ctx, accountScopeID, workspaceID)
+		}
 		limit := asInt(args["limit"], 100)
 		envID := strings.TrimSpace(asString(args["environment_id"]))
 		var deps []environments.Deployment
@@ -406,6 +412,21 @@ func (r *Runtime) executeManageDeployments(ctx context.Context, scope WorkspaceS
 		response["stdout"] = res.Stdout
 		response["stderr"] = res.Stderr
 		response["success"] = res.Success()
+
+	case "reap":
+		if reaper, ok := r.deploymentManager.(interface {
+			ReapExpired(ctx context.Context, accountScopeID, workspaceID string) ([]string, error)
+		}); ok {
+			reaped, err := reaper.ReapExpired(ctx, accountScopeID, workspaceID)
+			if err != nil {
+				return "", fmt.Errorf("reap expired deployments: %w", err)
+			}
+			response["reaped"] = reaped
+			response["reaped_count"] = len(reaped)
+		} else {
+			response["reaped"] = []string{}
+			response["reaped_count"] = 0
+		}
 
 	default:
 		return "", fmt.Errorf("unsupported manage_deployments action %q", actionName)

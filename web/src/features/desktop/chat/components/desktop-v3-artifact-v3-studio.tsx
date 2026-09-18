@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, FileDiff, GitCommitHorizontal, Loader2, MessageSquarePlus, RefreshCw, Search, X } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, FileDiff, GitCommitHorizontal, Loader2, MessageSquarePlus, Music, RefreshCw, Search, X } from 'lucide-react'
 
 import { defaultNativeGenerationGroup } from '../../session-v3/artifact-v3-groups'
 import { readNativeArtifactNavigation, writeNativeArtifactNavigation } from '../../session-v3/artifact-v3-navigation'
 import { cn } from '../../../../lib/cn'
+import {
+  fetchDesktopV3ArtifactCatalog,
+  preflightDesktopV3ArtifactDirectContent,
+  desktopV3ArtifactDirectContentURL,
+  type DesktopV3ArtifactCatalogEntry,
+} from '../../session-v3/artifact-api'
 import {
   artifactStatusLabel,
   desktopV3NativeArtifactIterationSelection,
@@ -29,6 +35,7 @@ export interface DesktopV3ArtifactV3StudioProps {
   onNavigate?: (artifact: DesktopV3NativeArtifactSummary) => void
   onRefresh?: () => void | Promise<void>
   onRepairDraft?: (artifact: DesktopV3NativeArtifactSummary) => void
+  soundtracks?: DesktopV3ArtifactCatalogEntry[]
 }
 
 function shortOid(value: string): string {
@@ -48,7 +55,7 @@ export function DesktopV3ArtifactV3Studio(props: DesktopV3ArtifactV3StudioProps)
   return <NativeArtifactStudio autoplay={autoplay} key={`${props.artifact?.ownerSessionId}:${props.artifact?.artifactId}:${props.open}`} {...props} />
 }
 
-function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefresh, onRepairDraft, onNavigate, autoplay }: DesktopV3ArtifactV3StudioProps & { autoplay: { current: string } }) {
+function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefresh, onRepairDraft, onNavigate, autoplay, soundtracks }: DesktopV3ArtifactV3StudioProps & { autoplay: { current: string } }) {
   const [studio, setStudio] = useState<DesktopV3NativeArtifactStudio | null>(null)
   const initialNavigation = readNativeArtifactNavigation(typeof window === 'undefined' ? '' : window.location.search)
   const [waveId, setWaveId] = useState(initialNavigation.artifactId === artifact?.artifactId ? initialNavigation.waveId : '')
@@ -67,11 +74,84 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   const [playback, setPlayback] = useState<NativeArtifactPlaybackState | null>(null)
   const [previewScale, setPreviewScale] = useState(1)
   const playbackCommand = useRef(0)
+  const [selectedSoundtrackId, setSelectedSoundtrackId] = useState('')
+  const [soundtrackURL, setSoundtrackURL] = useState('')
+  const soundtrackAudioRef = useRef<HTMLAudioElement | null>(null)
+  const [sessionSoundtracks, setSessionSoundtracks] = useState<DesktopV3ArtifactCatalogEntry[]>([])
+
+  useEffect(() => {
+    if (!open || !artifact?.ownerSessionId) {
+      setSessionSoundtracks([])
+      return
+    }
+    const controller = new AbortController()
+    fetchDesktopV3ArtifactCatalog(controller.signal, artifact.ownerSessionId)
+      .then((entries) => {
+        if (!controller.signal.aborted) {
+          setSessionSoundtracks(entries.filter((a) => (a.mediaType.startsWith('audio/') || a.kind === 'audio') && a.status === 'ready'))
+        }
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [open, artifact?.ownerSessionId])
+
+  const availableSoundtracks = useMemo(() => {
+    if (soundtracks && soundtracks.length > 0) {
+      return soundtracks.filter((a) => (a.mediaType.startsWith('audio/') || a.kind === 'audio') && a.status === 'ready')
+    }
+    return sessionSoundtracks
+  }, [soundtracks, sessionSoundtracks])
+
+  const activeSoundtrack = useMemo(() => {
+    if (selectedSoundtrackId === 'none') return null
+    if (selectedSoundtrackId) {
+      const match = availableSoundtracks.find((a) => a.artifactId === selectedSoundtrackId)
+      if (match) return match
+    }
+    return availableSoundtracks[0] ?? null
+  }, [availableSoundtracks, selectedSoundtrackId])
+
+  useEffect(() => {
+    if (!activeSoundtrack) {
+      setSoundtrackURL('')
+      return undefined
+    }
+    const controller = new AbortController()
+    void preflightDesktopV3ArtifactDirectContent(activeSoundtrack, controller.signal)
+      .then((url) => {
+        if (!controller.signal.aborted) setSoundtrackURL(url)
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setSoundtrackURL(desktopV3ArtifactDirectContentURL(activeSoundtrack))
+      })
+    return () => controller.abort()
+  }, [activeSoundtrack])
+
   const sendPlayback = (action: 'play' | 'pause' | 'seek', timeMs?: number) => {
     playbackCommand.current++
     previewRef.current?.contentWindow?.postMessage({ protocol: artifactV3SelectionProtocol, type: 'playback-command', revision_ref: selectedRevisionRef, command_id: playbackCommand.current, action, ...(timeMs === undefined ? {} : { time_ms: timeMs }) }, '*')
+    if (action === 'play') {
+      if (soundtrackAudioRef.current && soundtrackURL) {
+        if (timeMs !== undefined) {
+          soundtrackAudioRef.current.currentTime = timeMs / 1000
+        } else if (playback) {
+          soundtrackAudioRef.current.currentTime = playback.timeMs / 1000
+        }
+        soundtrackAudioRef.current.play().catch(() => {})
+      }
+    } else if (action === 'pause') {
+      if (soundtrackAudioRef.current) soundtrackAudioRef.current.pause()
+    } else if (action === 'seek' && timeMs !== undefined) {
+      if (soundtrackAudioRef.current) {
+        soundtrackAudioRef.current.currentTime = timeMs / 1000
+      }
+    }
   }
-  useEffect(() => { setPlayback(null); playbackCommand.current = 0 }, [selectedRevisionRef, previewURL])
+  useEffect(() => {
+    setPlayback(null)
+    playbackCommand.current = 0
+    if (soundtrackAudioRef.current) soundtrackAudioRef.current.pause()
+  }, [selectedRevisionRef, previewURL])
   useEffect(() => {
     const element = viewportRef.current
     if (!element || !playback) return
@@ -122,7 +202,12 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
   useEffect(() => {
     if (open && artifact) writeNativeArtifactNavigation({ artifactId: artifact.artifactId, revisionRef: selectedRevisionRef, waveId })
   }, [open, artifact?.artifactId, selectedRevisionRef, waveId])
-  const close = () => { autoplay.current = ''; writeNativeArtifactNavigation(null); onOpenChange(false) }
+  const close = () => {
+    if (soundtrackAudioRef.current) soundtrackAudioRef.current.pause()
+    autoplay.current = ''
+    writeNativeArtifactNavigation(null)
+    onOpenChange(false)
+  }
   const groups = studio?.artifact.generationGroups ?? []
   const group = defaultNativeGenerationGroup(groups, waveId)
   const previewOption = (revisionRef: string) => {
@@ -197,6 +282,14 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
         else {
           setPlayback(player)
           if (player.error) setError(player.error)
+          if (soundtrackAudioRef.current && soundtrackURL) {
+            if (player.playing && soundtrackAudioRef.current.paused) {
+              soundtrackAudioRef.current.currentTime = player.timeMs / 1000
+              soundtrackAudioRef.current.play().catch(() => {})
+            } else if (!player.playing && !soundtrackAudioRef.current.paused) {
+              soundtrackAudioRef.current.pause()
+            }
+          }
           if (autoplay.current === `${artifact?.artifactId}:${selectedRevisionRef}`) {
             autoplay.current = ''
             if (!player.error) sendPlayback('play')
@@ -287,13 +380,46 @@ function NativeArtifactStudio({ artifact, open, onOpenChange, onIterate, onRefre
       <main className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-[var(--app-bg-alt)]" data-artifact-v3-primary-preview>
         {historical ? <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-full border border-[var(--app-warning)] bg-[var(--app-warning-bg)] px-3 py-1 text-[10px] font-semibold text-[var(--app-warning)]">{viewingPending ? 'Pending change preview · not accepted · select head to apply' : 'Viewing prior revision · remix uses this revision · current head unchanged'}</div> : null}
         <div ref={viewportRef} className="relative min-h-0 flex-1 overflow-hidden">
-        {revisionUnavailable ? <div role="alert" className="p-6 text-sm">The exact viewed revision {selectedRevisionRef} or its Parts are unavailable. Your selection has not changed. Refresh or explicitly choose another revision.</div> : previewLoading ? <div className="grid size-full place-items-center"><Loader2 className="size-6 animate-spin text-[var(--app-primary)]" /></div> : previewURL ? <iframe key={selectedRevisionRef} ref={previewRef} onLoad={syncPreviewSelection} title={`${studio.artifact.label} complete revision preview`} src={previewURL} sandbox="allow-scripts" referrerPolicy="no-referrer" className="size-full border-0 bg-white" style={playback ? { position: 'absolute', width: 1920, height: 1080, maxWidth: 'none', left: '50%', top: '50%', transform: `translate(-50%, -50%) scale(${previewScale})` } : undefined} data-artifact-v3-complete-preview data-artifact-v3-preview data-artifact-v3-preview-revision={selectedRevision?.commitOid} /> : <div className="grid size-full place-items-center p-6 text-center text-sm text-[var(--app-text-muted)]">{studio.artifact.head ? 'This revision has no ready preview. Choose a ready revision from history.' : `${artifactStatusLabel(studio.artifact)}. ${studio.artifact.status === 'error' ? 'Your work is retained. Ask Swarm to continue fixing this artifact.' : 'You can close this window and continue chatting.'}`}</div>}
+        {revisionUnavailable ? <div role="alert" className="p-6 text-sm">The exact viewed revision {selectedRevisionRef} or its Parts are unavailable. Your selection has not changed. Refresh or explicitly choose another revision.</div> : previewLoading ? <div className="grid size-full place-items-center"><Loader2 className="size-6 animate-spin text-[var(--app-primary)]" /></div> : previewURL ? <iframe key={selectedRevisionRef} ref={previewRef} onLoad={syncPreviewSelection} title={`${studio.artifact.label} complete revision preview`} src={previewURL} sandbox="allow-scripts" allow="autoplay" referrerPolicy="no-referrer" className="size-full border-0 bg-white" style={playback ? { position: 'absolute', width: 1920, height: 1080, maxWidth: 'none', left: '50%', top: '50%', transform: `translate(-50%, -50%) scale(${previewScale})` } : undefined} data-artifact-v3-complete-preview data-artifact-v3-preview data-artifact-v3-preview-revision={selectedRevision?.commitOid} /> : <div className="grid size-full place-items-center p-6 text-center text-sm text-[var(--app-text-muted)]">{studio.artifact.head ? 'This revision has no ready preview. Choose a ready revision from history.' : `${artifactStatusLabel(studio.artifact)}. ${studio.artifact.status === 'error' ? 'Your work is retained. Ask Swarm to continue fixing this artifact.' : 'You can close this window and continue chatting.'}`}</div>}
         </div>
         {playback ? <section aria-label="Animation player" className="shrink-0 space-y-2 border-t border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-xs">
           <div className="flex items-center gap-3">
             <button type="button" disabled={Boolean(playback.error)} onClick={() => sendPlayback(playback.playing ? 'pause' : 'play')}>{playback.playing ? 'Pause' : playback.timeMs === playback.durationMs ? 'Replay' : 'Play'}</button>
             <input aria-label="Animation time" type="range" min={0} max={playback.durationMs} step={1} value={playback.timeMs} disabled={Boolean(playback.error)} onChange={(event) => sendPlayback('seek', Number(event.target.value))} className="min-w-0 flex-1" />
             <output>{(playback.timeMs / 1000).toFixed(1)} / {(playback.durationMs / 1000).toFixed(1)}s</output>
+            {availableSoundtracks.length > 0 ? (
+              <div className="inline-flex items-center gap-1.5 shrink-0 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1 text-xs" data-artifact-soundtrack-picker>
+                <Music size={13} className="text-[var(--app-primary)] shrink-0" aria-hidden="true" />
+                <select
+                  value={selectedSoundtrackId || activeSoundtrack?.artifactId || ''}
+                  onChange={(event) => {
+                    const nextId = event.target.value
+                    setSelectedSoundtrackId(nextId)
+                    if (playback.playing) sendPlayback('pause')
+                  }}
+                  className="bg-transparent text-[11px] font-medium text-[var(--app-text)] focus:outline-none cursor-pointer max-w-44 truncate"
+                  aria-label="Select soundtrack overlay"
+                  title="Synchronize soundtrack audio with animation playback"
+                >
+                  {availableSoundtracks.map((audio) => (
+                    <option key={audio.artifactId} value={audio.artifactId} className="bg-[var(--app-surface)] text-[var(--app-text)]">
+                      {audio.label || audio.filename || 'Soundtrack'}
+                    </option>
+                  ))}
+                  <option value="none" className="bg-[var(--app-surface)] text-[var(--app-text-muted)]">No soundtrack (silent)</option>
+                </select>
+              </div>
+            ) : null}
+            {soundtrackURL ? (
+              <audio
+                ref={soundtrackAudioRef}
+                key={soundtrackURL}
+                src={soundtrackURL}
+                preload="auto"
+                className="hidden"
+                data-artifact-soundtrack-overlay
+              />
+            ) : null}
           </div>
           <nav aria-label="Animation scenes" className="flex gap-1 overflow-x-auto">{visibleParts.filter((part) => part.temporal).map((part) => <button key={part.id} type="button" disabled={Boolean(playback.error)} aria-pressed={selectedPartIds.includes(part.id)} aria-current={part.temporal && playback.timeMs >= part.temporal.startMs && (playback.timeMs < part.temporal.endMs || playback.timeMs === playback.durationMs && part.temporal.endMs === playback.durationMs) ? 'step' : undefined} onClick={() => focusPart(part.id)} className="shrink-0 rounded border px-2 py-1 aria-[current=step]:border-[var(--app-primary)]">{part.label} · {part.temporal!.startMs / 1000}s</button>)}</nav>
         </section> : null}

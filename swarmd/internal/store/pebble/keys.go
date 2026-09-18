@@ -984,6 +984,22 @@ func KeySessionUsageSummaryByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_usage_summary_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }
 
+func KeyUsageLimit(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		accountPart = "default"
+	}
+	return fmt.Sprintf("usage_limit/%s", accountPart)
+}
+
+func KeyDailyUsageAccumulator(accountScopeID, date string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		accountPart = "default"
+	}
+	return fmt.Sprintf("daily_usage_accumulator/%s/%s", accountPart, keyPart(date))
+}
+
 func KeySessionLifecycleByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_lifecycle_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }

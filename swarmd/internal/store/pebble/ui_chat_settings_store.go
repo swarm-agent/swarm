@@ -225,6 +225,9 @@ func DefaultUISettingsRecord() UISettingsRecord {
 		Theme: UIThemeSettingsRecord{
 			ActiveID: sharedtheme.DefaultThemeID(),
 		},
+		Input: UIInputSettingsRecord{
+			MouseEnabled: true,
+		},
 		Chat: UIChatSettingsRecord{
 			ShowHeader:                      true,
 			ShowHeaderSet:                   true,

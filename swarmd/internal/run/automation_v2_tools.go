@@ -141,6 +141,8 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 	id = readID
 	var out any
 	switch mapString(args, "action") {
+	case "help":
+		out = map[string]any{"action": "help", "status": "ok", "instructions": tool.WorkerV2AuthoringInstructions}
 	case "review", "context":
 		p, found, err := s.sessions.GetAutomationV2Proposal(current.AccountScopeID, current.UserID, workspace, id)
 		if err != nil {

@@ -175,18 +175,21 @@ async function waitForProgram(sessionID, runID, label) {
     const outputs = taskToolOutputs(latest, sessionID)
     const completed = outputs.find((item) => String(item?.state || item?.program_state || item?.status || '') === 'completed')
     if (completed && intent?.status === 'completed') return { snapshot: latest, output: completed, intent }
-    const events = latest.events_by_session?.[sessionID] || []
-    const failedTaskEvent = events.find((event) => {
-      if (String(event?.event_type || '') !== 'session.tool.failed') return false
-      const payload = objectPayload(event?.payload)
-      return String(payload?.tool_name || payload?.name || '') === 'task'
-    })
-    if (failedTaskEvent) {
-      const payload = objectPayload(failedTaskEvent.payload)
-      fail(`${label} task failed: ${String(payload?.error || payload?.output || 'unknown task failure').slice(0, 1000)}`)
-    }
     const failed = outputs.find((item) => ['failed', 'blocked'].includes(String(item?.state || item?.program_state || item?.status || '')))
-    if (failed || (intent && isTerminal(intent.status) && intent.status !== 'completed')) fail(`${label} failed: ${JSON.stringify(failed || intent).slice(0, 2000)}`)
+    if (failed) fail(`${label} failed: ${JSON.stringify(failed).slice(0, 2000)}`)
+    if (intent && isTerminal(intent.status) && intent.status !== 'completed') {
+      const events = latest.events_by_session?.[sessionID] || []
+      const failedTaskEvent = events.find((event) => {
+        if (String(event?.event_type || '') !== 'session.tool.failed') return false
+        const payload = objectPayload(event?.payload)
+        return String(payload?.tool_name || payload?.name || '') === 'task'
+      })
+      if (failedTaskEvent) {
+        const payload = objectPayload(failedTaskEvent.payload)
+        fail(`${label} task failed: ${String(payload?.error || payload?.output || 'unknown task failure').slice(0, 1000)}`)
+      }
+      fail(`${label} failed: ${JSON.stringify(intent).slice(0, 2000)}`)
+    }
     if (Date.now() - lastBeat >= 15000) {
       log(`${label}: waiting; run=${intent?.status || 'pending'} task_outputs=${outputs.length}`)
       lastBeat = Date.now()
@@ -203,8 +206,7 @@ function programPrompt({ label, targetWorkspace, markerName }) {
     'Call the task tool exactly once with action=start, a non-empty top-level prompt, and one fully declared Task Program. The program must have one stage with id "verify" and dependency_evidence "Initial verify stage ready".',
     targetClause,
     `The program must have program id "${label === 'same-repo-current-parent' ? 'same_repo_probe' : 'linked_repo_probe'}", max_concurrency 1, and exactly one Coder job.`,
-    `The job must have: id "probe_coder", stage_id "verify", agent_type "coder", title "Probe Coder", owned_scope ["docs/task-program-probes/**"], deliverable "Committed verified probe file", dependency_evidence "Stage verify is ready", acceptance_criteria ["The committed file docs/task-program-probes/${markerName} exists"].`,
-    `The job meta_prompt must be: "Write one short public-safe line to docs/task-program-probes/${markerName} using the write tool, then stage it with git_add (all: true) and commit it with git_commit (message: \\"Add probe file\\"). You must commit your changes before finishing."`,
+    `The job must have: id "probe_coder", stage_id "verify", agent_type "coder", title "Probe Coder", meta_prompt "Write one short public-safe line to docs/task-program-probes/${markerName} using the write tool, then stage it with git_add (all: true) and commit it with git_commit (message: \\"Add probe file\\"). You must commit your changes before finishing.", owned_scope ["docs/task-program-probes/**"], deliverable "Committed verified probe file", dependency_evidence "Stage verify is ready", acceptance_criteria ["The committed file docs/task-program-probes/${markerName} exists"].`,
     `The parent must let the Task Program integrate the committed result and then reply exactly PROGRAM_OK.`,
     'Do not use any other tool. Do not inspect unrelated files. Do not include private paths, hostnames, credentials, or topology in the file.',
   ].filter(Boolean).join(' ')

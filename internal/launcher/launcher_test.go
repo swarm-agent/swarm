@@ -73,6 +73,114 @@ func TestWriteCompressedDesktopAssetsCreatesGzipFiles(t *testing.T) {
 	}
 }
 
+func TestCopyDirAndCopyFileSanitizePermissions(t *testing.T) {
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "target")
+	if err := os.Chmod(src, 0o775); err != nil {
+		t.Fatalf("chmod src: %v", err)
+	}
+	subDir := filepath.Join(src, "sub")
+	if err := os.Mkdir(subDir, 0o775); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	if err := os.Chmod(subDir, 0o775); err != nil {
+		t.Fatalf("chmod sub: %v", err)
+	}
+	normalFile := filepath.Join(subDir, "plain.txt")
+	if err := os.WriteFile(normalFile, []byte("plain text"), 0o664); err != nil {
+		t.Fatalf("write normal: %v", err)
+	}
+	if err := os.Chmod(normalFile, 0o664); err != nil {
+		t.Fatalf("chmod normal: %v", err)
+	}
+	execFile := filepath.Join(src, "run.sh")
+	if err := os.WriteFile(execFile, []byte("#!/bin/sh\nexit 0\n"), 0o775); err != nil {
+		t.Fatalf("write exec: %v", err)
+	}
+	if err := os.Chmod(execFile, 0o775); err != nil {
+		t.Fatalf("chmod exec: %v", err)
+	}
+
+	if err := copyDir(src, dst); err != nil {
+		t.Fatalf("copyDir: %v", err)
+	}
+
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat dst: %v", err)
+	}
+	if got := dstInfo.Mode().Perm(); got&0022 != 0 || got != 0o755 {
+		t.Fatalf("dst dir perm = %#o, want 0o755 without 0022", got)
+	}
+
+	dstSubInfo, err := os.Stat(filepath.Join(dst, "sub"))
+	if err != nil {
+		t.Fatalf("stat dst/sub: %v", err)
+	}
+	if got := dstSubInfo.Mode().Perm(); got&0022 != 0 || got != 0o755 {
+		t.Fatalf("dst sub dir perm = %#o, want 0o755 without 0022", got)
+	}
+
+	dstNormalInfo, err := os.Stat(filepath.Join(dst, "sub", "plain.txt"))
+	if err != nil {
+		t.Fatalf("stat dst plain.txt: %v", err)
+	}
+	if got := dstNormalInfo.Mode().Perm(); got&0022 != 0 || got != 0o644 {
+		t.Fatalf("dst plain.txt perm = %#o, want 0o644 without 0022", got)
+	}
+
+	dstExecInfo, err := os.Stat(filepath.Join(dst, "run.sh"))
+	if err != nil {
+		t.Fatalf("stat dst run.sh: %v", err)
+	}
+	if got := dstExecInfo.Mode().Perm(); got&0022 != 0 || got != 0o755 {
+		t.Fatalf("dst run.sh perm = %#o, want 0o755 without 0022", got)
+	}
+}
+
+func TestInstallDesktopAssetsSanitizesPermissions(t *testing.T) {
+	root := t.TempDir()
+	webDir := filepath.Join(root, "web")
+	distDir := filepath.Join(webDir, "dist")
+	if err := os.MkdirAll(distDir, 0o775); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	if err := os.Chmod(distDir, 0o775); err != nil {
+		t.Fatalf("chmod dist: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(distDir, "index.html"), []byte("<html></html>"), 0o664); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.Chmod(filepath.Join(distDir, "index.html"), 0o664); err != nil {
+		t.Fatalf("chmod index: %v", err)
+	}
+	targetDistDir := filepath.Join(root, "share")
+
+	profile := Profile{
+		WebDir:     webDir,
+		WebDistDir: targetDistDir,
+	}
+	if err := InstallDesktopAssets(profile); err != nil {
+		t.Fatalf("InstallDesktopAssets: %v", err)
+	}
+
+	targetInfo, err := os.Stat(targetDistDir)
+	if err != nil {
+		t.Fatalf("stat targetDistDir: %v", err)
+	}
+	if got := targetInfo.Mode().Perm(); got&0022 != 0 || got != 0o755 {
+		t.Fatalf("targetDistDir perm = %#o, want 0o755 without 0022", got)
+	}
+
+	targetIndexInfo, err := os.Stat(filepath.Join(targetDistDir, "index.html"))
+	if err != nil {
+		t.Fatalf("stat target index: %v", err)
+	}
+	if got := targetIndexInfo.Mode().Perm(); got&0022 != 0 || got != 0o644 {
+		t.Fatalf("target index perm = %#o, want 0o644 without 0022", got)
+	}
+}
+
 func TestDevFrontendAssetsNeedRebuildDetectsSourceChanges(t *testing.T) {
 	webDir := t.TempDir()
 	webDistDir := filepath.Join(t.TempDir(), "dist")

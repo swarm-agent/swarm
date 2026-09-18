@@ -136,10 +136,9 @@ func TestTaskProgramAuthoringContractGuidance(t *testing.T) {
 			continue
 		}
 		properties := definition.Parameters["properties"].(map[string]any)
-		program := properties["program"].(map[string]any)["properties"].(map[string]any)
-		job := program["jobs"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
-		if !strings.Contains(job["owned_scope"].(map[string]any)["description"].(string), taskscope.Guidance) {
-			t.Fatal("schema guidance drift")
+		program := properties["program"].(map[string]any)
+		if desc, _ := program["description"].(string); !strings.Contains(desc, "Task Program object") || !strings.Contains(desc, "topic='program'") {
+			t.Fatalf("task program description = %q", desc)
 		}
 		return
 	}

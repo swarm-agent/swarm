@@ -31,9 +31,10 @@ func TestRuntimeArtifactRegistryInjection(t *testing.T) {
 	if manageArtifact == nil {
 		t.Fatal("manage_artifact definition is missing")
 	}
+	workflowHelp := artifactHelpText("workflow")
 	for _, want := range []string{"reusable exact source for repeated edits", "every remix", "preview/download", "re-prompt from scratch"} {
-		if !strings.Contains(manageArtifact.Description, want) {
-			t.Fatalf("manage_artifact description missing %q: %s", want, manageArtifact.Description)
+		if !strings.Contains(workflowHelp, want) {
+			t.Fatalf("manage_artifact workflow help missing %q: %s", want, workflowHelp)
 		}
 	}
 	properties := manageArtifact.Parameters["properties"].(map[string]any)

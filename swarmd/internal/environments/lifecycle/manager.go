@@ -45,7 +45,21 @@ var (
 
 	// ErrDeploymentLeaseHeld indicates that the deployment has an active unexpired lease held by another consumer.
 	ErrDeploymentLeaseHeld = pebblestore.ErrDeploymentLeaseHeld
+
+	// DefaultLeaseTTLMillis defines the default lease lifetime (1 hour) when no explicit TTL is requested.
+	DefaultLeaseTTLMillis int64 = 60 * 60 * 1000
 )
+
+// resolveLeaseExpiresAt calculates the lease expiration timestamp: explicit TTL > idle timeout > default 1 hour.
+func resolveLeaseExpiresAt(now, reqTTLMillis int64, idleTimeoutSeconds int) int64 {
+	if reqTTLMillis > 0 {
+		return now + reqTTLMillis
+	}
+	if idleTimeoutSeconds > 0 {
+		return now + int64(idleTimeoutSeconds)*1000
+	}
+	return now + DefaultLeaseTTLMillis
+}
 
 // ConnectionReader provides read access to Connection records.
 type ConnectionReader interface {
@@ -367,10 +381,7 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 
 			// Attempt atomic lease acquisition
 			leaseID := "lease_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-			var expiresAt int64
-			if req.TTLMillis > 0 {
-				expiresAt = now + req.TTLMillis
-			}
+			expiresAt := resolveLeaseExpiresAt(now, req.TTLMillis, env.DeploymentPolicy.IdleTimeoutSeconds)
 			leaseToAcquire := environments.DeploymentLease{
 				ID:               leaseID,
 				AccountScopeID:   req.AccountScopeID,
@@ -486,10 +497,7 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 
 	// Acquire lease for the consumer
 	leaseID := "lease_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	var expiresAt int64
-	if req.TTLMillis > 0 {
-		expiresAt = now + req.TTLMillis
-	}
+	expiresAt := resolveLeaseExpiresAt(now, req.TTLMillis, env.DeploymentPolicy.IdleTimeoutSeconds)
 	leaseToAcquire := environments.DeploymentLease{
 		ID:               leaseID,
 		AccountScopeID:   req.AccountScopeID,
@@ -648,10 +656,7 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 	if req.ConsumerID != "" {
 		initialStatus = environments.DeploymentStatusBusy
 		leaseID := "lease_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		var expiresAt int64
-		if req.TTLMillis > 0 {
-			expiresAt = now + req.TTLMillis
-		}
+		expiresAt := resolveLeaseExpiresAt(now, req.TTLMillis, env.DeploymentPolicy.IdleTimeoutSeconds)
 		cType := req.ConsumerType
 		if cType == "" {
 			cType = environments.ConsumerTypeSession
@@ -1078,12 +1083,55 @@ func (m *DeploymentManager) ListDeploymentsByEnvironment(accountScopeID, workspa
 	return m.deployments.ListByEnvironment(accountScopeID, workspaceID, environmentID, limit)
 }
 
-// GetActiveLease retrieves the active lease for a deployment if one is held.
+// GetActiveLease retrieves the active lease for a deployment if one is held and unexpired.
 func (m *DeploymentManager) GetActiveLease(accountScopeID, workspaceID, deploymentID string) (environments.DeploymentLease, bool, error) {
 	if m == nil || m.deployments == nil {
 		return environments.DeploymentLease{}, false, errors.New("deployment store is not configured")
 	}
-	return m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	lease, found, err := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	if err != nil || !found {
+		return environments.DeploymentLease{}, found, err
+	}
+	if !lease.IsHeld(time.Now().UnixMilli()) {
+		return environments.DeploymentLease{}, false, nil
+	}
+	return lease, true, nil
+}
+
+// ReapExpired releases expired leases and triggers environment release behavior for idle/expired deployments.
+func (m *DeploymentManager) ReapExpired(ctx context.Context, accountScopeID, workspaceID string) ([]string, error) {
+	if m == nil || m.deployments == nil {
+		return nil, errors.New("deployment store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	workspaceID = strings.TrimSpace(workspaceID)
+	if accountScopeID == "" || workspaceID == "" {
+		return nil, errors.New("account scope id and workspace id are required")
+	}
+	deps, err := m.deployments.List(accountScopeID, workspaceID, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("list deployments: %w", err)
+	}
+	now := time.Now().UnixMilli()
+	var reaped []string
+	for _, dep := range deps {
+		if !dep.IsActive() {
+			continue
+		}
+		activeLease, hasActive, err := m.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID)
+		if err == nil && hasActive && activeLease.Active && activeLease.IsExpired(now) {
+			_, relErr := m.ReleaseDeployment(ctx, ReleaseDeploymentRequest{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				LeaseID:        activeLease.ID,
+				Reason:         "lease_ttl_expired",
+			})
+			if relErr == nil {
+				reaped = append(reaped, fmt.Sprintf("lease %s on deployment %s expired and released", activeLease.ID, dep.ID))
+			}
+		}
+	}
+	return reaped, nil
 }
 
 // GetLease retrieves a deployment lease by lease ID.

@@ -55,23 +55,25 @@ const (
 )
 
 type agentsModalState struct {
-	Visible            bool
-	Loading            bool
-	Status             string
-	Error              string
-	Providers          []string
-	ModelsByProvider   map[string][]string
-	ModelCatalog       map[string]client.ModelCatalogRecord
-	SelectedAgent      int
-	Focus              agentsModalFocus
-	SelectedAssignment int
-	SelectedField      int
-	EditingField       bool
-	EditingOption      string
-	EditingOptionSet   bool
-	Drafts             map[string][]client.AgentModelAssignment
-	InitialDrafts      map[string][]client.AgentModelAssignment
-	EditingProfileID   string
+	Visible                  bool
+	Loading                  bool
+	Status                   string
+	Error                    string
+	Providers                []string
+	ModelsByProvider         map[string][]string
+	ModelCatalog             map[string]client.ModelCatalogRecord
+	SelectedAgent            int
+	Focus                    agentsModalFocus
+	SelectedAssignment       int
+	SelectedField            int
+	EditingField             bool
+	EditingOption            string
+	EditingOptionSet         bool
+	EditingOptionScroll      int
+	EditingOptionVisibleRows int
+	Drafts                   map[string][]client.AgentModelAssignment
+	InitialDrafts            map[string][]client.AgentModelAssignment
+	EditingProfileID         string
 }
 
 func (p *HomePage) ShowAgentsModal() {
@@ -389,6 +391,35 @@ func (p *HomePage) beginAgentsModalFieldEdit() {
 	p.agentsModal.EditingField = true
 	p.agentsModal.EditingOption = options[index]
 	p.agentsModal.EditingOptionSet = true
+	p.agentsModal.EditingOptionScroll = 0
+}
+
+func (p *HomePage) reconcileAgentsModalOptionScroll(visibleRows, selectedIdx, totalOptions int) {
+	if visibleRows <= 0 || totalOptions <= 0 {
+		p.agentsModal.EditingOptionScroll = 0
+		return
+	}
+	maxScroll := maxInt(0, totalOptions-visibleRows)
+	if p.agentsModal.EditingOptionScroll < 0 {
+		p.agentsModal.EditingOptionScroll = 0
+	}
+	if p.agentsModal.EditingOptionScroll > maxScroll {
+		p.agentsModal.EditingOptionScroll = maxScroll
+	}
+	if selectedIdx >= 0 {
+		if p.agentsModal.EditingOptionScroll > selectedIdx {
+			p.agentsModal.EditingOptionScroll = selectedIdx
+		}
+		if p.agentsModal.EditingOptionScroll+visibleRows-1 < selectedIdx {
+			p.agentsModal.EditingOptionScroll = selectedIdx - visibleRows + 1
+		}
+	}
+	if p.agentsModal.EditingOptionScroll < 0 {
+		p.agentsModal.EditingOptionScroll = 0
+	}
+	if p.agentsModal.EditingOptionScroll > maxScroll {
+		p.agentsModal.EditingOptionScroll = maxScroll
+	}
 }
 
 func (p *HomePage) handleAgentsModalFieldKey(ev *tcell.EventKey) {
@@ -401,6 +432,7 @@ func (p *HomePage) handleAgentsModalFieldKey(ev *tcell.EventKey) {
 		p.agentsModal.EditingField = false
 		p.agentsModal.EditingOption = ""
 		p.agentsModal.EditingOptionSet = false
+		p.agentsModal.EditingOptionScroll = 0
 		return
 	}
 	if p.keybinds.Match(ev, KeybindAgentsEditorSave) {
@@ -412,15 +444,46 @@ func (p *HomePage) handleAgentsModalFieldKey(ev *tcell.EventKey) {
 	if index < 0 {
 		index = 0
 	}
-	switch ev.Key() {
-	case tcell.KeyUp, tcell.KeyLeft:
-		index = (index - 1 + len(options)) % len(options)
+	pageSize := maxInt(1, p.agentsModal.EditingOptionVisibleRows)
+	if pageSize <= 1 {
+		pageSize = 5
+	}
+	switch {
+	case ev.Key() == tcell.KeyUp || ev.Key() == tcell.KeyLeft ||
+		p.keybinds.Match(ev, KeybindModalMoveUp) || p.keybinds.Match(ev, KeybindModalMoveUpAlt):
+		if index > 0 {
+			index--
+		}
 		p.agentsModal.EditingOption = options[index]
-	case tcell.KeyDown, tcell.KeyRight:
-		index = (index + 1) % len(options)
+	case ev.Key() == tcell.KeyDown || ev.Key() == tcell.KeyRight ||
+		p.keybinds.Match(ev, KeybindModalMoveDown) || p.keybinds.Match(ev, KeybindModalMoveDownAlt):
+		if index < len(options)-1 {
+			index++
+		}
 		p.agentsModal.EditingOption = options[index]
-	case tcell.KeyEnter:
+	case ev.Key() == tcell.KeyPgUp || p.keybinds.Match(ev, KeybindModalPageUp):
+		index = maxInt(0, index-pageSize)
+		p.agentsModal.EditingOption = options[index]
+	case ev.Key() == tcell.KeyPgDn || p.keybinds.Match(ev, KeybindModalPageDown):
+		index = minInt(len(options)-1, index+pageSize)
+		p.agentsModal.EditingOption = options[index]
+	case ev.Key() == tcell.KeyHome || p.keybinds.Match(ev, KeybindModalJumpHome):
+		index = 0
+		p.agentsModal.EditingOption = options[index]
+	case ev.Key() == tcell.KeyEnd || p.keybinds.Match(ev, KeybindModalJumpEnd):
+		index = len(options) - 1
+		p.agentsModal.EditingOption = options[index]
+	case ev.Key() == tcell.KeyEnter || p.keybinds.Match(ev, KeybindModalEnter):
 		p.commitAgentsModalFieldEdit()
+	case ev.Key() == tcell.KeyRune && ev.Rune() >= 32:
+		ch := strings.ToLower(string(ev.Rune()))
+		for offset := 1; offset < len(options); offset++ {
+			candIdx := (index + offset) % len(options)
+			if strings.HasPrefix(strings.ToLower(options[candIdx]), ch) {
+				p.agentsModal.EditingOption = options[candIdx]
+				break
+			}
+		}
 	}
 }
 
@@ -431,6 +494,7 @@ func (p *HomePage) commitAgentsModalFieldEdit() {
 	p.agentsModal.EditingField = false
 	p.agentsModal.EditingOption = ""
 	p.agentsModal.EditingOptionSet = false
+	p.agentsModal.EditingOptionScroll = 0
 }
 
 func (p *HomePage) agentsModalSelectedFieldValue() string {
@@ -581,9 +645,29 @@ func (p *HomePage) handleAgentsModalMouse(ev *tcell.EventMouse) bool {
 	if p.agentsModal.Loading {
 		return true
 	}
+	buttons := ev.Buttons()
+	if buttons&(tcell.WheelUp|tcell.WheelDown) != 0 {
+		if p.agentsModal.EditingField {
+			options := p.agentsModalSelectedFieldOptions()
+			if len(options) > 0 {
+				index := findAgentsModalOptionIndex(options, p.agentsModal.EditingOption)
+				if index < 0 {
+					index = 0
+				}
+				if buttons&tcell.WheelUp != 0 {
+					index = maxInt(0, index-3)
+				} else {
+					index = minInt(len(options)-1, index+3)
+				}
+				p.agentsModal.EditingOption = options[index]
+				return true
+			}
+		}
+		return true
+	}
 	x, y := ev.Position()
 	target, ok := p.agentsModalTargetAt(x, y)
-	if !ok || ev.Buttons()&tcell.Button1 == 0 {
+	if !ok || buttons&tcell.Button1 == 0 {
 		return true
 	}
 	switch target.Action {
@@ -644,7 +728,11 @@ func (p *HomePage) drawAgentsModal(s tcell.Screen) {
 	right := Rect{X: body.X + leftW + 1, Y: body.Y, W: body.W - leftW - 1, H: body.H}
 	p.drawAgentsModalAgentList(s, left)
 	p.drawAgentsModalEditor(s, right)
-	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, "↑/↓ navigate • Enter opens • S saves and continues • Ctrl+Y saves and exits • Esc cancels")
+	helpLine := "↑/↓ navigate • Enter opens • S saves and continues • Ctrl+Y saves and exits • Esc cancels"
+	if p.agentsModal.EditingField {
+		helpLine = "↑/↓ scroll options • Enter selects • Esc cancels edit • Ctrl+Y saves and exits"
+	}
+	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.TextMuted, helpLine)
 	DrawText(s, rect.X+2, rect.Y+rect.H-1, rect.W-4, p.theme.TextMuted, "All values read and write /v1/agent-model-settings")
 }
 
@@ -712,15 +800,23 @@ func (p *HomePage) drawAgentsModalEditor(s tcell.Screen, rect Rect) {
 			prefix, lineStyle = "> ", p.theme.Accent.Bold(true)
 		}
 		label := agentsModalAssignmentLabel(name, i)
-		DrawText(s, rect.X+2, row, rect.W-4, lineStyle, prefix+label)
-		DrawText(s, rect.X+4, row+1, rect.W-6, p.theme.TextMuted, clampEllipsis(agentsModalAssignmentSummary(assignment), rect.W-6))
-		p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: row, W: rect.W - 2, H: 2}, "agents-assignment", i, "")
-		row += 3
+		if p.agentsModal.EditingField && rect.H < 26 {
+			DrawText(s, rect.X+2, row, rect.W-4, lineStyle, prefix+label+": "+clampEllipsis(agentsModalAssignmentSummary(assignment), rect.W-len([]rune(prefix+label))-6))
+			p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: row, W: rect.W - 2, H: 1}, "agents-assignment", i, "")
+			row++
+		} else {
+			DrawText(s, rect.X+2, row, rect.W-4, lineStyle, prefix+label)
+			DrawText(s, rect.X+4, row+1, rect.W-6, p.theme.TextMuted, clampEllipsis(agentsModalAssignmentSummary(assignment), rect.W-6))
+			p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: row, W: rect.W - 2, H: 2}, "agents-assignment", i, "")
+			row += 3
+		}
 	}
 
 	assignment := p.selectedAgentsModalAssignment()
 	if assignment != nil && (p.agentsModal.Focus == agentsModalFocusFields || p.agentsModal.Focus == agentsModalFocusSave) {
-		row++
+		if !p.agentsModal.EditingField || rect.H >= 26 {
+			row++
+		}
 		labels := []string{"Provider", "Model", "Thinking", "Priority"}
 		values := []string{assignment.Provider, assignment.Model, assignment.Thinking, assignment.ServiceTier}
 		for i, label := range labels {
@@ -742,14 +838,37 @@ func (p *HomePage) drawAgentsModalEditor(s tcell.Screen, rect Rect) {
 					value = "choose " + strings.ToLower(label)
 				}
 			}
-			DrawText(s, rect.X+2, row, rect.W-4, fieldStyle, fmt.Sprintf("%s[%s: %s]", prefix, label, value))
+			fieldLine := fmt.Sprintf("%s[%s: %s]", prefix, label, value)
+			if selected && p.agentsModal.EditingField {
+				options := p.agentsModalSelectedFieldOptions()
+				selectedIdx := findAgentsModalOptionIndex(options, p.agentsModal.EditingOption)
+				if selectedIdx < 0 {
+					selectedIdx = 0
+				}
+				if len(options) > 1 {
+					fieldLine = fmt.Sprintf("%s[%s: %s] (%d/%d)", prefix, label, value, selectedIdx+1, len(options))
+				}
+			}
+			DrawText(s, rect.X+2, row, rect.W-4, fieldStyle, fieldLine)
 			p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: row, W: rect.W - 2, H: 1}, "agents-field", i, "")
 			row++
 			if selected && p.agentsModal.EditingField {
-				for _, option := range p.agentsModalSelectedFieldOptions() {
+				options := p.agentsModalSelectedFieldOptions()
+				availableRows := maxInt(1, (rect.Y+rect.H-3)-row)
+				p.agentsModal.EditingOptionVisibleRows = availableRows
+				selectedIdx := findAgentsModalOptionIndex(options, p.agentsModal.EditingOption)
+				if selectedIdx < 0 {
+					selectedIdx = 0
+				}
+				p.reconcileAgentsModalOptionScroll(availableRows, selectedIdx, len(options))
+				scroll := p.agentsModal.EditingOptionScroll
+				endIdx := minInt(len(options), scroll+availableRows)
+
+				for idx := scroll; idx < endIdx; idx++ {
 					if row >= rect.Y+rect.H-3 {
 						break
 					}
+					option := options[idx]
 					optionLabel := strings.TrimSpace(option)
 					if optionLabel == "" {
 						optionLabel = "off"
@@ -758,7 +877,7 @@ func (p *HomePage) drawAgentsModalEditor(s tcell.Screen, rect Rect) {
 					if strings.EqualFold(option, p.agentsModal.EditingOption) {
 						optionPrefix, optionStyle = "  > ", p.theme.Text
 					}
-					DrawText(s, rect.X+2, row, rect.W-4, optionStyle, optionPrefix+optionLabel)
+					DrawText(s, rect.X+2, row, rect.W-4, optionStyle, clampEllipsis(optionPrefix+optionLabel, rect.W-4))
 					p.registerAgentsModalTarget(Rect{X: rect.X + 1, Y: row, W: rect.W - 2, H: 1}, "agents-option", i, option)
 					row++
 				}

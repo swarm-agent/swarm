@@ -44,7 +44,7 @@ const (
 	// srcdoc frames, and same-artifact package resources are supported; outbound
 	// connections, forms, objects, and top-level navigation remain unavailable.
 	sessionsV3ArtifactPreviewHTMLCSP           = "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; frame-src 'self' data: blob:; connect-src 'none'; worker-src blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
-	sessionsV3ArtifactPreviewPermissionsPolicy = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
+	sessionsV3ArtifactPreviewPermissionsPolicy = "accelerometer=(), ambient-light-sensor=(), autoplay=*, bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
 )
 
 type sessionsV3ArtifactPreviewTokenClaims struct {
@@ -57,7 +57,9 @@ type sessionsV3ArtifactPreviewTokenClaims struct {
 }
 
 var sessionsV3ArtifactPackageMediaTypes = map[string]string{
+	".aac":   "audio/aac",
 	".css":   "text/css; charset=utf-8",
+	".flac":  "audio/flac",
 	".gif":   "image/gif",
 	".htm":   "text/html; charset=utf-8",
 	".html":  "text/html; charset=utf-8",
@@ -65,13 +67,17 @@ var sessionsV3ArtifactPackageMediaTypes = map[string]string{
 	".jpg":   "image/jpeg",
 	".js":    "text/javascript; charset=utf-8",
 	".json":  "application/json",
+	".m4a":   "audio/mp4",
 	".mjs":   "text/javascript; charset=utf-8",
+	".mp3":   "audio/mpeg",
+	".ogg":   "audio/ogg",
 	".otf":   "font/otf",
 	".png":   "image/png",
 	".svg":   "image/svg+xml",
 	".ttf":   "font/ttf",
 	".txt":   "text/plain; charset=utf-8",
 	".wasm":  "application/wasm",
+	".wav":   "audio/wav",
 	".webp":  "image/webp",
 	".woff":  "font/woff",
 	".woff2": "font/woff2",
@@ -610,6 +616,9 @@ func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) 
 	if kind == "package" && mediaType == "application/zip" {
 		return "html", true
 	}
+	if strings.HasPrefix(mediaType, "audio/") && (kind == "" || kind == "audio" || kind == "download") {
+		return "audio", true
+	}
 	if mediaType == "video/mp4" {
 		// MP4 bytes are validated as browser-safe before a variant becomes ready.
 		// Repair historical and explicitly download-labelled publications so the
@@ -625,7 +634,7 @@ func sessionsV3ArtifactPresentation(variant pebblestore.SessionArtifactVariant) 
 func sessionsV3ManagedArtifactCategory(variant pebblestore.SessionArtifactVariant) string {
 	kind, _ := sessionsV3ArtifactPresentation(variant)
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "html", "package", "image", "pdf", "video":
+	case "html", "package", "image", "pdf", "video", "audio":
 		return "visual"
 	default:
 		return "document"
@@ -992,7 +1001,7 @@ func (s *Server) handleSessionV3Artifact(w http.ResponseWriter, r *http.Request,
 	}
 	defer file.Close()
 	maxAllowedBytes := sessionsV3ArtifactMaxBytes
-	if artifact.Descriptor.Kind == "video" || artifact.Descriptor.MediaType == "video/mp4" || strings.HasPrefix(artifact.Descriptor.MediaType, "video/") {
+	if artifact.Descriptor.Kind == "video" || artifact.Descriptor.MediaType == "video/mp4" || strings.HasPrefix(artifact.Descriptor.MediaType, "video/") || strings.HasPrefix(artifact.Descriptor.MediaType, "audio/") || artifact.Descriptor.Kind == "audio" {
 		maxAllowedBytes = sessionsV3ArtifactVideoMaxBytes
 	}
 	if info.Size() > maxAllowedBytes {

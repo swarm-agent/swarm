@@ -153,6 +153,7 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	}
 	exec.recoverDurableRuns(ctx)
 	exec.startStaleRecoveryBackstop(ctx)
+	exec.startDailyUsageLimitWatcher(ctx)
 	return exec
 }
 
@@ -253,6 +254,7 @@ func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel contex
 		e.runStates[runKey] = state
 	}
 	state.cancel = cancel
+	state.job = job
 	shouldCancel = state.canceled
 	e.mu.Unlock()
 	if shouldCancel {
@@ -351,6 +353,78 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		return result, true, err
 	}
 	return sessionruntime.SessionMutationResult{}, false, fmt.Errorf("v3 run %q is not active", job.RunID)
+}
+
+func (e *sessionV3Executor) CancelRunsForAccount(accountScopeID, reason string) int {
+	if e == nil {
+		return 0
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	e.mu.Lock()
+	var toCancel []sessionV3ExecutorJob
+	for _, state := range e.runStates {
+		if state != nil && !state.canceled {
+			if accountScopeID == "" || strings.TrimSpace(state.job.Principal.AccountScopeID) == accountScopeID {
+				toCancel = append(toCancel, state.job)
+			}
+		}
+	}
+	e.mu.Unlock()
+
+	canceledCount := 0
+	for _, job := range toCancel {
+		_, canceled, err := e.CancelRun(job, reason)
+		if err == nil && canceled {
+			canceledCount++
+		}
+	}
+	return canceledCount
+}
+
+func (e *sessionV3Executor) startDailyUsageLimitWatcher(ctx context.Context) {
+	if e == nil || ctx == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				e.checkAndEnforceUsageLimits()
+			}
+		}
+	}()
+}
+
+func (e *sessionV3Executor) checkAndEnforceUsageLimits() {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return
+	}
+	e.mu.Lock()
+	if len(e.runStates) == 0 {
+		e.mu.Unlock()
+		return
+	}
+	accounts := make(map[string]bool)
+	for _, state := range e.runStates {
+		if state != nil && !state.canceled {
+			acct := strings.TrimSpace(state.job.Principal.AccountScopeID)
+			accounts[acct] = true
+		}
+	}
+	e.mu.Unlock()
+
+	for acct := range accounts {
+		exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(acct)
+		if err == nil && exceeded {
+			reason := fmt.Sprintf("daily usage limit exceeded ($%.4f spent today, limit is $%.2f)", currentCost, limitCost)
+			log.Printf("warning: daily usage limit exceeded for account %q: $%.4f spent today (limit $%.2f). Terminating running sessions.", acct, currentCost, limitCost)
+			e.CancelRunsForAccount(acct, reason)
+		}
+	}
 }
 
 func hydrateSessionV3ExecutorJobFromIntent(job sessionV3ExecutorJob, intent pebblestore.V3SessionRunIntent) sessionV3ExecutorJob {
@@ -521,6 +595,15 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	}
 	if e.isRunCanceled(job) || runCtx.Err() != nil {
 		return
+	}
+	// Check daily usage limit before dispatching
+	if e.server != nil && e.server.sessions != nil {
+		if exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(job.Principal.AccountScopeID); err == nil && exceeded {
+			reason := fmt.Sprintf("daily usage limit exceeded ($%.4f spent today, limit is $%.2f)", currentCost, limitCost)
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+			_, _ = e.recordRunFailureSystemMessage(job, reason)
+			return
+		}
 	}
 	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
 	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor {
@@ -2819,6 +2902,14 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 				turnUsage, ok := sessionV3ProviderUsageRecord(usageProviderID, usageModel, resolved.ContextWindow, job.RunID, step, response.Usage)
 				if ok {
 					planGuardArmed = planContextGuard.Observe(sessionV3PlanContextGuardUsageSummary(usageResult, turnUsage))
+				}
+			}
+			if e.server != nil && e.server.sessions != nil {
+				if exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(job.Principal.AccountScopeID); err == nil && exceeded {
+					reason := fmt.Sprintf("daily usage limit exceeded ($%.4f spent today, limit is $%.2f)", currentCost, limitCost)
+					log.Printf("warning: daily usage limit exceeded during run %s: %s", job.RunID, reason)
+					e.CancelRunsForAccount(job.Principal.AccountScopeID, reason)
+					return sessionV3ProviderLoopResult{}, errors.New(reason)
 				}
 			}
 		}
