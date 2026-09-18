@@ -207,6 +207,21 @@ const (
 	SessionArtifactRoleWorkspacePub = "workspace_publication"
 )
 
+// IsValidArtifactRole validates whether an artifact role is supported.
+func IsValidArtifactRole(role string) bool {
+	switch strings.TrimSpace(role) {
+	case SessionArtifactRoleRenderOnly,
+		SessionArtifactRoleChainedVideo,
+		SessionArtifactRoleKeyframe,
+		SessionArtifactRoleVideoRender,
+		SessionArtifactRoleAIGenerated,
+		SessionArtifactRoleWorkspacePub:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsAIGeneratedMedia determines whether a session artifact variant represents a paid
 // external AI generation call (e.g. Veo, Lyria, Nano Banana/Imagen/FLUX) vs. a local
 // host operation (e.g. FFmpeg concatenation/keyframe extraction, Video Studio render, HTML capture, workspace publication).
@@ -1387,7 +1402,7 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		if len(variant.Filename) > 255 || len(variant.MediaType) > 255 || len(variant.Role) > 64 || len(variant.FailureCode) > 128 {
 			return errors.New("artifact variant metadata exceeds bounds")
 		}
-		if variant.Role != "" && variant.Role != SessionArtifactRoleRenderOnly {
+		if variant.Role != "" && !IsValidArtifactRole(variant.Role) {
 			return errors.New("artifact variant role is unsupported")
 		}
 		if variant.FailureCode != "" {

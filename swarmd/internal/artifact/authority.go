@@ -217,7 +217,7 @@ func (a *Authority) Reserve(principal Principal, input CreateInput) (pebblestore
 	input.SourceSessionID = strings.TrimSpace(input.SourceSessionID)
 	input.SourceCollectionID, input.SourceVariantID = strings.TrimSpace(input.SourceCollectionID), strings.TrimSpace(input.SourceVariantID)
 	input.Role = strings.TrimSpace(input.Role)
-	if input.Role != "" && input.Role != pebblestore.SessionArtifactRoleRenderOnly {
+	if input.Role != "" && !pebblestore.IsValidArtifactRole(input.Role) {
 		return pebblestore.SessionArtifactVariant{}, errors.New("artifact role is unsupported")
 	}
 	if input.RequestID == "" || input.CollectionID == "" || input.VariantID == "" {
@@ -313,7 +313,7 @@ func (a *Authority) create(ctx context.Context, principal Principal, input Creat
 	input.SourceCollectionID = strings.TrimSpace(input.SourceCollectionID)
 	input.SourceVariantID = strings.TrimSpace(input.SourceVariantID)
 	input.Role = strings.TrimSpace(input.Role)
-	if input.Role != "" && input.Role != pebblestore.SessionArtifactRoleRenderOnly {
+	if input.Role != "" && !pebblestore.IsValidArtifactRole(input.Role) {
 		return pebblestore.SessionArtifactVariant{}, errors.New("artifact role is unsupported")
 	}
 	if input.SourceSessionID != "" || input.SourceEventSeq != 0 {

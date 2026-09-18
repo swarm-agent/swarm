@@ -437,6 +437,31 @@ func TestAuthorityMaterializeReferenceRequiresOwnedReadyExactEvent(t *testing.T)
 	}
 }
 
+func TestAuthoritySupportsAIGeneratedRole(t *testing.T) {
+	authority, _, principal := authorityFixture(t)
+	variant, err := authority.Create(context.Background(), principal, CreateInput{
+		RequestID: "req-ai", CollectionName: "AI Image", Filename: "cat.png", MediaType: "image/png",
+		Role: pebblestore.SessionArtifactRoleAIGenerated, Body: []byte("fake-png"),
+	})
+	if err != nil {
+		t.Fatalf("create with ai_generated role failed: %v", err)
+	}
+	if variant.Role != pebblestore.SessionArtifactRoleAIGenerated {
+		t.Fatalf("expected role %q, got %q", pebblestore.SessionArtifactRoleAIGenerated, variant.Role)
+	}
+
+	reserved, err := authority.Reserve(principal, CreateInput{
+		RequestID: "req-reserve", CollectionID: "col-1", VariantID: "var-1",
+		Role: pebblestore.SessionArtifactRoleAIGenerated,
+	})
+	if err != nil {
+		t.Fatalf("reserve with ai_generated role failed: %v", err)
+	}
+	if reserved.Role != pebblestore.SessionArtifactRoleAIGenerated {
+		t.Fatalf("expected role %q, got %q", pebblestore.SessionArtifactRoleAIGenerated, reserved.Role)
+	}
+}
+
 func TestAuthorityReadPackageReferenceRequiresOwnedReadyExactEvent(t *testing.T) {
 	authority, metadata, principal := authorityFixture(t)
 	metadata.sourceCollection = pebblestore.SessionArtifactCollection{ID: "source-collection", AccountScopeID: "account-1", SessionID: "source-session", Status: pebblestore.SessionArtifactStatusReady, VariantCount: 1, ReadyCount: 1}
