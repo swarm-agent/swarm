@@ -114,14 +114,14 @@ export function DesktopV3ChatHeader({
     }
   }
   const editableTitle = editingTitle ? (
-    <span className="grid min-w-0 gap-0.5">
+    <span className="grid min-w-0 max-w-full flex-1 gap-0.5">
       <input
         ref={titleInputRef}
         value={titleDraft}
         disabled={pendingAction === 'rename'}
         aria-label="Conversation title"
         aria-invalid={Boolean(titleError)}
-        className="min-w-0 rounded border border-[var(--app-border-strong)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[13px] font-semibold text-[var(--app-text)] outline-none focus:ring-2 focus:ring-[var(--app-focus-ring)] sm:text-sm"
+        className="min-w-0 w-full max-w-full rounded border border-[var(--app-border-strong)] bg-[var(--app-bg)] px-1.5 py-0.5 text-[13px] font-semibold text-[var(--app-text)] outline-none focus:ring-2 focus:ring-[var(--app-focus-ring)] sm:text-sm"
         onChange={(event) => { setTitleDraft(event.target.value); setTitleError('') }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') { event.preventDefault(); void saveTitle() }
@@ -131,10 +131,10 @@ export function DesktopV3ChatHeader({
       {titleError ? <span role="alert" className="text-[10px] font-normal text-[var(--app-danger)]">{titleError}</span> : null}
     </span>
   ) : sessionActions?.onRename ? (
-    <button type="button" className="min-w-0 truncate rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" title={`${displayTitle} — click to rename`} aria-label={`Rename conversation: ${displayTitle}`} onClick={() => { setEditingTitle(true); setTitleDraft(displayTitle); setTitleError('') }}>
+    <button type="button" className="block max-w-full min-w-0 truncate rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" title={`${displayTitle} — click to rename`} aria-label={`Rename conversation: ${displayTitle}`} onClick={() => { setEditingTitle(true); setTitleDraft(displayTitle); setTitleError('') }}>
       {displayTitle}
     </button>
-  ) : <span className="truncate" title={displayTitle}>{displayTitle}</span>
+  ) : <span className="block max-w-full min-w-0 truncate" title={displayTitle}>{displayTitle}</span>
 
   return (
     <header className="min-h-[60px] shrink-0 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 pb-2 pt-[calc(var(--app-safe-area-top)_+_0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
@@ -151,10 +151,10 @@ export function DesktopV3ChatHeader({
           </button>
         ) : null}
 
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 overflow-hidden">
           {!hideMobileIdentity ? (
             <div className="sm:hidden">
-              <h1 className="min-w-0 text-[13px] font-semibold leading-tight text-[var(--app-text)]">
+              <h1 className="flex min-w-0 items-center overflow-hidden text-[13px] font-semibold leading-tight text-[var(--app-text)]">
                 {editableTitle}
               </h1>
             </div>
@@ -172,7 +172,7 @@ export function DesktopV3ChatHeader({
                 <span aria-hidden="true" className="hidden shrink-0 text-[var(--app-text-subtle)] sm:inline">·</span>
               </>
             ) : null}
-            <div data-testid="session-workspace-row" className="min-w-0 flex items-center">
+            <div data-testid="session-workspace-row" className="min-w-0 max-w-full flex items-center overflow-hidden">
               {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} /> : (
                 <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:text-[11px]" title={displayWorkspace}>{displayWorkspace}</span>
               )}
