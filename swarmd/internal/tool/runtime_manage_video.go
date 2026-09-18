@@ -198,9 +198,9 @@ func manageVideoDefinition() Definition {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"id":          map[string]any{"type": "string"},
-							"type":        map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
-							"source_kind": map[string]any{"type": "string", "enum": []string{"source_audio"}},
+							"id":           map[string]any{"type": "string"},
+							"type":         map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
+							"source_kind":  map[string]any{"type": "string", "enum": []string{"source_audio"}},
 							"audio_source": map[string]any{"type": "object"},
 						},
 					},
