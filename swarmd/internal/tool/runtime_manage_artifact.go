@@ -159,13 +159,14 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
+		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For images, call action='image_capabilities' first to read supported options and capability_token, then pass them to action='generate_image'. For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"artifact_id":          map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
 				"resume_draft":         map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
 				"action":               map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, generate_video_story, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
+				"capability_token":     map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for Google generate_image calls."},
 				"scenes":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"prompt": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_seconds": map[string]any{"type": "integer"}}, "required": []string{"prompt"}}, "description": "Multi-scene video script for generate_video_story."},
 				"soundtrack":           map[string]any{"type": "string", "description": "Soundtrack music/audio description for generate_video_story."},
 				"topic":                map[string]any{"type": "string", "description": "Optional topic for action=help (animation, video, audio, narration, workflow)."},
@@ -1416,7 +1417,7 @@ func (r *Runtime) managedImageCapabilities(accountScopeID string) (imagegen.Mana
 func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	for key := range args {
 		switch key {
-		case "action", "prompt", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+		case "action", "prompt", "title", "label", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_image contains unsupported field %q", key)
 		}
@@ -1445,6 +1446,12 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 
 	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
 	collectionName, collectionDescription := strings.TrimSpace(asString(args["collection_name"])), strings.TrimSpace(asString(args["collection_description"]))
+	if collectionName == "" {
+		collectionName = strings.TrimSpace(asString(args["title"]))
+	}
+	if collectionName == "" {
+		collectionName = strings.TrimSpace(asString(args["label"]))
+	}
 	if collectionName == "" {
 		collectionName = "Generated image"
 	}
@@ -1533,9 +1540,15 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if selectionID == "" {
 		selectionID = imagegen.DefaultModelSelectionID
 	}
+	capabilityToken := strings.TrimSpace(asString(args["capability_token"]))
+	if capabilityToken == "" {
+		if capabilities, err := r.managedImageCapabilities(principal.AccountScopeID); err == nil && capabilities.CapabilityToken != "" {
+			capabilityToken = capabilities.CapabilityToken
+		}
+	}
 	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
-		CapabilityToken: strings.TrimSpace(asString(args["capability_token"])), Principal: scope.Principal, Source: source,
+		CapabilityToken: capabilityToken, Principal: scope.Principal, Source: source,
 	})
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("generate managed image: %w", err)
@@ -1557,6 +1570,12 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	presentation.Kind, presentation.Previewable, presentation.Width, presentation.Height = "image", true, config.Width, config.Height
 	if strings.TrimSpace(presentation.Label) == "" {
 		presentation.Label = strings.TrimSpace(asString(args["collection_name"]))
+	}
+	if strings.TrimSpace(presentation.Label) == "" {
+		presentation.Label = strings.TrimSpace(asString(args["title"]))
+	}
+	if strings.TrimSpace(presentation.Label) == "" {
+		presentation.Label = strings.TrimSpace(asString(args["label"]))
 	}
 	if strings.TrimSpace(presentation.Description) == "" {
 		presentation.Description = strings.TrimSpace(asString(args["collection_description"]))

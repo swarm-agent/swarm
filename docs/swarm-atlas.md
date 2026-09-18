@@ -2165,5 +2165,23 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `go test -v ./internal/ui/v3chat -run TestPageScrollClampedToMaxScrollAndNeverExceedsContent` passes.
   - `bash scripts/check-atlas-sync.sh` passes.
 
+### Managed Image Generation Schema and Capability Token Auto-Resolution (2026-09-18)
+
+- **Schema and Capability Token Alignment (`swarmd/internal/tool/runtime_manage_artifact.go`):**
+  - Exposed `"capability_token"` in `manageArtifactDefinition` parameter properties so models can inspect and pass capability tokens from `action="image_capabilities"`.
+  - Added `"title"` and `"label"` to supported parameters for `action="generate_image"`, allowing optional image titles without throwing unsupported field errors and mapping them to presentation/collection metadata.
+  - Added automatic capability token resolution in `generateManagedImageArtifact`: when `capability_token` is omitted and the configured model provides a verified capability token, the runtime auto-populates `req.CapabilityToken`, enabling zero-instruction direct image generation without unnecessary error rounds.
+- **Harness Prompt Examples and Guidance (`swarmd/internal/run/service_prompt.go`):**
+  - Added explicit image generation guidance under `Managed Artifacts & Verification` explaining the `image_capabilities` discovery and token flow for Google Gemini image generation.
+  - Added concrete `manage_artifact (image capabilities)` and `manage_artifact (generate image)` JSON invocation examples under `Tool examples`.
+- **Validation:**
+  - Added unit test `TestManageArtifactGenerateImageAcceptsTitleAndAutoPopulatesCapabilityToken` in `swarmd/internal/tool/runtime_manage_artifact_test.go`.
+  - Verified `TestManageArtifactImageCapabilitiesExposeConfiguredSnapshotOptions` and all `TestManageArtifact*Image` tests pass.
+  - `(cd swarmd && go test -v ./internal/tool -run 'TestManageArtifact.*Image')` passes.
+  - `(cd swarmd && go test -v ./internal/run -run 'Test(ContextTokenBenchmark|MasterHarnessPrompt|BuildInput)')` passes.
+  - `scripts/run-critical-tests.sh fast` passes.
+  - `bash scripts/check-atlas-sync.sh` passes.
+
+
 
 

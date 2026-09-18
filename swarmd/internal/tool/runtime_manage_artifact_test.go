@@ -357,6 +357,68 @@ func TestManageArtifactImageCapabilitiesExposeConfiguredSnapshotOptions(t *testi
 	}
 }
 
+func TestManageArtifactGenerateImageAcceptsTitleAndAutoPopulatesCapabilityToken(t *testing.T) {
+	authority := &fakeArtifactAuthority{}
+	generator := &fakeManagedImageGenerator{
+		image:        imagegen.ManagedImage{Bytes: testPNGImage(), MediaType: "image/png"},
+		capabilities: imagegen.ManagedImageCapabilities{Available: true, CapabilityToken: "auto-token-xyz"},
+	}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactAuthority(authority)
+	runtime.SetManagedImageGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{settings: uisettings.UISettings{Tools: uisettings.ToolSettings{Image: uisettings.ToolImageSettings{DefaultModel: "gemini-3.1-flash-lite-image"}}}}, nil)
+	ctx, scope := artifactToolContext()
+
+	// Verify capability_token is in tool definitions
+	def := manageArtifactDefinition()
+	params, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("manageArtifactDefinition parameters properties missing or not map: %#v", def.Parameters)
+	}
+	if _, ok := params["capability_token"]; !ok {
+		t.Fatal("manageArtifactDefinition parameters missing capability_token property")
+	}
+
+	// 1. Call with title and omit capability_token -> verifies title is accepted and token is auto-populated
+	output, err := runtime.executeManageArtifact(ctx, scope, "image-call-title", map[string]any{
+		"action": "generate_image",
+		"prompt": "A cute cat on a bench",
+		"title":  "Cute Cat Benchmark",
+	})
+	if err != nil {
+		t.Fatalf("generate image with title and omitted token failed: %v", err)
+	}
+	if generator.calls != 1 {
+		t.Fatalf("expected 1 generator call, got %d", generator.calls)
+	}
+	if generator.req.CapabilityToken != "auto-token-xyz" {
+		t.Fatalf("expected capability token 'auto-token-xyz', got %q", generator.req.CapabilityToken)
+	}
+	if authority.created.CollectionName != "Cute Cat Benchmark" {
+		t.Fatalf("expected collection name 'Cute Cat Benchmark', got %q", authority.created.CollectionName)
+	}
+	if authority.created.Presentation.Label != "Cute Cat Benchmark" {
+		t.Fatalf("expected presentation label 'Cute Cat Benchmark', got %q", authority.created.Presentation.Label)
+	}
+	if !strings.Contains(output, `"session_id"`) {
+		t.Fatalf("missing session_id in output: %s", output)
+	}
+
+	// 2. Call with explicit capability_token
+	generator.calls = 0
+	_, err = runtime.executeManageArtifact(ctx, scope, "image-call-explicit-token", map[string]any{
+		"action":           "generate_image",
+		"prompt":           "A cute cat on a bench",
+		"capability_token": "explicit-token-abc",
+	})
+	if err != nil {
+		t.Fatalf("generate image with explicit token failed: %v", err)
+	}
+	if generator.req.CapabilityToken != "explicit-token-abc" {
+		t.Fatalf("expected explicit capability token 'explicit-token-abc', got %q", generator.req.CapabilityToken)
+	}
+}
+
 func TestManageArtifactGenerateImageUsesCanonicalSettingAndTrustedDestination(t *testing.T) {
 	authority := &fakeArtifactAuthority{}
 	generator := &fakeManagedImageGenerator{image: imagegen.ManagedImage{Bytes: testPNGImage(), MediaType: "image/png"}}
