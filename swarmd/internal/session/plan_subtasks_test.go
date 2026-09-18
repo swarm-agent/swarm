@@ -63,7 +63,7 @@ func TestPlanSubtaskCompletionBatchesAndCanFinishCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{CheckpointID: "cp-1", StartedAt: 1}); err != nil {
+	if _, err := ApplyPlanCheckpointStart(doc, PlanCheckpointStartOptions{CheckpointID: "cp-1", AttemptID: "attempt-1", RunID: "run-1", SessionID: "session-1", ParentSessionID: "parent-1", StartedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskIDs: []string{"task-1", "task-2"}, CompletedAt: 2}); err != nil {
@@ -73,7 +73,7 @@ func TestPlanSubtaskCompletionBatchesAndCanFinishCheckpoint(t *testing.T) {
 	if checkpoint.Subtasks[0].Status != PlanSubtaskStatusCompleted || checkpoint.Subtasks[1].Status != PlanSubtaskStatusCompleted || checkpoint.ActiveSubtaskID != "task-3" {
 		t.Fatalf("batched completion = %#v", checkpoint)
 	}
-	if err := completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskIDs: []string{"task-3"}, CompleteCheckpoint: true, CompletedAt: 3, Report: "done", Result: "done"}); err != nil {
+	if err := completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskIDs: []string{"task-3"}, CompleteCheckpoint: true, CompletedAt: 3, Report: "done", Result: "done", AttemptID: "attempt-1", RunID: "run-1", RunSessionID: "session-1", ParentSessionID: "parent-1"}); err != nil {
 		t.Fatal(err)
 	}
 	if checkpoint.Status != PlanCheckpointStatusCompleted || checkpoint.ActiveSubtaskID != "" || doc.ExecutionState == nil || doc.ExecutionState.Status != PlanExecutionStateWaitingReview {
