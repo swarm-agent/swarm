@@ -35,6 +35,13 @@ test('UsagePage defines dashboard sections: Overview, Models, Media Gen, Session
   assert.match(pageSource, /Media Calls/)
 })
 
+test('UsagePage stacks Top Models and Recent Sessions as full-width rows in Overview', () => {
+  assert.match(pageSource, /Top Models By Tokens/)
+  assert.match(pageSource, /View all models →/)
+  assert.match(pageSource, /Recent Sessions/)
+  assert.doesNotMatch(pageSource, /grid-cols-1 gap-6 lg:grid-cols-2/)
+})
+
 test('fetchSessionUsageDashboard queries /v3/usage with parameters', async () => {
   const originalFetch = globalThis.fetch
   try {

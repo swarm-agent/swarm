@@ -354,33 +354,43 @@ export function UsagePage() {
                   onSelectProvider={setSelectedProvider}
                 />
 
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                  <div className="space-y-3">
+                {/* Top Models Row */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
                     <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
                       Top Models By Tokens
                     </h4>
-                    <UsageModelsTable models={data.by_model.slice(0, 5)} />
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('models')}
+                      className="text-xs font-medium text-[var(--app-primary)] hover:underline"
+                    >
+                      View all models →
+                    </button>
                   </div>
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-                        Recent Sessions
-                      </h4>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab('sessions')}
-                        className="text-xs font-medium text-[var(--app-primary)] hover:underline"
-                      >
-                        View all sessions →
-                      </button>
-                    </div>
-                    <UsageSessionsTable
-                      sessions={data.recent_sessions.slice(0, 5)}
-                      onOpenSession={handleOpenSession}
-                      hideFilters
-                      title="Recent Sessions"
-                    />
+                  <UsageModelsTable models={data.by_model.slice(0, 5)} />
+                </div>
+
+                {/* Recent Sessions Row */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                      Recent Sessions
+                    </h4>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('sessions')}
+                      className="text-xs font-medium text-[var(--app-primary)] hover:underline"
+                    >
+                      View all sessions →
+                    </button>
                   </div>
+                  <UsageSessionsTable
+                    sessions={data.recent_sessions.slice(0, 5)}
+                    onOpenSession={handleOpenSession}
+                    hideFilters
+                    title="Recent Sessions"
+                  />
                 </div>
               </div>
             )}
