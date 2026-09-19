@@ -1408,7 +1408,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if err := s.updateAccountUsageRollupInBatch(batch, media.AccountScopeID, dateStr, media.SessionID, media.Provider, media.Model, 0.0, 0.0, media.CostUSD, 0, 0, 0, 0, 0, 0, 1, imageDelta, videoDelta, audioDelta, unknownDelta, media.CreatedAt, now); err != nil {
 			return V3SessionMutationResult{}, err
 		}
-		storedResult.MediaUsage = &media
 	}
 	if runIntentProvided {
 		runPayload, err := json.Marshal(runIntent)
@@ -1506,6 +1505,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if usageProvided {
 		result.TurnUsage = &turnUsage
 		result.UsageSummary = &usageSummary
+	}
+	if input.MediaUsage != nil {
+		media := *input.MediaUsage
+		result.MediaUsage = &media
 	}
 	result.Plan = committedV3PlanSaveResult(input.PlanSave)
 	if artifact.Projection.Collection.ID != "" {

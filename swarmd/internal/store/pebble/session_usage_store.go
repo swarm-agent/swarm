@@ -593,10 +593,7 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		return errors.New("media usage account_scope_id is required")
 	}
 
-	unlock := s.store.sessionMutations.lockSessions(rec.SessionID, "account:"+rec.AccountScopeID)
-	defer unlock()
-
-	// Validate session and account scope ownership UNDER LOCK
+	// Validate session and account scope ownership
 	session, ok, err := s.GetSession(rec.SessionID)
 	if err != nil {
 		return fmt.Errorf("verify session %q: %w", rec.SessionID, err)
@@ -606,6 +603,10 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 	}
 	if strings.TrimSpace(session.AccountScopeID) == "" || rec.AccountScopeID != strings.TrimSpace(session.AccountScopeID) {
 		return fmt.Errorf("account scope mismatch: record account %q does not match session account %q", rec.AccountScopeID, session.AccountScopeID)
+	}
+	rec.UserID = strings.TrimSpace(rec.UserID)
+	if rec.UserID == "" {
+		rec.UserID = session.UserID
 	}
 
 	key := KeySessionMediaUsage(rec.AccountScopeID, rec.ID)
@@ -619,184 +620,26 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		return nil
 	}
 
-	now := time.Now().UnixMilli()
-	if rec.CreatedAt <= 0 {
+	now := rec.CreatedAt
+	if now <= 0 {
+		now = time.Now().UnixMilli()
 		rec.CreatedAt = now
 	}
 
-	payload, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("marshal media usage %q: %w", rec.ID, err)
+	input := V3SessionMutationInput{
+		SessionID:       rec.SessionID,
+		UserID:          rec.UserID,
+		AccountScopeID:  rec.AccountScopeID,
+		ClientRequestID: "media:" + rec.ID,
+		IdempotencyKey:  "media:" + rec.ID,
+		PayloadHash:     "media:" + rec.ID,
+		RequestHash:     "media:" + rec.ID,
+		Kind:            V3SessionMutationRecordMediaUsage,
+		MediaUsage:      &rec,
+		NowUnixMs:       now,
 	}
-
-	dateStr := time.UnixMilli(rec.CreatedAt).UTC().Format("2006-01-02")
-	acc, _, err := s.GetDailyUsageAccumulator(rec.AccountScopeID, dateStr)
-	if err != nil {
-		return fmt.Errorf("get daily usage accumulator: %w", err)
-	}
-	if acc.AccountScopeID == "" {
-		acc.AccountScopeID = rec.AccountScopeID
-		acc.Date = dateStr
-	}
-	acc.TotalCostUSD += rec.CostUSD
-	acc.MediaCostUSD += rec.CostUSD
-	acc.MediaCalls++
-	switch strings.ToLower(rec.Kind) {
-	case "image":
-		acc.ImageCount++
-		acc.ImageCostUSD += rec.CostUSD
-	case "video":
-		acc.VideoCount++
-		acc.VideoCostUSD += rec.CostUSD
-	case "audio":
-		acc.AudioCount++
-		acc.AudioCostUSD += rec.CostUSD
-	}
-	acc.UpdatedAt = now
-	accPayload, err := json.Marshal(acc)
-	if err != nil {
-		return fmt.Errorf("marshal daily accumulator: %w", err)
-	}
-
-	summary, found, err := s.GetUsageSummary(rec.SessionID)
-	if err != nil {
-		return fmt.Errorf("get usage summary: %w", err)
-	}
-	if !found {
-		summary = SessionUsageSummary{
-			SessionID:      rec.SessionID,
-			AccountScopeID: rec.AccountScopeID,
-			UserID:         rec.UserID,
-		}
-	}
-	summary.EstimatedCostUSD += rec.CostUSD
-	summary.UpdatedAt = now
-	summaryPayload, err := json.Marshal(summary)
-	if err != nil {
-		return fmt.Errorf("marshal usage summary: %w", err)
-	}
-
-	// Allocate seq and outbox
-	seq, err := s.nextV3SessionSeq(rec.SessionID)
-	if err != nil {
-		return fmt.Errorf("allocate session sequence: %w", err)
-	}
-	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
-	if err != nil {
-		return fmt.Errorf("reserve outbox: %w", err)
-	}
-	endpointSeq := reservedOutbox.start
-
-	event := V3SessionEvent{
-		ID:        fmt.Sprintf("event_media_%s", rec.ID),
-		SessionID: rec.SessionID,
-		Seq:       seq,
-		EventType: "session.media_usage.recorded",
-		Payload:   payload,
-		TsUnixMs:  now,
-	}
-	eventPayload, err := json.Marshal(event)
-	if err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return fmt.Errorf("marshal event: %w", err)
-	}
-
-	membership := newV3RealtimeOutboxMembershipFromSession(session, now)
-	realtimeOutbox := V3RealtimeOutboxRecord{
-		EndpointSeq:    endpointSeq,
-		EndpointCursor: V3RealtimeOutboxCursor(endpointSeq),
-		SessionID:      rec.SessionID,
-		UserID:         rec.UserID,
-		AccountScopeID: rec.AccountScopeID,
-		Membership:     membership,
-		Event:          event,
-		CreatedAt:      now,
-	}
-	outboxPayload, err := json.Marshal(realtimeOutbox)
-	if err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return fmt.Errorf("marshal outbox: %w", err)
-	}
-	outboxRefPayload, err := marshalV3RealtimeOutboxReference(realtimeOutbox)
-	if err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return fmt.Errorf("marshal outbox ref: %w", err)
-	}
-
-	batch := s.store.NewBatch()
-	defer batch.Close()
-
-	if err := batch.Set([]byte(key), payload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	sessionMediaKey := KeySessionMediaUsageBySession(rec.SessionID, rec.ID)
-	if err := batch.Set([]byte(sessionMediaKey), payload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if err := batch.Set([]byte(KeySessionUsageSummary(summary.SessionID)), summaryPayload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if summary.AccountScopeID != "" {
-		if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(summary.AccountScopeID, summary.SessionID)), summaryPayload, nil); err != nil {
-			s.store.sessionMutations.abandonOutbox(reservedOutbox)
-			return err
-		}
-	}
-	if err := batch.Set([]byte(KeyV3SessionSequence(rec.SessionID)), uint64ToBytes(seq), nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if err := batch.Set([]byte(KeyV3SessionEvent(rec.SessionID, seq)), eventPayload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), outboxPayload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(rec.SessionID, endpointSeq)), outboxRefPayload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(rec.AccountScopeID, rec.UserID, endpointSeq)), outboxRefPayload, nil); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-
-	imageDelta, videoDelta, audioDelta := 0, 0, 0
-	switch strings.ToLower(rec.Kind) {
-	case "image":
-		imageDelta = 1
-	case "video":
-		videoDelta = 1
-	case "audio":
-		audioDelta = 1
-	}
-	unknownDelta := 0
-	if strings.EqualFold(rec.PriceStatus, "unknown") {
-		unknownDelta = 1
-	}
-	if err := s.updateAccountUsageRollupInBatch(batch, rec.AccountScopeID, dateStr, rec.SessionID, rec.Provider, rec.Model, 0.0, 0.0, rec.CostUSD, 0, 0, 0, 0, 0, 0, 1, imageDelta, videoDelta, audioDelta, unknownDelta, rec.CreatedAt, now); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return err
-	}
-
-	if err := batch.Commit(pebble.Sync); err != nil {
-		s.store.sessionMutations.abandonOutbox(reservedOutbox)
-		return fmt.Errorf("commit media usage batch: %w", err)
-	}
-
-	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
-		return fmt.Errorf("commit outbox: %w", err)
-	}
-	return nil
+	_, err = s.ApplyV3SessionMutation(input)
+	return err
 }
 
 func (s *SessionStore) ListMediaUsageBySession(sessionID string, limit int) ([]SessionMediaUsageRecord, error) {
