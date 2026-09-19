@@ -102,8 +102,21 @@ func TestManageVideoHelpAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("help action failed: %v", err)
 	}
-	if !strings.Contains(output, "Video Studio") {
-		t.Fatalf("help output missing video studio guidance: %s", output)
+	for _, expected := range []string{
+		"Video Studio",
+		"completely different from generating a single AI video",
+		"propose_plan",
+		"create_project",
+		"create_edit_proposal",
+		"convert_artifact_v3",
+		"initial_timeline",
+		"source_audio",
+		"source_start_ms",
+		"source_end_ms",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("help output missing %q: %s", expected, output)
+		}
 	}
 }
 

@@ -2239,6 +2239,30 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `(cd swarmd && go test -v ./internal/store/pebble -run TestTaskProgram)` passes.
   - `bash scripts/check-atlas-sync.sh` passes.
 
+### Video Studio Instructions Restoration and Tool Help Hydration (2026-09-19)
+
+- **Video Studio Harness Prompt & Examples Restoration (`swarmd/internal/run/service_prompt.go`):**
+  - Restored core Video Studio instructions under `Managed Artifacts & Verification` in `masterHarnessPromptWithScope`.
+  - Clarified the fundamental distinction between single-pass AI video generation (`manage_artifact action=generate_video`/`generate_video_story`) and Video Studio (`manage_video`): Video Studio creates, organizes, and edits multi-part video timeline projects, soundtracks, and compositions where real video/image media artifacts become timeline parts/clips.
+  - Documented the core 5-step studio workflow: (1) project setup via `manage_video action='create_project' title='...'`, (2) media visual preparation via `manage_artifact`, (3) visual plan proposal via `manage_video action='propose_plan'` with required part fields (`id`, `title`, `duration_ms`, `visual` artifact reference, and `source_start_ms`/`source_end_ms` for MP4 clips), (4) soundtrack audio & timeline operations via `create_edit_proposal` with `source_audio` clips, (5) user review and render setting recommendations (`recommend_render_settings`).
+  - Added copyable `manage_video (create project)` and `manage_video (propose visual plan with parts)` JSON examples under `Tool examples`.
+  - Preserved Iteration Swarm field-boundary guidance (`These per-launch fields do not apply to mode=swarm`).
+- **Video Studio Tool Schema & Adaptive Instructions Restoration (`swarmd/internal/tool/runtime_manage_video.go`):**
+  - Expanded `manageVideoDefinition()` tool description to clearly distinguish Video Studio timeline editing from single-pass AI video generation.
+  - Restored structured property definitions for `plan`: exposes `kind` (`initial` | `revision`), `summary`, and `parts` array with typed items (`id`, `title`, `duration_ms`, `visual`, `source_start_ms`, `source_end_ms`, `narration`, `on_screen_text`, `visual_direction`, `transition_in`), with required `id` and `title`.
+  - Restored `fingerprint_version` to `audio_source` properties in `operations` to unblock typed soundtrack proposal contracts.
+  - Restored full `focus_notes` adaptive job instructions and `initial_timeline` soundtrack base revision guidance.
+- **Hydrated Tool Help (`swarmd/internal/tool/runtime_manage_video.go:videoHelpText`):**
+  - Hydrated `videoHelpText()` with comprehensive architectural overview, 7-step studio workflow, detailed parameter schemas, and copyable JSON call examples for `propose_plan` (image and MP4 parts), `create_project` (with initial soundtrack), `create_edit_proposal` (adding background audio), and `convert_artifact_v3` (native Artifact V3 HTML motion conversion).
+  - Preserved all required contract and boundary test assertions.
+- **Validation:**
+  - Added unit test `TestMasterHarnessPromptRestoresVideoStudioInstructions` in `swarmd/internal/run/service_prompt_artifact_test.go`.
+  - Enhanced unit test `TestManageVideoHelpAction` in `swarmd/internal/tool/runtime_manage_video_test.go` asserting presence of hydrated studio help, schemas, and examples.
+  - `(cd swarmd && go test -v ./internal/tool -run "TestManageVideoDefinition|TestManageVideoHelp|TestToolDefinitionsTokenBudget")` passes (all 12 tests pass; tool definitions token budget 70,352 bytes <= 80,000 budget).
+  - `(cd swarmd && go test -v ./internal/run -run "TestMasterHarnessPrompt|TestContextTokenBenchmark|TestBuildInput")` passes (all 21 tests pass; master harness chars 30,915 <= 50,000 ceiling).
+  - `bash scripts/check-atlas-sync.sh` passes.
+
+
 
 
 

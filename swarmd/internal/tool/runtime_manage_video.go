@@ -144,7 +144,7 @@ func manageVideoAction(action string) (manageVideoActionSpec, bool) {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Video/audio source inspection, project creation, and timeline editing. Call action='help' for schema and workflows.",
+		Description: "Video Studio multi-clip project management, timeline editing, visual plan proposals, soundtracks, and rendering. Distinct from single-pass AI video generation; creates and edits multi-part video timelines with ready media visuals. Call action='help' for detailed workflows, schemas, and examples.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -159,7 +159,7 @@ func manageVideoDefinition() Definition {
 				"source_fingerprint":       map[string]any{"type": "string", "description": "Source fingerprint."},
 				"analysis_ref":             map[string]any{"type": "string", "description": "Audio analysis reference."},
 				"waveform_resolution_ms":   map[string]any{"type": "integer"},
-				"focus_notes":              map[string]any{"type": "string", "description": "Transcription focus notes."},
+				"focus_notes":              map[string]any{"type": "string", "maxLength": videotranscription.MaxFocusNotesBytes, "description": "Optional job-specific instructions from the initiating user or AI for start_transcription only, for example: 'Silent software demo; produce a dense play-by-play of cursor actions, navigation, text changes, and visible results.' Guidance cannot change the multimodal schema, factuality rules, or source authority."},
 				"max_bytes":                map[string]any{"type": "integer"},
 				"max_segments":             map[string]any{"type": "integer"},
 				"start_ms":                 map[string]any{"type": "integer"},
@@ -180,7 +180,7 @@ func manageVideoDefinition() Definition {
 				"output_preset":            map[string]any{"type": "string"},
 				"change_summary":           map[string]any{"type": "string"},
 				"timeline":                 map[string]any{"type": "object", "description": "Structured timeline. Call action='help' for schema."},
-				"initial_timeline":         map[string]any{"type": "object", "description": "Initial timeline. Call action='help' for schema."},
+				"initial_timeline":         map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan without accepted media. When registered soundtrack audio must share the initial part playhead, include one exact trimmed source_audio clip here; the returned base revision owns that audio and a subsequent propose_plan preserves it. Call action='help' for schema."},
 				"metadata":                 map[string]any{"type": "object"},
 				"artifact_v3_session_id":   map[string]any{"type": "string"},
 				"artifact_v3_artifact_id":  map[string]any{"type": "string"},
@@ -191,17 +191,52 @@ func manageVideoDefinition() Definition {
 				"selected_source":          manageVideoArtifactReferenceSchema(),
 				"derivative":               manageVideoArtifactReferenceSchema(),
 				"base_revision_id":         map[string]any{"type": "string"},
-				"plan":                     map[string]any{"type": "object", "description": "Visual video-plan proposal. Call action='help' for schema."},
+				"plan": map[string]any{
+					"type":        "object",
+					"description": "Visual video-plan proposal with kind ('initial'|'revision'), summary, and parts array. Call action='help' for schema and copyable examples.",
+					"properties": map[string]any{
+						"kind":        map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}, "description": "Plan kind: 'initial' for whole initial cut, 'revision' for updating specific parts."},
+						"summary":     map[string]any{"type": "string", "description": "Concise summary of the plan."},
+						"parts": map[string]any{
+							"type":        "array",
+							"description": "Ordered timeline parts. Each part requires id, title, duration_ms, and visual artifact reference.",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"id":               map[string]any{"type": "string", "description": "Unique stable part ID (e.g. 'part-1')."},
+									"title":            map[string]any{"type": "string", "description": "Human-readable part title (required)."},
+									"duration_ms":      map[string]any{"type": "integer", "minimum": 1, "description": "Part duration in milliseconds (required)."},
+									"visual":           manageVideoArtifactReferenceSchema(),
+									"source_start_ms":  map[string]any{"type": "integer", "minimum": 0, "description": "Required for video/mp4 visual: source start in ms."},
+									"source_end_ms":    map[string]any{"type": "integer", "minimum": 1, "description": "Required for video/mp4 visual: source end in ms (source_end_ms - source_start_ms == duration_ms)."},
+									"narration":        map[string]any{"type": "string", "description": "Optional spoken narration text."},
+									"on_screen_text":   map[string]any{"type": "string", "description": "Optional on-screen text/titles."},
+									"visual_direction": map[string]any{"type": "string", "description": "Optional visual direction or scene notes."},
+									"transition_in":    map[string]any{"type": "string", "description": "Optional transition into this part."},
+								},
+								"required": []string{"id", "title"},
+							},
+						},
+					},
+					"required": []string{"parts"},
+				},
 				"operations": map[string]any{
 					"type":        "array",
-					"description": "Edit operations. Call action='help' for schema.",
+					"description": "Bounded typed add, update, replace, and remove operations. Call action='help' for schema and examples.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"id":           map[string]any{"type": "string"},
-							"type":         map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
-							"source_kind":  map[string]any{"type": "string", "enum": []string{"source_audio"}},
-							"audio_source": map[string]any{"type": "object"},
+							"id":          map[string]any{"type": "string"},
+							"type":        map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
+							"source_kind": map[string]any{"type": "string", "enum": []string{"source_audio"}},
+							"audio_source": map[string]any{
+								"type":        "object",
+								"description": "Complete exact trusted audio reference returned by browse_source.",
+								"properties": map[string]any{
+									"source_fingerprint":  map[string]any{"type": "string"},
+									"fingerprint_version": map[string]any{"type": "string"},
+								},
+							},
 						},
 					},
 				},
@@ -2222,6 +2257,13 @@ func VideoHelpText() string {
 
 func videoHelpText() string {
 	return `Video Studio & Media Management Contracts:
+
+Overview & Distinction:
+- Video Studio (manage_video) manages multi-part video timeline projects, audio tracks, transitions, and rendering.
+- Making a video in Video Studio is completely different from generating a single AI video via manage_artifact action="generate_video" or "generate_video_story".
+- In Video Studio, videos are composed of ordered timeline parts (clips), each referencing an actual media artifact (still image or MP4 video clip), combined with background soundtrack audio clips, captions, and transitions within a persistent project.
+- The AI does not generate raw video pixels in manage_video; instead, you generate or select real media assets (images or MP4 clips) using manage_artifact, then assemble them into the studio timeline via manage_video action="propose_plan" or action="create_edit_proposal".
+
 1. Inspection & Discovery:
    - action="capabilities" or "help": list allowed actions and workflows.
    - Inspect trusted video and audio sources, browse registered source-media folders, and inspect selected opaque video or audio references or triggering-message video attachments.
@@ -2229,18 +2271,23 @@ func videoHelpText() string {
    - action="inspect_frames": sample exact PNG frames (pass timestamps_ms or ranges).
    - list_source_roots and browse_source to discover registered audio and video sources.
    - action="start_transcription", "read_transcript", "read_audio_analysis": word-timed speech transcripts and audio waveforms.
+
 2. Projects & Timelines:
    - One-shot initial-plan workflow: call create_project without initial_timeline when no accepted media must precede the visual plan; use returned project_id and revision_id, then call propose_plan with base_revision_id and plan.kind="initial". propose_plan creates only a pending whole-plan review object.
    - action="create_project": create a project (pass title, optional initial_timeline with clips).
      When registered soundtrack audio must share the initial part playhead, browse it first, copy the complete exact audio object, and pass its complete exact trimmed source_audio clip in create_project initial_timeline; the returned base revision then owns that audio and a subsequent propose_plan preserves it.
    - action="read_project", "get_project", "list_projects": retrieve video project state.
    - action="restore_revision", "create_revision": manage timeline revisions.
+
 3. Edit Proposals & Operations:
    - action="create_edit_proposal": submit typed add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision.
      Operations: add_clip, update_clip, replace_clip, remove_clip, trim_clip, move_clip, set_volume, set_mute, set_captions, replace_source.
      Soundtrack clips: use source_kind="source_audio" with audio_source carrying source_fingerprint and fingerprint_version. Copy the complete exact audio object into a source_audio clip; never pass a host path. Registered soundtrack audio must share the initial part playhead in create_project initial_timeline. Soundtrack proposals remain pending for explicit user acceptance; AI must never accept them or start final rendering.
    - action="propose_plan": initial visual plan proposal (base_revision_id, plan.kind="initial", parts array with visuals and captions).
-     Every newly proposed part must include an exact ready image/* or video/mp4 render-ready fallback. MP4 fallback parts require an explicit source range (source_start_ms, source_end_ms). Descriptive on_screen_text and transition_in never create timeline presentation; use typed caption and transition objects when presentation is intended.
+     Every newly proposed part must include an exact ready image/* or video/mp4 render-ready fallback. MP4 fallback parts require an explicit source range (source_start_ms, source_end_ms) where source_end_ms - source_start_ms == duration_ms.
+     For image/* visual fallbacks, source_start_ms and source_end_ms must be 0 or omitted.
+     Every part requires: id (unique stable string), title (human-readable string), duration_ms (positive integer ms), and visual (complete artifact reference: session_id, collection_id, variant_id, event_seq).
+     Descriptive on_screen_text and transition_in never create timeline presentation; use typed caption and transition objects when presentation is intended.
      Proposing HTML iterations accepts one or more stable parts in one atomic proposal; every part requires 2 to 16 compatible ready text/html candidates with per-part image-only downgrade.
      composition_catalog defines reusable layout geometry. Parts support detached_slots, clear_source, and audio_policy.
    - Storyboard Pre-Production: for pre-production requests, prefer a self-contained HTML swarm.storyboard/v1 source; use export_html_stills, then import_storyboard with storyboard_source and exports so Video Studio receives filming requirements and production state. Use propose_html_iteration for live animation iteration proposals. Each imported still remains the visible placeholder until a later plan.kind=revision replaces that same part ID with finished media. Do not stop after HTML authoring or still export while storyboard parts remain pending.
@@ -2250,7 +2297,130 @@ func videoHelpText() string {
    - action="inspect_composition", "update_composition": inspect resolved slots and update spatial compositions.
    - action="select_animation_candidate", "promote_animation_derivative": manage HTML animation alternatives.
      immediate live Video Studio preview: selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead; no HTML-to-MP4 export is needed for preview. Export only when durable acceptance/promotion or final rendering requires an MP4 derivative; never replace a durable timeline artifact_ref with text/html.
+
 4. Renders:
    - action="recommend_render_settings": review server-allowlisted render qualities (preview, standard, high, master) and fps (30, 60).
-   - action="start_render", "render_status", "cancel_render": server-owned final MP4 render execution. AI cannot accept a proposal or start a final render.`
+   - action="start_render", "render_status", "cancel_render": server-owned final MP4 render execution. AI cannot accept a proposal or start a final render.
+
+5. Detailed Call Schemas & Examples:
+
+   a) Propose Initial Plan with Image and MP4 Parts:
+      manage_video {
+        "action": "propose_plan",
+        "project_id": "vproj_12345678",
+        "base_revision_id": "vrev_abcdef01",
+        "plan": {
+          "kind": "initial",
+          "summary": "2-scene cut with opening title and video body",
+          "parts": [
+            {
+              "id": "part-1",
+              "title": "Scene 1 - Title Card",
+              "duration_ms": 3000,
+              "visual": {
+                "session_id": "sess_abc",
+                "collection_id": "collection-1",
+                "variant_id": "variant-img1",
+                "event_seq": 10
+              },
+              "narration": "Welcome to our presentation."
+            },
+            {
+              "id": "part-2",
+              "title": "Scene 2 - Main Action",
+              "duration_ms": 5000,
+              "visual": {
+                "session_id": "sess_abc",
+                "collection_id": "collection-2",
+                "variant_id": "variant-vid1",
+                "event_seq": 15
+              },
+              "source_start_ms": 0,
+              "source_end_ms": 5000,
+              "on_screen_text": "System Online"
+            }
+          ]
+        }
+      }
+
+   b) Create Project with Initial Soundtrack Audio:
+      manage_video {
+        "action": "create_project",
+        "title": "Campaign Video",
+        "initial_timeline": {
+          "output_preset": "landscape_1080p",
+          "total_duration_ms": 8000,
+          "clips": [
+            {
+              "id": "soundtrack-1",
+              "track": 1,
+              "sequence": 0,
+              "source_kind": "source_audio",
+              "audio_source": {
+                "ref": "audiosrc_music_track",
+                "name": "theme.mp3",
+                "mime_type": "audio/mpeg",
+                "size_bytes": 256000,
+                "source_fingerprint": "fp_123456",
+                "fingerprint_version": "v1"
+              },
+              "duration_ms": 8000,
+              "timeline_start_ms": 0,
+              "timeline_end_ms": 8000,
+              "visible": false,
+              "volume": 1.0,
+              "muted": false
+            }
+          ]
+        }
+      }
+
+   c) Add Soundtrack via Edit Proposal:
+      manage_video {
+        "action": "create_edit_proposal",
+        "project_id": "vproj_12345678",
+        "base_revision_id": "vrev_abcdef01",
+        "rationale": "Layer continuous background soundtrack",
+        "operations": [
+          {
+            "id": "op-soundtrack",
+            "type": "add_clip",
+            "clip": {
+              "id": "bg-music",
+              "track": 1,
+              "sequence": 0,
+              "source_kind": "source_audio",
+              "audio_source": {
+                "ref": "audiosrc_bg_music",
+                "name": "ambient.mp3",
+                "mime_type": "audio/mpeg",
+                "size_bytes": 128000,
+                "source_fingerprint": "fp_654321",
+                "fingerprint_version": "v1"
+              },
+              "duration_ms": 8000,
+              "timeline_start_ms": 0,
+              "timeline_end_ms": 8000,
+              "visible": false,
+              "volume": 0.8
+            }
+          }
+        ],
+        "affected_ranges": [
+          {
+            "start_ms": 0,
+            "end_ms": 8000
+          }
+        ]
+      }
+
+   d) Convert Native Artifact V3 HTML Motion to Studio:
+      manage_video {
+        "action": "convert_artifact_v3",
+        "project_id": "vproj_12345678",
+        "base_revision_id": "vrev_abcdef01",
+        "artifact_v3_session_id": "sess_abc",
+        "artifact_v3_artifact_id": "art_123",
+        "artifact_v3_revision_ref": "rev-1"
+      }`
 }

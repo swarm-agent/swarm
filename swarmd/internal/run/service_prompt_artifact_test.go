@@ -328,6 +328,23 @@ func TestMasterHarnessPromptGuidesSpecializedToolHelp(t *testing.T) {
 	}
 }
 
+func TestMasterHarnessPromptRestoresVideoStudioInstructions(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Video Studio (`manage_video`)",
+		"completely different from generating a single AI video",
+		"ordered timeline parts (clips)",
+		"manage_video action='create_project'",
+		"manage_video action='propose_plan'",
+		"manage_video (create project)",
+		"manage_video (propose visual plan with parts)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master prompt missing video studio instruction %q", want)
+		}
+	}
+}
+
 func TestAttachedArtifactSelectionsProjectsExactTypedPart(t *testing.T) {
 	selection := pebblestore.SessionArtifactSelectionReference{SessionID: "source-session", CollectionID: "collection-1", VariantID: "variant-2", EventSeq: 41, Action: "use", PartID: "hero", Part: &pebblestore.SessionArtifactPart{ID: "hero", Label: "Hero", Kind: "spatial", X: .1, Y: .2, Width: .7, Height: .5}}
 	got := AttachedArtifactSelectionsForProvider([]pebblestore.SessionArtifactSelectionReference{selection})
