@@ -91,48 +91,57 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 		t.Fatalf("record anthropic turn: %v", err)
 	}
 
-	// 4. Record media artifact variants
-	mediaVariants := []pebblestore.SessionArtifactVariant{
+	// 4. Record media usage
+	mediaRecords := []pebblestore.SessionMediaUsageRecord{
 		{
-			Version:        1,
 			ID:             "media-img-1",
 			SessionID:      sessionID,
 			AccountScopeID: testPrincipal().AccountScopeID,
-			Status:         pebblestore.SessionArtifactStatusReady,
 			MediaType:      "image/png",
+			Kind:           "image",
+			Provider:       "google",
+			Model:          "imagen-3.0",
 			Filename:       "hero-banner.png",
 			Size:           102400,
+			CostUSD:        0.04,
+			PriceStatus:    "known",
+			PricingSummary: "$0.04 per image (snapshot snap-1)",
 			CreatedAt:      now - 4000,
-			UpdatedAt:      now - 4000,
 		},
 		{
-			Version:        1,
 			ID:             "media-vid-1",
 			SessionID:      sessionID,
 			AccountScopeID: testPrincipal().AccountScopeID,
-			Status:         pebblestore.SessionArtifactStatusReady,
 			MediaType:      "video/mp4",
+			Kind:           "video",
+			Provider:       "google",
+			Model:          "veo-2.0",
 			Filename:       "feature-teaser.mp4",
 			Size:           2048000,
+			CostUSD:        1.20,
+			PriceStatus:    "known",
+			PricingSummary: "$1.20 per video (snapshot snap-1)",
 			CreatedAt:      now - 2000,
-			UpdatedAt:      now - 2000,
 		},
 		{
-			Version:        1,
 			ID:             "media-aud-1",
 			SessionID:      sessionID,
 			AccountScopeID: testPrincipal().AccountScopeID,
-			Status:         pebblestore.SessionArtifactStatusReady,
 			MediaType:      "audio/mp3",
+			Kind:           "audio",
+			Provider:       "google",
+			Model:          "lyria-3.5",
 			Filename:       "background-music.mp3",
 			Size:           512000,
+			CostUSD:        0.08,
+			PriceStatus:    "known",
+			PricingSummary: "$0.08 per audio (snapshot snap-1)",
 			CreatedAt:      now - 1000,
-			UpdatedAt:      now - 1000,
 		},
 	}
-	for _, v := range mediaVariants {
-		if err := sessionSvc.Store().PutArtifactVariant(v); err != nil {
-			t.Fatalf("put media variant: %v", err)
+	for _, m := range mediaRecords {
+		if err := sessionSvc.RecordMediaUsage(m); err != nil {
+			t.Fatalf("record media usage: %v", err)
 		}
 	}
 
@@ -672,10 +681,10 @@ func TestAnalyticsReadsPersistedAccountingReadOnly(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
-	// Verify exact persisted cost was read without repricing
-	expectedCost := 0.04125
-	if resp.Summary.TotalCostUSD < expectedCost-0.00001 || resp.Summary.TotalCostUSD > expectedCost+0.00001 {
-		t.Fatalf("expected turn cost %f, got %f", expectedCost, resp.Summary.TotalCostUSD)
+	// Verify exact persisted cost was read without repricing (turn cost 0.04125 + media cost 0.04 = 0.08125)
+	expectedTotalCost := 0.04125 + 0.04
+	if resp.Summary.TotalCostUSD < expectedTotalCost-0.00001 || resp.Summary.TotalCostUSD > expectedTotalCost+0.00001 {
+		t.Fatalf("expected total cost %f, got %f", expectedTotalCost, resp.Summary.TotalCostUSD)
 	}
 	if resp.Summary.MediaCostUSD != 0.04 {
 		t.Fatalf("expected media cost 0.04, got %f", resp.Summary.MediaCostUSD)

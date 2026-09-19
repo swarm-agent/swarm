@@ -261,7 +261,9 @@ type manageSessionService interface {
 	CurrentRealtimeOutboxRevision() (uint64, error)
 	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 	ReadSessionMediaAsset(accountScopeID, sessionID, assetID string) (pebblestore.SessionMediaAsset, []byte, error)
+	EstimateMediaCost(provider, model, kind string, count int, durationSeconds int, isIteration bool) pebblestore.MediaCostEstimate
 	RecordMediaUsage(pebblestore.SessionMediaUsageRecord) error
+	ListMediaUsage(accountScopeID string, limit int) ([]pebblestore.SessionMediaUsageRecord, error)
 }
 
 type manageWorktreeWorkspaceService interface {

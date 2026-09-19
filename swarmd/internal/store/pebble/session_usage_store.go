@@ -68,19 +68,23 @@ type SessionUsageSummary struct {
 }
 
 type SessionMediaUsageRecord struct {
-	ID             string  `json:"id"`
-	SessionID      string  `json:"session_id"`
-	AccountScopeID string  `json:"account_scope_id"`
-	UserID         string  `json:"user_id,omitempty"`
-	MediaType      string  `json:"media_type"`
-	Kind           string  `json:"kind"` // "image", "video", "audio"
-	Provider       string  `json:"provider,omitempty"`
-	Model          string  `json:"model,omitempty"`
-	Filename       string  `json:"filename"`
-	Label          string  `json:"label"`
-	Size           int64   `json:"size"`
-	CostUSD        float64 `json:"cost_usd"`
-	CreatedAt      int64   `json:"created_at"`
+	ID              string  `json:"id"`
+	SessionID       string  `json:"session_id"`
+	AccountScopeID  string  `json:"account_scope_id"`
+	UserID          string  `json:"user_id,omitempty"`
+	MediaType       string  `json:"media_type"`
+	Kind            string  `json:"kind"` // "image", "video", "audio"
+	Provider        string  `json:"provider,omitempty"`
+	Model           string  `json:"model,omitempty"`
+	Filename        string  `json:"filename"`
+	Label           string  `json:"label"`
+	Size            int64   `json:"size"`
+	CostUSD         float64 `json:"cost_usd"`
+	PriceStatus     string  `json:"price_status,omitempty"`     // "known", "unknown", "subscription", "free"
+	PricingSummary  string  `json:"pricing_summary,omitempty"`  // human-scannable pricing provenance
+	SnapshotID      string  `json:"snapshot_id,omitempty"`      // catalog snapshot ID
+	SnapshotVersion string  `json:"snapshot_version,omitempty"` // catalog snapshot version
+	CreatedAt       int64   `json:"created_at"`
 }
 
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
@@ -122,14 +126,24 @@ func clampUsageTokenCount(value int64) int64 {
 
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
-	if record.EstimatedCostUSD <= 0 {
+	if record.SessionID == "" {
+		return errors.New("turn usage session_id is required")
+	}
+	if record.RunID == "" {
+		return errors.New("turn usage run_id is required")
+	}
+	if record.EstimatedCostUSD <= 0 && !strings.EqualFold(record.Provider, "codex") {
 		record.EstimatedCostUSD = s.CalculateCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
 	}
-	payload, err := json.Marshal(record)
+
+	unlockSession := s.store.sessionMutations.lockSessions(record.SessionID)
+	defer unlockSession()
+
+	previous, hadPrevious, err := s.GetTurnUsage(record.SessionID, record.RunID)
 	if err != nil {
-		return fmt.Errorf("marshal turn usage %q/%q: %w", record.SessionID, record.RunID, err)
+		return fmt.Errorf("read previous turn usage: %w", err)
 	}
-	previous, hadPrevious, _ := s.GetTurnUsage(record.SessionID, record.RunID)
+
 	deltaCost := record.EstimatedCostUSD
 	deltaTokens := record.TotalTokens
 	if record.BilledTokens > 0 {
@@ -153,8 +167,15 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			deltaTokens = 0
 		}
 	}
+
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal turn usage %q/%q: %w", record.SessionID, record.RunID, err)
+	}
+
 	batch := s.store.NewBatch()
 	defer batch.Close()
+
 	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
 		return err
 	}
@@ -163,9 +184,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			return err
 		}
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
-		return err
-	}
+
 	ts := record.CreatedAt
 	if ts <= 0 {
 		ts = record.UpdatedAt
@@ -174,10 +193,42 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		ts = time.Now().UnixMilli()
 	}
 	dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-	if deltaCost > 0 || deltaTokens > 0 {
-		_, _ = s.IncrementDailyUsage(record.AccountScopeID, dateStr, deltaCost, deltaTokens)
+	if deltaCost > 0 || deltaTokens > 0 || !hadPrevious {
+		acc, _, err := s.GetDailyUsageAccumulator(record.AccountScopeID, dateStr)
+		if err != nil {
+			return fmt.Errorf("get daily usage accumulator: %w", err)
+		}
+		if acc.AccountScopeID == "" {
+			acc.AccountScopeID = record.AccountScopeID
+			acc.Date = dateStr
+		}
+		acc.TotalCostUSD += deltaCost
+		acc.TotalTokens += deltaTokens
+		acc.InputTokens += clampUsageTokenCount(record.InputTokens)
+		acc.OutputTokens += clampUsageTokenCount(record.OutputTokens)
+		acc.CachedTokens += clampUsageTokenCount(record.CacheReadTokens)
+		acc.ThinkingTokens += clampUsageTokenCount(record.ThinkingTokens)
+		if !hadPrevious {
+			acc.TurnCount++
+		}
+		if acc.ModelsUsed == nil {
+			acc.ModelsUsed = make(map[string]int64)
+		}
+		if record.Model != "" {
+			acc.ModelsUsed[record.Model] += deltaTokens
+		}
+		acc.UpdatedAt = time.Now().UnixMilli()
+
+		accPayload, err := json.Marshal(acc)
+		if err != nil {
+			return fmt.Errorf("marshal daily accumulator: %w", err)
+		}
+		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+			return err
+		}
 	}
-	return nil
+
+	return batch.Commit(pebble.Sync)
 }
 
 func (s *SessionStore) GetTurnUsage(sessionID, runID string) (SessionTurnUsageSnapshot, bool, error) {
@@ -433,21 +484,44 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 	if rec.ID == "" {
 		return errors.New("media usage id is required")
 	}
+	rec.SessionID = strings.TrimSpace(rec.SessionID)
+	if rec.SessionID == "" {
+		return errors.New("media usage session_id is required")
+	}
 	rec.AccountScopeID = strings.TrimSpace(rec.AccountScopeID)
 	if rec.AccountScopeID == "" {
 		rec.AccountScopeID = "default"
 	}
-	rec.SessionID = strings.TrimSpace(rec.SessionID)
-	if rec.CreatedAt <= 0 {
-		rec.CreatedAt = time.Now().UnixMilli()
+
+	// Validate session and account scope ownership
+	session, ok, err := s.GetSession(rec.SessionID)
+	if err != nil {
+		return fmt.Errorf("verify session %q: %w", rec.SessionID, err)
 	}
+	if !ok {
+		return fmt.Errorf("session %q not found", rec.SessionID)
+	}
+	if strings.TrimSpace(session.AccountScopeID) != "" && rec.AccountScopeID != strings.TrimSpace(session.AccountScopeID) {
+		return fmt.Errorf("account scope mismatch: record account %q does not match session account %q", rec.AccountScopeID, session.AccountScopeID)
+	}
+
+	// Serialized session locking ensures atomicity
+	unlock := s.store.sessionMutations.lockSessions(rec.SessionID)
+	defer unlock()
 
 	key := KeySessionMediaUsage(rec.AccountScopeID, rec.ID)
 	// Check if already persisted to ensure idempotent retry does not double-count
 	var existing SessionMediaUsageRecord
-	ok, err := s.store.GetJSON(key, &existing)
-	if err == nil && ok {
+	ok, err = s.store.GetJSON(key, &existing)
+	if err != nil {
+		return err
+	}
+	if ok {
 		return nil
+	}
+
+	if rec.CreatedAt <= 0 {
+		rec.CreatedAt = time.Now().UnixMilli()
 	}
 
 	payload, err := json.Marshal(rec)
@@ -455,36 +529,114 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		return fmt.Errorf("marshal media usage %q: %w", rec.ID, err)
 	}
 
+	dateStr := time.UnixMilli(rec.CreatedAt).UTC().Format("2006-01-02")
+	acc, _, err := s.GetDailyUsageAccumulator(rec.AccountScopeID, dateStr)
+	if err != nil {
+		return fmt.Errorf("get daily usage accumulator: %w", err)
+	}
+	if acc.AccountScopeID == "" {
+		acc.AccountScopeID = rec.AccountScopeID
+		acc.Date = dateStr
+	}
+	acc.TotalCostUSD += rec.CostUSD
+	acc.MediaCostUSD += rec.CostUSD
+	acc.MediaCalls++
+	switch strings.ToLower(rec.Kind) {
+	case "image":
+		acc.ImageCount++
+		acc.ImageCostUSD += rec.CostUSD
+	case "video":
+		acc.VideoCount++
+		acc.VideoCostUSD += rec.CostUSD
+	case "audio":
+		acc.AudioCount++
+		acc.AudioCostUSD += rec.CostUSD
+	}
+	acc.UpdatedAt = time.Now().UnixMilli()
+	accPayload, err := json.Marshal(acc)
+	if err != nil {
+		return fmt.Errorf("marshal daily accumulator: %w", err)
+	}
+
+	summary, found, err := s.GetUsageSummary(rec.SessionID)
+	if err != nil {
+		return fmt.Errorf("get usage summary: %w", err)
+	}
+	if !found {
+		summary = SessionUsageSummary{
+			SessionID:      rec.SessionID,
+			AccountScopeID: rec.AccountScopeID,
+			UserID:         rec.UserID,
+		}
+	}
+	summary.EstimatedCostUSD += rec.CostUSD
+	summary.UpdatedAt = time.Now().UnixMilli()
+	summaryPayload, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("marshal usage summary: %w", err)
+	}
+
+	// Single atomic Pebble batch for record, session index, daily accumulator, and usage summary
 	batch := s.store.NewBatch()
 	defer batch.Close()
+
 	if err := batch.Set([]byte(key), payload, nil); err != nil {
 		return err
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	sessionMediaKey := KeySessionMediaUsageBySession(rec.SessionID, rec.ID)
+	if err := batch.Set([]byte(sessionMediaKey), payload, nil); err != nil {
 		return err
 	}
-
-	dateStr := time.UnixMilli(rec.CreatedAt).UTC().Format("2006-01-02")
-	if rec.CostUSD > 0 {
-		_, _ = s.IncrementDailyMediaUsage(rec.AccountScopeID, dateStr, rec.CostUSD)
+	if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+		return err
 	}
-
-	if rec.SessionID != "" {
-		summary, found, err := s.GetUsageSummary(rec.SessionID)
-		if err == nil {
-			if !found {
-				summary = SessionUsageSummary{
-					SessionID:      rec.SessionID,
-					AccountScopeID: rec.AccountScopeID,
-					UserID:         rec.UserID,
-				}
-			}
-			summary.EstimatedCostUSD += rec.CostUSD
-			summary.UpdatedAt = time.Now().UnixMilli()
-			_ = s.PutUsageSummary(summary)
+	if err := batch.Set([]byte(KeySessionUsageSummary(summary.SessionID)), summaryPayload, nil); err != nil {
+		return err
+	}
+	if summary.AccountScopeID != "" {
+		if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(summary.AccountScopeID, summary.SessionID)), summaryPayload, nil); err != nil {
+			return err
 		}
 	}
-	return nil
+
+	return batch.Commit(pebble.Sync)
+}
+
+func (s *SessionStore) ListMediaUsageBySession(sessionID string, limit int) ([]SessionMediaUsageRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("store is not configured")
+	}
+	if limit <= 0 {
+		limit = 2000
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errors.New("session id is required")
+	}
+	prefix := SessionMediaUsageBySessionPrefix(sessionID)
+	out := make([]SessionMediaUsageRecord, 0, 32)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
+		var rec SessionMediaUsageRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return err
+		}
+		if rec.ID == "" {
+			return nil
+		}
+		out = append(out, rec)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (s *SessionStore) ListMediaUsage(accountScopeID string, limit int) ([]SessionMediaUsageRecord, error) {

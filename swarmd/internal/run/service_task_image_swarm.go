@@ -103,10 +103,6 @@ func (s *Service) hydrateDirectImageSwarm(ctx context.Context, parent pebblestor
 	if parsed.Swarm == nil || parsed.Swarm.AgentType != "image" || len(parsed.Launches) != parsed.Swarm.Count {
 		return nil, errors.New("direct image swarm requires a complete image specification")
 	}
-	router, err := s.newTaskSwarmRouter(parent, principal, callID)
-	if err != nil {
-		return nil, err
-	}
 	results := make([]directImageSwarmHydration, len(parsed.Launches))
 	errs := make([]error, len(parsed.Launches))
 	sem := make(chan struct{}, directImageSwarmRouterParallelism)
@@ -133,7 +129,12 @@ func (s *Service) hydrateDirectImageSwarm(ctx context.Context, parent pebblestor
 				OutputContract: parsed.Swarm.OutputContract, OutputMode: taskOutputModeManaged, OutputRequirements: cloneTaskOutputRequirements(parsed.Swarm.OutputRequirements), IterationControls: cloneTaskSwarmIterationControls(parsed.Swarm.IterationControls),
 				Items: []taskSwarmHydrationItem{{Index: 1, Theme: baseTheme, OutputMode: taskOutputModeManaged, WorkerExecution: "direct_image_model_generation"}},
 			}
-			hydrated, hydrateErr := router.Hydrate(ctx, request)
+			slotRouter, slotErr := s.newTaskSwarmRouter(parent, principal, fmt.Sprintf("%s:slot:%d", callID, i+1))
+			if slotErr != nil {
+				errs[i] = slotErr
+				return
+			}
+			hydrated, hydrateErr := slotRouter.Hydrate(ctx, request)
 			if hydrateErr != nil {
 				errs[i] = fmt.Errorf("image %d Router hydration failed: %w", i+1, hydrateErr)
 				emitDirectImageSwarmDelta(emit, step, callID, parsed.Action, parsed.Description, len(parsed.Launches), i+1, "failed", "", baseTheme, "router", boundedTaskLaunchReason(hydrateErr.Error()), nil)

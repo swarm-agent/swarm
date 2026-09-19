@@ -219,6 +219,9 @@ func TestMediaUsagePersistenceAndDailyLimits(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
 	acctID := "acct-media-1"
 	sessID := "sess-media-1"
+	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Test Session"}); err != nil {
+		t.Fatalf("set session: %v", err)
+	}
 
 	// Put image usage record
 	imgRecord := SessionMediaUsageRecord{
@@ -289,6 +292,9 @@ func TestDurableAccountingSurvivesReopen(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
 	acctID := "acct-reopen-1"
 	sessID := "sess-reopen-1"
+	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Test Session"}); err != nil {
+		t.Fatalf("set session: %v", err)
+	}
 
 	if err := store.PutTurnUsage(SessionTurnUsageSnapshot{
 		SessionID:        sessID,
@@ -364,5 +370,110 @@ func TestDurableAccountingSurvivesReopen(t *testing.T) {
 	}
 	if acc.MediaCalls != 1 || acc.MediaCostUSD != 1.20 {
 		t.Fatalf("expected media calls 1 and cost 1.20, got calls=%d cost=%f", acc.MediaCalls, acc.MediaCostUSD)
+	}
+}
+
+func TestAtomicPutMediaUsageValidationAndRollback(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-atomic.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	acctID := "acct-valid"
+	sessID := "sess-valid"
+	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Valid"}); err != nil {
+		t.Fatalf("set session: %v", err)
+	}
+
+	// 1. Rejection on missing session
+	err = store.PutMediaUsage(SessionMediaUsageRecord{
+		ID:             "media-fail-1",
+		SessionID:      "non-existent-sess",
+		AccountScopeID: acctID,
+		CostUSD:        1.0,
+	})
+	if err == nil {
+		t.Fatal("expected error on non-existent session, got nil")
+	}
+
+	// 2. Rejection on account mismatch
+	err = store.PutMediaUsage(SessionMediaUsageRecord{
+		ID:             "media-fail-2",
+		SessionID:      sessID,
+		AccountScopeID: "attacker-acct",
+		CostUSD:        1.0,
+	})
+	if err == nil {
+		t.Fatal("expected error on account scope mismatch, got nil")
+	}
+
+	// Verify no partial records or accumulator increments were created
+	acc, found, _ := store.GetDailyUsageAccumulator(acctID, time.Now().UTC().Format("2006-01-02"))
+	if found && acc.MediaCalls > 0 {
+		t.Fatalf("unexpected media calls in accumulator after failed validation: %d", acc.MediaCalls)
+	}
+}
+
+func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-estimate.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	catStore := NewModelCatalogStore(db)
+
+	// Add catalog record with snapshot pricing
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "imagen-3.0",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing:               []byte(`{"per_image": 0.035}`),
+	})
+	if err != nil {
+		t.Fatalf("set catalog record: %v", err)
+	}
+
+	// 1. Model with snapshot pricing
+	est := store.EstimateMediaCost("google", "imagen-3.0", "image", 2, 0, false)
+	if est.PriceStatus != "known" {
+		t.Fatalf("expected price status known, got %s", est.PriceStatus)
+	}
+	if est.CostUSD != 0.070 {
+		t.Fatalf("expected cost 0.070, got %f", est.CostUSD)
+	}
+	if est.SnapshotID != "snap-2026-09" {
+		t.Fatalf("expected snapshot snap-2026-09, got %s", est.SnapshotID)
+	}
+
+	// 2. Unpriced model in catalog: explicit unknown status, no hardcoded invented rates
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "unpriced-vision",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+	})
+	if err != nil {
+		t.Fatalf("set unpriced record: %v", err)
+	}
+	estUnpriced := store.EstimateMediaCost("google", "unpriced-vision", "image", 1, 0, false)
+	if estUnpriced.PriceStatus != "unknown" {
+		t.Fatalf("expected unknown price status, got %s", estUnpriced.PriceStatus)
+	}
+	if estUnpriced.CostUSD != 0.0 {
+		t.Fatalf("expected 0 cost for unpriced model, got %f", estUnpriced.CostUSD)
+	}
+
+	// 3. Codex model: subscription status ($0 billed)
+	estCodex := store.EstimateMediaCost("codex", "gpt-image-1", "image", 1, 0, false)
+	if estCodex.PriceStatus != "subscription" {
+		t.Fatalf("expected subscription status for codex, got %s", estCodex.PriceStatus)
+	}
+	if estCodex.CostUSD != 0.0 {
+		t.Fatalf("expected 0 cost for codex subscription, got %f", estCodex.CostUSD)
 	}
 }

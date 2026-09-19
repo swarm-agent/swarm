@@ -1629,30 +1629,49 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if sourceRef != nil {
 		create.SourceSessionID, create.SourceCollectionID, create.SourceVariantID, create.SourceEventSeq = sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq
 	}
+	var estimate pebblestore.MediaCostEstimate
+	imageProvider := "codex"
+	imageModel := "gpt-image-1"
+	if selectionID != "" && selectionID != imagegen.DefaultModelSelectionID && selectionID != "codex-image-gen" {
+		imageProvider = "google"
+		imageModel = selectionID
+	}
+	if r.sessions != nil {
+		estimate = r.sessions.EstimateMediaCost(imageProvider, imageModel, "image", 1, 0, sourceRef != nil)
+	}
+
+	mediaID := variantID
+	if mediaID == "" {
+		mediaID = fmt.Sprintf("media_%s_%s", callID, requestID)
+	}
+	mediaRec := pebblestore.SessionMediaUsageRecord{
+		ID:              mediaID,
+		SessionID:       principal.SessionID,
+		AccountScopeID:  principal.AccountScopeID,
+		UserID:          principal.UserID,
+		MediaType:       canonicalArtifactMediaType(generated.MediaType),
+		Kind:            "image",
+		Provider:        imageProvider,
+		Model:           imageModel,
+		Filename:        filename,
+		Label:           presentation.Label,
+		Size:            int64(len(generated.Bytes)),
+		CostUSD:         estimate.CostUSD,
+		PriceStatus:     estimate.PriceStatus,
+		PricingSummary:  estimate.PricingSummary,
+		SnapshotID:      estimate.SnapshotID,
+		SnapshotVersion: estimate.SnapshotVersion,
+		CreatedAt:       time.Now().UnixMilli(),
+	}
+	if r.sessions != nil {
+		if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("record image media usage: %w", recErr)
+		}
+	}
+
 	published, err := r.artifactAuthority.Create(ctx, principal, create)
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, err
-	}
-	imageCost := 0.04
-	if strings.EqualFold(selection.Provider, "codex") {
-		imageCost = 0.0
-	}
-	if r.sessions != nil {
-		_ = r.sessions.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
-			ID:             published.ID,
-			SessionID:      principal.SessionID,
-			AccountScopeID: principal.AccountScopeID,
-			UserID:         principal.UserID,
-			MediaType:      canonicalArtifactMediaType(generated.MediaType),
-			Kind:           "image",
-			Provider:       selection.Provider,
-			Model:          selection.Model,
-			Filename:       filename,
-			Label:          presentation.Label,
-			Size:           int64(len(generated.Bytes)),
-			CostUSD:        imageCost,
-			CreatedAt:      published.CreatedAt,
-		})
 	}
 	return published, nil
 }
@@ -2337,31 +2356,43 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
+		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
+		if r.sessions != nil {
+			estimate = r.sessions.EstimateMediaCost(generated.Provider, generated.Model, "video", 1, req.DurationSeconds, sourceRef != nil)
+		}
+		mediaRec := pebblestore.SessionMediaUsageRecord{
+			ID:              currentVariantID,
+			SessionID:       principal.SessionID,
+			AccountScopeID:  principal.AccountScopeID,
+			UserID:          principal.UserID,
+			MediaType:       "video/mp4",
+			Kind:            "video",
+			Provider:        generated.Provider,
+			Model:           generated.Model,
+			Filename:        filename,
+			Label:           presentation.Label,
+			Size:            int64(len(generated.Bytes)),
+			CostUSD:         estimate.CostUSD,
+			PriceStatus:     estimate.PriceStatus,
+			PricingSummary:  estimate.PricingSummary,
+			SnapshotID:      estimate.SnapshotID,
+			SnapshotVersion: estimate.SnapshotVersion,
+			CreatedAt:       time.Now().UnixMilli(),
+		}
+		if r.sessions != nil {
+			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
+				return managedVideoArtifactResult{}, fmt.Errorf("record video media usage: %w", recErr)
+			}
+		}
+
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
 		}
-		if r.sessions != nil {
-			_ = r.sessions.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
-				ID:             published.ID,
-				SessionID:      principal.SessionID,
-				AccountScopeID: principal.AccountScopeID,
-				UserID:         principal.UserID,
-				MediaType:      "video/mp4",
-				Kind:           "video",
-				Provider:       generated.Provider,
-				Model:          generated.Model,
-				Filename:       filename,
-				Label:          presentation.Label,
-				Size:           int64(len(generated.Bytes)),
-				CostUSD:        generated.EstimatedCostUSD,
-				CreatedAt:      published.CreatedAt,
-			})
-		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))
 		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
-		costPerVideo = generated.EstimatedCostUSD
+		costPerVideo = estimate.CostUSD
 		totalCost += generated.EstimatedCostUSD
 		pricingSummary = generated.PricingSummary
 		lastModel = generated.Model
@@ -2722,31 +2753,43 @@ func (r *Runtime) generateManagedAudioArtifact(
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
+		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
+		if r.sessions != nil {
+			estimate = r.sessions.EstimateMediaCost(lastProvider, requestedModel, "audio", 1, req.DurationSeconds, sourceRef != nil)
+		}
+		mediaRec := pebblestore.SessionMediaUsageRecord{
+			ID:              currentVariantID,
+			SessionID:       principal.SessionID,
+			AccountScopeID:  principal.AccountScopeID,
+			UserID:          principal.UserID,
+			MediaType:       mediaType,
+			Kind:            "audio",
+			Provider:        lastProvider,
+			Model:           requestedModel,
+			Filename:        filename,
+			Label:           presentation.Label,
+			Size:            int64(len(generated.Bytes)),
+			CostUSD:         estimate.CostUSD,
+			PriceStatus:     estimate.PriceStatus,
+			PricingSummary:  estimate.PricingSummary,
+			SnapshotID:      estimate.SnapshotID,
+			SnapshotVersion: estimate.SnapshotVersion,
+			CreatedAt:       time.Now().UnixMilli(),
+		}
+		if r.sessions != nil {
+			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
+				return managedAudioArtifactResult{}, fmt.Errorf("record audio media usage: %w", recErr)
+			}
+		}
+
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedAudioArtifactResult{}, fmt.Errorf("publish audio artifact: %w", err)
 		}
-		if r.sessions != nil {
-			_ = r.sessions.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
-				ID:             published.ID,
-				SessionID:      principal.SessionID,
-				AccountScopeID: principal.AccountScopeID,
-				UserID:         principal.UserID,
-				MediaType:      mediaType,
-				Kind:           "audio",
-				Provider:       lastProvider,
-				Model:          requestedModel,
-				Filename:       filename,
-				Label:          presentation.Label,
-				Size:           int64(len(generated.Bytes)),
-				CostUSD:        generated.EstimatedCostUSD,
-				CreatedAt:      published.CreatedAt,
-			})
-		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))
 		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
-		costPerAudio = generated.EstimatedCostUSD
+		costPerAudio = estimate.CostUSD
 		totalCost += generated.EstimatedCostUSD
 		pricingSummary = generated.PricingSummary
 		lastModel = generated.Model

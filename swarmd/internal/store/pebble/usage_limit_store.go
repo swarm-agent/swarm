@@ -21,14 +21,26 @@ type UsageLimitRecord struct {
 
 // DailyUsageAccumulator tracks aggregated daily spending and token counts in O(1) storage.
 type DailyUsageAccumulator struct {
-	AccountScopeID string  `json:"account_scope_id"`
-	Date           string  `json:"date"` // Format: YYYY-MM-DD (UTC)
-	TotalCostUSD   float64 `json:"total_cost_usd"`
-	TotalTokens    int64   `json:"total_tokens"`
-	TurnCount      int     `json:"turn_count"`
-	MediaCalls     int     `json:"media_calls,omitempty"`
-	MediaCostUSD   float64 `json:"media_cost_usd,omitempty"`
-	UpdatedAt      int64   `json:"updated_at"`
+	AccountScopeID      string           `json:"account_scope_id"`
+	Date                string           `json:"date"` // Format: YYYY-MM-DD (UTC)
+	TotalCostUSD        float64          `json:"total_cost_usd"`
+	CodexNominalCostUSD float64          `json:"codex_nominal_cost_usd,omitempty"`
+	TotalTokens         int64            `json:"total_tokens"`
+	InputTokens         int64            `json:"input_tokens,omitempty"`
+	OutputTokens        int64            `json:"output_tokens,omitempty"`
+	CachedTokens        int64            `json:"cached_tokens,omitempty"`
+	ThinkingTokens      int64            `json:"thinking_tokens,omitempty"`
+	TurnCount           int              `json:"turn_count"`
+	MediaCalls          int              `json:"media_calls,omitempty"`
+	MediaCostUSD        float64          `json:"media_cost_usd,omitempty"`
+	ImageCount          int              `json:"image_count,omitempty"`
+	ImageCostUSD        float64          `json:"image_cost_usd,omitempty"`
+	VideoCount          int              `json:"video_count,omitempty"`
+	VideoCostUSD        float64          `json:"video_cost_usd,omitempty"`
+	AudioCount          int              `json:"audio_count,omitempty"`
+	AudioCostUSD        float64          `json:"audio_cost_usd,omitempty"`
+	ModelsUsed          map[string]int64 `json:"models_used,omitempty"`
+	UpdatedAt           int64            `json:"updated_at"`
 }
 
 // ModelBaselinePricing holds standard per-million token rates for usage estimation.
@@ -80,17 +92,8 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 		pricing, ok = baselinePricingTable[model]
 	}
 	if !ok {
-		// Fallback rates for common model families if not in table
-		if strings.Contains(model, "flash") {
-			pricing = ModelBaselinePricing{InputPricePerMillion: 0.10, OutputPricePerMillion: 0.40, CachedInputPricePerMillion: 0.025, HasCached: true}
-		} else if strings.Contains(model, "haiku") {
-			pricing = ModelBaselinePricing{InputPricePerMillion: 0.80, OutputPricePerMillion: 4.0, CachedInputPricePerMillion: 0.08, HasCached: true}
-		} else if strings.Contains(model, "pro") || strings.Contains(model, "sonnet") {
-			pricing = ModelBaselinePricing{InputPricePerMillion: 2.00, OutputPricePerMillion: 10.0, CachedInputPricePerMillion: 0.50, HasCached: true}
-		} else {
-			// Conservative generic default ($0.50 / $2.00 per MTok)
-			pricing = ModelBaselinePricing{InputPricePerMillion: 0.50, OutputPricePerMillion: 2.00}
-		}
+		// If absent from snapshot pricing and baseline, do not invent fallback rates.
+		return 0.0
 	}
 
 	regularInput := inputTokens - cacheReadTokens
@@ -165,6 +168,190 @@ func (s *SessionStore) CalculateCost(provider, model string, inputTokens, output
 	}
 	return CalculateBaselineCost(provider, model, inputTokens, outputTokens, cacheReadTokens, thinkingTokens)
 }
+
+// MediaCostEstimate captures resolved media pricing without invented fallback rates.
+type MediaCostEstimate struct {
+	CostUSD         float64 `json:"cost_usd"`
+	PriceStatus     string  `json:"price_status"` // "known", "unknown", "subscription", "free"
+	PricingSummary  string  `json:"pricing_summary"`
+	SnapshotID      string  `json:"snapshot_id,omitempty"`
+	SnapshotVersion string  `json:"snapshot_version,omitempty"`
+}
+
+func toFloat64(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+// EstimateMediaCost resolves snapshot-backed media pricing for images, videos, and audio.
+// If the model is unpriced or absent from the snapshot, it explicitly marks the price status
+// as unknown rather than inventing fallback rates.
+func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int, durationSeconds int, isIteration bool) MediaCostEstimate {
+	if count <= 0 {
+		count = 1
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	kind = strings.ToLower(strings.TrimSpace(kind))
+
+	if provider == "codex" {
+		return MediaCostEstimate{
+			CostUSD:        0.0,
+			PriceStatus:    "subscription",
+			PricingSummary: "Codex subscription ($0.00 billed)",
+		}
+	}
+
+	if s == nil || s.store == nil {
+		return MediaCostEstimate{
+			CostUSD:        0.0,
+			PriceStatus:    "unknown",
+			PricingSummary: "unknown pricing (store not configured)",
+		}
+	}
+
+	catalogStore := NewModelCatalogStore(s.store)
+	rec, found, err := catalogStore.GetRecord(provider, model)
+	if err != nil || !found {
+		cleanModel := strings.TrimPrefix(strings.TrimPrefix(model, provider+"/"), "google/")
+		if cleanRec, cleanFound, cleanErr := catalogStore.GetRecord(provider, cleanModel); cleanErr == nil && cleanFound {
+			rec = cleanRec
+			found = true
+		}
+	}
+
+	if !found {
+		return MediaCostEstimate{
+			CostUSD:        0.0,
+			PriceStatus:    "unknown",
+			PricingSummary: fmt.Sprintf("unknown pricing (model %q absent from catalog snapshot)", model),
+		}
+	}
+
+	snapID := rec.SourceSnapshotID
+	snapVer := rec.SourceSnapshotVersion
+
+	if len(rec.Pricing) == 0 {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  fmt.Sprintf("unknown pricing (model %q unpriced in snapshot %s)", model, snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Pricing, &raw); err != nil {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  fmt.Sprintf("unknown pricing (invalid pricing in snapshot %s)", snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	if isFree, ok := raw["is_free"].(bool); ok && isFree {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "free",
+			PricingSummary:  fmt.Sprintf("Free (snapshot %s)", snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	unitPrice := 0.0
+	foundPrice := false
+
+	switch kind {
+	case "image":
+		for _, key := range []string{"per_image", "output_image", "image", "price_per_image"} {
+			if val, ok := raw[key]; ok {
+				if num, ok := toFloat64(val); ok && num >= 0 {
+					unitPrice = num
+					foundPrice = true
+					break
+				}
+			}
+		}
+	case "video":
+		for _, key := range []string{"video_output", "per_video", "video", "output_video", "prompt"} {
+			if val, ok := raw[key]; ok {
+				if num, ok := toFloat64(val); ok && num >= 0 {
+					unitPrice = num
+					foundPrice = true
+					break
+				}
+			}
+		}
+	case "audio":
+		for _, key := range []string{"audio_output", "music_output", "per_audio", "audio", "prompt"} {
+			if val, ok := raw[key]; ok {
+				if num, ok := toFloat64(val); ok && num >= 0 {
+					unitPrice = num
+					foundPrice = true
+					break
+				}
+			}
+		}
+	}
+
+	if !foundPrice {
+		if billing, ok := raw["billing"].(map[string]any); ok {
+			if lines, ok := billing["lines"].([]any); ok {
+				for _, line := range lines {
+					lineMap, ok := line.(map[string]any)
+					if !ok {
+						continue
+					}
+					billable, _ := lineMap["billable"].(string)
+					if (kind == "image" && billable == "image_output") ||
+						(kind == "video" && (billable == "video_output" || billable == "video")) ||
+						(kind == "audio" && (billable == "audio_output" || billable == "music_output")) {
+						if pUSD, ok := toFloat64(lineMap["price_usd"]); ok && pUSD >= 0 {
+							unitPrice = pUSD
+							foundPrice = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if !foundPrice {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  fmt.Sprintf("unknown pricing (no %s rate in snapshot %s)", kind, snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	totalCost := unitPrice * float64(count)
+	return MediaCostEstimate{
+		CostUSD:         totalCost,
+		PriceStatus:     "known",
+		PricingSummary:  fmt.Sprintf("$%.4f per %s (snapshot %s)", unitPrice, kind, snapID),
+		SnapshotID:      snapID,
+		SnapshotVersion: snapVer,
+	}
 
 // GetUsageLimit retrieves the configured daily usage limit for an account.
 func (s *SessionStore) GetUsageLimit(accountScopeID string) (UsageLimitRecord, bool, error) {

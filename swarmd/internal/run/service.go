@@ -733,6 +733,9 @@ type runWorkspaceContext struct {
 }
 
 func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, providers *registry.Registry, tools *tool.Runtime, permissions *permission.Service, agents *agentruntime.Service, discoverySvc *discovery.Service, events *pebblestore.EventLog) *Service {
+	if tools != nil && sessions != nil {
+		tools.SetManageSessionService(sessions)
+	}
 	return &Service{
 		sessions:    sessions,
 		model:       modelSvc,
@@ -2308,7 +2311,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
 		}
 		cumulativeTurnCost += stepCost
-		cumulativeBilledTokens += response.Usage.TotalTokens
+		if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {
+			cumulativeBilledTokens = response.Usage.TotalTokens
+		} else {
+			cumulativeBilledTokens += response.Usage.TotalTokens
+		}
 		accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
 		accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 		if shouldPersistProviderUsage(providerID, accumulatedUsage) {
@@ -3989,7 +3996,7 @@ func (s *Service) resolveCompactPreference(accountScopeID string, basePreference
 	return compactruntime.ResolvePreference(s.model, s.agents, s.agentModelSettings, accountScopeID, basePreference)
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, runID string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
 	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
 	if len(streamOut) > 0 && streamOut[0] != nil {
 		*streamOut[0] = toolStream
@@ -4126,6 +4133,36 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
+		// Account compaction response usage before downstream validation or error handling
+		if s.sessions != nil && hasConcreteUsageSnapshot(oneShotResult.Usage) {
+			compactCost := 0.0
+			if s.sessions.Store() != nil {
+				compactCost = s.sessions.Store().CalculateCost(compactModel.ProviderID, compactModel.Preference.Model, oneShotResult.Usage.InputTokens, oneShotResult.Usage.OutputTokens, oneShotResult.Usage.CacheReadTokens, oneShotResult.Usage.ThinkingTokens)
+			}
+			uniqueCompactRunID := fmt.Sprintf("compact:%s:%s:%d:%d:%d", sessionID, strings.TrimSpace(runID), compactIndex, attempt, time.Now().UnixNano())
+			compactTurn := pebblestore.SessionTurnUsageSnapshot{
+				SessionID:        sessionID,
+				AccountScopeID:   accountScopeID,
+				RunID:            uniqueCompactRunID,
+				Provider:         compactModel.ProviderID,
+				Model:            compactModel.Preference.Model,
+				Source:           "compaction",
+				InputTokens:      oneShotResult.Usage.InputTokens,
+				OutputTokens:     oneShotResult.Usage.OutputTokens,
+				ThinkingTokens:   oneShotResult.Usage.ThinkingTokens,
+				CacheReadTokens:  oneShotResult.Usage.CacheReadTokens,
+				CacheWriteTokens: oneShotResult.Usage.CacheWriteTokens,
+				TotalTokens:      oneShotResult.Usage.TotalTokens,
+				BilledTokens:     oneShotResult.Usage.TotalTokens,
+				EstimatedCostUSD: compactCost,
+				CreatedAt:        time.Now().UnixMilli(),
+				UpdatedAt:        time.Now().UnixMilli(),
+			}
+			if _, _, _, recErr := s.sessions.RecordTurnUsage(sessionID, compactTurn); recErr != nil {
+				finishFailure(recErr)
+				return "", fmt.Errorf("record compact turn usage: %w", recErr)
+			}
+		}
 		if reqErr == nil {
 			runCompactionDebugEvent("memory_compaction_one_shot_success", map[string]any{
 				"session_id": strings.TrimSpace(sessionID),
@@ -4133,30 +4170,6 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"model":      modelName,
 				"attempt":    attempt,
 			})
-			if s.sessions != nil && hasConcreteUsageSnapshot(oneShotResult.Usage) {
-				compactCost := 0.0
-				if s.sessions.Store() != nil {
-					compactCost = s.sessions.Store().CalculateCost(compactModel.ProviderID, compactModel.Preference.Model, oneShotResult.Usage.InputTokens, oneShotResult.Usage.OutputTokens, oneShotResult.Usage.CacheReadTokens, oneShotResult.Usage.ThinkingTokens)
-				}
-				compactTurn := pebblestore.SessionTurnUsageSnapshot{
-					SessionID:        sessionID,
-					RunID:            fmt.Sprintf("compact:%s:%d", sessionID, compactIndex),
-					Provider:         compactModel.ProviderID,
-					Model:            compactModel.Preference.Model,
-					Source:           "compaction",
-					InputTokens:      oneShotResult.Usage.InputTokens,
-					OutputTokens:     oneShotResult.Usage.OutputTokens,
-					ThinkingTokens:   oneShotResult.Usage.ThinkingTokens,
-					CacheReadTokens:  oneShotResult.Usage.CacheReadTokens,
-					CacheWriteTokens: oneShotResult.Usage.CacheWriteTokens,
-					TotalTokens:      oneShotResult.Usage.TotalTokens,
-					BilledTokens:     oneShotResult.Usage.TotalTokens,
-					EstimatedCostUSD: compactCost,
-					CreatedAt:        time.Now().UnixMilli(),
-					UpdatedAt:        time.Now().UnixMilli(),
-				}
-				_, _, _, _ = s.sessions.RecordTurnUsage(sessionID, compactTurn)
-			}
 			finishSuccess("context compacted by Compact; resuming run")
 			return oneShotResult.trimmedSummary(), nil
 		}

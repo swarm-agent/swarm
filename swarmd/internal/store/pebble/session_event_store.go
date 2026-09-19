@@ -1201,7 +1201,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if usageProvided {
-		if turnUsage.EstimatedCostUSD <= 0 {
+		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
 			turnUsage.EstimatedCostUSD = s.CalculateCost(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
 		}
 		usagePayload, err := json.Marshal(turnUsage)
@@ -1225,6 +1225,72 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 		if usageSummary.AccountScopeID != "" {
 			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(usageSummary.AccountScopeID, usageSummary.SessionID)), summaryPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+
+		// Update DailyUsageAccumulator atomically inside the same batch
+		ts := turnUsage.CreatedAt
+		if ts <= 0 {
+			ts = turnUsage.UpdatedAt
+		}
+		if ts <= 0 {
+			ts = now
+		}
+		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
+		costDelta := turnUsage.EstimatedCostUSD
+		tokensDelta := turnUsage.TotalTokens
+		if turnUsage.BilledTokens > 0 {
+			tokensDelta = turnUsage.BilledTokens
+		}
+		if hadPreviousTurnUsage {
+			costDelta = turnUsage.EstimatedCostUSD - previousTurnUsage.EstimatedCostUSD
+			if costDelta < 0 {
+				costDelta = 0
+			}
+			prevTokens := previousTurnUsage.TotalTokens
+			if previousTurnUsage.BilledTokens > 0 {
+				prevTokens = previousTurnUsage.BilledTokens
+			}
+			currTokens := turnUsage.TotalTokens
+			if turnUsage.BilledTokens > 0 {
+				currTokens = turnUsage.BilledTokens
+			}
+			tokensDelta = currTokens - prevTokens
+			if tokensDelta < 0 {
+				tokensDelta = 0
+			}
+		}
+		if costDelta > 0 || tokensDelta > 0 || !hadPreviousTurnUsage {
+			acc, _, err := s.GetDailyUsageAccumulator(turnUsage.AccountScopeID, dateStr)
+			if err != nil {
+				return V3SessionMutationResult{}, fmt.Errorf("get daily usage accumulator: %w", err)
+			}
+			if acc.AccountScopeID == "" {
+				acc.AccountScopeID = turnUsage.AccountScopeID
+				acc.Date = dateStr
+			}
+			acc.TotalCostUSD += costDelta
+			acc.TotalTokens += tokensDelta
+			acc.InputTokens += clampUsageTokenCount(turnUsage.InputTokens)
+			acc.OutputTokens += clampUsageTokenCount(turnUsage.OutputTokens)
+			acc.CachedTokens += clampUsageTokenCount(turnUsage.CacheReadTokens)
+			acc.ThinkingTokens += clampUsageTokenCount(turnUsage.ThinkingTokens)
+			if !hadPreviousTurnUsage {
+				acc.TurnCount++
+			}
+			if acc.ModelsUsed == nil {
+				acc.ModelsUsed = make(map[string]int64)
+			}
+			if turnUsage.Model != "" {
+				acc.ModelsUsed[turnUsage.Model] += tokensDelta
+			}
+			acc.UpdatedAt = now
+			accPayload, err := json.Marshal(acc)
+			if err != nil {
+				return V3SessionMutationResult{}, fmt.Errorf("marshal daily accumulator: %w", err)
+			}
+			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 		}
@@ -1291,42 +1357,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	reservationCommitted = true
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
-	}
-	if usageProvided {
-		ts := turnUsage.CreatedAt
-		if ts <= 0 {
-			ts = turnUsage.UpdatedAt
-		}
-		if ts <= 0 {
-			ts = now
-		}
-		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-		costDelta := turnUsage.EstimatedCostUSD
-		tokensDelta := turnUsage.TotalTokens
-		if turnUsage.BilledTokens > 0 {
-			tokensDelta = turnUsage.BilledTokens
-		}
-		if hadPreviousTurnUsage {
-			costDelta = turnUsage.EstimatedCostUSD - previousTurnUsage.EstimatedCostUSD
-			if costDelta < 0 {
-				costDelta = 0
-			}
-			prevTokens := previousTurnUsage.TotalTokens
-			if previousTurnUsage.BilledTokens > 0 {
-				prevTokens = previousTurnUsage.BilledTokens
-			}
-			currTokens := turnUsage.TotalTokens
-			if turnUsage.BilledTokens > 0 {
-				currTokens = turnUsage.BilledTokens
-			}
-			tokensDelta = currTokens - prevTokens
-			if tokensDelta < 0 {
-				tokensDelta = 0
-			}
-		}
-		if costDelta > 0 || tokensDelta > 0 {
-			_, _ = s.IncrementDailyUsage(turnUsage.AccountScopeID, dateStr, costDelta, tokensDelta)
-		}
 	}
 	v3SuccessfulFreshMutations.Add(1)
 	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))

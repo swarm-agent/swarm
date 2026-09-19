@@ -1012,6 +1012,18 @@ func SessionMediaUsagePrefix(accountScopeID string) string {
 	return fmt.Sprintf("session_media_usage/%s/", accountPart)
 }
 
+func KeySessionMediaUsageBySession(sessionID, id string) string {
+	return fmt.Sprintf("session_media_usage_by_session/%s/%s", keyPart(sessionID), keyPart(id))
+}
+
+func SessionMediaUsageBySessionPrefix(sessionID string) string {
+	sessionPart := keyPart(sessionID)
+	if sessionPart == "" {
+		return "session_media_usage_by_session/"
+	}
+	return fmt.Sprintf("session_media_usage_by_session/%s/", sessionPart)
+}
+
 func KeySessionLifecycleByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_lifecycle_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }

@@ -182,7 +182,7 @@ func (r *configuredTaskSwarmRouter) Hydrate(ctx context.Context, request taskSwa
 			attemptReq.BoundaryReason = "task_swarm_router_regenerate"
 			attemptReq.Instructions += "\nThe previous response failed local JSON or complete-wave validation and was discarded. Generate a fresh complete JSON object from the unchanged request. Include every requested index exactly once in ascending order, all required fields, distinct specializations, and a concrete 3 or 4 word group title. Do not abbreviate the requested wave or quote the shared brief."
 		}
-		raw, err := r.taskSwarmRouterOutput(callCtx, attemptReq)
+		raw, err := r.taskSwarmRouterOutput(callCtx, attemptReq, attempt)
 		if err != nil {
 			return taskSwarmHydrationResult{}, err
 		}
@@ -195,7 +195,7 @@ func (r *configuredTaskSwarmRouter) Hydrate(ctx context.Context, request taskSwa
 	return taskSwarmHydrationResult{}, fmt.Errorf("Router output invalid after %d validated attempts; no swarm workers launched: %w", taskSwarmRouterMaxAttempts, validationErr)
 }
 
-func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, req provideriface.Request) (string, error) {
+func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, req provideriface.Request, attempt int) (string, error) {
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var output strings.Builder
@@ -222,28 +222,19 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 			output.WriteString(event.Delta)
 		}
 	})
-	if overLimit || utf8.RuneCountInString(response.Text) > taskSwarmRouterMaxOutputRunes {
-		return "", fmt.Errorf("task swarm Router output exceeded %d characters", taskSwarmRouterMaxOutputRunes)
-	}
-	if toolCall || len(response.FunctionCalls) != 0 {
-		return "", errors.New("task swarm Router must not call tools")
-	}
-	if err != nil {
-		return "", err
-	}
-	if err := callCtx.Err(); err != nil {
-		return "", err
-	}
+
+	// Account response usage immediately after streaming completes, before downstream validation or error returns
 	if r.sessions != nil && hasConcreteUsageSnapshot(response.Usage) {
 		routerCost := 0.0
 		if r.sessions.Store() != nil {
 			routerCost = r.sessions.Store().CalculateCost(r.runtime.ProviderID, r.runtime.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
 		}
+		uniqueRouterRunID := fmt.Sprintf("router:%s:%d:%d", r.callID, attempt, time.Now().UnixNano())
 		routerUsage := pebblestore.SessionTurnUsageSnapshot{
 			SessionID:        r.parentID,
 			AccountScopeID:   r.principal.AccountScopeID,
 			UserID:           r.principal.UserID,
-			RunID:            fmt.Sprintf("router:%s", r.callID),
+			RunID:            uniqueRouterRunID,
 			Provider:         r.runtime.ProviderID,
 			Model:            r.runtime.Preference.Model,
 			Source:           "router",
@@ -258,7 +249,22 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 			CreatedAt:        time.Now().UnixMilli(),
 			UpdatedAt:        time.Now().UnixMilli(),
 		}
-		_, _, _, _ = r.sessions.RecordTurnUsage(r.parentID, routerUsage)
+		if _, _, _, recErr := r.sessions.RecordTurnUsage(r.parentID, routerUsage); recErr != nil {
+			return "", fmt.Errorf("record Router turn usage: %w", recErr)
+		}
+	}
+
+	if overLimit || utf8.RuneCountInString(response.Text) > taskSwarmRouterMaxOutputRunes {
+		return "", fmt.Errorf("task swarm Router output exceeded %d characters", taskSwarmRouterMaxOutputRunes)
+	}
+	if toolCall || len(response.FunctionCalls) != 0 {
+		return "", errors.New("task swarm Router must not call tools")
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := callCtx.Err(); err != nil {
+		return "", err
 	}
 	return strings.TrimSpace(firstNonEmptyString(response.Text, output.String())), nil
 }
