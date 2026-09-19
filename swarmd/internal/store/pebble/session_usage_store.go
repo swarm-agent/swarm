@@ -254,7 +254,10 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		return errors.New("turn usage run_id is required")
 	}
 	if record.AccountScopeID == "" {
-		return errors.New("turn usage account_scope_id is required")
+		record.AccountScopeID = "default"
+	}
+	if record.UserID == "" {
+		record.UserID = "default"
 	}
 	if record.EstimatedCostUSD <= 0 && !strings.EqualFold(record.Provider, "codex") {
 		cost, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
@@ -662,12 +665,21 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 	if !ok {
 		return fmt.Errorf("session %q not found", rec.SessionID)
 	}
-	if strings.TrimSpace(session.AccountScopeID) == "" || rec.AccountScopeID != strings.TrimSpace(session.AccountScopeID) {
+	if strings.TrimSpace(rec.AccountScopeID) == "" {
+		rec.AccountScopeID = strings.TrimSpace(session.AccountScopeID)
+	}
+	if rec.AccountScopeID == "" {
+		rec.AccountScopeID = "default"
+	}
+	if strings.TrimSpace(session.AccountScopeID) != "" && rec.AccountScopeID != strings.TrimSpace(session.AccountScopeID) {
 		return fmt.Errorf("account scope mismatch: record account %q does not match session account %q", rec.AccountScopeID, session.AccountScopeID)
 	}
 	rec.UserID = strings.TrimSpace(rec.UserID)
 	if rec.UserID == "" {
 		rec.UserID = session.UserID
+	}
+	if rec.UserID == "" {
+		rec.UserID = "default"
 	}
 
 	key := KeySessionMediaUsage(rec.AccountScopeID, rec.ID)
