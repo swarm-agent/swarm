@@ -478,6 +478,26 @@ func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
 	if estCodex.CostUSD != 0.0 {
 		t.Fatalf("expected 0 cost for codex subscription, got %f", estCodex.CostUSD)
 	}
+
+	// 4. Video model with billing lines schema: unit second
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "veo-2.0",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing:               []byte(`{"billing":{"lines":[{"billable":"video_output","unit":"second","price_usd":0.05}]}}`),
+	})
+	if err != nil {
+		t.Fatalf("set video catalog record: %v", err)
+	}
+	estVideo := store.EstimateMediaCost("google", "veo-2.0", "video", 2, 6, false)
+	if estVideo.PriceStatus != "known" {
+		t.Fatalf("expected video price status known, got %s", estVideo.PriceStatus)
+	}
+	expectedVideoCost := 2.0 * 6.0 * 0.05
+	if estVideo.CostUSD < expectedVideoCost-0.0001 || estVideo.CostUSD > expectedVideoCost+0.0001 {
+		t.Fatalf("expected video cost %f, got %f", expectedVideoCost, estVideo.CostUSD)
+	}
 }
 
 // TestConcurrentDifferentSessionsDailyAccumulator proves that concurrent writes from different

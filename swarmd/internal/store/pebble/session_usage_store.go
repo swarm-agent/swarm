@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -240,7 +241,7 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		record.EstimatedCostUSD = s.CalculateCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
 	}
 
-	unlockSession := s.store.sessionMutations.lockSessions("session:"+record.SessionID, "account:"+record.AccountScopeID)
+	unlockSession := s.store.sessionMutations.lockSessions(record.SessionID, "account:"+record.AccountScopeID)
 	defer unlockSession()
 
 	previous, hadPrevious, err := s.GetTurnUsage(record.SessionID, record.RunID)
@@ -599,7 +600,7 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		return errors.New("media usage account_scope_id is required")
 	}
 
-	unlock := s.store.sessionMutations.lockSessions("session:"+rec.SessionID, "account:"+rec.AccountScopeID)
+	unlock := s.store.sessionMutations.lockSessions(rec.SessionID, "account:"+rec.AccountScopeID)
 	defer unlock()
 
 	// Validate session and account scope ownership UNDER LOCK

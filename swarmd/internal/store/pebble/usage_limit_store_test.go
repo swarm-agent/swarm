@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -88,5 +89,59 @@ func TestCalculateBaselineCost(t *testing.T) {
 	// 500k regular = 0.5 * 0.15 = 0.075; 500k cached = 0.5 * 0.0375 = 0.01875 -> 0.09375
 	if costWithCache < 0.09 || costWithCache > 0.10 {
 		t.Errorf("expected cached cost ~0.09375, got %f", costWithCache)
+	}
+}
+
+func TestCalculateCostWithStatusNoBaselineFallback(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-calc-status.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	catStore := NewModelCatalogStore(db)
+
+	// 1. Unpriced model in catalog: returns 0.0 and "unknown", never falls back to baseline table
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider: "google",
+		Model:    "gemini-unpriced-experiment",
+	})
+	if err != nil {
+		t.Fatalf("set catalog: %v", err)
+	}
+	cost, status := store.CalculateCostWithStatus("google", "gemini-unpriced-experiment", 1_000_000, 1_000_000, 0, 0)
+	if status != "unknown" || cost != 0.0 {
+		t.Fatalf("expected status unknown and cost 0.0 without fallback, got status=%s cost=%f", status, cost)
+	}
+
+	// 2. Priced model in catalog: returns exact snapshot cost and "known"
+	inp := 1.25
+	out := 5.0
+	pricingJSON, _ := json.Marshal(map[string]any{
+		"input_price_per_million_tokens":  inp,
+		"output_price_per_million_tokens": out,
+	})
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider: "google",
+		Model:    "gemini-priced-test",
+		Pricing:  pricingJSON,
+	})
+	if err != nil {
+		t.Fatalf("set catalog: %v", err)
+	}
+	cost, status = store.CalculateCostWithStatus("google", "gemini-priced-test", 1_000_000, 100_000, 0, 0)
+	if status != "known" {
+		t.Fatalf("expected status known, got %s", status)
+	}
+	expectedCost := 1.25 + 0.50 // 1.75
+	if cost < expectedCost-0.0001 || cost > expectedCost+0.0001 {
+		t.Fatalf("expected cost %f, got %f", expectedCost, cost)
+	}
+
+	// 3. Codex model: subscription status and 0.0 billed cost
+	cost, status = store.CalculateCostWithStatus("codex", "gpt-5.6-sol", 100_000, 10_000, 0, 0)
+	if status != "subscription" || cost != 0.0 {
+		t.Fatalf("expected codex subscription with cost 0.0, got status=%s cost=%f", status, cost)
 	}
 }

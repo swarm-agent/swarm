@@ -68,15 +68,26 @@ export function UsagePage() {
   const queryClient = useQueryClient()
   useEffect(() => {
     const unsubscribe = subscribeDesktopV3Cache((mutation) => {
-      const actionType = mutation?.action?.type
-      if (
-        !actionType ||
-        actionType.includes('reconnect') ||
-        actionType.includes('usage') ||
-        actionType.includes('event') ||
-        actionType.includes('session')
-      ) {
+      const action = mutation?.action
+      if (!action) return
+      if (action.type === 'reconnect.applySnapshot') {
         void queryClient.invalidateQueries({ queryKey: ['session-usage-dashboard'] })
+        return
+      }
+      if (action.type === 'realtime.applyEvent') {
+        const et = action.event?.eventType
+        if (et === 'run.usage.updated' || et === 'session.media_usage.recorded') {
+          void queryClient.invalidateQueries({ queryKey: ['session-usage-dashboard'] })
+        }
+        return
+      }
+      if (action.type === 'realtime.applyLivePatchBatch') {
+        const hasUsagePatch = action.patches.some(
+          (p) => p.path?.includes('usage') || p.path?.includes('estimated_cost_usd')
+        )
+        if (hasUsagePatch) {
+          void queryClient.invalidateQueries({ queryKey: ['session-usage-dashboard'] })
+        }
       }
     })
     return unsubscribe

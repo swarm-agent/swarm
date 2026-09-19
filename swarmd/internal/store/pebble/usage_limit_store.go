@@ -318,22 +318,6 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 				}
 			}
 		}
-		if !foundPrice {
-			if !isIteration && (strings.Contains(lowerModel, "veo") || (provider == "google" && !strings.Contains(lowerModel, "omni"))) {
-				costPerSecond := 0.07
-				unitPrice = float64(durationSeconds) * costPerSecond
-				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (Google Veo)", costPerSecond, unitPrice, durationSeconds)
-			} else if isIteration || strings.Contains(lowerModel, "omni") {
-				unitPrice = 0.05
-				foundPrice = true
-				summaryText = "$0.05 per conversational edit (Gemini Omni Flash)"
-			} else if provider == "openrouter" {
-				unitPrice = 0.30
-				foundPrice = true
-				summaryText = "$0.30 per generation (OpenRouter estimated)"
-			}
-		}
 
 	case "audio":
 		if durationSeconds <= 0 {
@@ -387,25 +371,6 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 				}
 			}
 		}
-		if !foundPrice {
-			if strings.Contains(lowerModel, "clip") {
-				unitPrice = 0.04
-				foundPrice = true
-				summaryText = "$0.04 per clip generation (Google Lyria Clip)"
-			} else if strings.Contains(lowerModel, "3.5") || strings.Contains(lowerModel, "song") || strings.Contains(lowerModel, "pro") {
-				unitPrice = 0.08
-				foundPrice = true
-				summaryText = "$0.08 per song generation (Google Lyria 3.5)"
-			} else if isIteration {
-				unitPrice = 0.04
-				foundPrice = true
-				summaryText = "$0.04 per audio iteration (Google Lyria)"
-			} else if provider == "google" {
-				unitPrice = 0.04
-				foundPrice = true
-				summaryText = "$0.04 per audio generation (Google Lyria)"
-			}
-		}
 
 	case "image":
 		if raw != nil {
@@ -430,13 +395,7 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 							billable, _ := lineMap["billable"].(string)
 							if billable == "image_output" {
 								if pUSD, ok := toFloat64(lineMap["price_usd"]); ok && pUSD >= 0 {
-									unit, _ := lineMap["unit"].(string)
-									if strings.Contains(strings.ToLower(unit), "token") {
-										// Token-based image generation output: standard 1,290 tokens per image
-										unitPrice = (1290.0 / 1_000_000.0) * pUSD
-									} else {
-										unitPrice = pUSD
-									}
+									unitPrice = pUSD
 									foundPrice = true
 									summaryText = fmt.Sprintf("$%.4f per image (catalog)", unitPrice)
 									break
@@ -445,13 +404,6 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 						}
 					}
 				}
-			}
-		}
-		if !foundPrice {
-			if provider == "google" && strings.Contains(lowerModel, "imagen") {
-				unitPrice = 0.03
-				foundPrice = true
-				summaryText = "$0.03 per image (Google Imagen)"
 			}
 		}
 	}

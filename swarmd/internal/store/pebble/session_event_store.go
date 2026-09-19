@@ -666,9 +666,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return s.applyV3PlanAcceptanceMutation(input)
 	}
 
-	lockIDs := []string{"session:" + input.SessionID}
+	lockIDs := []string{input.SessionID}
 	if input.WorktreeRecovery != nil {
-		lockIDs = append(lockIDs, "session:"+input.WorktreeRecovery.OwnerSessionID)
+		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
 	}
 	if input.AccountScopeID != "" {
 		lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
@@ -2501,6 +2501,10 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 			artifactV3 := *payload.ArtifactV3
 			result.ArtifactV3 = &artifactV3
 		}
+		if payload.MediaUsage != nil {
+			media := *payload.MediaUsage
+			result.MediaUsage = &media
+		}
 	}
 	result.Projection = V3SessionProjection{
 		SessionID:                  record.Result.SessionID,
@@ -3223,6 +3227,11 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 			return err
 		}
 	}
+	if input.MediaUsage != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "media usage", input.MediaUsage.SessionID, input.MediaUsage.UserID, input.MediaUsage.AccountScopeID); err != nil {
+			return err
+		}
+	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
 	}
@@ -3358,6 +3367,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.diagnostic"
 	case V3SessionMutationRecordUsage:
 		return "run.usage.updated"
+	case V3SessionMutationRecordMediaUsage:
+		return "session.media_usage.recorded"
 	case V3SessionMutationUpdateMode:
 		return "session.mode.updated"
 	case V3SessionMutationUpdatePreference:
