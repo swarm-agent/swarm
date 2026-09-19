@@ -1,7 +1,9 @@
 package pebblestore
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -475,5 +477,75 @@ func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
 	}
 	if estCodex.CostUSD != 0.0 {
 		t.Fatalf("expected 0 cost for codex subscription, got %f", estCodex.CostUSD)
+	}
+}
+
+// TestConcurrentDifferentSessionsDailyAccumulator proves that concurrent writes from different
+// sessions belonging to the same account serialize correctly on the shared account lock without
+// losing spend or corrupted accumulators.
+func TestConcurrentDifferentSessionsDailyAccumulator(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-concurrent.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	acctID := "acct-concurrent"
+	today := time.Now().UTC().Format("2006-01-02")
+	const sessionCount = 20
+
+	for i := 0; i < sessionCount; i++ {
+		sessID := fmt.Sprintf("sess-conc-%d", i)
+		if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: sessID}); err != nil {
+			t.Fatalf("create session %d: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, sessionCount)
+
+	for i := 0; i < sessionCount; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sessID := fmt.Sprintf("sess-conc-%d", i)
+			rec := SessionMediaUsageRecord{
+				ID:             fmt.Sprintf("media-%d", i),
+				SessionID:      sessID,
+				AccountScopeID: acctID,
+				MediaType:      "image/png",
+				Kind:           "image",
+				Provider:       "google",
+				Model:          "imagen-3.0",
+				CostUSD:        0.05,
+				CreatedAt:      time.Now().UnixMilli(),
+			}
+			if err := store.PutMediaUsage(rec); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent write error: %v", err)
+		}
+	}
+
+	acc, ok, err := store.GetDailyUsageAccumulator(acctID, today)
+	if err != nil || !ok {
+		t.Fatalf("get daily accumulator: ok=%v err=%v", ok, err)
+	}
+	expectedCost := float64(sessionCount) * 0.05
+	if acc.MediaCalls != sessionCount {
+		t.Fatalf("lost media calls: expected %d, got %d", sessionCount, acc.MediaCalls)
+	}
+	if acc.TotalCostUSD < expectedCost-0.0001 || acc.TotalCostUSD > expectedCost+0.0001 {
+		t.Fatalf("lost spend in concurrent race: expected %f, got %f", expectedCost, acc.TotalCostUSD)
 	}
 }

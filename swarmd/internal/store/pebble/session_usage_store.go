@@ -124,6 +124,107 @@ func clampUsageTokenCount(value int64) int64 {
 	return value
 }
 
+func (s *SessionStore) updateAccountUsageAggregatesInBatch(batch *pebble.Batch, accountScopeID, provider, model string, costDelta float64, codexNominalDelta float64, tokensDelta, inputTokens, outputTokens, cachedTokens, thinkingTokens int64, isNewTurn bool, now int64) error {
+	if accountScopeID == "" || provider == "" {
+		return nil
+	}
+	// 1. Provider Aggregate
+	provAgg, _, err := s.GetAccountProviderUsage(accountScopeID, provider)
+	if err != nil {
+		return err
+	}
+	if provAgg.AccountScopeID == "" {
+		provAgg.AccountScopeID = accountScopeID
+		provAgg.Provider = provider
+		provAgg.DisplayName = formatProviderDisplayName(provider)
+		provAgg.IsSubscription = strings.EqualFold(provider, "codex")
+	}
+	provAgg.TotalTokens += tokensDelta
+	provAgg.InputTokens += inputTokens
+	provAgg.OutputTokens += outputTokens
+	provAgg.CachedTokens += cachedTokens
+	provAgg.ThinkingTokens += thinkingTokens
+	provAgg.CostUSD += costDelta
+	provAgg.CodexNominalCostUSD += codexNominalDelta
+	if isNewTurn {
+		provAgg.Turns++
+	}
+	if model != "" && !containsUsageString(provAgg.Models, model) {
+		provAgg.Models = append(provAgg.Models, model)
+	}
+	provAgg.UpdatedAt = now
+	payload, err := json.Marshal(provAgg)
+	if err != nil {
+		return err
+	}
+	if err := batch.Set([]byte(KeyAccountProviderUsage(accountScopeID, provider)), payload, nil); err != nil {
+		return err
+	}
+
+	// 2. Model Aggregate
+	if model != "" {
+		modelAgg, _, err := s.GetAccountModelUsage(accountScopeID, provider, model)
+		if err != nil {
+			return err
+		}
+		if modelAgg.AccountScopeID == "" {
+			modelAgg.AccountScopeID = accountScopeID
+			modelAgg.Provider = provider
+			modelAgg.Model = model
+			modelAgg.DisplayName = model
+		}
+		modelAgg.TotalTokens += tokensDelta
+		modelAgg.InputTokens += inputTokens
+		modelAgg.OutputTokens += outputTokens
+		modelAgg.CachedTokens += cachedTokens
+		modelAgg.ThinkingTokens += thinkingTokens
+		modelAgg.CostUSD += costDelta
+		modelAgg.CodexNominalCostUSD += codexNominalDelta
+		if isNewTurn {
+			modelAgg.Turns++
+		}
+		modelAgg.UpdatedAt = now
+		mPayload, err := json.Marshal(modelAgg)
+		if err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(KeyAccountModelUsage(accountScopeID, provider, model)), mPayload, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func containsUsageString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func formatProviderDisplayName(provider string) string {
+	switch strings.ToLower(provider) {
+	case "google":
+		return "Google Gemini"
+	case "codex":
+		return "Codex"
+	case "anthropic":
+		return "Anthropic"
+	case "openai":
+		return "OpenAI"
+	case "fireworks":
+		return "Fireworks AI"
+	case "copilot":
+		return "GitHub Copilot"
+	case "openrouter":
+		return "OpenRouter"
+	default:
+		return strings.Title(provider)
+	}
+}
+
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
 	if record.SessionID == "" {
@@ -132,11 +233,14 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if record.RunID == "" {
 		return errors.New("turn usage run_id is required")
 	}
+	if record.AccountScopeID == "" {
+		return errors.New("turn usage account_scope_id is required")
+	}
 	if record.EstimatedCostUSD <= 0 && !strings.EqualFold(record.Provider, "codex") {
 		record.EstimatedCostUSD = s.CalculateCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
 	}
 
-	unlockSession := s.store.sessionMutations.lockSessions(record.SessionID)
+	unlockSession := s.store.sessionMutations.lockSessions("session:"+record.SessionID, "account:"+record.AccountScopeID)
 	defer unlockSession()
 
 	previous, hadPrevious, err := s.GetTurnUsage(record.SessionID, record.RunID)
@@ -179,10 +283,8 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if err := batch.Set([]byte(KeySessionTurnUsage(record.SessionID, record.RunID)), payload, nil); err != nil {
 		return err
 	}
-	if record.AccountScopeID != "" {
-		if err := batch.Set([]byte(KeySessionTurnUsageByAccount(record.AccountScopeID, record.SessionID, record.RunID)), []byte(record.RunID), nil); err != nil {
-			return err
-		}
+	if err := batch.Set([]byte(KeySessionTurnUsageByAccount(record.AccountScopeID, record.SessionID, record.RunID)), []byte(record.RunID), nil); err != nil {
+		return err
 	}
 
 	ts := record.CreatedAt
@@ -224,6 +326,10 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			return fmt.Errorf("marshal daily accumulator: %w", err)
 		}
 		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+			return err
+		}
+
+		if err := s.updateAccountUsageAggregatesInBatch(batch, record.AccountScopeID, record.Provider, record.Model, deltaCost, 0.0, deltaTokens, clampUsageTokenCount(record.InputTokens), clampUsageTokenCount(record.OutputTokens), clampUsageTokenCount(record.CacheReadTokens), clampUsageTokenCount(record.ThinkingTokens), !hadPrevious, ts); err != nil {
 			return err
 		}
 	}
@@ -490,10 +596,13 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 	}
 	rec.AccountScopeID = strings.TrimSpace(rec.AccountScopeID)
 	if rec.AccountScopeID == "" {
-		rec.AccountScopeID = "default"
+		return errors.New("media usage account_scope_id is required")
 	}
 
-	// Validate session and account scope ownership
+	unlock := s.store.sessionMutations.lockSessions("session:"+rec.SessionID, "account:"+rec.AccountScopeID)
+	defer unlock()
+
+	// Validate session and account scope ownership UNDER LOCK
 	session, ok, err := s.GetSession(rec.SessionID)
 	if err != nil {
 		return fmt.Errorf("verify session %q: %w", rec.SessionID, err)
@@ -501,13 +610,9 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 	if !ok {
 		return fmt.Errorf("session %q not found", rec.SessionID)
 	}
-	if strings.TrimSpace(session.AccountScopeID) != "" && rec.AccountScopeID != strings.TrimSpace(session.AccountScopeID) {
+	if strings.TrimSpace(session.AccountScopeID) == "" || rec.AccountScopeID != strings.TrimSpace(session.AccountScopeID) {
 		return fmt.Errorf("account scope mismatch: record account %q does not match session account %q", rec.AccountScopeID, session.AccountScopeID)
 	}
-
-	// Serialized session locking ensures atomicity
-	unlock := s.store.sessionMutations.lockSessions(rec.SessionID)
-	defer unlock()
 
 	key := KeySessionMediaUsage(rec.AccountScopeID, rec.ID)
 	// Check if already persisted to ensure idempotent retry does not double-count
@@ -520,8 +625,9 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		return nil
 	}
 
+	now := time.Now().UnixMilli()
 	if rec.CreatedAt <= 0 {
-		rec.CreatedAt = time.Now().UnixMilli()
+		rec.CreatedAt = now
 	}
 
 	payload, err := json.Marshal(rec)
@@ -552,7 +658,7 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		acc.AudioCount++
 		acc.AudioCostUSD += rec.CostUSD
 	}
-	acc.UpdatedAt = time.Now().UnixMilli()
+	acc.UpdatedAt = now
 	accPayload, err := json.Marshal(acc)
 	if err != nil {
 		return fmt.Errorf("marshal daily accumulator: %w", err)
@@ -570,36 +676,120 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		}
 	}
 	summary.EstimatedCostUSD += rec.CostUSD
-	summary.UpdatedAt = time.Now().UnixMilli()
+	summary.UpdatedAt = now
 	summaryPayload, err := json.Marshal(summary)
 	if err != nil {
 		return fmt.Errorf("marshal usage summary: %w", err)
 	}
 
-	// Single atomic Pebble batch for record, session index, daily accumulator, and usage summary
+	// Allocate seq and outbox
+	seq, err := s.nextV3SessionSeq(rec.SessionID)
+	if err != nil {
+		return fmt.Errorf("allocate session sequence: %w", err)
+	}
+	reservedOutbox, err := s.store.sessionMutations.reserveOutbox(s.store, 1)
+	if err != nil {
+		return fmt.Errorf("reserve outbox: %w", err)
+	}
+	endpointSeq := reservedOutbox.start
+
+	event := V3SessionEvent{
+		ID:        fmt.Sprintf("event_media_%s", rec.ID),
+		SessionID: rec.SessionID,
+		Seq:       seq,
+		EventType: "session.media_usage.recorded",
+		Payload:   payload,
+		TsUnixMs:  now,
+	}
+	eventPayload, err := json.Marshal(event)
+	if err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return fmt.Errorf("marshal event: %w", err)
+	}
+
+	membership := newV3RealtimeOutboxMembershipFromSession(session, now)
+	realtimeOutbox := V3RealtimeOutboxRecord{
+		EndpointSeq:    endpointSeq,
+		EndpointCursor: V3RealtimeOutboxCursor(endpointSeq),
+		SessionID:      rec.SessionID,
+		UserID:         rec.UserID,
+		AccountScopeID: rec.AccountScopeID,
+		Membership:     membership,
+		Event:          event,
+		CreatedAt:      now,
+	}
+	outboxPayload, err := json.Marshal(realtimeOutbox)
+	if err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return fmt.Errorf("marshal outbox: %w", err)
+	}
+	outboxRefPayload, err := marshalV3RealtimeOutboxReference(realtimeOutbox)
+	if err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return fmt.Errorf("marshal outbox ref: %w", err)
+	}
+
 	batch := s.store.NewBatch()
 	defer batch.Close()
 
 	if err := batch.Set([]byte(key), payload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
 		return err
 	}
 	sessionMediaKey := KeySessionMediaUsageBySession(rec.SessionID, rec.ID)
 	if err := batch.Set([]byte(sessionMediaKey), payload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
 		return err
 	}
 	if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
 		return err
 	}
 	if err := batch.Set([]byte(KeySessionUsageSummary(summary.SessionID)), summaryPayload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
 		return err
 	}
 	if summary.AccountScopeID != "" {
 		if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(summary.AccountScopeID, summary.SessionID)), summaryPayload, nil); err != nil {
+			s.store.sessionMutations.abandonOutbox(reservedOutbox)
 			return err
 		}
 	}
+	if err := batch.Set([]byte(KeyV3SessionSequence(rec.SessionID)), uint64ToBytes(seq), nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return err
+	}
+	if err := batch.Set([]byte(KeyV3SessionEvent(rec.SessionID, seq)), eventPayload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), outboxPayload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(rec.SessionID, endpointSeq)), outboxRefPayload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return err
+	}
+	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(rec.AccountScopeID, rec.UserID, endpointSeq)), outboxRefPayload, nil); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return err
+	}
 
-	return batch.Commit(pebble.Sync)
+	if err := s.updateAccountUsageAggregatesInBatch(batch, rec.AccountScopeID, rec.Provider, rec.Model, rec.CostUSD, 0.0, 0, 0, 0, 0, 0, false, now); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return err
+	}
+
+	if err := batch.Commit(pebble.Sync); err != nil {
+		s.store.sessionMutations.abandonOutbox(reservedOutbox)
+		return fmt.Errorf("commit media usage batch: %w", err)
+	}
+
+	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
+		return fmt.Errorf("commit outbox: %w", err)
+	}
+	return nil
 }
 
 func (s *SessionStore) ListMediaUsageBySession(sessionID string, limit int) ([]SessionMediaUsageRecord, error) {

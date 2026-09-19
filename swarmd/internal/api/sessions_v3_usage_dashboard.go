@@ -40,6 +40,7 @@ type SessionUsageDashboardSummary struct {
 	ArchivedSessions    int     `json:"archived_sessions"`
 	TotalMediaCalls     int     `json:"total_media_calls"`
 	MediaCostUSD        float64 `json:"media_cost_usd"`
+	HasUnknownPricing   bool    `json:"has_unknown_pricing,omitempty"`
 }
 
 type SessionUsageDailyItem struct {
@@ -104,16 +105,18 @@ type SessionUsageMediaSummary struct {
 	RecentItems  []SessionUsageMediaItem `json:"recent_items"`
 }
 
-type SessionUsageMediaItem struct {
-	ID        string  `json:"id"`
-	SessionID string  `json:"session_id"`
-	MediaType string  `json:"media_type"`
-	Kind      string  `json:"kind"`
-	Filename  string  `json:"filename"`
-	Label     string  `json:"label"`
-	Size      int64   `json:"size"`
-	CostUSD   float64 `json:"cost_usd"`
-	CreatedAt int64   `json:"created_at"`
+	type SessionUsageMediaItem struct {
+	ID             string  `json:"id"`
+	SessionID      string  `json:"session_id"`
+	MediaType      string  `json:"media_type"`
+	Kind           string  `json:"kind"`
+	Filename       string  `json:"filename"`
+	Label          string  `json:"label"`
+	Size           int64   `json:"size"`
+	CostUSD        float64 `json:"cost_usd"`
+	PriceStatus    string  `json:"price_status,omitempty"`
+	PricingSummary string  `json:"pricing_summary,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
 }
 
 type SessionUsageSessionItem struct {
@@ -507,17 +510,23 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 			label = fmt.Sprintf("%s generation", m.Kind)
 		}
 
+		if strings.EqualFold(m.PriceStatus, "unknown") {
+			summary.HasUnknownPricing = true
+		}
+
 		if len(mediaSummary.RecentItems) < 30 {
 			mediaSummary.RecentItems = append(mediaSummary.RecentItems, SessionUsageMediaItem{
-				ID:        m.ID,
-				SessionID: m.SessionID,
-				MediaType: m.MediaType,
-				Kind:      m.Kind,
-				Filename:  m.Filename,
-				Label:     label,
-				Size:      m.Size,
-				CostUSD:   cost,
-				CreatedAt: ts,
+				ID:             m.ID,
+				SessionID:      m.SessionID,
+				MediaType:      m.MediaType,
+				Kind:           m.Kind,
+				Filename:       m.Filename,
+				Label:          label,
+				Size:           m.Size,
+				CostUSD:        cost,
+				PriceStatus:    m.PriceStatus,
+				PricingSummary: m.PricingSummary,
+				CreatedAt:      ts,
 			})
 		}
 
@@ -541,7 +550,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 
 	summary.TotalMediaCalls = mediaSummary.TotalCount
 	summary.MediaCostUSD = mediaSummary.TotalCostUSD
-	summary.TotalCostUSD += mediaSummary.TotalCostUSD
 
 	// 5. Convert maps to sorted slices
 	dailyList := make([]SessionUsageDailyItem, 0, len(dailyMap))

@@ -26,6 +26,7 @@ export interface SessionUsageDashboardSummary {
   archived_sessions?: number
   total_media_calls: number
   media_cost_usd: number
+  has_unknown_pricing?: boolean
 }
 
 export interface SessionUsageDailyItem {

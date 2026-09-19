@@ -681,10 +681,10 @@ func TestAnalyticsReadsPersistedAccountingReadOnly(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 
-	// Verify exact persisted cost was read without repricing (turn cost 0.04125 + media cost 0.04 = 0.08125)
-	expectedTotalCost := 0.04125 + 0.04
-	if resp.Summary.TotalCostUSD < expectedTotalCost-0.00001 || resp.Summary.TotalCostUSD > expectedTotalCost+0.00001 {
-		t.Fatalf("expected total cost %f, got %f", expectedTotalCost, resp.Summary.TotalCostUSD)
+	// Verify exact persisted cost was read without repricing (turn cost 0.04125, media cost 0.04)
+	expectedTurnCost := 0.04125
+	if resp.Summary.TotalCostUSD < expectedTurnCost-0.00001 || resp.Summary.TotalCostUSD > expectedTurnCost+0.00001 {
+		t.Fatalf("expected turn cost %f, got %f", expectedTurnCost, resp.Summary.TotalCostUSD)
 	}
 	if resp.Summary.MediaCostUSD != 0.04 {
 		t.Fatalf("expected media cost 0.04, got %f", resp.Summary.MediaCostUSD)

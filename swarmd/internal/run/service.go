@@ -2264,6 +2264,44 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				emit(providerToolConstructionStreamEvent(step, event))
 			}
 		})
+		stepsCompleted = step
+		if hasConcreteUsageSnapshot(response.Usage) {
+			stepCost := 0.0
+			if response.Usage.EstimatedCostUSD > 0 {
+				stepCost = response.Usage.EstimatedCostUSD
+			} else if strings.EqualFold(providerID, "codex") {
+				stepCost = 0.0
+			} else if s.sessions != nil && s.sessions.Store() != nil {
+				stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+			}
+			cumulativeTurnCost += stepCost
+			if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {
+				cumulativeBilledTokens = response.Usage.TotalTokens
+			} else {
+				cumulativeBilledTokens += response.Usage.TotalTokens
+			}
+			accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
+			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
+			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
+				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens)
+				if usageErr == nil {
+					turnUsageCopy := turnUsage
+					usageSummaryCopy := usageSummary
+					turnUsageRecord = &turnUsageCopy
+					usageSummaryState = &usageSummaryCopy
+					if usageEvent != nil {
+						events = append(events, *usageEvent)
+					}
+					emit(StreamEvent{
+						Type:         StreamEventUsageUpdated,
+						Step:         step,
+						TurnUsage:    turnUsageRecord,
+						UsageSummary: usageSummaryState,
+					})
+				}
+			}
+		}
+
 		if stopErr := ctx.Err(); stopErr != nil {
 			if runErr != nil {
 				return RunResult{}, runErr
@@ -2301,48 +2339,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if stepReasoningErr != nil {
 			return RunResult{}, stepReasoningErr
 		}
-		stepsCompleted = step
-		stepCost := 0.0
-		if response.Usage.EstimatedCostUSD > 0 {
-			stepCost = response.Usage.EstimatedCostUSD
-		} else if strings.EqualFold(providerID, "codex") {
-			stepCost = 0.0
-		} else if s.sessions != nil && s.sessions.Store() != nil {
-			stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && usageSummaryState != nil {
+			planContextGuard.observe(*usageSummaryState)
 		}
-		cumulativeTurnCost += stepCost
-		if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {
-			cumulativeBilledTokens = response.Usage.TotalTokens
-		} else {
-			cumulativeBilledTokens += response.Usage.TotalTokens
-		}
-		accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
-		accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
-		if shouldPersistProviderUsage(providerID, accumulatedUsage) {
-			turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens)
-			if usageErr != nil {
-				return RunResult{}, usageErr
-			}
-			turnUsageCopy := turnUsage
-			usageSummaryCopy := usageSummary
-			turnUsageRecord = &turnUsageCopy
-			usageSummaryState = &usageSummaryCopy
-			if usageEvent != nil {
-				events = append(events, *usageEvent)
-			}
-			emit(StreamEvent{
-				Type:         StreamEventUsageUpdated,
-				Step:         step,
-				TurnUsage:    turnUsageRecord,
-				UsageSummary: usageSummaryState,
-			})
-			if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) {
-				planContextGuard.observe(usageSummaryCopy)
-			}
-			if s.sessions != nil {
-				if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
-					return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
-				}
+		if s.sessions != nil {
+			if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
+				return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
 			}
 		}
 		if responseReasoningSummary := strings.TrimSpace(response.ReasoningSummary); responseReasoningSummary != "" {

@@ -100,7 +100,7 @@ func (s *Service) RunManualCompaction(ctx context.Context, sessionID string, inp
 		ctx,
 		sessionID,
 		prompt,
-		"",
+		runID,
 		resolvedPreference.Preference,
 		resolvedPreference.ContextWindow,
 		resolvedPreference.MaxOutputTokens,

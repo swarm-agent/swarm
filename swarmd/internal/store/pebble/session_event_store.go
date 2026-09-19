@@ -19,6 +19,7 @@ const (
 	V3SessionMutationRecordRunIntent          = "run_intent.record"
 	V3SessionMutationRecordDiagnostic         = "diagnostic.record"
 	V3SessionMutationRecordUsage              = "usage.record"
+	V3SessionMutationRecordMediaUsage         = "media_usage.record"
 	V3SessionMutationUpdateMode               = "session.mode.update"
 	V3SessionMutationUpdatePreference         = "session.preference.update"
 	V3SessionMutationUpdateMetadata           = "session.metadata.update"
@@ -115,6 +116,7 @@ type V3SessionMutationInput struct {
 	MediaStagingBindings         []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
 	EpochID                      string                        `json:"epoch_id,omitempty"`
 	TurnUsage                    *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	MediaUsage                   *SessionMediaUsageRecord      `json:"media_usage,omitempty"`
 	ExpectedLastEventSeq         *uint64                       `json:"expected_last_event_seq,omitempty"`
 	NowUnixMs                    int64                         `json:"now_unix_ms,omitempty"`
 }
@@ -137,6 +139,7 @@ type V3SessionMutationResult struct {
 	Lifecycle        *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
 	RunIntent        *V3SessionRunIntent        `json:"run_intent,omitempty"`
 	TurnUsage        *SessionTurnUsageSnapshot  `json:"turn_usage,omitempty"`
+	MediaUsage       *SessionMediaUsageRecord   `json:"media_usage,omitempty"`
 	UsageSummary     *SessionUsageSummary       `json:"usage_summary,omitempty"`
 	Projection       V3SessionProjection        `json:"projection"`
 	Idempotency      V3SessionIdempotencyRecord `json:"idempotency"`
@@ -477,6 +480,7 @@ type v3SessionEventReplayPayload struct {
 	Lifecycle          *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
 	RunIntent          *V3SessionRunIntent           `json:"run_intent,omitempty"`
 	TurnUsage          *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	MediaUsage         *SessionMediaUsageRecord      `json:"media_usage,omitempty"`
 	UsageSummary       *SessionUsageSummary          `json:"usage_summary,omitempty"`
 	CheckpointBoundary *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
 	Tombstone          *V3SessionTombstone           `json:"tombstone,omitempty"`
@@ -662,9 +666,12 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 		return s.applyV3PlanAcceptanceMutation(input)
 	}
 
-	lockIDs := []string{input.SessionID}
+	lockIDs := []string{"session:" + input.SessionID}
 	if input.WorktreeRecovery != nil {
-		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
+		lockIDs = append(lockIDs, "session:"+input.WorktreeRecovery.OwnerSessionID)
+	}
+	if input.AccountScopeID != "" {
+		lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
 	}
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
 	defer unlockSession()
@@ -1293,7 +1300,94 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
+			if err := s.updateAccountUsageAggregatesInBatch(batch, turnUsage.AccountScopeID, turnUsage.Provider, turnUsage.Model, costDelta, 0.0, tokensDelta, clampUsageTokenCount(turnUsage.InputTokens), clampUsageTokenCount(turnUsage.OutputTokens), clampUsageTokenCount(turnUsage.CacheReadTokens), clampUsageTokenCount(turnUsage.ThinkingTokens), !hadPreviousTurnUsage, now); err != nil {
+				return V3SessionMutationResult{}, err
+			}
 		}
+	}
+	if input.MediaUsage != nil {
+		media := *input.MediaUsage
+		media.ID = strings.TrimSpace(media.ID)
+		media.SessionID = strings.TrimSpace(input.SessionID)
+		media.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
+		if media.CreatedAt <= 0 {
+			media.CreatedAt = now
+		}
+		mediaKey := KeySessionMediaUsage(media.AccountScopeID, media.ID)
+		mediaPayload, err := json.Marshal(media)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 media usage: %w", err)
+		}
+		if err := batch.Set([]byte(mediaKey), mediaPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		sessionMediaKey := KeySessionMediaUsageBySession(media.SessionID, media.ID)
+		if err := batch.Set([]byte(sessionMediaKey), mediaPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+
+		dateStr := time.UnixMilli(media.CreatedAt).UTC().Format("2006-01-02")
+		acc, _, err := s.GetDailyUsageAccumulator(media.AccountScopeID, dateStr)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("get daily usage accumulator: %w", err)
+		}
+		if acc.AccountScopeID == "" {
+			acc.AccountScopeID = media.AccountScopeID
+			acc.Date = dateStr
+		}
+		acc.TotalCostUSD += media.CostUSD
+		acc.MediaCostUSD += media.CostUSD
+		acc.MediaCalls++
+		switch strings.ToLower(media.Kind) {
+		case "image":
+			acc.ImageCount++
+			acc.ImageCostUSD += media.CostUSD
+		case "video":
+			acc.VideoCount++
+			acc.VideoCostUSD += media.CostUSD
+		case "audio":
+			acc.AudioCount++
+			acc.AudioCostUSD += media.CostUSD
+		}
+		acc.UpdatedAt = now
+		accPayload, err := json.Marshal(acc)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal daily accumulator: %w", err)
+		}
+		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+
+		summary, found, err := s.GetUsageSummary(media.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("get usage summary: %w", err)
+		}
+		if !found {
+			summary = SessionUsageSummary{
+				SessionID:      media.SessionID,
+				AccountScopeID: media.AccountScopeID,
+				UserID:         input.UserID,
+			}
+		}
+		summary.EstimatedCostUSD += media.CostUSD
+		summary.UpdatedAt = now
+		summaryPayload, err := json.Marshal(summary)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal usage summary: %w", err)
+		}
+		if err := batch.Set([]byte(KeySessionUsageSummary(summary.SessionID)), summaryPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if summary.AccountScopeID != "" {
+			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(summary.AccountScopeID, summary.SessionID)), summaryPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+
+		if err := s.updateAccountUsageAggregatesInBatch(batch, media.AccountScopeID, media.Provider, media.Model, media.CostUSD, 0.0, 0, 0, 0, 0, 0, false, now); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		storedResult.MediaUsage = &media
 	}
 	if runIntentProvided {
 		runPayload, err := json.Marshal(runIntent)
@@ -3408,6 +3502,10 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if artifactV3.Repository != nil || artifactV3.Revision != nil || artifactV3.Turn != nil || artifactV3.Candidate != nil {
 		projection := artifactV3
 		payload.ArtifactV3 = &projection
+	}
+	if input.MediaUsage != nil {
+		copyMedia := *input.MediaUsage
+		payload.MediaUsage = &copyMedia
 	}
 	if transcription.AttachmentRef != "" || transcription.JobRef != "" {
 		projection := transcription

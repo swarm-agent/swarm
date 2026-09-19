@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from '@tanstack/react-router'
 import {
   Activity,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
+import { subscribeDesktopV3Cache } from '../../state/desktop-v3-cache-store'
 import { fetchSessionUsageDashboard } from '../services/usage-api'
 import { UsageLimitsCard } from '../components/usage-limits-card'
 import { UsageChartTokens } from '../components/usage-chart-tokens'
@@ -63,6 +64,23 @@ export function UsagePage() {
       ),
     staleTime: 30_000,
   })
+
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    const unsubscribe = subscribeDesktopV3Cache((mutation) => {
+      const actionType = mutation?.action?.type
+      if (
+        !actionType ||
+        actionType.includes('reconnect') ||
+        actionType.includes('usage') ||
+        actionType.includes('event') ||
+        actionType.includes('session')
+      ) {
+        void queryClient.invalidateQueries({ queryKey: ['session-usage-dashboard'] })
+      }
+    })
+    return unsubscribe
+  }, [queryClient])
 
   const handleBack = () => {
     if (workspaceSlug) {
@@ -208,10 +226,15 @@ export function UsagePage() {
                 <span className="text-[11px] font-medium text-[var(--app-text-muted)]">
                   Est. Billed Cost
                 </span>
-                <div className="flex items-baseline gap-1.5">
+                <div className="flex items-baseline gap-1.5 flex-wrap">
                   <span className="text-2xl font-bold text-emerald-600 dark:text-emerald-400 font-mono">
                     ${billedCost.toFixed(2)}
                   </span>
+                  {summary?.has_unknown_pricing && (
+                    <span className="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                      + unpriced models
+                    </span>
+                  )}
                 </div>
                 <div className="text-[10px] text-[var(--app-text-subtle)] truncate">
                   Tokens: ${summary?.total_cost_usd.toFixed(2)} · Media: ${summary?.media_cost_usd.toFixed(2)}

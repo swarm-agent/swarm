@@ -114,12 +114,19 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 	return cost
 }
 
-// CalculateCost computes estimated cost in USD based on stored catalog pricing first, falling back to baseline pricing.
+// CalculateCost computes estimated cost in USD based on stored catalog pricing.
+// If pricing is absent or unpriced, it returns 0.0 without guessing fallback rates.
 func (s *SessionStore) CalculateCost(provider, model string, inputTokens, outputTokens, cacheReadTokens, thinkingTokens int64) float64 {
+	cost, _ := s.CalculateCostWithStatus(provider, model, inputTokens, outputTokens, cacheReadTokens, thinkingTokens)
+	return cost
+}
+
+// CalculateCostWithStatus evaluates cost and reports whether the pricing is known, subscription, free, or unknown.
+func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputTokens, outputTokens, cacheReadTokens, thinkingTokens int64) (float64, string) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.ToLower(strings.TrimSpace(model))
 	if provider == "codex" {
-		return 0.0
+		return 0.0, "subscription"
 	}
 	if s != nil && s.store != nil {
 		catalogStore := NewModelCatalogStore(s.store)
@@ -132,7 +139,7 @@ func (s *SessionStore) CalculateCost(provider, model string, inputTokens, output
 			}
 			if err := json.Unmarshal(rec.Pricing, &p); err == nil {
 				if p.IsFree != nil && *p.IsFree {
-					return 0.0
+					return 0.0, "free"
 				}
 				inp := 0.0
 				if p.InputPricePerMillion != nil {
@@ -161,12 +168,12 @@ func (s *SessionStore) CalculateCost(provider, model string, inputTokens, output
 						cost += (float64(cacheReadTokens) / 1_000_000.0) * inp
 					}
 					cost += (float64(outputTokens + thinkingTokens) / 1_000_000.0) * outVal
-					return cost
+					return cost, "known"
 				}
 			}
 		}
 	}
-	return CalculateBaselineCost(provider, model, inputTokens, outputTokens, cacheReadTokens, thinkingTokens)
+	return 0.0, "unknown"
 }
 
 // MediaCostEstimate captures resolved media pricing without invented fallback rates.
@@ -205,6 +212,7 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.TrimSpace(model)
+	lowerModel := strings.ToLower(model)
 	kind = strings.ToLower(strings.TrimSpace(kind))
 
 	if provider == "codex" {
@@ -233,103 +241,217 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 		}
 	}
 
-	if !found {
-		return MediaCostEstimate{
-			CostUSD:        0.0,
-			PriceStatus:    "unknown",
-			PricingSummary: fmt.Sprintf("unknown pricing (model %q absent from catalog snapshot)", model),
-		}
-	}
-
 	snapID := rec.SourceSnapshotID
 	snapVer := rec.SourceSnapshotVersion
 
-	if len(rec.Pricing) == 0 {
-		return MediaCostEstimate{
-			CostUSD:         0.0,
-			PriceStatus:     "unknown",
-			PricingSummary:  fmt.Sprintf("unknown pricing (model %q unpriced in snapshot %s)", model, snapID),
-			SnapshotID:      snapID,
-			SnapshotVersion: snapVer,
-		}
-	}
-
 	var raw map[string]any
-	if err := json.Unmarshal(rec.Pricing, &raw); err != nil {
-		return MediaCostEstimate{
-			CostUSD:         0.0,
-			PriceStatus:     "unknown",
-			PricingSummary:  fmt.Sprintf("unknown pricing (invalid pricing in snapshot %s)", snapID),
-			SnapshotID:      snapID,
-			SnapshotVersion: snapVer,
-		}
+	if len(rec.Pricing) > 0 {
+		_ = json.Unmarshal(rec.Pricing, &raw)
 	}
 
-	if isFree, ok := raw["is_free"].(bool); ok && isFree {
-		return MediaCostEstimate{
-			CostUSD:         0.0,
-			PriceStatus:     "free",
-			PricingSummary:  fmt.Sprintf("Free (snapshot %s)", snapID),
-			SnapshotID:      snapID,
-			SnapshotVersion: snapVer,
+	if raw != nil {
+		if isFree, ok := raw["is_free"].(bool); ok && isFree {
+			return MediaCostEstimate{
+				CostUSD:         0.0,
+				PriceStatus:     "free",
+				PricingSummary:  fmt.Sprintf("Free (snapshot %s)", snapID),
+				SnapshotID:      snapID,
+				SnapshotVersion: snapVer,
+			}
 		}
 	}
 
 	unitPrice := 0.0
 	foundPrice := false
+	summaryText := ""
 
 	switch kind {
-	case "image":
-		for _, key := range []string{"per_image", "output_image", "image", "price_per_image"} {
-			if val, ok := raw[key]; ok {
-				if num, ok := toFloat64(val); ok && num >= 0 {
-					unitPrice = num
-					foundPrice = true
-					break
-				}
-			}
-		}
 	case "video":
-		for _, key := range []string{"video_output", "per_video", "video", "output_video", "prompt"} {
-			if val, ok := raw[key]; ok {
-				if num, ok := toFloat64(val); ok && num >= 0 {
-					unitPrice = num
-					foundPrice = true
-					break
-				}
+		if durationSeconds <= 0 {
+			durationSeconds = 8
+		}
+		if raw != nil {
+			if vo, ok := toFloat64(raw["video_output"]); ok && vo > 0 {
+				unitPrice = vo
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", vo)
+			} else if promptCost, ok := toFloat64(raw["prompt"]); ok && promptCost > 0 {
+				unitPrice = promptCost
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", promptCost)
 			}
 		}
-	case "audio":
-		for _, key := range []string{"audio_output", "music_output", "per_audio", "audio", "prompt"} {
-			if val, ok := raw[key]; ok {
-				if num, ok := toFloat64(val); ok && num >= 0 {
-					unitPrice = num
-					foundPrice = true
-					break
-				}
-			}
-		}
-	}
-
-	if !foundPrice {
-		if billing, ok := raw["billing"].(map[string]any); ok {
-			if lines, ok := billing["lines"].([]any); ok {
-				for _, line := range lines {
-					lineMap, ok := line.(map[string]any)
-					if !ok {
-						continue
-					}
-					billable, _ := lineMap["billable"].(string)
-					if (kind == "image" && billable == "image_output") ||
-						(kind == "video" && (billable == "video_output" || billable == "video")) ||
-						(kind == "audio" && (billable == "audio_output" || billable == "music_output")) {
-						if pUSD, ok := toFloat64(lineMap["price_usd"]); ok && pUSD >= 0 {
-							unitPrice = pUSD
-							foundPrice = true
-							break
+		if !foundPrice && raw != nil {
+			if billing, ok := raw["billing"].(map[string]any); ok {
+				if lines, ok := billing["lines"].([]any); ok {
+					for _, line := range lines {
+						lineMap, ok := line.(map[string]any)
+						if !ok {
+							continue
+						}
+						billable, _ := lineMap["billable"].(string)
+						if billable == "video_output" || billable == "video" {
+							pUSD, ok := toFloat64(lineMap["price_usd"])
+							if !ok || pUSD < 0 {
+								continue
+							}
+							unit, _ := lineMap["unit"].(string)
+							switch strings.ToLower(unit) {
+							case "second", "sec":
+								unitPrice = pUSD * float64(durationSeconds)
+								foundPrice = true
+								summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog)", pUSD, unitPrice, durationSeconds)
+							case "minute", "min":
+								unitPrice = (pUSD / 60.0) * float64(durationSeconds)
+								foundPrice = true
+								summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) (catalog)", pUSD, unitPrice, durationSeconds)
+							default:
+								unitPrice = pUSD
+								foundPrice = true
+								summaryText = fmt.Sprintf("$%.2f per generation (catalog)", unitPrice)
+							}
+							if foundPrice {
+								break
+							}
 						}
 					}
 				}
+			}
+		}
+		if !foundPrice {
+			if !isIteration && (strings.Contains(lowerModel, "veo") || (provider == "google" && !strings.Contains(lowerModel, "omni"))) {
+				costPerSecond := 0.07
+				unitPrice = float64(durationSeconds) * costPerSecond
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (Google Veo)", costPerSecond, unitPrice, durationSeconds)
+			} else if isIteration || strings.Contains(lowerModel, "omni") {
+				unitPrice = 0.05
+				foundPrice = true
+				summaryText = "$0.05 per conversational edit (Gemini Omni Flash)"
+			} else if provider == "openrouter" {
+				unitPrice = 0.30
+				foundPrice = true
+				summaryText = "$0.30 per generation (OpenRouter estimated)"
+			}
+		}
+
+	case "audio":
+		if durationSeconds <= 0 {
+			durationSeconds = 30
+		}
+		if raw != nil {
+			if ao, ok := toFloat64(raw["audio_output"]); ok && ao > 0 {
+				unitPrice = ao
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", ao)
+			} else if mo, ok := toFloat64(raw["music_output"]); ok && mo > 0 {
+				unitPrice = mo
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", mo)
+			} else if promptCost, ok := toFloat64(raw["prompt"]); ok && promptCost > 0 {
+				unitPrice = promptCost
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", promptCost)
+			}
+		}
+		if !foundPrice && raw != nil {
+			if billing, ok := raw["billing"].(map[string]any); ok {
+				if lines, ok := billing["lines"].([]any); ok {
+					for _, line := range lines {
+						lineMap, ok := line.(map[string]any)
+						if !ok {
+							continue
+						}
+						billable, _ := lineMap["billable"].(string)
+						if billable == "audio_output" || billable == "music_output" {
+							pUSD, ok := toFloat64(lineMap["price_usd"])
+							if !ok || pUSD < 0 {
+								continue
+							}
+							unit, _ := lineMap["unit"].(string)
+							switch strings.ToLower(unit) {
+							case "second", "sec":
+								unitPrice = pUSD * float64(durationSeconds)
+								foundPrice = true
+								summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog)", pUSD, unitPrice, durationSeconds)
+							default:
+								unitPrice = pUSD
+								foundPrice = true
+								summaryText = fmt.Sprintf("$%.2f per generation (catalog)", unitPrice)
+							}
+							if foundPrice {
+								break
+							}
+						}
+					}
+				}
+			}
+		}
+		if !foundPrice {
+			if strings.Contains(lowerModel, "clip") {
+				unitPrice = 0.04
+				foundPrice = true
+				summaryText = "$0.04 per clip generation (Google Lyria Clip)"
+			} else if strings.Contains(lowerModel, "3.5") || strings.Contains(lowerModel, "song") || strings.Contains(lowerModel, "pro") {
+				unitPrice = 0.08
+				foundPrice = true
+				summaryText = "$0.08 per song generation (Google Lyria 3.5)"
+			} else if isIteration {
+				unitPrice = 0.04
+				foundPrice = true
+				summaryText = "$0.04 per audio iteration (Google Lyria)"
+			} else if provider == "google" {
+				unitPrice = 0.04
+				foundPrice = true
+				summaryText = "$0.04 per audio generation (Google Lyria)"
+			}
+		}
+
+	case "image":
+		if raw != nil {
+			for _, key := range []string{"per_image", "output_image", "image", "price_per_image"} {
+				if val, ok := raw[key]; ok {
+					if num, ok := toFloat64(val); ok && num >= 0 {
+						unitPrice = num
+						foundPrice = true
+						summaryText = fmt.Sprintf("$%.4f per image (catalog)", unitPrice)
+						break
+					}
+				}
+			}
+			if !foundPrice {
+				if billing, ok := raw["billing"].(map[string]any); ok {
+					if lines, ok := billing["lines"].([]any); ok {
+						for _, line := range lines {
+							lineMap, ok := line.(map[string]any)
+							if !ok {
+								continue
+							}
+							billable, _ := lineMap["billable"].(string)
+							if billable == "image_output" {
+								if pUSD, ok := toFloat64(lineMap["price_usd"]); ok && pUSD >= 0 {
+									unit, _ := lineMap["unit"].(string)
+									if strings.Contains(strings.ToLower(unit), "token") {
+										// Token-based image generation output: standard 1,290 tokens per image
+										unitPrice = (1290.0 / 1_000_000.0) * pUSD
+									} else {
+										unitPrice = pUSD
+									}
+									foundPrice = true
+									summaryText = fmt.Sprintf("$%.4f per image (catalog)", unitPrice)
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		if !foundPrice {
+			if provider == "google" && strings.Contains(lowerModel, "imagen") {
+				unitPrice = 0.03
+				foundPrice = true
+				summaryText = "$0.03 per image (Google Imagen)"
 			}
 		}
 	}
@@ -338,7 +460,7 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 		return MediaCostEstimate{
 			CostUSD:         0.0,
 			PriceStatus:     "unknown",
-			PricingSummary:  fmt.Sprintf("unknown pricing (no %s rate in snapshot %s)", kind, snapID),
+			PricingSummary:  fmt.Sprintf("unknown pricing (no verified %s rate for %q in snapshot %s)", kind, model, snapID),
 			SnapshotID:      snapID,
 			SnapshotVersion: snapVer,
 		}
@@ -348,10 +470,11 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 	return MediaCostEstimate{
 		CostUSD:         totalCost,
 		PriceStatus:     "known",
-		PricingSummary:  fmt.Sprintf("$%.4f per %s (snapshot %s)", unitPrice, kind, snapID),
+		PricingSummary:  summaryText,
 		SnapshotID:      snapID,
 		SnapshotVersion: snapVer,
 	}
+}
 
 // GetUsageLimit retrieves the configured daily usage limit for an account.
 func (s *SessionStore) GetUsageLimit(accountScopeID string) (UsageLimitRecord, bool, error) {
@@ -441,6 +564,12 @@ func (s *SessionStore) IncrementDailyUsage(accountScopeID, date string, costUSD 
 		return DailyUsageAccumulator{}, errors.New("store is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return DailyUsageAccumulator{}, errors.New("account_scope_id is required")
+	}
+	unlock := s.store.sessionMutations.lockSessions("account:" + accountScopeID)
+	defer unlock()
+
 	date = strings.TrimSpace(date)
 	if date == "" {
 		date = time.Now().UTC().Format("2006-01-02")
@@ -473,6 +602,12 @@ func (s *SessionStore) IncrementDailyMediaUsage(accountScopeID, date string, cos
 		return DailyUsageAccumulator{}, errors.New("store is not configured")
 	}
 	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return DailyUsageAccumulator{}, errors.New("account_scope_id is required")
+	}
+	unlock := s.store.sessionMutations.lockSessions("account:" + accountScopeID)
+	defer unlock()
+
 	date = strings.TrimSpace(date)
 	if date == "" {
 		date = time.Now().UTC().Format("2006-01-02")
@@ -495,6 +630,148 @@ func (s *SessionStore) IncrementDailyMediaUsage(accountScopeID, date string, cos
 		return DailyUsageAccumulator{}, err
 	}
 	return acc, nil
+}
+
+// ListDailyUsageAccumulators returns all daily usage accumulators for an account in chronological order.
+func (s *SessionStore) ListDailyUsageAccumulators(accountScopeID string) ([]DailyUsageAccumulator, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("store is not configured")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
+	}
+	prefix := DailyUsageAccumulatorPrefix(accountScopeID)
+	out := make([]DailyUsageAccumulator, 0, 32)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
+		var acc DailyUsageAccumulator
+		if err := json.Unmarshal(value, &acc); err != nil {
+			return err
+		}
+		if acc.Date == "" {
+			return nil
+		}
+		out = append(out, acc)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Date < out[j].Date
+	})
+	return out, nil
+}
+
+// AccountProviderUsageAggregate persists aggregated telemetry per provider on write.
+type AccountProviderUsageAggregate struct {
+	AccountScopeID      string   `json:"account_scope_id"`
+	Provider            string   `json:"provider"`
+	DisplayName         string   `json:"display_name"`
+	TotalTokens         int64    `json:"total_tokens"`
+	InputTokens         int64    `json:"input_tokens"`
+	OutputTokens        int64    `json:"output_tokens"`
+	CachedTokens        int64    `json:"cached_tokens"`
+	ThinkingTokens      int64    `json:"thinking_tokens"`
+	CostUSD             float64  `json:"cost_usd"`
+	CodexNominalCostUSD float64  `json:"codex_nominal_cost_usd"`
+	IsSubscription      bool     `json:"is_subscription"`
+	Turns               int      `json:"turns"`
+	Models              []string `json:"models"`
+	UpdatedAt           int64    `json:"updated_at"`
+}
+
+// AccountModelUsageAggregate persists aggregated telemetry per model on write.
+type AccountModelUsageAggregate struct {
+	AccountScopeID        string  `json:"account_scope_id"`
+	Provider              string  `json:"provider"`
+	Model                 string  `json:"model"`
+	DisplayName           string  `json:"display_name"`
+	TotalTokens           int64   `json:"total_tokens"`
+	InputTokens           int64   `json:"input_tokens"`
+	OutputTokens          int64   `json:"output_tokens"`
+	CachedTokens          int64   `json:"cached_tokens"`
+	ThinkingTokens        int64   `json:"thinking_tokens"`
+	CostUSD               float64 `json:"cost_usd"`
+	CodexNominalCostUSD   float64 `json:"codex_nominal_cost_usd"`
+	Turns                 int     `json:"turns"`
+	InputPricePerMillion  float64 `json:"input_price_per_million"`
+	OutputPricePerMillion float64 `json:"output_price_per_million"`
+	CachedPricePerMillion float64 `json:"cached_price_per_million"`
+	UpdatedAt             int64   `json:"updated_at"`
+}
+
+func (s *SessionStore) GetAccountProviderUsage(accountScopeID, provider string) (AccountProviderUsageAggregate, bool, error) {
+	if s == nil || s.store == nil {
+		return AccountProviderUsageAggregate{}, false, errors.New("store is not configured")
+	}
+	var agg AccountProviderUsageAggregate
+	ok, err := s.store.GetJSON(KeyAccountProviderUsage(accountScopeID, provider), &agg)
+	return agg, ok, err
+}
+
+func (s *SessionStore) ListAccountProviderUsage(accountScopeID string) ([]AccountProviderUsageAggregate, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("store is not configured")
+	}
+	prefix := AccountProviderUsagePrefix(accountScopeID)
+	out := make([]AccountProviderUsageAggregate, 0, 8)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
+		var agg AccountProviderUsageAggregate
+		if err := json.Unmarshal(value, &agg); err != nil {
+			return err
+		}
+		if agg.Provider == "" {
+			return nil
+		}
+		out = append(out, agg)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].TotalTokens > out[j].TotalTokens
+	})
+	return out, nil
+}
+
+func (s *SessionStore) GetAccountModelUsage(accountScopeID, provider, model string) (AccountModelUsageAggregate, bool, error) {
+	if s == nil || s.store == nil {
+		return AccountModelUsageAggregate{}, false, errors.New("store is not configured")
+	}
+	var agg AccountModelUsageAggregate
+	ok, err := s.store.GetJSON(KeyAccountModelUsage(accountScopeID, provider, model), &agg)
+	return agg, ok, err
+}
+
+func (s *SessionStore) ListAccountModelUsage(accountScopeID string) ([]AccountModelUsageAggregate, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("store is not configured")
+	}
+	prefix := AccountModelUsagePrefix(accountScopeID)
+	out := make([]AccountModelUsageAggregate, 0, 16)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
+		var agg AccountModelUsageAggregate
+		if err := json.Unmarshal(value, &agg); err != nil {
+			return err
+		}
+		if agg.Model == "" {
+			return nil
+		}
+		out = append(out, agg)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].TotalTokens > out[j].TotalTokens
+	})
+	return out, nil
 }
 
 // GetTodayUsageTotal returns the total cost in USD and total tokens for today (UTC).
