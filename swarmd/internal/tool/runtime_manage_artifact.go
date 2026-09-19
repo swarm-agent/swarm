@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -2364,6 +2365,15 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
+		effectiveVideoDurationSeconds := durationSeconds
+		if generated.DurationMs > 0 {
+			effectiveVideoDurationSeconds = (generated.DurationMs + 500) / 1000
+		}
+		effectiveVideoResolution := resolution
+		if effectiveVideoResolution == "" && generated.Height > 0 {
+			effectiveVideoResolution = fmt.Sprintf("%dp", generated.Height)
+		}
+
 		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
 		if r.sessions != nil {
 			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
@@ -2371,8 +2381,8 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 				Model:           generated.Model,
 				Kind:            "video",
 				Count:           1,
-				DurationSeconds: req.DurationSeconds,
-				Resolution:      req.Resolution,
+				DurationSeconds: effectiveVideoDurationSeconds,
+				Resolution:      effectiveVideoResolution,
 				IsIteration:     sourceRef != nil,
 			})
 		}
@@ -2769,6 +2779,11 @@ func (r *Runtime) generateManagedAudioArtifact(
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
+		effectiveAudioDurationSeconds := durationSeconds
+		if generated.DurationMs > 0 {
+			effectiveAudioDurationSeconds = (generated.DurationMs + 500) / 1000
+		}
+
 		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
 		if r.sessions != nil {
 			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
@@ -2776,7 +2791,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 				Model:           requestedModel,
 				Kind:            "audio",
 				Count:           1,
-				DurationSeconds: req.DurationSeconds,
+				DurationSeconds: effectiveAudioDurationSeconds,
 				IsIteration:     sourceRef != nil,
 			})
 		}

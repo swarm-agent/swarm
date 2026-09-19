@@ -665,7 +665,10 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 				tokens = count
 			}
 		}
-		img := managedImageFromCodex(completed[0])
+		img, err := managedImageFromCodex(completed[0])
+		if err != nil {
+			return ManagedImage{}, err
+		}
 		img.OutputTokens = tokens
 		return img, nil
 	default:
