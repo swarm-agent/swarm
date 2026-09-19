@@ -2208,6 +2208,37 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `scripts/run-critical-tests.sh all` passes.
   - `bash scripts/check-precommit.sh` passes.
 
+### Task Program Schema Restoration, Alias Support, and On-Demand Help Authorization (2026-09-19)
+
+- **Task Program Tool Schema & Action Help Restoration (`swarmd/internal/tool/runtime.go`, `runtime_task_contract_test.go`):**
+  - Expanded `taskProgramToolSchema()` to define full authoritative JSON schemas for `id`, `max_concurrency`, `stages` (with `id`, `title`, `description`, `depends_on`, `dependency_evidence`), and `jobs` (with `id`, `stage_id`, `agent_type`, `subagent_type`, `title`, `meta_prompt`, `deliverable`, `acceptance_criteria`, `dependency_evidence`, `depends_on`, `workspace_path`, `owned_scope`, `output_mode`, `output_requirements`, `animation_profile`, `recovery_source_digest`).
+  - Added explicit parameter documentation detailing worker rules: concurrent Coders in the same stage require distinct non-overlapping owned scopes; Finders are read-only and default to root scope (`["."]`); Designers default to managed artifacts (`output_mode: "managed"`, omitting `owned_scope` and `workspace_path`) or workspace edits (`output_mode: "workspace"` with concrete non-overlapping owned scope without wildcards).
+  - Added `help` to `action` parameter description on `task` tool, and restored `Regular mode only` distinguishing wording in `launches.description` to align with `TestTaskDefinitionKeepsProviderSchemaSimpleAndDocumentsRuntimeRequirements`.
+- **Task Tool Help and Status Permission Exemption (`swarmd/internal/permission/service.go`, `permission/policy.go`, `run/service_tools.go`, `run/service_task_launch.go`):**
+  - Added `ShouldApproveTaskLaunch(toolArguments string) bool` in `swarmd/internal/permission/service.go`, recognizing that `action="help"` and `action="status"` are read-only inspection operations that must not trigger approval prompts or fail in automated turns.
+  - Aligned `authorizationRequirement` in `service.go` and `defaultPolicyDecision` in `policy.go` to return `none` / `PolicyDecisionAllow` for task help and status.
+  - In `service_task_launch.go`, added `parsed.Action == "help"` support in `buildTaskLaunchPermissionPayload` to generate a valid permission manifest and prevent `task requires at least one launch` errors on help requests.
+  - In `service_tools.go` `gateToolCalls`, marked `manifest.Action == "help"` as auto-approved and excluded it from consuming a subagent wave reservation.
+  - Added integration test `TestProviderManagedToolInvokerTaskHelpAction` in `swarmd/internal/run/plan_manage_help_test.go` verifying that `task action="help"` succeeds through `NewProviderManagedToolInvoker` with and without top-level prompts and across help topics.
+- **Task Program Alias Forgiveness and Defaulting (`swarmd/internal/run/service_task_launch.go`, `session/plan_task_program.go`, `store/pebble/task_program_store.go`):**
+  - In `parseTaskProgram`, accepted top-level `"title"` and program/stage `"title"`, `"name"`, `"description"`.
+  - Normalized `program.ID`, `stage.ID`, `job.ID`, `job.StageID`, and `depends_on` entries to lowercase and defaulted `program.ID` if omitted.
+  - Supported job field aliases: `agent` and `purpose` for `agent_type`; `role` for `meta_prompt`; `name` and `label` for `title`; `scope` for `owned_scope`.
+  - Defaulted stage `dependency_evidence` if omitted, and defaulted stage `depends_on` to preceding stage for sequential stages (`i > 0`).
+  - Supported string inputs for `acceptance_criteria` and `owned_scope` in `taskProgramStringArray` by wrapping non-empty strings into single-element slices.
+  - Defaulted Finder `owned_scope` to `["."]` when omitted; partitioned concurrent Coder default scopes to `docs/task-program-probes/<job_id>/**` when multiple Coders omit `owned_scope` to avoid spurious overlap errors.
+  - In `TaskProgramJobSpec.UnmarshalJSON`, accepted `agent`, `purpose`, `role`, `name`, `label`, `description`, `scope` to ensure JSON plan deserialization does not fail on job aliases.
+  - Added unit test `TestParseTaskProgramAcceptsAliasesAndDefaultsAcrossAgents` in `swarmd/internal/run/service_task_program_test.go`.
+- **Harness Guidance & Specialized Help Discovery (`swarmd/internal/run/service_prompt.go`, `run/task_help.go`):**
+  - Updated `masterHarnessPromptWithScope` in `service_prompt.go` to list `task action="help"` under specialized domain tools, expanded the Task Program authoring contract with concise worker rules across Coder, Finder, and Designer, and added a multi-agent Task Program example.
+  - Expanded `taskHelpText("program")` in `task_help.go` with full schema details and a multi-agent example.
+- **Validation:**
+  - `(cd swarmd && go test -v ./internal/tool -run "TestTaskDefinition|TestToolDefinitionsTokenBudget")` passes.
+  - `(cd swarmd && go test -v ./internal/permission -run TestPolicy)` passes.
+  - `(cd swarmd && go test -v ./internal/run -run "TestTaskHelp|TestParseTaskProgram|TestProviderManagedToolInvokerTaskHelpAction|TestTaskProgramAuthoringContract")` passes.
+  - `(cd swarmd && go test -v ./internal/store/pebble -run TestTaskProgram)` passes.
+  - `bash scripts/check-atlas-sync.sh` passes.
+
 
 
 

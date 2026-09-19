@@ -1498,7 +1498,7 @@ func (r *Runtime) Definitions() []Definition {
 				"properties": map[string]any{
 					"action": map[string]any{
 						"type":        "string",
-						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted.",
+						"description": "Optional action. Supported: spawn (default), help; Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted. Call action='help' with optional topic='program' or topic='swarm' for guide and schema.",
 					},
 					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count; omit launches and regular-launch fields such as concurrency_reason."},
 					"program_id": map[string]any{"type": "string", "description": "Stable program ID for status. A new start carries a new ID inside program.id; existing IDs cannot be continued."},
@@ -1571,7 +1571,7 @@ func (r *Runtime) Definitions() []Definition {
 					"owned_scope":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Regular mode wave of launches. Omit in mode=swarm. Call action='help' for guide.",
+						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Call action='help' for guide.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -1596,17 +1596,117 @@ func (r *Runtime) Definitions() []Definition {
 }
 
 func taskProgramToolSchema() map[string]any {
+	id := map[string]any{
+		"type":        "string",
+		"pattern":     "^[a-z][a-z0-9_-]{0,63}$",
+		"description": "Unique lowercase identifier matching ^[a-z][a-z0-9_-]{0,63}$",
+	}
 	return map[string]any{
 		"type":        "object",
-		"description": "Task Program object. Call task action='help' topic='program' for the staged program schema.",
+		"description": "Task Program object for staged multi-agent execution across coders, finders, and designers. Call task action='help' topic='program' for guide and schema.",
+		"properties": map[string]any{
+			"id": id,
+			"max_concurrency": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"description": "Optional explicit concurrency limit across ready jobs. Omit to run ready jobs bounded by account capacity.",
+			},
+			"stages": map[string]any{
+				"type":        "array",
+				"minItems":    1,
+				"description": "Ordered execution stages. Each stage defines an integration barrier.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":          id,
+						"title":       map[string]any{"type": "string", "description": "Optional human-readable stage title."},
+						"description": map[string]any{"type": "string", "description": "Optional stage description."},
+						"depends_on": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Earlier stage IDs that must integrate before this stage starts. Required for stages after the first stage.",
+						},
+						"dependency_evidence": map[string]any{
+							"type":        "string",
+							"description": "Explanation of why this stage is ready initially or what prior integrated state unlocks it.",
+						},
+					},
+					"required": []string{"id", "dependency_evidence"},
+				},
+			},
+			"jobs": map[string]any{
+				"type":        "array",
+				"minItems":    1,
+				"description": "Job assignments across stages. Supports coder, finder, and designer agents.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":       id,
+						"stage_id": map[string]any{"type": "string", "description": "ID of the stage this job belongs to."},
+						"agent_type": map[string]any{
+							"type":        "string",
+							"enum":        []string{"coder", "finder", "designer"},
+							"description": "Subagent type: 'coder' for code implementation/tests/commits; 'finder' for read-only research/discovery; 'designer' for visual/UI artifacts.",
+						},
+						"subagent_type": map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
+						"title":         map[string]any{"type": "string", "description": "Concise cosmetic title for the job, ideally three words."},
+						"meta_prompt":   map[string]any{"type": "string", "description": "Required full instructive assignment for the subagent worker."},
+						"deliverable":   map[string]any{"type": "string", "description": "Specific child output the parent will verify upon completion."},
+						"acceptance_criteria": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Criteria for job completion and verification.",
+						},
+						"dependency_evidence": map[string]any{
+							"type":        "string",
+							"description": "Why this job is ready initially or what dependency unlocks it.",
+						},
+						"depends_on": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Earlier-stage job IDs whose accepted handoffs are required.",
+						},
+						"workspace_path": map[string]any{
+							"type":        "string",
+							"description": "Optional target workspace root (supported for Coder or Finder only).",
+						},
+						"owned_scope": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Workspace-relative file or directory paths. For Coders: concurrent Coders in the same stage must have non-overlapping scopes (e.g. distinct files/dirs); defaults to isolated worktree if omitted. For Finders: search paths (defaults to ['.']). For Designers: must be omitted for managed output; required concrete paths for workspace output.",
+						},
+						"output_mode": map[string]any{
+							"type":        "string",
+							"enum":        []string{"managed", "workspace"},
+							"description": "Designer jobs only: 'managed' (default) produces native Artifact V3 reusable artifacts and must omit owned_scope; 'workspace' edits files in place and requires concrete non-overlapping owned_scope without wildcards.",
+						},
+						"output_requirements": map[string]any{
+							"type":        "object",
+							"description": "Designer jobs only: optional preset (e.g. twitter_header, landscape_video) or dimensions.",
+						},
+						"animation_profile": map[string]any{
+							"type":        "object",
+							"description": "Designer jobs only: optional animation profile (motion_ui, spatial_3d, vector_playback, final_render).",
+						},
+						"recovery_source_digest": map[string]any{
+							"type":        "string",
+							"description": "Optional retained recovery digest from manage-worktree retain_source (Coder only).",
+						},
+					},
+					"required": []string{"id", "stage_id", "title", "meta_prompt", "deliverable"},
+				},
+			},
+		},
+		"required": []string{"id", "stages", "jobs"},
 	}
 }
 
 func taskProgramDefinitionToolSchema(description string) map[string]any {
-	return map[string]any{
-		"type":        "object",
-		"description": description,
+	schema := taskProgramToolSchema()
+	if strings.TrimSpace(description) != "" {
+		schema["description"] = description
 	}
+	return schema
 }
 
 func sessionPlanDocumentToolSchema() map[string]any {

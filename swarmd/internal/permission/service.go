@@ -1486,6 +1486,9 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	toolName = normalizePolicyToolName(toolName)
 	switch toolName {
 	case "task":
+		if !ShouldApproveTaskLaunch(toolArguments) {
+			return "none"
+		}
 		return "task_launch"
 	case "manage_skill":
 		if ShouldApproveManageSkillMutation(toolArguments) {
@@ -1600,6 +1603,16 @@ func ShouldApproveManageAgentMutation(toolArguments string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func ShouldApproveTaskLaunch(toolArguments string) bool {
+	action := manageAction(toolArguments)
+	switch action {
+	case "help", "status":
+		return false
+	default:
+		return true
 	}
 }
 

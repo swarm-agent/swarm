@@ -104,22 +104,38 @@ func (j *TaskProgramJobSpec) UnmarshalJSON(data []byte) error {
 	type canonical TaskProgramJobSpec
 	var decoded struct {
 		canonical
-		SubagentType string `json:"subagent_type"`
+		SubagentType string   `json:"subagent_type"`
+		Agent        string   `json:"agent"`
+		Purpose      string   `json:"purpose"`
+		Role         string   `json:"role"`
+		Name         string   `json:"name"`
+		Label        string   `json:"label"`
+		Description  string   `json:"description"`
+		Scope        []string `json:"scope"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&decoded); err != nil {
 		return err
 	}
-	agentType := strings.TrimSpace(decoded.AgentType)
-	alias := strings.TrimSpace(decoded.SubagentType)
-	if agentType != "" && alias != "" && !strings.EqualFold(agentType, alias) {
+	agentType := strings.TrimSpace(firstNonEmptyString(decoded.AgentType, decoded.SubagentType, decoded.Agent, decoded.Purpose))
+	alias := strings.TrimSpace(firstNonEmptyString(decoded.SubagentType, decoded.Agent, decoded.Purpose))
+	if decoded.AgentType != "" && alias != "" && !strings.EqualFold(decoded.AgentType, alias) {
 		return errors.New("task program agent_type conflicts with subagent_type")
 	}
 	if agentType == "" {
 		agentType = alias
 	}
 	decoded.AgentType = strings.ToLower(agentType)
+	if decoded.MetaPrompt == "" {
+		decoded.MetaPrompt = strings.TrimSpace(decoded.Role)
+	}
+	if decoded.Title == "" {
+		decoded.Title = strings.TrimSpace(firstNonEmptyString(decoded.Name, decoded.Label))
+	}
+	if len(decoded.OwnedScope) == 0 && len(decoded.Scope) > 0 {
+		decoded.OwnedScope = decoded.Scope
+	}
 	*j = TaskProgramJobSpec(decoded.canonical)
 	return nil
 }

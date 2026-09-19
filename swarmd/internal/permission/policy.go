@@ -1501,6 +1501,9 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		}
 		return PolicyDecisionAllow
 	case "task":
+		if !ShouldApproveTaskLaunch(toolArguments) {
+			return PolicyDecisionAllow
+		}
 		return PolicyDecisionAsk
 	case "compact":
 		return PolicyDecisionAllow

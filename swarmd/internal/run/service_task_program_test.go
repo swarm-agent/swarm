@@ -1130,3 +1130,112 @@ func TestParseTaskProgramLifecycleRejectsAllExistingProgramContinuation(t *testi
 		t.Fatalf("retired resume error = %v", err)
 	}
 }
+
+func TestParseTaskProgramAcceptsAliasesAndDefaultsAcrossAgents(t *testing.T) {
+	raw := `{
+		"action": "start",
+		"prompt": "Test program across agents",
+		"title": "Program Wrapper Title",
+		"program": {
+			"id": "Test-Prog-1",
+			"title": "Human Program Title",
+			"description": "Program description",
+			"stages": [
+				{"id": "Phase-1", "title": "Discovery Phase"},
+				{"id": "Phase-2", "title": "Implementation Phase"}
+			],
+			"jobs": [
+				{
+					"id": "Job-Finder",
+					"stage_id": "Phase-1",
+					"agent": "finder",
+					"role": "Search codebase for models",
+					"name": "Audit Models",
+					"deliverable": "Model audit",
+					"acceptance_criteria": "Audit complete"
+				},
+				{
+					"id": "Job-Coder-1",
+					"stage_id": "Phase-2",
+					"agent": "coder",
+					"role": "Implement feature A",
+					"name": "Coder A",
+					"deliverable": "Feature A code",
+					"acceptance_criteria": ["Feature A working"]
+				},
+				{
+					"id": "Job-Coder-2",
+					"stage_id": "Phase-2",
+					"agent": "coder",
+					"role": "Implement feature B",
+					"name": "Coder B",
+					"deliverable": "Feature B code",
+					"acceptance_criteria": ["Feature B working"]
+				},
+				{
+					"id": "Job-Designer",
+					"stage_id": "Phase-2",
+					"agent": "designer",
+					"role": "Design UI card",
+					"name": "Card Designer",
+					"deliverable": "Card artifact",
+					"output_mode": "managed",
+					"acceptance_criteria": ["Card design ready"]
+				}
+			]
+		}
+	}`
+
+	parsed, err := parseTaskCallArguments(raw)
+	if err != nil {
+		t.Fatalf("parseTaskCallArguments failed: %v", err)
+	}
+	if parsed.Program == nil {
+		t.Fatal("program is nil")
+	}
+	if parsed.Program.ID != "test-prog-1" {
+		t.Fatalf("program id = %q, want test-prog-1", parsed.Program.ID)
+	}
+	if len(parsed.Program.Stages) != 2 {
+		t.Fatalf("stages count = %d, want 2", len(parsed.Program.Stages))
+	}
+	if parsed.Program.Stages[0].ID != "phase-1" || parsed.Program.Stages[0].DependencyEvidence == "" {
+		t.Fatalf("stage 0 = %#v", parsed.Program.Stages[0])
+	}
+	if parsed.Program.Stages[1].ID != "phase-2" || len(parsed.Program.Stages[1].DependsOn) != 1 || parsed.Program.Stages[1].DependsOn[0] != "phase-1" {
+		t.Fatalf("stage 1 depends_on = %#v, want [phase-1]", parsed.Program.Stages[1].DependsOn)
+	}
+
+	if len(parsed.Program.Jobs) != 4 {
+		t.Fatalf("jobs count = %d, want 4", len(parsed.Program.Jobs))
+	}
+
+	finderJob := parsed.Program.Jobs[0]
+	if finderJob.RequestedSubagentType != "finder" || finderJob.MetaPrompt != "Search codebase for models" || finderJob.AssignmentLabel != "Audit Models" {
+		t.Fatalf("finder job = %#v", finderJob)
+	}
+	if len(finderJob.OwnedScope) == 0 || finderJob.OwnedScope[0] != "." {
+		t.Fatalf("finder owned_scope = %#v, want ['.']", finderJob.OwnedScope)
+	}
+	if len(finderJob.AcceptanceCriteria) != 1 || finderJob.AcceptanceCriteria[0] != "Audit complete" {
+		t.Fatalf("finder criteria = %#v, want ['Audit complete']", finderJob.AcceptanceCriteria)
+	}
+
+	coder1 := parsed.Program.Jobs[1]
+	coder2 := parsed.Program.Jobs[2]
+	if coder1.RequestedSubagentType != "coder" || coder2.RequestedSubagentType != "coder" {
+		t.Fatalf("coders = %#v, %#v", coder1, coder2)
+	}
+	// Verify concurrent Coders with omitted owned_scope do not overlap
+	if coder1.OwnedScope[0] == coder2.OwnedScope[0] {
+		t.Fatalf("concurrent coders share owned_scope: %s", coder1.OwnedScope[0])
+	}
+
+	designerJob := parsed.Program.Jobs[3]
+	if designerJob.RequestedSubagentType != "designer" || designerJob.OutputMode != "managed" {
+		t.Fatalf("designer job = %#v", designerJob)
+	}
+	if len(designerJob.OwnedScope) != 0 {
+		t.Fatalf("managed designer must omit owned scope: %#v", designerJob.OwnedScope)
+	}
+}

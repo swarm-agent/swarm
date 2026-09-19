@@ -1709,21 +1709,25 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "task manifest is invalid"
 				continue
 			}
-			if manifest.Action == taskProgramActionStatus {
-				// Status is a read-only lookup scoped to the authenticated parent session.
-				// It must never create an approval interaction.
-				if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
-					decisions[i].Err = statusErr
-					decisions[i].Result.Error = statusErr.Error()
-				} else if !ok {
-					decisions[i].Err = fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
-					decisions[i].Result.Error = decisions[i].Err.Error()
+			if manifest.Action == taskProgramActionStatus || manifest.Action == "help" {
+				// Status and help are read-only operations scoped to the authenticated parent session.
+				// They must never create an approval interaction.
+				if manifest.Action == taskProgramActionStatus {
+					if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
+						decisions[i].Err = statusErr
+						decisions[i].Result.Error = statusErr.Error()
+					} else if !ok {
+						decisions[i].Err = fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
+						decisions[i].Result.Error = decisions[i].Err.Error()
+					} else {
+						decisions[i].Approved = true
+					}
 				} else {
 					decisions[i].Approved = true
 				}
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
+			if manifest.Action != taskProgramActionStatus && manifest.Action != "help" && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
 				// Program status and direct image generation do not allocate delegated
 				// child sessions, so neither consumes a subagent-wave reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
