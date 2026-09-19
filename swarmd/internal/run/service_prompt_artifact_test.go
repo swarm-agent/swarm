@@ -298,6 +298,7 @@ func TestArtifactHelpGuidesVideoChainingAndAudioOverride(t *testing.T) {
 func TestArtifactHelpGuidesAudioGenerationAndMultipleSoundClips(t *testing.T) {
 	help := tool.ArtifactHelpText("audio")
 	for _, want := range []string{
+		"Before generating audio, call manage_artifact action=\"audio_capabilities\"",
 		"When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio",
 		"The AI can generate multiple sound clips or audio variations in ONE tool call:",
 		"prompts: [\"...\", \"...\"] (up to 8 clips",
@@ -307,6 +308,20 @@ func TestArtifactHelpGuidesAudioGenerationAndMultipleSoundClips(t *testing.T) {
 	} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("artifact help missing audio generation guidance %q", want)
+		}
+	}
+}
+
+func TestMasterHarnessPromptGuidesAudioCapabilitiesPreflight(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"action='audio_capabilities'",
+		"inspect the configured audio model, duration limits",
+		`manage_artifact (audio capabilities): {"action":"audio_capabilities"}`,
+		`manage_artifact (generate audio): {"action":"generate_audio"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing audio preflight guidance %q", want)
 		}
 	}
 }

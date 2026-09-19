@@ -158,14 +158,14 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For images, call action='image_capabilities' first to read supported options and capability_token, then pass them to action='generate_image'. For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
+		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For images, call action='image_capabilities' first to read supported options and capability_token, then pass them to action='generate_image'. For audio, call action='audio_capabilities' first to inspect configured model duration limits and capability_token, then pass them to action='generate_audio'. For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"artifact_id":          map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
 				"resume_draft":         map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
-				"action":               map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, generate_video_story, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
-				"capability_token":     map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities; required for Google generate_image calls."},
+				"action":               map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "audio_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, generate_video_story, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
+				"capability_token":     map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities or audio_capabilities; required for Google generative media calls."},
 				"scenes":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"prompt": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_seconds": map[string]any{"type": "integer"}}, "required": []string{"prompt"}}, "description": "Multi-scene video script for generate_video_story."},
 				"soundtrack":           map[string]any{"type": "string", "description": "Soundtrack music/audio description for generate_video_story."},
 				"topic":                map[string]any{"type": "string", "description": "Optional topic for action=help (animation, video, audio, narration, workflow)."},
@@ -264,7 +264,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "audio_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
@@ -279,6 +279,13 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		response["image_capabilities"] = capabilities
+	case "audio_capabilities":
+		modelArg := strings.TrimSpace(asString(args["model"]))
+		capabilities, err := r.managedAudioCapabilitiesWithModel(principal.AccountScopeID, modelArg)
+		if err != nil {
+			return "", err
+		}
+		response["audio_capabilities"] = capabilities
 	case "read_part":
 		part, err := r.readManagedArtifactPart(ctx, principal, args)
 		if err != nil {
@@ -1414,6 +1421,26 @@ func (r *Runtime) managedImageCapabilities(accountScopeID string) (imagegen.Mana
 	return r.imageGeneration.ManagedImageCapabilities(selectionID)
 }
 
+func (r *Runtime) managedAudioCapabilities(accountScopeID string) (audiogen.ManagedAudioCapabilities, error) {
+	return r.managedAudioCapabilitiesWithModel(accountScopeID, "")
+}
+
+func (r *Runtime) managedAudioCapabilitiesWithModel(accountScopeID, modelOverride string) (audiogen.ManagedAudioCapabilities, error) {
+	if r == nil || r.audioGeneration == nil {
+		return audiogen.ManagedAudioCapabilities{}, errors.New("manage_artifact audio generation is not configured")
+	}
+	modelID := strings.TrimSpace(modelOverride)
+	if modelID == "" && r.uiSettings != nil && strings.TrimSpace(accountScopeID) != "" {
+		if ui, err := r.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); err == nil {
+			modelID = strings.TrimSpace(ui.Tools.Audio.DefaultModel)
+		}
+	}
+	if modelID == "" {
+		modelID = audiogen.DefaultAudioSongModel
+	}
+	return r.audioGeneration.ManagedAudioCapabilities(modelID)
+}
+
 func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	for key := range args {
 		switch key {
@@ -1762,10 +1789,11 @@ func artifactHelpText(topic string) string {
 - action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking in one atomic operation.`
 	case "audio", "lyria":
 		return `Artifact AI Audio (Google Lyria) Contract:
+- Before generating audio, call manage_artifact action="audio_capabilities" to inspect the configured audio model, duration limits, and capability_token.
 - When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. You can specify model (e.g. lyria-3.5, lyria-3-clip-preview, lyria-3-pro-preview), or omit it to resolve your account-configured audio model (Google Lyria).
 - The AI can generate multiple sound clips or audio variations in ONE tool call: provide an array of descriptive style/mood prompts via prompts: ["...", "..."] (up to 8 clips, e.g. prompts: ["Upbeat funk groove with slapping bass", "Ambient calm piano with rain sounds", "High-energy rock guitar solo"]), or specify count: N (1 to 8) to generate multiple variations from a single prompt.
 - Each generated sound clip is published as a distinct variant in the artifact collection with its own title and description, and Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly.
-- Specify duration_seconds (e.g. 15, 30, 60, 120s; default 30s) and optional image or image_path for multimodal audio inspiration.
+- Specify duration_seconds (respecting model limits from audio_capabilities, e.g. 5-30s for clip preview, 30-300s for full songs) and optional image or image_path for multimodal audio inspiration.
 - To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.
 - Video Studio Ingestion: To use a generated audio artifact as soundtrack audio in Video Studio timeline projects, call manage_video action="import_audio_artifact" with its exact reference ({session_id, collection_id, variant_id, event_seq}). This persists an authenticated AudioSourceRecord and returns the exact audio_source object ({ref, name, mime_type, size_bytes, source_fingerprint, fingerprint_version: "v1"}) ready for create_edit_proposal operations: [{type: "add_clip", clip: {source_kind: "source_audio", audio_source: ...}}] or create_project initial_timeline.`
 	case "narration":
@@ -1800,9 +1828,11 @@ Quick Action References:
 - create (narration): action='create', narration_plan={title, scenes:[{id, title, narration, visual_direction, music_direction}]}.
 - revise_v3 (candidate revision): action='revise_v3', session_id, artifact_id, content='...', revision_intent='whole_project|focused_parts', target_part_ids=['...'].
 - begin_v3 / author_v3 (incremental repair): begin_v3 returns draft_handle; author_v3 accepts draft_handle and operation={action:'read_file|edit_file|build_preview|finish_turn', path, old_string, new_string}.
+- image_capabilities: action='image_capabilities'. Inspect image settings and get capability_token.
 - generate_image: action='generate_image', prompt='...', capability_token='...' (call action='image_capabilities' first).
+- audio_capabilities: action='audio_capabilities', model='...' (optional). Inspect duration constraints and get capability_token.
 - generate_video: action='generate_video', prompt='...', duration_seconds=8, aspect_ratio='16:9'.
-- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), model='...' (optional), duration_seconds=30.
+- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), model='...' (optional), duration_seconds=30, capability_token='...' (call action='audio_capabilities' first).
 - materialize: action='materialize', session_id, collection_id, variant_id, event_seq, destination='path/to/file'.
 - publish_workspace: action='publish_workspace', source='path/to/file', media_type='...'.`
 	}
@@ -2326,7 +2356,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 		case "action", "prompt", "prompts", "title", "label", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "model":
+			"image", "image_path", "model", "capability_token":
 		default:
 			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact generate_audio contains unsupported field %q", key)
 		}
@@ -2531,6 +2561,27 @@ func (r *Runtime) generateManagedAudioArtifact(
 			requestedModel = strings.TrimSpace(ui.Tools.Audio.DefaultModel)
 		}
 	}
+	if requestedModel == "" {
+		requestedModel = audiogen.DefaultAudioSongModel
+	}
+
+	capabilityToken := strings.TrimSpace(asString(args["capability_token"]))
+	caps, capsErr := r.managedAudioCapabilitiesWithModel(principal.AccountScopeID, requestedModel)
+	if capsErr == nil && caps.Available {
+		if capabilityToken != "" && caps.CapabilityToken != "" && capabilityToken != caps.CapabilityToken {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio capability_token does not match current audio model capabilities; call action='audio_capabilities' first")
+		}
+		if durationSeconds > 0 {
+			if caps.DurationSeconds.MaxSeconds > 0 && durationSeconds > caps.DurationSeconds.MaxSeconds {
+				return managedAudioArtifactResult{}, fmt.Errorf("requested duration %ds exceeds maximum duration of %ds for audio model %q; call action='audio_capabilities' to check model limits or choose a full-song model in Settings -> Media", durationSeconds, caps.DurationSeconds.MaxSeconds, caps.Model)
+			}
+			if caps.DurationSeconds.MinSeconds > 0 && durationSeconds < caps.DurationSeconds.MinSeconds {
+				return managedAudioArtifactResult{}, fmt.Errorf("requested duration %ds is below minimum duration of %ds for audio model %q", durationSeconds, caps.DurationSeconds.MinSeconds, caps.Model)
+			}
+		} else if caps.DurationSeconds.DefaultValue > 0 {
+			durationSeconds = caps.DurationSeconds.DefaultValue
+		}
+	}
 
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
@@ -2550,6 +2601,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 			Model:           requestedModel,
 			Source:          source,
 			Image:           audioImage,
+			CapabilityToken: capabilityToken,
 		})
 		if err != nil {
 			return managedAudioArtifactResult{}, fmt.Errorf("generate managed audio: %w", err)

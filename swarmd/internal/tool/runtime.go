@@ -397,6 +397,7 @@ type ManagedVideoGenerationService interface {
 
 type ManagedAudioGenerationService interface {
 	GenerateManagedAudio(context.Context, audiogen.ManagedAudioRequest) (audiogen.ManagedAudioResult, error)
+	ManagedAudioCapabilities(modelID string) (audiogen.ManagedAudioCapabilities, error)
 }
 
 type manageThemeUISettingsService interface {

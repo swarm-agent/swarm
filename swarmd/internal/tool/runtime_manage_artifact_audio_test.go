@@ -21,6 +21,46 @@ type fakeAudioGenerationService struct {
 	calls   int
 	result  audiogen.ManagedAudioResult
 	err     error
+	caps    audiogen.ManagedAudioCapabilities
+	capsErr error
+}
+
+func (f *fakeAudioGenerationService) ManagedAudioCapabilities(modelID string) (audiogen.ManagedAudioCapabilities, error) {
+	if f.capsErr != nil {
+		return audiogen.ManagedAudioCapabilities{}, f.capsErr
+	}
+	if f.caps.Model != "" {
+		return f.caps, nil
+	}
+	clean := strings.TrimPrefix(strings.TrimSpace(modelID), "google/")
+	isClip := strings.Contains(strings.ToLower(clean), "clip")
+	kind := "full_song"
+	durationCap := audiogen.ManagedAudioDurationCapability{
+		DefaultValue:    120,
+		MinSeconds:      1,
+		MaxSeconds:      300,
+		SupportedValues: []int{30, 60, 90, 120, 180, 240, 300},
+		Notes:           "Full-length songs",
+	}
+	if isClip {
+		kind = "clip"
+		durationCap = audiogen.ManagedAudioDurationCapability{
+			DefaultValue:    30,
+			MinSeconds:      1,
+			MaxSeconds:      30,
+			SupportedValues: []int{5, 10, 15, 20, 25, 30},
+			Notes:           "Short musical clips up to 30 seconds",
+		}
+	}
+	return audiogen.ManagedAudioCapabilities{
+		Available:       true,
+		Model:           clean,
+		Provider:        "google",
+		DisplayName:     clean,
+		Kind:            kind,
+		DurationSeconds: durationCap,
+		CapabilityToken: "fake-cap-token",
+	}, nil
 }
 
 func (f *fakeAudioGenerationService) GenerateManagedAudio(ctx context.Context, req audiogen.ManagedAudioRequest) (audiogen.ManagedAudioResult, error) {
@@ -667,5 +707,114 @@ func TestManageArtifactGenerateAudioResolvesConfiguredUIModel(t *testing.T) {
 
 	if generator.lastReq.Model != "lyria-3-pro-preview" {
 		t.Errorf("generator.lastReq.Model = %q, want lyria-3-pro-preview", generator.lastReq.Model)
+	}
+}
+
+func TestManageArtifactAudioCapabilities(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-caps-test",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "audio_capabilities",
+			"model": "lyria-3-clip-preview"
+		}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute audio_capabilities: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+
+	caps, ok := res["audio_capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected audio_capabilities in response: %v", res)
+	}
+	if caps["available"] != true {
+		t.Errorf("expected available=true, got %v", caps["available"])
+	}
+	if caps["model"] != "lyria-3-clip-preview" {
+		t.Errorf("caps.model = %v, want lyria-3-clip-preview", caps["model"])
+	}
+	if caps["kind"] != "clip" {
+		t.Errorf("caps.kind = %v, want clip", caps["kind"])
+	}
+	dur, ok := caps["duration_seconds"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected duration_seconds in caps: %v", caps)
+	}
+	if fmt.Sprint(dur["max_seconds"]) != "30" {
+		t.Errorf("dur.max_seconds = %v, want 30", dur["max_seconds"])
+	}
+	if caps["capability_token"] != "fake-cap-token" {
+		t.Errorf("caps.capability_token = %v, want fake-cap-token", caps["capability_token"])
+	}
+}
+
+func TestManageArtifactGenerateAudioDurationExceedsClipLimit(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-duration-exceeded",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_audio",
+			"prompt": "Punchy techno bass",
+			"model": "lyria-3-clip-preview",
+			"duration_seconds": 60
+		}`,
+	}
+
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err == nil {
+		t.Fatal("expected error when duration_seconds exceeds model limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum duration") {
+		t.Errorf("expected duration error message, got: %v", err)
+	}
+}
+
+func TestManageArtifactGenerateAudioCapabilityTokenMismatch(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-token-mismatch",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_audio",
+			"prompt": "Punchy techno bass",
+			"model": "lyria-3-clip-preview",
+			"duration_seconds": 20,
+			"capability_token": "stale-or-wrong-token"
+		}`,
+	}
+
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err == nil {
+		t.Fatal("expected error on capability_token mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "capability_token does not match") {
+		t.Errorf("expected capability_token mismatch error, got: %v", err)
 	}
 }

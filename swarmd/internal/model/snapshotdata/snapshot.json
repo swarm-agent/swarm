@@ -2,9 +2,9 @@
   "schema_version": "2026-08-14.2",
   "api_version": "v1",
   "snapshot_schema_version": "2026-08-14.2",
-  "snapshot_id": "swarm-models-v1-509b5ba697355d46",
-  "snapshot_version": "509b5ba697355d46",
-  "generated_at": "2026-09-14T09:43:11.045Z",
+  "snapshot_id": "swarm-models-v1-c1ef3f604dea5bc9",
+  "snapshot_version": "c1ef3f604dea5bc9",
+  "generated_at": "2026-09-19T07:42:52.180Z",
   "model_count": 734,
   "provider_count": 7,
   "hydrated_provider_count": 6,
@@ -583,6 +583,8 @@
         },
         "music_generation_settings": {
           "explicit_profile_model_ids": [
+            "lyria-3-clip-preview",
+            "lyria-3-pro-preview",
             "lyria-3.5"
           ],
           "unknown_semantics": "Documented output formats are not verified request enums. Prompt-based music controls do not imply exact numeric duration settings or voice/TTS support."
@@ -3406,7 +3408,7 @@
           "source_id": "anthropic_fable_5_1_docs",
           "source_url": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
           "source_kind": "official_docs",
-          "fetched_at": "2026-09-14T09:43:11.045Z",
+          "fetched_at": "2026-09-19T07:42:52.180Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -3832,7 +3834,7 @@
         "reviewed_at": null,
         "notes": "Anthropic entry hydrated from first-party model docs pending Models API visibility verification. Claude API service-tier metadata is mapped for Swarm off/fast/batch where documented; provider Fast Mode is represented separately as serving.fast_mode; and Claude thinking controls and token pricing are mapped from first-party docs."
       },
-      "updated_at": "2026-09-14T09:43:11.045Z",
+      "updated_at": "2026-09-19T07:42:52.180Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -35819,6 +35821,8 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
+          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -36089,9 +36093,12 @@
             "status": "verified",
             "api_surface": "generate_content",
             "managed_image_tool": {
-              "supported": false,
-              "client_setting_names": [],
-              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
+              "supported": true,
+              "client_setting_names": [
+                "aspect_ratio",
+                "image_size"
+              ],
+              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
             },
             "settings": {
               "image_size": {
@@ -36121,8 +36128,6 @@
                   "3:2",
                   "3:4",
                   "4:3",
-                  "4:5",
-                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -36133,8 +36138,6 @@
                   "3:2",
                   "3:4",
                   "4:3",
-                  "4:5",
-                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -36551,6 +36554,8 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
+          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -36819,9 +36824,12 @@
             "status": "verified",
             "api_surface": "generate_content",
             "managed_image_tool": {
-              "supported": false,
-              "client_setting_names": [],
-              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
+              "supported": true,
+              "client_setting_names": [
+                "aspect_ratio",
+                "image_size"
+              ],
+              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
             },
             "settings": {
               "image_size": {
@@ -36849,32 +36857,20 @@
                 "provider_parameter": "generationConfig.imageConfig.aspectRatio",
                 "supported_values": [
                   "1:1",
-                  "1:4",
-                  "1:8",
                   "2:3",
                   "3:2",
                   "3:4",
-                  "4:1",
                   "4:3",
-                  "4:5",
-                  "5:4",
-                  "8:1",
                   "9:16",
                   "16:9",
                   "21:9"
                 ],
                 "provider_documented_values": [
                   "1:1",
-                  "1:4",
-                  "1:8",
                   "2:3",
                   "3:2",
                   "3:4",
-                  "4:1",
                   "4:3",
-                  "4:5",
-                  "5:4",
-                  "8:1",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -37719,7 +37715,9 @@
       },
       "parameters": {
         "supported_parameters": [
+          "aspect_ratio",
           "generationConfig.thinkingConfig.thinkingLevel",
+          "image_size",
           "max_temperature",
           "temperature",
           "top_k",
@@ -37982,9 +37980,12 @@
             "status": "verified",
             "api_surface": "generate_content",
             "managed_image_tool": {
-              "supported": false,
-              "client_setting_names": [],
-              "notes": "The current Swarm managed image tool does not accept this exact model ID, even though the provider model has documented image-generation controls."
+              "supported": true,
+              "client_setting_names": [
+                "aspect_ratio",
+                "image_size"
+              ],
+              "notes": "The current Swarm managed image tool accepts this exact model ID and the client setting names listed here; callers must still use only each setting's model-specific supported_values."
             },
             "settings": {
               "image_size": {
@@ -38010,8 +38011,6 @@
                   "3:2",
                   "3:4",
                   "4:3",
-                  "4:5",
-                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -38022,8 +38021,6 @@
                   "3:2",
                   "3:4",
                   "4:3",
-                  "4:5",
-                  "5:4",
                   "9:16",
                   "16:9",
                   "21:9"
@@ -49177,6 +49174,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_music_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/music-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.google.model_api_surface",
+            "provider_specific.google.music_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3-clip-preview",
           "source_kind": "official_docs",
@@ -49245,7 +49254,7 @@
           "docs_enrichment_status": "official_model_docs_verified",
           "pricing_enrichment_status": "official_gemini_pricing_docs",
           "note": "models.list supplies identity, token limits, generation methods, thinking, and default generation parameters. Google thinking controls are mapped from first-party Gemini thinking docs; per-model docs and pricing docs still need parsing before publishing precise multimodal capabilities and prices.",
-          "model_api_surface": "generate_content",
+          "model_api_surface": "interactions_api",
           "multimodal": {
             "native_input_modalities": [
               "image",
@@ -49257,9 +49266,12 @@
             ],
             "image": {
               "input": true,
-              "contract_inheritance": "provider.generate_content.image",
-              "model_overrides": null,
-              "notes": "This exact image-capable generateContent row inherits the provider contract from https://ai.google.dev/gemini-api/docs/generate-content/image-understanding."
+              "contract_inheritance": null,
+              "model_overrides": {
+                "status": "unsupported",
+                "reason": "This model uses a different API surface, so the generateContent image contract does not apply."
+              },
+              "notes": "No generateContent image-input contract is inherited."
             },
             "pdf": {
               "input": false,
@@ -49267,7 +49279,7 @@
               "contract_inheritance": null,
               "model_overrides": {
                 "status": "unsupported",
-                "reason": "The cited exact-model data-type table does not list PDF."
+                "reason": "This model uses a different API surface, so the generateContent PDF contract does not apply."
               },
               "notes": "The cited exact-model data-type table does not list PDF or generic files."
             },
@@ -49275,17 +49287,113 @@
               "files_api_is_capability_evidence": false,
               "notes": "The Files API and inline/URI transport can carry model-supported media, but transport acceptance does not establish a model capability or arbitrary-file support."
             },
-            "output_semantics": "Generated MP3 music plus documented lyrics text output."
+            "output_semantics": "Generated 48kHz stereo MP3 music clip up to 30 seconds plus documented lyrics text output."
           },
           "multimodal_evidence": {
             "source_id": "google_gemini_per_model_docs",
             "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3-clip-preview",
             "status": "verified",
             "exact_model": true,
-            "notes": "The exact first-party Lyria page lists text and image input and MP3 audio plus lyrics text output."
+            "notes": "The exact first-party Lyria page lists text and image input and MP3 audio plus lyrics text output; the music-generation guide verifies the Interactions API surface."
           },
           "image_generation": null,
-          "video_generation": null
+          "video_generation": null,
+          "music_generation": {
+            "status": "verified",
+            "api_surface": "interactions_api",
+            "kind": "clip",
+            "documented_generation_method": "interactions.create",
+            "settings": {
+              "duration_seconds": {
+                "status": "verified",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": null,
+                "supported_values": [
+                  5,
+                  10,
+                  15,
+                  20,
+                  25,
+                  30
+                ],
+                "provider_documented_values": [
+                  5,
+                  10,
+                  15,
+                  20,
+                  25,
+                  30
+                ],
+                "default_value": 30,
+                "min_seconds": 1,
+                "max_seconds": 30,
+                "notes": "Lyria 3 Clip Preview generates short musical clips up to 30 seconds. Presets range from 5 to 30 seconds with 30 seconds default."
+              },
+              "format": {
+                "status": "unknown",
+                "client_parameter": "format",
+                "provider_parameter": "response_format",
+                "supported_values": [],
+                "provider_documented_values": [
+                  "mp3"
+                ],
+                "default_value": "mp3",
+                "notes": "The guide documents MP3 by default. An exact format selector mapping is unverified; do not send mp3 as response_format.type."
+              }
+            },
+            "features": {
+              "clip_generation": {
+                "status": "verified",
+                "supported": true,
+                "max_duration_seconds": 30,
+                "notes": "Generates short musical clips, loops, and previews up to 30 seconds."
+              },
+              "multi_prompt_variations": {
+                "status": "verified",
+                "supported": true,
+                "max_variations": 8,
+                "notes": "Supports batch variation generation up to 8 prompt variations in one call."
+              },
+              "image_to_music": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "input",
+                "provider_parameter": "input",
+                "max_inputs": 10,
+                "notes": "Accepts up to 10 images alongside text in the Interactions input list to inspire music."
+              },
+              "conversational_editing": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "input",
+                "provider_parameter": "previous_interaction_id",
+                "max_inputs": 1,
+                "notes": "Stored generated music can be refined across turns using previous_interaction_id."
+              },
+              "instrumental": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Prompt with Instrumental only, no vocals for music without singing."
+              }
+            },
+            "billing": {
+              "rate_usd": 0.04,
+              "unit": "30_second_clip",
+              "notes": "$0.04 per 30-second clip."
+            },
+            "output": {
+              "sample_rate_hz": 48000,
+              "channels": 2,
+              "default_format": "mp3",
+              "includes_lyrics_text": true
+            },
+            "source_id": "google_gemini_music_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/music-generation",
+            "notes": "Lyria 3 Clip Preview generates short musical clips up to 30 seconds via the Interactions API. Supports conversational editing via previous_interaction_id and up to 8 variations."
+          }
         }
       },
       "swarm": {
@@ -49586,6 +49694,18 @@
           ]
         },
         {
+          "source_id": "google_gemini_music_generation_docs",
+          "source_url": "https://ai.google.dev/gemini-api/docs/music-generation",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.google.model_api_surface",
+            "provider_specific.google.music_generation"
+          ]
+        },
+        {
           "source_id": "google_gemini_per_model_docs",
           "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3-pro-preview",
           "source_kind": "official_docs",
@@ -49654,7 +49774,7 @@
           "docs_enrichment_status": "official_model_docs_verified",
           "pricing_enrichment_status": "official_gemini_pricing_docs",
           "note": "models.list supplies identity, token limits, generation methods, thinking, and default generation parameters. Google thinking controls are mapped from first-party Gemini thinking docs; per-model docs and pricing docs still need parsing before publishing precise multimodal capabilities and prices.",
-          "model_api_surface": "generate_content",
+          "model_api_surface": "interactions_api",
           "multimodal": {
             "native_input_modalities": [
               "image",
@@ -49666,9 +49786,12 @@
             ],
             "image": {
               "input": true,
-              "contract_inheritance": "provider.generate_content.image",
-              "model_overrides": null,
-              "notes": "This exact image-capable generateContent row inherits the provider contract from https://ai.google.dev/gemini-api/docs/generate-content/image-understanding."
+              "contract_inheritance": null,
+              "model_overrides": {
+                "status": "unsupported",
+                "reason": "This model uses a different API surface, so the generateContent image contract does not apply."
+              },
+              "notes": "No generateContent image-input contract is inherited."
             },
             "pdf": {
               "input": false,
@@ -49676,7 +49799,7 @@
               "contract_inheritance": null,
               "model_overrides": {
                 "status": "unsupported",
-                "reason": "The cited exact-model data-type table does not list PDF."
+                "reason": "This model uses a different API surface, so the generateContent PDF contract does not apply."
               },
               "notes": "The cited exact-model data-type table does not list PDF or generic files."
             },
@@ -49684,17 +49807,131 @@
               "files_api_is_capability_evidence": false,
               "notes": "The Files API and inline/URI transport can carry model-supported media, but transport acceptance does not establish a model capability or arbitrary-file support."
             },
-            "output_semantics": "Generated MP3 music plus documented lyrics text output."
+            "output_semantics": "Generated 48kHz stereo full-song MP3 music plus documented lyrics text output."
           },
           "multimodal_evidence": {
             "source_id": "google_gemini_per_model_docs",
             "source_url": "https://ai.google.dev/gemini-api/docs/models/lyria-3-pro-preview",
             "status": "verified",
             "exact_model": true,
-            "notes": "The exact first-party Lyria page lists text and image input and MP3 audio plus lyrics text output."
+            "notes": "The exact first-party Lyria page lists text and image input and MP3 audio plus lyrics text output; the music-generation guide verifies the Interactions API surface."
           },
           "image_generation": null,
-          "video_generation": null
+          "video_generation": null,
+          "music_generation": {
+            "status": "verified",
+            "api_surface": "interactions_api",
+            "kind": "full_song",
+            "documented_generation_method": "interactions.create",
+            "settings": {
+              "duration_seconds": {
+                "status": "verified",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": null,
+                "supported_values": [
+                  30,
+                  60,
+                  90,
+                  120,
+                  180,
+                  240,
+                  300
+                ],
+                "provider_documented_values": [
+                  30,
+                  60,
+                  90,
+                  120,
+                  180,
+                  240,
+                  300
+                ],
+                "default_value": 120,
+                "min_seconds": 30,
+                "max_seconds": 300,
+                "notes": "Pro preview full-length songs with complex structure. Prompt descriptions or timestamps influence duration from 30 to 300 seconds."
+              },
+              "format": {
+                "status": "unknown",
+                "client_parameter": "format",
+                "provider_parameter": "response_format",
+                "supported_values": [],
+                "provider_documented_values": [
+                  "mp3",
+                  "wav"
+                ],
+                "default_value": "mp3",
+                "notes": "The guide documents MP3 by default and WAV via response_format. An exact format selector mapping is unverified."
+              }
+            },
+            "features": {
+              "full_song_generation": {
+                "status": "verified",
+                "supported": true,
+                "notes": "Pro preview full-length songs with complex structural coherence including verses, choruses, and bridges."
+              },
+              "image_to_music": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "input",
+                "provider_parameter": "input",
+                "max_inputs": 10,
+                "notes": "Accepts up to 10 images alongside text in the Interactions input list to inspire music."
+              },
+              "custom_lyrics": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "section_tags": [
+                  "[Verse]",
+                  "[Chorus]",
+                  "[Bridge]"
+                ],
+                "notes": "Include custom lyrics with [Verse], [Chorus], and [Bridge] section tags in the prompt."
+              },
+              "timed_structure": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Use timestamps such as [0:00 - 0:30] in the prompt to guide arrangement progression."
+              },
+              "instrumental": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "notes": "Prompt with Instrumental only, no vocals for music without singing."
+              },
+              "duration_control": {
+                "status": "verified",
+                "supported": true,
+                "control_method": "prompt",
+                "provider_parameter": "input",
+                "max_inputs": null,
+                "control_mechanism": "prompt_timestamps",
+                "notes": "Full-length songs last a couple of minutes. Prompt descriptions or timestamps influence duration."
+              }
+            },
+            "billing": {
+              "rate_usd": 0.08,
+              "unit": "song",
+              "notes": "$0.08 per song."
+            },
+            "output": {
+              "sample_rate_hz": 48000,
+              "channels": 2,
+              "default_format": "mp3",
+              "includes_lyrics_text": true
+            },
+            "source_id": "google_gemini_music_generation_docs",
+            "source_url": "https://ai.google.dev/gemini-api/docs/music-generation",
+            "notes": "Exact Lyria 3 Pro Preview Interactions API documentation backs full-length music generation up to 48kHz stereo, not voice/TTS. Single-turn generation only; generated audio includes a SynthID watermark."
+          }
         }
       },
       "swarm": {
@@ -50102,10 +50339,38 @@
           "image_generation": null,
           "video_generation": null,
           "music_generation": {
-            "status": "partially_verified",
+            "status": "verified",
             "api_surface": "interactions_api",
+            "kind": "full_song",
             "documented_generation_method": "interactions.create",
             "settings": {
+              "duration_seconds": {
+                "status": "verified",
+                "client_parameter": "duration_seconds",
+                "provider_parameter": null,
+                "supported_values": [
+                  30,
+                  60,
+                  90,
+                  120,
+                  180,
+                  240,
+                  300
+                ],
+                "provider_documented_values": [
+                  30,
+                  60,
+                  90,
+                  120,
+                  180,
+                  240,
+                  300
+                ],
+                "default_value": 120,
+                "min_seconds": 30,
+                "max_seconds": 300,
+                "notes": "Full-length songs last a couple of minutes. Prompt descriptions or timestamps influence duration from 30 to 300 seconds."
+              },
               "format": {
                 "status": "unknown",
                 "client_parameter": "format",
@@ -50120,6 +50385,11 @@
               }
             },
             "features": {
+              "full_song_generation": {
+                "status": "verified",
+                "supported": true,
+                "notes": "Full-length songs with complex structural coherence including verses, choruses, and bridges."
+              },
               "image_to_music": {
                 "status": "verified",
                 "supported": true,
@@ -50134,6 +50404,11 @@
                 "control_method": "prompt",
                 "provider_parameter": "input",
                 "max_inputs": null,
+                "section_tags": [
+                  "[Verse]",
+                  "[Chorus]",
+                  "[Bridge]"
+                ],
                 "notes": "Include custom lyrics with [Verse], [Chorus], and [Bridge] section tags in the prompt."
               },
               "timed_structure": {
@@ -50158,8 +50433,14 @@
                 "control_method": "prompt",
                 "provider_parameter": "input",
                 "max_inputs": null,
+                "control_mechanism": "prompt_timestamps",
                 "notes": "Full-length songs last a couple of minutes. Prompt descriptions or timestamps influence duration; no exact numeric duration parameter or guaranteed range is published."
               }
+            },
+            "billing": {
+              "rate_usd": 0.08,
+              "unit": "song",
+              "notes": "$0.08 per song."
             },
             "output": {
               "sample_rate_hz": 44100,

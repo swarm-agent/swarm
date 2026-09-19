@@ -10,6 +10,7 @@ const (
 
 	ModelLyriaClip = "lyria-3-clip-preview"
 	ModelLyriaSong = "lyria-3.5"
+	ModelLyriaPro  = "lyria-3-pro-preview"
 
 	DefaultAudioClipModel = ModelLyriaClip
 	DefaultAudioSongModel = ModelLyriaSong
@@ -31,6 +32,29 @@ type ModelCatalog interface {
 	ListCatalog(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error)
 }
 
+// ManagedAudioDurationCapability defines supported duration ranges and presets.
+type ManagedAudioDurationCapability struct {
+	DefaultValue    int    `json:"default_value"`
+	MinSeconds      int    `json:"min_seconds"`
+	MaxSeconds      int    `json:"max_seconds"`
+	SupportedValues []int  `json:"supported_values,omitempty"`
+	Notes           string `json:"notes,omitempty"`
+}
+
+// ManagedAudioCapabilities details what the configured audio model can do.
+type ManagedAudioCapabilities struct {
+	Available       bool                           `json:"available"`
+	Reason          string                         `json:"reason,omitempty"`
+	Model           string                         `json:"model"`
+	Provider        string                         `json:"provider"`
+	DisplayName     string                         `json:"display_name"`
+	Kind            string                         `json:"kind"` // "clip" or "full_song"
+	DurationSeconds ManagedAudioDurationCapability `json:"duration_seconds"`
+	Features        map[string]any                 `json:"features,omitempty"`
+	Billing         map[string]any                 `json:"billing,omitempty"`
+	CapabilityToken string                         `json:"capability_token,omitempty"`
+}
+
 // ManagedAudioRequest specifies audio generation or iteration parameters.
 type ManagedAudioRequest struct {
 	Prompt                string
@@ -42,6 +66,7 @@ type ManagedAudioRequest struct {
 	NegativePrompt        string
 	TargetDurationSeconds float64
 	FadeOutSeconds        float64
+	CapabilityToken       string
 }
 
 // ManagedAudioSource specifies an existing audio track or prior interaction for iteration.

@@ -1040,3 +1040,93 @@ func TestGenerateManagedAudio_ExplicitModelOverride(t *testing.T) {
 		t.Errorf("res.Model = %q, want %q", res.Model, ModelLyriaSong)
 	}
 }
+
+func TestManagedAudioCapabilities(t *testing.T) {
+	svc := NewService(nil, nil, nil)
+
+	t.Run("clip model capabilities", func(t *testing.T) {
+		caps, err := svc.ManagedAudioCapabilities(ModelLyriaClip)
+		if err != nil {
+			t.Fatalf("ManagedAudioCapabilities failed: %v", err)
+		}
+		if !caps.Available {
+			t.Error("expected available=true")
+		}
+		if caps.Kind != "clip" {
+			t.Errorf("caps.Kind = %q, want clip", caps.Kind)
+		}
+		if caps.DurationSeconds.MaxSeconds != 30 {
+			t.Errorf("max_seconds = %d, want 30", caps.DurationSeconds.MaxSeconds)
+		}
+		if caps.DurationSeconds.MinSeconds != 1 {
+			t.Errorf("min_seconds = %d, want 1", caps.DurationSeconds.MinSeconds)
+		}
+		if caps.DurationSeconds.DefaultValue != 30 {
+			t.Errorf("default_value = %d, want 30", caps.DurationSeconds.DefaultValue)
+		}
+		if caps.CapabilityToken == "" {
+			t.Error("expected non-empty capability token")
+		}
+	})
+
+	t.Run("song model capabilities", func(t *testing.T) {
+		caps, err := svc.ManagedAudioCapabilities(ModelLyriaSong)
+		if err != nil {
+			t.Fatalf("ManagedAudioCapabilities failed: %v", err)
+		}
+		if !caps.Available {
+			t.Error("expected available=true")
+		}
+		if caps.Kind != "full_song" {
+			t.Errorf("caps.Kind = %q, want full_song", caps.Kind)
+		}
+		if caps.DurationSeconds.MaxSeconds != 300 {
+			t.Errorf("max_seconds = %d, want 300", caps.DurationSeconds.MaxSeconds)
+		}
+		if caps.DurationSeconds.DefaultValue != 120 {
+			t.Errorf("default_value = %d, want 120", caps.DurationSeconds.DefaultValue)
+		}
+		if caps.CapabilityToken == "" {
+			t.Error("expected non-empty capability token")
+		}
+	})
+}
+
+func TestGenerateManagedAudio_DurationExceedsClipLimit(t *testing.T) {
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	svc := NewService(authStore, nil, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	_, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "bassline",
+		DurationSeconds: 60,
+		Model:           ModelLyriaClip,
+		Principal:       principal,
+	})
+	if err == nil {
+		t.Fatal("expected error when duration exceeds clip model limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum duration") {
+		t.Errorf("expected duration error message, got: %v", err)
+	}
+}
+
+func TestGenerateManagedAudio_CapabilityTokenValidation(t *testing.T) {
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	svc := NewService(authStore, nil, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	_, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "bassline",
+		DurationSeconds: 15,
+		Model:           ModelLyriaClip,
+		Principal:       principal,
+		CapabilityToken: "invalid-token",
+	})
+	if err == nil {
+		t.Fatal("expected error when capability token is invalid, got nil")
+	}
+	if !strings.Contains(err.Error(), "capability_token does not match") {
+		t.Errorf("expected capability_token mismatch error, got: %v", err)
+	}
+}
