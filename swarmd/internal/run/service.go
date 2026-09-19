@@ -2284,21 +2284,22 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
 				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens)
-				if usageErr == nil {
-					turnUsageCopy := turnUsage
-					usageSummaryCopy := usageSummary
-					turnUsageRecord = &turnUsageCopy
-					usageSummaryState = &usageSummaryCopy
-					if usageEvent != nil {
-						events = append(events, *usageEvent)
-					}
-					emit(StreamEvent{
-						Type:         StreamEventUsageUpdated,
-						Step:         step,
-						TurnUsage:    turnUsageRecord,
-						UsageSummary: usageSummaryState,
-					})
+				if usageErr != nil {
+					return RunResult{}, usageErr
 				}
+				turnUsageCopy := turnUsage
+				usageSummaryCopy := usageSummary
+				turnUsageRecord = &turnUsageCopy
+				usageSummaryState = &usageSummaryCopy
+				if usageEvent != nil {
+					events = append(events, *usageEvent)
+				}
+				emit(StreamEvent{
+					Type:         StreamEventUsageUpdated,
+					Step:         step,
+					TurnUsage:    turnUsageRecord,
+					UsageSummary: usageSummaryState,
+				})
 			}
 		}
 

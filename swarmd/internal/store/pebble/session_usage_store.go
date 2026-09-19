@@ -35,6 +35,7 @@ type SessionTurnUsageSnapshot struct {
 	RequestedServiceTier string           `json:"requested_service_tier,omitempty"`
 	ServiceTier          string           `json:"service_tier,omitempty"`
 	ServiceTierStatus    string           `json:"service_tier_status,omitempty"`
+	PriceStatus          string           `json:"price_status,omitempty"`
 	EstimatedCostUSD     float64          `json:"estimated_cost_usd,omitempty"`
 	APIUsageRaw          map[string]any   `json:"api_usage_raw,omitempty"`
 	APIUsageRawPath      string           `json:"api_usage_raw_path,omitempty"`
@@ -223,7 +224,14 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		return errors.New("turn usage account_scope_id is required")
 	}
 	if record.EstimatedCostUSD <= 0 && !strings.EqualFold(record.Provider, "codex") {
-		record.EstimatedCostUSD = s.CalculateCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+		cost, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+		record.EstimatedCostUSD = cost
+		if record.PriceStatus == "" {
+			record.PriceStatus = status
+		}
+	} else if record.PriceStatus == "" {
+		_, status := s.CalculateCostWithStatus(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+		record.PriceStatus = status
 	}
 
 	unlockSession := s.store.sessionMutations.lockSessions(record.SessionID, "account:"+record.AccountScopeID)
@@ -239,6 +247,10 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	if record.BilledTokens > 0 {
 		deltaTokens = record.BilledTokens
 	}
+	deltaInputTokens := clampUsageTokenCount(record.InputTokens)
+	deltaOutputTokens := clampUsageTokenCount(record.OutputTokens)
+	deltaCachedTokens := clampUsageTokenCount(record.CacheReadTokens)
+	deltaThinkingTokens := clampUsageTokenCount(record.ThinkingTokens)
 	if hadPrevious {
 		deltaCost = record.EstimatedCostUSD - previous.EstimatedCostUSD
 		if deltaCost < 0 {
@@ -255,6 +267,22 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		deltaTokens = currTokens - prevTokens
 		if deltaTokens < 0 {
 			deltaTokens = 0
+		}
+		deltaInputTokens -= clampUsageTokenCount(previous.InputTokens)
+		if deltaInputTokens < 0 {
+			deltaInputTokens = 0
+		}
+		deltaOutputTokens -= clampUsageTokenCount(previous.OutputTokens)
+		if deltaOutputTokens < 0 {
+			deltaOutputTokens = 0
+		}
+		deltaCachedTokens -= clampUsageTokenCount(previous.CacheReadTokens)
+		if deltaCachedTokens < 0 {
+			deltaCachedTokens = 0
+		}
+		deltaThinkingTokens -= clampUsageTokenCount(previous.ThinkingTokens)
+		if deltaThinkingTokens < 0 {
+			deltaThinkingTokens = 0
 		}
 	}
 
@@ -292,10 +320,10 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		}
 		acc.TotalCostUSD += deltaCost
 		acc.TotalTokens += deltaTokens
-		acc.InputTokens += clampUsageTokenCount(record.InputTokens)
-		acc.OutputTokens += clampUsageTokenCount(record.OutputTokens)
-		acc.CachedTokens += clampUsageTokenCount(record.CacheReadTokens)
-		acc.ThinkingTokens += clampUsageTokenCount(record.ThinkingTokens)
+		acc.InputTokens += deltaInputTokens
+		acc.OutputTokens += deltaOutputTokens
+		acc.CachedTokens += deltaCachedTokens
+		acc.ThinkingTokens += deltaThinkingTokens
 		if !hadPrevious {
 			acc.TurnCount++
 		}
@@ -320,10 +348,10 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			turnsDelta = 1
 		}
 		unknownDelta := 0
-		if strings.EqualFold(record.ServiceTierStatus, "unknown") {
+		if strings.EqualFold(record.PriceStatus, "unknown") || strings.EqualFold(record.ServiceTierStatus, "unknown") {
 			unknownDelta = 1
 		}
-		if err := s.updateAccountUsageRollupInBatch(batch, record.AccountScopeID, dateStr, record.SessionID, record.Provider, record.Model, deltaCost, 0.0, 0.0, deltaTokens, clampUsageTokenCount(record.InputTokens), clampUsageTokenCount(record.OutputTokens), clampUsageTokenCount(record.CacheReadTokens), clampUsageTokenCount(record.ThinkingTokens), turnsDelta, 0, 0, 0, 0, unknownDelta, ts, time.Now().UnixMilli()); err != nil {
+		if err := s.updateAccountUsageRollupInBatch(batch, record.AccountScopeID, dateStr, record.SessionID, record.Provider, record.Model, deltaCost, 0.0, 0.0, deltaTokens, deltaInputTokens, deltaOutputTokens, deltaCachedTokens, deltaThinkingTokens, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, time.Now().UnixMilli()); err != nil {
 			return err
 		}
 	}

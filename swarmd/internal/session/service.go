@@ -1486,7 +1486,14 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	usage.Source = strings.TrimSpace(usage.Source)
 	normalizeTurnUsage(&usage)
 	if usage.EstimatedCostUSD <= 0 {
-		usage.EstimatedCostUSD = s.store.CalculateCost(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+		cost, status := s.store.CalculateCostWithStatus(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+		usage.EstimatedCostUSD = cost
+		if usage.PriceStatus == "" {
+			usage.PriceStatus = status
+		}
+	} else if usage.PriceStatus == "" {
+		_, status := s.store.CalculateCostWithStatus(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+		usage.PriceStatus = status
 	}
 
 	s.mu.Lock()

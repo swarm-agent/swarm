@@ -2108,7 +2108,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "chain_from", "chain":
+			"image", "image_path", "chain_from", "chain", "includes_audio":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -2374,6 +2374,11 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			effectiveVideoResolution = fmt.Sprintf("%dp", generated.Height)
 		}
 
+		effectiveIncludesAudio := true
+		if incVal, ok := args["includes_audio"].(bool); ok {
+			effectiveIncludesAudio = incVal
+		}
+
 		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
 		if r.sessions != nil {
 			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
@@ -2383,6 +2388,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 				Count:           1,
 				DurationSeconds: effectiveVideoDurationSeconds,
 				Resolution:      effectiveVideoResolution,
+				IncludesAudio:   effectiveIncludesAudio,
 				IsIteration:     sourceRef != nil,
 			})
 		}

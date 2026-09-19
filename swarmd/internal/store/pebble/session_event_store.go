@@ -1209,7 +1209,14 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if usageProvided {
 		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
-			turnUsage.EstimatedCostUSD = s.CalculateCost(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			cost, status := s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.EstimatedCostUSD = cost
+			if turnUsage.PriceStatus == "" {
+				turnUsage.PriceStatus = status
+			}
+		} else if turnUsage.PriceStatus == "" {
+			_, status := s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.PriceStatus = status
 		}
 		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
@@ -1250,6 +1257,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		if turnUsage.BilledTokens > 0 {
 			tokensDelta = turnUsage.BilledTokens
 		}
+		inputDelta := clampUsageTokenCount(turnUsage.InputTokens)
+		outputDelta := clampUsageTokenCount(turnUsage.OutputTokens)
+		cachedDelta := clampUsageTokenCount(turnUsage.CacheReadTokens)
+		thinkingDelta := clampUsageTokenCount(turnUsage.ThinkingTokens)
 		if hadPreviousTurnUsage {
 			costDelta = turnUsage.EstimatedCostUSD - previousTurnUsage.EstimatedCostUSD
 			if costDelta < 0 {
@@ -1267,6 +1278,22 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if tokensDelta < 0 {
 				tokensDelta = 0
 			}
+			inputDelta -= clampUsageTokenCount(previousTurnUsage.InputTokens)
+			if inputDelta < 0 {
+				inputDelta = 0
+			}
+			outputDelta -= clampUsageTokenCount(previousTurnUsage.OutputTokens)
+			if outputDelta < 0 {
+				outputDelta = 0
+			}
+			cachedDelta -= clampUsageTokenCount(previousTurnUsage.CacheReadTokens)
+			if cachedDelta < 0 {
+				cachedDelta = 0
+			}
+			thinkingDelta -= clampUsageTokenCount(previousTurnUsage.ThinkingTokens)
+			if thinkingDelta < 0 {
+				thinkingDelta = 0
+			}
 		}
 		if costDelta > 0 || tokensDelta > 0 || !hadPreviousTurnUsage {
 			acc, _, err := s.GetDailyUsageAccumulator(turnUsage.AccountScopeID, dateStr)
@@ -1279,10 +1306,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 			acc.TotalCostUSD += costDelta
 			acc.TotalTokens += tokensDelta
-			acc.InputTokens += clampUsageTokenCount(turnUsage.InputTokens)
-			acc.OutputTokens += clampUsageTokenCount(turnUsage.OutputTokens)
-			acc.CachedTokens += clampUsageTokenCount(turnUsage.CacheReadTokens)
-			acc.ThinkingTokens += clampUsageTokenCount(turnUsage.ThinkingTokens)
+			acc.InputTokens += inputDelta
+			acc.OutputTokens += outputDelta
+			acc.CachedTokens += cachedDelta
+			acc.ThinkingTokens += thinkingDelta
 			if !hadPreviousTurnUsage {
 				acc.TurnCount++
 			}
@@ -1305,10 +1332,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 				turnsDelta = 1
 			}
 			unknownDelta := 0
-			if strings.EqualFold(turnUsage.ServiceTierStatus, "unknown") {
+			if strings.EqualFold(turnUsage.PriceStatus, "unknown") || strings.EqualFold(turnUsage.ServiceTierStatus, "unknown") {
 				unknownDelta = 1
 			}
-			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, 0.0, 0.0, tokensDelta, clampUsageTokenCount(turnUsage.InputTokens), clampUsageTokenCount(turnUsage.OutputTokens), clampUsageTokenCount(turnUsage.CacheReadTokens), clampUsageTokenCount(turnUsage.ThinkingTokens), turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
+			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, 0.0, 0.0, tokensDelta, inputDelta, outputDelta, cachedDelta, thinkingDelta, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 		}

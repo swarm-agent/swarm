@@ -657,14 +657,7 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if err != nil {
 			return ManagedImage{}, err
 		}
-		tokens := int64(0)
-		if generated.Usage != nil {
-			if count, ok := toInt64(generated.Usage["candidatesTokenCount"]); ok && count > 0 {
-				tokens = count
-			} else if count, ok := toInt64(generated.Usage["totalTokenCount"]); ok && count > 0 {
-				tokens = count
-			}
-		}
+		tokens := extractImageOutputTokens(generated.Usage)
 		img, err := managedImageFromCodex(completed[0])
 		if err != nil {
 			return ManagedImage{}, err
@@ -674,6 +667,43 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 	default:
 		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
 	}
+}
+
+func extractImageOutputTokens(usage map[string]any) int64 {
+	if usage == nil {
+		return 0
+	}
+	for _, key := range []string{"candidatesTokensDetails", "candidates_tokens_details"} {
+		if rawDetails, ok := usage[key]; ok {
+			switch details := rawDetails.(type) {
+			case []any:
+				for _, item := range details {
+					if m, ok := item.(map[string]any); ok {
+						modality, _ := m["modality"].(string)
+						if strings.EqualFold(strings.TrimSpace(modality), "IMAGE") {
+							for _, tcKey := range []string{"tokenCount", "token_count"} {
+								if count, ok := toInt64(m[tcKey]); ok && count > 0 {
+									return count
+								}
+							}
+						}
+					}
+				}
+			case []map[string]any:
+				for _, m := range details {
+					modality, _ := m["modality"].(string)
+					if strings.EqualFold(strings.TrimSpace(modality), "IMAGE") {
+						for _, tcKey := range []string{"tokenCount", "token_count"} {
+							if count, ok := toInt64(m[tcKey]); ok && count > 0 {
+								return count
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return 0
 }
 
 func toInt64(v any) (int64, bool) {

@@ -625,6 +625,208 @@ func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
 	if estImgTokensZero.PriceStatus != "unknown" || estImgTokensZero.CostUSD != 0.0 {
 		t.Fatalf("expected unknown price status for 0-token image line, got status=%s cost=%f", estImgTokensZero.PriceStatus, estImgTokensZero.CostUSD)
 	}
+
+	// 7. Video with includes_audio condition
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "veo-audio",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing:               []byte(`{"currency":"USD","billing":{"status":"verified","lines":[{"billable":"video_output","unit":"second","price_usd":0.05,"conditions":{"resolution":"720p","includes_audio":true}}]}}`),
+	})
+	if err != nil {
+		t.Fatalf("set video with audio catalog: %v", err)
+	}
+	estVeoAudio := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-audio",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 5,
+		Resolution:      "720p",
+		IncludesAudio:   true,
+	})
+	if estVeoAudio.PriceStatus != "known" || estVeoAudio.CostUSD != (5.0*0.05) {
+		t.Fatalf("expected veo with audio cost %f known, got status=%s cost=%f", 5.0*0.05, estVeoAudio.PriceStatus, estVeoAudio.CostUSD)
+	}
+	estVeoNoAudio := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-audio",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 5,
+		Resolution:      "720p",
+		IncludesAudio:   false,
+	})
+	if estVeoNoAudio.PriceStatus != "unknown" || estVeoNoAudio.CostUSD != 0.0 {
+		t.Fatalf("expected unknown price status when includes_audio=false for audio-conditioned line, got status=%s cost=%f", estVeoNoAudio.PriceStatus, estVeoNoAudio.CostUSD)
+	}
+
+	// 8. Image model with unverified status: MUST reject to unknown, no fallback to raw keys
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "unverified-image",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing:               []byte(`{"currency":"USD","per_image":0.03,"billing":{"status":"unverified","lines":[{"billable":"image_output","unit":"image","price_usd":0.03}]}}`),
+	})
+	if err != nil {
+		t.Fatalf("set unverified image catalog: %v", err)
+	}
+	estUnverifiedImg := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider: "google",
+		Model:    "unverified-image",
+		Kind:     "image",
+		Count:    1,
+	})
+	if estUnverifiedImg.PriceStatus != "unknown" || estUnverifiedImg.CostUSD != 0.0 {
+		t.Fatalf("expected unknown price status for unverified image, got status=%s cost=%f", estUnverifiedImg.PriceStatus, estUnverifiedImg.CostUSD)
+	}
+
+	// 9. Image model with resolution condition matching
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "imagen-res",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing: []byte(`{"currency":"USD","billing":{"status":"verified","lines":[
+			{"billable":"image_output","unit":"image","price_usd":0.03,"conditions":{"resolution":"1024x1024"}},
+			{"billable":"image_output","unit":"image","price_usd":0.06,"conditions":{"resolution":"2048x2048"}}
+		]}}`),
+	})
+	if err != nil {
+		t.Fatalf("set imagen-res catalog: %v", err)
+	}
+	estImg1024 := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:   "google",
+		Model:      "imagen-res",
+		Kind:       "image",
+		Count:      1,
+		Resolution: "1024x1024",
+	})
+	if estImg1024.PriceStatus != "known" || estImg1024.CostUSD != 0.03 {
+		t.Fatalf("expected imagen-res 1024 cost 0.03, got status=%s cost=%f", estImg1024.PriceStatus, estImg1024.CostUSD)
+	}
+	estImgAbsentRes := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:   "google",
+		Model:      "imagen-res",
+		Kind:       "image",
+		Count:      1,
+		Resolution: "",
+	})
+	if estImgAbsentRes.PriceStatus != "unknown" || estImgAbsentRes.CostUSD != 0.0 {
+		t.Fatalf("expected imagen-res absent resolution to be unknown, got status=%s cost=%f", estImgAbsentRes.PriceStatus, estImgAbsentRes.CostUSD)
+	}
+}
+
+func TestTurnUsageBilledTokensDeltasAndUnknownPriceStatus(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-deltas.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	catStore := NewModelCatalogStore(db)
+	// Add an unpriced model to catalog
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "unpriced-text",
+		SourceSnapshotID:      "snap-1",
+		SourceSnapshotVersion: "v1",
+		Pricing:               []byte(`{"billing":{"status":"unverified"}}`),
+	})
+	if err != nil {
+		t.Fatalf("set catalog: %v", err)
+	}
+
+	acctID := "acct-delta"
+	sessID := "sess-delta"
+	runID := "run-delta"
+	dateStr := time.Now().UTC().Format("2006-01-02")
+	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, UserID: "u1", Title: "Delta Test"}); err != nil {
+		t.Fatalf("set session: %v", err)
+	}
+
+	// 1. Initial turn: 1000 input tokens
+	turn1 := SessionTurnUsageSnapshot{
+		SessionID:      sessID,
+		AccountScopeID: acctID,
+		UserID:         "u1",
+		RunID:          runID,
+		Provider:       "google",
+		Model:          "unpriced-text",
+		InputTokens:    1000,
+		OutputTokens:   100,
+		TotalTokens:    1100,
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+	if err := store.PutTurnUsage(turn1); err != nil {
+		t.Fatalf("put turn 1: %v", err)
+	}
+
+	// Verify price status is marked unknown and unknown count is incremented
+	readTurn1, found, err := store.GetTurnUsage(sessID, runID)
+	if err != nil || !found {
+		t.Fatalf("get turn 1: found=%v err=%v", found, err)
+	}
+	if readTurn1.PriceStatus != "unknown" {
+		t.Fatalf("expected price status unknown, got %s", readTurn1.PriceStatus)
+	}
+
+	rollup1, found, err := store.GetAccountUsageRollup(acctID, dateStr, sessID, "google", "unpriced-text")
+	if err != nil || !found {
+		t.Fatalf("get rollup 1: found=%v err=%v", found, err)
+	}
+	if rollup1.UnknownCount != 1 {
+		t.Fatalf("expected unknown count 1, got %d", rollup1.UnknownCount)
+	}
+	if rollup1.InputTokens != 1000 || rollup1.Turns != 1 {
+		t.Fatalf("expected input tokens 1000 and turns 1, got tokens=%d turns=%d", rollup1.InputTokens, rollup1.Turns)
+	}
+
+	// 2. Repeat update for the same run: conversational occupancy grew from 1000 to 1500 input tokens
+	turn2 := SessionTurnUsageSnapshot{
+		SessionID:      sessID,
+		AccountScopeID: acctID,
+		UserID:         "u1",
+		RunID:          runID,
+		Provider:       "google",
+		Model:          "unpriced-text",
+		InputTokens:    1500,
+		OutputTokens:   200,
+		TotalTokens:    1700,
+		CreatedAt:      time.Now().UnixMilli(),
+	}
+	if err := store.PutTurnUsage(turn2); err != nil {
+		t.Fatalf("put turn 2: %v", err)
+	}
+
+	rollup2, found, err := store.GetAccountUsageRollup(acctID, dateStr, sessID, "google", "unpriced-text")
+	if err != nil || !found {
+		t.Fatalf("get rollup 2: found=%v err=%v", found, err)
+	}
+	// InputTokens in rollup must be 1500 (1000 initial + 500 delta), NOT 2500 (1000 + 1500)
+	if rollup2.InputTokens != 1500 {
+		t.Fatalf("expected cumulative billed input tokens 1500, got %d", rollup2.InputTokens)
+	}
+	// OutputTokens must be 200 (100 initial + 100 delta), NOT 300
+	if rollup2.OutputTokens != 200 {
+		t.Fatalf("expected cumulative billed output tokens 200, got %d", rollup2.OutputTokens)
+	}
+	// Turns must stay 1, not 2
+	if rollup2.Turns != 1 {
+		t.Fatalf("expected turns 1, got %d", rollup2.Turns)
+	}
+
+	// DailyAccumulator must also reflect deltas
+	acc, found, err := store.GetDailyUsageAccumulator(acctID, dateStr)
+	if err != nil || !found {
+		t.Fatalf("get daily accumulator: found=%v err=%v", found, err)
+	}
+	if acc.InputTokens != 1500 || acc.OutputTokens != 200 || acc.TurnCount != 1 {
+		t.Fatalf("daily accumulator tokens mismatch: input=%d output=%d turns=%d", acc.InputTokens, acc.OutputTokens, acc.TurnCount)
+	}
 }
 
 // TestConcurrentDifferentSessionsDailyAccumulator proves that concurrent writes from different

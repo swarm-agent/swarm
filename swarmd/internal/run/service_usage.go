@@ -231,6 +231,16 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		ServiceTier:      strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
 		EstimatedCostUSD: usage.EstimatedCostUSD,
 	}
+	if s.sessions != nil && s.sessions.Store() != nil {
+		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
+			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.EstimatedCostUSD = cost
+			turnUsage.PriceStatus = status
+		} else if turnUsage.PriceStatus == "" {
+			_, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.PriceStatus = status
+		}
+	}
 	if apply == nil {
 		return s.sessions.RecordTurnUsage(sessionID, turnUsage)
 	}

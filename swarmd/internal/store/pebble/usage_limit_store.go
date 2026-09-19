@@ -313,6 +313,15 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 					}
 				}
 			}
+		} else {
+			// Explicit unverified status: MUST stay unknown, no fallback!
+			return MediaCostEstimate{
+				CostUSD:         0.0,
+				PriceStatus:     "unknown",
+				PricingSummary:  fmt.Sprintf("unknown pricing (catalog pricing status is %q for %s)", status, snapID),
+				SnapshotID:      snapID,
+				SnapshotVersion: snapVer,
+			}
 		}
 	}
 
@@ -436,7 +445,7 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 	case "image":
 		for _, lineMap := range verifiedLines {
 			billable, _ := lineMap["billable"].(string)
-			if billable != "image_output" && billable != "image" {
+			if billable != "image_output" && billable != "image" && billable != "image_generation" {
 				continue
 			}
 			pUSD, ok := toFloat64(lineMap["price_usd"])
@@ -446,6 +455,11 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 			if conds, ok := lineMap["conditions"].(map[string]any); ok {
 				if res, ok := conds["resolution"].(string); ok && res != "" {
 					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
+						continue
+					}
+				}
+				if ar, ok := conds["aspect_ratio"].(string); ok && ar != "" {
+					if opts.AspectRatio == "" || !strings.EqualFold(ar, opts.AspectRatio) {
 						continue
 					}
 				}
@@ -465,36 +479,6 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 			}
 			if foundPrice {
 				break
-			}
-		}
-		if !foundPrice {
-			for _, key := range []string{"per_image", "output_image", "image", "price_per_image"} {
-				if val, ok := raw[key]; ok {
-					if num, ok := toFloat64(val); ok && num > 0 {
-						unitPrice = num
-						foundPrice = true
-						summaryText = fmt.Sprintf("$%.4f per image (catalog %s)", unitPrice, snapID)
-						break
-					}
-				}
-			}
-		}
-		if !foundPrice {
-			if iop, ok := raw["image_output_price"].(map[string]any); ok {
-				if amt, ok := toFloat64(iop["amount"]); ok && amt > 0 {
-					unit, _ := iop["unit"].(string)
-					if strings.Contains(strings.ToLower(unit), "token") {
-						if opts.OutputTokens > 0 {
-							unitPrice = (amt / 1_000_000.0) * float64(opts.OutputTokens)
-							foundPrice = true
-							summaryText = fmt.Sprintf("$%.4f (token-metered) (catalog %s)", unitPrice, snapID)
-						}
-					} else {
-						unitPrice = amt
-						foundPrice = true
-						summaryText = fmt.Sprintf("$%.4f per image (catalog %s)", unitPrice, snapID)
-					}
-				}
 			}
 		}
 	}
