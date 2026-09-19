@@ -229,7 +229,6 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 	}
 	provider := strings.ToLower(strings.TrimSpace(opts.Provider))
 	model := strings.TrimSpace(opts.Model)
-	kind := strings.ToLower(strings.TrimSpace(opts.Kind))
 
 	if provider == "codex" {
 		return MediaCostEstimate{
@@ -257,14 +256,62 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 		}
 	}
 
-	snapID := rec.SourceSnapshotID
-	snapVer := rec.SourceSnapshotVersion
-
-	if !found || len(rec.Pricing) == 0 {
+	if !found {
+		snapID := rec.SourceSnapshotID
+		snapVer := rec.SourceSnapshotVersion
+		summary := fmt.Sprintf("unknown pricing (model %q unpriced in snapshot)", model)
+		if snapID != "" {
+			summary = fmt.Sprintf("unknown pricing (model %q unpriced in snapshot %s)", model, snapID)
+		}
 		return MediaCostEstimate{
 			CostUSD:         0.0,
 			PriceStatus:     "unknown",
-			PricingSummary:  fmt.Sprintf("unknown pricing (model %q unpriced in snapshot %s)", model, snapID),
+			PricingSummary:  summary,
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	return EstimateMediaCostFromRecord(rec, opts)
+}
+
+// EstimateMediaCostFromRecord resolves snapshot-backed media pricing for a given catalog record.
+// If the model is unpriced or contains unverified status, it explicitly marks the price status
+// as unknown rather than inventing fallback rates.
+func EstimateMediaCostFromRecord(rec ModelCatalogRecord, opts MediaCostEstimateOptions) MediaCostEstimate {
+	if opts.Count <= 0 {
+		opts.Count = 1
+	}
+	provider := strings.ToLower(strings.TrimSpace(opts.Provider))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(rec.Provider))
+	}
+	model := strings.TrimSpace(opts.Model)
+	if model == "" {
+		model = strings.TrimSpace(rec.Model)
+	}
+	kind := strings.ToLower(strings.TrimSpace(opts.Kind))
+
+	if provider == "codex" {
+		return MediaCostEstimate{
+			CostUSD:        0.0,
+			PriceStatus:    "subscription",
+			PricingSummary: "Codex subscription ($0.00 billed)",
+		}
+	}
+
+	snapID := rec.SourceSnapshotID
+	snapVer := rec.SourceSnapshotVersion
+
+	if len(rec.Pricing) == 0 {
+		summary := fmt.Sprintf("unknown pricing (model %q unpriced in snapshot)", model)
+		if snapID != "" {
+			summary = fmt.Sprintf("unknown pricing (model %q unpriced in snapshot %s)", model, snapID)
+		}
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  summary,
 			SnapshotID:      snapID,
 			SnapshotVersion: snapVer,
 		}
@@ -272,10 +319,14 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 
 	var raw map[string]any
 	if err := json.Unmarshal(rec.Pricing, &raw); err != nil {
+		summary := "unknown pricing (invalid pricing in snapshot)"
+		if snapID != "" {
+			summary = fmt.Sprintf("unknown pricing (invalid pricing in snapshot %s)", snapID)
+		}
 		return MediaCostEstimate{
 			CostUSD:         0.0,
 			PriceStatus:     "unknown",
-			PricingSummary:  fmt.Sprintf("unknown pricing (invalid pricing in snapshot %s)", snapID),
+			PricingSummary:  summary,
 			SnapshotID:      snapID,
 			SnapshotVersion: snapVer,
 		}
@@ -293,10 +344,14 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 	}
 
 	if isFree, ok := raw["is_free"].(bool); ok && isFree {
+		summary := "Free"
+		if snapID != "" {
+			summary = fmt.Sprintf("Free (snapshot %s)", snapID)
+		}
 		return MediaCostEstimate{
 			CostUSD:         0.0,
 			PriceStatus:     "free",
-			PricingSummary:  fmt.Sprintf("Free (snapshot %s)", snapID),
+			PricingSummary:  summary,
 			SnapshotID:      snapID,
 			SnapshotVersion: snapVer,
 		}
@@ -316,10 +371,14 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 			}
 		} else {
 			// Explicit unverified status: MUST stay unknown, no fallback!
+			summary := fmt.Sprintf("unknown pricing (catalog pricing status is %q)", status)
+			if snapID != "" {
+				summary = fmt.Sprintf("unknown pricing (catalog pricing status is %q for %s)", status, snapID)
+			}
 			return MediaCostEstimate{
 				CostUSD:         0.0,
 				PriceStatus:     "unknown",
-				PricingSummary:  fmt.Sprintf("unknown pricing (catalog pricing status is %q for %s)", status, snapID),
+				PricingSummary:  summary,
 				SnapshotID:      snapID,
 				SnapshotVersion: snapVer,
 			}
@@ -342,7 +401,8 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 			if !ok || pUSD < 0 {
 				continue
 			}
-			// Condition matching: resolution and includes_audio
+			// Condition matching: resolution, includes_audio, service_tier
+			serviceTier := ""
 			if conds, ok := lineMap["conditions"].(map[string]any); ok {
 				if res, ok := conds["resolution"].(string); ok && res != "" {
 					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
@@ -354,6 +414,27 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 						continue
 					}
 				}
+				if st, ok := conds["service_tier"].(string); ok && st != "" {
+					serviceTier = st
+				}
+			}
+			if serviceTier == "" {
+				if st, ok := lineMap["service_tier"].(string); ok && st != "" {
+					serviceTier = st
+				}
+			}
+			if serviceTier != "" {
+				reqTier := opts.ServiceTier
+				if reqTier == "" {
+					reqTier = "standard"
+				}
+				if !strings.EqualFold(serviceTier, reqTier) {
+					continue
+				}
+			}
+			catalogTag := "(catalog)"
+			if snapID != "" {
+				catalogTag = fmt.Sprintf("(catalog %s)", snapID)
 			}
 			unit, _ := lineMap["unit"].(string)
 			switch strings.ToLower(unit) {
@@ -361,32 +442,36 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 				if opts.DurationSeconds > 0 {
 					unitPrice = pUSD * float64(opts.DurationSeconds)
 					foundPrice = true
-					summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog %s)", pUSD, unitPrice, opts.DurationSeconds, snapID)
+					summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) %s", pUSD, unitPrice, opts.DurationSeconds, catalogTag)
 				}
 			case "minute", "min":
 				if opts.DurationSeconds > 0 {
 					unitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
 					foundPrice = true
-					summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) (catalog %s)", pUSD, unitPrice, opts.DurationSeconds, snapID)
+					summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) %s", pUSD, unitPrice, opts.DurationSeconds, catalogTag)
 				}
 			case "video", "generation":
 				unitPrice = pUSD
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per video (catalog %s)", unitPrice, snapID)
+				summaryText = fmt.Sprintf("$%.2f per video %s", unitPrice, catalogTag)
 			}
 			if foundPrice {
 				break
 			}
 		}
 		if !foundPrice {
+			catalogTag := "(catalog)"
+			if snapID != "" {
+				catalogTag = fmt.Sprintf("(catalog %s)", snapID)
+			}
 			if vo, ok := toFloat64(raw["video_output"]); ok && vo > 0 {
 				unitPrice = vo
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per generation (catalog %s)", vo, snapID)
+				summaryText = fmt.Sprintf("$%.2f per generation %s", vo, catalogTag)
 			} else if pv, ok := toFloat64(raw["per_video"]); ok && pv > 0 {
 				unitPrice = pv
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per video (catalog %s)", pv, snapID)
+				summaryText = fmt.Sprintf("$%.2f per video %s", pv, catalogTag)
 			}
 		}
 

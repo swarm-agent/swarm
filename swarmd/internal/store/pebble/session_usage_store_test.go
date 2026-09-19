@@ -745,6 +745,166 @@ func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
 	}
 }
 
+func TestEstimateMediaCostFromRecordVeoPricing(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-veo-pricing.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	catStore := NewModelCatalogStore(db)
+	store := NewSessionStore(db)
+
+	// Real-shape billing record for Veo 3.1 Lite from live catalog snapshot
+	veoLiteRecord := ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "veo-3.1-lite-generate-preview",
+		SourceSnapshotID:      "swarm-models-v1-c1ef3f604dea5bc9",
+		SourceSnapshotVersion: "v1",
+		Pricing: []byte(`{
+			"currency": "USD",
+			"billing": {
+				"status": "verified",
+				"lines": [
+					{
+						"billable": "video_output",
+						"unit": "second",
+						"price_usd": 0.05,
+						"conditions": {
+							"resolution": "720p",
+							"includes_audio": true,
+							"service_tier": "standard"
+						}
+					},
+					{
+						"billable": "video_output",
+						"unit": "second",
+						"price_usd": 0.08,
+						"conditions": {
+							"resolution": "1080p",
+							"includes_audio": true,
+							"service_tier": "standard"
+						}
+					}
+				]
+			}
+		}`),
+	}
+
+	if err := catStore.SetRecord(veoLiteRecord); err != nil {
+		t.Fatalf("set veo record: %v", err)
+	}
+
+	// 1. Default 720p 8s => $0.40
+	est720p := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-3.1-lite-generate-preview",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if est720p.PriceStatus != "known" {
+		t.Fatalf("expected known status for 720p, got %s", est720p.PriceStatus)
+	}
+	if math.Abs(est720p.CostUSD-0.40) > 0.0001 {
+		t.Fatalf("expected $0.40 for 720p 8s, got %f", est720p.CostUSD)
+	}
+
+	// Direct call to EstimateMediaCostFromRecord gives identical result
+	recEst720p := EstimateMediaCostFromRecord(veoLiteRecord, MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-3.1-lite-generate-preview",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		IncludesAudio:   true,
+	})
+	if recEst720p.PriceStatus != "known" || math.Abs(recEst720p.CostUSD-0.40) > 0.0001 {
+		t.Fatalf("EstimateMediaCostFromRecord mismatch: status=%s cost=%f", recEst720p.PriceStatus, recEst720p.CostUSD)
+	}
+
+	// 2. 1080p 8s => $0.64
+	est1080p := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-3.1-lite-generate-preview",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 8,
+		Resolution:      "1080p",
+		IncludesAudio:   true,
+		ServiceTier:     "standard",
+	})
+	if est1080p.PriceStatus != "known" {
+		t.Fatalf("expected known status for 1080p, got %s", est1080p.PriceStatus)
+	}
+	if math.Abs(est1080p.CostUSD-0.64) > 0.0001 {
+		t.Fatalf("expected $0.64 for 1080p 8s, got %f", est1080p.CostUSD)
+	}
+
+	// 3. Missing resolution condition => unknown (cost $0.0)
+	estMissingRes := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-3.1-lite-generate-preview",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 8,
+		Resolution:      "",
+		IncludesAudio:   true,
+	})
+	if estMissingRes.PriceStatus != "unknown" || estMissingRes.CostUSD != 0.0 {
+		t.Fatalf("expected unknown on missing resolution, got status=%s cost=%f", estMissingRes.PriceStatus, estMissingRes.CostUSD)
+	}
+
+	// 4. Mismatched service tier (e.g. priority) => unknown (cost $0.0)
+	estMismatchedTier := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-3.1-lite-generate-preview",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 8,
+		Resolution:      "720p",
+		IncludesAudio:   true,
+		ServiceTier:     "priority",
+	})
+	if estMismatchedTier.PriceStatus != "unknown" || estMismatchedTier.CostUSD != 0.0 {
+		t.Fatalf("expected unknown on mismatched tier, got status=%s cost=%f", estMismatchedTier.PriceStatus, estMismatchedTier.CostUSD)
+	}
+
+	// 5. Unverified status => unknown (cost $0.0)
+	unverifiedRecord := ModelCatalogRecord{
+		Provider: "google",
+		Model:    "veo-unverified",
+		Pricing:  []byte(`{"billing":{"status":"unverified","lines":[{"billable":"video_output","unit":"second","price_usd":0.05}]}}`),
+	}
+	estUnverified := EstimateMediaCostFromRecord(unverifiedRecord, MediaCostEstimateOptions{
+		Kind:            "video",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+	})
+	if estUnverified.PriceStatus != "unknown" || estUnverified.CostUSD != 0.0 {
+		t.Fatalf("expected unknown for unverified record, got status=%s cost=%f", estUnverified.PriceStatus, estUnverified.CostUSD)
+	}
+
+	// 6. Invalid currency => unknown
+	invalidCurrencyRecord := ModelCatalogRecord{
+		Provider: "google",
+		Model:    "veo-eur",
+		Pricing:  []byte(`{"currency":"EUR","billing":{"status":"verified","lines":[{"billable":"video_output","unit":"second","price_usd":0.05}]}}`),
+	}
+	estInvalidCurr := EstimateMediaCostFromRecord(invalidCurrencyRecord, MediaCostEstimateOptions{
+		Kind:            "video",
+		DurationSeconds: 8,
+		Resolution:      "720p",
+	})
+	if estInvalidCurr.PriceStatus != "unknown" || estInvalidCurr.CostUSD != 0.0 {
+		t.Fatalf("expected unknown for non-USD currency, got status=%s cost=%f", estInvalidCurr.PriceStatus, estInvalidCurr.CostUSD)
+	}
+}
+
 func TestTurnUsageBilledTokensDeltasAndUnknownPriceStatus(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "test-deltas.pebble"))
 	if err != nil {

@@ -73,8 +73,14 @@ type ManagedVideoResult struct {
 	DurationMs       int
 	Width            int
 	Height           int
-	EstimatedCostUSD float64
+	Resolution       string
+	DurationSeconds  int
+	AspectRatio      string
+	PriceStatus      string
 	PricingSummary   string
+	SnapshotID       string
+	SnapshotVersion  string
+	EstimatedCostUSD float64
 }
 
 type Service struct {
@@ -255,10 +261,59 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 		return ManagedVideoResult{}, genErr
 	}
 
-	catalogPricing := s.resolveModelPricing(providerID, modelID)
-	cost, summary := EstimateVideoCost(providerID, modelID, durationSeconds, isIteration, catalogPricing)
-	result.EstimatedCostUSD = cost
-	result.PricingSummary = summary
+	result.Resolution = resolution
+	result.DurationSeconds = durationSeconds
+	result.AspectRatio = aspectRatio
+	if result.DurationMs <= 0 {
+		result.DurationMs = durationSeconds * 1000
+	}
+	if result.Height <= 0 {
+		switch resolution {
+		case "360p":
+			result.Height = 360
+		case "1080p":
+			result.Height = 1080
+		case "4k":
+			result.Height = 2160
+		default:
+			result.Height = 720
+		}
+	}
+	if result.Width <= 0 {
+		if aspectRatio == "9:16" {
+			result.Width = (result.Height * 9) / 16
+		} else {
+			result.Width = (result.Height * 16) / 9
+		}
+	}
+
+	modelRecord, found := s.resolveModelRecord(providerID, modelID)
+	var estimate pebblestore.MediaCostEstimate
+	if found {
+		estimate = pebblestore.EstimateMediaCostFromRecord(modelRecord, pebblestore.MediaCostEstimateOptions{
+			Provider:        providerID,
+			Model:           modelID,
+			Kind:            "video",
+			Count:           1,
+			DurationSeconds: durationSeconds,
+			Resolution:      resolution,
+			AspectRatio:     aspectRatio,
+			IncludesAudio:   true,
+			IsIteration:     isIteration,
+			ServiceTier:     "standard",
+		})
+	} else {
+		estimate = pebblestore.MediaCostEstimate{
+			CostUSD:        0.0,
+			PriceStatus:    "unknown",
+			PricingSummary: fmt.Sprintf("unknown pricing (model %q unpriced in snapshot)", modelID),
+		}
+	}
+	result.EstimatedCostUSD = estimate.CostUSD
+	result.PriceStatus = estimate.PriceStatus
+	result.PricingSummary = estimate.PricingSummary
+	result.SnapshotID = estimate.SnapshotID
+	result.SnapshotVersion = estimate.SnapshotVersion
 	return result, nil
 }
 
@@ -391,56 +446,55 @@ func normalizeDuration(durationSeconds int, modelID, resolution string) int {
 	return 8
 }
 
-func (s *Service) resolveModelPricing(providerID, modelID string) []byte {
+func (s *Service) resolveModelRecord(providerID, modelID string) (pebblestore.ModelCatalogRecord, bool) {
 	if s == nil || s.modelCatalog == nil {
-		return nil
+		return pebblestore.ModelCatalogRecord{}, false
 	}
 	records, err := s.modelCatalog.ListCatalog(providerID, 100)
 	if err != nil {
-		return nil
+		return pebblestore.ModelCatalogRecord{}, false
 	}
 	for _, rec := range records {
-		if strings.EqualFold(rec.Model, modelID) && len(rec.Pricing) > 0 {
-			return rec.Pricing
+		if strings.EqualFold(rec.Model, modelID) {
+			return rec, true
 		}
+	}
+	cleanModel := strings.TrimPrefix(strings.TrimPrefix(modelID, providerID+"/"), "google/")
+	for _, rec := range records {
+		cleanRec := strings.TrimPrefix(strings.TrimPrefix(rec.Model, providerID+"/"), "google/")
+		if strings.EqualFold(cleanRec, cleanModel) {
+			return rec, true
+		}
+	}
+	return pebblestore.ModelCatalogRecord{}, false
+}
+
+func (s *Service) resolveModelPricing(providerID, modelID string) []byte {
+	if rec, found := s.resolveModelRecord(providerID, modelID); found && len(rec.Pricing) > 0 {
+		return rec.Pricing
 	}
 	return nil
 }
 
 func EstimateVideoCost(providerID, modelID string, durationSeconds int, isIteration bool, catalogPricing []byte) (float64, string) {
-	if len(catalogPricing) > 0 {
-		var p struct {
-			VideoOutput float64 `json:"video_output"`
-			Prompt      float64 `json:"prompt"`
-		}
-		if err := json.Unmarshal(catalogPricing, &p); err == nil {
-			if p.VideoOutput > 0 {
-				return p.VideoOutput, fmt.Sprintf("$%.2f per generation (catalog)", p.VideoOutput)
-			}
-			if p.Prompt > 0 {
-				return p.Prompt, fmt.Sprintf("$%.2f per generation (catalog)", p.Prompt)
-			}
-		}
+	if durationSeconds <= 0 {
+		durationSeconds = 8
 	}
-
-	if !isIteration && (strings.Contains(strings.ToLower(modelID), "veo") || (providerID == ProviderGoogleGemini && !isOmniModel(modelID))) {
-		if durationSeconds <= 0 {
-			durationSeconds = 8
-		}
-		costPerSecond := 0.07
-		total := float64(durationSeconds) * costPerSecond
-		return total, fmt.Sprintf("$%.2f/sec ($%.2f for %ds) (Google Veo)", costPerSecond, total, durationSeconds)
+	rec := pebblestore.ModelCatalogRecord{
+		Provider: providerID,
+		Model:    modelID,
+		Pricing:  catalogPricing,
 	}
-
-	if isIteration || isOmniModel(modelID) {
-		cost := 0.05
-		return cost, "$0.05 per conversational edit (Gemini Omni Flash)"
-	}
-
-	if providerID == ProviderOpenRouter {
-		cost := 0.30
-		return cost, "$0.30 per generation (OpenRouter estimated)"
-	}
-
-	return 0.10, "$0.10 per generation (estimated)"
+	estimate := pebblestore.EstimateMediaCostFromRecord(rec, pebblestore.MediaCostEstimateOptions{
+		Provider:        providerID,
+		Model:           modelID,
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: durationSeconds,
+		Resolution:      "720p",
+		IncludesAudio:   true,
+		IsIteration:     isIteration,
+		ServiceTier:     "standard",
+	})
+	return estimate.CostUSD, estimate.PricingSummary
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +125,12 @@ func TestGenerateGoogleVeoVideo(t *testing.T) {
 	}
 	if res.Provider != ProviderGoogleGemini {
 		t.Fatalf("provider = %q, want %q", res.Provider, ProviderGoogleGemini)
+	}
+	if res.PriceStatus != "unknown" {
+		t.Fatalf("price_status = %q, want unknown", res.PriceStatus)
+	}
+	if res.EstimatedCostUSD != 0.0 {
+		t.Fatalf("estimated_cost_usd = %f, want 0.0", res.EstimatedCostUSD)
 	}
 }
 
@@ -680,4 +688,176 @@ func (f *fakeSVGRasterizer) RasterizeSVG(ctx context.Context, svgBytes []byte) (
 		return nil, f.err
 	}
 	return f.rasterizedPNG, nil
+}
+
+type fakeModelCatalog struct {
+	records []pebblestore.ModelCatalogRecord
+}
+
+func (f *fakeModelCatalog) ListCatalog(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error) {
+	return f.records, nil
+}
+
+func TestGenerateGoogleVeoVideoWithSnapshotCatalogPricing(t *testing.T) {
+	fakeMP4 := []byte("fake-veo-mp4-video-bytes")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case stringsContains(r.URL.Path, "predictLongRunning"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "operations/op-snap-pricing",
+				"done": false,
+			})
+		case stringsContains(r.URL.Path, "operations/op-snap-pricing"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "operations/op-snap-pricing",
+				"done": true,
+				"response": map[string]any{
+					"generateVideoResponse": map[string]any{
+						"generatedSamples": []any{
+							map[string]any{
+								"video": map[string]any{
+									"uri": "https://generativelanguage.googleapis.com/v1beta/files/snap-pricing-sample",
+								},
+							},
+						},
+					},
+				},
+			})
+		case stringsContains(r.URL.Path, "files/snap-pricing-sample"):
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(fakeMP4)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key", "")
+	catalog := &fakeModelCatalog{
+		records: []pebblestore.ModelCatalogRecord{
+			{
+				Provider:              "google",
+				Model:                 DefaultVideoGenerationModel,
+				SourceSnapshotID:      "swarm-models-v1-c1ef3f604dea5bc9",
+				SourceSnapshotVersion: "v1",
+				Pricing: []byte(`{
+					"currency": "USD",
+					"billing": {
+						"status": "verified",
+						"lines": [
+							{
+								"billable": "video_output",
+								"unit": "second",
+								"price_usd": 0.05,
+								"conditions": {
+									"resolution": "720p",
+									"includes_audio": true,
+									"service_tier": "standard"
+								}
+							},
+							{
+								"billable": "video_output",
+								"unit": "second",
+								"price_usd": 0.08,
+								"conditions": {
+									"resolution": "1080p",
+									"includes_audio": true,
+									"service_tier": "standard"
+								}
+							}
+						]
+					}
+				}`),
+			},
+		},
+	}
+
+	svc := NewService(authStore, nil, catalog)
+	svc.SetBaseURLs(server.URL, "")
+	svc.SetPollTiming(10*time.Millisecond, 2*time.Second)
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	// 1. Defaults (720p, 8s) => $0.40
+	res720p, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:    "A drone shot over the ocean",
+		Principal: principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedVideo 720p failed: %v", err)
+	}
+	if res720p.Resolution != "720p" {
+		t.Fatalf("resolution = %q, want 720p", res720p.Resolution)
+	}
+	if res720p.DurationSeconds != 8 {
+		t.Fatalf("duration_seconds = %d, want 8", res720p.DurationSeconds)
+	}
+	if res720p.PriceStatus != "known" {
+		t.Fatalf("price_status = %q, want known", res720p.PriceStatus)
+	}
+	if math.Abs(res720p.EstimatedCostUSD-0.40) > 0.0001 {
+		t.Fatalf("estimated_cost_usd = %f, want 0.40", res720p.EstimatedCostUSD)
+	}
+	if res720p.SnapshotID != "swarm-models-v1-c1ef3f604dea5bc9" {
+		t.Fatalf("snapshot_id = %q, want swarm-models-v1-c1ef3f604dea5bc9", res720p.SnapshotID)
+	}
+
+	// 2. 1080p, 8s => $0.64
+	res1080p, err := svc.GenerateManagedVideo(context.Background(), ManagedVideoRequest{
+		Prompt:     "A drone shot over the mountains in high resolution",
+		Resolution: "1080p",
+		Principal:  principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedVideo 1080p failed: %v", err)
+	}
+	if res1080p.Resolution != "1080p" {
+		t.Fatalf("resolution = %q, want 1080p", res1080p.Resolution)
+	}
+	if res1080p.PriceStatus != "known" {
+		t.Fatalf("price_status = %q, want known", res1080p.PriceStatus)
+	}
+	if math.Abs(res1080p.EstimatedCostUSD-0.64) > 0.0001 {
+		t.Fatalf("estimated_cost_usd = %f, want 0.64", res1080p.EstimatedCostUSD)
+	}
+}
+
+func TestEstimateVideoCostNoInventedFallback(t *testing.T) {
+	// Without catalog pricing: returns 0.0 and unknown summary, not $0.07/sec or $0.05
+	cost, summary := EstimateVideoCost("google", "veo-3.1-generate-preview", 8, false, nil)
+	if cost != 0.0 {
+		t.Fatalf("expected 0.0 for unpriced video, got %f", cost)
+	}
+	if !strings.Contains(summary, "unknown") {
+		t.Fatalf("expected unknown pricing summary, got %q", summary)
+	}
+
+	// With verified catalog pricing for 720p
+	catalogPricing := []byte(`{
+		"currency": "USD",
+		"billing": {
+			"status": "verified",
+			"lines": [
+				{
+					"billable": "video_output",
+					"unit": "second",
+					"price_usd": 0.05,
+					"conditions": {
+						"resolution": "720p",
+						"includes_audio": true,
+						"service_tier": "standard"
+					}
+				}
+			]
+		}
+	}`)
+	cost720, summary720 := EstimateVideoCost("google", "veo-3.1-generate-preview", 8, false, catalogPricing)
+	if math.Abs(cost720-0.40) > 0.0001 {
+		t.Fatalf("expected 0.40 for 8s 720p, got %f", cost720)
+	}
+	if !strings.Contains(summary720, "$0.050/sec") || !strings.Contains(summary720, "$0.40 for 8s") {
+		t.Fatalf("unexpected summary: %q", summary720)
+	}
 }

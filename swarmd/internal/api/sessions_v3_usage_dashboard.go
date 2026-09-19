@@ -94,15 +94,19 @@ type SessionUsageModelItem struct {
 }
 
 type SessionUsageMediaSummary struct {
-	TotalCount   int                     `json:"total_count"`
-	TotalCostUSD float64                 `json:"total_cost_usd"`
-	ImageCount   int                     `json:"image_count"`
-	ImageCostUSD float64                 `json:"image_cost_usd"`
-	VideoCount   int                     `json:"video_count"`
-	VideoCostUSD float64                 `json:"video_cost_usd"`
-	AudioCount   int                     `json:"audio_count"`
-	AudioCostUSD float64                 `json:"audio_cost_usd"`
-	RecentItems  []SessionUsageMediaItem `json:"recent_items"`
+	TotalCount        int                     `json:"total_count"`
+	TotalCostUSD      float64                 `json:"total_cost_usd"`
+	ImageCount        int                     `json:"image_count"`
+	ImageCostUSD      float64                 `json:"image_cost_usd"`
+	VideoCount        int                     `json:"video_count"`
+	VideoCostUSD      float64                 `json:"video_cost_usd"`
+	AudioCount        int                     `json:"audio_count"`
+	AudioCostUSD      float64                 `json:"audio_cost_usd"`
+	HasUnknownPricing bool                    `json:"has_unknown_pricing,omitempty"`
+	HasUnknownImage   bool                    `json:"has_unknown_image,omitempty"`
+	HasUnknownVideo   bool                    `json:"has_unknown_video,omitempty"`
+	HasUnknownAudio   bool                    `json:"has_unknown_audio,omitempty"`
+	RecentItems       []SessionUsageMediaItem `json:"recent_items"`
 }
 
 type SessionUsageMediaItem struct {
@@ -472,6 +476,15 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.EqualFold(m.PriceStatus, "unknown") {
 			summary.HasUnknownPricing = true
+			mediaSummary.HasUnknownPricing = true
+			switch strings.ToLower(strings.TrimSpace(m.Kind)) {
+			case "image":
+				mediaSummary.HasUnknownImage = true
+			case "video":
+				mediaSummary.HasUnknownVideo = true
+			case "audio":
+				mediaSummary.HasUnknownAudio = true
+			}
 		}
 		if len(mediaSummary.RecentItems) < 30 {
 			mediaSummary.RecentItems = append(mediaSummary.RecentItems, SessionUsageMediaItem{

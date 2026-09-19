@@ -88,6 +88,10 @@ export interface SessionUsageMediaSummary {
   video_cost_usd: number
   audio_count: number
   audio_cost_usd: number
+  has_unknown_pricing?: boolean
+  has_unknown_image?: boolean
+  has_unknown_video?: boolean
+  has_unknown_audio?: boolean
   recent_items: SessionUsageMediaItem[]
 }
 
@@ -100,6 +104,8 @@ export interface SessionUsageMediaItem {
   label: string
   size: number
   cost_usd: number
+  price_status?: string
+  pricing_summary?: string
   created_at: number
 }
 

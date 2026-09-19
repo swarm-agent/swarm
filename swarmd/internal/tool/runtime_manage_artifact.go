@@ -407,7 +407,14 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["duration_seconds"] = videoResult.DurationSeconds
 		response["estimated_cost_usd"] = videoResult.TotalEstimatedCostUSD
 		response["cost_per_video_usd"] = videoResult.CostPerVideoUSD
+		response["price_status"] = videoResult.PriceStatus
 		response["pricing_summary"] = videoResult.PricingSummary
+		if videoResult.SnapshotID != "" {
+			response["snapshot_id"] = videoResult.SnapshotID
+		}
+		if videoResult.SnapshotVersion != "" {
+			response["snapshot_version"] = videoResult.SnapshotVersion
+		}
 		response["artifact"] = managedArtifactVariant(videoResult.LastVariant)
 		response["reference"] = managedArtifactReferenceWithSession(videoResult.LastVariant.SessionID, videoResult.LastVariant.CollectionID, videoResult.LastVariant.ID, videoResult.LastVariant.EventSeq)
 		response["variants"] = videoResult.Variants
@@ -1713,7 +1720,10 @@ type managedVideoArtifactResult struct {
 	DurationSeconds       int
 	CostPerVideoUSD       float64
 	TotalEstimatedCostUSD float64
+	PriceStatus           string
 	PricingSummary        string
+	SnapshotID            string
+	SnapshotVersion       string
 	HasImageInput         bool `json:"has_image_input,omitempty"`
 }
 
@@ -2301,7 +2311,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 	var allVariants []map[string]any
 	var allReferences []map[string]any
 	var costPerVideo, totalCost float64
-	var pricingSummary, lastModel, lastProvider string
+	var pricingSummary, priceStatus, snapshotID, snapshotVersion, lastModel, lastProvider string
+	var lastAspectRatio, lastResolution string
+	var lastDurationSeconds int
 
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
@@ -2380,32 +2392,54 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
-		effectiveVideoDurationSeconds := durationSeconds
-		if generated.DurationMs > 0 {
-			effectiveVideoDurationSeconds = (generated.DurationMs + 500) / 1000
+		effectiveVideoDurationSeconds := generated.DurationSeconds
+		if effectiveVideoDurationSeconds <= 0 {
+			effectiveVideoDurationSeconds = durationSeconds
+			if generated.DurationMs > 0 {
+				effectiveVideoDurationSeconds = (generated.DurationMs + 500) / 1000
+			}
 		}
-		effectiveVideoResolution := resolution
-		if effectiveVideoResolution == "" && generated.Height > 0 {
-			effectiveVideoResolution = fmt.Sprintf("%dp", generated.Height)
+		effectiveVideoResolution := generated.Resolution
+		if effectiveVideoResolution == "" {
+			effectiveVideoResolution = resolution
+			if effectiveVideoResolution == "" && generated.Height > 0 {
+				effectiveVideoResolution = fmt.Sprintf("%dp", generated.Height)
+			}
+		}
+		effectiveAspectRatio := generated.AspectRatio
+		if effectiveAspectRatio == "" {
+			effectiveAspectRatio = aspectRatio
 		}
 
 		effectiveIncludesAudio := true
-		if incVal, ok := args["includes_audio"].(bool); ok {
+		if incVal, ok := args["includes_audio"].(bool); ok && !strings.Contains(strings.ToLower(generated.Model), "veo") {
 			effectiveIncludesAudio = incVal
 		}
 
-		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
-		if r.sessions != nil {
-			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
-				Provider:        generated.Provider,
-				Model:           generated.Model,
-				Kind:            "video",
-				Count:           1,
-				DurationSeconds: effectiveVideoDurationSeconds,
-				Resolution:      effectiveVideoResolution,
-				IncludesAudio:   effectiveIncludesAudio,
-				IsIteration:     sourceRef != nil,
-			})
+		estimate := pebblestore.MediaCostEstimate{
+			CostUSD:         generated.EstimatedCostUSD,
+			PriceStatus:     generated.PriceStatus,
+			PricingSummary:  generated.PricingSummary,
+			SnapshotID:      generated.SnapshotID,
+			SnapshotVersion: generated.SnapshotVersion,
+		}
+		if estimate.PriceStatus == "" {
+			if r.sessions != nil {
+				estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+					Provider:        generated.Provider,
+					Model:           generated.Model,
+					Kind:            "video",
+					Count:           1,
+					DurationSeconds: effectiveVideoDurationSeconds,
+					Resolution:      effectiveVideoResolution,
+					AspectRatio:     effectiveAspectRatio,
+					IncludesAudio:   effectiveIncludesAudio,
+					IsIteration:     sourceRef != nil,
+					ServiceTier:     "standard",
+				})
+			} else {
+				estimate.PriceStatus = "unknown"
+			}
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
 			ID:              currentVariantID,
@@ -2440,10 +2474,16 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		allVariants = append(allVariants, managedArtifactVariant(published))
 		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
 		costPerVideo = estimate.CostUSD
-		totalCost += generated.EstimatedCostUSD
-		pricingSummary = generated.PricingSummary
+		totalCost += estimate.CostUSD
+		pricingSummary = estimate.PricingSummary
+		priceStatus = estimate.PriceStatus
+		snapshotID = estimate.SnapshotID
+		snapshotVersion = estimate.SnapshotVersion
 		lastModel = generated.Model
 		lastProvider = generated.Provider
+		lastResolution = effectiveVideoResolution
+		lastDurationSeconds = effectiveVideoDurationSeconds
+		lastAspectRatio = effectiveAspectRatio
 	}
 
 	return managedVideoArtifactResult{
@@ -2454,12 +2494,15 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		Prompt:                prompt,
 		Model:                 lastModel,
 		Provider:              lastProvider,
-		AspectRatio:           aspectRatio,
-		Resolution:            resolution,
-		DurationSeconds:       durationSeconds,
+		AspectRatio:           lastAspectRatio,
+		Resolution:            lastResolution,
+		DurationSeconds:       lastDurationSeconds,
 		CostPerVideoUSD:       costPerVideo,
 		TotalEstimatedCostUSD: totalCost,
+		PriceStatus:           priceStatus,
 		PricingSummary:        pricingSummary,
+		SnapshotID:            snapshotID,
+		SnapshotVersion:       snapshotVersion,
 		HasImageInput:         videoImage != nil,
 	}, nil
 }

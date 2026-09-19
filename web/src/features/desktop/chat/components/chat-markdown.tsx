@@ -1930,6 +1930,7 @@ export function ManageArtifactCard({
   const prompt = toolJsonString(args, "prompt") || toolJsonString(output, "prompt");
   const videoTitle = toolJsonString(args, "title") || toolJsonString(output, "title");
   const estimatedCost = toolJsonNumber(output, "estimated_cost_usd") ?? toolJsonNumber(output, "cost_per_video_usd");
+  const priceStatus = toolJsonString(output, "price_status");
   const pricingSummary = toolJsonString(output, "pricing_summary");
   const videoModel = toolJsonString(output, "model");
 
@@ -2259,7 +2260,11 @@ export function ManageArtifactCard({
           {mediaType && !isImageCapabilities ? <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--app-text-muted)]">{mediaType}</span> : null}
           {filename && filename !== label ? <span className="font-mono text-[10px] truncate max-w-48">{filename}</span> : null}
           {artifact?.collectionId ? <span className="font-mono text-[10px] truncate max-w-36">col: {artifact.collectionId}</span> : null}
-          {estimatedCost !== undefined && estimatedCost !== null && estimatedCost > 0 ? (
+          {priceStatus === "unknown" ? (
+            <span className="rounded bg-[var(--app-bg-alt)] px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400" title={pricingSummary || "Pricing unknown"}>
+              Est. Unknown
+            </span>
+          ) : estimatedCost !== undefined && estimatedCost !== null && estimatedCost > 0 ? (
             <span className="rounded bg-[var(--app-primary-soft)] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[var(--app-primary)]" title={pricingSummary || `Estimated cost: $${estimatedCost.toFixed(2)}`}>
               Est. ${estimatedCost.toFixed(2)}
             </span>
