@@ -1,12 +1,17 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -498,10 +503,10 @@ func TestBuildGoogleRequestOmitsUnsupportedConstraintsWithoutMutatingCanonicalSc
 
 func TestBuildGoogleRequestNormalizesPlanCheckpointAnyOfRequiredBranches(t *testing.T) {
 	definitions := toolruntime.NewRuntime(1).Definitions()
-	planTools := make([]provideriface.ToolDefinition, 0, 2)
-	canonicalParameters := make(map[string][]byte, 2)
+	planTools := make([]provideriface.ToolDefinition, 0, 1)
+	canonicalParameters := make(map[string][]byte, 1)
 	for _, definition := range definitions {
-		if definition.Name != "exit_plan_mode" && definition.Name != "plan_manage" {
+		if definition.Name != "ask-user" {
 			continue
 		}
 		encoded, err := json.Marshal(definition.Parameters)
@@ -516,8 +521,8 @@ func TestBuildGoogleRequestNormalizesPlanCheckpointAnyOfRequiredBranches(t *test
 			Type: definition.Type, Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters,
 		})
 	}
-	if len(planTools) != 2 {
-		t.Fatalf("found %d plan tools, want exit_plan_mode and plan_manage", len(planTools))
+	if len(planTools) != 1 {
+		t.Fatalf("found %d plan tools, want ask-user", len(planTools))
 	}
 
 	request, err := buildGoogleRequest(provideriface.Request{
@@ -537,8 +542,8 @@ func TestBuildGoogleRequestNormalizesPlanCheckpointAnyOfRequiredBranches(t *test
 	}
 	assertGoogleRequiredSchemasHaveProperties(t, serialized, "$", false)
 	for _, declaration := range request.Tools[0].FunctionDeclarations {
-		if !hasGoogleRequiredAlternatives(declaration.Parameters, "objective", "tasks") {
-			t.Fatalf("serialized %s parameters lost the checkpoint objective-or-tasks requirement", declaration.Name)
+		if !hasGoogleRequiredAlternatives(declaration.Parameters, "question", "options") {
+			t.Fatalf("serialized %s parameters lost the question-or-options requirement", declaration.Name)
 		}
 	}
 
@@ -725,6 +730,360 @@ func TestBuildGoogleRequestEnforcesTotalInlineRequestLimit(t *testing.T) {
 	_, err := buildGoogleRequest(provideriface.Request{Input: []map[string]any{{"role": "user", "content": strings.Repeat("x", maxInlineRequestBytes)}}})
 	if err == nil || !strings.Contains(err.Error(), "20 MB") {
 		t.Fatalf("oversize Google request error = %v", err)
+	}
+}
+
+func createTestPNG(width, height int) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	var seed uint32 = 12345
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			seed = seed*1664525 + 1013904223
+			img.SetRGBA(x, y, color.RGBA{
+				R: uint8(seed),
+				G: uint8(seed >> 8),
+				B: uint8(seed >> 16),
+				A: 255,
+			})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func TestBuildGoogleRequestDownsamplesLargeImageToFitInlineLimit(t *testing.T) {
+	pngBytes1 := createTestPNG(1800, 1800)
+	pngBytes2 := createTestPNG(1800, 1800)
+	if len(pngBytes1) < 8<<20 {
+		t.Fatalf("test PNG too small: %d bytes", len(pngBytes1))
+	}
+
+	digest1 := sha256.Sum256(pngBytes1)
+	digest2 := sha256.Sum256(pngBytes2)
+
+	payload1 := provideriface.SessionMediaPayload{
+		AssetID:      "asset-large-1",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest1[:]),
+		Size:         int64(len(pngBytes1)),
+		Bytes:        pngBytes1,
+	}
+	payload2 := provideriface.SessionMediaPayload{
+		AssetID:      "asset-large-2",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest2[:]),
+		Size:         int64(len(pngBytes2)),
+		Bytes:        pngBytes2,
+	}
+
+	contract := provideriface.SessionMediaContract{
+		ProviderID:            "google",
+		ProviderSurface:       provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceGoogleAPIKey,
+		CredentialFingerprint: "credential",
+		AdapterID:             provideriface.MediaAdapterIDGoogleGenerateContentV1,
+		Hash:                  "contract",
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality:     "image",
+			State:        provideriface.MediaCapabilityStateAllowed,
+			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes:    []string{"image/png", "image/jpeg"},
+			ContentTypes: []string{"inline_data"},
+			MaxBytes:     maxInlineImageBytes,
+			MaxCount:     4,
+		}},
+	}
+
+	req := provideriface.Request{
+		ProviderConfigurationHash: "configuration",
+		MediaContract:             contract,
+		Instructions:              strings.Repeat("instructions ", 1000),
+		Input: []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "session_media", "media": payload1},
+				{"type": "session_media", "media": payload2},
+				{"type": "input_text", "text": "compare these two images"},
+			},
+		}},
+	}
+
+	request, err := buildGoogleRequest(req)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest failed on large images: %v", err)
+	}
+
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if len(encoded) > maxInlineRequestBytes {
+		t.Fatalf("encoded request size %d exceeds %d limit", len(encoded), maxInlineRequestBytes)
+	}
+
+	if len(request.Contents) != 1 {
+		t.Fatalf("expected 1 content turn, got %d", len(request.Contents))
+	}
+	parts := request.Contents[0].Parts
+	var inlineParts []*googleInlineData
+	for _, p := range parts {
+		if p.InlineData != nil {
+			inlineParts = append(inlineParts, p.InlineData)
+		}
+	}
+	if len(inlineParts) != 2 {
+		t.Fatalf("expected 2 inlineData parts, got %d", len(inlineParts))
+	}
+
+	origBase64Len1 := base64.StdEncoding.EncodedLen(len(pngBytes1))
+	if len(inlineParts[0].Data) >= origBase64Len1 {
+		t.Fatalf("expected image 1 to be downsampled, got len %d >= %d", len(inlineParts[0].Data), origBase64Len1)
+	}
+}
+
+func TestBuildGoogleRequestGracefullyPrunesHistoricalImages(t *testing.T) {
+	synthBytes1 := bytes.Repeat([]byte{0xAA}, 10<<20)
+	synthBytes2 := bytes.Repeat([]byte{0xBB}, 10<<20)
+	digest1 := sha256.Sum256(synthBytes1)
+	digest2 := sha256.Sum256(synthBytes2)
+
+	payload1 := provideriface.SessionMediaPayload{
+		AssetID:      "asset-hist-1",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest1[:]),
+		Size:         int64(len(synthBytes1)),
+		Bytes:        synthBytes1,
+	}
+	payload2 := provideriface.SessionMediaPayload{
+		AssetID:      "asset-curr-2",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest2[:]),
+		Size:         int64(len(synthBytes2)),
+		Bytes:        synthBytes2,
+	}
+
+	contract := provideriface.SessionMediaContract{
+		ProviderID:            "google",
+		ProviderSurface:       provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceGoogleAPIKey,
+		CredentialFingerprint: "credential",
+		AdapterID:             provideriface.MediaAdapterIDGoogleGenerateContentV1,
+		Hash:                  "contract",
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality:     "image",
+			State:        provideriface.MediaCapabilityStateAllowed,
+			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes:    []string{"image/png"},
+			ContentTypes: []string{"inline_data"},
+			MaxBytes:     maxInlineImageBytes,
+			MaxCount:     2,
+		}},
+	}
+
+	req := provideriface.Request{
+		ProviderConfigurationHash: "configuration",
+		MediaContract:             contract,
+		Input: []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "session_media", "media": payload1},
+					{"type": "input_text", "text": "first question"},
+				},
+			},
+			{
+				"role":    "assistant",
+				"content": "first answer",
+			},
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "session_media", "media": payload2},
+					{"type": "input_text", "text": "second question"},
+				},
+			},
+		},
+	}
+
+	request, err := buildGoogleRequest(req)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest failed on multi-turn history: %v", err)
+	}
+
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if len(encoded) > maxInlineRequestBytes {
+		t.Fatalf("encoded request size %d exceeds %d limit", len(encoded), maxInlineRequestBytes)
+	}
+
+	turn0 := request.Contents[0]
+	foundPlaceholder := false
+	for _, p := range turn0.Parts {
+		if strings.Contains(p.Text, "omitted to satisfy provider request limit") && strings.Contains(p.Text, "asset-hist-1") {
+			foundPlaceholder = true
+		}
+		if p.InlineData != nil {
+			t.Fatalf("historical image should have been pruned, but inlineData is still present")
+		}
+	}
+	if !foundPlaceholder {
+		t.Fatalf("expected placeholder in Turn 0 parts: %+v", turn0.Parts)
+	}
+
+	turn2 := request.Contents[2]
+	foundCurrent := false
+	for _, p := range turn2.Parts {
+		if p.InlineData != nil {
+			foundCurrent = true
+			if len(p.InlineData.Data) != base64.StdEncoding.EncodedLen(len(synthBytes2)) {
+				t.Fatalf("current image data length = %d, want %d", len(p.InlineData.Data), base64.StdEncoding.EncodedLen(len(synthBytes2)))
+			}
+		}
+	}
+	if !foundCurrent {
+		t.Fatalf("expected current image in Turn 2 parts: %+v", turn2.Parts)
+	}
+}
+
+func TestBuildGoogleRequestBudgetsMultipleImagesInSingleTurn(t *testing.T) {
+	synthBytes1 := bytes.Repeat([]byte{0x11}, 11<<20)
+	synthBytes2 := bytes.Repeat([]byte{0x22}, 11<<20)
+	digest1 := sha256.Sum256(synthBytes1)
+	digest2 := sha256.Sum256(synthBytes2)
+
+	payload1 := provideriface.SessionMediaPayload{
+		AssetID:      "asset-single-1",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest1[:]),
+		Size:         int64(len(synthBytes1)),
+		Bytes:        synthBytes1,
+	}
+	payload2 := provideriface.SessionMediaPayload{
+		AssetID:      "asset-single-2",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest2[:]),
+		Size:         int64(len(synthBytes2)),
+		Bytes:        synthBytes2,
+	}
+
+	contract := provideriface.SessionMediaContract{
+		ProviderID:            "google",
+		ProviderSurface:       provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceGoogleAPIKey,
+		CredentialFingerprint: "credential",
+		AdapterID:             provideriface.MediaAdapterIDGoogleGenerateContentV1,
+		Hash:                  "contract",
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality:     "image",
+			State:        provideriface.MediaCapabilityStateAllowed,
+			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes:    []string{"image/png"},
+			ContentTypes: []string{"inline_data"},
+			MaxBytes:     maxInlineImageBytes,
+			MaxCount:     2,
+		}},
+	}
+
+	req := provideriface.Request{
+		ProviderConfigurationHash: "configuration",
+		MediaContract:             contract,
+		Input: []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "session_media", "media": payload1},
+				{"type": "session_media", "media": payload2},
+				{"type": "input_text", "text": "review both"},
+			},
+		}},
+	}
+
+	request, err := buildGoogleRequest(req)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest failed on multiple single-turn images: %v", err)
+	}
+
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if len(encoded) > maxInlineRequestBytes {
+		t.Fatalf("encoded request size %d exceeds %d limit", len(encoded), maxInlineRequestBytes)
+	}
+
+	parts := request.Contents[0].Parts
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts, got %d: %+v", len(parts), parts)
+	}
+	if parts[0].InlineData == nil {
+		t.Fatalf("expected first image to be preserved as inlineData: %+v", parts[0])
+	}
+	if !strings.Contains(parts[1].Text, "omitted to satisfy provider request limit") || !strings.Contains(parts[1].Text, "asset-single-2") {
+		t.Fatalf("expected second image to be pruned with placeholder: %+v", parts[1])
+	}
+}
+
+func TestBuildGoogleRequestRejectsWhenTextAloneExceedsLimitEvenWithMedia(t *testing.T) {
+	synthBytes := bytes.Repeat([]byte{0x33}, 1<<20)
+	digest := sha256.Sum256(synthBytes)
+	payload := provideriface.SessionMediaPayload{
+		AssetID:      "asset-small",
+		Modality:     "image",
+		MIMEType:     "image/png",
+		FileType:     "png",
+		DigestSHA256: hex.EncodeToString(digest[:]),
+		Size:         int64(len(synthBytes)),
+		Bytes:        synthBytes,
+	}
+	contract := provideriface.SessionMediaContract{
+		ProviderID:            "google",
+		ProviderSurface:       provideriface.MediaProviderSurfaceGoogleGenerateContent,
+		CredentialSurface:     provideriface.MediaCredentialSurfaceGoogleAPIKey,
+		CredentialFingerprint: "credential",
+		AdapterID:             provideriface.MediaAdapterIDGoogleGenerateContentV1,
+		Hash:                  "contract",
+		Capabilities: []provideriface.MediaContractCapability{{
+			Modality:     "image",
+			State:        provideriface.MediaCapabilityStateAllowed,
+			Semantics:    pebblestore.ModelCatalogMediaSemanticsNative,
+			MIMETypes:    []string{"image/png"},
+			ContentTypes: []string{"inline_data"},
+			MaxBytes:     maxInlineImageBytes,
+			MaxCount:     1,
+		}},
+	}
+
+	req := provideriface.Request{
+		ProviderConfigurationHash: "configuration",
+		MediaContract:             contract,
+		Input: []map[string]any{{
+			"role": "user",
+			"content": []map[string]any{
+				{"type": "session_media", "media": payload},
+				{"type": "input_text", "text": strings.Repeat("x", maxInlineRequestBytes+1024)},
+			},
+		}},
+	}
+
+	_, err := buildGoogleRequest(req)
+	if err == nil || !strings.Contains(err.Error(), "20 MB") {
+		t.Fatalf("expected 20 MB error, got: %v", err)
 	}
 }
 

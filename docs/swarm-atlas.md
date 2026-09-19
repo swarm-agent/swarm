@@ -128,7 +128,7 @@ swarm launcher / swarmtui                 React Desktop
 ### AI turn and delegation flow
 
 1. `run.Service` resolves the compiled agent, account-scoped model settings, workspace, prompt, tool contract, and permissions (`swarmd/internal/run/service*.go`; daemon wiring at `runtime/daemon.go:474-480`).
-2. The provider registry selects an adapter/runner. Registered adapters are Anthropic, Codex, Fireworks, Google, OpenAI, OpenRouter, and Exa; runners exclude Exa and dormant Copilot (`runtime/daemon.go:455-471`). Google `provider/google/runner.go:buildGoogleRequest` adapts canonical tool schemas for both response paths: `sanitizeGoogleToolSchemaMap` encodes enum members as protobuf-compatible strings while retaining parameter types and canonical allowlists, and treats property names as data. `tool_enum_schema_test.go` checks nested/typed enums, nonmutation, idempotency, and the actual runtime catalog on the JSON wire; this is hermetic request-shape evidence, not live provider acceptance.
+2. The provider registry selects an adapter/runner. Registered adapters are Anthropic, Codex, Fireworks, Google, OpenAI, OpenRouter, and Exa; runners exclude Exa and dormant Copilot (`runtime/daemon.go:455-471`). Google `provider/google/runner.go:buildGoogleRequest` adapts canonical tool schemas for both response paths: `sanitizeGoogleToolSchemaMap` encodes enum members as protobuf-compatible strings while retaining parameter types and canonical allowlists, and treats property names as data. `buildGoogleRequest` also enforces the 20 MB inline request ceiling with automatic image downsampling/budgeting and graceful chronological media pruning for multimodal payloads. `tool_enum_schema_test.go` checks nested/typed enums, nonmutation, idempotency, and the actual runtime catalog on the JSON wire; this is hermetic request-shape evidence, not live provider acceptance.
 3. Tool calls pass through runtime policy and workspace/path constraints (`swarmd/internal/tool/`, `swarmd/internal/permission/`, `swarmd/internal/run/service_tools.go`).
 4. Regular delegation launches bounded Finder/Coder/Designer waves. Coder work allocates a child branch/worktree from an immutable base and returns a commit for explicit integration (`worktree.Service.ResolveTaskBase`, `AllocateTaskWorkspace`, `PrepareTaskIntegration`, `ApplyTaskIntegration`). Admission fails before allocation when Git is absent, the workspace is not a repository, or `HEAD` has no initial commit; these paths provide actionable remediation and do not install packages or initialize/commit a repository automatically.
 5. Dependent work uses the Task Program stage/job DAG (`run/service_task_program.go`, `service_task_program_scheduler.go`); rapid independent alternatives use Iteration Swarms (`run/service_task_swarm.go`). Durable child lineage/generation and worktree-owner leases are recorded by `store/pebble/delegated_child_rotation_store.go`, rather than existing only in process memory.
@@ -2398,6 +2398,26 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `(cd swarmd && go test -v ./internal/audiogen/...)` passes all unit tests including `TestManagedAudioCapabilities`, `TestGenerateManagedAudio_DurationExceedsClipLimit`, `TestGenerateManagedAudio_CapabilityTokenValidation`.
   - `(cd swarmd && go test -v ./internal/tool -run "TestManageArtifact.*Audio.*")` passes all 16 tests including `TestManageArtifactAudioCapabilities`, `TestManageArtifactGenerateAudioDurationExceedsClipLimit`, `TestManageArtifactGenerateAudioCapabilityTokenMismatch`.
   - `(cd swarmd && go test -v ./internal/run -run "Test.*Audio.*")` passes all tests including `TestMasterHarnessPromptGuidesAudioCapabilitiesPreflight` and `TestArtifactHelpGuidesAudioGenerationAndMultipleSoundClips`.
+  - `bash scripts/check-atlas-sync.sh` passes.
+
+### Google Generative Language Provider Inline Request Size Limitation Fix (2026-09-19)
+
+- **Multimodal Media Budgeting, Downsampling, and Graceful Pruning (`swarmd/internal/provider/google/runner.go`):**
+  - Resolved Google Generative Language provider inline request size failure (`google inline request exceeds the 20 MB request limit`) when multiple multimodal images or large media assets are attached to a session or provider turn.
+  - Implemented `optimizeGoogleMediaPayloadSize`:
+    - First evaluates total request JSON size against `maxInlineRequestBytes` (20 MB); requests already within budget incur zero overhead or modification.
+    - For requests exceeding the 20 MB ceiling with media parts, computes available media budget reserving space for instructions, tools, and message text.
+    - Phase 1 (Downsampling): If images are decodable (JPEG/PNG), scales dimensions and re-encodes via `downsampleGoogleImage` to fit the per-image budget share, preserving all attached images whenever feasible.
+    - Phase 2 (Graceful Pruning): If downsampling cannot sufficiently reduce the payload (e.g. non-decodable synthetic bytes, extreme count, or large text), prunes media parts from oldest to newest according to `googleMediaPruneOrder`. Historical turns are pruned first, and within a turn later attachments are pruned before primary attachments. Pruned media parts are replaced with explicit text placeholders (`[attached image %s omitted to satisfy provider request limit]`), preserving turn structure, content non-emptiness, and conversation turn alternation invariants.
+    - Fails closed with `google inline request exceeds the 20 MB request limit` if text/instructions/tools alone exceed the 20 MB ceiling.
+- **Validation:**
+  - Added focused unit tests in `swarmd/internal/provider/google/runner_test.go`:
+    - `TestBuildGoogleRequestDownsamplesLargeImageToFitInlineLimit`: Verifies that multiple large high-entropy PNG images exceeding 20 MB base64 are downsampled so the total request fits under 20 MB while preserving all images as `inlineData`.
+    - `TestBuildGoogleRequestGracefullyPrunesHistoricalImages`: Verifies that in a multi-turn conversation with synthetic media exceeding 20 MB, older historical images are pruned with placeholders while the active turn's image is preserved in full.
+    - `TestBuildGoogleRequestBudgetsMultipleImagesInSingleTurn`: Verifies that when multiple large synthetic images exist in a single turn, the primary image is retained as `inlineData` and excess media is pruned with placeholders.
+    - `TestBuildGoogleRequestRejectsWhenTextAloneExceedsLimitEvenWithMedia`: Verifies that requests where text alone exceeds 20 MB continue to fail with the 20 MB request limit error.
+  - `(cd swarmd && go test -v ./internal/provider/google)` passes all 58 unit tests.
+  - `bash scripts/run-critical-tests.sh all` passes all deterministic tiers (`fast`, `deep`, `agents`).
   - `bash scripts/check-atlas-sync.sh` passes.
 
 

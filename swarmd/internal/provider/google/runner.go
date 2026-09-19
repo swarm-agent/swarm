@@ -10,10 +10,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	_ "image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -395,7 +403,7 @@ func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
 }
 
 func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
-	contents, err := buildGoogleContents(req)
+	contents, mediaPayloads, err := buildGoogleContentsWithMedia(req)
 	if err != nil {
 		return googleRequest{}, err
 	}
@@ -435,12 +443,13 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 			}
 		}
 	}
+	mediaLocations := findGoogleMediaLocations(out.Contents, mediaPayloads)
 	encoded, err := json.Marshal(out)
 	if err != nil {
 		return googleRequest{}, fmt.Errorf("marshal google request for size validation: %w", err)
 	}
 	if len(encoded) > maxInlineRequestBytes {
-		return googleRequest{}, errors.New("google inline request exceeds the 20 MB request limit")
+		return optimizeGoogleMediaPayloadSize(out, mediaLocations, maxInlineRequestBytes)
 	}
 	return out, nil
 }
@@ -772,9 +781,15 @@ func sanitizeGoogleToolSchemaAlternatives(value any, inheritedProperties map[str
 }
 
 func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
+	contents, _, err := buildGoogleContentsWithMedia(req)
+	return contents, err
+}
+
+func buildGoogleContentsWithMedia(req provideriface.Request) ([]googleContent, []provideriface.SessionMediaPayload, error) {
 	input := req.Input
 	contents := make([]googleContent, 0, len(input))
 	callNameByID := make(map[string]string, 32)
+	var mediaPayloads []provideriface.SessionMediaPayload
 
 	for i := 0; i < len(input); i++ {
 		item := input[i]
@@ -866,16 +881,16 @@ func buildGoogleContents(req provideriface.Request) ([]googleContent, error) {
 		}
 		// MaxCount is the admission ceiling for one explicit message, not the
 		// accumulated media count across stateless full-input history replay.
-		parts, err := googleMessageParts(req, item["content"], sourceRole, map[string]int{})
+		parts, err := googleMessagePartsWithPayloads(req, item["content"], sourceRole, map[string]int{}, &mediaPayloads)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if len(parts) == 0 {
 			continue
 		}
 		contents = append(contents, googleContent{Role: googleRole, Parts: parts})
 	}
-	return contents, nil
+	return contents, mediaPayloads, nil
 }
 
 // normalizeGoogleContentsForRequest enforces Google Gemini conversation turn requirements:
@@ -928,7 +943,272 @@ func normalizeGoogleContentsForRequest(contents []googleContent) []googleContent
 	return out
 }
 
+type googleMediaLocation struct {
+	contentIndex int
+	partIndex    int
+	payload      provideriface.SessionMediaPayload
+}
+
+func findGoogleMediaLocations(contents []googleContent, payloads []provideriface.SessionMediaPayload) []googleMediaLocation {
+	var locations []googleMediaLocation
+	payloadIdx := 0
+	for cIdx := range contents {
+		for pIdx := range contents[cIdx].Parts {
+			if contents[cIdx].Parts[pIdx].InlineData != nil {
+				var p provideriface.SessionMediaPayload
+				if payloadIdx < len(payloads) {
+					p = payloads[payloadIdx]
+					payloadIdx++
+				}
+				locations = append(locations, googleMediaLocation{
+					contentIndex: cIdx,
+					partIndex:    pIdx,
+					payload:      p,
+				})
+			}
+		}
+	}
+	return locations
+}
+
+func googleMediaPruneOrder(mediaLocations []googleMediaLocation) []int {
+	if len(mediaLocations) <= 1 {
+		indices := make([]int, len(mediaLocations))
+		for i := range mediaLocations {
+			indices[i] = i
+		}
+		return indices
+	}
+
+	latestContentIdx := -1
+	for _, loc := range mediaLocations {
+		if loc.contentIndex > latestContentIdx {
+			latestContentIdx = loc.contentIndex
+		}
+	}
+
+	indices := make([]int, len(mediaLocations))
+	for i := range mediaLocations {
+		indices[i] = i
+	}
+
+	sort.SliceStable(indices, func(i, j int) bool {
+		a := mediaLocations[indices[i]]
+		b := mediaLocations[indices[j]]
+		aIsCurrent := (a.contentIndex == latestContentIdx)
+		bIsCurrent := (b.contentIndex == latestContentIdx)
+
+		if !aIsCurrent && bIsCurrent {
+			return true
+		}
+		if aIsCurrent && !bIsCurrent {
+			return false
+		}
+		if a.contentIndex != b.contentIndex {
+			return a.contentIndex < b.contentIndex
+		}
+		return a.partIndex > b.partIndex
+	})
+
+	return indices
+}
+
+func downsampleGoogleImage(raw []byte, mimeType string, targetMaxBytes int) ([]byte, string, bool) {
+	if len(raw) <= targetMaxBytes || targetMaxBytes <= 0 {
+		return raw, mimeType, false
+	}
+	img, format, err := image.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return raw, mimeType, false
+	}
+	bounds := img.Bounds()
+	origW := bounds.Dx()
+	origH := bounds.Dy()
+	if origW <= 0 || origH <= 0 {
+		return raw, mimeType, false
+	}
+
+	scale := math.Sqrt(float64(targetMaxBytes) / float64(len(raw)))
+	if scale > 0.85 {
+		scale = 0.85
+	}
+	if scale < 0.05 {
+		scale = 0.05
+	}
+
+	for attempt := 0; attempt < 3; attempt++ {
+		targetW := int(float64(origW) * scale)
+		targetH := int(float64(origH) * scale)
+		if targetW < 16 {
+			targetW = 16
+		}
+		if targetH < 16 {
+			targetH = 16
+		}
+		if targetW > origW {
+			targetW = origW
+		}
+		if targetH > origH {
+			targetH = origH
+		}
+
+		resampled := image.NewRGBA(image.Rect(0, 0, targetW, targetH))
+		for y := 0; y < targetH; y++ {
+			srcY := bounds.Min.Y + y*origH/targetH
+			for x := 0; x < targetW; x++ {
+				srcX := bounds.Min.X + x*origW/targetW
+				resampled.Set(x, y, img.At(srcX, srcY))
+			}
+		}
+
+		var buf bytes.Buffer
+		outMIME := mimeType
+		isJPEG := strings.EqualFold(mimeType, "image/jpeg") || strings.EqualFold(mimeType, "image/jpg") || strings.EqualFold(format, "jpeg")
+		if isJPEG {
+			outMIME = "image/jpeg"
+			q := 80 - attempt*15
+			if q < 40 {
+				q = 40
+			}
+			if err := jpeg.Encode(&buf, resampled, &jpeg.Options{Quality: q}); err != nil {
+				return raw, mimeType, false
+			}
+		} else {
+			if err := png.Encode(&buf, resampled); err != nil {
+				return raw, mimeType, false
+			}
+			outMIME = "image/png"
+			if buf.Len() > targetMaxBytes {
+				buf.Reset()
+				outMIME = "image/jpeg"
+				q := 80 - attempt*15
+				if q < 40 {
+					q = 40
+				}
+				opaque := image.NewRGBA(image.Rect(0, 0, targetW, targetH))
+				draw.Draw(opaque, opaque.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+				draw.Draw(opaque, opaque.Bounds(), resampled, image.Point{}, draw.Over)
+				if err := jpeg.Encode(&buf, opaque, &jpeg.Options{Quality: q}); err != nil {
+					return raw, mimeType, false
+				}
+			}
+		}
+
+		if buf.Len() <= targetMaxBytes && buf.Len() < len(raw) {
+			return buf.Bytes(), outMIME, true
+		}
+		if buf.Len() < len(raw) && attempt == 2 {
+			return buf.Bytes(), outMIME, true
+		}
+		scale *= 0.6
+	}
+
+	return raw, mimeType, false
+}
+
+func optimizeGoogleMediaPayloadSize(out googleRequest, mediaLocations []googleMediaLocation, maxBytes int) (googleRequest, error) {
+	if len(mediaLocations) == 0 {
+		return googleRequest{}, errors.New("google inline request exceeds the 20 MB request limit")
+	}
+
+	const safeMargin = 128 << 10 // 128 KB
+	safeTarget := maxBytes - safeMargin
+	if safeTarget <= 0 {
+		safeTarget = maxBytes
+	}
+
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return googleRequest{}, fmt.Errorf("marshal google request for size validation: %w", err)
+	}
+	if len(encoded) <= maxBytes {
+		return out, nil
+	}
+
+	totalMediaBase64Bytes := 0
+	for _, loc := range mediaLocations {
+		if loc.contentIndex < len(out.Contents) && loc.partIndex < len(out.Contents[loc.contentIndex].Parts) {
+			if part := out.Contents[loc.contentIndex].Parts[loc.partIndex]; part.InlineData != nil {
+				totalMediaBase64Bytes += len(part.InlineData.Data)
+			}
+		}
+	}
+	nonMediaBytes := len(encoded) - totalMediaBase64Bytes
+	if nonMediaBytes < 0 {
+		nonMediaBytes = 0
+	}
+
+	availableMediaBase64 := safeTarget - nonMediaBytes
+	if availableMediaBase64 > 0 {
+		availableRawBytes := int(float64(availableMediaBase64) * 0.72)
+		n := len(mediaLocations)
+		targetBytesPerImage := availableRawBytes / n
+		if targetBytesPerImage < 256<<10 {
+			targetBytesPerImage = 256 << 10
+		}
+
+		downsampledAny := false
+		for i := range mediaLocations {
+			loc := &mediaLocations[i]
+			if loc.contentIndex >= len(out.Contents) || loc.partIndex >= len(out.Contents[loc.contentIndex].Parts) {
+				continue
+			}
+			part := &out.Contents[loc.contentIndex].Parts[loc.partIndex]
+			if part.InlineData == nil {
+				continue
+			}
+			if len(loc.payload.Bytes) > targetBytesPerImage {
+				downsampledBytes, outMIME, ok := downsampleGoogleImage(loc.payload.Bytes, loc.payload.MIMEType, targetBytesPerImage)
+				if ok && len(downsampledBytes) < len(loc.payload.Bytes) {
+					loc.payload.Bytes = downsampledBytes
+					loc.payload.MIMEType = outMIME
+					part.InlineData.MIMEType = outMIME
+					part.InlineData.Data = base64.StdEncoding.EncodeToString(downsampledBytes)
+					downsampledAny = true
+				}
+			}
+		}
+
+		if downsampledAny {
+			encoded, err = json.Marshal(out)
+			if err != nil {
+				return googleRequest{}, fmt.Errorf("marshal google request after downsampling: %w", err)
+			}
+			if len(encoded) <= maxBytes {
+				return out, nil
+			}
+		}
+	}
+
+	pruneOrder := googleMediaPruneOrder(mediaLocations)
+	for _, idx := range pruneOrder {
+		loc := mediaLocations[idx]
+		if loc.contentIndex >= len(out.Contents) || loc.partIndex >= len(out.Contents[loc.contentIndex].Parts) {
+			continue
+		}
+		placeholder := "[attached image omitted to satisfy provider request limit]"
+		if strings.TrimSpace(loc.payload.AssetID) != "" {
+			placeholder = fmt.Sprintf("[attached image %s omitted to satisfy provider request limit]", strings.TrimSpace(loc.payload.AssetID))
+		}
+		out.Contents[loc.contentIndex].Parts[loc.partIndex] = googlePart{Text: placeholder}
+
+		encoded, err = json.Marshal(out)
+		if err != nil {
+			return googleRequest{}, fmt.Errorf("marshal google request after pruning media: %w", err)
+		}
+		if len(encoded) <= maxBytes {
+			return out, nil
+		}
+	}
+
+	return googleRequest{}, errors.New("google inline request exceeds the 20 MB request limit")
+}
+
 func googleMessageParts(req provideriface.Request, content any, sourceRole string, mediaCounts map[string]int) ([]googlePart, error) {
+	return googleMessagePartsWithPayloads(req, content, sourceRole, mediaCounts, nil)
+}
+
+func googleMessagePartsWithPayloads(req provideriface.Request, content any, sourceRole string, mediaCounts map[string]int, mediaPayloads *[]provideriface.SessionMediaPayload) ([]googlePart, error) {
 	if text, ok := content.(string); ok {
 		text = strings.TrimSpace(text)
 		if text == "" {
@@ -961,6 +1241,9 @@ func googleMessageParts(req provideriface.Request, content any, sourceRole strin
 			}
 			if err := validateGoogleMediaPayload(req, payload, mediaCounts); err != nil {
 				return nil, err
+			}
+			if mediaPayloads != nil {
+				*mediaPayloads = append(*mediaPayloads, payload)
 			}
 			parts = append(parts, googlePart{InlineData: &googleInlineData{MIMEType: strings.ToLower(strings.TrimSpace(payload.MIMEType)), Data: base64.StdEncoding.EncodeToString(payload.Bytes)}})
 		default:
