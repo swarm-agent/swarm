@@ -203,17 +203,31 @@ func toFloat64(v any) (float64, bool) {
 	return 0, false
 }
 
-// EstimateMediaCost resolves snapshot-backed media pricing for images, videos, and audio.
+// MediaCostEstimateOptions holds concrete dimensions for media pricing without guessing.
+type MediaCostEstimateOptions struct {
+	Provider        string
+	Model           string
+	Kind            string // "image", "video", "audio"
+	Count           int
+	DurationSeconds int
+	Resolution      string
+	AspectRatio     string
+	IncludesAudio   bool
+	IsIteration     bool
+	OutputTokens    int64
+	ServiceTier     string
+}
+
+// EstimateMediaCostWithOptions resolves snapshot-backed media pricing for images, videos, and audio.
 // If the model is unpriced or absent from the snapshot, it explicitly marks the price status
 // as unknown rather than inventing fallback rates.
-func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int, durationSeconds int, isIteration bool) MediaCostEstimate {
-	if count <= 0 {
-		count = 1
+func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOptions) MediaCostEstimate {
+	if opts.Count <= 0 {
+		opts.Count = 1
 	}
-	provider = strings.ToLower(strings.TrimSpace(provider))
-	model = strings.TrimSpace(model)
-	lowerModel := strings.ToLower(model)
-	kind = strings.ToLower(strings.TrimSpace(kind))
+	provider := strings.ToLower(strings.TrimSpace(opts.Provider))
+	model := strings.TrimSpace(opts.Model)
+	kind := strings.ToLower(strings.TrimSpace(opts.Kind))
 
 	if provider == "codex" {
 		return MediaCostEstimate{
@@ -244,19 +258,59 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 	snapID := rec.SourceSnapshotID
 	snapVer := rec.SourceSnapshotVersion
 
-	var raw map[string]any
-	if len(rec.Pricing) > 0 {
-		_ = json.Unmarshal(rec.Pricing, &raw)
+	if !found || len(rec.Pricing) == 0 {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  fmt.Sprintf("unknown pricing (model %q unpriced in snapshot %s)", model, snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
 	}
 
-	if raw != nil {
-		if isFree, ok := raw["is_free"].(bool); ok && isFree {
-			return MediaCostEstimate{
-				CostUSD:         0.0,
-				PriceStatus:     "free",
-				PricingSummary:  fmt.Sprintf("Free (snapshot %s)", snapID),
-				SnapshotID:      snapID,
-				SnapshotVersion: snapVer,
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Pricing, &raw); err != nil {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  fmt.Sprintf("unknown pricing (invalid pricing in snapshot %s)", snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	// Strict currency check
+	if curr, ok := raw["currency"].(string); ok && curr != "" && curr != "USD" {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "unknown",
+			PricingSummary:  fmt.Sprintf("unknown pricing (unsupported currency %q)", curr),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	if isFree, ok := raw["is_free"].(bool); ok && isFree {
+		return MediaCostEstimate{
+			CostUSD:         0.0,
+			PriceStatus:     "free",
+			PricingSummary:  fmt.Sprintf("Free (snapshot %s)", snapID),
+			SnapshotID:      snapID,
+			SnapshotVersion: snapVer,
+		}
+	}
+
+	// Extract verified billing lines
+	var verifiedLines []map[string]any
+	if billing, ok := raw["billing"].(map[string]any); ok {
+		status, _ := billing["status"].(string)
+		if strings.EqualFold(status, "verified") || strings.EqualFold(status, "partially_verified") {
+			if lines, ok := billing["lines"].([]any); ok {
+				for _, line := range lines {
+					if lMap, ok := line.(map[string]any); ok {
+						verifiedLines = append(verifiedLines, lMap)
+					}
+				}
 			}
 		}
 	}
@@ -267,141 +321,177 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 
 	switch kind {
 	case "video":
-		if durationSeconds <= 0 {
-			durationSeconds = 8
+		// Check verified billing lines for video
+		for _, lineMap := range verifiedLines {
+			billable, _ := lineMap["billable"].(string)
+			if billable != "video_output" && billable != "video" {
+				continue
+			}
+			pUSD, ok := toFloat64(lineMap["price_usd"])
+			if !ok || pUSD < 0 {
+				continue
+			}
+			// Condition matching: resolution and includes_audio
+			if conds, ok := lineMap["conditions"].(map[string]any); ok {
+				if res, ok := conds["resolution"].(string); ok && res != "" {
+					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
+						continue
+					}
+				}
+				if incAudio, ok := conds["includes_audio"].(bool); ok {
+					if incAudio != opts.IncludesAudio {
+						continue
+					}
+				}
+			}
+			unit, _ := lineMap["unit"].(string)
+			switch strings.ToLower(unit) {
+			case "second", "sec":
+				if opts.DurationSeconds > 0 {
+					unitPrice = pUSD * float64(opts.DurationSeconds)
+					foundPrice = true
+					summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog %s)", pUSD, unitPrice, opts.DurationSeconds, snapID)
+				}
+			case "minute", "min":
+				if opts.DurationSeconds > 0 {
+					unitPrice = (pUSD / 60.0) * float64(opts.DurationSeconds)
+					foundPrice = true
+					summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) (catalog %s)", pUSD, unitPrice, opts.DurationSeconds, snapID)
+				}
+			case "video", "generation":
+				unitPrice = pUSD
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per video (catalog %s)", unitPrice, snapID)
+			}
+			if foundPrice {
+				break
+			}
 		}
-		if raw != nil {
+		if !foundPrice {
 			if vo, ok := toFloat64(raw["video_output"]); ok && vo > 0 {
 				unitPrice = vo
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", vo)
-			} else if promptCost, ok := toFloat64(raw["prompt"]); ok && promptCost > 0 {
-				unitPrice = promptCost
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog %s)", vo, snapID)
+			} else if pv, ok := toFloat64(raw["per_video"]); ok && pv > 0 {
+				unitPrice = pv
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", promptCost)
-			}
-		}
-		if !foundPrice && raw != nil {
-			if billing, ok := raw["billing"].(map[string]any); ok {
-				if lines, ok := billing["lines"].([]any); ok {
-					for _, line := range lines {
-						lineMap, ok := line.(map[string]any)
-						if !ok {
-							continue
-						}
-						billable, _ := lineMap["billable"].(string)
-						if billable == "video_output" || billable == "video" {
-							pUSD, ok := toFloat64(lineMap["price_usd"])
-							if !ok || pUSD < 0 {
-								continue
-							}
-							unit, _ := lineMap["unit"].(string)
-							switch strings.ToLower(unit) {
-							case "second", "sec":
-								unitPrice = pUSD * float64(durationSeconds)
-								foundPrice = true
-								summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog)", pUSD, unitPrice, durationSeconds)
-							case "minute", "min":
-								unitPrice = (pUSD / 60.0) * float64(durationSeconds)
-								foundPrice = true
-								summaryText = fmt.Sprintf("$%.2f/min ($%.2f for %ds) (catalog)", pUSD, unitPrice, durationSeconds)
-							default:
-								unitPrice = pUSD
-								foundPrice = true
-								summaryText = fmt.Sprintf("$%.2f per generation (catalog)", unitPrice)
-							}
-							if foundPrice {
-								break
-							}
-						}
-					}
-				}
+				summaryText = fmt.Sprintf("$%.2f per video (catalog %s)", pv, snapID)
 			}
 		}
 
 	case "audio":
-		if durationSeconds <= 0 {
-			durationSeconds = 30
+		lowerModel := strings.ToLower(model)
+		for _, lineMap := range verifiedLines {
+			billable, _ := lineMap["billable"].(string)
+			if billable != "song" && billable != "clip" && billable != "audio_output" && billable != "music_output" && billable != "audio" {
+				continue
+			}
+			pUSD, ok := toFloat64(lineMap["price_usd"])
+			if !ok || pUSD < 0 {
+				continue
+			}
+			variant, _ := lineMap["variant"].(string)
+			if strings.Contains(lowerModel, "clip") && variant != "" && !strings.Contains(strings.ToLower(variant), "clip") {
+				continue
+			}
+			if (strings.Contains(lowerModel, "song") || strings.Contains(lowerModel, "3.5")) && variant != "" && strings.Contains(strings.ToLower(variant), "clip") {
+				continue
+			}
+			unit, _ := lineMap["unit"].(string)
+			switch strings.ToLower(unit) {
+			case "song", "clip", "audio", "generation":
+				unitPrice = pUSD
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.2f per %s (catalog %s)", unitPrice, unit, snapID)
+			case "second", "sec":
+				if opts.DurationSeconds > 0 {
+					unitPrice = pUSD * float64(opts.DurationSeconds)
+					foundPrice = true
+					summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog %s)", pUSD, unitPrice, opts.DurationSeconds, snapID)
+				}
+			}
+			if foundPrice {
+				break
+			}
 		}
-		if raw != nil {
+		if !foundPrice {
 			if ao, ok := toFloat64(raw["audio_output"]); ok && ao > 0 {
 				unitPrice = ao
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", ao)
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog %s)", ao, snapID)
 			} else if mo, ok := toFloat64(raw["music_output"]); ok && mo > 0 {
 				unitPrice = mo
 				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", mo)
-			} else if promptCost, ok := toFloat64(raw["prompt"]); ok && promptCost > 0 {
-				unitPrice = promptCost
-				foundPrice = true
-				summaryText = fmt.Sprintf("$%.2f per generation (catalog)", promptCost)
-			}
-		}
-		if !foundPrice && raw != nil {
-			if billing, ok := raw["billing"].(map[string]any); ok {
-				if lines, ok := billing["lines"].([]any); ok {
-					for _, line := range lines {
-						lineMap, ok := line.(map[string]any)
-						if !ok {
-							continue
-						}
-						billable, _ := lineMap["billable"].(string)
-						if billable == "audio_output" || billable == "music_output" {
-							pUSD, ok := toFloat64(lineMap["price_usd"])
-							if !ok || pUSD < 0 {
-								continue
-							}
-							unit, _ := lineMap["unit"].(string)
-							switch strings.ToLower(unit) {
-							case "second", "sec":
-								unitPrice = pUSD * float64(durationSeconds)
-								foundPrice = true
-								summaryText = fmt.Sprintf("$%.3f/sec ($%.2f for %ds) (catalog)", pUSD, unitPrice, durationSeconds)
-							default:
-								unitPrice = pUSD
-								foundPrice = true
-								summaryText = fmt.Sprintf("$%.2f per generation (catalog)", unitPrice)
-							}
-							if foundPrice {
-								break
-							}
-						}
-					}
+				summaryText = fmt.Sprintf("$%.2f per generation (catalog %s)", mo, snapID)
+			} else if aop, ok := raw["audio_output_price"].(map[string]any); ok {
+				if amt, ok := toFloat64(aop["amount"]); ok && amt > 0 {
+					unitPrice = amt
+					foundPrice = true
+					summaryText = fmt.Sprintf("$%.2f per audio (catalog %s)", amt, snapID)
 				}
 			}
 		}
 
 	case "image":
-		if raw != nil {
+		for _, lineMap := range verifiedLines {
+			billable, _ := lineMap["billable"].(string)
+			if billable != "image_output" && billable != "image" {
+				continue
+			}
+			pUSD, ok := toFloat64(lineMap["price_usd"])
+			if !ok || pUSD < 0 {
+				continue
+			}
+			if conds, ok := lineMap["conditions"].(map[string]any); ok {
+				if res, ok := conds["resolution"].(string); ok && res != "" {
+					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
+						continue
+					}
+				}
+			}
+			unit, _ := lineMap["unit"].(string)
+			switch strings.ToLower(unit) {
+			case "token":
+				if opts.OutputTokens > 0 {
+					unitPrice = pUSD * float64(opts.OutputTokens)
+					foundPrice = true
+					summaryText = fmt.Sprintf("$%.6f/token (%d tokens: $%.4f) (catalog %s)", pUSD, opts.OutputTokens, unitPrice, snapID)
+				}
+			case "image", "generation":
+				unitPrice = pUSD
+				foundPrice = true
+				summaryText = fmt.Sprintf("$%.4f per image (catalog %s)", unitPrice, snapID)
+			}
+			if foundPrice {
+				break
+			}
+		}
+		if !foundPrice {
 			for _, key := range []string{"per_image", "output_image", "image", "price_per_image"} {
 				if val, ok := raw[key]; ok {
-					if num, ok := toFloat64(val); ok && num >= 0 {
+					if num, ok := toFloat64(val); ok && num > 0 {
 						unitPrice = num
 						foundPrice = true
-						summaryText = fmt.Sprintf("$%.4f per image (catalog)", unitPrice)
+						summaryText = fmt.Sprintf("$%.4f per image (catalog %s)", unitPrice, snapID)
 						break
 					}
 				}
 			}
-			if !foundPrice {
-				if billing, ok := raw["billing"].(map[string]any); ok {
-					if lines, ok := billing["lines"].([]any); ok {
-						for _, line := range lines {
-							lineMap, ok := line.(map[string]any)
-							if !ok {
-								continue
-							}
-							billable, _ := lineMap["billable"].(string)
-							if billable == "image_output" {
-								if pUSD, ok := toFloat64(lineMap["price_usd"]); ok && pUSD >= 0 {
-									unitPrice = pUSD
-									foundPrice = true
-									summaryText = fmt.Sprintf("$%.4f per image (catalog)", unitPrice)
-									break
-								}
-							}
+		}
+		if !foundPrice {
+			if iop, ok := raw["image_output_price"].(map[string]any); ok {
+				if amt, ok := toFloat64(iop["amount"]); ok && amt > 0 {
+					unit, _ := iop["unit"].(string)
+					if strings.Contains(strings.ToLower(unit), "token") {
+						if opts.OutputTokens > 0 {
+							unitPrice = (amt / 1_000_000.0) * float64(opts.OutputTokens)
+							foundPrice = true
+							summaryText = fmt.Sprintf("$%.4f (token-metered) (catalog %s)", unitPrice, snapID)
 						}
+					} else {
+						unitPrice = amt
+						foundPrice = true
+						summaryText = fmt.Sprintf("$%.4f per image (catalog %s)", unitPrice, snapID)
 					}
 				}
 			}
@@ -418,7 +508,7 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 		}
 	}
 
-	totalCost := unitPrice * float64(count)
+	totalCost := unitPrice * float64(opts.Count)
 	return MediaCostEstimate{
 		CostUSD:         totalCost,
 		PriceStatus:     "known",
@@ -426,6 +516,18 @@ func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int
 		SnapshotID:      snapID,
 		SnapshotVersion: snapVer,
 	}
+}
+
+// EstimateMediaCost resolves snapshot-backed media pricing for images, videos, and audio.
+func (s *SessionStore) EstimateMediaCost(provider, model, kind string, count int, durationSeconds int, isIteration bool) MediaCostEstimate {
+	return s.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        provider,
+		Model:           model,
+		Kind:            kind,
+		Count:           count,
+		DurationSeconds: durationSeconds,
+		IsIteration:     isIteration,
+	})
 }
 
 // GetUsageLimit retrieves the configured daily usage limit for an account.

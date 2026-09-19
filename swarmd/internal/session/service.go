@@ -1774,6 +1774,13 @@ func (s *Service) EstimateMediaCost(provider, model, kind string, count int, dur
 	return s.store.EstimateMediaCost(provider, model, kind, count, durationSeconds, isIteration)
 }
 
+func (s *Service) EstimateMediaCostWithOptions(opts pebblestore.MediaCostEstimateOptions) pebblestore.MediaCostEstimate {
+	if s == nil || s.store == nil {
+		return pebblestore.MediaCostEstimate{PriceStatus: "unknown", PricingSummary: "unknown pricing (session store not configured)"}
+	}
+	return s.store.EstimateMediaCostWithOptions(opts)
+}
+
 func (s *Service) RecordMediaUsage(rec pebblestore.SessionMediaUsageRecord) error {
 	if s == nil || s.store == nil {
 		return errors.New("session service is not configured")

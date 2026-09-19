@@ -485,18 +485,145 @@ func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
 		Model:                 "veo-2.0",
 		SourceSnapshotID:      "snap-2026-09",
 		SourceSnapshotVersion: "v1",
-		Pricing:               []byte(`{"billing":{"lines":[{"billable":"video_output","unit":"second","price_usd":0.05}]}}`),
+		Pricing:               []byte(`{"billing":{"status":"verified","lines":[{"billable":"video_output","unit":"second","price_usd":0.05,"conditions":{"resolution":"720p"}}]}}`),
 	})
 	if err != nil {
 		t.Fatalf("set video catalog record: %v", err)
 	}
-	estVideo := store.EstimateMediaCost("google", "veo-2.0", "video", 2, 6, false)
+	estVideo := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-2.0",
+		Kind:            "video",
+		Count:           2,
+		DurationSeconds: 6,
+		Resolution:      "720p",
+	})
 	if estVideo.PriceStatus != "known" {
 		t.Fatalf("expected video price status known, got %s", estVideo.PriceStatus)
 	}
 	expectedVideoCost := 2.0 * 6.0 * 0.05
 	if estVideo.CostUSD < expectedVideoCost-0.0001 || estVideo.CostUSD > expectedVideoCost+0.0001 {
 		t.Fatalf("expected video cost %f, got %f", expectedVideoCost, estVideo.CostUSD)
+	}
+
+	// Unknown duration on second-metered video must reject to unknown, not invent 8s
+	estVideoZeroDuration := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-2.0",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 0,
+		Resolution:      "720p",
+	})
+	if estVideoZeroDuration.PriceStatus != "unknown" || estVideoZeroDuration.CostUSD != 0.0 {
+		t.Fatalf("expected unknown price status on 0 duration second-metered video, got status=%s cost=%f", estVideoZeroDuration.PriceStatus, estVideoZeroDuration.CostUSD)
+	}
+
+	// Absent resolution condition must reject to unknown (not match arbitrarily)
+	estVideoAbsentResolution := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-2.0",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 6,
+		Resolution:      "",
+	})
+	if estVideoAbsentResolution.PriceStatus != "unknown" || estVideoAbsentResolution.CostUSD != 0.0 {
+		t.Fatalf("expected unknown price status on absent resolution, got status=%s cost=%f", estVideoAbsentResolution.PriceStatus, estVideoAbsentResolution.CostUSD)
+	}
+
+	// Mismatched resolution condition must reject to unknown
+	estVideoMismatchedResolution := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:        "google",
+		Model:           "veo-2.0",
+		Kind:            "video",
+		Count:           1,
+		DurationSeconds: 6,
+		Resolution:      "1080p",
+	})
+	if estVideoMismatchedResolution.PriceStatus != "unknown" || estVideoMismatchedResolution.CostUSD != 0.0 {
+		t.Fatalf("expected unknown price status on mismatched resolution, got status=%s cost=%f", estVideoMismatchedResolution.PriceStatus, estVideoMismatchedResolution.CostUSD)
+	}
+
+	// 5. Audio model with actual Lyria billing lines schema
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "lyria-3.5",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing: []byte(`{
+			"currency": "USD",
+			"billing": {
+				"status": "verified",
+				"lines": [
+					{"kind":"billing_rate","billable":"song","unit":"song","price_usd":0.08,"variant":"full_song","conditions":{"tier":"paid","service_tier":"standard"}},
+					{"kind":"billing_rate","billable":"song","unit":"song","price_usd":0.04,"variant":"clip","conditions":{"tier":"paid","service_tier":"standard"}}
+				]
+			}
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("set audio catalog: %v", err)
+	}
+	estSong := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider: "google",
+		Model:    "lyria-3.5",
+		Kind:     "audio",
+		Count:    1,
+	})
+	if estSong.PriceStatus != "known" || estSong.CostUSD != 0.08 {
+		t.Fatalf("expected lyria 3.5 song cost $0.08 known, got status=%s cost=%f", estSong.PriceStatus, estSong.CostUSD)
+	}
+
+	estClip := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider: "google",
+		Model:    "lyria-clip",
+		Kind:     "audio",
+		Count:    1,
+	})
+	if estClip.PriceStatus != "known" || estClip.CostUSD != 0.04 {
+		t.Fatalf("expected lyria clip cost $0.04 known, got status=%s cost=%f", estClip.PriceStatus, estClip.CostUSD)
+	}
+
+	// 6. Image model with token-metered line: requires actual output token quantities
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "gemini-image-token",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing: []byte(`{
+			"currency": "USD",
+			"billing": {
+				"status": "verified",
+				"lines": [
+					{"kind":"billing_rate","billable":"image_output","unit":"token","price_usd":0.00003,"variant":"standard"}
+				]
+			}
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("set image token catalog: %v", err)
+	}
+	estImgTokens := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:     "google",
+		Model:        "gemini-image-token",
+		Kind:         "image",
+		Count:        1,
+		OutputTokens: 1500,
+	})
+	if estImgTokens.PriceStatus != "known" || estImgTokens.CostUSD != (1500.0*0.00003) {
+		t.Fatalf("expected token-metered image cost %f known, got status=%s cost=%f", 1500.0*0.00003, estImgTokens.PriceStatus, estImgTokens.CostUSD)
+	}
+
+	estImgTokensZero := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:     "google",
+		Model:        "gemini-image-token",
+		Kind:         "image",
+		Count:        1,
+		OutputTokens: 0,
+	})
+	if estImgTokensZero.PriceStatus != "unknown" || estImgTokensZero.CostUSD != 0.0 {
+		t.Fatalf("expected unknown price status for 0-token image line, got status=%s cost=%f", estImgTokensZero.PriceStatus, estImgTokensZero.CostUSD)
 	}
 }
 

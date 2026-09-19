@@ -1637,7 +1637,15 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		imageModel = selectionID
 	}
 	if r.sessions != nil {
-		estimate = r.sessions.EstimateMediaCost(imageProvider, imageModel, "image", 1, 0, sourceRef != nil)
+		estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+			Provider:     imageProvider,
+			Model:        imageModel,
+			Kind:         "image",
+			Count:        1,
+			OutputTokens: generated.OutputTokens,
+			Resolution:   fmt.Sprintf("%dx%d", config.Width, config.Height),
+			IsIteration:  sourceRef != nil,
+		})
 	}
 
 	mediaID := variantID
@@ -2358,7 +2366,15 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 
 		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
 		if r.sessions != nil {
-			estimate = r.sessions.EstimateMediaCost(generated.Provider, generated.Model, "video", 1, req.DurationSeconds, sourceRef != nil)
+			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+				Provider:        generated.Provider,
+				Model:           generated.Model,
+				Kind:            "video",
+				Count:           1,
+				DurationSeconds: req.DurationSeconds,
+				Resolution:      req.Resolution,
+				IsIteration:     sourceRef != nil,
+			})
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
 			ID:              currentVariantID,
@@ -2755,7 +2771,14 @@ func (r *Runtime) generateManagedAudioArtifact(
 
 		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
 		if r.sessions != nil {
-			estimate = r.sessions.EstimateMediaCost(lastProvider, requestedModel, "audio", 1, req.DurationSeconds, sourceRef != nil)
+			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+				Provider:        lastProvider,
+				Model:           requestedModel,
+				Kind:            "audio",
+				Count:           1,
+				DurationSeconds: req.DurationSeconds,
+				IsIteration:     sourceRef != nil,
+			})
 		}
 		mediaRec := pebblestore.SessionMediaUsageRecord{
 			ID:              currentVariantID,

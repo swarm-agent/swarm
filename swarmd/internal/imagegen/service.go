@@ -148,6 +148,7 @@ type ManagedImage struct {
 	Bytes         []byte
 	MediaType     string
 	RevisedPrompt string
+	OutputTokens  int64
 }
 
 type ModelSelection struct {
@@ -656,10 +657,36 @@ func (s *Service) GenerateManagedImage(ctx context.Context, req ManagedGenerateR
 		if err != nil {
 			return ManagedImage{}, err
 		}
-		return managedImageFromCodex(completed[0])
+		tokens := int64(0)
+		if generated.Usage != nil {
+			if count, ok := toInt64(generated.Usage["candidatesTokenCount"]); ok && count > 0 {
+				tokens = count
+			} else if count, ok := toInt64(generated.Usage["totalTokenCount"]); ok && count > 0 {
+				tokens = count
+			}
+		}
+		img := managedImageFromCodex(completed[0])
+		img.OutputTokens = tokens
+		return img, nil
 	default:
 		return ManagedImage{}, fmt.Errorf("unsupported image provider %q", selection.Provider)
 	}
+}
+
+func toInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func cloneManagedImageSource(source *ManagedImageSource) *ManagedImageSource {
