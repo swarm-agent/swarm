@@ -698,6 +698,9 @@ func (f *fakeModelCatalog) ListCatalog(providerID string, limit int) ([]pebblest
 	return f.records, nil
 }
 
+// Requirement: GenerateManagedVideo must price effective request dimensions from the
+// selected catalog record, not a guessed Veo rate. A mock HTTP adapter is the narrowest
+// layer exercising normalization, generation, and pricing without paid provider calls.
 func TestGenerateGoogleVeoVideoWithSnapshotCatalogPricing(t *testing.T) {
 	fakeMP4 := []byte("fake-veo-mp4-video-bytes")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -718,7 +721,7 @@ func TestGenerateGoogleVeoVideoWithSnapshotCatalogPricing(t *testing.T) {
 						"generatedSamples": []any{
 							map[string]any{
 								"video": map[string]any{
-									"uri": "https://generativelanguage.googleapis.com/v1beta/files/snap-pricing-sample",
+									"uri": "/v1beta/files/snap-pricing-sample",
 								},
 							},
 						},

@@ -717,6 +717,9 @@ func (f *fakeSessionUsageRecordingService) RecordMediaUsage(rec pebblestore.Sess
 	return nil
 }
 
+// Requirement: generateManagedVideoArtifact must send the same captured estimate
+// to RecordMediaUsage and its tool response, including unknown status. A recording
+// fake proves this handoff without claiming storage durability or provider billing.
 func TestManageArtifactGenerateVideoResponseAndPersistedUsagePricingAgreement(t *testing.T) {
 	runtime := NewRuntime(1)
 	authority := &fakeArtifactAuthority{}

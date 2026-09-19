@@ -2476,7 +2476,10 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		costPerVideo = estimate.CostUSD
 		totalCost += estimate.CostUSD
 		pricingSummary = estimate.PricingSummary
-		priceStatus = estimate.PriceStatus
+		// A later priced result must not hide an unpriced member of the batch.
+		if priceStatus != "unknown" {
+			priceStatus = estimate.PriceStatus
+		}
 		snapshotID = estimate.SnapshotID
 		snapshotVersion = estimate.SnapshotVersion
 		lastModel = generated.Model

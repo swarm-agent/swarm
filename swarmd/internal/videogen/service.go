@@ -2,7 +2,6 @@ package videogen
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -234,6 +233,8 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	resolution := normalizeResolution(req.Resolution)
 	durationSeconds := normalizeDuration(req.DurationSeconds, modelID, resolution)
 
+	// Pin pricing to the selected model before the provider request begins.
+	modelRecord, found := s.resolveModelRecord(providerID, modelID)
 	var result ManagedVideoResult
 	var genErr error
 	switch providerID {
@@ -264,30 +265,8 @@ func (s *Service) GenerateManagedVideo(ctx context.Context, req ManagedVideoRequ
 	result.Resolution = resolution
 	result.DurationSeconds = durationSeconds
 	result.AspectRatio = aspectRatio
-	if result.DurationMs <= 0 {
-		result.DurationMs = durationSeconds * 1000
-	}
-	if result.Height <= 0 {
-		switch resolution {
-		case "360p":
-			result.Height = 360
-		case "1080p":
-			result.Height = 1080
-		case "4k":
-			result.Height = 2160
-		default:
-			result.Height = 720
-		}
-	}
-	if result.Width <= 0 {
-		if aspectRatio == "9:16" {
-			result.Width = (result.Height * 9) / 16
-		} else {
-			result.Width = (result.Height * 16) / 9
-		}
-	}
-
-	modelRecord, found := s.resolveModelRecord(providerID, modelID)
+	// Effective request settings are distinct from measured media dimensions.
+	// Do not synthesize Width/Height or overwrite provider-reported metadata.
 	var estimate pebblestore.MediaCostEstimate
 	if found {
 		estimate = pebblestore.EstimateMediaCostFromRecord(modelRecord, pebblestore.MediaCostEstimateOptions{
