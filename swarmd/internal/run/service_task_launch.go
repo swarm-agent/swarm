@@ -974,7 +974,7 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			MetaPrompt:            metaPrompt,
 			AssignmentLabel:       title,
 			Deliverable:           deliverable,
-			DependencyEvidence:   dependencyEvidence,
+			DependencyEvidence:    dependencyEvidence,
 		}
 		if !taskProgramIDPattern.MatchString(job.ID) {
 			return nil, nil, fmt.Errorf("task program jobs[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)

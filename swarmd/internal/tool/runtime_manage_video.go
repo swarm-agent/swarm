@@ -208,8 +208,8 @@ func manageVideoDefinition() Definition {
 					"type":        "object",
 					"description": "Visual video-plan proposal with kind ('initial'|'revision'), summary, and parts array. Call action='help' for schema and copyable examples.",
 					"properties": map[string]any{
-						"kind":        map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}, "description": "Plan kind: 'initial' for whole initial cut, 'revision' for updating specific parts."},
-						"summary":     map[string]any{"type": "string", "description": "Concise summary of the plan."},
+						"kind":    map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}, "description": "Plan kind: 'initial' for whole initial cut, 'revision' for updating specific parts."},
+						"summary": map[string]any{"type": "string", "description": "Concise summary of the plan."},
 						"parts": map[string]any{
 							"type":        "array",
 							"description": "Ordered timeline parts. Each part requires id, title, duration_ms, and visual artifact reference.",

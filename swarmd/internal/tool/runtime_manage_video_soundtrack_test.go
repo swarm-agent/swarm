@@ -277,10 +277,10 @@ func TestManageVideoImportAudioArtifactWorkflow(t *testing.T) {
 	}
 
 	var importRes struct {
-		Action      string                         `json:"action"`
-		Status      string                         `json:"status"`
+		Action      string                           `json:"action"`
+		Status      string                           `json:"status"`
 		AudioSource pebblestore.AudioSourceReference `json:"audio_source"`
-		AudioRef    string                         `json:"audio_ref"`
+		AudioRef    string                           `json:"audio_ref"`
 	}
 	if err := json.Unmarshal([]byte(importPayload), &importRes); err != nil {
 		t.Fatalf("unmarshal import result: %v", err)
