@@ -799,9 +799,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			return nil, nil, fmt.Errorf("task program contains unsupported field %q", key)
 		}
 	}
-	programID := strings.ToLower(strings.TrimSpace(mapString(raw, "id")))
+	programID := strings.TrimSpace(mapString(raw, "id"))
+	programID = strings.ToLower(programID)
+	programID = strings.ReplaceAll(programID, " ", "_")
+	if len(programID) > 0 && programID[0] >= '0' && programID[0] <= '9' {
+		programID = "prog_" + programID
+	}
 	if programID == "" {
-		programID = "task_program_1"
+		programID = "task_program"
 	}
 	program := &taskProgramSpec{ID: programID}
 	if !taskProgramIDPattern.MatchString(program.ID) {
@@ -832,7 +837,12 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 				return nil, nil, fmt.Errorf("task program stages[%d] contains unsupported field %q", i, key)
 			}
 		}
-		stageID := strings.ToLower(strings.TrimSpace(mapString(row, "id")))
+		stageID := strings.TrimSpace(mapString(row, "id"))
+		stageID = strings.ToLower(stageID)
+		stageID = strings.ReplaceAll(stageID, " ", "_")
+		if len(stageID) > 0 && stageID[0] >= '0' && stageID[0] <= '9' {
+			stageID = "stage_" + stageID
+		}
 		if stageID == "" {
 			stageID = fmt.Sprintf("stage_%d", i+1)
 		}
@@ -854,6 +864,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		dependsOn, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program stages[%d] depends_on", i), false)
 		if err != nil {
 			return nil, nil, err
+		}
+		for j, dep := range dependsOn {
+			dep = strings.TrimSpace(strings.ToLower(dep))
+			dep = strings.ReplaceAll(dep, " ", "_")
+			if len(dep) > 0 && dep[0] >= '0' && dep[0] <= '9' {
+				dep = "stage_" + dep
+			}
+			dependsOn[j] = dep
 		}
 		if i > 0 && len(dependsOn) == 0 {
 			dependsOn = []string{program.Stages[i-1].ID}
@@ -906,11 +924,24 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			}
 		}
 		agentType := firstNonEmptyString(rawAgentType, rawSubagentType, rawAgent, rawPurpose)
-		jobID := strings.ToLower(strings.TrimSpace(mapString(row, "id")))
+		jobID := strings.TrimSpace(mapString(row, "id"))
+		if jobID == "" && strings.TrimSpace(mapString(row, "stage_id")) != "" {
+			jobID = strings.TrimSpace(mapString(row, "stage_id"))
+		}
+		jobID = strings.ToLower(jobID)
+		jobID = strings.ReplaceAll(jobID, " ", "_")
+		if len(jobID) > 0 && jobID[0] >= '0' && jobID[0] <= '9' {
+			jobID = "job_" + jobID
+		}
 		if jobID == "" {
 			jobID = fmt.Sprintf("job_%d", i+1)
 		}
-		stageID := strings.ToLower(strings.TrimSpace(mapString(row, "stage_id")))
+		stageID := strings.TrimSpace(mapString(row, "stage_id"))
+		stageID = strings.ToLower(stageID)
+		stageID = strings.ReplaceAll(stageID, " ", "_")
+		if len(stageID) > 0 && stageID[0] >= '0' && stageID[0] <= '9' {
+			stageID = "stage_" + stageID
+		}
 		metaPrompt := strings.TrimSpace(firstNonEmptyString(
 			mapString(row, "meta_prompt"),
 			mapString(row, "role"),
@@ -1071,8 +1102,13 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if err != nil {
 			return nil, nil, err
 		}
-		for dIdx := range dependencies {
-			dependencies[dIdx] = strings.ToLower(strings.TrimSpace(dependencies[dIdx]))
+		for j, dep := range dependencies {
+			dep = strings.TrimSpace(strings.ToLower(dep))
+			dep = strings.ReplaceAll(dep, " ", "_")
+			if len(dep) > 0 && dep[0] >= '0' && dep[0] <= '9' {
+				dep = "job_" + dep
+			}
+			dependencies[j] = dep
 		}
 		for _, dependency := range dependencies {
 			dependencyIndex, exists := jobIndexes[dependency]
