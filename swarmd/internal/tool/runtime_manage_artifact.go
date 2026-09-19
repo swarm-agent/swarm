@@ -199,6 +199,7 @@ func manageArtifactDefinition() Definition {
 				"limit":                map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
 				"max_bytes":            map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize instead."},
 				"destination":          map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
+				"model":                map[string]any{"type": "string", "description": "Model identifier for generation (e.g. lyria-3.5, lyria-3-clip-preview, lyria-3-pro-preview)."},
 				"overwrite":            map[string]any{"type": "boolean", "description": "Permit replacement of destination files; defaults to false."},
 			},
 			"required":             []string{"action"},
@@ -1761,7 +1762,7 @@ func artifactHelpText(topic string) string {
 - action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking in one atomic operation.`
 	case "audio", "lyria":
 		return `Artifact AI Audio (Google Lyria) Contract:
-- When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. Omit provider/model: the backend resolves your account-configured audio model (Google Lyria).
+- When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. You can specify model (e.g. lyria-3.5, lyria-3-clip-preview, lyria-3-pro-preview), or omit it to resolve your account-configured audio model (Google Lyria).
 - The AI can generate multiple sound clips or audio variations in ONE tool call: provide an array of descriptive style/mood prompts via prompts: ["...", "..."] (up to 8 clips, e.g. prompts: ["Upbeat funk groove with slapping bass", "Ambient calm piano with rain sounds", "High-energy rock guitar solo"]), or specify count: N (1 to 8) to generate multiple variations from a single prompt.
 - Each generated sound clip is published as a distinct variant in the artifact collection with its own title and description, and Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly.
 - Specify duration_seconds (e.g. 15, 30, 60, 120s; default 30s) and optional image or image_path for multimodal audio inspiration.
@@ -1801,7 +1802,7 @@ Quick Action References:
 - begin_v3 / author_v3 (incremental repair): begin_v3 returns draft_handle; author_v3 accepts draft_handle and operation={action:'read_file|edit_file|build_preview|finish_turn', path, old_string, new_string}.
 - generate_image: action='generate_image', prompt='...', capability_token='...' (call action='image_capabilities' first).
 - generate_video: action='generate_video', prompt='...', duration_seconds=8, aspect_ratio='16:9'.
-- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), duration_seconds=30.
+- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), model='...' (optional), duration_seconds=30.
 - materialize: action='materialize', session_id, collection_id, variant_id, event_seq, destination='path/to/file'.
 - publish_workspace: action='publish_workspace', source='path/to/file', media_type='...'.`
 	}
@@ -2325,7 +2326,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 		case "action", "prompt", "prompts", "title", "label", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path":
+			"image", "image_path", "model":
 		default:
 			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact generate_audio contains unsupported field %q", key)
 		}
@@ -2524,6 +2525,13 @@ func (r *Runtime) generateManagedAudioArtifact(
 	var lastDurationMs int
 	var lastMetadata audiogen.AudioMetadata
 
+	requestedModel := strings.TrimSpace(asString(args["model"]))
+	if requestedModel == "" && r.uiSettings != nil && strings.TrimSpace(principal.AccountScopeID) != "" {
+		if ui, err := r.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
+			requestedModel = strings.TrimSpace(ui.Tools.Audio.DefaultModel)
+		}
+	}
+
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
 		if i > 0 && !managedDestination {
@@ -2539,6 +2547,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 			Prompt:          currentPrompt,
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
+			Model:           requestedModel,
 			Source:          source,
 			Image:           audioImage,
 		})

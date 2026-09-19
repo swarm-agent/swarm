@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { saveAudioDefaultModel } from './save-audio-models'
 import { saveDefaultNewSessionMode } from './save-default-new-session-mode'
 import { savePlanContextGuardSettings } from './save-plan-context-guard-settings'
 import { saveThinkingTagsSetting } from './save-thinking-tags-setting'
@@ -140,6 +141,29 @@ test('saveSwarmSettings sends only swarm name patch and returns refreshed target
       swarm: { name: 'Primary Renamed' },
     })
     assert(seenURLs.some((url) => url.includes('/v1/swarm/targets')), 'expected immediate target refresh')
+  } finally {
+    restore()
+  }
+})
+
+test('saveAudioDefaultModel sends only the audio tool patch', async () => {
+  let capturedBody = ''
+  const restore = installFetchMock(async (_input, init) => {
+    capturedBody = String(init?.body ?? '')
+    return new Response(JSON.stringify({ tools: { audio: { default_model: 'lyria-3-pro-preview' } } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  })
+  try {
+    const response = await saveAudioDefaultModel({
+      current: { theme: { active_id: 'tide' }, tools: { audio: { default_model: 'lyria-3.5' } } },
+      defaultModel: 'lyria-3-pro-preview',
+    })
+    assert.equal(response.tools?.audio?.default_model, 'lyria-3-pro-preview')
+    assert.deepEqual(JSON.parse(capturedBody), {
+      tools: { audio: { default_model: 'lyria-3-pro-preview' } },
+    })
   } finally {
     restore()
   }

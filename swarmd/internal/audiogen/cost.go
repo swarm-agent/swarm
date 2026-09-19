@@ -31,7 +31,7 @@ func EstimateAudioCost(providerID, modelID string, isIteration bool, catalogPric
 	if strings.Contains(lowerModel, "clip") {
 		return 0.04, "$0.04 per clip generation (Google Lyria Clip)"
 	}
-	if strings.Contains(lowerModel, "3.5") || strings.Contains(lowerModel, "song") {
+	if strings.Contains(lowerModel, "3.5") || strings.Contains(lowerModel, "song") || strings.Contains(lowerModel, "pro") {
 		return 0.08, "$0.08 per song generation (Google Lyria 3.5)"
 	}
 	if isIteration {

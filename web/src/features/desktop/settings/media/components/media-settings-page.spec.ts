@@ -15,7 +15,7 @@ test('Media settings page places source media folder at the very top', () => {
   assert.ok(transcribeIndex > modelsIndex, 'Transcribe videos section should appear below media models')
 })
 
-test('Media models section consolidates all four model types into one unified section', () => {
+test('Media models section consolidates all model types into one unified section', () => {
   const modelsSection = source.slice(
     source.indexOf('aria-labelledby="media-models-title"'),
     source.indexOf('aria-labelledby="transcribe-video-title"')
@@ -24,6 +24,7 @@ test('Media models section consolidates all four model types into one unified se
   assert.ok(modelsSection.includes('aria-labelledby="image-model-title"'), 'Image generation model should be inside models section')
   assert.ok(modelsSection.includes('aria-labelledby="video-generation-title"'), 'Base video generation model should be inside models section')
   assert.ok(modelsSection.includes('aria-labelledby="video-iteration-title"'), 'Video iteration model should be inside models section')
+  assert.ok(modelsSection.includes('aria-labelledby="audio-generation-title"'), 'Music & audio generation model should be inside models section')
   assert.ok(modelsSection.includes('aria-labelledby="transcription-model-title"'), 'Video understanding model should be inside models section')
 })
 

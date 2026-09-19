@@ -12,6 +12,7 @@ import (
 
 	"swarm/packages/swarmd/internal/audiogen"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 type fakeAudioGenerationService struct {
@@ -593,5 +594,69 @@ func TestManageArtifactGenerateAudioVariantIncludesLineageInVariantPayload(t *te
 	}
 	if lineageMap["iteration_id"] != "interaction-1" {
 		t.Fatalf("expected iteration_id interaction-1 in lineage, got %v", lineageMap["iteration_id"])
+	}
+}
+
+func TestManageArtifactGenerateAudioAcceptsModelArgument(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-model-test",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_audio",
+			"prompt": "Liquid DnB roller",
+			"model": "lyria-3.5"
+		}`,
+	}
+
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_audio with model: %v", err)
+	}
+
+	if generator.lastReq.Model != "lyria-3.5" {
+		t.Errorf("generator.lastReq.Model = %q, want lyria-3.5", generator.lastReq.Model)
+	}
+}
+
+func TestManageArtifactGenerateAudioResolvesConfiguredUIModel(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+	generator := &fakeAudioGenerationService{}
+	runtime.SetManagedAudioGenerationService(generator)
+	runtime.SetManageThemeServices(&fakeImageUISettings{
+		settings: uisettings.UISettings{
+			Tools: uisettings.ToolSettings{
+				Audio: uisettings.ToolAudioSettings{
+					DefaultModel: "lyria-3-pro-preview",
+				},
+			},
+		},
+	}, nil)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID: "audio-configured-model-test",
+		Name:   "manage_artifact",
+		Arguments: `{
+			"action": "generate_audio",
+			"prompt": "Melodic DnB anthem"
+		}`,
+	}
+
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_audio with configured ui model: %v", err)
+	}
+
+	if generator.lastReq.Model != "lyria-3-pro-preview" {
+		t.Errorf("generator.lastReq.Model = %q, want lyria-3-pro-preview", generator.lastReq.Model)
 	}
 }

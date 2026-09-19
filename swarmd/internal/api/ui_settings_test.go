@@ -413,6 +413,51 @@ func TestUISettingsPostPersistsVideoModels(t *testing.T) {
 	}
 }
 
+func TestUISettingsPostPersistsAudioModel(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-audio-model.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("new event log: %v", err)
+	}
+	hub := stream.NewHub(nil)
+	settingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	settingsSvc.SetEventPublisher(events, hub.Publish)
+	server := NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, events, hub)
+	server.SetUISettingsService(settingsSvc)
+
+	reqBody := []byte(`{"tools":{"audio":{"default_model":"lyria-3-pro-preview"}}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/ui/settings", bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "audio-user", AccountScopeID: "audio-settings-account"}
+	req = req.WithContext(identity.ContextWithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /v1/ui/settings status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var response uisettings.UISettings
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Tools.Audio.DefaultModel != "lyria-3-pro-preview" {
+		t.Fatalf("audio default model = %q, want lyria-3-pro-preview", response.Tools.Audio.DefaultModel)
+	}
+
+	loaded, err := settingsSvc.GetForAccount("audio-settings-account")
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if loaded.Tools.Audio.DefaultModel != "lyria-3-pro-preview" {
+		t.Fatalf("persisted audio default model = %q, want lyria-3-pro-preview", loaded.Tools.Audio.DefaultModel)
+	}
+}
+
 func TestUISettingsPostPreservesExistingThinkingTagsWhenThemeOnlyPayloadSent(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "ui-settings-api-theme-only.pebble"))
 	if err != nil {

@@ -149,6 +149,13 @@ func (s *Service) resolveTargetModel(
 	if strings.TrimSpace(requestedModel) != "" {
 		return RouteModel(durationSeconds, requestedModel)
 	}
+	if s != nil && s.uiSettings != nil && strings.TrimSpace(principal.AccountScopeID) != "" {
+		if ui, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
+			if configured := strings.TrimSpace(ui.Tools.Audio.DefaultModel); configured != "" {
+				return RouteModel(durationSeconds, configured)
+			}
+		}
+	}
 	return RouteModel(durationSeconds, "")
 }
 

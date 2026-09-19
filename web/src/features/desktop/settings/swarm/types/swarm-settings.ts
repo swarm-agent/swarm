@@ -35,9 +35,14 @@ export interface UIToolVideoSettingsWire {
   iteration_model?: string
 }
 
+export interface UIToolAudioSettingsWire {
+  default_model?: string
+}
+
 export interface UIToolSettingsWire {
   image?: UIToolImageSettingsWire
   video?: UIToolVideoSettingsWire
+  audio?: UIToolAudioSettingsWire
 }
 
 export interface UIMediaSettingsWire {
@@ -367,6 +372,23 @@ export function withVideoIterationModel(current: UISettingsWire, iterationModel:
       video: {
         ...(current.tools?.video ?? {}),
         iteration_model: iterationModel.trim(),
+      },
+    },
+  }
+}
+
+export function normalizeAudioDefaultModel(payload?: UISettingsWire | null): string {
+  return typeof payload?.tools?.audio?.default_model === 'string' ? payload.tools.audio.default_model.trim() : ''
+}
+
+export function withAudioDefaultModel(current: UISettingsWire, defaultModel: string): UISettingsWire {
+  return {
+    ...current,
+    tools: {
+      ...(current.tools ?? {}),
+      audio: {
+        ...(current.tools?.audio ?? {}),
+        default_model: defaultModel.trim(),
       },
     },
   }

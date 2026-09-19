@@ -143,7 +143,7 @@ func (s *Service) generateGoogleLyria(
 
 	// Calculate initial expected duration based on model
 	durationMs := 30000
-	if strings.Contains(strings.ToLower(modelID), "3.5") || strings.Contains(strings.ToLower(modelID), "song") {
+	if strings.Contains(strings.ToLower(modelID), "3.5") || strings.Contains(strings.ToLower(modelID), "song") || strings.Contains(strings.ToLower(modelID), "pro") {
 		if durationSeconds > 0 {
 			durationMs = durationSeconds * 1000
 		} else {

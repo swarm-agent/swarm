@@ -17,9 +17,11 @@ const (
 	mediaKindTranscription   = "video_understanding"
 	mediaKindVideoGeneration = "video_generation"
 	mediaKindVideoIteration  = "video_iteration"
+	mediaKindAudioGeneration = "audio_generation"
 
 	DefaultVideoGenerationModel = "veo-3.1-generate-preview"
 	DefaultVideoIterationModel  = "gemini-omni-1.1-flash"
+	DefaultAudioGenerationModel = "lyria-3.5"
 )
 
 type mediaCatalogOption struct {
@@ -39,8 +41,11 @@ type mediaCatalogResponse struct {
 	VideoGenerationModels []mediaCatalogOption `json:"video_generation_models"`
 	VideoIterationModels  []mediaCatalogOption `json:"video_iteration_models"`
 	VideoModels           []mediaCatalogOption `json:"video_models"`
+	AudioModels           []mediaCatalogOption `json:"audio_models"`
 	VideoReady            bool                 `json:"video_ready"`
 	VideoStatus           string               `json:"video_status"`
+	AudioReady            bool                 `json:"audio_ready"`
+	AudioStatus           string               `json:"audio_status"`
 }
 
 func (s *Server) handleMediaSettingsCatalog(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +85,7 @@ func (s *Server) handleMediaSettingsCatalog(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses ...imagegen.ProviderStatus) (mediaCatalogResponse, error) {
-	response := mediaCatalogResponse{VideoReady: false, VideoStatus: "coming_soon"}
+	response := mediaCatalogResponse{VideoReady: false, VideoStatus: "coming_soon", AudioReady: false, AudioStatus: "coming_soon"}
 	providerStatus := make(map[string]imagegen.ProviderStatus, len(caps.Providers)+len(extraStatuses))
 	for _, status := range caps.Providers {
 		providerStatus[status.ID] = status
@@ -141,57 +146,81 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 		return response.TranscriptionModels[i].DisplayName < response.TranscriptionModels[j].DisplayName
 	})
 
-	// Google video generation and iteration models
+	// Google video and audio generation models
 	for _, record := range records {
-		if !isVideoOutputCatalogRecord(record) {
-			continue
+		if isVideoOutputCatalogRecord(record) {
+			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
+			baseOption := mediaCatalogOption{
+				ID:          record.Model,
+				Provider:    "google",
+				Model:       record.Model,
+				DisplayName: displayName,
+				Ready:       googleStatus.Ready,
+				Reason:      googleStatus.Reason,
+				Pricing:     cloneMediaPricing(record.Pricing),
+			}
+			if isVideoGenerationCatalogRecord(record) {
+				genOption := baseOption
+				genOption.Kind = mediaKindVideoGeneration
+				response.VideoGenerationModels = append(response.VideoGenerationModels, genOption)
+			}
+			if isVideoIterationCatalogRecord(record) {
+				iterOption := baseOption
+				iterOption.Kind = mediaKindVideoIteration
+				response.VideoIterationModels = append(response.VideoIterationModels, iterOption)
+			}
+			response.VideoModels = append(response.VideoModels, baseOption)
 		}
-		displayName := firstMediaDisplayName(record.DisplayName, record.Model)
-		baseOption := mediaCatalogOption{
-			ID:          record.Model,
-			Provider:    "google",
-			Model:       record.Model,
-			DisplayName: displayName,
-			Ready:       googleStatus.Ready,
-			Reason:      googleStatus.Reason,
-			Pricing:     cloneMediaPricing(record.Pricing),
+		if isAudioGenerationCatalogRecord(record) {
+			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
+			response.AudioModels = append(response.AudioModels, mediaCatalogOption{
+				ID:          record.Model,
+				Provider:    "google",
+				Model:       record.Model,
+				DisplayName: displayName,
+				Kind:        mediaKindAudioGeneration,
+				Ready:       googleStatus.Ready,
+				Reason:      googleStatus.Reason,
+				Pricing:     cloneMediaPricing(record.Pricing),
+			})
 		}
-		if isVideoGenerationCatalogRecord(record) {
-			genOption := baseOption
-			genOption.Kind = mediaKindVideoGeneration
-			response.VideoGenerationModels = append(response.VideoGenerationModels, genOption)
-		}
-		if isVideoIterationCatalogRecord(record) {
-			iterOption := baseOption
-			iterOption.Kind = mediaKindVideoIteration
-			response.VideoIterationModels = append(response.VideoIterationModels, iterOption)
-		}
-		response.VideoModels = append(response.VideoModels, baseOption)
 	}
 
-	// OpenRouter video generation models
+	// OpenRouter video and audio models
 	openRouterStatus := providerStatus["openrouter"]
 	openRouterRecords, _ := s.model.ListCatalog("openrouter", 2000)
 	for _, record := range openRouterRecords {
-		if !isVideoOutputCatalogRecord(record) {
-			continue
+		if isVideoOutputCatalogRecord(record) {
+			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
+			baseOption := mediaCatalogOption{
+				ID:          record.Model,
+				Provider:    "openrouter",
+				Model:       record.Model,
+				DisplayName: displayName,
+				Ready:       openRouterStatus.Ready,
+				Reason:      openRouterStatus.Reason,
+				Pricing:     cloneMediaPricing(record.Pricing),
+			}
+			if isVideoGenerationCatalogRecord(record) {
+				genOption := baseOption
+				genOption.Kind = mediaKindVideoGeneration
+				response.VideoGenerationModels = append(response.VideoGenerationModels, genOption)
+			}
+			response.VideoModels = append(response.VideoModels, baseOption)
 		}
-		displayName := firstMediaDisplayName(record.DisplayName, record.Model)
-		baseOption := mediaCatalogOption{
-			ID:          record.Model,
-			Provider:    "openrouter",
-			Model:       record.Model,
-			DisplayName: displayName,
-			Ready:       openRouterStatus.Ready,
-			Reason:      openRouterStatus.Reason,
-			Pricing:     cloneMediaPricing(record.Pricing),
+		if isAudioGenerationCatalogRecord(record) {
+			displayName := firstMediaDisplayName(record.DisplayName, record.Model)
+			response.AudioModels = append(response.AudioModels, mediaCatalogOption{
+				ID:          record.Model,
+				Provider:    "openrouter",
+				Model:       record.Model,
+				DisplayName: displayName,
+				Kind:        mediaKindAudioGeneration,
+				Ready:       openRouterStatus.Ready,
+				Reason:      openRouterStatus.Reason,
+				Pricing:     cloneMediaPricing(record.Pricing),
+			})
 		}
-		if isVideoGenerationCatalogRecord(record) {
-			genOption := baseOption
-			genOption.Kind = mediaKindVideoGeneration
-			response.VideoGenerationModels = append(response.VideoGenerationModels, genOption)
-		}
-		response.VideoModels = append(response.VideoModels, baseOption)
 	}
 
 	sortVideoModels := func(models []mediaCatalogOption) {
@@ -207,6 +236,28 @@ func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses 
 	sortVideoModels(response.VideoGenerationModels)
 	sortVideoModels(response.VideoIterationModels)
 	sortVideoModels(response.VideoModels)
+
+	sortAudioModels := func(models []mediaCatalogOption) {
+		sort.Slice(models, func(i, j int) bool {
+			prioI := audioModelPriority(models[i])
+			prioJ := audioModelPriority(models[j])
+			if prioI != prioJ {
+				return prioI < prioJ
+			}
+			return models[i].DisplayName < models[j].DisplayName
+		})
+	}
+	sortAudioModels(response.AudioModels)
+
+	if len(response.AudioModels) > 0 {
+		if googleStatus.Ready {
+			response.AudioReady = true
+			response.AudioStatus = "ready"
+		} else {
+			response.AudioReady = false
+			response.AudioStatus = "needs_auth"
+		}
+	}
 
 	if len(response.VideoGenerationModels) > 0 || len(response.VideoIterationModels) > 0 {
 		if googleStatus.Ready || openRouterStatus.Ready {
@@ -244,6 +295,47 @@ func videoModelPriority(option mediaCatalogOption) int {
 		return 10
 	}
 	return 30
+}
+
+func audioModelPriority(option mediaCatalogOption) int {
+	switch option.Model {
+	case "lyria-3.5":
+		return 1
+	case "lyria-3-clip-preview":
+		return 2
+	case "lyria-3-pro-preview":
+		return 3
+	case "lyria-realtime-exp":
+		return 4
+	case "google/lyria-3.5":
+		return 20
+	case "google/lyria-3-clip-preview":
+		return 21
+	case "google/lyria-3-pro-preview":
+		return 22
+	}
+	if option.Provider == "google" {
+		return 10
+	}
+	return 30
+}
+
+func isAudioGenerationCatalogRecord(record pebblestore.ModelCatalogRecord) bool {
+	if containsMediaModality(record.CatalogModalities.Outputs, "video") {
+		return false
+	}
+	joined := strings.ToLower(strings.Join([]string{record.Model, record.DisplayName, record.CatalogID, strings.Join(record.CatalogModalities.Categories, " ")}, " "))
+	if !containsMediaModality(record.CatalogModalities.Outputs, "audio") &&
+		!containsMediaModality(record.CatalogModalities.Categories, "audio_generation") &&
+		!strings.Contains(joined, "lyria") {
+		return false
+	}
+	for _, excluded := range []string{"embedding", "robot", "research", "live-translate", "transcription"} {
+		if strings.Contains(joined, excluded) {
+			return false
+		}
+	}
+	return true
 }
 
 func isVideoOutputCatalogRecord(record pebblestore.ModelCatalogRecord) bool {
