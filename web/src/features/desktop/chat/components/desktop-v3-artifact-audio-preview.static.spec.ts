@@ -102,4 +102,46 @@ test('preview thumbnail renders audio with aspect-auto sound bar layout', async 
   assert.match(thumbnail, /isAudio && '!aspect-auto'/)
 })
 
+test('chat markdown ManageArtifactCard renders select action on individual sound bars', async () => {
+  const markdown = await readFile(markdownURL, 'utf8')
+  assert.match(markdown, /data-testid="select-audio-clip-button"/)
+  assert.match(markdown, /handleSelectClip/)
+  assert.match(markdown, /soundBarArtifactSelection/)
+  assert.match(markdown, /onArtifactSelections=\{onArtifactSelections\}/)
+})
+
+test('normalizeDesktopV3ArtifactCatalogEntry populates label, description, kind, and previewable from presentation', async () => {
+  const { normalizeDesktopV3ArtifactCatalogEntry, desktopV3ArtifactMessageSelection } = await import('../../session-v3/artifact-api')
+  const entry = normalizeDesktopV3ArtifactCatalogEntry({
+    id: 'variant-audio-1',
+    collection_id: 'col-audio',
+    session_id: 'sess-audio',
+    event_seq: 12,
+    status: 'ready',
+    filename: 'clip.mp3',
+    media_type: 'audio/mp3',
+    presentation: {
+      kind: 'audio',
+      label: 'Neurofunk DnB 174 BPM',
+      description: 'Heavy rolling reese bass with cybernetic accents',
+      previewable: true,
+    },
+  })
+  assert.ok(entry)
+  assert.equal(entry.label, 'Neurofunk DnB 174 BPM')
+  assert.equal(entry.description, 'Heavy rolling reese bass with cybernetic accents')
+  assert.equal(entry.kind, 'audio')
+  assert.equal(entry.previewable, true)
+
+  const selection = desktopV3ArtifactMessageSelection(entry, 'select')
+  assert.equal(selection.variant_id, 'variant-audio-1')
+  assert.equal(selection.session_id, 'sess-audio')
+  assert.equal(selection.collection_id, 'col-audio')
+  assert.equal(selection.event_seq, 12)
+  assert.equal(selection.action, 'select')
+  assert.match(selection.label, /Neurofunk DnB 174 BPM/)
+  assert.match(selection.description || '', /Heavy rolling reese bass with cybernetic accents/)
+})
+
+
 

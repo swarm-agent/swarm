@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 void React;
-import { Archive, ArrowRight, Bot, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Music, Pause, Play, Search, Sparkles, Volume2, VolumeX, XCircle } from "lucide-react";
+import { Archive, ArrowRight, Bot, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDot, CircleStop, Clapperboard, Clock3, Copy, Download, ExternalLink, Film, FolderOpen, GitBranch, Layers3, Loader2, LoaderCircle, MessageSquareText, Music, Pause, Play, Search, Sparkles, Volume2, VolumeX, XCircle } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { cn } from "../../../../lib/cn";
 import { MarkdownRenderer } from "../markdown/render";
@@ -1544,6 +1544,7 @@ function ChatAudioSoundBar({
   onSelect,
   href,
   onOpenViewer,
+  onArtifactSelections,
 }: {
   artifact: DesktopV3ArtifactCatalogEntry;
   index: number;
@@ -1552,6 +1553,7 @@ function ChatAudioSoundBar({
   onSelect: () => void;
   href?: string;
   onOpenViewer?: () => void;
+  onArtifactSelections?: (selections: DesktopV3ArtifactMessageSelection[]) => void;
 }) {
   const [previewURL, setPreviewURL] = useState<string>("");
   const [isPlaying, setIsPlaying] = useState(false);
@@ -1618,9 +1620,35 @@ function ChatAudioSoundBar({
     setIsMuted(!isMuted);
   };
 
-  const vLabel = artifact.label || `Sound Clip ${index + 1}`;
+  const vLabel = (artifact.label && artifact.label !== artifact.filename)
+    ? artifact.label
+    : (promptText ? `Sound Clip ${index + 1}` : artifact.label || `Sound Clip ${index + 1}`);
   const fullPrompt = promptText || artifact.description || "";
   const progressPercent = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+
+  const soundBarArtifactSelection = useMemo(() => {
+    try {
+      const selection = desktopV3ArtifactMessageSelection(artifact, "select");
+      if (fullPrompt && (!selection.description || selection.description === selection.label)) {
+        return {
+          ...selection,
+          description: fullPrompt,
+        };
+      }
+      return selection;
+    } catch {
+      return null;
+    }
+  }, [artifact, fullPrompt]);
+
+  const handleSelectClip = (e: MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onSelect();
+    if (soundBarArtifactSelection && onArtifactSelections) {
+      onArtifactSelections([soundBarArtifactSelection]);
+    }
+  };
 
   return (
     <div
@@ -1683,7 +1711,20 @@ function ChatAudioSoundBar({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1.5">
+          {onArtifactSelections && soundBarArtifactSelection && (artifact.status === "ready" || !artifact.status) ? (
+            <button
+              type="button"
+              onClick={handleSelectClip}
+              className="inline-flex h-7 items-center justify-center gap-1 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-[11px] font-medium text-[var(--app-text)] shadow-2xs transition hover:border-[var(--app-primary)] hover:bg-[var(--app-primary-soft)] hover:text-[var(--app-primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-primary)]"
+              data-testid="select-audio-clip-button"
+              aria-label={`Select ${vLabel} with metadata`}
+              title={`Select ${vLabel} with metadata`}
+            >
+              <Check size={11} className="shrink-0 text-[var(--app-primary)]" />
+              <span>Select</span>
+            </button>
+          ) : null}
           {onOpenViewer || href ? (
             <a
               href={href || "#"}
@@ -1953,7 +1994,15 @@ export function ManageArtifactCard({
 
   const artifactSelection = artifact ? (() => {
     try {
-      return desktopV3ArtifactMessageSelection(artifact, "select");
+      const selection = desktopV3ArtifactMessageSelection(artifact, "select");
+      const effectiveDescription = artifact.description || prompt || "";
+      if (effectiveDescription && (!selection.description || selection.description === selection.label)) {
+        return {
+          ...selection,
+          description: effectiveDescription,
+        };
+      }
+      return selection;
     } catch {
       return null;
     }
@@ -2098,7 +2147,7 @@ export function ManageArtifactCard({
                 {isAudioGeneration ? `Sound Clips (${rawVariants.length})` : `Variations (${rawVariants.length})`}
               </span>
               <span className="text-[9px] font-normal text-[var(--app-text-muted)]">
-                {isAudioGeneration ? "Click any clip to play" : "Select to preview & play"}
+                {isAudioGeneration ? "Select or play any clip" : "Select to preview & play"}
               </span>
             </div>
             <div className="grid gap-2">
@@ -2118,6 +2167,7 @@ export function ManageArtifactCard({
                       onSelect={() => setSelectedVariantIndex(idx)}
                       href={artifactHref ? artifactHref(variantItem) : undefined}
                       onOpenViewer={onArtifactNavigate ? () => onArtifactNavigate(variantItem) : undefined}
+                      onArtifactSelections={onArtifactSelections}
                     />
                   );
                 }
@@ -2174,6 +2224,7 @@ export function ManageArtifactCard({
               onSelect={() => setSelectedVariantIndex(0)}
               href={href}
               onOpenViewer={handleOpenViewer}
+              onArtifactSelections={onArtifactSelections}
             />
           </div>
         ) : null}

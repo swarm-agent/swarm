@@ -595,6 +595,15 @@ func TestManageArtifactGenerateAudioVariantIncludesLineageInVariantPayload(t *te
 	if lineageMap["iteration_id"] != "interaction-1" {
 		t.Fatalf("expected iteration_id interaction-1 in lineage, got %v", lineageMap["iteration_id"])
 	}
+	if artifactMap["label"] == "" || artifactMap["label"] == nil {
+		t.Fatalf("expected label in artifact variant, got: %+v", artifactMap)
+	}
+	if artifactMap["kind"] != "audio" {
+		t.Fatalf("expected kind 'audio' in artifact variant, got: %v", artifactMap["kind"])
+	}
+	if artifactMap["previewable"] != true {
+		t.Fatalf("expected previewable true in artifact variant, got: %v", artifactMap["previewable"])
+	}
 }
 
 func TestManageArtifactGenerateAudioAcceptsModelArgument(t *testing.T) {
