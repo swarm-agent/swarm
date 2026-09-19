@@ -120,6 +120,8 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		`- manage_video (propose visual plan with parts): {"action":"propose_plan","project_id":"vproj_...","base_revision_id":"vrev_...","plan":{"kind":"initial","parts":[{"id":"part-1","title":"Intro","duration_ms":4000,"visual":{"session_id":"...","collection_id":"...","variant_id":"...","event_seq":1}},{"id":"part-2","title":"Body","duration_ms":4000,"visual":{"session_id":"...","collection_id":"...","variant_id":"...","event_seq":2},"source_start_ms":0,"source_end_ms":4000}]}}`,
 		`- manage-sessions (commit single session): {"action":"commit","commits":[{"session_id":"7a3132094f4f2822a095256309fa9665","message":"refactor: consolidate top header metadata into a single row"}]}`,
 		`- manage-sessions (commit multiple sessions at once): {"action":"commit","commits":[{"session_id":"sess_1","message":"feat: first change"},{"session_id":"sess_2","message":"fix: second change"}]}`,
+		`- manage-sessions (list active sidebar categories and archived sessions): {"action":"list"}`,
+		`- manage-sessions (archive all unarchived sessions or by category): {"action":"archive","all":true} or {"action":"archive","category":"video"}`,
 		`- manage-worktree (promote/integrate single session into dev/main): {"action":"promote","source_session_id":"7a3132094f4f2822a095256309fa9665","target_branch":"dev"}`,
 		`- manage-worktree (multi-session promote/integrate into dev/main): {"action":"promote","source_session_ids":["sess_1","sess_2"],"target_branch":"dev"}`,
 		`- manage_deployments (ensure test environment deployment & lease): {"action":"ensure","environment_id":"env-test"}`,

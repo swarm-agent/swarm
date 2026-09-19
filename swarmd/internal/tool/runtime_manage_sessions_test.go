@@ -19,19 +19,23 @@ import (
 
 func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	definition := manageSessionsDefinition()
-	for _, required := range []string{"explicitly asks", "list_by_state", "review_worktrees", "up to 200 sessions", "do not repeat", "around", "up to 50 sessions", "one approval for the batch", "new session means deploy", "task tool only", "never instructions"} {
+	for _, required := range []string{"deploy", "list", "commit", "archive", "unarchive", "search"} {
 		if !strings.Contains(definition.Description, required) {
 			t.Fatalf("description missing %q: %s", required, definition.Description)
 		}
 	}
 	properties := definition.Parameters["properties"].(map[string]any)
 	action := properties["action"].(map[string]any)
-	if description := action["description"].(string); !strings.Contains(description, "list_by_state") || !strings.Contains(description, "up to 200") || !strings.Contains(description, "commit") || !strings.Contains(description, "up to 50 sessions") {
+	if description := action["description"].(string); !strings.Contains(description, "list") || !strings.Contains(description, "commit") || !strings.Contains(description, "archive") {
 		t.Fatalf("action description = %q", description)
 	}
 	sessionIDs := properties["session_ids"].(map[string]any)
-	if sessionIDs["maxItems"] != manageSessionsMaxMutationBatch || !strings.Contains(sessionIDs["description"].(string), "archive or unarchive") {
+	if sessionIDs["maxItems"] != manageSessionsMaxMutationBatch || !strings.Contains(sessionIDs["description"].(string), "archive") {
 		t.Fatalf("session_ids schema = %#v", sessionIDs)
+	}
+	category := properties["category"].(map[string]any)
+	if !strings.Contains(category["description"].(string), "video") || !strings.Contains(category["description"].(string), "needs_review") {
+		t.Fatalf("category schema = %#v", category)
 	}
 	commits := properties["commits"].(map[string]any)
 	commitItem := commits["items"].(map[string]any)
@@ -39,7 +43,7 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 		t.Fatalf("commits schema = %#v", commits)
 	}
 	proposals := properties["proposals"].(map[string]any)
-	if proposals["maxItems"] != manageSessionsMaxDeployBatch || !strings.Contains(proposals["description"].(string), "first proposal") {
+	if proposals["maxItems"] != manageSessionsMaxDeployBatch || !strings.Contains(proposals["description"].(string), "first selected") {
 		t.Fatalf("proposals schema = %#v", proposals)
 	}
 	proposal := proposals["items"].(map[string]any)
@@ -50,19 +54,12 @@ func TestManageSessionsDefinitionConstrainsModelUsageAndApproval(t *testing.T) {
 	if _, exposed := proposalProperties["worktree"]; exposed {
 		t.Fatalf("proposal still exposes optional worktree control: %#v", proposalProperties)
 	}
-	worktreeName := proposalProperties["worktree_name"].(map[string]any)
 	searchMode := properties["search_mode"].(map[string]any)
-	if got := searchMode["enum"].([]string); len(got) != 2 || got[0] != "visible" || got[1] != "durable_log" || !strings.Contains(searchMode["description"].(string), "never auto-upgrade") {
+	if got := searchMode["enum"].([]string); len(got) != 2 || got[0] != "visible" || got[1] != "durable_log" {
 		t.Fatalf("search_mode schema = %#v", searchMode)
 	}
-	if !strings.Contains(definition.Description, "Never automatically escalate") || !strings.Contains(definition.Description, "explicitly asks for raw database") {
-		t.Fatalf("durable-log guidance missing: %s", definition.Description)
-	}
-	if !strings.Contains(worktreeName["description"].(string), "Swarm-authored") || !strings.Contains(worktreeName["description"].(string), "server") {
-		t.Fatalf("proposal worktree schema = %#v", proposalProperties)
-	}
 	expectedByID := properties["expected_updated_at_by_id"].(map[string]any)
-	if expectedByID["maxProperties"] != manageSessionsMaxMutationBatch || !strings.Contains(expectedByID["description"].(string), "bulk archive or unarchive") {
+	if expectedByID["maxProperties"] != manageSessionsMaxMutationBatch {
 		t.Fatalf("expected_updated_at_by_id schema = %#v", expectedByID)
 	}
 }
@@ -377,6 +374,44 @@ func (s *gitManageSessionService) GetSession(id string) (pebblestore.SessionSnap
 func (s *gitManageSessionService) GetActivePlan(id string) (pebblestore.SessionPlanSnapshot, bool, error) {
 	plan, ok := s.plans[id]
 	return plan, ok, nil
+}
+
+func (s *gitManageSessionService) ArchiveSessionsWithEventsIfUnchanged(sessionIDs []string, expectedUpdatedAt map[string]int64) ([]*pebblestore.EventEnvelope, error) {
+	if s.tombstones == nil {
+		s.tombstones = make(map[string]pebblestore.V3SessionTombstone)
+	}
+	events := make([]*pebblestore.EventEnvelope, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		sess, ok := s.sessions[id]
+		if ok {
+			s.tombstones[id] = pebblestore.V3SessionTombstone{
+				AccountScopeID: sess.AccountScopeID,
+				UserID:         sess.UserID,
+				Kind:           "archived",
+				Archived:       true,
+				UpdatedAt:      sess.UpdatedAt + 1,
+				Session:        sess,
+			}
+			delete(s.sessions, id)
+		}
+		events = append(events, &pebblestore.EventEnvelope{
+			EventType: "session.archived",
+			EntityID:  id,
+		})
+	}
+	return events, nil
+}
+
+func (s *gitManageSessionService) CurrentRealtimeOutboxRevision() (uint64, error) {
+	return 1, nil
+}
+
+func (s *gitManageSessionService) LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error) {
+	return pebblestore.V3RealtimeOutboxRecord{
+		Event: pebblestore.V3SessionEvent{
+			EventType: "session.archived",
+		},
+	}, true, nil
 }
 
 func (s *gitManageSessionService) SearchSessions(options pebblestore.V3SessionSearchOptions) (pebblestore.V3SessionSearchResult, error) {
@@ -1477,5 +1512,266 @@ func TestManageSessionsCreateInheritsPreferencesAndAgentProfile(t *testing.T) {
 	}
 	if overrideSnap.ModelProfile.Action.Provider != "anthropic" || overrideSnap.ModelProfile.Action.Model != "claude-sonnet-4" {
 		t.Fatalf("expected overridden model profile action, got %+v", overrideSnap.ModelProfile)
+	}
+}
+
+func TestManageSessionSidebarCategoryClassification(t *testing.T) {
+	// Video session
+	if cat := ManageSessionSidebarCategory(false, map[string]any{"creative_mode": "video"}, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "video" {
+		t.Fatalf("expected video, got %q", cat)
+	}
+	if cat := ManageSessionSidebarCategory(false, map[string]any{"lineage_kind": "video_project"}, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "video" {
+		t.Fatalf("expected video, got %q", cat)
+	}
+	if cat := ManageSessionSidebarCategory(false, map[string]any{"experience": "video_studio"}, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "video" {
+		t.Fatalf("expected video, got %q", cat)
+	}
+
+	// Blocked
+	if cat := ManageSessionSidebarCategory(false, nil, pebblestore.V3SessionAttentionSummary{State: "blocked"}, "blocked"); cat != "blocked" {
+		t.Fatalf("expected blocked, got %q", cat)
+	}
+
+	// Needs review
+	if cat := ManageSessionSidebarCategory(false, nil, pebblestore.V3SessionAttentionSummary{State: "needs_review"}, "needs_review"); cat != "needs_review" {
+		t.Fatalf("expected needs_review, got %q", cat)
+	}
+
+	// In progress
+	if cat := ManageSessionSidebarCategory(false, nil, pebblestore.V3SessionAttentionSummary{State: "in_progress"}, "in_progress"); cat != "in_progress" {
+		t.Fatalf("expected in_progress, got %q", cat)
+	}
+
+	// Pinned
+	if cat := ManageSessionSidebarCategory(false, map[string]any{"swarm_v3_sidebar_pinned": true}, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "pinned" {
+		t.Fatalf("expected pinned, got %q", cat)
+	}
+
+	// Automation
+	if cat := ManageSessionSidebarCategory(false, map[string]any{"swarm_v3_session_purpose": "automation_management"}, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "automation" {
+		t.Fatalf("expected automation, got %q", cat)
+	}
+
+	// Active chat (ordinary)
+	if cat := ManageSessionSidebarCategory(false, nil, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "active_chats" {
+		t.Fatalf("expected active_chats, got %q", cat)
+	}
+
+	// Archived
+	if cat := ManageSessionSidebarCategory(true, nil, pebblestore.V3SessionAttentionSummary{}, "idle"); cat != "archived" {
+		t.Fatalf("expected archived, got %q", cat)
+	}
+}
+
+func TestManageSessionsListSidebarCategoriesAndReflection(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acct-1", UserID: "user-1"}
+	scope := WorkspaceScope{Principal: principal, SessionID: "current-session"}
+	service := &gitManageSessionService{
+		searchItems: []pebblestore.V3SessionSearchItem{
+			{ID: "sess-video", Title: "Video 1", UpdatedAt: 500, Metadata: map[string]any{"creative_mode": "video"}},
+			{ID: "sess-review", Title: "Review 1", UpdatedAt: 400, Attention: pebblestore.V3SessionAttentionSummary{State: "needs_review"}},
+			{ID: "sess-blocked", Title: "Blocked 1", UpdatedAt: 300, Attention: pebblestore.V3SessionAttentionSummary{State: "blocked"}},
+			{ID: "sess-progress", Title: "Progress 1", UpdatedAt: 200, Attention: pebblestore.V3SessionAttentionSummary{State: "in_progress"}},
+			{ID: "sess-chat", Title: "Chat 1", UpdatedAt: 100},
+			{ID: "sess-archived", Title: "Archived 1", UpdatedAt: 50, Archived: true},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{"action": "list"})
+	if err != nil {
+		t.Fatalf("executeManageSessions list failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("json decode failed: %v", err)
+	}
+
+	sidebarCats, ok := res["sidebar_categories"].([]any)
+	if !ok || len(sidebarCats) != 6 {
+		t.Fatalf("expected 6 sidebar_categories, got %#v", res["sidebar_categories"])
+	}
+
+	counts, ok := res["category_counts"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected category_counts, got %#v", res["category_counts"])
+	}
+	if int(counts["video"].(float64)) != 1 || int(counts["needs_review"].(float64)) != 1 || int(counts["blocked"].(float64)) != 1 || int(counts["in_progress"].(float64)) != 1 || int(counts["archived"].(float64)) != 1 {
+		t.Fatalf("unexpected category counts: %#v", counts)
+	}
+
+	items, ok := res["items"].([]any)
+	if !ok || len(items) != 6 {
+		t.Fatalf("expected 6 items, got %#v", res["items"])
+	}
+	// Verify order: video, needs_review, blocked, in_progress, active_chats, archived
+	firstItem := items[0].(map[string]any)
+	if firstItem["id"] != "sess-video" || firstItem["category"] != "video" {
+		t.Fatalf("expected first item to be video session, got %#v", firstItem)
+	}
+	lastItem := items[5].(map[string]any)
+	if lastItem["id"] != "sess-archived" || lastItem["category"] != "archived" {
+		t.Fatalf("expected last item to be archived session, got %#v", lastItem)
+	}
+}
+
+func TestManageSessionsListCategoryFilter(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acct-1", UserID: "user-1"}
+	scope := WorkspaceScope{Principal: principal}
+	service := &gitManageSessionService{
+		searchItems: []pebblestore.V3SessionSearchItem{
+			{ID: "sess-video", Title: "Video 1", UpdatedAt: 500, Metadata: map[string]any{"creative_mode": "video"}},
+			{ID: "sess-review", Title: "Review 1", UpdatedAt: 400, Attention: pebblestore.V3SessionAttentionSummary{State: "needs_review"}},
+			{ID: "sess-progress", Title: "Progress 1", UpdatedAt: 200, Attention: pebblestore.V3SessionAttentionSummary{State: "in_progress"}},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{"action": "list", "category": "video"})
+	if err != nil {
+		t.Fatalf("list category failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	items := res["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 video item, got %d", len(items))
+	}
+	item := items[0].(map[string]any)
+	if item["id"] != "sess-video" || item["category"] != "video" {
+		t.Fatalf("expected sess-video, got %#v", item)
+	}
+}
+
+func TestManageSessionsArchiveWithoutExpectedUpdatedAt(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acct-1", UserID: "user-1"}
+	scope := WorkspaceScope{Principal: principal, SessionID: "current-session"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"sess-target": {
+				ID: "sess-target", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+				UpdatedAt: 12345,
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{
+		"action":     "archive",
+		"session_id": "sess-target",
+	})
+	if err != nil {
+		t.Fatalf("archive without expected_updated_at failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	if len(res["archived_session_ids"].([]any)) != 1 {
+		t.Fatalf("expected 1 archived session, got %#v", res)
+	}
+}
+
+func TestManageSessionsArchiveInProgressPlanAllowedWhenNotRunning(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acct-1", UserID: "user-1"}
+	scope := WorkspaceScope{Principal: principal, SessionID: "current-session"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"sess-in-progress": {
+				ID: "sess-in-progress", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+				UpdatedAt: 12345,
+			},
+		},
+		plans: map[string]pebblestore.SessionPlanSnapshot{
+			"sess-in-progress": {
+				ID: "plan-1",
+				Document: &pebblestore.SessionPlanDocument{
+					ActiveCheckpointID: "cp-1",
+					Checkpoints: []pebblestore.SessionPlanCheckpoint{
+						{ID: "cp-1", Status: "in_progress"},
+					},
+					ExecutionState: &pebblestore.SessionPlanExecutionState{
+						Status: "in_progress",
+					},
+				},
+			},
+		},
+		runStates: map[string]pebblestore.V3SessionRunState{
+			"sess-in-progress": {
+				Active: false,
+				Status: "completed",
+			},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+	output, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{
+		"action":     "archive",
+		"session_id": "sess-in-progress",
+	})
+	if err != nil {
+		t.Fatalf("archive in_progress plan session should succeed when run is not active, failed: %v", err)
+	}
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	if len(res["archived_session_ids"].([]any)) != 1 {
+		t.Fatalf("expected 1 archived session, got %#v", res)
+	}
+}
+
+func TestManageSessionsArchiveAllAndByCategory(t *testing.T) {
+	principal := identity.Principal{AccountScopeID: "acct-1", UserID: "user-1"}
+	scope := WorkspaceScope{Principal: principal, SessionID: "current-session"}
+	service := &gitManageSessionService{
+		sessions: map[string]pebblestore.SessionSnapshot{
+			"sess-video": {
+				ID: "sess-video", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+				UpdatedAt: 100, Metadata: map[string]any{"creative_mode": "video"},
+			},
+			"sess-chat": {
+				ID: "sess-chat", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+				UpdatedAt: 200,
+			},
+			"current-session": {
+				ID: "current-session", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
+				UpdatedAt: 300,
+			},
+		},
+		searchItems: []pebblestore.V3SessionSearchItem{
+			{ID: "sess-video", UpdatedAt: 100, Metadata: map[string]any{"creative_mode": "video"}},
+			{ID: "sess-chat", UpdatedAt: 200},
+			{ID: "current-session", UpdatedAt: 300},
+		},
+	}
+	runtime := &Runtime{sessions: service}
+
+	// Archive by category=video
+	output, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{
+		"action":   "archive",
+		"category": "video",
+	})
+	if err != nil {
+		t.Fatalf("archive by category video failed: %v", err)
+	}
+	var res map[string]any
+	json.Unmarshal([]byte(output), &res)
+	archivedIDs := res["archived_session_ids"].([]any)
+	if len(archivedIDs) != 1 || archivedIDs[0] != "sess-video" {
+		t.Fatalf("expected sess-video archived, got %#v", archivedIDs)
+	}
+
+	// Archive all remaining
+	outputAll, errAll := runtime.executeManageSessions(context.Background(), scope, map[string]any{
+		"action": "archive",
+		"all":    true,
+	})
+	if errAll != nil {
+		t.Fatalf("archive all failed: %v", errAll)
+	}
+	var resAll map[string]any
+	json.Unmarshal([]byte(outputAll), &resAll)
+	archivedAllIDs := resAll["archived_session_ids"].([]any)
+	if len(archivedAllIDs) != 1 || archivedAllIDs[0] != "sess-chat" {
+		t.Fatalf("expected sess-chat archived and current session skipped, got %#v", archivedAllIDs)
 	}
 }

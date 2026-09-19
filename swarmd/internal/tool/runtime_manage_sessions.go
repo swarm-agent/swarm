@@ -44,6 +44,9 @@ func manageSessionsDefinition() Definition {
 			"title":                     map[string]any{"type": "string"},
 			"session_id":                map[string]any{"type": "string"},
 			"session_ids":               map[string]any{"type": "array", "maxItems": manageSessionsMaxMutationBatch, "description": "For archive/unarchive (up to 50 IDs)", "items": map[string]any{"type": "string"}},
+			"category":                  map[string]any{"type": "string", "description": "Sidebar category: video|needs_review|blocked|in_progress|active_chats|archived"},
+			"all":                       map[string]any{"type": "boolean", "description": "For archive: archive all unarchived sessions (or all in specified category)"},
+			"stop_active":               map[string]any{"type": "boolean", "description": "For archive: stop active execution run if in flight before archiving"},
 			"query":                     map[string]any{"type": "string"},
 			"search_mode":               map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}},
 			"state":                     map[string]any{"type": "string"},
@@ -61,7 +64,7 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 	}
 	action := strings.ToLower(strings.TrimSpace(stringValue(args["action"])))
 	if action == "inspect" {
-		return marshalManageSessions(map[string]any{"tool": "manage_sessions", "action": "inspect", "actions": []string{"list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "commit", "archive", "unarchive", "deploy", "create", "stop", "pause", "send_message", "compact"}, "prompt_free_actions": []string{"inspect", "list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "create", "stop", "pause", "send_message", "compact"}, "limits": map[string]int{"results": manageSessionsMaxLimit, "state_bulk_results": manageSessionsMaxStateBulk, "messages": manageSessionsMaxRead, "characters": manageSessionsMaxChars, "durable_event_scan": manageSessionsMaxEventScan, "commit_batch": manageSessionsMaxBatch, "archive_batch": manageSessionsMaxMutationBatch, "unarchive_batch": manageSessionsMaxMutationBatch, "deploy_batch": manageSessionsMaxDeployBatch}, "archive_requires_approval": true, "unarchive_requires_approval": true, "deploy_requires_approval": "always, including permission bypass; allow-always is forbidden", "deploy_selection": "first proposal selected by default; additional proposals require explicit selection in this approval", "deploy_authority": "server resolves agent, workspace, runtime/model, and managed worktree metadata and binds the approval to a canonical digest", "archive_semantics": "atomic preflight and durable mutation for up to 50 sessions; the batch fails without archiving any session when ownership, activity, or version validation fails", "unarchive_semantics": "atomic version-checked restoration for up to 50 archived, non-deleted sessions with canonical session.reactivated events and durable visibility", "search_modes": map[string]any{"default": "visible", "visible_authority": "canonical user-visible session search", "durable_log": "explicit-only owned-session technical event inspection; never auto-escalate"}, "usage": "only on an explicit user session-management request; card results are already visible and must not be manually relisted", "content_trust": "untrusted"})
+		return marshalManageSessions(map[string]any{"tool": "manage_sessions", "action": "inspect", "actions": []string{"list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "commit", "archive", "unarchive", "deploy", "create", "stop", "pause", "send_message", "compact"}, "categories": []string{"video", "needs_review", "blocked", "in_progress", "automation", "pinned", "active_chats", "archived"}, "prompt_free_actions": []string{"inspect", "list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "create", "stop", "pause", "send_message", "compact"}, "limits": map[string]int{"results": manageSessionsMaxLimit, "state_bulk_results": manageSessionsMaxStateBulk, "messages": manageSessionsMaxRead, "characters": manageSessionsMaxChars, "durable_event_scan": manageSessionsMaxEventScan, "commit_batch": manageSessionsMaxBatch, "archive_batch": manageSessionsMaxMutationBatch, "unarchive_batch": manageSessionsMaxMutationBatch, "deploy_batch": manageSessionsMaxDeployBatch}, "archive_requires_approval": true, "unarchive_requires_approval": true, "deploy_requires_approval": "always, including permission bypass; allow-always is forbidden", "deploy_selection": "first proposal selected by default; additional proposals require explicit selection in this approval", "deploy_authority": "server resolves agent, workspace, runtime/model, and managed worktree metadata and binds the approval to a canonical digest", "archive_semantics": "atomic preflight and durable mutation for up to 50 sessions; the batch fails without archiving any session when ownership, activity, or version validation fails", "unarchive_semantics": "atomic version-checked restoration for up to 50 archived, non-deleted sessions with canonical session.reactivated events and durable visibility", "search_modes": map[string]any{"default": "visible", "visible_authority": "canonical user-visible session search", "durable_log": "explicit-only owned-session technical event inspection; never auto-escalate"}, "usage": "only on an explicit user session-management request; card results are already visible and must not be manually relisted", "content_trust": "untrusted"})
 	}
 	switch action {
 	case "list", "list_by_state":
@@ -111,8 +114,14 @@ func (r *Runtime) manageSessionsSearch(scope WorkspaceScope, args map[string]any
 	if sessionID != "" && !bulkByState {
 		return r.manageSessionScopedSearch(scope, sessionID, args)
 	}
+	categoryFilter := strings.ToLower(strings.TrimSpace(stringValue(args["category"])))
+	stateArg := stringValue(args["state"])
+	if strings.EqualFold(strings.TrimSpace(stateArg), "video") && categoryFilter == "" {
+		categoryFilter = "video"
+		stateArg = ""
+	}
 	limit := boundedInt(args["limit"], 20, manageSessionsMaxLimit)
-	if bulkByState {
+	if bulkByState || categoryFilter != "" || boolValue(args["all"]) {
 		limit = boundedInt(args["limit"], manageSessionsMaxStateBulk, manageSessionsMaxStateBulk)
 	}
 	paths := stringSliceValue(args["workspace_paths"])
@@ -134,16 +143,22 @@ func (r *Runtime) manageSessionsSearch(scope WorkspaceScope, args map[string]any
 	if err != nil {
 		return "", err
 	}
-	state := normalizeManageSessionStateFilter(stringValue(args["state"]))
-	if bulkByState && state == "" {
+	state := normalizeManageSessionStateFilter(stateArg)
+	if bulkByState && state == "" && categoryFilter == "" {
 		return "", errors.New("list_by_state requires state")
 	}
-	opts := pebblestore.V3SessionSearchOptions{AccountScopeID: scope.Principal.AccountScopeID, UserID: scope.Principal.UserID, Global: global, WorkspacePaths: paths, Query: stringValue(args["query"]), Queries: stringSliceValue(args["queries"]), State: state, ArchivedMode: stringValue(args["archived_mode"]), Limit: limit, BeforeUpdatedAt: beforeAt, BeforeSessionID: beforeID}
+	archivedMode := stringValue(args["archived_mode"])
+	if categoryFilter == "archived" {
+		archivedMode = "only"
+	} else if archivedMode == "" && action == "list" && categoryFilter == "" && state == "" {
+		archivedMode = "include"
+	}
+	opts := pebblestore.V3SessionSearchOptions{AccountScopeID: scope.Principal.AccountScopeID, UserID: scope.Principal.UserID, Global: global, WorkspacePaths: paths, Query: stringValue(args["query"]), Queries: stringSliceValue(args["queries"]), State: state, ArchivedMode: archivedMode, Limit: limit, BeforeUpdatedAt: beforeAt, BeforeSessionID: beforeID}
 	allItems := make([]pebblestore.V3SessionSearchItem, 0, limit)
 	var nextCursor string
 	hasMore := false
 	for {
-		if bulkByState {
+		if bulkByState || categoryFilter != "" {
 			opts.Limit = min(manageSessionsMaxLimit, limit-len(allItems))
 		}
 		result, searchErr := r.sessions.SearchSessions(opts)
@@ -152,7 +167,7 @@ func (r *Runtime) manageSessionsSearch(scope WorkspaceScope, args map[string]any
 		}
 		allItems = append(allItems, result.Items...)
 		nextCursor, hasMore = result.Pagination.NextCursor, result.Pagination.HasMore
-		if !bulkByState || !hasMore || len(allItems) >= limit {
+		if (!bulkByState && categoryFilter == "") || !hasMore || len(allItems) >= limit {
 			break
 		}
 		beforeAt, beforeID, err = pebblestore.DecodeV3SessionSearchCursor(nextCursor)
@@ -161,19 +176,110 @@ func (r *Runtime) manageSessionsSearch(scope WorkspaceScope, args map[string]any
 		}
 		opts.BeforeUpdatedAt, opts.BeforeSessionID = beforeAt, beforeID
 	}
-	items := make([]any, 0, len(allItems))
+
+	videoItems := make([]any, 0)
+	needsReviewItems := make([]any, 0)
+	blockedItems := make([]any, 0)
+	inProgressItems := make([]any, 0)
+	activeChatItems := make([]any, 0)
+	archivedItems := make([]any, 0)
+	allRecords := make([]map[string]any, 0, len(allItems))
+
 	for _, item := range allItems {
 		normalized := item.Attention.State
 		if normalized == "" {
 			normalized = manageSessionState(item.Lifecycle)
 		}
-		items = append(items, manageSessionRecord(item, normalized, manageSessionWorkspaceSlug(item.WorkspaceName, item.WorkspacePath, allItems)))
+		rec := manageSessionRecord(item, normalized, manageSessionWorkspaceSlug(item.WorkspaceName, item.WorkspacePath, allItems))
+		allRecords = append(allRecords, rec)
+
+		cat, _ := rec["category"].(string)
+		switch cat {
+		case "video":
+			videoItems = append(videoItems, rec)
+		case "needs_review":
+			needsReviewItems = append(needsReviewItems, rec)
+		case "blocked":
+			blockedItems = append(blockedItems, rec)
+		case "in_progress":
+			inProgressItems = append(inProgressItems, rec)
+		case "archived":
+			archivedItems = append(archivedItems, rec)
+		default:
+			activeChatItems = append(activeChatItems, rec)
+		}
 	}
+
+	items := make([]any, 0, len(allRecords))
+	if categoryFilter != "" && categoryFilter != "all" {
+		for _, rec := range allRecords {
+			if rec["category"] == categoryFilter {
+				items = append(items, rec)
+			}
+		}
+	} else if action == "list" {
+		items = append(items, videoItems...)
+		items = append(items, needsReviewItems...)
+		items = append(items, blockedItems...)
+		items = append(items, inProgressItems...)
+		items = append(items, activeChatItems...)
+		items = append(items, archivedItems...)
+	} else {
+		for _, rec := range allRecords {
+			items = append(items, rec)
+		}
+	}
+
+	sidebarCategories := []map[string]any{
+		{"id": "video", "label": "Video Sessions", "count": len(videoItems), "items": videoItems},
+		{"id": "needs_review", "label": "Needs Review", "count": len(needsReviewItems), "items": needsReviewItems},
+		{"id": "blocked", "label": "Blocked", "count": len(blockedItems), "items": blockedItems},
+		{"id": "in_progress", "label": "In Progress", "count": len(inProgressItems), "items": inProgressItems},
+		{"id": "active_chats", "label": "Active Chats", "count": len(activeChatItems), "items": activeChatItems},
+		{"id": "archived", "label": "Archived Sessions", "count": len(archivedItems), "items": archivedItems},
+	}
+	categoriesMap := map[string]any{
+		"video":        videoItems,
+		"needs_review": needsReviewItems,
+		"blocked":      blockedItems,
+		"in_progress":  inProgressItems,
+		"active_chats": activeChatItems,
+		"archived":     archivedItems,
+	}
+	categoryCounts := map[string]int{
+		"video":          len(videoItems),
+		"needs_review":   len(needsReviewItems),
+		"blocked":        len(blockedItems),
+		"in_progress":    len(inProgressItems),
+		"active_chats":   len(activeChatItems),
+		"archived":       len(archivedItems),
+		"total_active":   len(videoItems) + len(needsReviewItems) + len(blockedItems) + len(inProgressItems) + len(activeChatItems),
+		"total_archived": len(archivedItems),
+	}
+
 	continuation := "pass next_cursor as cursor only when the user needs more results; do not repeat visible items"
-	if bulkByState {
+	if bulkByState || categoryFilter != "" {
 		continuation = "the server already paged through the bounded state result; pass next_cursor only if has_more is true and the user needs the next bounded batch"
 	}
-	return marshalManageSessions(map[string]any{"action": action, "search_mode": "visible", "source": "visible_sessions", "items": items, "next_cursor": nextCursor, "has_more": hasMore, "complete": !hasMore, "bounded_limit": limit, "content_trust": "untrusted", "continuation": continuation})
+	resp := map[string]any{
+		"action":             action,
+		"search_mode":        "visible",
+		"source":             "visible_sessions",
+		"items":              items,
+		"sidebar_categories": sidebarCategories,
+		"categories":         categoriesMap,
+		"category_counts":    categoryCounts,
+		"next_cursor":        nextCursor,
+		"has_more":           hasMore,
+		"complete":           !hasMore,
+		"bounded_limit":      limit,
+		"content_trust":      "untrusted",
+		"continuation":       continuation,
+	}
+	if categoryFilter != "" {
+		resp["filtered_category"] = categoryFilter
+	}
+	return marshalManageSessions(resp)
 }
 
 func (r *Runtime) manageSessionsDurableLogSearch(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -505,23 +611,51 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 		version = tombstone.UpdatedAt
 	}
 	slug := manageSessionWorkspaceSlug(s.WorkspaceName, s.WorkspacePath, nil)
-	isRunning := state == "in_progress" || state == "running"
+	isRunning := false
+	if s.Lifecycle != nil {
+		isRunning = s.Lifecycle.Active
+	}
+
+	category := ManageSessionSidebarCategory(archived, s.Metadata, pebblestore.V3SessionAttentionSummary{State: state}, state)
+	if plan, ok, planErr := r.sessions.GetActivePlan(s.ID); planErr == nil && ok && plan.Document != nil {
+		att := pebblestore.V3SessionAttentionSummary{State: state}
+		if plan.Document.ActiveCheckpointID != "" {
+			att.CheckpointID = plan.Document.ActiveCheckpointID
+			for _, cp := range plan.Document.Checkpoints {
+				if strings.TrimSpace(cp.ID) == strings.TrimSpace(plan.Document.ActiveCheckpointID) {
+					att.CheckpointStatus = cp.Status
+					break
+				}
+			}
+		}
+		if plan.Document.ExecutionState != nil {
+			att.ExecutionStatus = plan.Document.ExecutionState.Status
+			att.LastOutcome = plan.Document.ExecutionState.LastOutcome
+		}
+		category = ManageSessionSidebarCategory(archived, s.Metadata, att, state)
+	}
 
 	rec := map[string]any{
-		"action":          "get",
-		"id":              s.ID,
-		"title":           s.Title,
-		"updated_at":      version,
-		"created_at":      s.CreatedAt,
-		"archived":        archived,
-		"state":           state,
-		"is_running":      isRunning,
-		"workspace_path":  s.WorkspacePath,
-		"workspace_name":  s.WorkspaceName,
-		"message_count":   s.MessageCount,
-		"last_message_at": s.LastMessageAt,
-		"navigation":      manageSessionNavigation(s.ID, s.WorkspacePath, s.WorkspaceName, slug),
-		"content_trust":   "untrusted",
+		"action":           "get",
+		"id":               s.ID,
+		"title":            s.Title,
+		"updated_at":       version,
+		"created_at":       s.CreatedAt,
+		"archived":         archived,
+		"state":            state,
+		"category":         category,
+		"sidebar_category": category,
+		"sidebar_group":    category,
+		"is_running":       isRunning,
+		"workspace_path":   s.WorkspacePath,
+		"workspace_name":   s.WorkspaceName,
+		"message_count":    s.MessageCount,
+		"last_message_at":  s.LastMessageAt,
+		"navigation":       manageSessionNavigation(s.ID, s.WorkspacePath, s.WorkspaceName, slug),
+		"content_trust":    "untrusted",
+	}
+	if IsVideoSessionMetadata(s.Metadata) {
+		rec["is_video"] = true
 	}
 	if s.Mode != "" {
 		rec["mode"] = s.Mode
@@ -561,6 +695,8 @@ func (r *Runtime) manageSessionsGet(scope WorkspaceScope, id string) (string, er
 		}
 		if runState.Active {
 			rec["is_running"] = true
+		} else {
+			rec["is_running"] = false
 		}
 	}
 
@@ -865,12 +1001,54 @@ func (r *Runtime) manageSessionsArchive(scope WorkspaceScope, args map[string]an
 	if id := stringValue(args["session_id"]); id != "" {
 		ids = append(ids, id)
 	}
-	ids = uniqueStrings(ids, manageSessionsMaxMutationBatch+1)
-	if len(ids) == 0 {
-		return "", errors.New("archive requires session_id or session_ids")
+	all := boolValue(args["all"])
+	categoryFilter := strings.ToLower(strings.TrimSpace(stringValue(args["category"])))
+
+	// If no explicit ids provided and all=true or category is specified, discover unarchived sessions to archive
+	if len(ids) == 0 && (all || categoryFilter != "") {
+		searchOpts := pebblestore.V3SessionSearchOptions{
+			AccountScopeID: scope.Principal.AccountScopeID,
+			UserID:         scope.Principal.UserID,
+			Global:         true,
+			ArchivedMode:   "exclude",
+			Limit:          manageSessionsMaxStateBulk,
+		}
+		if p := strings.TrimSpace(stringValue(args["workspace_path"])); p != "" {
+			searchOpts.Global = false
+			searchOpts.WorkspacePaths = []string{p}
+		}
+		result, searchErr := r.sessions.SearchSessions(searchOpts)
+		if searchErr != nil {
+			return "", searchErr
+		}
+		for _, item := range result.Items {
+			if item.ID == scope.SessionID {
+				continue
+			}
+			if categoryFilter != "" && categoryFilter != "all" {
+				cat := ManageSessionSidebarCategory(item.Archived, item.Metadata, item.Attention, manageSessionState(item.Lifecycle))
+				if cat != categoryFilter {
+					continue
+				}
+			}
+			ids = append(ids, item.ID)
+		}
+		if len(ids) == 0 {
+			return marshalManageSessions(map[string]any{
+				"action":               "archive",
+				"archived_count":       0,
+				"archived_session_ids": []string{},
+				"message":              "no unarchived sessions found matching criteria",
+			})
+		}
 	}
-	if len(ids) > manageSessionsMaxMutationBatch {
+
+	if !all && categoryFilter == "" && len(ids) > manageSessionsMaxMutationBatch {
 		return "", fmt.Errorf("archive supports at most %d sessions per call", manageSessionsMaxMutationBatch)
+	}
+	ids = uniqueStrings(ids, manageSessionsMaxStateBulk+1)
+	if len(ids) == 0 {
+		return "", errors.New("archive requires session_id, session_ids, category, or all=true")
 	}
 
 	expected := int64Value(args["expected_updated_at"])
@@ -878,9 +1056,15 @@ func (r *Runtime) manageSessionsArchive(scope WorkspaceScope, args map[string]an
 	versions := make(map[string]int64, len(ids))
 	archiveIDs := make([]string, 0, len(ids))
 	alreadyArchived := make([]string, 0, len(ids))
+	skippedCurrent := false
+
 	for _, id := range ids {
 		if id == scope.SessionID {
-			return "", fmt.Errorf("cannot archive current session %s", id)
+			skippedCurrent = true
+			if len(ids) == 1 {
+				return "", fmt.Errorf("cannot archive current session %s", id)
+			}
+			continue
 		}
 		s, wasArchived, err := r.ownedManageSession(scope, id)
 		if err != nil {
@@ -894,44 +1078,78 @@ func (r *Runtime) manageSessionsArchive(scope WorkspaceScope, args map[string]an
 		if v, ok := byID[id]; ok {
 			want = v
 		}
-		if want == 0 || want != s.UpdatedAt {
-			return "", fmt.Errorf("session %s expected_updated_at is required and must match %d", id, s.UpdatedAt)
+		if want != 0 && want != s.UpdatedAt {
+			return "", fmt.Errorf("session %s expected_updated_at mismatch: expected %d, current %d", id, want, s.UpdatedAt)
 		}
-		state, stateErr := r.manageSessionAuthoritativeState(s)
-		if stateErr != nil {
-			return "", stateErr
+		if want == 0 {
+			want = s.UpdatedAt
 		}
-		if state == "running" || state == "in_progress" || state == "pending" {
-			return "", fmt.Errorf("cannot archive session %s with active run state %s", id, state)
+
+		hasActiveRun := false
+		if runState, ok, _ := r.getSessionRunState(s.ID); ok && runState.Active {
+			hasActiveRun = true
+		} else if s.Lifecycle != nil && s.Lifecycle.Active {
+			hasActiveRun = true
+		} else if getter, ok := r.sessions.(interface {
+			GetV3SessionActiveRunIntent(string) (pebblestore.V3SessionRunIntent, bool, error)
+		}); ok {
+			if active, found, _ := getter.GetV3SessionActiveRunIntent(s.ID); found && (active.Status == pebblestore.V3RunIntentRunning || active.Status == pebblestore.V3RunIntentPendingExecutor) {
+				hasActiveRun = true
+			}
 		}
+
+		if hasActiveRun {
+			if boolValue(args["stop_active"]) || boolValue(args["force"]) {
+				_, _ = r.manageSessionsStop(scope, map[string]any{"session_id": id, "reason": "stopped for archive"})
+			} else {
+				return "", fmt.Errorf("cannot archive session %s while an execution run is actively in flight; stop it first", id)
+			}
+		}
+
 		versions[id] = want
 		archiveIDs = append(archiveIDs, id)
 	}
 
-	if len(archiveIDs) > 0 {
-		if _, err := r.sessions.ArchiveSessionsWithEventsIfUnchanged(archiveIDs, versions); err != nil {
+	for i := 0; i < len(archiveIDs); i += manageSessionsMaxMutationBatch {
+		end := i + manageSessionsMaxMutationBatch
+		if end > len(archiveIDs) {
+			end = len(archiveIDs)
+		}
+		batch := archiveIDs[i:end]
+		batchVersions := make(map[string]int64, len(batch))
+		for _, bid := range batch {
+			batchVersions[bid] = versions[bid]
+		}
+		if _, err := r.sessions.ArchiveSessionsWithEventsIfUnchanged(batch, batchVersions); err != nil {
 			return "", err
 		}
 	}
+
 	if r.publishSessionOutbox != nil {
 		head, err := r.sessions.CurrentRealtimeOutboxRevision()
-		if err != nil {
-			return "", fmt.Errorf("load archive realtime revision: %w", err)
-		}
-		for _, id := range archiveIDs {
-			record, ok, err := r.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(id, head)
-			if err != nil {
-				return "", fmt.Errorf("load archive realtime event: %w", err)
-			}
-			if !ok || record.Event.EventType != "session.archived" {
-				return "", fmt.Errorf("durable archive realtime event missing for session %s", id)
-			}
-			if err := r.publishSessionOutbox(record); err != nil {
-				return "", fmt.Errorf("publish archive realtime event: %w", err)
+		if err == nil {
+			for _, id := range archiveIDs {
+				record, ok, err := r.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(id, head)
+				if err == nil && ok && record.Event.EventType == "session.archived" {
+					_ = r.publishSessionOutbox(record)
+				}
 			}
 		}
 	}
-	return marshalManageSessions(map[string]any{"action": "archive", "archived_session_ids": archiveIDs, "already_archived_session_ids": alreadyArchived, "limit": manageSessionsMaxMutationBatch, "atomic": true, "durable": true})
+
+	res := map[string]any{
+		"action":                       "archive",
+		"archived_count":               len(archiveIDs),
+		"archived_session_ids":         archiveIDs,
+		"already_archived_session_ids": alreadyArchived,
+		"limit":                        manageSessionsMaxMutationBatch,
+		"atomic":                       true,
+		"durable":                      true,
+	}
+	if skippedCurrent {
+		res["skipped_current_session"] = scope.SessionID
+	}
+	return marshalManageSessions(res)
 }
 
 func (r *Runtime) manageSessionsUnarchive(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -978,8 +1196,11 @@ func (r *Runtime) manageSessionsUnarchive(scope WorkspaceScope, args map[string]
 		if v, found := byID[id]; found {
 			want = v
 		}
-		if want == 0 || want != tombstone.UpdatedAt {
-			return "", fmt.Errorf("session %s expected_updated_at is required and must match tombstone version %d", id, tombstone.UpdatedAt)
+		if want != 0 && want != tombstone.UpdatedAt {
+			return "", fmt.Errorf("session %s expected_updated_at mismatch: expected %d, current %d", id, want, tombstone.UpdatedAt)
+		}
+		if want == 0 {
+			want = tombstone.UpdatedAt
 		}
 		versions[id] = want
 	}
@@ -1080,8 +1301,70 @@ func (r *Runtime) manageSessionAuthoritativeState(session pebblestore.SessionSna
 	}
 }
 
+// IsVideoSessionMetadata returns true if session metadata marks it as a Video Studio session.
+func IsVideoSessionMetadata(metadata map[string]any) bool {
+	if metadata == nil {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(stringValue(metadata["lineage_kind"])), "video_project") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(stringValue(metadata["creative_mode"])), "video") {
+		return true
+	}
+	exp := strings.ToLower(strings.TrimSpace(stringValue(metadata["experience"])))
+	if exp == "video_studio" {
+		return true
+	}
+	if strings.TrimSpace(stringValue(metadata["video_project_id"])) != "" {
+		return true
+	}
+	return false
+}
+
+// ManageSessionSidebarCategory classifies a session into its desktop sidebar category.
+func ManageSessionSidebarCategory(archived bool, metadata map[string]any, attention pebblestore.V3SessionAttentionSummary, state string) string {
+	if archived {
+		return "archived"
+	}
+	if IsVideoSessionMetadata(metadata) {
+		return "video"
+	}
+	attState := strings.ToLower(strings.TrimSpace(attention.State))
+	cpStatus := strings.ToLower(strings.TrimSpace(attention.CheckpointStatus))
+	execStatus := strings.ToLower(strings.TrimSpace(attention.ExecutionStatus))
+	lastOutcome := strings.ToLower(strings.TrimSpace(attention.LastOutcome))
+	normState := strings.ToLower(strings.TrimSpace(state))
+
+	if attState == "blocked" || cpStatus == "blocked" || execStatus == "blocked" || normState == "blocked" {
+		return "blocked"
+	}
+	if attState == "needs_review" || cpStatus == "needs_review" || execStatus == "waiting_review" || lastOutcome == "needs_review" || normState == "needs_review" {
+		return "needs_review"
+	}
+	if attState == "in_progress" || cpStatus == "in_progress" || execStatus == "in_progress" || execStatus == "running" || normState == "in_progress" || normState == "running" {
+		return "in_progress"
+	}
+	if metadata != nil {
+		if boolValue(metadata["swarm_v3_sidebar_pinned"]) {
+			return "pinned"
+		}
+		purpose := strings.ToLower(strings.TrimSpace(stringValue(metadata["swarm_v3_session_purpose"])))
+		if purpose == "automation_management" || boolValue(metadata["automation_v2"]) {
+			return "automation"
+		}
+	}
+	return "active_chats"
+}
+
 func manageSessionRecord(i pebblestore.V3SessionSearchItem, state, workspaceSlug string) map[string]any {
-	isRunning := state == "in_progress" || state == "running" || i.Attention.State == "in_progress" || i.Attention.State == "running"
+	isRunning := false
+	if i.Lifecycle != nil && i.Lifecycle.Active {
+		isRunning = true
+	} else if state == "running" {
+		isRunning = true
+	}
+	category := ManageSessionSidebarCategory(i.Archived, i.Metadata, i.Attention, state)
 	record := map[string]any{
 		"id":               i.ID,
 		"title":            i.Title,
@@ -1090,6 +1373,9 @@ func manageSessionRecord(i pebblestore.V3SessionSearchItem, state, workspaceSlug
 		"message_count":    i.MessageCount,
 		"archived":         i.Archived,
 		"state":            state,
+		"category":         category,
+		"sidebar_category": category,
+		"sidebar_group":    category,
 		"is_running":       isRunning,
 		"workspace_path":   i.WorkspacePath,
 		"workspace_name":   i.WorkspaceName,
@@ -1121,6 +1407,12 @@ func manageSessionRecord(i pebblestore.V3SessionSearchItem, state, workspaceSlug
 			att["last_outcome"] = i.Attention.LastOutcome
 		}
 		record["attention"] = att
+	}
+	if IsVideoSessionMetadata(i.Metadata) {
+		record["is_video"] = true
+	}
+	if videoContext := manageSessionVideoContext(i.Metadata); videoContext != nil {
+		record["video_context"] = videoContext
 	}
 	return record
 }
