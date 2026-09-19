@@ -232,6 +232,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	// 1. Fetch persisted query rollups from Pebble (keyed by account/day/session/provider/model)
 	var summary SessionUsageDashboardSummary
 	var mediaSummary SessionUsageMediaSummary
+	mediaSummary.RecentItems = make([]SessionUsageMediaItem, 0, 30)
 	dailyMap := make(map[string]*SessionUsageDailyItem)
 	providerMap := make(map[string]*SessionUsageProviderItem)
 	modelMap := make(map[string]*SessionUsageModelItem)
@@ -275,6 +276,12 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	rollups, err := s.sessions.Store().ListAccountUsageRollups(principal.AccountScopeID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("list usage rollups: %w", err))
+		return
+	}
+
+	mediaRecords, err := s.sessions.Store().ListMediaUsage(principal.AccountScopeID, 200)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("list media usage: %w", err))
 		return
 	}
 
@@ -441,6 +448,28 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, m := range mediaRecords {
+		if cutoffTime > 0 && m.CreatedAt < cutoffTime {
+			continue
+		}
+		if endTimeCutoff > 0 && m.CreatedAt > endTimeCutoff {
+			continue
+		}
+		if sessionFilter != "" && m.SessionID != sessionFilter {
+			continue
+		}
+		if providerFilter != "" && !strings.EqualFold(strings.TrimSpace(m.Provider), providerFilter) {
+			continue
+		}
+		if modelFilter != "" && !strings.Contains(strings.ToLower(strings.TrimSpace(m.Model)), modelFilter) {
+			continue
+		}
+		meta := resolveSessionMeta(m.SessionID)
+		if archivedMode == "exclude" && meta.archived {
+			continue
+		}
+		if archivedMode == "only" && !meta.archived {
+			continue
+		}
 		if strings.EqualFold(m.PriceStatus, "unknown") {
 			summary.HasUnknownPricing = true
 		}
@@ -490,31 +519,30 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 5. Convert fallback maps to sorted slices if not already populated from persisted aggregates
-	if len(dailyList) == 0 {
-		for _, item := range dailyMap {
-			dailyList = append(dailyList, *item)
-		}
-		sort.Slice(dailyList, func(i, j int) bool {
-			return dailyList[i].Date < dailyList[j].Date // chronological ascending
-		})
+	// 5. Convert maps to sorted slices
+	dailyList := make([]SessionUsageDailyItem, 0, len(dailyMap))
+	for _, item := range dailyMap {
+		dailyList = append(dailyList, *item)
 	}
-	if len(providerList) == 0 {
-		for _, item := range providerMap {
-			providerList = append(providerList, *item)
-		}
-		sort.Slice(providerList, func(i, j int) bool {
-			return providerList[i].TotalTokens > providerList[j].TotalTokens
-		})
+	sort.Slice(dailyList, func(i, j int) bool {
+		return dailyList[i].Date < dailyList[j].Date // chronological ascending
+	})
+
+	providerList := make([]SessionUsageProviderItem, 0, len(providerMap))
+	for _, item := range providerMap {
+		providerList = append(providerList, *item)
 	}
-	if len(modelList) == 0 {
-		for _, item := range modelMap {
-			modelList = append(modelList, *item)
-		}
-		sort.Slice(modelList, func(i, j int) bool {
-			return modelList[i].TotalTokens > modelList[j].TotalTokens
-		})
+	sort.Slice(providerList, func(i, j int) bool {
+		return providerList[i].TotalTokens > providerList[j].TotalTokens
+	})
+
+	modelList := make([]SessionUsageModelItem, 0, len(modelMap))
+	for _, item := range modelMap {
+		modelList = append(modelList, *item)
 	}
+	sort.Slice(modelList, func(i, j int) bool {
+		return modelList[i].TotalTokens > modelList[j].TotalTokens
+	})
 
 	seenSessionIDs := make(map[string]struct{})
 	sessionList := make([]SessionUsageSessionItem, 0, len(sessionUsageMap))

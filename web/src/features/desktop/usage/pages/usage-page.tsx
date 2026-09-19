@@ -81,11 +81,11 @@ export function UsagePage() {
         }
         return
       }
-      if (action.type === 'realtime.applyLivePatchBatch') {
-        const hasUsagePatch = action.patches.some(
-          (p) => p.path?.includes('usage') || p.path?.includes('estimated_cost_usd')
+      if (action.type === 'syncStream.applyBatch') {
+        const hasUsageEvent = action.events.some(
+          (e) => e.eventType === 'run.usage.updated' || e.eventType === 'session.media_usage.recorded'
         )
-        if (hasUsagePatch) {
+        if (hasUsageEvent) {
           void queryClient.invalidateQueries({ queryKey: ['session-usage-dashboard'] })
         }
       }
