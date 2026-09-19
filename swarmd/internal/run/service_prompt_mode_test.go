@@ -371,4 +371,3 @@ func TestMasterHarnessDistinguishesSingleAndMultiCheckpointWorkflows(t *testing.
 		}
 	}
 }
-

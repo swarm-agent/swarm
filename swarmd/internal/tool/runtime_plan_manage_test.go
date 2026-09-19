@@ -258,7 +258,6 @@ func TestPlanManageDefinitionGuidesSingleVsMultiCheckpointScope(t *testing.T) {
 	}
 }
 
-
 func mustFindDefinition(t *testing.T, name string) Definition {
 	t.Helper()
 	rt := NewRuntime(1)
