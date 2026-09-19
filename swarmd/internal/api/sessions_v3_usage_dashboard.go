@@ -105,7 +105,7 @@ type SessionUsageMediaSummary struct {
 	RecentItems  []SessionUsageMediaItem `json:"recent_items"`
 }
 
-	type SessionUsageMediaItem struct {
+type SessionUsageMediaItem struct {
 	ID             string  `json:"id"`
 	SessionID      string  `json:"session_id"`
 	MediaType      string  `json:"media_type"`

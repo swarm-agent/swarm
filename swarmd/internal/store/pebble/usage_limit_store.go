@@ -168,7 +168,7 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 					} else {
 						cost += (float64(cacheReadTokens) / 1_000_000.0) * inp
 					}
-					cost += (float64(outputTokens + thinkingTokens) / 1_000_000.0) * outVal
+					cost += (float64(outputTokens+thinkingTokens) / 1_000_000.0) * outVal
 					return cost, "known"
 				}
 			}

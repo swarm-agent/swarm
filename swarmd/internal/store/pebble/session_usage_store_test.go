@@ -183,8 +183,8 @@ func TestRepeatUpdateDeduplicationVsDistinctRequests(t *testing.T) {
 		Model:            "gemini-3.8-flash",
 		InputTokens:      1200,
 		OutputTokens:     100,
-		TotalTokens:      1300, // occupancy
-		BilledTokens:     2400, // cumulative billed tokens (1100 + 1300)
+		TotalTokens:      1300,  // occupancy
+		BilledTokens:     2400,  // cumulative billed tokens (1100 + 1300)
 		EstimatedCostUSD: 0.012, // cumulative cost ($0.005 + $0.007)
 		CreatedAt:        now,
 		UpdatedAt:        now + 1000,

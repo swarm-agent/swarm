@@ -232,18 +232,18 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 		}
 		uniqueRouterRunID := fmt.Sprintf("router:%s:%d:%d", r.callID, attempt, time.Now().UnixNano())
 		routerUsage := pebblestore.SessionTurnUsageSnapshot{
-			SessionID:        r.parentID,
-			AccountScopeID:   r.principal.AccountScopeID,
-			UserID:           r.principal.UserID,
-			RunID:            uniqueRouterRunID,
-			Provider:         r.runtime.ProviderID,
-			Model:            r.runtime.Preference.Model,
-			Source:           "router",
-			InputTokens:      response.Usage.InputTokens,
-			OutputTokens:     response.Usage.OutputTokens,
-			ThinkingTokens:   response.Usage.ThinkingTokens,
-			CacheReadTokens:  response.Usage.CacheReadTokens,
-			CacheWriteTokens: response.Usage.CacheWriteTokens,
+			SessionID:              r.parentID,
+			AccountScopeID:         r.principal.AccountScopeID,
+			UserID:                 r.principal.UserID,
+			RunID:                  uniqueRouterRunID,
+			Provider:               r.runtime.ProviderID,
+			Model:                  r.runtime.Preference.Model,
+			Source:                 "router",
+			InputTokens:            response.Usage.InputTokens,
+			OutputTokens:           response.Usage.OutputTokens,
+			ThinkingTokens:         response.Usage.ThinkingTokens,
+			CacheReadTokens:        response.Usage.CacheReadTokens,
+			CacheWriteTokens:       response.Usage.CacheWriteTokens,
 			TotalTokens:            response.Usage.TotalTokens,
 			BilledTokens:           response.Usage.TotalTokens,
 			BilledInputTokens:      response.Usage.InputTokens,
@@ -252,8 +252,8 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 			BilledCacheWriteTokens: response.Usage.CacheWriteTokens,
 			BilledThinkingTokens:   response.Usage.ThinkingTokens,
 			EstimatedCostUSD:       routerCost,
-			CreatedAt:        time.Now().UnixMilli(),
-			UpdatedAt:        time.Now().UnixMilli(),
+			CreatedAt:              time.Now().UnixMilli(),
+			UpdatedAt:              time.Now().UnixMilli(),
 		}
 		if _, _, _, recErr := r.sessions.RecordTurnUsage(r.parentID, routerUsage); recErr != nil {
 			return "", fmt.Errorf("record Router turn usage: %w", recErr)
