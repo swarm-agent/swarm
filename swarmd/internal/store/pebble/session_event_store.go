@@ -924,7 +924,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, errors.New("media staging bindings already committed without routed mutation authority")
 		}
 	}
-	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
+	turnUsage, usageSummary, previousTurnUsage, hadPreviousTurnUsage, usageProvided, err := s.prepareV3UsageForMutation(input, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1202,7 +1202,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if usageProvided {
 		if turnUsage.EstimatedCostUSD <= 0 {
-			turnUsage.EstimatedCostUSD = CalculateBaselineCost(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.EstimatedCostUSD = s.CalculateCost(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
 		}
 		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
@@ -1301,7 +1301,32 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			ts = now
 		}
 		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-		_, _ = s.IncrementDailyUsage(turnUsage.AccountScopeID, dateStr, turnUsage.EstimatedCostUSD, turnUsage.TotalTokens)
+		costDelta := turnUsage.EstimatedCostUSD
+		tokensDelta := turnUsage.TotalTokens
+		if turnUsage.BilledTokens > 0 {
+			tokensDelta = turnUsage.BilledTokens
+		}
+		if hadPreviousTurnUsage {
+			costDelta = turnUsage.EstimatedCostUSD - previousTurnUsage.EstimatedCostUSD
+			if costDelta < 0 {
+				costDelta = 0
+			}
+			prevTokens := previousTurnUsage.TotalTokens
+			if previousTurnUsage.BilledTokens > 0 {
+				prevTokens = previousTurnUsage.BilledTokens
+			}
+			currTokens := turnUsage.TotalTokens
+			if turnUsage.BilledTokens > 0 {
+				currTokens = turnUsage.BilledTokens
+			}
+			tokensDelta = currTokens - prevTokens
+			if tokensDelta < 0 {
+				tokensDelta = 0
+			}
+		}
+		if costDelta > 0 || tokensDelta > 0 {
+			_, _ = s.IncrementDailyUsage(turnUsage.AccountScopeID, dateStr, costDelta, tokensDelta)
+		}
 	}
 	v3SuccessfulFreshMutations.Add(1)
 	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
@@ -2630,29 +2655,29 @@ func v3RunIntentPriority(status string) int {
 	}
 }
 
-func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, now int64) (SessionTurnUsageSnapshot, SessionUsageSummary, bool, error) {
+func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, now int64) (SessionTurnUsageSnapshot, SessionUsageSummary, SessionTurnUsageSnapshot, bool, bool, error) {
 	if input.TurnUsage == nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, nil
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, nil
 	}
 	usage := sanitizeTurnUsageSnapshot(*input.TurnUsage)
 	usage.SessionID = input.SessionID
 	if usage.RunID == "" {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, errors.New("turn usage run id is required")
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, errors.New("turn usage run id is required")
 	}
 	session, ok, err := s.GetSession(input.SessionID)
 	if err != nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, err
 	}
 	if !ok {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, fmt.Errorf("session %q not found", input.SessionID)
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, fmt.Errorf("session %q not found", input.SessionID)
 	}
 	previous, hadPrevious, err := s.GetTurnUsage(input.SessionID, usage.RunID)
 	if err != nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, err
 	}
 	summary, hasSummary, err := s.GetUsageSummary(input.SessionID)
 	if err != nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, err
 	}
 	if !hasSummary {
 		summary = SessionUsageSummary{SessionID: input.SessionID}
@@ -2670,6 +2695,20 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 		}
 	}
 	usage.UpdatedAt = now
+	if usage.EstimatedCostUSD <= 0 {
+		usage.EstimatedCostUSD = s.CalculateCost(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+	}
+	costDelta := usage.EstimatedCostUSD
+	if hadPrevious {
+		costDelta = usage.EstimatedCostUSD - previous.EstimatedCostUSD
+		if costDelta < 0 {
+			costDelta = 0
+		}
+	}
+	summary.EstimatedCostUSD += costDelta
+	if summary.EstimatedCostUSD < 0 {
+		summary.EstimatedCostUSD = 0
+	}
 	if usage.ContextWindow > 0 {
 		summary.ContextWindow = usage.ContextWindow
 	} else if summary.ContextWindow > 0 {
@@ -2701,7 +2740,7 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	} else {
 		summary = ApplyProviderUsageSnapshotToSummary(summary, usage)
 	}
-	return usage, summary, true, nil
+	return usage, summary, previous, hadPrevious, true, nil
 }
 
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {

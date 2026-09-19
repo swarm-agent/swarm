@@ -1629,7 +1629,32 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if sourceRef != nil {
 		create.SourceSessionID, create.SourceCollectionID, create.SourceVariantID, create.SourceEventSeq = sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq
 	}
-	return r.artifactAuthority.Create(ctx, principal, create)
+	published, err := r.artifactAuthority.Create(ctx, principal, create)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	imageCost := 0.04
+	if strings.EqualFold(selection.Provider, "codex") {
+		imageCost = 0.0
+	}
+	if r.sessions != nil {
+		_ = r.sessions.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
+			ID:             published.ID,
+			SessionID:      principal.SessionID,
+			AccountScopeID: principal.AccountScopeID,
+			UserID:         principal.UserID,
+			MediaType:      canonicalArtifactMediaType(generated.MediaType),
+			Kind:           "image",
+			Provider:       selection.Provider,
+			Model:          selection.Model,
+			Filename:       filename,
+			Label:          presentation.Label,
+			Size:           int64(len(generated.Bytes)),
+			CostUSD:        imageCost,
+			CreatedAt:      published.CreatedAt,
+		})
+	}
+	return published, nil
 }
 
 type managedVideoArtifactResult struct {
@@ -2316,6 +2341,23 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
 		}
+		if r.sessions != nil {
+			_ = r.sessions.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
+				ID:             published.ID,
+				SessionID:      principal.SessionID,
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				MediaType:      "video/mp4",
+				Kind:           "video",
+				Provider:       generated.Provider,
+				Model:          generated.Model,
+				Filename:       filename,
+				Label:          presentation.Label,
+				Size:           int64(len(generated.Bytes)),
+				CostUSD:        generated.EstimatedCostUSD,
+				CreatedAt:      published.CreatedAt,
+			})
+		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))
 		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
@@ -2683,6 +2725,23 @@ func (r *Runtime) generateManagedAudioArtifact(
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedAudioArtifactResult{}, fmt.Errorf("publish audio artifact: %w", err)
+		}
+		if r.sessions != nil {
+			_ = r.sessions.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
+				ID:             published.ID,
+				SessionID:      principal.SessionID,
+				AccountScopeID: principal.AccountScopeID,
+				UserID:         principal.UserID,
+				MediaType:      mediaType,
+				Kind:           "audio",
+				Provider:       lastProvider,
+				Model:          requestedModel,
+				Filename:       filename,
+				Label:          presentation.Label,
+				Size:           int64(len(generated.Bytes)),
+				CostUSD:        generated.EstimatedCostUSD,
+				CreatedAt:      published.CreatedAt,
+			})
 		}
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))

@@ -590,3 +590,106 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 		t.Fatalf("expected legacy archived session %s in response", legacyArchivedID)
 	}
 }
+
+// TestAnalyticsReadsPersistedAccountingReadOnly verifies that handleSessionsV3Usage reads
+// already-persisted accounting totals and media usage records directly without mutating
+// daily usage accumulators, creating phantom records, or re-pricing models on GET.
+// Production authority: Server.handleSessionsV3Usage, SessionStore.ListMediaUsage.
+func TestAnalyticsReadsPersistedAccountingReadOnly(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	now := time.Now().UTC().UnixMilli()
+	today := time.Now().UTC().Format("2006-01-02")
+	acctID := testPrincipal().AccountScopeID
+
+	sessionID := "sess_analytics_readonly_test"
+	_, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      sessionID,
+		Title:          "Readonly Accounting Verification",
+		AccountScopeID: acctID,
+		UserID:         testPrincipal().UserID,
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "test-ws",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// 1. Record a turn with exact persisted cost
+	_, _, _, err = sessionSvc.RecordTurnUsage(sessionID, pebblestore.SessionTurnUsageSnapshot{
+		SessionID:        sessionID,
+		AccountScopeID:   acctID,
+		UserID:           testPrincipal().UserID,
+		RunID:            "run-ro-1",
+		Provider:         "google",
+		Model:            "gemini-3.8-flash",
+		Source:           "google_api_usage",
+		InputTokens:      50000,
+		OutputTokens:     1000,
+		TotalTokens:      51000,
+		BilledTokens:     51000,
+		EstimatedCostUSD: 0.04125,
+		CreatedAt:        now - 2000,
+		UpdatedAt:        now - 2000,
+	})
+	if err != nil {
+		t.Fatalf("record turn: %v", err)
+	}
+
+	// 2. Record media usage via PutMediaUsage
+	if err := sessionSvc.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
+		ID:             "media-ro-img-1",
+		SessionID:      sessionID,
+		AccountScopeID: acctID,
+		MediaType:      "image/png",
+		Kind:           "image",
+		Provider:       "google",
+		Model:          "imagen-3.0",
+		Filename:       "generated-hero.png",
+		Label:          "Generated hero image",
+		Size:           54321,
+		CostUSD:        0.04,
+		CreatedAt:      now - 1000,
+	}); err != nil {
+		t.Fatalf("record media: %v", err)
+	}
+
+	// Capture daily accumulator before GET
+	accBefore, ok, err := sessionSvc.Store().GetDailyUsageAccumulator(acctID, today)
+	if err != nil || !ok {
+		t.Fatalf("get daily accumulator before: ok=%v err=%v", ok, err)
+	}
+
+	// 3. Make GET /v3/usage call
+	req := httptest.NewRequest(http.MethodGet, "/v3/usage?time_range=today", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, withTestPrincipal(req))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp SessionUsageDashboardResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// Verify exact persisted cost was read without repricing
+	expectedCost := 0.04125
+	if resp.Summary.TotalCostUSD < expectedCost-0.00001 || resp.Summary.TotalCostUSD > expectedCost+0.00001 {
+		t.Fatalf("expected turn cost %f, got %f", expectedCost, resp.Summary.TotalCostUSD)
+	}
+	if resp.Summary.MediaCostUSD != 0.04 {
+		t.Fatalf("expected media cost 0.04, got %f", resp.Summary.MediaCostUSD)
+	}
+	if resp.Summary.TotalMediaCalls != 1 {
+		t.Fatalf("expected 1 media call, got %d", resp.Summary.TotalMediaCalls)
+	}
+
+	// Verify daily accumulator was NOT mutated by page visit (read-only guarantee)
+	accAfter, ok, err := sessionSvc.Store().GetDailyUsageAccumulator(acctID, today)
+	if err != nil || !ok {
+		t.Fatalf("get daily accumulator after: ok=%v err=%v", ok, err)
+	}
+	if accBefore.TotalCostUSD != accAfter.TotalCostUSD || accBefore.TotalTokens != accAfter.TotalTokens || accBefore.TurnCount != accAfter.TurnCount {
+		t.Fatalf("daily accumulator was mutated on GET: before=%+v after=%+v", accBefore, accAfter)
+	}
+}

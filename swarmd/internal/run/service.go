@@ -1628,6 +1628,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
+	var cumulativeTurnCost float64
+	var cumulativeBilledTokens int64
 	var (
 		turnUsageRecord   *pebblestore.SessionTurnUsageSnapshot
 		usageSummaryState *pebblestore.SessionUsageSummary
@@ -2297,9 +2299,20 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			return RunResult{}, stepReasoningErr
 		}
 		stepsCompleted = step
+		stepCost := 0.0
+		if response.Usage.EstimatedCostUSD > 0 {
+			stepCost = response.Usage.EstimatedCostUSD
+		} else if strings.EqualFold(providerID, "codex") {
+			stepCost = 0.0
+		} else if s.sessions != nil && s.sessions.Store() != nil {
+			stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+		}
+		cumulativeTurnCost += stepCost
+		cumulativeBilledTokens += response.Usage.TotalTokens
 		accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
+		accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 		if shouldPersistProviderUsage(providerID, accumulatedUsage) {
-			turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation)
+			turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens)
 			if usageErr != nil {
 				return RunResult{}, usageErr
 			}
@@ -4120,6 +4133,30 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 				"model":      modelName,
 				"attempt":    attempt,
 			})
+			if s.sessions != nil && hasConcreteUsageSnapshot(oneShotResult.Usage) {
+				compactCost := 0.0
+				if s.sessions.Store() != nil {
+					compactCost = s.sessions.Store().CalculateCost(compactModel.ProviderID, compactModel.Preference.Model, oneShotResult.Usage.InputTokens, oneShotResult.Usage.OutputTokens, oneShotResult.Usage.CacheReadTokens, oneShotResult.Usage.ThinkingTokens)
+				}
+				compactTurn := pebblestore.SessionTurnUsageSnapshot{
+					SessionID:        sessionID,
+					RunID:            fmt.Sprintf("compact:%s:%d", sessionID, compactIndex),
+					Provider:         compactModel.ProviderID,
+					Model:            compactModel.Preference.Model,
+					Source:           "compaction",
+					InputTokens:      oneShotResult.Usage.InputTokens,
+					OutputTokens:     oneShotResult.Usage.OutputTokens,
+					ThinkingTokens:   oneShotResult.Usage.ThinkingTokens,
+					CacheReadTokens:  oneShotResult.Usage.CacheReadTokens,
+					CacheWriteTokens: oneShotResult.Usage.CacheWriteTokens,
+					TotalTokens:      oneShotResult.Usage.TotalTokens,
+					BilledTokens:     oneShotResult.Usage.TotalTokens,
+					EstimatedCostUSD: compactCost,
+					CreatedAt:        time.Now().UnixMilli(),
+					UpdatedAt:        time.Now().UnixMilli(),
+				}
+				_, _, _, _ = s.sessions.RecordTurnUsage(sessionID, compactTurn)
+			}
 			finishSuccess("context compacted by Compact; resuming run")
 			return oneShotResult.trimmedSummary(), nil
 		}
@@ -4977,6 +5014,7 @@ type memoryCompactionResult struct {
 	Summary          string
 	StopReason       string
 	ProviderResponse string
+	Usage            provideriface.TokenUsage
 }
 
 func (r memoryCompactionResult) trimmedSummary() string {
@@ -5086,6 +5124,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 		Summary:          summary,
 		StopReason:       strings.TrimSpace(response.StopReason),
 		ProviderResponse: strings.TrimSpace(summarizeProviderResponseDiagnostics(response)),
+		Usage:            response.Usage,
 	}
 	if result.isEmpty() {
 		detail := result.diagnosticDetail()

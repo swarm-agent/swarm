@@ -1000,6 +1000,18 @@ func KeyDailyUsageAccumulator(accountScopeID, date string) string {
 	return fmt.Sprintf("daily_usage_accumulator/%s/%s", accountPart, keyPart(date))
 }
 
+func KeySessionMediaUsage(accountScopeID, id string) string {
+	return fmt.Sprintf("session_media_usage/%s/%s", keyPart(accountScopeID), keyPart(id))
+}
+
+func SessionMediaUsagePrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "session_media_usage/"
+	}
+	return fmt.Sprintf("session_media_usage/%s/", accountPart)
+}
+
 func KeySessionLifecycleByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_lifecycle_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }

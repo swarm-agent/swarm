@@ -30,6 +30,7 @@ type SessionTurnUsageSnapshot struct {
 	CacheReadTokens      int64            `json:"cache_read_tokens"`
 	CacheWriteTokens     int64            `json:"cache_write_tokens"`
 	TotalTokens          int64            `json:"total_tokens"`
+	BilledTokens         int64            `json:"billed_tokens,omitempty"`
 	RequestedServiceTier string           `json:"requested_service_tier,omitempty"`
 	ServiceTier          string           `json:"service_tier,omitempty"`
 	ServiceTierStatus    string           `json:"service_tier_status,omitempty"`
@@ -66,10 +67,29 @@ type SessionUsageSummary struct {
 	UpdatedAt          int64   `json:"updated_at"`
 }
 
+type SessionMediaUsageRecord struct {
+	ID             string  `json:"id"`
+	SessionID      string  `json:"session_id"`
+	AccountScopeID string  `json:"account_scope_id"`
+	UserID         string  `json:"user_id,omitempty"`
+	MediaType      string  `json:"media_type"`
+	Kind           string  `json:"kind"` // "image", "video", "audio"
+	Provider       string  `json:"provider,omitempty"`
+	Model          string  `json:"model,omitempty"`
+	Filename       string  `json:"filename"`
+	Label          string  `json:"label"`
+	Size           int64   `json:"size"`
+	CostUSD        float64 `json:"cost_usd"`
+	CreatedAt      int64   `json:"created_at"`
+}
+
 func ApplyProviderUsageSnapshotToSummary(summary SessionUsageSummary, usage SessionTurnUsageSnapshot) SessionUsageSummary {
 	// Provider usage counters describe the latest request's context occupancy.
 	// Billing totals such as EstimatedCostUSD are accumulated separately by the
 	// session service; summing repeated prompt snapshots corrupts remaining context.
+	if strings.EqualFold(usage.Source, "router") || strings.EqualFold(usage.Source, "compaction") {
+		return summary
+	}
 	summary.InputTokens = clampUsageTokenCount(usage.InputTokens)
 	summary.OutputTokens = clampUsageTokenCount(usage.OutputTokens)
 	summary.ThinkingTokens = clampUsageTokenCount(usage.ThinkingTokens)
@@ -103,11 +123,35 @@ func clampUsageTokenCount(value int64) int64 {
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
 	if record.EstimatedCostUSD <= 0 {
-		record.EstimatedCostUSD = CalculateBaselineCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
+		record.EstimatedCostUSD = s.CalculateCost(record.Provider, record.Model, record.InputTokens, record.OutputTokens, record.CacheReadTokens, record.ThinkingTokens)
 	}
 	payload, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("marshal turn usage %q/%q: %w", record.SessionID, record.RunID, err)
+	}
+	previous, hadPrevious, _ := s.GetTurnUsage(record.SessionID, record.RunID)
+	deltaCost := record.EstimatedCostUSD
+	deltaTokens := record.TotalTokens
+	if record.BilledTokens > 0 {
+		deltaTokens = record.BilledTokens
+	}
+	if hadPrevious {
+		deltaCost = record.EstimatedCostUSD - previous.EstimatedCostUSD
+		if deltaCost < 0 {
+			deltaCost = 0
+		}
+		prevTokens := previous.TotalTokens
+		if previous.BilledTokens > 0 {
+			prevTokens = previous.BilledTokens
+		}
+		currTokens := record.TotalTokens
+		if record.BilledTokens > 0 {
+			currTokens = record.BilledTokens
+		}
+		deltaTokens = currTokens - prevTokens
+		if deltaTokens < 0 {
+			deltaTokens = 0
+		}
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
@@ -130,7 +174,9 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		ts = time.Now().UnixMilli()
 	}
 	dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-	_, _ = s.IncrementDailyUsage(record.AccountScopeID, dateStr, record.EstimatedCostUSD, record.TotalTokens)
+	if deltaCost > 0 || deltaTokens > 0 {
+		_, _ = s.IncrementDailyUsage(record.AccountScopeID, dateStr, deltaCost, deltaTokens)
+	}
 	return nil
 }
 
@@ -377,4 +423,103 @@ func sanitizeTurnUsageSnapshot(record SessionTurnUsageSnapshot) SessionTurnUsage
 		record.EstimatedCostUSD = 0
 	}
 	return record
+}
+
+func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
+	if s == nil || s.store == nil {
+		return errors.New("store is not configured")
+	}
+	rec.ID = strings.TrimSpace(rec.ID)
+	if rec.ID == "" {
+		return errors.New("media usage id is required")
+	}
+	rec.AccountScopeID = strings.TrimSpace(rec.AccountScopeID)
+	if rec.AccountScopeID == "" {
+		rec.AccountScopeID = "default"
+	}
+	rec.SessionID = strings.TrimSpace(rec.SessionID)
+	if rec.CreatedAt <= 0 {
+		rec.CreatedAt = time.Now().UnixMilli()
+	}
+
+	key := KeySessionMediaUsage(rec.AccountScopeID, rec.ID)
+	// Check if already persisted to ensure idempotent retry does not double-count
+	var existing SessionMediaUsageRecord
+	ok, err := s.store.GetJSON(key, &existing)
+	if err == nil && ok {
+		return nil
+	}
+
+	payload, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshal media usage %q: %w", rec.ID, err)
+	}
+
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(key), payload, nil); err != nil {
+		return err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+
+	dateStr := time.UnixMilli(rec.CreatedAt).UTC().Format("2006-01-02")
+	if rec.CostUSD > 0 {
+		_, _ = s.IncrementDailyMediaUsage(rec.AccountScopeID, dateStr, rec.CostUSD)
+	}
+
+	if rec.SessionID != "" {
+		summary, found, err := s.GetUsageSummary(rec.SessionID)
+		if err == nil {
+			if !found {
+				summary = SessionUsageSummary{
+					SessionID:      rec.SessionID,
+					AccountScopeID: rec.AccountScopeID,
+					UserID:         rec.UserID,
+				}
+			}
+			summary.EstimatedCostUSD += rec.CostUSD
+			summary.UpdatedAt = time.Now().UnixMilli()
+			_ = s.PutUsageSummary(summary)
+		}
+	}
+	return nil
+}
+
+func (s *SessionStore) ListMediaUsage(accountScopeID string, limit int) ([]SessionMediaUsageRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("store is not configured")
+	}
+	if limit <= 0 {
+		limit = 2000
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		accountScopeID = "default"
+	}
+	prefix := SessionMediaUsagePrefix(accountScopeID)
+	out := make([]SessionMediaUsageRecord, 0, 64)
+	const iterateAll = int(^uint(0) >> 1)
+	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
+		var rec SessionMediaUsageRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return err
+		}
+		if rec.ID == "" {
+			return nil
+		}
+		out = append(out, rec)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }

@@ -240,6 +240,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mediaRecords, _ := s.sessions.ListMediaUsage(principal.AccountScopeID, 2000)
 	mediaVariants, _ := s.sessions.ListAllMediaArtifactVariants(principal.AccountScopeID, 2000)
 
 	// Session metadata resolver with point-lookup caching: resolves title and archived
@@ -314,7 +315,13 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		costUSD, codexNominalUSD := calculateTurnCost(rec, pricingMap)
+		costUSD := rec.EstimatedCostUSD
+		codexNominalUSD := 0.0
+		if strings.EqualFold(provID, "codex") {
+			_, codexNominalUSD = calculateTurnCost(rec, pricingMap)
+		} else if costUSD <= 0 {
+			costUSD, _ = calculateTurnCost(rec, pricingMap)
+		}
 
 		summary.TotalTokens += rec.TotalTokens
 		summary.InputTokens += rec.InputTokens
@@ -457,82 +464,154 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Process media generation calls
 	var mediaSummary SessionUsageMediaSummary
-	for _, v := range mediaVariants {
-		ts := v.CreatedAt
-		if ts <= 0 {
-			continue
-		}
-		if cutoffTime > 0 && ts < cutoffTime {
-			continue
-		}
-		if endTimeCutoff > 0 && ts > endTimeCutoff {
-			continue
-		}
-		if sessionFilter != "" && v.SessionID != sessionFilter {
-			continue
-		}
+	if len(mediaRecords) > 0 {
+		for _, m := range mediaRecords {
+			ts := m.CreatedAt
+			if ts <= 0 {
+				continue
+			}
+			if cutoffTime > 0 && ts < cutoffTime {
+				continue
+			}
+			if endTimeCutoff > 0 && ts > endTimeCutoff {
+				continue
+			}
+			if sessionFilter != "" && m.SessionID != sessionFilter {
+				continue
+			}
 
-		mt := strings.ToLower(v.MediaType)
-		var kind string
-		var cost float64
-		if strings.HasPrefix(mt, "image/") {
-			kind = "image"
-			cost = 0.04
-			mediaSummary.ImageCount++
-			mediaSummary.ImageCostUSD += cost
-		} else if strings.HasPrefix(mt, "video/") {
-			kind = "video"
-			cost = 1.20
-			mediaSummary.VideoCount++
-			mediaSummary.VideoCostUSD += cost
-		} else if strings.HasPrefix(mt, "audio/") {
-			kind = "audio"
-			cost = 0.08
-			mediaSummary.AudioCount++
-			mediaSummary.AudioCostUSD += cost
-		} else {
-			continue
-		}
+			cost := m.CostUSD
+			mediaSummary.TotalCount++
+			mediaSummary.TotalCostUSD += cost
+			switch strings.ToLower(m.Kind) {
+			case "image":
+				mediaSummary.ImageCount++
+				mediaSummary.ImageCostUSD += cost
+			case "video":
+				mediaSummary.VideoCount++
+				mediaSummary.VideoCostUSD += cost
+			case "audio":
+				mediaSummary.AudioCount++
+				mediaSummary.AudioCostUSD += cost
+			}
 
-		mediaSummary.TotalCount++
-		mediaSummary.TotalCostUSD += cost
+			label := strings.TrimSpace(m.Label)
+			if label == "" {
+				label = m.Filename
+			}
+			if label == "" {
+				label = fmt.Sprintf("%s generation", m.Kind)
+			}
 
-		label := strings.TrimSpace(v.Presentation.Label)
-		if label == "" {
-			label = v.Filename
-		}
-		if label == "" {
-			label = fmt.Sprintf("%s generation", kind)
-		}
+			if len(mediaSummary.RecentItems) < 30 {
+				mediaSummary.RecentItems = append(mediaSummary.RecentItems, SessionUsageMediaItem{
+					ID:        m.ID,
+					SessionID: m.SessionID,
+					MediaType: m.MediaType,
+					Kind:      m.Kind,
+					Filename:  m.Filename,
+					Label:     label,
+					Size:      m.Size,
+					CostUSD:   cost,
+					CreatedAt: ts,
+				})
+			}
 
-		if len(mediaSummary.RecentItems) < 30 {
-			mediaSummary.RecentItems = append(mediaSummary.RecentItems, SessionUsageMediaItem{
-				ID:        v.ID,
-				SessionID: v.SessionID,
-				MediaType: v.MediaType,
-				Kind:      kind,
-				Filename:  v.Filename,
-				Label:     label,
-				Size:      v.Size,
-				CostUSD:   cost,
-				CreatedAt: ts,
-			})
+			// Attach media count and cost to daily bin
+			dayKey := time.UnixMilli(ts).UTC().Format("2006-01-02")
+			dayItem, exists := dailyMap[dayKey]
+			if exists {
+				dayItem.MediaCalls++
+				dayItem.MediaCostUSD += cost
+			} else {
+				dayStart := time.Date(time.UnixMilli(ts).UTC().Year(), time.UnixMilli(ts).UTC().Month(), time.UnixMilli(ts).UTC().Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
+				dailyMap[dayKey] = &SessionUsageDailyItem{
+					Date:         dayKey,
+					Timestamp:    dayStart,
+					MediaCalls:   1,
+					MediaCostUSD: cost,
+					ModelsUsed:   make(map[string]int64),
+				}
+			}
 		}
+	} else {
+		for _, v := range mediaVariants {
+			ts := v.CreatedAt
+			if ts <= 0 {
+				continue
+			}
+			if cutoffTime > 0 && ts < cutoffTime {
+				continue
+			}
+			if endTimeCutoff > 0 && ts > endTimeCutoff {
+				continue
+			}
+			if sessionFilter != "" && v.SessionID != sessionFilter {
+				continue
+			}
 
-		// Also attach media count and cost to daily bin
-		dayKey := time.UnixMilli(ts).UTC().Format("2006-01-02")
-		dayItem, exists := dailyMap[dayKey]
-		if exists {
-			dayItem.MediaCalls++
-			dayItem.MediaCostUSD += cost
-		} else {
-			dayStart := time.Date(time.UnixMilli(ts).UTC().Year(), time.UnixMilli(ts).UTC().Month(), time.UnixMilli(ts).UTC().Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
-			dailyMap[dayKey] = &SessionUsageDailyItem{
-				Date:         dayKey,
-				Timestamp:    dayStart,
-				MediaCalls:   1,
-				MediaCostUSD: cost,
-				ModelsUsed:   make(map[string]int64),
+			mt := strings.ToLower(v.MediaType)
+			var kind string
+			var cost float64
+			if strings.HasPrefix(mt, "image/") {
+				kind = "image"
+				cost = 0.04
+				mediaSummary.ImageCount++
+				mediaSummary.ImageCostUSD += cost
+			} else if strings.HasPrefix(mt, "video/") {
+				kind = "video"
+				cost = 1.20
+				mediaSummary.VideoCount++
+				mediaSummary.VideoCostUSD += cost
+			} else if strings.HasPrefix(mt, "audio/") {
+				kind = "audio"
+				cost = 0.08
+				mediaSummary.AudioCount++
+				mediaSummary.AudioCostUSD += cost
+			} else {
+				continue
+			}
+
+			mediaSummary.TotalCount++
+			mediaSummary.TotalCostUSD += cost
+
+			label := strings.TrimSpace(v.Presentation.Label)
+			if label == "" {
+				label = v.Filename
+			}
+			if label == "" {
+				label = fmt.Sprintf("%s generation", kind)
+			}
+
+			if len(mediaSummary.RecentItems) < 30 {
+				mediaSummary.RecentItems = append(mediaSummary.RecentItems, SessionUsageMediaItem{
+					ID:        v.ID,
+					SessionID: v.SessionID,
+					MediaType: v.MediaType,
+					Kind:      kind,
+					Filename:  v.Filename,
+					Label:     label,
+					Size:      v.Size,
+					CostUSD:   cost,
+					CreatedAt: ts,
+				})
+			}
+
+			// Also attach media count and cost to daily bin
+			dayKey := time.UnixMilli(ts).UTC().Format("2006-01-02")
+			dayItem, exists := dailyMap[dayKey]
+			if exists {
+				dayItem.MediaCalls++
+				dayItem.MediaCostUSD += cost
+			} else {
+				dayStart := time.Date(time.UnixMilli(ts).UTC().Year(), time.UnixMilli(ts).UTC().Month(), time.UnixMilli(ts).UTC().Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
+				dailyMap[dayKey] = &SessionUsageDailyItem{
+					Date:         dayKey,
+					Timestamp:    dayStart,
+					MediaCalls:   1,
+					MediaCostUSD: cost,
+					ModelsUsed:   make(map[string]int64),
+				}
 			}
 		}
 	}

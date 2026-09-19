@@ -1485,6 +1485,9 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	usage.Model = strings.TrimSpace(usage.Model)
 	usage.Source = strings.TrimSpace(usage.Source)
 	normalizeTurnUsage(&usage)
+	if usage.EstimatedCostUSD <= 0 {
+		usage.EstimatedCostUSD = s.store.CalculateCost(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1762,6 +1765,20 @@ func (s *Service) CheckDailyLimit(accountScopeID string) (exceeded bool, current
 		return true, cost, limit.DailyCostLimitUSD, nil
 	}
 	return false, cost, limit.DailyCostLimitUSD, nil
+}
+
+func (s *Service) RecordMediaUsage(rec pebblestore.SessionMediaUsageRecord) error {
+	if s == nil || s.store == nil {
+		return errors.New("session service is not configured")
+	}
+	return s.store.PutMediaUsage(rec)
+}
+
+func (s *Service) ListMediaUsage(accountScopeID string, limit int) ([]pebblestore.SessionMediaUsageRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session service is not configured")
+	}
+	return s.store.ListMediaUsage(accountScopeID, limit)
 }
 
 type PlanSaveMetadata struct {

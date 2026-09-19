@@ -261,6 +261,7 @@ type manageSessionService interface {
 	CurrentRealtimeOutboxRevision() (uint64, error)
 	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 	ReadSessionMediaAsset(accountScopeID, sessionID, assetID string) (pebblestore.SessionMediaAsset, []byte, error)
+	RecordMediaUsage(pebblestore.SessionMediaUsageRecord) error
 }
 
 type manageWorktreeWorkspaceService interface {

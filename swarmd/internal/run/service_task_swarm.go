@@ -83,6 +83,7 @@ type configuredTaskSwarmRouter struct {
 	principal identity.Principal
 	parentID  string
 	callID    string
+	sessions  *sessionruntime.Service
 }
 
 func (s *Service) newTaskSwarmRouter(parent pebblestore.SessionSnapshot, principal identity.Principal, callID string) (taskSwarmRouter, error) {
@@ -109,7 +110,7 @@ func (s *Service) newTaskSwarmRouter(parent pebblestore.SessionSnapshot, princip
 			AccountScopeSource: identity.AccountScopeSourceSession,
 		}
 	}
-	return &configuredTaskSwarmRouter{runner: runner, runtime: runtime, principal: principal, parentID: strings.TrimSpace(parent.ID), callID: strings.TrimSpace(callID)}, nil
+	return &configuredTaskSwarmRouter{runner: runner, runtime: runtime, principal: principal, parentID: strings.TrimSpace(parent.ID), callID: strings.TrimSpace(callID), sessions: s.sessions}, nil
 }
 
 func taskSwarmRouterSystemPrompt(request taskSwarmHydrationRequest) string {
@@ -232,6 +233,32 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 	}
 	if err := callCtx.Err(); err != nil {
 		return "", err
+	}
+	if r.sessions != nil && hasConcreteUsageSnapshot(response.Usage) {
+		routerCost := 0.0
+		if r.sessions.Store() != nil {
+			routerCost = r.sessions.Store().CalculateCost(r.runtime.ProviderID, r.runtime.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+		}
+		routerUsage := pebblestore.SessionTurnUsageSnapshot{
+			SessionID:        r.parentID,
+			AccountScopeID:   r.principal.AccountScopeID,
+			UserID:           r.principal.UserID,
+			RunID:            fmt.Sprintf("router:%s", r.callID),
+			Provider:         r.runtime.ProviderID,
+			Model:            r.runtime.Preference.Model,
+			Source:           "router",
+			InputTokens:      response.Usage.InputTokens,
+			OutputTokens:     response.Usage.OutputTokens,
+			ThinkingTokens:   response.Usage.ThinkingTokens,
+			CacheReadTokens:  response.Usage.CacheReadTokens,
+			CacheWriteTokens: response.Usage.CacheWriteTokens,
+			TotalTokens:      response.Usage.TotalTokens,
+			BilledTokens:     response.Usage.TotalTokens,
+			EstimatedCostUSD: routerCost,
+			CreatedAt:        time.Now().UnixMilli(),
+			UpdatedAt:        time.Now().UnixMilli(),
+		}
+		_, _, _, _ = r.sessions.RecordTurnUsage(r.parentID, routerUsage)
 	}
 	return strings.TrimSpace(firstNonEmptyString(response.Text, output.String())), nil
 }

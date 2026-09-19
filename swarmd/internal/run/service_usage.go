@@ -99,7 +99,9 @@ func mergeSnapshotTokenUsage(acc, next provideriface.TokenUsage) provideriface.T
 	acc.CacheWriteTokens = next.CacheWriteTokens
 	acc.TotalTokens = next.TotalTokens
 	acc.ServiceTier = strings.ToLower(strings.TrimSpace(next.ServiceTier))
-	acc.EstimatedCostUSD = next.EstimatedCostUSD
+	if next.EstimatedCostUSD > 0 {
+		acc.EstimatedCostUSD = next.EstimatedCostUSD
+	}
 	if strings.TrimSpace(next.Source) != "" {
 		acc.Source = strings.TrimSpace(next.Source)
 	}
@@ -194,13 +196,17 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 	}
 }
 
-func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), billedTokens ...int64) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("session service is not configured")
 	}
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
 	if providerID == "" {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("provider id is required")
+	}
+	var cumulativeBilled int64 = usage.TotalTokens
+	if len(billedTokens) > 0 && billedTokens[0] > 0 {
+		cumulativeBilled = billedTokens[0]
 	}
 	turnUsage := pebblestore.SessionTurnUsageSnapshot{
 		RunID:            runID,
@@ -221,6 +227,7 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 		CacheReadTokens:  usage.CacheReadTokens,
 		CacheWriteTokens: usage.CacheWriteTokens,
 		TotalTokens:      usage.TotalTokens,
+		BilledTokens:     cumulativeBilled,
 		ServiceTier:      strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
 		EstimatedCostUSD: usage.EstimatedCostUSD,
 	}
