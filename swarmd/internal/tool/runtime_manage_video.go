@@ -101,6 +101,7 @@ var manageVideoActionRegistry = []manageVideoActionSpec{
 	{"inspect_accepted_cut", "Accepted cut loaded", "Inspecting accepted cut", true},
 	{"create_edit_proposal", "New change added", "Preparing video working change", true},
 	{"propose_plan", "New video change added", "Preparing visual video change", true},
+	{"propose_html_iteration", "HTML iteration added", "Preparing live HTML iteration", true},
 	{"convert_artifact_v2", "Artifact V2 proposal added", "Converting exact Artifact V2 head", true},
 	{"convert_artifact_v3", "Artifact V3 proposal added", "Rendering exact Artifact V3 revision", true},
 	{"import_audio_artifact", "Audio artifact imported", "Importing audio artifact into Video Studio", true},
@@ -292,7 +293,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	}
 	action = strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	requestedAction := action
-	if action == "propose_plan" {
+	if action == "propose_plan" || action == "propose_html_iteration" {
 		// Providers get purpose-specific actions while storage continues to use
 		// the revision-gated edit proposal authority.
 		action = "create_edit_proposal"
@@ -1140,6 +1141,8 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 				return "", err
 			}
 			response["session_upgraded_to_video_studio"] = true
+		} else if strings.TrimSpace(asString(session.Metadata["launch_source"])) == "chat_upgrade" {
+			response["session_upgraded_to_video_studio"] = true
 		}
 		if projectID == "" || baseRevisionID == "" {
 			return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id")
@@ -1148,7 +1151,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if err != nil {
 			return "", err
 		}
-		if requestedAction == "propose_plan" && plan == nil {
+		if (requestedAction == "propose_plan" || requestedAction == "propose_html_iteration") && plan == nil {
 			return "", fmt.Errorf("%s requires one atomic plan", requestedAction)
 		}
 		var operations []pebblestore.VideoEditOperation
@@ -1172,13 +1175,16 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		intent := pebblestore.VideoEditProposalIntentGeneral
+		if requestedAction == "propose_html_iteration" {
+			intent = pebblestore.VideoEditProposalIntentHTMLIteration
+		}
 		proposal, err := r.videoProjects.CreateEditProposal(ctx, scope.Principal, videoproject.CreateEditProposalInput{SessionID: projectSessionID, ProjectID: projectID, ProposalID: strings.TrimSpace(asString(args["proposal_id"])), BaseRevisionID: baseRevisionID, Title: strings.TrimSpace(asString(args["title"])), Rationale: strings.TrimSpace(asString(args["rationale"])), Intent: intent, Plan: plan, Operations: operations, AffectedRanges: affectedRanges})
 		if err != nil {
 			return "", err
 		}
 		response["proposal"] = safeVideoEditProposal(proposal)
 		response["proposal_id"], response["project_id"], response["revision_id"] = proposal.ID, proposal.ProjectID, proposal.BaseRevisionID
-		if requestedAction == "propose_plan" {
+		if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" {
 			response["action"] = requestedAction
 		}
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
@@ -1556,7 +1562,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		return "", fmt.Errorf("unsupported manage_video action %q", action)
 	}
 	presentationAction := action
-	if requestedAction == "propose_plan" {
+	if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" {
 		presentationAction = requestedAction
 	}
 	response["presentation"] = manageVideoPresentation(presentationAction, args, response)
@@ -1581,6 +1587,7 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 		"inspect_accepted_cut":      {"Accepted cut loaded", "Inspecting accepted cut"},
 		"create_edit_proposal":      {"New change added", "Preparing video working change"},
 		"propose_plan":              {"New video change added", "Preparing visual video change"},
+		"propose_html_iteration":    {"HTML iteration added", "Preparing live HTML iteration"},
 		"inspect_composition":       {"Composition loaded", "Inspecting pending spatial composition"},
 		"update_composition":        {"Composition updated", "Updating pending spatial composition"},
 		"proposal_status":           {"Proposal status updated", "Checking edit proposal"},
@@ -2293,6 +2300,10 @@ func (r *Runtime) manageVideoProjectSession(principal identity.Principal, sessio
 	}
 	parentID := strings.TrimSpace(asString(session.Metadata["parent_session_id"]))
 	if parentID == "" {
+		return session.ID, false, nil
+	}
+	lineageKind := strings.TrimSpace(asString(session.Metadata["lineage_kind"]))
+	if lineageKind != "system_sidechat" {
 		return session.ID, false, nil
 	}
 	parent, ok, err := r.sessions.GetSession(parentID)
