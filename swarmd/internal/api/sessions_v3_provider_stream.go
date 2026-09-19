@@ -347,7 +347,13 @@ func sessionV3ProviderStepAssistantText(response provideriface.Response, streame
 			parts = append(parts, message.Text)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n\n")
+	}
+	if strings.TrimSpace(response.ReasoningSummary) != "" {
+		return response.ReasoningSummary
+	}
+	return ""
 }
 
 func firstNonNilErr(errs ...error) error {

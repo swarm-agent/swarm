@@ -472,6 +472,9 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	if err := s.replaceV3SessionSearchIndexInBatch(batch, s.store.db, session, false, nil); err != nil {
 		return err
 	}
+	if err := s.updateV3SessionLibraryMetricInBatch(batch, session, nil, false, false); err != nil {
+		return err
+	}
 	return batch.Commit(pebble.Sync)
 }
 

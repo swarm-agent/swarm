@@ -1326,7 +1326,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if strings.EqualFold(turnUsage.PriceStatus, "unknown") || strings.EqualFold(turnUsage.ServiceTierStatus, "unknown") {
 				unknownDelta = 1
 			}
-			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, 0.0, 0.0, tokensDelta, inputDelta, outputDelta, cachedDelta, thinkingDelta, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
+			codexNominalDelta := 0.0
+			if strings.EqualFold(turnUsage.Provider, "codex") {
+				codexNominalDelta = CalculateBaselineCost("openai", turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+				if hadPreviousTurnUsage {
+					prevNominal := CalculateBaselineCost("openai", previousTurnUsage.Model, previousTurnUsage.InputTokens, previousTurnUsage.OutputTokens, previousTurnUsage.CacheReadTokens, previousTurnUsage.ThinkingTokens)
+					codexNominalDelta -= prevNominal
+				}
+			}
+			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, codexNominalDelta, 0.0, tokensDelta, inputDelta, outputDelta, cachedDelta, thinkingDelta, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 		}

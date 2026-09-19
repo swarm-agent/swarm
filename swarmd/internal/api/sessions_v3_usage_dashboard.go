@@ -324,7 +324,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		summary.OutputTokens += row.OutputTokens
 		summary.CachedTokens += row.CachedTokens
 		summary.ThinkingTokens += row.ThinkingTokens
-		summary.TotalCostUSD += row.TokenCostUSD
+		summary.TotalCostUSD += row.TokenCostUSD + row.MediaCostUSD
 		summary.CodexNominalCostUSD += row.CodexNominalCostUSD
 		summary.TotalTurns += row.Turns
 		summary.TotalMediaCalls += row.MediaCalls
@@ -358,7 +358,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		dayItem.OutputTokens += row.OutputTokens
 		dayItem.CachedTokens += row.CachedTokens
 		dayItem.ThinkingTokens += row.ThinkingTokens
-		dayItem.CostUSD += row.TokenCostUSD
+		dayItem.CostUSD += row.TokenCostUSD + row.MediaCostUSD
 		dayItem.CodexNominalCostUSD += row.CodexNominalCostUSD
 		dayItem.Turns += row.Turns
 		dayItem.MediaCalls += row.MediaCalls
@@ -383,7 +383,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		provItem.OutputTokens += row.OutputTokens
 		provItem.CachedTokens += row.CachedTokens
 		provItem.ThinkingTokens += row.ThinkingTokens
-		provItem.CostUSD += row.TokenCostUSD
+		provItem.CostUSD += row.TokenCostUSD + row.MediaCostUSD
 		provItem.CodexNominalCostUSD += row.CodexNominalCostUSD
 		provItem.Turns += row.Turns
 		if row.Model != "" && !containsUsageString(provItem.Models, row.Model) {
@@ -416,7 +416,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		mItem.OutputTokens += row.OutputTokens
 		mItem.CachedTokens += row.CachedTokens
 		mItem.ThinkingTokens += row.ThinkingTokens
-		mItem.CostUSD += row.TokenCostUSD
+		mItem.CostUSD += row.TokenCostUSD + row.MediaCostUSD
 		mItem.CodexNominalCostUSD += row.CodexNominalCostUSD
 		mItem.Turns += row.Turns
 

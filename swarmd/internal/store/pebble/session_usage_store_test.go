@@ -221,7 +221,7 @@ func TestMediaUsagePersistenceAndDailyLimits(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
 	acctID := "acct-media-1"
 	sessID := "sess-media-1"
-	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Test Session"}); err != nil {
+	if err := store.CreateSession(SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Test Session"}); err != nil {
 		t.Fatalf("set session: %v", err)
 	}
 
@@ -294,7 +294,7 @@ func TestDurableAccountingSurvivesReopen(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
 	acctID := "acct-reopen-1"
 	sessID := "sess-reopen-1"
-	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Test Session"}); err != nil {
+	if err := store.CreateSession(SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Test Session"}); err != nil {
 		t.Fatalf("set session: %v", err)
 	}
 
@@ -385,7 +385,7 @@ func TestAtomicPutMediaUsageValidationAndRollback(t *testing.T) {
 	store := NewSessionStore(db)
 	acctID := "acct-valid"
 	sessID := "sess-valid"
-	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Valid"}); err != nil {
+	if err := store.CreateSession(SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: "Valid"}); err != nil {
 		t.Fatalf("set session: %v", err)
 	}
 
@@ -769,7 +769,7 @@ func TestTurnUsageBilledTokensDeltasAndUnknownPriceStatus(t *testing.T) {
 	sessID := "sess-delta"
 	runID := "run-delta"
 	dateStr := time.Now().UTC().Format("2006-01-02")
-	if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, UserID: "u1", Title: "Delta Test"}); err != nil {
+	if err := store.CreateSession(SessionSnapshot{ID: sessID, AccountScopeID: acctID, UserID: "u1", Title: "Delta Test"}); err != nil {
 		t.Fatalf("set session: %v", err)
 	}
 
@@ -893,7 +893,7 @@ func TestConcurrentDifferentSessionsDailyAccumulator(t *testing.T) {
 
 	for i := 0; i < sessionCount; i++ {
 		sessID := fmt.Sprintf("sess-conc-%d", i)
-		if err := db.SetJSON(KeySession(sessID), SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: sessID}); err != nil {
+		if err := store.CreateSession(SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: sessID}); err != nil {
 			t.Fatalf("create session %d: %v", i, err)
 		}
 	}
