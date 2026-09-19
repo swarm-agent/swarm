@@ -48,8 +48,8 @@ func planManageHelpText() string {
      {"action":"start_session_checkpoint","change_request":"<verbatim request>","checkpoint_title":"Title","tasks":["Task 1"],"acceptance_criteria":["Done"],"notes":"Context"}
    - Complete checkpoint:
      {"action":"complete_checkpoint","checkpoint_id":"cp-1","report":"Report","changed_files":["file.go"],"validation":["passed"],"result":"done","closing_state":"routine_clean","summary":"Clean completion","recommendation":{"decision":"ship","action":"review","reason":"Criteria met","action_state":"ready"}}
-   - Request new plan:
-     {"action":"request_new_plan","title":"Feature Plan","document":{"title":"Feature Plan","info":{"goal":"Feature"},"checkpoints":[{"id":"cp-1","title":"Step 1","status":"pending","order":1,"tasks":["Do work"],"acceptance_criteria":["Done"]}]}}
+   - Request new plan (multi-checkpoint with task_program):
+     {"action":"request_new_plan","title":"CI/CD Pipeline Overhaul","document":{"title":"CI/CD Pipeline Overhaul","info":{"goal":"Modernize and harden CI/CD pipeline"},"checkpoints":[{"id":"cp-1","title":"Audit workflows","status":"pending","order":1,"tasks":["Audit CI configs"],"acceptance_criteria":["Audit complete"],"task_program":{"id":"ci-audit","stages":[{"id":"audit","dependency_evidence":"Ready initially"}],"jobs":[{"id":"inspect","stage_id":"audit","agent_type":"finder","title":"Inspect CI","meta_prompt":"Audit workflows","deliverable":"Report","acceptance_criteria":["Audited"],"dependency_evidence":"Ready initially"}]}},{"id":"cp-2","title":"Implement pipeline","status":"pending","order":2,"tasks":["Write workflow definitions"],"acceptance_criteria":["CI passes"]}]}}
    - Amend plan:
      {"action":"amend_plan","base_revision":1,"update_summary":"What changed","replace_from_checkpoint_id":"cp-2","document":{"info":{"goal":"Updated"},"checkpoints":[{"id":"cp-1","title":"Done","status":"completed"},{"id":"cp-2","title":"Revised","status":"pending"}]}}
    - Add subtask:

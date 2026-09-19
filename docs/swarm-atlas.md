@@ -2326,6 +2326,24 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `TestManageWorkspaceSourceMediaDirectories` in `swarmd/internal/run/service_workspace_source_media_test.go`
   - `bash scripts/run-critical-tests.sh fast` passes.
 
+### Multi-Checkpoint Plan Authoring & Harness Intelligence Contract (2026-09-19)
+
+- **Harness Intelligence for Single vs Multi-Checkpoint Plans (`swarmd/internal/run/service_prompt.go`, `swarmd/internal/run/run_state_prompt.go`, `swarmd/internal/tool/runtime.go`, `swarmd/internal/run/plan_manage_help.go`):**
+  - Updated master harness prompt under `Plan & Checkpoint Lifecycle Management` to guide the agent on evaluating request scope:
+    - Single scoped requests (e.g. `fix my sidebar`, adding an isolated component, fixing a typo, updating configuration) execute automatically via `plan_manage action=start_session_checkpoint` atomically in auto mode.
+    - Broad, multi-phase, cross-subsystem workflows (e.g. `fix my cicd pipeline`, major refactorings, multi-stage migrations) or explicit multi-checkpoint requests (e.g. `make a 3 point checkpoint plan`) benefit from multi-checkpoint plans: propose via `plan_manage action='request_new_plan'` (in auto mode for user approval) or `exit_plan_mode` (in plan mode).
+    - Checkpoints can code staged `task_program` definitions directly into `checkpoint.task_program` (stages and jobs across coder/finder/designer with explicit dependencies and owned_scopes) so that once approved and started, checkpoints immediately execute via `task action='start'` without re-authoring the program.
+  - Added copyable `plan_manage multi-checkpoint plan proposal with embedded task_program example` under `Tool examples` in `service_prompt.go`.
+  - Updated auto-mode instructions in `run_state_prompt.go` when no active plan exists to explicitly instruct the agent on contrasting single scoped requests (`start_session_checkpoint`) with broad multi-phase workflows or explicit multi-checkpoint requests (`request_new_plan`), with optional embedded task programs.
+  - Updated `plan_manage` tool definition and `action` parameter descriptions in `swarmd/internal/tool/runtime.go`.
+  - Updated `plan_manage action='help'` in `swarmd/internal/run/plan_manage_help.go` with multi-checkpoint and task_program call examples.
+- **Validation:**
+  - Added unit test `TestMasterHarnessDistinguishesSingleAndMultiCheckpointWorkflows` in `swarmd/internal/run/service_prompt_mode_test.go`.
+  - Added unit test `TestPlanManageDefinitionGuidesSingleVsMultiCheckpointScope` in `swarmd/internal/tool/runtime_plan_manage_test.go`.
+  - Added unit assertions in `TestDurableRunStateInstructionsRoutesAutoModeWithoutActivePlan` in `swarmd/internal/run/run_state_prompt_test.go`.
+  - Focused test suite execution: `(cd swarmd && go test ./internal/run ./internal/tool -run "TestMasterHarnessDistinguishesSingleAndMultiCheckpointWorkflows|TestDurableRunStateInstructionsRoutesAutoModeWithoutActivePlan|TestPlanManageDefinitionGuidesSingleVsMultiCheckpointScope|TestPlanManageHelpAction")` passes.
+
+
 
 
 

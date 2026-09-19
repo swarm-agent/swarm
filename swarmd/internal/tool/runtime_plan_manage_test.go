@@ -238,6 +238,27 @@ func TestPlanManageDefinitionExposesStartSessionCheckpointContract(t *testing.T)
 	}
 }
 
+func TestPlanManageDefinitionGuidesSingleVsMultiCheckpointScope(t *testing.T) {
+	definition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(definition.Description,
+		"distinguish single requests from multi-checkpoint workflows",
+		"start_session_checkpoint atomically creates and starts one bounded checkpoint",
+		"fix my cicd pipeline",
+		"optional embedded task_programs",
+	) {
+		t.Fatalf("plan_manage description does not guide single vs multi-checkpoint workflows: %s", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
+	}
+	actionDesc, _ := params["action"].(map[string]any)["description"].(string)
+	if !containsAll(actionDesc, "fix my sidebar", "fix my cicd pipeline", "multi-checkpoint plans") {
+		t.Fatalf("plan_manage action description does not contrast single vs multi-checkpoint: %s", actionDesc)
+	}
+}
+
+
 func mustFindDefinition(t *testing.T, name string) Definition {
 	t.Helper()
 	rt := NewRuntime(1)
