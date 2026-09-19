@@ -1223,6 +1223,8 @@ The dated entries below are historical observations at their cited stages. Matri
 | 82 | working tree | 2026-09-07 | Stabilize user-bubble confirmation and routed horizontal geometry | Inspected routed start/append, mutation reconciliation, render-item keys, virtual rows and both user-message component branches. Pending and committed user rows now return the same immediate bubble component; routed shell scrollbar gutters match the conversation. Added focused identity/overlap/failure/distinct-message tests, not executed. Cross-route DOM continuity and live styled paint behavior remain unverified; no route, storage or permission authority changed. |
 | 83 | working tree | 2026-09-18 | Context token compression, secondary tool schema compaction, doomloop server-side guard, and direct multi-scene video story execution | Inspected master harness prompt, run state lifecycle instructions, tool runtime definitions, and plan lifecycle transitions. Compressed master harness prompt by 50% without losing operational constraints; compacted tool schemas across task, manage_video, manage_deployments, manage_environments, manage-sessions, manage_workspace, manage-worktree, ask-user, and manage_artifact; added server-side guard preventing inline provider runs from resurrecting waiting_review plans via add_subtask; exposed scenes and soundtrack on manage_artifact for direct atomic generate_video_story execution. Verified with unit tests, benchmark suite, and live GCP testbench runs on c2-standard-8 across hello, plan, and video suites. |
 
+| 84 | working tree based on `068f50308` | 2026-09-19 | Video Studio audio ingestion pipeline, workspace source media directory management, and animation contract guidance | Implemented manage_video import_audio_artifact / register_audio_artifact to bridge generated audio artifacts into authenticated Pebble AudioSourceRecords and exact audio_source references; added videosource.Service EnsureRoot and ImportAudio methods; exposed add_source_media_directory, list_source_media_directories, and remove_source_media_directory actions in manage_workspace connecting to workspace.Service; updated system prompt harness, tool definitions, and artifact/video help with HTML animation contracts (#swarm-animation-manifest, ready(), seek(), convert_artifact_v3) and audio ingestion workflows. Verified with unit tests across videosource, videoproject, run, and tool packages; all fast critical tests pass. |
+
 Copy this row when updating:
 
 ```text
@@ -2261,6 +2263,33 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - `(cd swarmd && go test -v ./internal/tool -run "TestManageVideoDefinition|TestManageVideoHelp|TestToolDefinitionsTokenBudget")` passes (all 12 tests pass; tool definitions token budget 70,352 bytes <= 80,000 budget).
   - `(cd swarmd && go test -v ./internal/run -run "TestMasterHarnessPrompt|TestContextTokenBenchmark|TestBuildInput")` passes (all 21 tests pass; master harness chars 30,915 <= 50,000 ceiling).
   - `bash scripts/check-atlas-sync.sh` passes.
+
+### Video Studio Audio Ingestion Pipeline & Source Media Directory Management (2026-09-19)
+
+- **Audio Artifact Ingestion in Video Studio (`swarmd/internal/tool/runtime_manage_video.go`, `swarmd/internal/videosource/service.go`):**
+  - Added `import_audio_artifact` (and alias `register_audio_artifact`) to `manage_video`.
+  - Accepts exact artifact references (`{session_id, collection_id, variant_id, event_seq}`), `media_inspect_reference`, or `artifact_id`.
+  - Verifies artifact is in ready status and has `audio/*` media type (`audio/mpeg`, `audio/mp3`, `audio/wav`, etc.).
+  - Persists an authenticated `AudioSourceRecord` in `pebblestore.SessionStore` with computed SHA256 fingerprint, size, mtime, and container MIME type.
+  - Ensures `pebblestore.OpenValidatedAudioSource` and `videorender/service.go` can locate and read the bytes for audio playback and video rendering.
+  - Returns the exact `audio_source` object (`ref`, `name`, `mime_type`, `size_bytes`, `source_fingerprint`, `fingerprint_version: "v1"`) ready to be plugged into `create_edit_proposal` (`operations: [{type: "add_clip", clip: {source_kind: "source_audio", audio_source: ...}}]`) or `create_project initial_timeline`.
+  - Added `EnsureRoot` and `ImportAudio` on `videosource.Service` with automatic directory resolution and registration in `workspace.Service`.
+- **Source Media Directory Registration in Workspace Tool (`swarmd/internal/run/service_workspace_manage.go`, `swarmd/internal/tool/runtime.go`, `swarmd/internal/permission/policy.go`):**
+  - Added `add_source_media_directory`, `list_source_media_directories`, and `remove_source_media_directory` actions to `manage_workspace`.
+  - Connected actions to `workspaceService.AddSourceMediaDirectoryForPrincipal`, `ListSourceMediaDirectoriesForPrincipal`, and `RemoveSourceMediaDirectoryForPrincipal`.
+  - Added `directory_path` (and alias `directory`) to `manage_workspace` tool parameters and allowed arguments.
+  - Updated permission policy in `permission/policy.go` to recognize the new actions.
+- **Agent Harness Prompt & Tool Help Enhancements (`swarmd/internal/run/service_prompt.go`, `swarmd/internal/tool/runtime_manage_video.go`, `runtime_manage_artifact.go`):**
+  - Documented the full audio generation (`manage_artifact generate_audio`) -> ingestion (`manage_video import_audio_artifact`) -> soundtrack proposal (`create_edit_proposal` with `source_audio`) workflow in the master harness prompt and `manage_video` help text.
+  - Documented the strict HTML animation requirements: `#swarm-animation-manifest` disallowing unknown fields (only `version: "swarm.animation/v1"`, `duration_ms`, `fps`), requiring at least one semantic region with an `id` on `<main id="...">`, and requiring `globalThis.__SWARM_ANIMATION_V1__.ready()` to return `{ duration_ms, fps }` matching the manifest, and `seek(ms)` returning `{ time_ms: ms }`.
+  - Documented converting Artifact V3 HTML motion into Video Studio proposals with MP4 fallbacks using `manage_video action="convert_artifact_v3"`.
+  - Added copyable examples for `import_audio_artifact`, `convert_artifact_v3`, and `add_source_media_directory` in `Tool examples`.
+- **Validation:**
+  - `TestManageVideoImportAudioArtifactWorkflow` in `swarmd/internal/tool/runtime_manage_video_soundtrack_test.go`
+  - `TestCreateProjectAndProposalWithImportedAudioSourceRecord` in `swarmd/internal/videoproject/service_audio_test.go`
+  - `TestServiceImportAudioWorkflow` in `swarmd/internal/videosource/service_test.go`
+  - `TestManageWorkspaceSourceMediaDirectories` in `swarmd/internal/run/service_workspace_source_media_test.go`
+  - `bash scripts/run-critical-tests.sh fast` passes.
 
 
 

@@ -458,7 +458,7 @@ func canonicalManageWorkspaceAction(raw any) (string, bool) {
 		action = "delete"
 	}
 	switch action {
-	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory":
 		return action, true
 	default:
 		return "", false
@@ -510,7 +510,7 @@ func manageWorkspacePolicyIdentity(arguments string) (string, string) {
 		return "workspace_reclaim", ""
 	case "copy_worktree":
 		return "workspace_copy", ""
-	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory":
 		return "manage_workspace", ""
 	case "create":
 		return policyToolWorkspaceCreate, ""

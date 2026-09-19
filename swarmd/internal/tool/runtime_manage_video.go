@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -102,6 +103,8 @@ var manageVideoActionRegistry = []manageVideoActionSpec{
 	{"propose_plan", "New video change added", "Preparing visual video change", true},
 	{"convert_artifact_v2", "Artifact V2 proposal added", "Converting exact Artifact V2 head", true},
 	{"convert_artifact_v3", "Artifact V3 proposal added", "Rendering exact Artifact V3 revision", true},
+	{"import_audio_artifact", "Audio artifact imported", "Importing audio artifact into Video Studio", true},
+	{"register_audio_artifact", "Audio artifact registered", "Registering audio artifact into Video Studio", true},
 	{"select_animation_candidate", "Animation candidate selected", "Selecting exact HTML animation candidate", true},
 	{"promote_animation_derivative", "Animation derivative promoted", "Promoting exact MP4 animation derivative", true},
 	{"inspect_composition", "Composition loaded", "Inspecting pending spatial composition", true},
@@ -190,6 +193,15 @@ func manageVideoDefinition() Definition {
 				"selected_candidate_id":    map[string]any{"type": "string"},
 				"selected_source":          manageVideoArtifactReferenceSchema(),
 				"derivative":               manageVideoArtifactReferenceSchema(),
+				"artifact_reference":       manageVideoArtifactReferenceSchema(),
+				"media_inspect_reference":  map[string]any{"type": "object", "description": "Media inspect reference containing session_id, collection_id, variant_id, event_seq or artifact_id."},
+				"artifact_id":              map[string]any{"type": "string", "description": "Artifact ID or variant ID of audio artifact to import."},
+				"directory":                map[string]any{"type": "string", "description": "Optional destination directory for the imported audio source."},
+				"destination_dir":          map[string]any{"type": "string", "description": "Alias for directory."},
+				"session_id":               map[string]any{"type": "string", "description": "Optional session ID for the audio artifact."},
+				"collection_id":            map[string]any{"type": "string", "description": "Optional collection ID for the audio artifact."},
+				"variant_id":               map[string]any{"type": "string", "description": "Optional variant ID for the audio artifact."},
+				"event_seq":                map[string]any{"type": "integer", "description": "Optional event sequence for the audio artifact."},
 				"base_revision_id":         map[string]any{"type": "string"},
 				"plan": map[string]any{
 					"type":        "object",
@@ -538,6 +550,149 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["project_id"], response["revision_id"], response["revision_event_seq"] = result.ProjectID, result.RevisionID, result.RevisionEventSeq
 		response["duration_ms"], response["width"], response["height"] = result.DurationMs, result.Width, result.Height
 		response["frames"], response["count"] = frames, len(frames)
+
+	case "import_audio_artifact", "register_audio_artifact":
+		if r.artifactAuthority == nil {
+			return "", errors.New("manage_video audio import requires configured artifact authority")
+		}
+		var ref *pebblestore.SessionArtifactSelectionReference
+		var artifactID string
+		if rawRef := args["artifact_reference"]; rawRef != nil {
+			parsedRef, err := parseManageVideoArtifactReference(rawRef, "artifact_reference")
+			if err != nil {
+				return "", err
+			}
+			ref = parsedRef
+		} else if rawInspect := args["media_inspect_reference"]; rawInspect != nil {
+			if inspectObj, err := parseJSONEncodedObject(rawInspect, "media_inspect_reference"); err == nil {
+				if inspectObj["session_id"] != nil && inspectObj["collection_id"] != nil && inspectObj["variant_id"] != nil && inspectObj["event_seq"] != nil {
+					parsedRef, err := parseManageVideoArtifactReference(rawInspect, "media_inspect_reference")
+					if err != nil {
+						return "", err
+					}
+					ref = parsedRef
+				} else if idStr := strings.TrimSpace(asString(inspectObj["artifact_id"])); idStr != "" {
+					artifactID = idStr
+				}
+			}
+		}
+		if ref == nil && artifactID == "" {
+			sessionIDVal := strings.TrimSpace(asString(args["session_id"]))
+			collectionIDVal := strings.TrimSpace(asString(args["collection_id"]))
+			variantIDVal := strings.TrimSpace(asString(args["variant_id"]))
+			eventSeqVal := asUint64(args["event_seq"])
+			if sessionIDVal != "" && collectionIDVal != "" && variantIDVal != "" && eventSeqVal != 0 {
+				ref = &pebblestore.SessionArtifactSelectionReference{
+					SessionID:    sessionIDVal,
+					CollectionID: collectionIDVal,
+					VariantID:    variantIDVal,
+					EventSeq:     eventSeqVal,
+				}
+			} else if artIDVal := strings.TrimSpace(asString(args["artifact_id"])); artIDVal != "" {
+				artifactID = artIDVal
+			} else if variantIDVal != "" {
+				artifactID = variantIDVal
+			}
+		}
+		if ref == nil && artifactID == "" {
+			return "", errors.New("import_audio_artifact requires an exact artifact reference ({session_id, collection_id, variant_id, event_seq}) or artifact_id")
+		}
+
+		targetSessionID := scope.SessionID
+		if ref != nil && ref.SessionID != "" {
+			targetSessionID = ref.SessionID
+		}
+		artifactPrincipal := artifact.Principal{
+			SessionID:      targetSessionID,
+			AccountScopeID: scope.Principal.AccountScopeID,
+			UserID:         scope.Principal.UserID,
+		}
+
+		var body []byte
+		var variant pebblestore.SessionArtifactVariant
+		if ref != nil {
+			b, v, readErr := r.artifactAuthority.ReadReference(ctx, artifactPrincipal, *ref, 512<<20)
+			if readErr != nil {
+				return "", fmt.Errorf("read audio artifact reference: %w", readErr)
+			}
+			body = b
+			variant = v
+		} else {
+			v, getErr := r.artifactAuthority.Get(artifactPrincipal, artifactID)
+			if getErr != nil {
+				return "", fmt.Errorf("resolve audio artifact %q: %w", artifactID, getErr)
+			}
+			b, v, readErr := r.artifactAuthority.Read(ctx, artifactPrincipal, artifactID, 512<<20)
+			if readErr != nil {
+				return "", fmt.Errorf("read audio artifact %q: %w", artifactID, readErr)
+			}
+			body = b
+			variant = v
+		}
+
+		if variant.Status != pebblestore.SessionArtifactStatusReady {
+			return "", fmt.Errorf("audio artifact %q is not ready (status: %s)", variant.ID, variant.Status)
+		}
+		if len(body) == 0 {
+			return "", fmt.Errorf("audio artifact %q contains no data", variant.ID)
+		}
+
+		mediaType := canonicalArtifactMediaType(variant.MediaType)
+		if !strings.HasPrefix(mediaType, "audio/") && mediaType != "audio/mpeg" && mediaType != "audio/mp3" {
+			return "", fmt.Errorf("artifact %q is not an audio artifact (media_type: %s)", variant.ID, variant.MediaType)
+		}
+
+		workspacePath := manageVideoWorkspacePath(session)
+		if workspacePath == "" {
+			workspacePath = scope.PrimaryPath
+		}
+		preferredDir := strings.TrimSpace(firstNonEmptyString(asString(args["directory"]), asString(args["destination_dir"])))
+
+		displayName := strings.TrimSpace(firstNonEmptyString(asString(args["name"]), variant.Presentation.Label, variant.Filename))
+		if displayName == "" {
+			displayName = "audio_" + variant.ID
+		}
+
+		if r.videoSources == nil {
+			return "", errors.New("manage_video source service is not configured")
+		}
+		workspaceID := ""
+		wsIDs := pebblestore.SessionVideoWorkspaceIDs(session)
+		if len(wsIDs) > 0 {
+			workspaceID = wsIDs[0]
+		}
+		savedRecord, importErr := r.videoSources.ImportAudio(scope.Principal, workspacePath, workspaceID, displayName, mediaType, body, preferredDir)
+		if importErr != nil {
+			return "", importErr
+		}
+		if r.videoSources.Store() != nil {
+			for _, secondaryWSID := range wsIDs {
+				if secondaryWSID != "" && secondaryWSID != savedRecord.WorkspaceID {
+					secRecord := savedRecord
+					secRecord.WorkspaceID = secondaryWSID
+					_, _ = r.videoSources.Store().PutAudioSourceRecord(secRecord)
+				}
+			}
+		}
+
+		exactRef := pebblestore.AudioSourceReference{
+			Ref:                savedRecord.Ref,
+			Name:               savedRecord.DisplayName,
+			MIMEType:           savedRecord.MIMEType,
+			SizeBytes:          savedRecord.SizeBytes,
+			SourceFingerprint:  savedRecord.SourceFingerprint,
+			FingerprintVersion: savedRecord.FingerprintVersion,
+		}
+		response["audio_source"] = exactRef
+		response["audio_ref"] = savedRecord.Ref
+		response["source_root_path"] = savedRecord.RootPath
+		response["relative_path"] = savedRecord.RelativePath
+		response["workspace_id"] = savedRecord.WorkspaceID
+		response["name"] = savedRecord.DisplayName
+		response["mime_type"] = savedRecord.MIMEType
+		response["size_bytes"] = savedRecord.SizeBytes
+		response["source_fingerprint"] = savedRecord.SourceFingerprint
+		response["fingerprint_version"] = savedRecord.FingerprintVersion
 
 	case "list_source_roots":
 		if r.videoSources == nil {
@@ -2270,6 +2425,7 @@ Overview & Distinction:
    - action="inspect_context": inspects project, revision, and selection state.
    - action="inspect_frames": sample exact PNG frames (pass timestamps_ms or ranges).
    - list_source_roots and browse_source to discover registered audio and video sources.
+   - action="import_audio_artifact" (or "register_audio_artifact"): import an AI-generated audio artifact (from manage_artifact generate_audio) into Video Studio as an authenticated audio source, returning an exact audio_source object with ref, name, mime_type, size_bytes, source_fingerprint, and fingerprint_version.
    - action="start_transcription", "read_transcript", "read_audio_analysis": word-timed speech transcripts and audio waveforms.
 
 2. Projects & Timelines:
@@ -2283,6 +2439,10 @@ Overview & Distinction:
    - action="create_edit_proposal": submit typed add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision.
      Operations: add_clip, update_clip, replace_clip, remove_clip, trim_clip, move_clip, set_volume, set_mute, set_captions, replace_source.
      Soundtrack clips: use source_kind="source_audio" with audio_source carrying source_fingerprint and fingerprint_version. Copy the complete exact audio object into a source_audio clip; never pass a host path. Registered soundtrack audio must share the initial part playhead in create_project initial_timeline. Soundtrack proposals remain pending for explicit user acceptance; AI must never accept them or start final rendering.
+     Soundtrack workflow from generated audio:
+       (1) Generate music or sound effects with manage_artifact action="generate_audio" prompt="..." duration_seconds=N. This creates a ready audio artifact with {session_id, collection_id, variant_id, event_seq}.
+       (2) Ingest it into Video Studio using manage_video action="import_audio_artifact", passing the exact artifact reference. This persists an authenticated AudioSourceRecord and returns the exact audio_source object.
+       (3) Add the soundtrack to the timeline with manage_video action="create_edit_proposal" operations: [{type: "add_clip", clip: {source_kind: "source_audio", audio_source: ...}}] or in create_project initial_timeline.
    - action="propose_plan": initial visual plan proposal (base_revision_id, plan.kind="initial", parts array with visuals and captions).
      Every newly proposed part must include an exact ready image/* or video/mp4 render-ready fallback. MP4 fallback parts require an explicit source range (source_start_ms, source_end_ms) where source_end_ms - source_start_ms == duration_ms.
      For image/* visual fallbacks, source_start_ms and source_end_ms must be 0 or omitted.
@@ -2293,6 +2453,11 @@ Overview & Distinction:
    - Storyboard Pre-Production: for pre-production requests, prefer a self-contained HTML swarm.storyboard/v1 source; use export_html_stills, then import_storyboard with storyboard_source and exports so Video Studio receives filming requirements and production state. Use propose_html_iteration for live animation iteration proposals. Each imported still remains the visible placeholder until a later plan.kind=revision replaces that same part ID with finished media. Do not stop after HTML authoring or still export while storyboard parts remain pending.
    - Convert a compatible exact Artifact V2 storyboard or motion Published Head to Video Studio only with manage_video convert_artifact_v2. The server validates exact V2 composition/build/validation evidence and constructs storyboard stills or animation candidates and fallback media; callers must not export V1 HTML, reconstruct arrays, or mix collection/variant references into the V2 path. The resulting proposal remains pending for user review and cannot accept itself or start final rendering. Server owns the fallback and pending candidate set; do not derive V1 HTML, allocate replacement variants, or export MP4 merely for live preview.
    - Convert an exact selected native Artifact V3 HTML revision to Video Studio only with manage_video convert_artifact_v3. Supply its exact artifact_v3_session_id, artifact_v3_artifact_id, artifact_v3_revision_ref, project_id, and base_revision_id. The server authenticates the selected Git head plus build/validation evidence, injects deterministic animation timing only into ephemeral render bytes, creates the fallback and silent MP4, and submits exactly one pending artifact_v3_conversion proposal; callers must not author plan arrays or translate through V1/V2 identity.
+     Native Artifact V3 HTML Animation Requirements:
+       - Manifest schema: declare exactly one <script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":...,"fps":...}</script>. Unknown fields are strictly disallowed.
+       - Semantic regions: requires at least one semantic region with an id attribute on <main id="...">.
+       - Animation API: expose globalThis.__SWARM_ANIMATION_V1__ with version "swarm.animation/v1", ready() returning { duration_ms, fps } matching the manifest, and seek(ms) returning { time_ms: ms }. seek(ms) must pause all animations/timers and deterministically render the requested playhead timestamp.
+       - Use manage_video action="convert_artifact_v3" to convert Artifact V3 HTML motion into Video Studio proposals with MP4 fallbacks.
    - For managed pre-production storyboards, use Artifact V2 storyboard section and catalog parts through managed Designer authoring. Stable ordered parts carry filming requirements, production state, capture-state identity, and optional spatial composition; the server owns capture HTML, state runtime, trusted rendering, exact still lineage, and the pending Video Studio adapter.
    - action="inspect_composition", "update_composition": inspect resolved slots and update spatial compositions.
    - action="select_animation_candidate", "promote_animation_derivative": manage HTML animation alternatives.
@@ -2422,5 +2587,16 @@ Overview & Distinction:
         "artifact_v3_session_id": "sess_abc",
         "artifact_v3_artifact_id": "art_123",
         "artifact_v3_revision_ref": "rev-1"
+      }
+
+   e) Import Audio Artifact into Video Studio:
+      manage_video {
+        "action": "import_audio_artifact",
+        "artifact_reference": {
+          "session_id": "sess_abc",
+          "collection_id": "col_123",
+          "variant_id": "var_456",
+          "event_seq": 1
+        }
       }`
 }

@@ -1319,7 +1319,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"}},
+					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory"}},
 					"workspace_id":           map[string]any{"type": "string", "description": "Target workspace identity"},
 					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1},
 					"workspace_path":         map[string]any{"type": "string"},
@@ -1339,6 +1339,8 @@ func (r *Runtime) Definitions() []Definition {
 					"worktree_name":          map[string]any{"type": "string"},
 					"worktree_path":          map[string]any{"type": "string"},
 					"expected_worktree_path": map[string]any{"type": "string"},
+					"directory_path":         map[string]any{"type": "string", "description": "Directory path for source media operations"},
+					"directory":              map[string]any{"type": "string", "description": "Alias for directory_path"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,

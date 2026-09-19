@@ -194,3 +194,172 @@ func TestParseVideoEditOperationsRejectsArbitrarySoundtrackPaths(t *testing.T) {
 		t.Fatalf("arbitrary soundtrack path error=%v", err)
 	}
 }
+
+func TestManageVideoImportAudioArtifactWorkflow(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-import-audio.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
+	workspacePath := t.TempDir()
+	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workspacePath
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("initialize fixture: %v: %s", err, output)
+		}
+	}
+
+	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
+	workspaceResolution, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{
+		ID:             "studio",
+		UserID:         principal.UserID,
+		AccountScopeID: principal.AccountScopeID,
+		WorkspacePath:  workspacePath,
+		Mode:           "auto",
+		Metadata: map[string]any{
+			"lineage_kind": "video_project",
+			"workspace_id": workspaceResolution.WorkspaceID,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoSources = videosource.NewService(workspaceService, sessionStore)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+
+	audioBytes := []byte("RIFF\x0c\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
+	authority := &fakeArtifactAuthority{
+		readBody: audioBytes,
+		variant: pebblestore.SessionArtifactVariant{
+			ID:           "var-audio-1",
+			CollectionID: "col-audio-1",
+			SessionID:    "studio",
+			EventSeq:     1,
+			Status:       pebblestore.SessionArtifactStatusReady,
+			Filename:     "soundtrack.wav",
+			MediaType:    "audio/wav",
+		},
+	}
+	runtime.SetArtifactAuthority(authority)
+
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "studio", RunID: "run-import-audio"})
+	scope := WorkspaceScope{SessionID: "studio", Principal: principal}
+
+	// 1. Success: Import Audio Artifact
+	importArgs, _ := json.Marshal(map[string]any{
+		"action": "import_audio_artifact",
+		"artifact_reference": map[string]any{
+			"session_id":    "studio",
+			"collection_id": "col-audio-1",
+			"variant_id":    "var-audio-1",
+			"event_seq":     1,
+		},
+	})
+	importPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "import", Name: "manage_video", Arguments: string(importArgs)})
+	if err != nil {
+		t.Fatalf("import_audio_artifact failed: %v", err)
+	}
+
+	var importRes struct {
+		Action      string                         `json:"action"`
+		Status      string                         `json:"status"`
+		AudioSource pebblestore.AudioSourceReference `json:"audio_source"`
+		AudioRef    string                         `json:"audio_ref"`
+	}
+	if err := json.Unmarshal([]byte(importPayload), &importRes); err != nil {
+		t.Fatalf("unmarshal import result: %v", err)
+	}
+	if importRes.Status != "ok" || importRes.AudioSource.Ref == "" {
+		t.Fatalf("unexpected import result: %s", importPayload)
+	}
+	if importRes.AudioSource.MIMEType != "audio/wav" {
+		t.Fatalf("expected audio/wav MIME type, got %s", importRes.AudioSource.MIMEType)
+	}
+	if importRes.AudioSource.SizeBytes != int64(len(audioBytes)) {
+		t.Fatalf("expected size %d, got %d", len(audioBytes), importRes.AudioSource.SizeBytes)
+	}
+
+	// Verify the AudioSourceRecord exists and can be validated and opened
+	record, found, err := sessionStore.GetAudioSourceRecord(principal.AccountScopeID, workspaceResolution.WorkspaceID, importRes.AudioSource.Ref)
+	if err != nil || !found {
+		t.Fatalf("GetAudioSourceRecord found=%v err=%v", found, err)
+	}
+	if err := pebblestore.ValidateAudioSourceRecord(record); err != nil {
+		t.Fatalf("ValidateAudioSourceRecord failed: %v", err)
+	}
+	file, err := pebblestore.OpenValidatedAudioSource(record)
+	if err != nil {
+		t.Fatalf("OpenValidatedAudioSource failed: %v", err)
+	}
+	file.Close()
+
+	// 2. Use imported AudioSource in Video Studio create_project and create_edit_proposal
+	created, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+		CallID: "create_proj", Name: "manage_video",
+		Arguments: `{"action":"create_project","title":"Imported audio project","initial_timeline":{"output_preset":"landscape_1080p","total_duration_ms":3000,"clips":[{"id":"visual","track":0,"sequence":0,"source_kind":"color","duration_ms":3000,"timeline_start_ms":0,"timeline_end_ms":3000,"visible":true}]}}`,
+	})
+	if err != nil {
+		t.Fatalf("create_project failed: %v", err)
+	}
+	var proj struct {
+		ProjectID  string `json:"project_id"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(created), &proj); err != nil {
+		t.Fatal(err)
+	}
+
+	clip := map[string]any{
+		"id": "bg-soundtrack", "name": importRes.AudioSource.Name, "track": 1, "layer": 1, "sequence": 0,
+		"source_kind": "source_audio", "audio_source": importRes.AudioSource, "media_type": importRes.AudioSource.MIMEType,
+		"source_start_ms": 0, "source_end_ms": 3000, "timeline_start_ms": 0, "timeline_end_ms": 3000,
+		"duration_ms": 3000, "visible": false, "volume": 0.8,
+	}
+	proposalArgs, _ := json.Marshal(map[string]any{
+		"action": "create_edit_proposal", "project_id": proj.ProjectID, "base_revision_id": proj.RevisionID,
+		"title": "Layer imported soundtrack", "affected_ranges": []map[string]any{{"start_ms": 0, "end_ms": 3000}},
+		"operations": []map[string]any{{"id": "op-add-soundtrack", "type": "add_clip", "clip": clip}},
+	})
+	propPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "proposal", Name: "manage_video", Arguments: string(proposalArgs)})
+	if err != nil {
+		t.Fatalf("create_edit_proposal with imported audio failed: %v", err)
+	}
+	if !strings.Contains(propPayload, `"proposal_status":"pending"`) {
+		t.Fatalf("proposal payload lacks pending status: %s", propPayload)
+	}
+
+	// 3. Error cases:
+	// a) Not ready artifact
+	authority.variant.Status = "pending"
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "import_not_ready", Name: "manage_video", Arguments: string(importArgs)}); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("expected not ready error, got %v", err)
+	}
+
+	// b) Non-audio artifact
+	authority.variant.Status = pebblestore.SessionArtifactStatusReady
+	authority.variant.MediaType = "image/png"
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "import_not_audio", Name: "manage_video", Arguments: string(importArgs)}); err == nil || !strings.Contains(err.Error(), "not an audio artifact") {
+		t.Fatalf("expected not audio artifact error, got %v", err)
+	}
+
+	// c) Missing reference
+	if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "import_missing_ref", Name: "manage_video", Arguments: `{"action":"import_audio_artifact"}`}); err == nil || !strings.Contains(err.Error(), "requires an exact artifact reference") {
+		t.Fatalf("expected missing reference error, got %v", err)
+	}
+}

@@ -1,6 +1,7 @@
 package videosource
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -38,6 +39,10 @@ const (
 
 type WorkspaceAuthority interface {
 	ListSourceMediaDirectoriesForPrincipal(identity.Principal, string) (workspaceruntime.Resolution, error)
+}
+
+type WorkspaceDirectoryRegistrar interface {
+	AddSourceMediaDirectoryForPrincipal(identity.Principal, string, string) (workspaceruntime.Resolution, error)
 }
 
 type Service struct {
@@ -94,6 +99,195 @@ type BrowseResult struct {
 
 func NewService(workspace WorkspaceAuthority, store *pebblestore.SessionStore) *Service {
 	return &Service{workspace: workspace, store: store}
+}
+
+func (s *Service) Store() *pebblestore.SessionStore {
+	if s == nil {
+		return nil
+	}
+	return s.store
+}
+
+// EnsureRoot resolves or registers a canonical source-media root directory.
+// If the workspace already has registered roots, the first registered root or
+// preferredDir (if specified and matching/registerable) is returned.
+// If no roots exist, it creates and registers a default source_media directory.
+func (s *Service) EnsureRoot(principal identity.Principal, workspacePath, preferredDir string) (string, string, error) {
+	if s == nil {
+		return "", "", errors.New("source service is not configured")
+	}
+	if s.workspace != nil && workspacePath != "" {
+		res, err := s.workspace.ListSourceMediaDirectoriesForPrincipal(principal, workspacePath)
+		if err == nil {
+			workspaceID := res.WorkspaceID
+			preferredDir = strings.TrimSpace(preferredDir)
+			if preferredDir != "" {
+				cleanPreferred, resolveErr := ResolveRootPath(preferredDir)
+				if resolveErr == nil {
+					for _, d := range res.SourceMediaDirectories {
+						if filepath.Clean(d) == cleanPreferred {
+							return cleanPreferred, workspaceID, nil
+						}
+					}
+					if registrar, ok := s.workspace.(WorkspaceDirectoryRegistrar); ok {
+						addRes, addErr := registrar.AddSourceMediaDirectoryForPrincipal(principal, workspacePath, cleanPreferred)
+						if addErr == nil {
+							return cleanPreferred, addRes.WorkspaceID, nil
+						}
+					}
+				}
+			}
+			if len(res.SourceMediaDirectories) > 0 {
+				return filepath.Clean(res.SourceMediaDirectories[0]), workspaceID, nil
+			}
+			defaultDir := filepath.Join(workspacePath, "source_media")
+			if err := os.MkdirAll(defaultDir, 0o755); err != nil {
+				return "", "", fmt.Errorf("create source media directory: %w", err)
+			}
+			if registrar, ok := s.workspace.(WorkspaceDirectoryRegistrar); ok {
+				addRes, addErr := registrar.AddSourceMediaDirectoryForPrincipal(principal, workspacePath, defaultDir)
+				if addErr == nil {
+					return defaultDir, addRes.WorkspaceID, nil
+				}
+			}
+			return defaultDir, workspaceID, nil
+		}
+	}
+	targetDir := strings.TrimSpace(preferredDir)
+	if targetDir == "" {
+		if workspacePath != "" {
+			targetDir = filepath.Join(workspacePath, "source_media")
+		} else {
+			targetDir = filepath.Join(os.TempDir(), "swarm_source_media", principal.AccountScopeID)
+		}
+	}
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("create media directory: %w", err)
+	}
+	return targetDir, "", nil
+}
+
+// ImportAudio writes audio bytes to an authenticated source media directory,
+// validates the file against supported audio formats, and persists an authenticated
+// AudioSourceRecord in the session store.
+func (s *Service) ImportAudio(principal identity.Principal, workspacePath, workspaceID, displayName, mimeType string, data []byte, preferredDir string) (pebblestore.AudioSourceRecord, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.AudioSourceRecord{}, errors.New("source service is not configured")
+	}
+	if len(data) == 0 {
+		return pebblestore.AudioSourceRecord{}, errors.New("audio data is empty")
+	}
+	rootPath, resolvedWorkspaceID, err := s.EnsureRoot(principal, workspacePath, preferredDir)
+	if err != nil {
+		return pebblestore.AudioSourceRecord{}, err
+	}
+	if strings.TrimSpace(workspaceID) == "" {
+		workspaceID = resolvedWorkspaceID
+	}
+	if strings.TrimSpace(workspaceID) == "" {
+		workspaceID = "workspace"
+	}
+
+	ext := strings.ToLower(filepath.Ext(displayName))
+	if ext == "" {
+		switch strings.ToLower(strings.TrimSpace(mimeType)) {
+		case "audio/mpeg", "audio/mp3":
+			ext = ".mp3"
+		case "audio/wav", "audio/x-wav", "audio/wave":
+			ext = ".wav"
+		case "audio/mp4", "audio/m4a", "audio/x-m4a":
+			ext = ".m4a"
+		case "audio/aac":
+			ext = ".aac"
+		case "audio/flac", "audio/x-flac":
+			ext = ".flac"
+		case "audio/ogg", "audio/opus":
+			ext = ".ogg"
+		default:
+			ext = ".mp3"
+		}
+	}
+	canonicalMIME, supported := pebblestore.SupportedAudioMIMEForExtension(ext)
+	if !supported {
+		ext = ".mp3"
+		canonicalMIME, _ = pebblestore.SupportedAudioMIMEForExtension(ext)
+	}
+
+	cleanBase := sanitizeFilename(displayName)
+	if cleanBase == "" || cleanBase == ext {
+		cleanBase = "audio"
+	}
+	if !strings.HasSuffix(strings.ToLower(cleanBase), ext) {
+		cleanBase += ext
+	}
+
+	destPath := filepath.Join(rootPath, cleanBase)
+	if existing, readErr := os.ReadFile(destPath); readErr == nil {
+		if !bytes.Equal(existing, data) {
+			hash := sha256.Sum256(data)
+			prefix := hex.EncodeToString(hash[:])[:8]
+			stem := strings.TrimSuffix(cleanBase, ext)
+			cleanBase = fmt.Sprintf("%s_%s%s", stem, prefix, ext)
+			destPath = filepath.Join(rootPath, cleanBase)
+		}
+	}
+
+	if err := os.WriteFile(destPath, data, 0o600); err != nil {
+		return pebblestore.AudioSourceRecord{}, fmt.Errorf("write imported audio file: %w", err)
+	}
+	stat, err := os.Stat(destPath)
+	if err != nil {
+		return pebblestore.AudioSourceRecord{}, fmt.Errorf("stat imported audio file: %w", err)
+	}
+
+	name := displayName
+	if strings.TrimSpace(name) == "" {
+		name = cleanBase
+	}
+
+	record := pebblestore.AudioSourceRecord{
+		AccountScopeID: principal.AccountScopeID,
+		WorkspaceID:    workspaceID,
+		RootPath:       rootPath,
+		RelativePath:   cleanBase,
+		DisplayName:    name,
+		MIMEType:       canonicalMIME,
+		SizeBytes:      stat.Size(),
+		ModifiedAt:     stat.ModTime().UnixMilli(),
+	}
+
+	saved, err := s.store.PutAudioSourceRecord(record)
+	if err != nil {
+		return pebblestore.AudioSourceRecord{}, fmt.Errorf("save audio source record: %w", err)
+	}
+	if err := pebblestore.ValidateAudioSourceRecord(saved); err != nil {
+		return pebblestore.AudioSourceRecord{}, fmt.Errorf("validate imported audio source record: %w", err)
+	}
+	return saved, nil
+}
+
+func sanitizeFilename(name string) string {
+	name = filepath.Base(strings.TrimSpace(name))
+	if name == "." || name == ".." || name == "/" {
+		return "audio"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	s := strings.TrimSpace(b.String())
+	s = strings.Trim(s, " ")
+	for strings.HasPrefix(s, ".") {
+		s = strings.TrimPrefix(s, ".")
+	}
+	if s == "" {
+		return "audio"
+	}
+	return s
 }
 
 func (s *Service) ListRoots(principal identity.Principal, workspacePath string) (string, []Root, error) {

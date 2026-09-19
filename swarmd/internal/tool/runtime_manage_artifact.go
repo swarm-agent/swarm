@@ -1732,10 +1732,11 @@ func artifactHelpText(topic string) string {
 	case "animation", "motion":
 		return `Artifact Animation & Motion Contract:
 - Direct native HTML accepts animation_profile motion_ui or spatial_3d (pinned offline Three.js; import from 'three' in module script).
-- Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready().
-- Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
-- Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready(), and seek(ms) returning {time_ms: ms}.
+- Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready(). Unknown manifest fields are strictly disallowed.
+- Requires at least one semantic region with an id attribute on <main id="...">. Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
+- Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready() returning { duration_ms, fps } matching the manifest, and seek(ms) returning { time_ms: ms }.
 - seek must pause all rAF/timers and deterministically render the exact timestamp.
+- To use the animation in Video Studio, call manage_video action="convert_artifact_v3" with project_id, base_revision_id, artifact_v3_session_id, artifact_v3_artifact_id, and artifact_v3_revision_ref.
 - data-swarm-capture-ui are excluded from derived Parts
 - explicit Parts must target output regions only
 - remaining meaningful output regions still required
@@ -1764,7 +1765,8 @@ func artifactHelpText(topic string) string {
 - The AI can generate multiple sound clips or audio variations in ONE tool call: provide an array of descriptive style/mood prompts via prompts: ["...", "..."] (up to 8 clips, e.g. prompts: ["Upbeat funk groove with slapping bass", "Ambient calm piano with rain sounds", "High-energy rock guitar solo"]), or specify count: N (1 to 8) to generate multiple variations from a single prompt.
 - Each generated sound clip is published as a distinct variant in the artifact collection with its own title and description, and Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly.
 - Specify duration_seconds (e.g. 15, 30, 60, 120s; default 30s) and optional image or image_path for multimodal audio inspiration.
-- To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.`
+- To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.
+- Video Studio Ingestion: To use a generated audio artifact as soundtrack audio in Video Studio timeline projects, call manage_video action="import_audio_artifact" with its exact reference ({session_id, collection_id, variant_id, event_seq}). This persists an authenticated AudioSourceRecord and returns the exact audio_source object ({ref, name, mime_type, size_bytes, source_fingerprint, fingerprint_version: "v1"}) ready for create_edit_proposal operations: [{type: "add_clip", clip: {source_kind: "source_audio", audio_source: ...}}] or create_project initial_timeline.`
 	case "narration":
 		return `Narration Plan Draft Contract:
 - For narration-plan drafts, use manage_artifact action=create with the built-in narration_plan object and its complete schema example instead of inventing HTML, selectors, or Parts.
