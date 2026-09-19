@@ -125,75 +125,60 @@ func clampUsageTokenCount(value int64) int64 {
 	return value
 }
 
-func (s *SessionStore) updateAccountUsageAggregatesInBatch(batch *pebble.Batch, accountScopeID, provider, model string, costDelta float64, codexNominalDelta float64, tokensDelta, inputTokens, outputTokens, cachedTokens, thinkingTokens int64, isNewTurn bool, now int64) error {
-	if accountScopeID == "" || provider == "" {
+func (s *SessionStore) updateAccountUsageRollupInBatch(batch *pebble.Batch, accountScopeID, date, sessionID, provider, model string, tokenCostDelta, codexNominalDelta, mediaCostDelta float64, tokensDelta, inputTokens, outputTokens, cachedTokens, thinkingTokens int64, turnsDelta, mediaCallsDelta, imageDelta, videoDelta, audioDelta, unknownDelta int, ts, now int64) error {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	sessionID = strings.TrimSpace(sessionID)
+	date = strings.TrimSpace(date)
+	if accountScopeID == "" || sessionID == "" || date == "" {
 		return nil
 	}
-	// 1. Provider Aggregate
-	provAgg, _, err := s.GetAccountProviderUsage(accountScopeID, provider)
-	if err != nil {
-		return err
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	if provider == "" {
+		provider = "unknown"
 	}
-	if provAgg.AccountScopeID == "" {
-		provAgg.AccountScopeID = accountScopeID
-		provAgg.Provider = provider
-		provAgg.DisplayName = formatProviderDisplayName(provider)
-		provAgg.IsSubscription = strings.EqualFold(provider, "codex")
-	}
-	provAgg.TotalTokens += tokensDelta
-	provAgg.InputTokens += inputTokens
-	provAgg.OutputTokens += outputTokens
-	provAgg.CachedTokens += cachedTokens
-	provAgg.ThinkingTokens += thinkingTokens
-	provAgg.CostUSD += costDelta
-	provAgg.CodexNominalCostUSD += codexNominalDelta
-	if isNewTurn {
-		provAgg.Turns++
-	}
-	if model != "" && !containsUsageString(provAgg.Models, model) {
-		provAgg.Models = append(provAgg.Models, model)
-	}
-	provAgg.UpdatedAt = now
-	payload, err := json.Marshal(provAgg)
-	if err != nil {
-		return err
-	}
-	if err := batch.Set([]byte(KeyAccountProviderUsage(accountScopeID, provider)), payload, nil); err != nil {
-		return err
+	if model == "" {
+		model = "unknown"
 	}
 
-	// 2. Model Aggregate
-	if model != "" {
-		modelAgg, _, err := s.GetAccountModelUsage(accountScopeID, provider, model)
-		if err != nil {
-			return err
-		}
-		if modelAgg.AccountScopeID == "" {
-			modelAgg.AccountScopeID = accountScopeID
-			modelAgg.Provider = provider
-			modelAgg.Model = model
-			modelAgg.DisplayName = model
-		}
-		modelAgg.TotalTokens += tokensDelta
-		modelAgg.InputTokens += inputTokens
-		modelAgg.OutputTokens += outputTokens
-		modelAgg.CachedTokens += cachedTokens
-		modelAgg.ThinkingTokens += thinkingTokens
-		modelAgg.CostUSD += costDelta
-		modelAgg.CodexNominalCostUSD += codexNominalDelta
-		if isNewTurn {
-			modelAgg.Turns++
-		}
-		modelAgg.UpdatedAt = now
-		mPayload, err := json.Marshal(modelAgg)
-		if err != nil {
-			return err
-		}
-		if err := batch.Set([]byte(KeyAccountModelUsage(accountScopeID, provider, model)), mPayload, nil); err != nil {
-			return err
-		}
+	rollup, _, err := s.GetAccountUsageRollup(accountScopeID, date, sessionID, provider, model)
+	if err != nil {
+		return err
 	}
-	return nil
+	if rollup.AccountScopeID == "" {
+		rollup.AccountScopeID = accountScopeID
+		rollup.Date = date
+		rollup.SessionID = sessionID
+		rollup.Provider = provider
+		rollup.Model = model
+	}
+	rollup.TotalTokens += tokensDelta
+	rollup.InputTokens += inputTokens
+	rollup.OutputTokens += outputTokens
+	rollup.CachedTokens += cachedTokens
+	rollup.ThinkingTokens += thinkingTokens
+	rollup.TokenCostUSD += tokenCostDelta
+	rollup.CodexNominalCostUSD += codexNominalDelta
+	rollup.Turns += turnsDelta
+	rollup.MediaCalls += mediaCallsDelta
+	rollup.MediaCostUSD += mediaCostDelta
+	rollup.ImageCount += imageDelta
+	rollup.ImageCostUSD += mediaCostDelta // if image
+	rollup.VideoCount += videoDelta
+	rollup.VideoCostUSD += mediaCostDelta // if video
+	rollup.AudioCount += audioDelta
+	rollup.AudioCostUSD += mediaCostDelta // if audio
+	rollup.UnknownCount += unknownDelta
+	if ts > rollup.LastActiveAt {
+		rollup.LastActiveAt = ts
+	}
+	rollup.UpdatedAt = now
+
+	payload, err := json.Marshal(rollup)
+	if err != nil {
+		return err
+	}
+	return batch.Set([]byte(KeyAccountUsageRollup(accountScopeID, date, sessionID, provider, model)), payload, nil)
 }
 
 func containsUsageString(slice []string, s string) bool {
@@ -330,7 +315,15 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 			return err
 		}
 
-		if err := s.updateAccountUsageAggregatesInBatch(batch, record.AccountScopeID, record.Provider, record.Model, deltaCost, 0.0, deltaTokens, clampUsageTokenCount(record.InputTokens), clampUsageTokenCount(record.OutputTokens), clampUsageTokenCount(record.CacheReadTokens), clampUsageTokenCount(record.ThinkingTokens), !hadPrevious, ts); err != nil {
+		turnsDelta := 0
+		if !hadPrevious {
+			turnsDelta = 1
+		}
+		unknownDelta := 0
+		if strings.EqualFold(record.ServiceTierStatus, "unknown") {
+			unknownDelta = 1
+		}
+		if err := s.updateAccountUsageRollupInBatch(batch, record.AccountScopeID, dateStr, record.SessionID, record.Provider, record.Model, deltaCost, 0.0, 0.0, deltaTokens, clampUsageTokenCount(record.InputTokens), clampUsageTokenCount(record.OutputTokens), clampUsageTokenCount(record.CacheReadTokens), clampUsageTokenCount(record.ThinkingTokens), turnsDelta, 0, 0, 0, 0, unknownDelta, ts, time.Now().UnixMilli()); err != nil {
 			return err
 		}
 	}
@@ -777,7 +770,20 @@ func (s *SessionStore) PutMediaUsage(rec SessionMediaUsageRecord) error {
 		return err
 	}
 
-	if err := s.updateAccountUsageAggregatesInBatch(batch, rec.AccountScopeID, rec.Provider, rec.Model, rec.CostUSD, 0.0, 0, 0, 0, 0, 0, false, now); err != nil {
+	imageDelta, videoDelta, audioDelta := 0, 0, 0
+	switch strings.ToLower(rec.Kind) {
+	case "image":
+		imageDelta = 1
+	case "video":
+		videoDelta = 1
+	case "audio":
+		audioDelta = 1
+	}
+	unknownDelta := 0
+	if strings.EqualFold(rec.PriceStatus, "unknown") {
+		unknownDelta = 1
+	}
+	if err := s.updateAccountUsageRollupInBatch(batch, rec.AccountScopeID, dateStr, rec.SessionID, rec.Provider, rec.Model, 0.0, 0.0, rec.CostUSD, 0, 0, 0, 0, 0, 0, 1, imageDelta, videoDelta, audioDelta, unknownDelta, rec.CreatedAt, now); err != nil {
 		s.store.sessionMutations.abandonOutbox(reservedOutbox)
 		return err
 	}

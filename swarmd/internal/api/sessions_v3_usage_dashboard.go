@@ -229,244 +229,214 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	limit := 10000
-	if rawLimit := strings.TrimSpace(query.Get("limit")); rawLimit != "" {
-		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
-			limit = parsed
-		}
-	}
-
-	// 1. Fetch persisted query aggregates from Pebble
+	// 1. Fetch persisted query rollups from Pebble (keyed by account/day/session/provider/model)
 	var summary SessionUsageDashboardSummary
 	var mediaSummary SessionUsageMediaSummary
-	dailyList := make([]SessionUsageDailyItem, 0, 32)
-	providerList := make([]SessionUsageProviderItem, 0, 8)
-	modelList := make([]SessionUsageModelItem, 0, 16)
+	dailyMap := make(map[string]*SessionUsageDailyItem)
+	providerMap := make(map[string]*SessionUsageProviderItem)
+	modelMap := make(map[string]*SessionUsageModelItem)
 	sessionUsageMap := make(map[string]*SessionUsageSessionItem)
 	uniqueSessions := make(map[string]struct{})
 
-	accumulators, _ := s.sessions.Store().ListDailyUsageAccumulators(principal.AccountScopeID)
-	provAggs, _ := s.sessions.Store().ListAccountProviderUsage(principal.AccountScopeID)
-	modAggs, _ := s.sessions.Store().ListAccountModelUsage(principal.AccountScopeID)
-	mediaRecords, _ := s.sessions.ListMediaUsage(principal.AccountScopeID, 30)
+	// Session metadata resolver with point-lookup caching: resolves title and archived
+	// state on-demand for active/participating sessions without performing a full-table
+	// account scan across all sessions and lifecycles in Pebble.
+	type sessionMeta struct {
+		title    string
+		archived bool
+	}
+	sessionMetaCache := make(map[string]sessionMeta)
+	resolveSessionMeta := func(sessionID string) sessionMeta {
+		if meta, ok := sessionMetaCache[sessionID]; ok {
+			return meta
+		}
+		var meta sessionMeta
+		store := s.sessions.Store()
+		if store != nil {
+			if sess, ok, err := store.GetSession(sessionID); err == nil && ok {
+				meta.title = strings.TrimSpace(sess.Title)
+				meta.archived = false
+			} else if tombstone, ok, err := store.GetV3SessionTombstone(sessionID); err == nil && ok && tombstone.Archived && !tombstone.Deleted {
+				meta.title = strings.TrimSpace(tombstone.Session.Title)
+				meta.archived = true
+			}
+		}
+		if meta.title == "" {
+			if len(sessionID) > 8 {
+				meta.title = "Session " + sessionID[:8]
+			} else {
+				meta.title = "Session " + sessionID
+			}
+		}
+		sessionMetaCache[sessionID] = meta
+		return meta
+	}
 
-	if len(accumulators) > 0 {
-		// Use persisted daily rollups directly without iterating turn histories
-		for _, acc := range accumulators {
-			tParsed, _ := time.Parse("2006-01-02", acc.Date)
-			dayStart := tParsed.UTC().UnixMilli()
-			if cutoffTime > 0 && dayStart < cutoffTime {
-				continue
-			}
-			if endTimeCutoff > 0 && dayStart > endTimeCutoff {
-				continue
-			}
-			tokenCost := acc.TotalCostUSD - acc.MediaCostUSD
-			if tokenCost < 0 {
-				tokenCost = 0
-			}
-			dailyItem := SessionUsageDailyItem{
-				Date:                acc.Date,
-				Timestamp:           dayStart,
-				TotalTokens:         acc.TotalTokens,
-				InputTokens:         acc.InputTokens,
-				OutputTokens:        acc.OutputTokens,
-				CachedTokens:        acc.CachedTokens,
-				ThinkingTokens:      acc.ThinkingTokens,
-				CostUSD:             tokenCost,
-				CodexNominalCostUSD: acc.CodexNominalCostUSD,
-				Turns:               acc.TurnCount,
-				MediaCalls:          acc.MediaCalls,
-				MediaCostUSD:        acc.MediaCostUSD,
-				ModelsUsed:          acc.ModelsUsed,
-			}
-			dailyList = append(dailyList, dailyItem)
-			summary.TotalTokens += acc.TotalTokens
-			summary.InputTokens += acc.InputTokens
-			summary.OutputTokens += acc.OutputTokens
-			summary.CachedTokens += acc.CachedTokens
-			summary.ThinkingTokens += acc.ThinkingTokens
-			summary.TotalCostUSD += tokenCost
-			summary.CodexNominalCostUSD += acc.CodexNominalCostUSD
-			summary.TotalTurns += acc.TurnCount
-			summary.TotalMediaCalls += acc.MediaCalls
-			summary.MediaCostUSD += acc.MediaCostUSD
-			mediaSummary.TotalCount += acc.MediaCalls
-			mediaSummary.TotalCostUSD += acc.MediaCostUSD
-			mediaSummary.ImageCount += acc.ImageCount
-			mediaSummary.ImageCostUSD += acc.ImageCostUSD
-			mediaSummary.VideoCount += acc.VideoCount
-			mediaSummary.VideoCostUSD += acc.VideoCostUSD
-			mediaSummary.AudioCount += acc.AudioCount
-			mediaSummary.AudioCostUSD += acc.AudioCostUSD
+	rollups, err := s.sessions.Store().ListAccountUsageRollups(principal.AccountScopeID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("list usage rollups: %w", err))
+		return
+	}
+
+	pricingMap := s.buildPricingMap()
+
+	for _, row := range rollups {
+		tParsed, _ := time.Parse("2006-01-02", row.Date)
+		dayStart := tParsed.UTC().UnixMilli()
+		if cutoffTime > 0 && dayStart < cutoffTime {
+			continue
+		}
+		if endTimeCutoff > 0 && dayStart > endTimeCutoff {
+			continue
+		}
+		if sessionFilter != "" && row.SessionID != sessionFilter {
+			continue
+		}
+		provID := strings.ToLower(strings.TrimSpace(row.Provider))
+		if providerFilter != "" && provID != providerFilter {
+			continue
+		}
+		modelID := strings.TrimSpace(row.Model)
+		if modelFilter != "" && !strings.Contains(strings.ToLower(modelID), modelFilter) {
+			continue
 		}
 
-		for _, p := range provAggs {
-			if providerFilter != "" && strings.ToLower(p.Provider) != providerFilter {
-				continue
-			}
-			providerList = append(providerList, SessionUsageProviderItem{
-				Provider:            p.Provider,
-				DisplayName:         p.DisplayName,
-				TotalTokens:         p.TotalTokens,
-				InputTokens:         p.InputTokens,
-				OutputTokens:        p.OutputTokens,
-				CachedTokens:        p.CachedTokens,
-				ThinkingTokens:      p.ThinkingTokens,
-				CostUSD:             p.CostUSD,
-				CodexNominalCostUSD: p.CodexNominalCostUSD,
-				IsSubscription:      p.IsSubscription,
-				Turns:               p.Turns,
-				Models:              p.Models,
-			})
+		meta := resolveSessionMeta(row.SessionID)
+		if archivedMode == "exclude" && meta.archived {
+			continue
+		}
+		if archivedMode == "only" && !meta.archived {
+			continue
 		}
 
-		for _, m := range modAggs {
-			if providerFilter != "" && strings.ToLower(m.Provider) != providerFilter {
-				continue
-			}
-			if modelFilter != "" && !strings.Contains(strings.ToLower(m.Model), modelFilter) {
-				continue
-			}
-			modelList = append(modelList, SessionUsageModelItem{
-				Model:                 m.Model,
-				Provider:              m.Provider,
-				DisplayName:           m.DisplayName,
-				TotalTokens:           m.TotalTokens,
-				InputTokens:           m.InputTokens,
-				OutputTokens:          m.OutputTokens,
-				CachedTokens:          m.CachedTokens,
-				ThinkingTokens:        m.ThinkingTokens,
-				CostUSD:               m.CostUSD,
-				CodexNominalCostUSD:   m.CodexNominalCostUSD,
-				Turns:                 m.Turns,
-				InputPricePerMillion:  m.InputPricePerMillion,
-				OutputPricePerMillion: m.OutputPricePerMillion,
-				CachedPricePerMillion: m.CachedPricePerMillion,
-			})
-		}
-	} else {
-		// Fallback for un-aggregated legacy records
-		pricingMap := s.buildPricingMap()
-		dailyMap := make(map[string]*SessionUsageDailyItem)
-		providerMap := make(map[string]*SessionUsageProviderItem)
-		modelMap := make(map[string]*SessionUsageModelItem)
-		turnRecords, _ := s.sessions.ListAllTurnUsage(principal.AccountScopeID, 1000)
-		for _, rec := range turnRecords {
-			ts := rec.CreatedAt
-			if ts <= 0 {
-				ts = rec.UpdatedAt
-			}
-			if ts <= 0 || (cutoffTime > 0 && ts < cutoffTime) || (endTimeCutoff > 0 && ts > endTimeCutoff) {
-				continue
-			}
-			provID := strings.ToLower(strings.TrimSpace(rec.Provider))
-			modelID := strings.TrimSpace(rec.Model)
-			if providerFilter != "" && provID != providerFilter {
-				continue
-			}
-			if modelFilter != "" && !strings.Contains(strings.ToLower(modelID), modelFilter) {
-				continue
-			}
-			costUSD := rec.EstimatedCostUSD
-			codexNominalUSD := 0.0
-			if strings.EqualFold(provID, "codex") {
-				_, codexNominalUSD = calculateTurnCost(rec, pricingMap)
-			}
-			summary.TotalTokens += rec.TotalTokens
-			summary.InputTokens += rec.InputTokens
-			summary.OutputTokens += rec.OutputTokens
-			summary.CachedTokens += rec.CacheReadTokens
-			summary.ThinkingTokens += rec.ThinkingTokens
-			summary.TotalCostUSD += costUSD
-			summary.CodexNominalCostUSD += codexNominalUSD
-			summary.TotalTurns++
-			uniqueSessions[rec.SessionID] = struct{}{}
+		uniqueSessions[row.SessionID] = struct{}{}
 
-			dayKey := time.UnixMilli(ts).UTC().Format("2006-01-02")
-			dayItem, exists := dailyMap[dayKey]
-			if !exists {
-				dayStart := time.Date(time.UnixMilli(ts).UTC().Year(), time.UnixMilli(ts).UTC().Month(), time.UnixMilli(ts).UTC().Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
-				dayItem = &SessionUsageDailyItem{
-					Date:       dayKey,
-					Timestamp:  dayStart,
-					ModelsUsed: make(map[string]int64),
-				}
-				dailyMap[dayKey] = dayItem
-			}
-			dayItem.TotalTokens += rec.TotalTokens
-			dayItem.InputTokens += rec.InputTokens
-			dayItem.OutputTokens += rec.OutputTokens
-			dayItem.CachedTokens += rec.CacheReadTokens
-			dayItem.ThinkingTokens += rec.ThinkingTokens
-			dayItem.CostUSD += costUSD
-			dayItem.CodexNominalCostUSD += codexNominalUSD
-			dayItem.Turns++
-			dayItem.ModelsUsed[modelID] += rec.TotalTokens
-
-			provItem, provExists := providerMap[provID]
-			if !provExists {
-				provItem = &SessionUsageProviderItem{
-					Provider:       provID,
-					DisplayName:    formatProviderDisplayName(provID),
-					IsSubscription: provID == "codex",
-					Models:         []string{},
-				}
-				providerMap[provID] = provItem
-			}
-			provItem.TotalTokens += rec.TotalTokens
-			provItem.InputTokens += rec.InputTokens
-			provItem.OutputTokens += rec.OutputTokens
-			provItem.CachedTokens += rec.CacheReadTokens
-			provItem.ThinkingTokens += rec.ThinkingTokens
-			provItem.CostUSD += costUSD
-			provItem.CodexNominalCostUSD += codexNominalUSD
-			provItem.Turns++
-			if !containsUsageString(provItem.Models, modelID) {
-				provItem.Models = append(provItem.Models, modelID)
-			}
-
-			modelKey := provID + ":" + modelID
-			mItem, mExists := modelMap[modelKey]
-			if !mExists {
-				pInfo := pricingMap[modelKey]
-				if pInfo.DisplayName == "" {
-					pInfo = pricingMap[modelID]
-				}
-				mItem = &SessionUsageModelItem{
-					Model:                 modelID,
-					Provider:              provID,
-					DisplayName:           pInfo.DisplayName,
-					InputPricePerMillion:  pInfo.InputPrice,
-					OutputPricePerMillion: pInfo.OutputPrice,
-					CachedPricePerMillion: pInfo.CachedPrice,
-				}
-				if mItem.DisplayName == "" {
-					mItem.DisplayName = modelID
-				}
-				modelMap[modelKey] = mItem
-			}
-			mItem.TotalTokens += rec.TotalTokens
-			mItem.InputTokens += rec.InputTokens
-			mItem.OutputTokens += rec.OutputTokens
-			mItem.CachedTokens += rec.CacheReadTokens
-			mItem.ThinkingTokens += rec.ThinkingTokens
-			mItem.CostUSD += costUSD
-			mItem.CodexNominalCostUSD += codexNominalUSD
-			mItem.Turns++
+		// Summary
+		summary.TotalTokens += row.TotalTokens
+		summary.InputTokens += row.InputTokens
+		summary.OutputTokens += row.OutputTokens
+		summary.CachedTokens += row.CachedTokens
+		summary.ThinkingTokens += row.ThinkingTokens
+		summary.TotalCostUSD += row.TokenCostUSD
+		summary.CodexNominalCostUSD += row.CodexNominalCostUSD
+		summary.TotalTurns += row.Turns
+		summary.TotalMediaCalls += row.MediaCalls
+		summary.MediaCostUSD += row.MediaCostUSD
+		if row.UnknownCount > 0 {
+			summary.HasUnknownPricing = true
 		}
 
-		for _, item := range dailyMap {
-			dailyList = append(dailyList, *item)
+		// Media summary
+		mediaSummary.TotalCount += row.MediaCalls
+		mediaSummary.TotalCostUSD += row.MediaCostUSD
+		mediaSummary.ImageCount += row.ImageCount
+		mediaSummary.ImageCostUSD += row.ImageCostUSD
+		mediaSummary.VideoCount += row.VideoCount
+		mediaSummary.VideoCostUSD += row.VideoCostUSD
+		mediaSummary.AudioCount += row.AudioCount
+		mediaSummary.AudioCostUSD += row.AudioCostUSD
+
+		// Daily fold
+		dayItem, exists := dailyMap[row.Date]
+		if !exists {
+			dayItem = &SessionUsageDailyItem{
+				Date:       row.Date,
+				Timestamp:  dayStart,
+				ModelsUsed: make(map[string]int64),
+			}
+			dailyMap[row.Date] = dayItem
 		}
-		sort.Slice(dailyList, func(i, j int) bool {
-			return dailyList[i].Date < dailyList[j].Date
-		})
-		for _, item := range providerMap {
-			providerList = append(providerList, *item)
+		dayItem.TotalTokens += row.TotalTokens
+		dayItem.InputTokens += row.InputTokens
+		dayItem.OutputTokens += row.OutputTokens
+		dayItem.CachedTokens += row.CachedTokens
+		dayItem.ThinkingTokens += row.ThinkingTokens
+		dayItem.CostUSD += row.TokenCostUSD
+		dayItem.CodexNominalCostUSD += row.CodexNominalCostUSD
+		dayItem.Turns += row.Turns
+		dayItem.MediaCalls += row.MediaCalls
+		dayItem.MediaCostUSD += row.MediaCostUSD
+		if row.Model != "" {
+			dayItem.ModelsUsed[row.Model] += row.TotalTokens
 		}
-		for _, item := range modelMap {
-			modelList = append(modelList, *item)
+
+		// Provider fold
+		provItem, exists := providerMap[provID]
+		if !exists {
+			provItem = &SessionUsageProviderItem{
+				Provider:       provID,
+				DisplayName:    formatProviderDisplayName(provID),
+				IsSubscription: provID == "codex",
+				Models:         []string{},
+			}
+			providerMap[provID] = provItem
+		}
+		provItem.TotalTokens += row.TotalTokens
+		provItem.InputTokens += row.InputTokens
+		provItem.OutputTokens += row.OutputTokens
+		provItem.CachedTokens += row.CachedTokens
+		provItem.ThinkingTokens += row.ThinkingTokens
+		provItem.CostUSD += row.TokenCostUSD
+		provItem.CodexNominalCostUSD += row.CodexNominalCostUSD
+		provItem.Turns += row.Turns
+		if row.Model != "" && !containsUsageString(provItem.Models, row.Model) {
+			provItem.Models = append(provItem.Models, row.Model)
+		}
+
+		// Model fold
+		modelKey := provID + ":" + modelID
+		mItem, exists := modelMap[modelKey]
+		if !exists {
+			pInfo := pricingMap[modelKey]
+			if pInfo.DisplayName == "" {
+				pInfo = pricingMap[modelID]
+			}
+			mItem = &SessionUsageModelItem{
+				Model:                 modelID,
+				Provider:              provID,
+				DisplayName:           pInfo.DisplayName,
+				InputPricePerMillion:  pInfo.InputPrice,
+				OutputPricePerMillion: pInfo.OutputPrice,
+				CachedPricePerMillion: pInfo.CachedPrice,
+			}
+			if mItem.DisplayName == "" {
+				mItem.DisplayName = modelID
+			}
+			modelMap[modelKey] = mItem
+		}
+		mItem.TotalTokens += row.TotalTokens
+		mItem.InputTokens += row.InputTokens
+		mItem.OutputTokens += row.OutputTokens
+		mItem.CachedTokens += row.CachedTokens
+		mItem.ThinkingTokens += row.ThinkingTokens
+		mItem.CostUSD += row.TokenCostUSD
+		mItem.CodexNominalCostUSD += row.CodexNominalCostUSD
+		mItem.Turns += row.Turns
+
+		// Session usage fold (period billing only, no lifetime substitution!)
+		sessItem, exists := sessionUsageMap[row.SessionID]
+		if !exists {
+			sessItem = &SessionUsageSessionItem{
+				SessionID:    row.SessionID,
+				Title:        meta.title,
+				Archived:     meta.archived,
+				Provider:     provID,
+				Model:        modelID,
+				LastActiveAt: row.LastActiveAt,
+			}
+			sessionUsageMap[row.SessionID] = sessItem
+		}
+		sessItem.TotalTokens += row.TotalTokens
+		sessItem.InputTokens += row.InputTokens
+		sessItem.OutputTokens += row.OutputTokens
+		sessItem.CachedTokens += row.CachedTokens
+		sessItem.ThinkingTokens += row.ThinkingTokens
+		sessItem.CostUSD += row.TokenCostUSD + row.MediaCostUSD
+		sessItem.TurnCount += row.Turns
+		if row.LastActiveAt > sessItem.LastActiveAt {
+			sessItem.LastActiveAt = row.LastActiveAt
+			sessItem.Provider = provID
+			sessItem.Model = modelID
 		}
 	}
 
@@ -547,66 +517,34 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	seenSessionIDs := make(map[string]struct{})
-	sessionList := make([]SessionUsageSessionItem, 0, len(searchResult.Items)+len(sessionUsageMap))
-
-	// 1. Populate from fast indexed search results (guarantees active sessions in view
-	// and archived sessions in library are retrieved with O(1) usage lookup).
+	sessionList := make([]SessionUsageSessionItem, 0, len(sessionUsageMap))
+	for sid, item := range sessionUsageMap {
+		seenSessionIDs[sid] = struct{}{}
+		sessionList = append(sessionList, *item)
+	}
 	if searchErr == nil {
 		for _, sItem := range searchResult.Items {
-			seenSessionIDs[sItem.ID] = struct{}{}
-			if usageItem, exists := sessionUsageMap[sItem.ID]; exists {
-				meta := resolveSessionMeta(sItem.ID)
-				usageItem.Title = meta.title
-				usageItem.Archived = meta.archived
-				sessionList = append(sessionList, *usageItem)
-			} else {
-				// Session had no turns in this specific time window; pull canonical lifetime usage summary
-				item := SessionUsageSessionItem{
-					SessionID:    sItem.ID,
-					Title:        sItem.Title,
-					Archived:     sItem.Archived,
-					LastActiveAt: sItem.UpdatedAt,
-				}
-				if store := s.sessions.Store(); store != nil {
-					if lSummary, hasSummary, _ := store.GetUsageSummary(sItem.ID); hasSummary && lSummary.TotalTokens > 0 {
-						item.TotalTokens = lSummary.TotalTokens
-						item.InputTokens = lSummary.InputTokens
-						item.OutputTokens = lSummary.OutputTokens
-						item.CachedTokens = lSummary.CacheReadTokens
-						item.ThinkingTokens = lSummary.ThinkingTokens
-						item.TurnCount = lSummary.TurnCount
-						item.Provider = lSummary.Provider
-						item.Model = lSummary.Model
-						item.CostUSD = lSummary.EstimatedCostUSD
-						if lSummary.UpdatedAt > item.LastActiveAt {
-							item.LastActiveAt = lSummary.UpdatedAt
-						}
-					}
-				}
-				if item.Title == "" {
-					meta := resolveSessionMeta(sItem.ID)
-					item.Title = meta.title
-				}
-				sessionList = append(sessionList, item)
+			if _, seen := seenSessionIDs[sItem.ID]; seen {
+				continue
 			}
+			meta := resolveSessionMeta(sItem.ID)
+			if archivedMode == "exclude" && meta.archived {
+				continue
+			}
+			if archivedMode == "only" && !meta.archived {
+				continue
+			}
+			if sessionFilter != "" && sItem.ID != sessionFilter {
+				continue
+			}
+			seenSessionIDs[sItem.ID] = struct{}{}
+			sessionList = append(sessionList, SessionUsageSessionItem{
+				SessionID:    sItem.ID,
+				Title:        meta.title,
+				Archived:     meta.archived,
+				LastActiveAt: sItem.UpdatedAt,
+			})
 		}
-	}
-
-	// 2. Also append any sessions with turn usage in the time window not caught in top search items
-	for sid, item := range sessionUsageMap {
-		if _, seen := seenSessionIDs[sid]; seen {
-			continue
-		}
-		meta := resolveSessionMeta(sid)
-		item.Title = meta.title
-		item.Archived = meta.archived
-		if archivedMode == "exclude" && item.Archived {
-			continue
-		}
-		if archivedMode == "only" && !item.Archived {
-			continue
-		}
-		sessionList = append(sessionList, *item)
 	}
 
 	// Apply session, provider, model filters to the session list
@@ -642,6 +580,9 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	// Calculate session counts per provider
 	provSessionSet := make(map[string]map[string]struct{})
 	for _, item := range sessionList {
+		if item.Provider == "" {
+			continue
+		}
 		if provSessionSet[item.Provider] == nil {
 			provSessionSet[item.Provider] = make(map[string]struct{})
 		}
@@ -676,7 +617,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		Meta: SessionUsageDashboardMeta{
 			GeneratedAt:          now.UnixMilli(),
 			TimeRange:            timeRange,
-			TotalRecordsAnalyzed: len(turnRecords),
+			TotalRecordsAnalyzed: len(rollups),
 		},
 	})
 }

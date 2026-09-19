@@ -1300,7 +1300,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
-			if err := s.updateAccountUsageAggregatesInBatch(batch, turnUsage.AccountScopeID, turnUsage.Provider, turnUsage.Model, costDelta, 0.0, tokensDelta, clampUsageTokenCount(turnUsage.InputTokens), clampUsageTokenCount(turnUsage.OutputTokens), clampUsageTokenCount(turnUsage.CacheReadTokens), clampUsageTokenCount(turnUsage.ThinkingTokens), !hadPreviousTurnUsage, now); err != nil {
+			turnsDelta := 0
+			if !hadPreviousTurnUsage {
+				turnsDelta = 1
+			}
+			unknownDelta := 0
+			if strings.EqualFold(turnUsage.ServiceTierStatus, "unknown") {
+				unknownDelta = 1
+			}
+			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, 0.0, 0.0, tokensDelta, clampUsageTokenCount(turnUsage.InputTokens), clampUsageTokenCount(turnUsage.OutputTokens), clampUsageTokenCount(turnUsage.CacheReadTokens), clampUsageTokenCount(turnUsage.ThinkingTokens), turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
 				return V3SessionMutationResult{}, err
 			}
 		}
@@ -1384,7 +1392,20 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 
-		if err := s.updateAccountUsageAggregatesInBatch(batch, media.AccountScopeID, media.Provider, media.Model, media.CostUSD, 0.0, 0, 0, 0, 0, 0, false, now); err != nil {
+		imageDelta, videoDelta, audioDelta := 0, 0, 0
+		switch strings.ToLower(media.Kind) {
+		case "image":
+			imageDelta = 1
+		case "video":
+			videoDelta = 1
+		case "audio":
+			audioDelta = 1
+		}
+		unknownDelta := 0
+		if strings.EqualFold(media.PriceStatus, "unknown") {
+			unknownDelta = 1
+		}
+		if err := s.updateAccountUsageRollupInBatch(batch, media.AccountScopeID, dateStr, media.SessionID, media.Provider, media.Model, 0.0, 0.0, media.CostUSD, 0, 0, 0, 0, 0, 0, 1, imageDelta, videoDelta, audioDelta, unknownDelta, media.CreatedAt, now); err != nil {
 			return V3SessionMutationResult{}, err
 		}
 		storedResult.MediaUsage = &media

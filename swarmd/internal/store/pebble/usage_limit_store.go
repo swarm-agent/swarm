@@ -616,113 +616,68 @@ func (s *SessionStore) ListDailyUsageAccumulators(accountScopeID string) ([]Dail
 	return out, nil
 }
 
-// AccountProviderUsageAggregate persists aggregated telemetry per provider on write.
-type AccountProviderUsageAggregate struct {
-	AccountScopeID      string   `json:"account_scope_id"`
-	Provider            string   `json:"provider"`
-	DisplayName         string   `json:"display_name"`
-	TotalTokens         int64    `json:"total_tokens"`
-	InputTokens         int64    `json:"input_tokens"`
-	OutputTokens        int64    `json:"output_tokens"`
-	CachedTokens        int64    `json:"cached_tokens"`
-	ThinkingTokens      int64    `json:"thinking_tokens"`
-	CostUSD             float64  `json:"cost_usd"`
-	CodexNominalCostUSD float64  `json:"codex_nominal_cost_usd"`
-	IsSubscription      bool     `json:"is_subscription"`
-	Turns               int      `json:"turns"`
-	Models              []string `json:"models"`
-	UpdatedAt           int64    `json:"updated_at"`
+// AccountUsageRollup persists aggregated telemetry keyed by account/day/session/provider/model on write.
+type AccountUsageRollup struct {
+	AccountScopeID      string  `json:"account_scope_id"`
+	Date                string  `json:"date"` // Format: YYYY-MM-DD (UTC)
+	SessionID           string  `json:"session_id"`
+	Provider            string  `json:"provider"`
+	Model               string  `json:"model"`
+	TotalTokens         int64   `json:"total_tokens"`
+	InputTokens         int64   `json:"input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CachedTokens        int64   `json:"cached_tokens"`
+	ThinkingTokens      int64   `json:"thinking_tokens"`
+	TokenCostUSD        float64 `json:"token_cost_usd"`
+	CodexNominalCostUSD float64 `json:"codex_nominal_cost_usd"`
+	Turns               int     `json:"turns"`
+	MediaCalls          int     `json:"media_calls"`
+	MediaCostUSD        float64 `json:"media_cost_usd"`
+	ImageCount          int     `json:"image_count"`
+	ImageCostUSD        float64 `json:"image_cost_usd"`
+	VideoCount          int     `json:"video_count"`
+	VideoCostUSD        float64 `json:"video_cost_usd"`
+	AudioCount          int     `json:"audio_count"`
+	AudioCostUSD        float64 `json:"audio_cost_usd"`
+	UnknownCount        int     `json:"unknown_count"`
+	LastActiveAt        int64   `json:"last_active_at"`
+	UpdatedAt           int64   `json:"updated_at"`
 }
 
-// AccountModelUsageAggregate persists aggregated telemetry per model on write.
-type AccountModelUsageAggregate struct {
-	AccountScopeID        string  `json:"account_scope_id"`
-	Provider              string  `json:"provider"`
-	Model                 string  `json:"model"`
-	DisplayName           string  `json:"display_name"`
-	TotalTokens           int64   `json:"total_tokens"`
-	InputTokens           int64   `json:"input_tokens"`
-	OutputTokens          int64   `json:"output_tokens"`
-	CachedTokens          int64   `json:"cached_tokens"`
-	ThinkingTokens        int64   `json:"thinking_tokens"`
-	CostUSD               float64 `json:"cost_usd"`
-	CodexNominalCostUSD   float64 `json:"codex_nominal_cost_usd"`
-	Turns                 int     `json:"turns"`
-	InputPricePerMillion  float64 `json:"input_price_per_million"`
-	OutputPricePerMillion float64 `json:"output_price_per_million"`
-	CachedPricePerMillion float64 `json:"cached_price_per_million"`
-	UpdatedAt             int64   `json:"updated_at"`
-}
-
-func (s *SessionStore) GetAccountProviderUsage(accountScopeID, provider string) (AccountProviderUsageAggregate, bool, error) {
+func (s *SessionStore) GetAccountUsageRollup(accountScopeID, date, sessionID, provider, model string) (AccountUsageRollup, bool, error) {
 	if s == nil || s.store == nil {
-		return AccountProviderUsageAggregate{}, false, errors.New("store is not configured")
+		return AccountUsageRollup{}, false, errors.New("store is not configured")
 	}
-	var agg AccountProviderUsageAggregate
-	ok, err := s.store.GetJSON(KeyAccountProviderUsage(accountScopeID, provider), &agg)
-	return agg, ok, err
+	var rollup AccountUsageRollup
+	ok, err := s.store.GetJSON(KeyAccountUsageRollup(accountScopeID, date, sessionID, provider, model), &rollup)
+	return rollup, ok, err
 }
 
-func (s *SessionStore) ListAccountProviderUsage(accountScopeID string) ([]AccountProviderUsageAggregate, error) {
+func (s *SessionStore) ListAccountUsageRollups(accountScopeID string) ([]AccountUsageRollup, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("store is not configured")
 	}
-	prefix := AccountProviderUsagePrefix(accountScopeID)
-	out := make([]AccountProviderUsageAggregate, 0, 8)
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return nil, errors.New("account_scope_id is required")
+	}
+	prefix := AccountUsageRollupPrefix(accountScopeID)
+	out := make([]AccountUsageRollup, 0, 64)
 	const iterateAll = int(^uint(0) >> 1)
 	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
-		var agg AccountProviderUsageAggregate
-		if err := json.Unmarshal(value, &agg); err != nil {
+		var rollup AccountUsageRollup
+		if err := json.Unmarshal(value, &rollup); err != nil {
 			return err
 		}
-		if agg.Provider == "" {
+		if rollup.SessionID == "" {
 			return nil
 		}
-		out = append(out, agg)
+		out = append(out, rollup)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].TotalTokens > out[j].TotalTokens
-	})
-	return out, nil
-}
-
-func (s *SessionStore) GetAccountModelUsage(accountScopeID, provider, model string) (AccountModelUsageAggregate, bool, error) {
-	if s == nil || s.store == nil {
-		return AccountModelUsageAggregate{}, false, errors.New("store is not configured")
-	}
-	var agg AccountModelUsageAggregate
-	ok, err := s.store.GetJSON(KeyAccountModelUsage(accountScopeID, provider, model), &agg)
-	return agg, ok, err
-}
-
-func (s *SessionStore) ListAccountModelUsage(accountScopeID string) ([]AccountModelUsageAggregate, error) {
-	if s == nil || s.store == nil {
-		return nil, errors.New("store is not configured")
-	}
-	prefix := AccountModelUsagePrefix(accountScopeID)
-	out := make([]AccountModelUsageAggregate, 0, 16)
-	const iterateAll = int(^uint(0) >> 1)
-	err := s.store.IteratePrefix(prefix, iterateAll, func(_ string, value []byte) error {
-		var agg AccountModelUsageAggregate
-		if err := json.Unmarshal(value, &agg); err != nil {
-			return err
-		}
-		if agg.Model == "" {
-			return nil
-		}
-		out = append(out, agg)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].TotalTokens > out[j].TotalTokens
-	})
 	return out, nil
 }
 

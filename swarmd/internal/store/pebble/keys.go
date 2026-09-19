@@ -1008,28 +1008,16 @@ func DailyUsageAccumulatorPrefix(accountScopeID string) string {
 	return fmt.Sprintf("daily_usage_accumulator/%s/", accountPart)
 }
 
-func KeyAccountProviderUsage(accountScopeID, provider string) string {
-	return fmt.Sprintf("account_provider_usage/%s/%s", keyPart(accountScopeID), keyPart(provider))
+func KeyAccountUsageRollup(accountScopeID, date, sessionID, provider, model string) string {
+	return fmt.Sprintf("account_usage_rollup/%s/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(date), keyPart(sessionID), keyPart(provider), keyPart(model))
 }
 
-func AccountProviderUsagePrefix(accountScopeID string) string {
+func AccountUsageRollupPrefix(accountScopeID string) string {
 	accountPart := keyPart(accountScopeID)
 	if accountPart == "" {
-		return "account_provider_usage/"
+		return "account_usage_rollup/"
 	}
-	return fmt.Sprintf("account_provider_usage/%s/", accountPart)
-}
-
-func KeyAccountModelUsage(accountScopeID, provider, model string) string {
-	return fmt.Sprintf("account_model_usage/%s/%s/%s", keyPart(accountScopeID), keyPart(provider), keyPart(model))
-}
-
-func AccountModelUsagePrefix(accountScopeID string) string {
-	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
-		return "account_model_usage/"
-	}
-	return fmt.Sprintf("account_model_usage/%s/", accountPart)
+	return fmt.Sprintf("account_usage_rollup/%s/", accountPart)
 }
 
 func KeySessionMediaUsage(accountScopeID, id string) string {
