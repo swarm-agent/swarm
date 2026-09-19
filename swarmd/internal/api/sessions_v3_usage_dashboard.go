@@ -566,12 +566,27 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			seenSessionIDs[sItem.ID] = struct{}{}
-			sessionList = append(sessionList, SessionUsageSessionItem{
+			sessEntry := SessionUsageSessionItem{
 				SessionID:    sItem.ID,
 				Title:        meta.title,
 				Archived:     meta.archived,
 				LastActiveAt: sItem.UpdatedAt,
-			})
+			}
+			store := s.sessions.Store()
+			if store != nil {
+				if sum, hasSum, _ := store.GetUsageSummary(sItem.ID); hasSum {
+					sessEntry.TotalTokens = sum.TotalTokens
+					sessEntry.InputTokens = sum.InputTokens
+					sessEntry.OutputTokens = sum.OutputTokens
+					sessEntry.CachedTokens = sum.CacheReadTokens
+					sessEntry.ThinkingTokens = sum.ThinkingTokens
+					sessEntry.TurnCount = sum.TurnCount
+					sessEntry.CostUSD = sum.EstimatedCostUSD
+					sessEntry.Provider = sum.Provider
+					sessEntry.Model = sum.Model
+				}
+			}
+			sessionList = append(sessionList, sessEntry)
 		}
 	}
 
