@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -362,7 +363,7 @@ func TestDurableAccountingSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get today total after reopen: %v", err)
 	}
-	if todayCost != (0.025 + 1.20) {
+	if math.Abs(todayCost-(0.025+1.20)) > 1e-6 {
 		t.Fatalf("expected today cost 1.225, got %f", todayCost)
 	}
 
