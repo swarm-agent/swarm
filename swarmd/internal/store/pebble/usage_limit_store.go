@@ -212,6 +212,7 @@ type MediaCostEstimateOptions struct {
 	Count           int
 	DurationSeconds int
 	Resolution      string
+	ImageSize       string
 	AspectRatio     string
 	IncludesAudio   bool
 	IsIteration     bool
@@ -454,7 +455,12 @@ func (s *SessionStore) EstimateMediaCostWithOptions(opts MediaCostEstimateOption
 			}
 			if conds, ok := lineMap["conditions"].(map[string]any); ok {
 				if res, ok := conds["resolution"].(string); ok && res != "" {
-					if opts.Resolution == "" || !strings.EqualFold(res, opts.Resolution) {
+					if !strings.EqualFold(res, opts.Resolution) && !strings.EqualFold(res, opts.ImageSize) {
+						continue
+					}
+				}
+				if imgSize, ok := conds["image_size"].(string); ok && imgSize != "" {
+					if !strings.EqualFold(imgSize, opts.ImageSize) && !strings.EqualFold(imgSize, opts.Resolution) {
 						continue
 					}
 				}

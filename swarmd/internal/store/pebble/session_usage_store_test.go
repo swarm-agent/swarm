@@ -717,6 +717,31 @@ func TestMediaCostEstimateSnapshotProvenance(t *testing.T) {
 	if estImgAbsentRes.PriceStatus != "unknown" || estImgAbsentRes.CostUSD != 0.0 {
 		t.Fatalf("expected imagen-res absent resolution to be unknown, got status=%s cost=%f", estImgAbsentRes.PriceStatus, estImgAbsentRes.CostUSD)
 	}
+
+	// 10. Image model with image_size condition matching
+	err = catStore.SetRecord(ModelCatalogRecord{
+		Provider:              "google",
+		Model:                 "imagen-size",
+		SourceSnapshotID:      "snap-2026-09",
+		SourceSnapshotVersion: "v1",
+		Pricing: []byte(`{"currency":"USD","billing":{"status":"verified","lines":[
+			{"billable":"image_output","unit":"image","price_usd":0.03,"conditions":{"image_size":"1K"}},
+			{"billable":"image_output","unit":"image","price_usd":0.06,"conditions":{"image_size":"2K"}}
+		]}}`),
+	})
+	if err != nil {
+		t.Fatalf("set imagen-size catalog: %v", err)
+	}
+	estImg1K := store.EstimateMediaCostWithOptions(MediaCostEstimateOptions{
+		Provider:  "google",
+		Model:     "imagen-size",
+		Kind:      "image",
+		Count:     1,
+		ImageSize: "1K",
+	})
+	if estImg1K.PriceStatus != "known" || estImg1K.CostUSD != 0.03 {
+		t.Fatalf("expected imagen-size 1K cost 0.03, got status=%s cost=%f", estImg1K.PriceStatus, estImg1K.CostUSD)
+	}
 }
 
 func TestTurnUsageBilledTokensDeltasAndUnknownPriceStatus(t *testing.T) {
@@ -748,18 +773,21 @@ func TestTurnUsageBilledTokensDeltasAndUnknownPriceStatus(t *testing.T) {
 		t.Fatalf("set session: %v", err)
 	}
 
-	// 1. Initial turn: 1000 input tokens
+	// 1. Initial turn: 1000 input tokens from request 1
 	turn1 := SessionTurnUsageSnapshot{
-		SessionID:      sessID,
-		AccountScopeID: acctID,
-		UserID:         "u1",
-		RunID:          runID,
-		Provider:       "google",
-		Model:          "unpriced-text",
-		InputTokens:    1000,
-		OutputTokens:   100,
-		TotalTokens:    1100,
-		CreatedAt:      time.Now().UnixMilli(),
+		SessionID:          sessID,
+		AccountScopeID:     acctID,
+		UserID:             "u1",
+		RunID:              runID,
+		Provider:           "google",
+		Model:              "unpriced-text",
+		InputTokens:        1000,
+		OutputTokens:       100,
+		TotalTokens:        1100,
+		BilledTokens:       1100,
+		BilledInputTokens:  1000,
+		BilledOutputTokens: 100,
+		CreatedAt:          time.Now().UnixMilli(),
 	}
 	if err := store.PutTurnUsage(turn1); err != nil {
 		t.Fatalf("put turn 1: %v", err)
@@ -785,47 +813,66 @@ func TestTurnUsageBilledTokensDeltasAndUnknownPriceStatus(t *testing.T) {
 		t.Fatalf("expected input tokens 1000 and turns 1, got tokens=%d turns=%d", rollup1.InputTokens, rollup1.Turns)
 	}
 
-	// 2. Repeat update for the same run: conversational occupancy grew from 1000 to 1500 input tokens
+	// 2. Repeat update for the same run: distinct second request takes 1500 input tokens, 200 output tokens.
+	// Conversational occupancy is 1500 input tokens.
+	// Cumulative billed input tokens = 1000 (req 1) + 1500 (req 2) = 2500.
 	turn2 := SessionTurnUsageSnapshot{
-		SessionID:      sessID,
-		AccountScopeID: acctID,
-		UserID:         "u1",
-		RunID:          runID,
-		Provider:       "google",
-		Model:          "unpriced-text",
-		InputTokens:    1500,
-		OutputTokens:   200,
-		TotalTokens:    1700,
-		CreatedAt:      time.Now().UnixMilli(),
+		SessionID:          sessID,
+		AccountScopeID:     acctID,
+		UserID:             "u1",
+		RunID:              runID,
+		Provider:           "google",
+		Model:              "unpriced-text",
+		InputTokens:        1500, // latest occupancy
+		OutputTokens:       200,  // latest response
+		TotalTokens:        1700,
+		BilledTokens:       2800, // 1100 + 1700
+		BilledInputTokens:  2500, // 1000 + 1500
+		BilledOutputTokens: 300,  // 100 + 200
+		CreatedAt:          time.Now().UnixMilli(),
 	}
 	if err := store.PutTurnUsage(turn2); err != nil {
 		t.Fatalf("put turn 2: %v", err)
+	}
+
+	readTurn2, found, err := store.GetTurnUsage(sessID, runID)
+	if err != nil || !found {
+		t.Fatalf("get turn 2: found=%v err=%v", found, err)
+	}
+	if readTurn2.InputTokens != 1500 {
+		t.Fatalf("expected occupancy input tokens 1500, got %d", readTurn2.InputTokens)
+	}
+	if readTurn2.BilledInputTokens != 2500 {
+		t.Fatalf("expected billed input tokens 2500, got %d", readTurn2.BilledInputTokens)
 	}
 
 	rollup2, found, err := store.GetAccountUsageRollup(acctID, dateStr, sessID, "google", "unpriced-text")
 	if err != nil || !found {
 		t.Fatalf("get rollup 2: found=%v err=%v", found, err)
 	}
-	// InputTokens in rollup must be 1500 (1000 initial + 500 delta), NOT 2500 (1000 + 1500)
-	if rollup2.InputTokens != 1500 {
-		t.Fatalf("expected cumulative billed input tokens 1500, got %d", rollup2.InputTokens)
+	// InputTokens in rollup must be cumulative billed input tokens 2500 (1000 req1 + 1500 req2)
+	if rollup2.InputTokens != 2500 {
+		t.Fatalf("expected cumulative billed input tokens 2500, got %d", rollup2.InputTokens)
 	}
-	// OutputTokens must be 200 (100 initial + 100 delta), NOT 300
-	if rollup2.OutputTokens != 200 {
-		t.Fatalf("expected cumulative billed output tokens 200, got %d", rollup2.OutputTokens)
+	// OutputTokens must be cumulative billed output tokens 300 (100 req1 + 200 req2)
+	if rollup2.OutputTokens != 300 {
+		t.Fatalf("expected cumulative billed output tokens 300, got %d", rollup2.OutputTokens)
+	}
+	if rollup2.TotalTokens != 2800 {
+		t.Fatalf("expected cumulative billed total tokens 2800, got %d", rollup2.TotalTokens)
 	}
 	// Turns must stay 1, not 2
 	if rollup2.Turns != 1 {
 		t.Fatalf("expected turns 1, got %d", rollup2.Turns)
 	}
 
-	// DailyAccumulator must also reflect deltas
+	// DailyAccumulator must also reflect cumulative billed components
 	acc, found, err := store.GetDailyUsageAccumulator(acctID, dateStr)
 	if err != nil || !found {
 		t.Fatalf("get daily accumulator: found=%v err=%v", found, err)
 	}
-	if acc.InputTokens != 1500 || acc.OutputTokens != 200 || acc.TurnCount != 1 {
-		t.Fatalf("daily accumulator tokens mismatch: input=%d output=%d turns=%d", acc.InputTokens, acc.OutputTokens, acc.TurnCount)
+	if acc.InputTokens != 2500 || acc.OutputTokens != 300 || acc.TotalTokens != 2800 || acc.TurnCount != 1 {
+		t.Fatalf("daily accumulator tokens mismatch: input=%d output=%d total=%d turns=%d", acc.InputTokens, acc.OutputTokens, acc.TotalTokens, acc.TurnCount)
 	}
 }
 

@@ -1252,45 +1252,36 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			ts = now
 		}
 		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
+		currTot, currIn, currOut, currCache, _, currThink := billedComponents(turnUsage)
 		costDelta := turnUsage.EstimatedCostUSD
-		tokensDelta := turnUsage.TotalTokens
-		if turnUsage.BilledTokens > 0 {
-			tokensDelta = turnUsage.BilledTokens
-		}
-		inputDelta := clampUsageTokenCount(turnUsage.InputTokens)
-		outputDelta := clampUsageTokenCount(turnUsage.OutputTokens)
-		cachedDelta := clampUsageTokenCount(turnUsage.CacheReadTokens)
-		thinkingDelta := clampUsageTokenCount(turnUsage.ThinkingTokens)
+		tokensDelta := currTot
+		inputDelta := currIn
+		outputDelta := currOut
+		cachedDelta := currCache
+		thinkingDelta := currThink
 		if hadPreviousTurnUsage {
 			costDelta = turnUsage.EstimatedCostUSD - previousTurnUsage.EstimatedCostUSD
 			if costDelta < 0 {
 				costDelta = 0
 			}
-			prevTokens := previousTurnUsage.TotalTokens
-			if previousTurnUsage.BilledTokens > 0 {
-				prevTokens = previousTurnUsage.BilledTokens
-			}
-			currTokens := turnUsage.TotalTokens
-			if turnUsage.BilledTokens > 0 {
-				currTokens = turnUsage.BilledTokens
-			}
-			tokensDelta = currTokens - prevTokens
+			prevTot, prevIn, prevOut, prevCache, _, prevThink := billedComponents(previousTurnUsage)
+			tokensDelta = currTot - prevTot
 			if tokensDelta < 0 {
 				tokensDelta = 0
 			}
-			inputDelta -= clampUsageTokenCount(previousTurnUsage.InputTokens)
+			inputDelta = currIn - prevIn
 			if inputDelta < 0 {
 				inputDelta = 0
 			}
-			outputDelta -= clampUsageTokenCount(previousTurnUsage.OutputTokens)
+			outputDelta = currOut - prevOut
 			if outputDelta < 0 {
 				outputDelta = 0
 			}
-			cachedDelta -= clampUsageTokenCount(previousTurnUsage.CacheReadTokens)
+			cachedDelta = currCache - prevCache
 			if cachedDelta < 0 {
 				cachedDelta = 0
 			}
-			thinkingDelta -= clampUsageTokenCount(previousTurnUsage.ThinkingTokens)
+			thinkingDelta = currThink - prevThink
 			if thinkingDelta < 0 {
 				thinkingDelta = 0
 			}

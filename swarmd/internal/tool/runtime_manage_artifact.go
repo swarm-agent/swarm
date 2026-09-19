@@ -1638,13 +1638,28 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 		imageModel = selectionID
 	}
 	if r.sessions != nil {
+		requestedAspectRatio := ""
+		if ar, ok := settings["aspect_ratio"].(string); ok {
+			requestedAspectRatio = ar
+		}
+		requestedImageSize := size
+		if is, ok := settings["image_size"].(string); ok && is != "" {
+			requestedImageSize = is
+		}
+		effectiveImageResolution := fmt.Sprintf("%dx%d", config.Width, config.Height)
+		if requestedImageSize != "" && (config.Width < 1 || config.Height < 1) {
+			effectiveImageResolution = requestedImageSize
+		}
+
 		estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
 			Provider:     imageProvider,
 			Model:        imageModel,
 			Kind:         "image",
 			Count:        1,
 			OutputTokens: generated.OutputTokens,
-			Resolution:   fmt.Sprintf("%dx%d", config.Width, config.Height),
+			Resolution:   effectiveImageResolution,
+			ImageSize:    requestedImageSize,
+			AspectRatio:  requestedAspectRatio,
 			IsIteration:  sourceRef != nil,
 		})
 	}

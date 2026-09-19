@@ -30,9 +30,14 @@ type SessionTurnUsageSnapshot struct {
 	ThinkingTokens       int64            `json:"thinking_tokens"`
 	CacheReadTokens      int64            `json:"cache_read_tokens"`
 	CacheWriteTokens     int64            `json:"cache_write_tokens"`
-	TotalTokens          int64            `json:"total_tokens"`
-	BilledTokens         int64            `json:"billed_tokens,omitempty"`
-	RequestedServiceTier string           `json:"requested_service_tier,omitempty"`
+	TotalTokens            int64            `json:"total_tokens"`
+	BilledTokens           int64            `json:"billed_tokens,omitempty"`
+	BilledInputTokens      int64            `json:"billed_input_tokens,omitempty"`
+	BilledOutputTokens     int64            `json:"billed_output_tokens,omitempty"`
+	BilledCacheReadTokens  int64            `json:"billed_cache_read_tokens,omitempty"`
+	BilledCacheWriteTokens int64            `json:"billed_cache_write_tokens,omitempty"`
+	BilledThinkingTokens   int64            `json:"billed_thinking_tokens,omitempty"`
+	RequestedServiceTier   string           `json:"requested_service_tier,omitempty"`
 	ServiceTier          string           `json:"service_tier,omitempty"`
 	ServiceTierStatus    string           `json:"service_tier_status,omitempty"`
 	PriceStatus          string           `json:"price_status,omitempty"`
@@ -212,6 +217,34 @@ func formatProviderDisplayName(provider string) string {
 	}
 }
 
+func billedComponents(u SessionTurnUsageSnapshot) (total, input, output, cacheRead, cacheWrite, thinking int64) {
+	total = u.TotalTokens
+	if u.BilledTokens > 0 {
+		total = u.BilledTokens
+	}
+	input = u.InputTokens
+	if u.BilledInputTokens > 0 {
+		input = u.BilledInputTokens
+	}
+	output = u.OutputTokens
+	if u.BilledOutputTokens > 0 {
+		output = u.BilledOutputTokens
+	}
+	cacheRead = u.CacheReadTokens
+	if u.BilledCacheReadTokens > 0 {
+		cacheRead = u.BilledCacheReadTokens
+	}
+	cacheWrite = u.CacheWriteTokens
+	if u.BilledCacheWriteTokens > 0 {
+		cacheWrite = u.BilledCacheWriteTokens
+	}
+	thinking = u.ThinkingTokens
+	if u.BilledThinkingTokens > 0 {
+		thinking = u.BilledThinkingTokens
+	}
+	return
+}
+
 func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 	record = sanitizeTurnUsageSnapshot(record)
 	if record.SessionID == "" {
@@ -242,45 +275,36 @@ func (s *SessionStore) PutTurnUsage(record SessionTurnUsageSnapshot) error {
 		return fmt.Errorf("read previous turn usage: %w", err)
 	}
 
+	currTot, currIn, currOut, currCache, _, currThink := billedComponents(record)
 	deltaCost := record.EstimatedCostUSD
-	deltaTokens := record.TotalTokens
-	if record.BilledTokens > 0 {
-		deltaTokens = record.BilledTokens
-	}
-	deltaInputTokens := clampUsageTokenCount(record.InputTokens)
-	deltaOutputTokens := clampUsageTokenCount(record.OutputTokens)
-	deltaCachedTokens := clampUsageTokenCount(record.CacheReadTokens)
-	deltaThinkingTokens := clampUsageTokenCount(record.ThinkingTokens)
+	deltaTokens := currTot
+	deltaInputTokens := currIn
+	deltaOutputTokens := currOut
+	deltaCachedTokens := currCache
+	deltaThinkingTokens := currThink
 	if hadPrevious {
 		deltaCost = record.EstimatedCostUSD - previous.EstimatedCostUSD
 		if deltaCost < 0 {
 			deltaCost = 0
 		}
-		prevTokens := previous.TotalTokens
-		if previous.BilledTokens > 0 {
-			prevTokens = previous.BilledTokens
-		}
-		currTokens := record.TotalTokens
-		if record.BilledTokens > 0 {
-			currTokens = record.BilledTokens
-		}
-		deltaTokens = currTokens - prevTokens
+		prevTot, prevIn, prevOut, prevCache, _, prevThink := billedComponents(previous)
+		deltaTokens = currTot - prevTot
 		if deltaTokens < 0 {
 			deltaTokens = 0
 		}
-		deltaInputTokens -= clampUsageTokenCount(previous.InputTokens)
+		deltaInputTokens = currIn - prevIn
 		if deltaInputTokens < 0 {
 			deltaInputTokens = 0
 		}
-		deltaOutputTokens -= clampUsageTokenCount(previous.OutputTokens)
+		deltaOutputTokens = currOut - prevOut
 		if deltaOutputTokens < 0 {
 			deltaOutputTokens = 0
 		}
-		deltaCachedTokens -= clampUsageTokenCount(previous.CacheReadTokens)
+		deltaCachedTokens = currCache - prevCache
 		if deltaCachedTokens < 0 {
 			deltaCachedTokens = 0
 		}
-		deltaThinkingTokens -= clampUsageTokenCount(previous.ThinkingTokens)
+		deltaThinkingTokens = currThink - prevThink
 		if deltaThinkingTokens < 0 {
 			deltaThinkingTokens = 0
 		}

@@ -1632,7 +1632,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
 	var cumulativeTurnCost float64
-	var cumulativeBilledTokens int64
+	var (
+		cumulativeBilledTokens           int64
+		cumulativeBilledInputTokens      int64
+		cumulativeBilledOutputTokens     int64
+		cumulativeBilledCacheReadTokens  int64
+		cumulativeBilledCacheWriteTokens int64
+		cumulativeBilledThinkingTokens   int64
+	)
 	var (
 		turnUsageRecord   *pebblestore.SessionTurnUsageSnapshot
 		usageSummaryState *pebblestore.SessionUsageSummary
@@ -2277,13 +2284,23 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			cumulativeTurnCost += stepCost
 			if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {
 				cumulativeBilledTokens = response.Usage.TotalTokens
+				cumulativeBilledInputTokens = response.Usage.InputTokens
+				cumulativeBilledOutputTokens = response.Usage.OutputTokens
+				cumulativeBilledCacheReadTokens = response.Usage.CacheReadTokens
+				cumulativeBilledCacheWriteTokens = response.Usage.CacheWriteTokens
+				cumulativeBilledThinkingTokens = response.Usage.ThinkingTokens
 			} else {
 				cumulativeBilledTokens += response.Usage.TotalTokens
+				cumulativeBilledInputTokens += response.Usage.InputTokens
+				cumulativeBilledOutputTokens += response.Usage.OutputTokens
+				cumulativeBilledCacheReadTokens += response.Usage.CacheReadTokens
+				cumulativeBilledCacheWriteTokens += response.Usage.CacheWriteTokens
+				cumulativeBilledThinkingTokens += response.Usage.ThinkingTokens
 			}
 			accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
 			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
 			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
-				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens)
+				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens, cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens)
 				if usageErr != nil {
 					return RunResult{}, usageErr
 				}
