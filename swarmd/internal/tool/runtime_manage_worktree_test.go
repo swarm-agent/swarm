@@ -78,6 +78,13 @@ func (s *coderLineageWorktreeService) ValidateTaskRepositoryLane(source, lane, o
 	return nil
 }
 
+func (s *coderLineageWorktreeService) ValidateSessionRepositoryLane(source, lane, owner, branch string) error {
+	if source != "/captured" || lane != "/repo" || owner != "parent-session" || branch != "agent/parent-session" {
+		return errors.New("invalid test parent lane")
+	}
+	return nil
+}
+
 func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, _, _ string) (bool, error) {
 	return false, nil
 }

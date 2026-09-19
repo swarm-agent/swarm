@@ -1571,7 +1571,7 @@ func (r *Runtime) Definitions() []Definition {
 					"owned_scope":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Regular mode wave of launches. Omit in mode=swarm. Call action='help' for guide.",
+						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Call action='help' for guide.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{

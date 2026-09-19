@@ -799,7 +799,16 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			return nil, nil, fmt.Errorf("task program contains unsupported field %q", key)
 		}
 	}
-	program := &taskProgramSpec{ID: strings.TrimSpace(mapString(raw, "id"))}
+	programID := strings.TrimSpace(mapString(raw, "id"))
+	programID = strings.ToLower(programID)
+	programID = strings.ReplaceAll(programID, " ", "_")
+	if len(programID) > 0 && programID[0] >= '0' && programID[0] <= '9' {
+		programID = "prog_" + programID
+	}
+	if programID == "" {
+		programID = "task_program"
+	}
+	program := &taskProgramSpec{ID: programID}
 	if !taskProgramIDPattern.MatchString(program.ID) {
 		return nil, nil, errors.New("task program id must match ^[a-z][a-z0-9_-]{0,63}$")
 	}
@@ -828,7 +837,13 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 				return nil, nil, fmt.Errorf("task program stages[%d] contains unsupported field %q", i, key)
 			}
 		}
-		stage := taskProgramStage{ID: strings.TrimSpace(mapString(row, "id")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence"))}
+		stageID := strings.TrimSpace(mapString(row, "id"))
+		stageID = strings.ToLower(stageID)
+		stageID = strings.ReplaceAll(stageID, " ", "_")
+		if len(stageID) > 0 && stageID[0] >= '0' && stageID[0] <= '9' {
+			stageID = "stage_" + stageID
+		}
+		stage := taskProgramStage{ID: stageID, DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence"))}
 		if !taskProgramIDPattern.MatchString(stage.ID) {
 			return nil, nil, fmt.Errorf("task program stages[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
 		}
@@ -838,6 +853,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		dependsOn, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program stages[%d] depends_on", i), false)
 		if err != nil {
 			return nil, nil, err
+		}
+		for j, dep := range dependsOn {
+			dep = strings.TrimSpace(strings.ToLower(dep))
+			dep = strings.ReplaceAll(dep, " ", "_")
+			if len(dep) > 0 && dep[0] >= '0' && dep[0] <= '9' {
+				dep = "stage_" + dep
+			}
+			dependsOn[j] = dep
 		}
 		if i > 0 && len(dependsOn) == 0 {
 			return nil, nil, fmt.Errorf("task program stages[%d] requires depends_on identifying an earlier barrier", i)
@@ -885,8 +908,17 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if agentType != "" && subagentType != "" && !strings.EqualFold(agentType, subagentType) {
 			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type conflicts with subagent_type", i)
 		}
+		jobID := strings.TrimSpace(mapString(row, "id"))
+		if jobID == "" && strings.TrimSpace(mapString(row, "stage_id")) != "" {
+			jobID = strings.TrimSpace(mapString(row, "stage_id"))
+		}
+		jobID = strings.ToLower(jobID)
+		jobID = strings.ReplaceAll(jobID, " ", "_")
+		if len(jobID) > 0 && jobID[0] >= '0' && jobID[0] <= '9' {
+			jobID = "job_" + jobID
+		}
 		job := taskProgramJob{
-			ID: strings.TrimSpace(mapString(row, "id")), StageID: strings.TrimSpace(mapString(row, "stage_id")),
+			ID: jobID, StageID: strings.TrimSpace(strings.ToLower(mapString(row, "stage_id"))),
 			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(agentType, subagentType)),
 			TargetWorkspacePath:   strings.TrimSpace(mapString(row, "workspace_path")),
 			MetaPrompt:            strings.TrimSpace(mapString(row, "meta_prompt")), AssignmentLabel: strings.TrimSpace(mapString(row, "title")),
@@ -997,6 +1029,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		dependencies, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program jobs[%d] depends_on", i), false)
 		if err != nil {
 			return nil, nil, err
+		}
+		for j, dep := range dependencies {
+			dep = strings.TrimSpace(strings.ToLower(dep))
+			dep = strings.ReplaceAll(dep, " ", "_")
+			if len(dep) > 0 && dep[0] >= '0' && dep[0] <= '9' {
+				dep = "job_" + dep
+			}
+			dependencies[j] = dep
 		}
 		for _, dependency := range dependencies {
 			dependencyIndex, exists := jobIndexes[dependency]
