@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -47,6 +48,7 @@ type Service struct {
 	principalID                      string
 	bypassPermissions                bool
 	retainToolOutputHistory          bool
+	capacity                         *executioncapacity.Manager
 
 	mu                   sync.Mutex
 	waiters              map[string][]chan pebblestore.PermissionRecord
@@ -132,7 +134,7 @@ type PendingPlanProposalEditResult struct {
 }
 
 func NewService(store *pebblestore.PermissionStore, events *pebblestore.EventLog, publish func(pebblestore.EventEnvelope)) *Service {
-	return &Service{
+	s := &Service{
 		store:                store,
 		events:               events,
 		publish:              publish,
@@ -140,6 +142,75 @@ func NewService(store *pebblestore.PermissionStore, events *pebblestore.EventLog
 		waiters:              make(map[string][]chan pebblestore.PermissionRecord),
 		permissionStateCache: make(map[string]permissionStateCacheEntry),
 	}
+	s.capacity = executioncapacity.NewManager(executioncapacity.ManagerConfig{
+		DefaultLimit: DefaultActiveExecutionLimit,
+		LimitResolver: func(accountScopeID string) int {
+			policy, err := s.CurrentPolicyForAccount(accountScopeID)
+			if err != nil {
+				return DefaultActiveExecutionLimit
+			}
+			return policy.ActiveExecutionLimit
+		},
+	})
+	return s
+}
+
+// ExecutionCapacity returns the shared account-scoped execution capacity manager.
+func (s *Service) ExecutionCapacity() *executioncapacity.Manager {
+	if s == nil {
+		return nil
+	}
+	return s.capacity
+}
+
+// SetExecutionCapacity overrides the execution capacity manager.
+func (s *Service) SetExecutionCapacity(mgr *executioncapacity.Manager) {
+	if s == nil {
+		return
+	}
+	s.capacity = mgr
+}
+
+// ExecutionCapacitySnapshot returns the atomic capacity snapshot for an account.
+func (s *Service) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
+	if s == nil || s.capacity == nil {
+		limit := DefaultActiveExecutionLimit
+		if s != nil {
+			if pol, err := s.CurrentPolicyForAccount(accountScopeID); err == nil && pol.ActiveExecutionLimit > 0 {
+				limit = pol.ActiveExecutionLimit
+			}
+		}
+		return executioncapacity.Snapshot{
+			AccountScopeID:       strings.TrimSpace(accountScopeID),
+			EffectiveLimit:       limit,
+			TotalActive:          0,
+			DeployedActive:       0,
+			Pending:              0,
+			Available:            limit,
+			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
+			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+		}
+	}
+	return s.capacity.Snapshot(accountScopeID)
+}
+
+// AdmitExecution admits an execution request through the shared capacity manager.
+func (s *Service) AdmitExecution(ctx context.Context, req executioncapacity.AcquireRequest) (executioncapacity.Lease, error) {
+	if s == nil || s.capacity == nil {
+		return nil, errors.New("permission service capacity manager is not configured")
+	}
+	return s.capacity.Admit(ctx, req)
+}
+
+// ReleaseExecution releases an execution lease through the shared capacity manager.
+func (s *Service) ReleaseExecution(lease executioncapacity.Lease) error {
+	if s == nil || s.capacity == nil {
+		if lease != nil {
+			return lease.Release()
+		}
+		return nil
+	}
+	return s.capacity.Release(lease)
 }
 
 func (s *Service) SetSessionResolver(resolver sessionLookup) {

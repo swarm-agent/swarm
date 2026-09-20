@@ -40,18 +40,50 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 	policy := state.Policy
 	if overlay != nil {
 		policy = NormalizePolicy(Policy{
-			Version:        1,
-			BashProfile:    policy.BashProfile,
-			Subagents:      policy.Subagents,
-			SessionDeploy:  policy.SessionDeploy,
-			PlanAcceptance: policy.PlanAcceptance,
-			Rules:          append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
+			Version:              1,
+			ActiveExecutionLimit: policy.ActiveExecutionLimit,
+			BashProfile:          policy.BashProfile,
+			Subagents:            policy.Subagents,
+			SessionDeploy:        policy.SessionDeploy,
+			PlanAcceptance:       policy.PlanAcceptance,
+			Rules:                append(append([]PolicyRule(nil), overlay.Rules...), policy.Rules...),
 		})
 	}
 	if state.BypassPermissions {
 		mode = policyModeWithBypass(strings.TrimSpace(mode), true)
 	}
 	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
+}
+
+func (s *Service) UpdateActiveExecutionLimitForAccount(accountScopeID string, limit int) (Policy, error) {
+	if s == nil {
+		return Policy{}, errors.New("permission service is not configured")
+	}
+	if err := ValidateActiveExecutionLimit(limit); err != nil {
+		return Policy{}, err
+	}
+	s.mu.Lock()
+	state, err := s.loadPermissionStateLocked(accountScopeID)
+	if err != nil {
+		s.mu.Unlock()
+		return Policy{}, err
+	}
+	policy := state.Policy
+	policy.ActiveExecutionLimit = limit
+	now := time.Now().UnixMilli()
+	policy.UpdatedAt = now
+	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		s.mu.Unlock()
+		return Policy{}, err
+	}
+	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	normalized := NormalizePolicy(policy)
+	s.mu.Unlock()
+
+	if s.capacity != nil {
+		s.capacity.SetLimit(accountScopeID, normalized.ActiveExecutionLimit)
+	}
+	return normalized, nil
 }
 
 func (s *Service) UpdateBashApprovalProfileForAccount(accountScopeID string, profile BashApprovalProfile) (Policy, error) {

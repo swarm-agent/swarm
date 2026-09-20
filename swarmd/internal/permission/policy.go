@@ -24,13 +24,14 @@ const (
 )
 
 type Policy struct {
-	Version        int                  `json:"version"`
-	BashProfile    BashApprovalProfile  `json:"bash_profile"`
-	Rules          []PolicyRule         `json:"rules,omitempty"`
-	Subagents      SubagentPolicy       `json:"subagents"`
-	SessionDeploy  SessionDeployPolicy  `json:"session_deploy"`
-	PlanAcceptance PlanAcceptancePolicy `json:"plan_acceptance"`
-	UpdatedAt      int64                `json:"updated_at,omitempty"`
+	Version              int                  `json:"version"`
+	ActiveExecutionLimit int                  `json:"active_execution_limit,omitempty"`
+	BashProfile          BashApprovalProfile  `json:"bash_profile"`
+	Rules                []PolicyRule         `json:"rules,omitempty"`
+	Subagents            SubagentPolicy       `json:"subagents"`
+	SessionDeploy        SessionDeployPolicy  `json:"session_deploy"`
+	PlanAcceptance       PlanAcceptancePolicy `json:"plan_acceptance"`
+	UpdatedAt            int64                `json:"updated_at,omitempty"`
 }
 
 type SubagentOrchestrationMode string
@@ -72,7 +73,21 @@ const (
 	// This is a validation safety bound, not an orchestration default. Account policy
 	// remains authoritative within it and can support substantial refactor waves.
 	MaxSubagentWaveSize = 256
+
+	DefaultActiveExecutionLimit = 100
+	MinActiveExecutionLimit     = 1
+	MaxActiveExecutionLimit     = 10000
 )
+
+func ValidateActiveExecutionLimit(limit int) error {
+	if limit < MinActiveExecutionLimit {
+		return fmt.Errorf("active execution limit must be at least %d", MinActiveExecutionLimit)
+	}
+	if limit > MaxActiveExecutionLimit {
+		return fmt.Errorf("active execution limit cannot exceed %d", MaxActiveExecutionLimit)
+	}
+	return nil
+}
 
 // SessionDeployPolicy controls only durable manage-sessions deployment. It is
 // intentionally separate from generic manage_sessions tool rules.
@@ -246,11 +261,12 @@ type BashEffectAssessment struct {
 
 func DefaultPolicy() Policy {
 	return Policy{
-		Version:        1,
-		BashProfile:    DefaultBashApprovalProfile(),
-		Subagents:      DefaultSubagentPolicy(),
-		SessionDeploy:  DefaultSessionDeployPolicy(),
-		PlanAcceptance: DefaultPlanAcceptancePolicy(),
+		Version:              1,
+		ActiveExecutionLimit: DefaultActiveExecutionLimit,
+		BashProfile:          DefaultBashApprovalProfile(),
+		Subagents:            DefaultSubagentPolicy(),
+		SessionDeploy:        DefaultSessionDeployPolicy(),
+		PlanAcceptance:       DefaultPlanAcceptancePolicy(),
 		Rules: []PolicyRule{
 			{ID: "default_deny_bash_rm_root", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /"},
 			{ID: "default_deny_bash_rm_root_glob", Kind: PolicyRuleKindPhrase, Decision: PolicyDecisionDeny, Tool: "bash", Pattern: "rm -rf /*"},
@@ -290,6 +306,11 @@ func NormalizePolicy(policy Policy) Policy {
 	}
 	if err := ValidatePlanAcceptancePolicy(policy.PlanAcceptance); err != nil {
 		policy.PlanAcceptance = DefaultPlanAcceptancePolicy()
+	}
+	if policy.ActiveExecutionLimit == 0 {
+		policy.ActiveExecutionLimit = DefaultActiveExecutionLimit
+	} else if err := ValidateActiveExecutionLimit(policy.ActiveExecutionLimit); err != nil {
+		policy.ActiveExecutionLimit = DefaultActiveExecutionLimit
 	}
 	if policy.UpdatedAt < 0 {
 		policy.UpdatedAt = 0
