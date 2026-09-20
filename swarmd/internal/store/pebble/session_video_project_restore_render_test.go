@@ -46,7 +46,7 @@ func TestCreateVideoProjectAtomicallyPersistsInitialProposalAndSurvivesReload(t 
 	htmlRef := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-anim", VariantID: "var-html", EventSeq: 5}
 	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-anim", VariantID: "var-html-2", EventSeq: 6}
 	fallback := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-still", VariantID: "var-still", EventSeq: 4}
-	plan := VideoPlanProposal{
+	unselectedPlan := VideoPlanProposal{
 		Kind: VideoPlanKindInitial,
 		Parts: []VideoPlanPart{{
 			ID:              "clip_a",
@@ -55,13 +55,11 @@ func TestCreateVideoProjectAtomicallyPersistsInitialProposalAndSurvivesReload(t 
 			Visual:          fallback,
 			VisualMediaType: "image/png",
 			AnimationCandidates: &VideoAnimationCandidateSet{
-				Status: VideoAnimationCandidateStatusAwaitingExport,
+				Status: VideoAnimationCandidateStatusAwaitingSelection,
 				Candidates: []VideoAnimationCandidate{
 					{ID: "cand-html", Source: htmlRef},
 					{ID: "cand-html-2", Source: htmlRef2},
 				},
-				SelectedCandidateID: "cand-html",
-				SelectedSource:      htmlRef,
 			},
 		}},
 	}
@@ -74,11 +72,39 @@ func TestCreateVideoProjectAtomicallyPersistsInitialProposalAndSurvivesReload(t 
 		ProjectID:      sourceProj.ID,
 		ProposalID:     "vprop-source-accepted",
 		BaseRevisionID: sourceBaseRev.ID,
-		Plan:           &plan,
+		Intent:         VideoEditProposalIntentHTMLIteration,
+		Plan:           &unselectedPlan,
 		NowUnixMs:      150,
 	})
 	if err != nil {
 		t.Fatalf("create source proposal failed: %v", err)
+	}
+
+	// Legally select candidate via V3SessionMutationSelectVideoAnimationCandidate
+	_, err = store.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:       sourceSessionID,
+		UserID:          userID,
+		AccountScopeID:  accountID,
+		ClientRequestID: "select-cand-html",
+		IdempotencyKey:  "select-cand-html",
+		PayloadHash:     "select-cand-html-hash",
+		Kind:            V3SessionMutationSelectVideoAnimationCandidate,
+		NowUnixMs:       180,
+		VideoProject: &V3VideoProjectMutation{
+			EditProposal: &VideoEditProposalSnapshot{
+				ID:             sourceProposal.ID,
+				ProjectID:      sourceProj.ID,
+				BaseRevisionID: sourceProposal.BaseRevisionID,
+			},
+			AnimationSelection: &VideoAnimationSelectionMutation{
+				PartID:              "clip_a",
+				SelectedCandidateID: "cand-html",
+				SelectedSource:      htmlRef,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("select candidate failed: %v", err)
 	}
 
 	acceptedProposal, acceptedRev, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
@@ -315,7 +341,7 @@ func TestResolveAuthoritativeVideoPlanDanglingForkRecoversViaSourceLineage(t *te
 
 	htmlRef := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-motion", VariantID: "var-orbit", EventSeq: 9}
 	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-motion", VariantID: "var-orbit-2", EventSeq: 10}
-	plan := VideoPlanProposal{
+	unselectedPlan := VideoPlanProposal{
 		Kind: VideoPlanKindInitial,
 		Parts: []VideoPlanPart{{
 			ID:              "clip_a",
@@ -324,9 +350,7 @@ func TestResolveAuthoritativeVideoPlanDanglingForkRecoversViaSourceLineage(t *te
 			Visual:          &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-still", VariantID: "var-still", EventSeq: 1},
 			VisualMediaType: "image/png",
 			AnimationCandidates: &VideoAnimationCandidateSet{
-				Status:              VideoAnimationCandidateStatusAwaitingExport,
-				SelectedCandidateID: "orbit",
-				SelectedSource:      htmlRef,
+				Status: VideoAnimationCandidateStatusAwaitingSelection,
 				Candidates: []VideoAnimationCandidate{
 					{ID: "orbit", Source: htmlRef},
 					{ID: "pulse", Source: htmlRef2},
@@ -342,11 +366,38 @@ func TestResolveAuthoritativeVideoPlanDanglingForkRecoversViaSourceLineage(t *te
 		ProjectID:      sourceProj.ID,
 		ProposalID:     "vprop-lineage-accepted",
 		BaseRevisionID: sourceBaseRev.ID,
-		Plan:           &plan,
+		Intent:         VideoEditProposalIntentHTMLIteration,
+		Plan:           &unselectedPlan,
 		NowUnixMs:      150,
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	_, err = store.ApplyV3SessionMutation(V3SessionMutationInput{
+		SessionID:       sourceSessionID,
+		UserID:          userID,
+		AccountScopeID:  accountID,
+		ClientRequestID: "select-orbit",
+		IdempotencyKey:  "select-orbit",
+		PayloadHash:     "select-orbit-hash",
+		Kind:            V3SessionMutationSelectVideoAnimationCandidate,
+		NowUnixMs:       180,
+		VideoProject: &V3VideoProjectMutation{
+			EditProposal: &VideoEditProposalSnapshot{
+				ID:             sourceProposal.ID,
+				ProjectID:      sourceProj.ID,
+				BaseRevisionID: sourceProposal.BaseRevisionID,
+			},
+			AnimationSelection: &VideoAnimationSelectionMutation{
+				PartID:              "clip_a",
+				SelectedCandidateID: "orbit",
+				SelectedSource:      htmlRef,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("select orbit candidate failed: %v", err)
 	}
 
 	acceptedProposal, acceptedRev, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
@@ -460,6 +511,7 @@ func TestResolveAuthoritativeVideoPlanImmutableSelectionWinsOverLaterProposalUpd
 		ProjectID:      proj.ID,
 		ProposalID:     "vprop-immut",
 		BaseRevisionID: baseRev.ID,
+		Intent:         VideoEditProposalIntentHTMLIteration,
 		Plan:           &unlockedPlan,
 		NowUnixMs:      150,
 	})

@@ -105,7 +105,7 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 		if input.InitialProposal.Plan == nil {
 			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("initial edit proposal requires plan")
 		}
-		if err := pebblestore.ValidateVideoPlanForIntent(input.InitialProposal.Intent, *input.InitialProposal.Plan); err != nil {
+		if err := pebblestore.ValidateVideoPlanProposal(*input.InitialProposal.Plan); err != nil {
 			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("initial edit proposal plan invalid: %w", err)
 		}
 		prop := *input.InitialProposal
@@ -1114,6 +1114,7 @@ func TestForkRevisionPreservesRenderAuthorityAndAdmitsRender(t *testing.T) {
 		SessionID:         sourceSessionID,
 		AccountScopeID:    principal.AccountScopeID,
 		UserID:            principal.UserID,
+		Intent:            pebblestore.VideoEditProposalIntentHTMLIteration,
 		Plan:              &locked,
 		WorkingRevisionID: "vrev_working",
 		Status:            pebblestore.VideoEditProposalStatusAccepted,

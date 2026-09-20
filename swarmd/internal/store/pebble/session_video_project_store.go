@@ -899,7 +899,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if ep.Plan == nil {
 				return errors.New("initial edit proposal requires plan")
 			}
-			if err := ValidateVideoPlanForIntent(ep.Intent, *ep.Plan); err != nil {
+			if err := validateVideoPlanProposal(*ep.Plan); err != nil {
 				return fmt.Errorf("initial edit proposal plan invalid: %w", err)
 			}
 			acceptedPlan, err := acceptedVideoPlanFromTimeline(r.Timeline)
@@ -1237,6 +1237,11 @@ func validateAudioTimelineClip(clip VideoTimelineClip) error {
 		return fmt.Errorf("source_audio clip %q gain must be between 0 and 2", clip.ID)
 	}
 	return nil
+}
+
+// ValidateVideoPlanProposal structurally validates a video plan proposal.
+func ValidateVideoPlanProposal(plan VideoPlanProposal) error {
+	return validateVideoPlanProposal(plan)
 }
 
 // ValidateVideoPlanForIntent validates a complete visual plan at service
@@ -1817,15 +1822,6 @@ func ResolveAuthoritativeVideoPlanDetails(
 		return AuthoritativeVideoPlanResolution{}, errors.New("video revision ownership does not match authenticated principal")
 	}
 
-	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
-	if proposalID == "" {
-		plan, err := ResolveVideoPlanRenderAuthority(revision, nil)
-		if err != nil {
-			return AuthoritativeVideoPlanResolution{}, err
-		}
-		return AuthoritativeVideoPlanResolution{Plan: plan}, nil
-	}
-
 	// 1. Final render blocked: check if this revision is the pending working cut of any proposal in its project.
 	proposals, err := reader.ListVideoEditProposals(accountScopeID, revision.SessionID, revision.ProjectID, 100)
 	if err != nil {
@@ -1833,6 +1829,15 @@ func ResolveAuthoritativeVideoPlanDetails(
 	}
 	if pending := PendingVideoEditProposalForRevision(revision, proposals); pending != nil {
 		return AuthoritativeVideoPlanResolution{}, fmt.Errorf("final render blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before rendering", revision.ID, pending.ID)
+	}
+
+	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
+	if proposalID == "" {
+		plan, err := ResolveVideoPlanRenderAuthority(revision, nil)
+		if err != nil {
+			return AuthoritativeVideoPlanResolution{}, err
+		}
+		return AuthoritativeVideoPlanResolution{Plan: plan}, nil
 	}
 
 	// 2. Look up the authority proposal in the current project.
@@ -3550,7 +3555,7 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		if input.InitialProposal.Plan == nil {
 			return VideoProjectSnapshot{}, nil, errors.New("initial edit proposal requires plan")
 		}
-		if err := ValidateVideoPlanForIntent(input.InitialProposal.Intent, *input.InitialProposal.Plan); err != nil {
+		if err := validateVideoPlanProposal(*input.InitialProposal.Plan); err != nil {
 			return VideoProjectSnapshot{}, nil, fmt.Errorf("initial edit proposal plan invalid: %w", err)
 		}
 		prop := *input.InitialProposal
