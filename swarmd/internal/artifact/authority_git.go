@@ -117,7 +117,7 @@ func (a *Authority) attachGitProjection(ctx context.Context, principal Principal
 	state, resulting := "candidate", ""
 	// Candidate/staging projection never claims an official move. The terminal
 	// mutation records the already-completed Git CAS so crash replay can reconcile.
-	if kind == pebblestore.V3SessionMutationFinalizeArtifact && (len(parents) == 0 || variant.AutoAccept) {
+	if (kind == pebblestore.V3SessionMutationFinalizeArtifact || kind == pebblestore.V3SessionMutationImportArtifact) && (len(parents) == 0 || variant.AutoAccept) {
 		state, resulting = "committed", variant.CommitOID
 	}
 	selectionCASCompleted := false

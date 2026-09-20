@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -352,6 +355,18 @@ func (s *ArtifactV3Service) Recover(ctx context.Context, owner ArtifactV3Owner, 
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
+	if receipt, receiptErr := repository.readImportReceipt(ctx, tx.ID); receiptErr == nil {
+		if receipt.Owner != owner || receipt.Mutation.Repository.ArtifactID != artifactID {
+			return ArtifactV3Projection{}, ErrArtifactV3Unauthorized
+		}
+		return s.applyImportReceipt(ctx, repository, receipt)
+	} else if !errors.Is(receiptErr, ErrArtifactV3NotFound) {
+		return ArtifactV3Projection{}, receiptErr
+	}
+	message, messageErr := repository.gitCommand(ctx, nil, "show", "-s", "--format=%B", head)
+	if messageErr != nil || strings.HasPrefix(string(message), "Import ") {
+		return ArtifactV3Projection{}, ErrArtifactV3Integrity
+	}
 	revision, err := repository.ReadRevision(ctx, head)
 	if err != nil {
 		return ArtifactV3Projection{}, err
@@ -532,7 +547,7 @@ func (s *ArtifactV3Service) ResolveSelectedSource(owner ArtifactV3Owner, artifac
 	if err != nil {
 		return ArtifactV3SelectedSource{}, err
 	}
-	if !found || (owner.SessionID != "" && repository.OwnerSessionID != owner.SessionID) {
+	if !found || repository.OwnerSessionID != owner.SessionID {
 		return ArtifactV3SelectedSource{}, ErrArtifactV3Unauthorized
 	}
 	if repository.HeadCommitOID == "" && commitOID == "" && projectionSeq == 0 {
@@ -551,10 +566,10 @@ func (s *ArtifactV3Service) ResolveSelectedSource(owner ArtifactV3Owner, artifac
 	if err != nil {
 		return ArtifactV3SelectedSource{}, err
 	}
-	if !found || (owner.SessionID != "" && revision.OwnerSessionID != owner.SessionID) || !artifactV3EvidenceReady(revision.Build, commitOID) || !artifactV3EvidenceReady(revision.Preview, commitOID) {
+	if !found || revision.OwnerSessionID != owner.SessionID || !artifactV3EvidenceReady(revision.Build, commitOID) || !artifactV3EvidenceReady(revision.Preview, commitOID) {
 		return ArtifactV3SelectedSource{}, ErrArtifactV3Integrity
 	}
-	source := ArtifactV3SelectedSource{Owner: ArtifactV3Owner{AccountScopeID: owner.AccountScopeID, UserID: owner.UserID, SessionID: repository.OwnerSessionID}, SessionID: repository.OwnerSessionID, ArtifactID: artifactID, RevisionRef: "revision-" + commitOID, CommitOID: commitOID, ProjectionSeq: repository.EventSeq, Revision: revision}
+	source := ArtifactV3SelectedSource{Owner: owner, SessionID: owner.SessionID, ArtifactID: artifactID, RevisionRef: "revision-" + commitOID, CommitOID: commitOID, ProjectionSeq: repository.EventSeq, Revision: revision}
 	candidates, err := s.sessions.ListArtifactV3CandidateProjections(owner.AccountScopeID, owner.UserID, artifactID)
 	if err != nil {
 		return ArtifactV3SelectedSource{}, err
@@ -618,13 +633,11 @@ type ArtifactV3ImportInput struct {
 	SourceCandidateID    string                             `json:"source_candidate_id,omitempty"`
 	SourceReference      *SessionArtifactSelectionReference `json:"source_reference,omitempty"`
 
-	DestinationOwner      ArtifactV3Owner               `json:"destination_owner"`
-	DestinationArtifactID string                        `json:"destination_artifact_id"`
-	TransactionID         string                        `json:"transaction_id"`
-	Message               string                        `json:"message,omitempty"`
-	Build                 *ArtifactV3EvidenceProjection `json:"build,omitempty"`
-	Preview               *ArtifactV3EvidenceProjection `json:"preview,omitempty"`
-	NowUnixMs             int64                         `json:"now_unix_ms,omitempty"`
+	DestinationOwner      ArtifactV3Owner `json:"destination_owner"`
+	DestinationArtifactID string          `json:"destination_artifact_id"`
+	TransactionID         string          `json:"transaction_id"`
+	Message               string          `json:"message,omitempty"`
+	NowUnixMs             int64           `json:"now_unix_ms,omitempty"`
 }
 
 // ResolveRetainedSource resolves an exact ready head, historical revision, or candidate
@@ -651,7 +664,7 @@ func (s *ArtifactV3Service) ResolveRetainedSource(accountScopeID, userID, source
 	if sourceSessionID != "" && repository.OwnerSessionID != sourceSessionID {
 		return ArtifactV3SelectedSource{}, ErrArtifactV3Unauthorized
 	}
-	session, ok, err := s.sessions.GetSession(repository.OwnerSessionID)
+	session, ok, err := s.sessions.GetRetainedArtifactSourceSession(repository.OwnerSessionID)
 	if err != nil {
 		return ArtifactV3SelectedSource{}, err
 	}
@@ -683,27 +696,19 @@ func (s *ArtifactV3Service) ResolveRetainedSource(accountScopeID, userID, source
 		ProjectionSeq: repository.EventSeq,
 		Revision:      revision,
 	}
-	candidates, err := s.sessions.ListArtifactV3CandidateProjections(accountScopeID, userID, artifactID)
+	// Exact version reads do not enumerate sibling slots. Use the bounded catalog
+	// for candidate discovery. projectionSeq is advisory discovery evidence, not
+	// a mutable-head CAS; historical references remain valid after head changes.
+	git, err := s.openRetained(context.Background(), source.Owner, artifactID)
 	if err != nil {
 		return ArtifactV3SelectedSource{}, err
 	}
-	seen := map[string]bool{}
-	for _, candidate := range candidates {
-		if candidate.CandidateRef == "refs/heads/artifact" {
-			continue
-		}
-		turn, found, err := s.sessions.GetArtifactV3Turn(accountScopeID, userID, artifactID, candidate.TurnID)
-		if err != nil || !found {
-			return ArtifactV3SelectedSource{}, ErrArtifactV3Integrity
-		}
-		if len(source.Candidates) >= 50 {
-			break
-		}
-		source.Candidates = append(source.Candidates, candidate)
-		if !seen[turn.TurnID] {
-			source.Turns = append(source.Turns, turn)
-			seen[turn.TurnID] = true
-		}
+	actual, err := git.ReadRevision(context.Background(), commitOID)
+	if err != nil {
+		return ArtifactV3SelectedSource{}, err
+	}
+	if actual.TreeOID != revision.TreeOID || actual.ManifestBlobOID != revision.ManifestBlobOID {
+		return ArtifactV3SelectedSource{}, ErrArtifactV3Integrity
 	}
 	return source, nil
 }
@@ -713,7 +718,7 @@ func (s *ArtifactV3Service) SearchCatalog(ctx context.Context, accountScopeID, u
 	if s == nil || s.sessions == nil {
 		return ArtifactV3CatalogPage{}, errors.New("artifact v3 service requires session store")
 	}
-	return s.sessions.SearchArtifactV3Catalog(accountScopeID, userID, options)
+	return s.sessions.searchArtifactV3Catalog(ctx, accountScopeID, userID, options)
 }
 
 // Import imports an exact version (head, historical revision, or ready candidate) from a retained
@@ -729,6 +734,14 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 	}
 
 	if input.SourceReference != nil {
+		ref := input.SourceReference
+		if ref.CollectionID != "" || ref.VariantID != "" || ref.EventSeq != 0 || ref.PartID != "" || ref.ArtifactID == "" || ref.SessionID == "" || !strings.HasPrefix(ref.RevisionRef, "revision-") {
+			return ArtifactV3Projection{}, ErrArtifactV3Invalid
+		}
+		commit := strings.TrimPrefix(ref.RevisionRef, "revision-")
+		if (ref.CommitOID != "" && ref.CommitOID != commit) || (input.SourceSessionID != "" && input.SourceSessionID != ref.SessionID) || (input.SourceArtifactID != "" && input.SourceArtifactID != ref.ArtifactID) || (input.SourceCommitOID != "" && input.SourceCommitOID != commit) {
+			return ArtifactV3Projection{}, ErrArtifactV3Invalid
+		}
 		if input.SourceSessionID == "" {
 			input.SourceSessionID = input.SourceReference.SessionID
 		}
@@ -766,7 +779,7 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 	}
 
 	// Recheck source session
-	srcSession, ok, err := s.sessions.GetSession(srcSessionID)
+	srcSession, ok, err := s.sessions.GetRetainedArtifactSourceSession(srcSessionID)
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
@@ -792,30 +805,8 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 		return ArtifactV3Projection{}, ErrArtifactV3NotFound
 	}
 
-	// Destination existence & idempotency check
-	existingRepo, existedBefore, existenceErr := s.sessions.GetArtifactV3Repository(destOwner.AccountScopeID, destOwner.UserID, input.DestinationArtifactID)
-	if existenceErr != nil {
-		return ArtifactV3Projection{}, ErrArtifactV3Unauthorized
-	}
-	if existedBefore && existingRepo.OwnerSessionID != destOwner.SessionID {
-		return ArtifactV3Projection{}, ErrArtifactV3Unauthorized
-	}
-	if existedBefore && existingRepo.HeadCommitOID != "" {
-		dstGit, openErr := s.open(ctx, destOwner, input.DestinationArtifactID)
-		if openErr != nil {
-			return ArtifactV3Projection{}, openErr
-		}
-		tx, txErr := dstGit.Transaction(ctx, input.TransactionID)
-		if txErr == nil && tx.CommitOID == existingRepo.HeadCommitOID {
-			projected, ok, readErr := s.sessions.GetArtifactV3Revision(destOwner.AccountScopeID, destOwner.UserID, input.DestinationArtifactID, existingRepo.HeadCommitOID)
-			if readErr == nil && ok && artifactV3EvidenceReady(projected.Build, existingRepo.HeadCommitOID) && artifactV3EvidenceReady(projected.Preview, existingRepo.HeadCommitOID) {
-				turnID, candidateID := "turn-"+input.TransactionID, "candidate-"+input.TransactionID
-				turn, _, _ := s.sessions.GetArtifactV3Turn(destOwner.AccountScopeID, destOwner.UserID, input.DestinationArtifactID, turnID)
-				candidate, _, _ := s.sessions.GetArtifactV3Candidate(destOwner.AccountScopeID, destOwner.UserID, input.DestinationArtifactID, turnID, candidateID)
-				return ArtifactV3Projection{Repository: &existingRepo, Revision: &projected, Turn: &turn, Candidate: &candidate}, nil
-			}
-		}
-		return ArtifactV3Projection{}, ErrArtifactV3Conflict
+	if input.SourceCommitOID == "" || (input.SourceCandidateID == "") != (input.SourceTurnID == "") {
+		return ArtifactV3Projection{}, ErrArtifactV3Invalid
 	}
 
 	// Resolve exact source commit and ready evidence
@@ -836,6 +827,9 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 		if !artifactV3EvidenceReady(candidate.Build, candidate.CommitOID) || !artifactV3EvidenceReady(candidate.Preview, candidate.CommitOID) {
 			return ArtifactV3Projection{}, ErrArtifactV3Integrity
 		}
+		if candidate.CommitOID != input.SourceCommitOID {
+			return ArtifactV3Projection{}, ErrArtifactV3Invalid
+		}
 		sourceCommitOID = candidate.CommitOID
 		sourceBuild = candidate.Build
 		sourcePreview = candidate.Preview
@@ -849,19 +843,7 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 			return ArtifactV3Projection{}, revErr
 		}
 		if !revOK || revision.OwnerSessionID != srcSessionID {
-			candidates, _ := s.sessions.ListArtifactV3CandidateProjections(srcAccount, srcUser, srcArtifactID)
-			foundCand := false
-			for _, c := range candidates {
-				if c.CommitOID == sourceCommitOID && (c.Status == "ready" || c.Status == "selected") && artifactV3EvidenceReady(c.Build, sourceCommitOID) && artifactV3EvidenceReady(c.Preview, sourceCommitOID) {
-					sourceBuild = c.Build
-					sourcePreview = c.Preview
-					foundCand = true
-					break
-				}
-			}
-			if !foundCand {
-				return ArtifactV3Projection{}, ErrArtifactV3NotFound
-			}
+			return ArtifactV3Projection{}, ErrArtifactV3NotFound
 		} else {
 			if !artifactV3EvidenceReady(revision.Build, sourceCommitOID) || !artifactV3EvidenceReady(revision.Preview, sourceCommitOID) {
 				return ArtifactV3Projection{}, ErrArtifactV3Integrity
@@ -869,21 +851,10 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 			sourceBuild = revision.Build
 			sourcePreview = revision.Preview
 		}
-	} else {
-		if srcRepo.HeadCommitOID == "" {
-			return ArtifactV3Projection{}, fmt.Errorf("%w: artifact_v3_unpublished: source artifact has no selected head", ErrArtifactV3Conflict)
-		}
-		sourceCommitOID = srcRepo.HeadCommitOID
-		revision, revOK, revErr := s.sessions.GetArtifactV3Revision(srcAccount, srcUser, srcArtifactID, sourceCommitOID)
-		if revErr != nil || !revOK || revision.OwnerSessionID != srcSessionID || !artifactV3EvidenceReady(revision.Build, sourceCommitOID) || !artifactV3EvidenceReady(revision.Preview, sourceCommitOID) {
-			return ArtifactV3Projection{}, ErrArtifactV3Integrity
-		}
-		sourceBuild = revision.Build
-		sourcePreview = revision.Preview
 	}
 
 	// Open source repository and read project tree
-	srcGit, err := s.open(ctx, ArtifactV3Owner{AccountScopeID: srcAccount, UserID: srcUser, SessionID: srcSessionID}, srcArtifactID)
+	srcGit, err := s.openRetained(ctx, ArtifactV3Owner{AccountScopeID: srcAccount, UserID: srcUser, SessionID: srcSessionID}, srcArtifactID)
 	if err != nil {
 		return ArtifactV3Projection{}, err
 	}
@@ -892,30 +863,21 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 		return ArtifactV3Projection{}, err
 	}
 
-	// Prepare destination evidence
-	var destBuild, destPreview ArtifactV3EvidenceProjection
-	if input.Build != nil && input.Preview != nil {
-		if err := validateArtifactV3SceneEvidence(project, *input.Preview, s.limits); err != nil {
-			return ArtifactV3Projection{}, err
-		}
-		destBuild = *input.Build
-		destPreview = *input.Preview
-	} else {
-		destBuild = ArtifactV3EvidenceProjection{
-			Status:       "succeeded",
-			DigestSHA256: sourceBuild.DigestSHA256,
-			Reference:    fmt.Sprintf("imported-build-%s-%s", srcArtifactID, sourceCommitOID[:12]),
-		}
-		destPreview = ArtifactV3EvidenceProjection{
-			Status:       "succeeded",
-			DigestSHA256: sourcePreview.DigestSHA256,
-			Reference:    fmt.Sprintf("imported-preview-%s-%s", srcArtifactID, sourceCommitOID[:12]),
-			Scenes:       append([]ArtifactV3SceneEvidence(nil), sourcePreview.Scenes...),
-		}
-		if err := validateArtifactV3SceneEvidence(project, destPreview, s.limits); err != nil {
-			return ArtifactV3Projection{}, err
-		}
+	if err := validateArtifactV3SceneEvidence(project, sourcePreview, s.limits); err != nil {
+		return ArtifactV3Projection{}, err
 	}
+	sourceRevision, err := srcGit.ReadRevision(ctx, sourceCommitOID)
+	if err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	projectedSource, found, err := s.sessions.GetArtifactV3Revision(srcAccount, srcUser, srcArtifactID, sourceCommitOID)
+	if err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	if !found || projectedSource.TreeOID != sourceRevision.TreeOID || projectedSource.ManifestBlobOID != sourceRevision.ManifestBlobOID {
+		return ArtifactV3Projection{}, ErrArtifactV3Integrity
+	}
+	destBuild, destPreview := sourceBuild, sourcePreview
 
 	// Open destination repository
 	dstGit, err := s.open(ctx, destOwner, input.DestinationArtifactID)
@@ -928,13 +890,45 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 		message = fmt.Sprintf("Import from artifact %s revision %s", srcArtifactID, sourceCommitOID[:12])
 	}
 
-	revision, err := dstGit.Genesis(ctx, ArtifactV3GenesisRequest{
-		TransactionID: input.TransactionID,
-		Project:       project,
-		Message:       message,
-	})
+	fingerprintInput := input
+	fingerprintInput.NowUnixMs = 0
+	fingerprintInput.SourceReference = nil
+	fingerprintInput.SourceAccountScopeID, fingerprintInput.SourceUserID = srcAccount, srcUser
+	fingerprintBytes, err := json.Marshal(fingerprintInput)
 	if err != nil {
 		return ArtifactV3Projection{}, err
+	}
+	fingerprintSum := sha256.Sum256(fingerprintBytes)
+	fingerprint := hex.EncodeToString(fingerprintSum[:])
+	if receipt, err := dstGit.readImportReceipt(ctx, input.TransactionID); err == nil {
+		if receipt.Fingerprint != fingerprint {
+			return ArtifactV3Projection{}, ErrArtifactV3TxReuse
+		}
+		return s.applyImportReceipt(ctx, dstGit, receipt)
+	} else if !errors.Is(err, ErrArtifactV3NotFound) {
+		return ArtifactV3Projection{}, err
+	}
+	if existing, exists, err := s.sessions.GetArtifactV3Repository(destOwner.AccountScopeID, destOwner.UserID, input.DestinationArtifactID); err != nil {
+		return ArtifactV3Projection{}, err
+	} else if exists {
+		_ = existing
+		return ArtifactV3Projection{}, ErrArtifactV3Conflict
+	}
+	if _, err := dstGit.Head(ctx); err == nil {
+		return ArtifactV3Projection{}, ErrArtifactV3Conflict
+	} else if !errors.Is(err, ErrArtifactV3NotFound) {
+		return ArtifactV3Projection{}, err
+	}
+	commit, err := dstGit.commitProject(ctx, project, nil, "Import "+fingerprint)
+	if err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	revision, err := dstGit.ReadRevision(ctx, commit)
+	if err != nil {
+		return ArtifactV3Projection{}, err
+	}
+	if revision.TreeOID != sourceRevision.TreeOID {
+		return ArtifactV3Projection{}, ErrArtifactV3Integrity
 	}
 
 	now := input.NowUnixMs
@@ -942,8 +936,14 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 		now = time.Now().UnixMilli()
 	}
 
-	destBuild.CommitOID = revision.CommitOID
-	destPreview.CommitOID = revision.CommitOID
+	provenance := &ArtifactV3EvidenceSource{Owner: ArtifactV3Owner{AccountScopeID: srcAccount, UserID: srcUser, SessionID: srcSessionID}, ArtifactID: srcArtifactID, CommitOID: sourceCommitOID, TreeOID: sourceRevision.TreeOID}
+	if destBuild.InheritedFrom == nil {
+		destBuild.InheritedFrom = provenance
+	}
+	if destPreview.InheritedFrom == nil {
+		destPreview.InheritedFrom = provenance
+	}
+	destBuild.CommitOID, destPreview.CommitOID = revision.CommitOID, revision.CommitOID
 
 	projectedRevision, err := s.revisionProjection(ctx, dstGit, destOwner, input.DestinationArtifactID, revision, "", destBuild, destPreview, now)
 	if err != nil {
@@ -991,15 +991,48 @@ func (s *ArtifactV3Service) Import(ctx context.Context, input ArtifactV3ImportIn
 		Preview:        destPreview,
 	}
 
-	applied, err := s.apply(destOwner, input.TransactionID, V3SessionMutationArtifactV3Imported,
-		ArtifactV3Mutation{
-			Repository: &repositoryProjection,
-			Revision:   &projectedRevision,
-			Turn:       &turn,
-			Candidate:  &candidate,
-		}, input.NowUnixMs)
-	if err != nil {
+	receipt := artifactV3ImportReceipt{Owner: destOwner, TransactionID: input.TransactionID, Fingerprint: fingerprint, Now: now, Mutation: ArtifactV3Mutation{Repository: &repositoryProjection, Revision: &projectedRevision, Turn: &turn, Candidate: &candidate}}
+	if err := dstGit.commitImportReceipt(ctx, receipt); err != nil {
+		if existing, readErr := dstGit.readImportReceipt(ctx, input.TransactionID); readErr == nil && existing.Fingerprint == fingerprint {
+			return s.applyImportReceipt(ctx, dstGit, existing)
+		}
 		return ArtifactV3Projection{}, err
 	}
-	return applied, nil
+	return s.applyImportReceipt(ctx, dstGit, receipt)
+}
+
+// openRetained is read-only: a missing source must never initialize a replacement
+// repository, alter permissions, or bind a new owner file.
+func (s *ArtifactV3Service) openRetained(ctx context.Context, owner ArtifactV3Owner, id string) (*ArtifactV3Repository, error) {
+	if !artifactV3IDPattern.MatchString(id) || invalidArtifactV3Owner(owner) {
+		return nil, ErrArtifactV3Invalid
+	}
+	path := filepath.Join(s.root, id+".git")
+	for _, p := range []string{s.root, path, filepath.Join(path, "swarm-owner.json")} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, ErrArtifactV3NotFound
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (p != filepath.Join(path, "swarm-owner.json") && !info.IsDir()) || (p == filepath.Join(path, "swarm-owner.json") && (!info.Mode().IsRegular() || info.Size() > 16384)) {
+			return nil, ErrArtifactV3Integrity
+		}
+	}
+	file, err := os.Open(filepath.Join(path, "swarm-owner.json"))
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, 16385))
+	if err != nil || len(raw) > 16384 {
+		return nil, ErrArtifactV3Integrity
+	}
+	var stored ArtifactV3Owner
+	if json.Unmarshal(raw, &stored) != nil || stored != owner {
+		return nil, ErrArtifactV3Unauthorized
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return nil, err
+	}
+	return &ArtifactV3Repository{root: s.root, path: path, hooks: filepath.Join(s.root, ".empty-hooks"), git: git, id: id, owner: owner, limits: s.limits}, nil
 }

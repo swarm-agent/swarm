@@ -1,28 +1,31 @@
 package pebblestore
 
 import (
+	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
 )
 
 const (
-	ArtifactV3CatalogDefaultLimit  = 50
-	ArtifactV3CatalogMaxLimit      = 100
-	artifactV3CatalogCursorVersion = 1
+	ArtifactV3CatalogDefaultLimit = 50
+	ArtifactV3CatalogMaxLimit     = 100
+	artifactV3CatalogScanBudget   = 256
+	artifactV3CatalogByteBudget   = 8 << 20
 )
 
-// ArtifactV3CatalogOptions specifies bounded search filters for native Artifact V3 library discovery.
+// ArtifactV3CatalogOptions filters retained immutable versions. Pagination is in
+// repository/record key order, not mutable selection order. A scan-budget page
+// may be empty and still carry NextCursor; callers must continue that cursor.
 type ArtifactV3CatalogOptions struct {
 	Query         string `json:"query,omitempty"`
-	Status        string `json:"status,omitempty"`      // "ready", "selected"
-	MediaType     string `json:"media_type,omitempty"`  // "text/html"
-	SourceKind    string `json:"source_kind,omitempty"` // "head", "candidate", "historical_revision"
+	Status        string `json:"status,omitempty"`
+	MediaType     string `json:"media_type,omitempty"`
+	SourceKind    string `json:"source_kind,omitempty"`
 	SessionID     string `json:"session_id,omitempty"`
 	ArtifactID    string `json:"artifact_id,omitempty"`
 	CreatedAfter  int64  `json:"created_after,omitempty"`
@@ -31,7 +34,6 @@ type ArtifactV3CatalogOptions struct {
 	Cursor        string `json:"cursor,omitempty"`
 }
 
-// ArtifactV3CatalogItem describes one discoverable native version (head, historical revision, or ready candidate).
 type ArtifactV3CatalogItem struct {
 	ArtifactID  string                            `json:"artifact_id"`
 	SessionID   string                            `json:"session_id"`
@@ -39,8 +41,8 @@ type ArtifactV3CatalogItem struct {
 	RevisionRef string                            `json:"revision_ref"`
 	TurnID      string                            `json:"turn_id,omitempty"`
 	CandidateID string                            `json:"candidate_id,omitempty"`
-	SourceKind  string                            `json:"source_kind"` // "head", "candidate", "historical_revision"
-	Status      string                            `json:"status"`      // "ready", "selected"
+	SourceKind  string                            `json:"source_kind"`
+	Status      string                            `json:"status"`
 	Intent      string                            `json:"intent,omitempty"`
 	Entrypoint  string                            `json:"entrypoint,omitempty"`
 	MediaType   string                            `json:"media_type,omitempty"`
@@ -54,7 +56,6 @@ type ArtifactV3CatalogItem struct {
 	Lineage     *ArtifactV3Lineage                `json:"lineage,omitempty"`
 }
 
-// ArtifactV3CatalogPage is a paginated collection of native Artifact V3 items.
 type ArtifactV3CatalogPage struct {
 	Items      []ArtifactV3CatalogItem `json:"items"`
 	NextCursor string                  `json:"next_cursor,omitempty"`
@@ -62,403 +63,266 @@ type ArtifactV3CatalogPage struct {
 }
 
 type artifactV3CatalogCursor struct {
-	Version        int    `json:"v"`
-	SnapshotAt     int64  `json:"s"`
-	LastCreatedAt  int64  `json:"t"`
-	LastSessionID  string `json:"sid"`
-	LastArtifactID string `json:"aid"`
-	LastCommitOID  string `json:"cid"`
-	LastCandidate  string `json:"can"`
-	Filter         string `json:"f"`
+	Version    int    `json:"v"`
+	Filter     string `json:"f"`
+	Repository string `json:"r,omitempty"`
+	Phase      int    `json:"p"`
+	After      string `json:"a,omitempty"`
 }
 
-// SearchArtifactV3Catalog traverses native artifacts owned by the authenticated account and user
-// across retained sessions. It includes selected heads, historical ready revisions, and ready
-// unselected turn/swarm iteration candidates.
-func (s *SessionStore) SearchArtifactV3Catalog(accountScopeID, userID string, options ArtifactV3CatalogOptions) (ArtifactV3CatalogPage, error) {
-	if s == nil || s.store == nil {
-		return ArtifactV3CatalogPage{}, errors.New("session store is not configured")
-	}
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	userID = strings.TrimSpace(userID)
-	if accountScopeID == "" || userID == "" {
-		return ArtifactV3CatalogPage{}, errors.New("artifact v3 catalog account and user ownership are required")
-	}
+func (s *SessionStore) SearchArtifactV3Catalog(account, user string, options ArtifactV3CatalogOptions) (ArtifactV3CatalogPage, error) {
+	return s.searchArtifactV3Catalog(context.Background(), account, user, options)
+}
 
-	options.Query = strings.ToLower(strings.TrimSpace(options.Query))
-	options.Status = strings.ToLower(strings.TrimSpace(options.Status))
-	options.SourceKind = strings.ToLower(strings.TrimSpace(options.SourceKind))
-	options.MediaType = canonicalArtifactCatalogMediaType(options.MediaType)
-	options.SessionID = strings.TrimSpace(options.SessionID)
-	options.ArtifactID = strings.TrimSpace(options.ArtifactID)
-
-	if options.CreatedAfter < 0 || options.CreatedBefore < 0 || (options.CreatedAfter != 0 && options.CreatedBefore != 0 && options.CreatedAfter > options.CreatedBefore) {
-		return ArtifactV3CatalogPage{}, errors.New("artifact v3 catalog date bounds are invalid")
+func (s *SessionStore) searchArtifactV3Catalog(ctx context.Context, account, user string, o ArtifactV3CatalogOptions) (ArtifactV3CatalogPage, error) {
+	page := ArtifactV3CatalogPage{Items: []ArtifactV3CatalogItem{}}
+	if s == nil || s.store == nil || strings.TrimSpace(account) == "" || strings.TrimSpace(user) == "" {
+		return page, ErrArtifactV3Unauthorized
 	}
-	if options.Status != "" && options.Status != "ready" && options.Status != "selected" {
-		return ArtifactV3CatalogPage{}, errors.New("artifact v3 catalog status is invalid")
+	o.Query = strings.ToLower(strings.TrimSpace(o.Query))
+	o.Status = strings.ToLower(strings.TrimSpace(o.Status))
+	o.SourceKind = strings.ToLower(strings.TrimSpace(o.SourceKind))
+	o.MediaType = canonicalArtifactCatalogMediaType(o.MediaType)
+	o.SessionID, o.ArtifactID = strings.TrimSpace(o.SessionID), strings.TrimSpace(o.ArtifactID)
+	if len(o.Query) > 1024 || len(o.Cursor) > 8192 || len(o.SessionID) > 256 || len(o.ArtifactID) > 256 || len(o.MediaType) > 256 || o.CreatedAfter < 0 || o.CreatedBefore < 0 || (o.CreatedBefore != 0 && o.CreatedAfter > o.CreatedBefore) {
+		return page, ErrArtifactV3Invalid
 	}
-	if options.SourceKind != "" && options.SourceKind != "head" && options.SourceKind != "candidate" && options.SourceKind != "historical_revision" {
-		return ArtifactV3CatalogPage{}, errors.New("artifact v3 catalog source_kind is invalid")
+	if o.Status != "" && o.Status != "ready" && o.Status != "selected" {
+		return page, ErrArtifactV3Invalid
 	}
-	if options.Limit <= 0 {
-		options.Limit = ArtifactV3CatalogDefaultLimit
+	if o.SourceKind != "" && o.SourceKind != "head" && o.SourceKind != "candidate" && o.SourceKind != "historical_revision" {
+		return page, ErrArtifactV3Invalid
 	}
-	if options.Limit > ArtifactV3CatalogMaxLimit {
-		options.Limit = ArtifactV3CatalogMaxLimit
+	if o.Limit <= 0 {
+		o.Limit = ArtifactV3CatalogDefaultLimit
 	}
-
-	filter := artifactV3CatalogFilterIdentity(options)
-	cursor, err := decodeArtifactV3CatalogCursor(options.Cursor, filter)
-	if err != nil {
-		return ArtifactV3CatalogPage{}, err
+	if o.Limit > ArtifactV3CatalogMaxLimit {
+		o.Limit = ArtifactV3CatalogMaxLimit
 	}
-
-	// Gather all sessions owned by accountScopeID and userID.
-	const iterateAll = int(^uint(0) >> 1)
-	ownedSessions := make(map[string]bool)
-	if err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
-		sessionID := strings.TrimSpace(string(value))
-		if sessionID == "" {
-			return nil
-		}
-		session, ok, err := s.GetSession(sessionID)
+	filterBytes, _ := json.Marshal([]any{account, user, o.Query, o.Status, o.SourceKind, o.MediaType, o.SessionID, o.ArtifactID, o.CreatedAfter, o.CreatedBefore})
+	digest := sha256.Sum256(filterBytes)
+	c := artifactV3CatalogCursor{Version: 1, Filter: hex.EncodeToString(digest[:])}
+	if o.Cursor != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(o.Cursor)
 		if err != nil {
-			return err
+			return page, ErrArtifactV3Invalid
 		}
-		if !ok || strings.TrimSpace(session.AccountScopeID) != accountScopeID || strings.TrimSpace(session.UserID) != userID {
-			return nil
+		var decoded artifactV3CatalogCursor
+		if json.Unmarshal(raw, &decoded) != nil || decoded.Version != 1 || decoded.Filter != c.Filter || decoded.Phase < 0 || decoded.Phase > 3 || decoded.Repository == "" {
+			return page, ErrArtifactV3Invalid
 		}
-		ownedSessions[session.ID] = true
-		return nil
-	}); err != nil {
-		return ArtifactV3CatalogPage{}, err
+		c = decoded
 	}
-
-	if options.SessionID != "" && !ownedSessions[options.SessionID] {
-		return ArtifactV3CatalogPage{}, nil
+	prefix := KeyArtifactV3RepositoryPrefix(account)
+	if c.Repository != "" && !strings.HasPrefix(c.Repository, prefix) {
+		return page, ErrArtifactV3Invalid
 	}
-
-	prefix := KeyArtifactV3RepositoryPrefix(accountScopeID)
-	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	repos, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
 	if err != nil {
-		return ArtifactV3CatalogPage{}, err
+		return page, err
 	}
-	defer iter.Close()
-
-	items := make([]ArtifactV3CatalogItem, 0)
-	for iter.First(); iter.Valid(); iter.Next() {
+	defer repos.Close()
+	more := func() (ArtifactV3CatalogPage, error) {
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return page, err
+		}
+		page.HasMore, page.NextCursor = true, base64.RawURLEncoding.EncodeToString(raw)
+		return page, nil
+	}
+	budget := artifactV3CatalogScanBudget
+	byteBudget := artifactV3CatalogByteBudget
+	valid := repos.First()
+	if c.Repository != "" {
+		valid = repos.SeekGE([]byte(c.Repository))
+	}
+	for ; valid; valid = repos.Next() {
+		if err := ctx.Err(); err != nil {
+			return page, err
+		}
+		key := string(repos.Key())
+		if c.Repository != key {
+			c.Repository, c.Phase, c.After = key, 0, ""
+		}
+		if c.Phase == 3 {
+			continue
+		}
+		if budget == 0 {
+			return more()
+		}
+		if len(repos.Value()) > artifactV3CatalogByteBudget {
+			return page, ErrArtifactV3Quota
+		}
+		if len(repos.Value()) > byteBudget {
+			return more()
+		}
+		byteBudget -= len(repos.Value())
+		budget--
 		var repo ArtifactV3RepositoryProjection
-		if err := json.Unmarshal(iter.Value(), &repo); err != nil {
-			return ArtifactV3CatalogPage{}, err
+		if err := json.Unmarshal(repos.Value(), &repo); err != nil {
+			return page, err
 		}
-		if repo.AccountScopeID != accountScopeID || repo.UserID != userID || !ownedSessions[repo.OwnerSessionID] {
+		if repo.AccountScopeID != account || repo.UserID != user || (o.SessionID != "" && repo.OwnerSessionID != o.SessionID) || (o.ArtifactID != "" && repo.ArtifactID != o.ArtifactID) {
+			c.Phase = 3
 			continue
 		}
-		if options.SessionID != "" && repo.OwnerSessionID != options.SessionID {
-			continue
-		}
-		if options.ArtifactID != "" && repo.ArtifactID != options.ArtifactID {
-			continue
-		}
-
-		// Recheck session row immediately
-		owned, ok, err := s.GetSession(repo.OwnerSessionID)
+		session, ok, err := s.GetRetainedArtifactSourceSession(repo.OwnerSessionID)
 		if err != nil {
-			return ArtifactV3CatalogPage{}, err
+			return page, err
 		}
-		if !ok || strings.TrimSpace(owned.AccountScopeID) != accountScopeID || strings.TrimSpace(owned.UserID) != userID {
+		if !ok || session.AccountScopeID != account || session.UserID != user {
+			c.Phase = 3
 			continue
 		}
-
-		// 1. Selected Head revision
-		if repo.HeadCommitOID != "" {
-			rev, ok, err := s.GetArtifactV3Revision(accountScopeID, userID, repo.ArtifactID, repo.HeadCommitOID)
-			if err == nil && ok && rev.OwnerSessionID == repo.OwnerSessionID &&
-				artifactV3EvidenceReady(rev.Build, repo.HeadCommitOID) && artifactV3EvidenceReady(rev.Preview, repo.HeadCommitOID) {
-				headItem := ArtifactV3CatalogItem{
-					ArtifactID:  repo.ArtifactID,
-					SessionID:   repo.OwnerSessionID,
-					CommitOID:   repo.HeadCommitOID,
-					RevisionRef: "revision-" + repo.HeadCommitOID,
-					SourceKind:  "head",
-					Status:      "selected",
-					Intent:      repo.IntentReference,
-					Entrypoint:  "index.html",
-					MediaType:   "text/html",
-					Parts:       rev.Parts,
-					FileCount:   rev.FileCount,
-					TreeBytes:   rev.TreeBytes,
-					CreatedAt:   rev.CreatedAt,
-					Build:       rev.Build,
-					Preview:     rev.Preview,
-					Lineage:     repo.Lineage,
-					Reference: SessionArtifactSelectionReference{
-						SessionID:     repo.OwnerSessionID,
-						ArtifactID:    repo.ArtifactID,
-						RevisionRef:   "revision-" + repo.HeadCommitOID,
-						CommitOID:     repo.HeadCommitOID,
-						Action:        "use",
-						ProjectionSeq: repo.EventSeq,
-					},
-				}
-				if artifactV3CatalogItemMatches(headItem, options) {
-					items = append(items, headItem)
-				}
-			}
-		}
-
-		// 2. Candidates (including ready unselected turn/swarm candidates)
-		candidates, err := s.ListArtifactV3CandidateProjections(accountScopeID, userID, repo.ArtifactID)
-		if err == nil {
-			for _, cand := range candidates {
-				if cand.CommitOID == "" || (cand.Status != "ready" && cand.Status != "selected") {
-					continue
-				}
-				if !artifactV3EvidenceReady(cand.Build, cand.CommitOID) || !artifactV3EvidenceReady(cand.Preview, cand.CommitOID) {
-					continue
-				}
-				// If this candidate is the head and caller did not specifically ask for candidates,
-				// it is already represented by the head item.
-				if cand.CommitOID == repo.HeadCommitOID && options.SourceKind != "candidate" {
-					continue
-				}
-				candItem := ArtifactV3CatalogItem{
-					ArtifactID:  repo.ArtifactID,
-					SessionID:   repo.OwnerSessionID,
-					CommitOID:   cand.CommitOID,
-					RevisionRef: "revision-" + cand.CommitOID,
-					TurnID:      cand.TurnID,
-					CandidateID: cand.CandidateID,
-					SourceKind:  "candidate",
-					Status:      cand.Status,
-					Intent:      repo.IntentReference,
-					Entrypoint:  "index.html",
-					MediaType:   "text/html",
-					CreatedAt:   cand.CreatedAt,
-					Build:       cand.Build,
-					Preview:     cand.Preview,
-					Lineage:     repo.Lineage,
-					Reference: SessionArtifactSelectionReference{
-						SessionID:     repo.OwnerSessionID,
-						ArtifactID:    repo.ArtifactID,
-						RevisionRef:   "revision-" + cand.CommitOID,
-						CommitOID:     cand.CommitOID,
-						Action:        "use",
-						ProjectionSeq: cand.EventSeq,
-					},
-				}
-				if rev, ok, _ := s.GetArtifactV3Revision(accountScopeID, userID, repo.ArtifactID, cand.CommitOID); ok {
-					candItem.Parts = rev.Parts
-					candItem.FileCount = rev.FileCount
-					candItem.TreeBytes = rev.TreeBytes
-				}
-				if artifactV3CatalogItemMatches(candItem, options) {
-					items = append(items, candItem)
-				}
-			}
-		}
-
-		// 3. Historical ready revisions
-		revisions, err := s.ListArtifactV3RevisionProjections(accountScopeID, userID, repo.ArtifactID)
-		if err == nil {
-			for _, rev := range revisions {
-				if rev.CommitOID == repo.HeadCommitOID {
-					continue
-				}
-				isCandidate := false
-				for _, c := range candidates {
-					if c.CommitOID == rev.CommitOID && (c.Status == "ready" || c.Status == "selected") {
-						isCandidate = true
-						break
+		for c.Phase < 3 {
+			if c.Phase == 0 {
+				c.Phase = 1
+				if repo.HeadCommitOID != "" {
+					rev, ok, err := s.GetArtifactV3Revision(account, user, repo.ArtifactID, repo.HeadCommitOID)
+					if err != nil {
+						return page, err
+					}
+					if ok && readyArtifactV3CatalogRevision(repo, rev) {
+						item := artifactV3CatalogRevisionItem(repo, rev, "head")
+						if artifactV3CatalogItemMatches(item, o) {
+							page.Items = append(page.Items, item)
+						}
 					}
 				}
-				if isCandidate {
-					continue
-				}
-				if !artifactV3EvidenceReady(rev.Build, rev.CommitOID) || !artifactV3EvidenceReady(rev.Preview, rev.CommitOID) {
-					continue
-				}
-				revItem := ArtifactV3CatalogItem{
-					ArtifactID:  repo.ArtifactID,
-					SessionID:   repo.OwnerSessionID,
-					CommitOID:   rev.CommitOID,
-					RevisionRef: "revision-" + rev.CommitOID,
-					SourceKind:  "historical_revision",
-					Status:      "ready",
-					Intent:      repo.IntentReference,
-					Entrypoint:  "index.html",
-					MediaType:   "text/html",
-					Parts:       rev.Parts,
-					FileCount:   rev.FileCount,
-					TreeBytes:   rev.TreeBytes,
-					CreatedAt:   rev.CreatedAt,
-					Build:       rev.Build,
-					Preview:     rev.Preview,
-					Lineage:     rev.Lineage,
-					Reference: SessionArtifactSelectionReference{
-						SessionID:     repo.OwnerSessionID,
-						ArtifactID:    repo.ArtifactID,
-						RevisionRef:   "revision-" + rev.CommitOID,
-						CommitOID:     rev.CommitOID,
-						Action:        "use",
-						ProjectionSeq: rev.EventSeq,
-					},
-				}
-				if artifactV3CatalogItemMatches(revItem, options) {
-					items = append(items, revItem)
+				if len(page.Items) >= o.Limit {
+					return more()
 				}
 			}
+			recordPrefix := KeyArtifactV3CandidatePrefix(account, repo.ArtifactID)
+			if c.Phase == 2 {
+				recordPrefix = KeyArtifactV3RevisionPrefix(account, repo.ArtifactID)
+			}
+			if c.After != "" && !strings.HasPrefix(c.After, recordPrefix) {
+				return page, ErrArtifactV3Invalid
+			}
+			records, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(recordPrefix), UpperBound: []byte(recordPrefix + "\xff")})
+			if err != nil {
+				return page, err
+			}
+			validRecord := records.First()
+			if c.After != "" {
+				validRecord = records.SeekGE([]byte(c.After))
+				if validRecord && string(records.Key()) == c.After {
+					validRecord = records.Next()
+				}
+			}
+			for ; validRecord; validRecord = records.Next() {
+				if err := ctx.Err(); err != nil {
+					records.Close()
+					return page, err
+				}
+				if budget == 0 {
+					records.Close()
+					return more()
+				}
+				if len(records.Value()) > artifactV3CatalogByteBudget-len(repos.Value()) {
+					records.Close()
+					return page, ErrArtifactV3Quota
+				}
+				if len(records.Value()) > byteBudget {
+					records.Close()
+					return more()
+				}
+				byteBudget -= len(records.Value())
+				budget--
+				c.After = string(records.Key())
+				var item ArtifactV3CatalogItem
+				if c.Phase == 1 {
+					var cand ArtifactV3CandidateProjection
+					if err := json.Unmarshal(records.Value(), &cand); err != nil {
+						records.Close()
+						return page, err
+					}
+					if cand.OwnerSessionID != repo.OwnerSessionID || cand.ArtifactID != repo.ArtifactID || cand.CandidateRef == "refs/heads/artifact" || (cand.Status != "ready" && cand.Status != "selected") || !artifactV3EvidenceReady(cand.Build, cand.CommitOID) || !artifactV3EvidenceReady(cand.Preview, cand.CommitOID) {
+						continue
+					}
+					rev, ok, err := s.GetArtifactV3Revision(account, user, repo.ArtifactID, cand.CommitOID)
+					if err != nil {
+						records.Close()
+						return page, err
+					}
+					if !ok || !readyArtifactV3CatalogRevision(repo, rev) {
+						continue
+					}
+					item = artifactV3CatalogRevisionItem(repo, rev, "candidate")
+					item.CandidateID, item.TurnID, item.Status = cand.CandidateID, cand.TurnID, cand.Status
+				} else {
+					var rev ArtifactV3RevisionProjection
+					if err := json.Unmarshal(records.Value(), &rev); err != nil {
+						records.Close()
+						return page, err
+					}
+					if rev.CommitOID == repo.HeadCommitOID || !readyArtifactV3CatalogRevision(repo, rev) {
+						continue
+					}
+					// Immutable revisions and candidate slots are distinct catalog records.
+					// A candidate can also appear as its underlying historical ready revision.
+					item = artifactV3CatalogRevisionItem(repo, rev, "historical_revision")
+				}
+				if artifactV3CatalogItemMatches(item, o) {
+					page.Items = append(page.Items, item)
+				}
+				if len(page.Items) >= o.Limit {
+					records.Close()
+					return more()
+				}
+			}
+			err = records.Error()
+			records.Close()
+			if err != nil {
+				return page, err
+			}
+			c.Phase++
+			c.After = ""
 		}
 	}
-
-	sort.Slice(items, func(i, j int) bool {
-		return artifactV3CatalogItemBefore(items[i], items[j])
-	})
-
-	snapshotAt := cursor.SnapshotAt
-	if snapshotAt == 0 && len(items) > 0 {
-		snapshotAt = items[0].CreatedAt
+	if err := repos.Error(); err != nil {
+		return page, err
 	}
-
-	visible := make([]ArtifactV3CatalogItem, 0, len(items))
-	snapshotBound := cursor.LastSessionID != "" || len(items) > 0
-	for _, item := range items {
-		if snapshotBound && item.CreatedAt > snapshotAt {
-			continue
-		}
-		if cursor.LastSessionID != "" && !artifactV3CatalogItemAfterCursor(item, cursor) {
-			continue
-		}
-		visible = append(visible, item)
-	}
-
-	page := ArtifactV3CatalogPage{}
-	if len(visible) > options.Limit {
-		page.HasMore = true
-		visible = visible[:options.Limit]
-	}
-	page.Items = visible
-	if page.HasMore && len(visible) > 0 {
-		last := visible[len(visible)-1]
-		page.NextCursor, err = encodeArtifactV3CatalogCursor(artifactV3CatalogCursor{
-			Version:        artifactV3CatalogCursorVersion,
-			SnapshotAt:     snapshotAt,
-			LastCreatedAt:  last.CreatedAt,
-			LastSessionID:  last.SessionID,
-			LastArtifactID: last.ArtifactID,
-			LastCommitOID:  last.CommitOID,
-			LastCandidate:  last.CandidateID,
-			Filter:         filter,
-		})
-		if err != nil {
-			return ArtifactV3CatalogPage{}, err
-		}
-	}
-
 	return page, nil
 }
 
-func artifactV3CatalogItemMatches(item ArtifactV3CatalogItem, options ArtifactV3CatalogOptions) bool {
-	if options.Status != "" && item.Status != options.Status {
+func readyArtifactV3CatalogRevision(repo ArtifactV3RepositoryProjection, rev ArtifactV3RevisionProjection) bool {
+	return rev.OwnerSessionID == repo.OwnerSessionID && rev.ArtifactID == repo.ArtifactID && artifactV3EvidenceReady(rev.Build, rev.CommitOID) && artifactV3EvidenceReady(rev.Preview, rev.CommitOID)
+}
+
+func artifactV3CatalogRevisionItem(repo ArtifactV3RepositoryProjection, rev ArtifactV3RevisionProjection, kind string) ArtifactV3CatalogItem {
+	status := "ready"
+	if kind == "head" {
+		status = "selected"
+	}
+	return ArtifactV3CatalogItem{ArtifactID: repo.ArtifactID, SessionID: repo.OwnerSessionID, CommitOID: rev.CommitOID, RevisionRef: "revision-" + rev.CommitOID, SourceKind: kind, Status: status, Intent: repo.IntentReference, MediaType: "text/html", Parts: rev.Parts, FileCount: rev.FileCount, TreeBytes: rev.TreeBytes, CreatedAt: rev.CreatedAt, Build: rev.Build, Preview: rev.Preview, Lineage: rev.Lineage, Reference: SessionArtifactSelectionReference{SessionID: repo.OwnerSessionID, ArtifactID: repo.ArtifactID, CommitOID: rev.CommitOID, RevisionRef: "revision-" + rev.CommitOID, ProjectionSeq: rev.EventSeq, Action: "use"}}
+}
+
+func artifactV3CatalogItemMatches(item ArtifactV3CatalogItem, o ArtifactV3CatalogOptions) bool {
+	if o.Status != "" && !(o.Status == "ready" && item.Status == "selected") && o.Status != item.Status {
 		return false
 	}
-	if options.SourceKind != "" && item.SourceKind != options.SourceKind {
+	if o.SourceKind != "" && item.SourceKind != o.SourceKind {
 		return false
 	}
-	if options.MediaType != "" && canonicalArtifactCatalogMediaType(item.MediaType) != options.MediaType {
+	if o.MediaType != "" && canonicalArtifactCatalogMediaType(item.MediaType) != o.MediaType {
 		return false
 	}
-	if options.SessionID != "" && item.SessionID != options.SessionID {
+	if o.CreatedAfter != 0 && item.CreatedAt < o.CreatedAfter || o.CreatedBefore != 0 && item.CreatedAt > o.CreatedBefore {
 		return false
 	}
-	if options.ArtifactID != "" && item.ArtifactID != options.ArtifactID {
-		return false
-	}
-	if options.CreatedAfter != 0 && item.CreatedAt < options.CreatedAfter {
-		return false
-	}
-	if options.CreatedBefore != 0 && item.CreatedAt > options.CreatedBefore {
-		return false
-	}
-	if options.Query == "" {
+	if o.Query == "" {
 		return true
 	}
-	fields := []string{
-		item.ArtifactID, item.Intent, item.Entrypoint, item.CommitOID, item.RevisionRef,
-		item.TurnID, item.CandidateID, item.SourceKind,
-	}
-	for _, p := range item.Parts {
-		fields = append(fields, p.ID, p.Label)
+	fields := []string{item.ArtifactID, item.Intent, item.CommitOID, item.RevisionRef, item.CandidateID, item.TurnID}
+	for _, part := range item.Parts {
+		fields = append(fields, part.ID, part.Label)
 	}
 	for _, field := range fields {
-		if strings.Contains(strings.ToLower(field), options.Query) {
+		if strings.Contains(strings.ToLower(field), o.Query) {
 			return true
 		}
 	}
 	return false
-}
-
-func artifactV3CatalogItemBefore(left, right ArtifactV3CatalogItem) bool {
-	if left.CreatedAt != right.CreatedAt {
-		return left.CreatedAt > right.CreatedAt
-	}
-	if left.SessionID != right.SessionID {
-		return left.SessionID < right.SessionID
-	}
-	if left.ArtifactID != right.ArtifactID {
-		return left.ArtifactID < right.ArtifactID
-	}
-	if left.CommitOID != right.CommitOID {
-		return left.CommitOID < right.CommitOID
-	}
-	return left.CandidateID < right.CandidateID
-}
-
-func artifactV3CatalogItemAfterCursor(item ArtifactV3CatalogItem, cursor artifactV3CatalogCursor) bool {
-	if item.CreatedAt != cursor.LastCreatedAt {
-		return item.CreatedAt < cursor.LastCreatedAt
-	}
-	if item.SessionID != cursor.LastSessionID {
-		return item.SessionID > cursor.LastSessionID
-	}
-	if item.ArtifactID != cursor.LastArtifactID {
-		return item.ArtifactID > cursor.LastArtifactID
-	}
-	if item.CommitOID != cursor.LastCommitOID {
-		return item.CommitOID > cursor.LastCommitOID
-	}
-	return item.CandidateID > cursor.LastCandidate
-}
-
-func artifactV3CatalogFilterIdentity(options ArtifactV3CatalogOptions) string {
-	payload, _ := json.Marshal([]any{
-		options.Query, options.Status, options.MediaType, options.SourceKind,
-		options.SessionID, options.ArtifactID, options.CreatedAfter, options.CreatedBefore,
-	})
-	return base64.RawURLEncoding.EncodeToString(payload)
-}
-
-func encodeArtifactV3CatalogCursor(cursor artifactV3CatalogCursor) (string, error) {
-	payload, err := json.Marshal(cursor)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(payload), nil
-}
-
-func decodeArtifactV3CatalogCursor(raw, filter string) (artifactV3CatalogCursor, error) {
-	if strings.TrimSpace(raw) == "" {
-		return artifactV3CatalogCursor{Version: artifactV3CatalogCursorVersion, Filter: filter}, nil
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(raw))
-	if err != nil {
-		return artifactV3CatalogCursor{}, errors.New("artifact v3 catalog cursor is invalid")
-	}
-	var cursor artifactV3CatalogCursor
-	if err := json.Unmarshal(payload, &cursor); err != nil || cursor.Version != artifactV3CatalogCursorVersion ||
-		cursor.SnapshotAt < 0 || cursor.LastCreatedAt < 0 || cursor.LastSessionID == "" || cursor.LastArtifactID == "" || cursor.Filter != filter {
-		return artifactV3CatalogCursor{}, errors.New("artifact v3 catalog cursor is invalid or does not match the filters")
-	}
-	return cursor, nil
 }

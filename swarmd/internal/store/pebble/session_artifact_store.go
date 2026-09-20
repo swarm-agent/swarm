@@ -211,6 +211,8 @@ type SessionArtifactProgress struct {
 }
 
 type SessionArtifactVariant struct {
+	ImportRequestID       string                             `json:"import_request_id,omitempty"`
+	ImportFingerprint     string                             `json:"import_fingerprint,omitempty"`
 	Version               int                                `json:"version"`
 	ID                    string                             `json:"id"`
 	CollectionID          string                             `json:"collection_id"`
@@ -1108,7 +1110,7 @@ func boundedArtifactListLimit(limit, maximum int) int {
 
 func isV3ArtifactMutationKind(kind string) bool {
 	switch kind {
-	case V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact, V3SessionMutationSelectArtifact, V3SessionMutationDeleteArtifactVariant, V3SessionMutationDeleteArtifactCollection:
+	case V3SessionMutationImportArtifact, V3SessionMutationCreateArtifact, V3SessionMutationUpdateArtifact, V3SessionMutationFinalizeArtifact, V3SessionMutationFailArtifact, V3SessionMutationUnavailableArtifact, V3SessionMutationSelectArtifact, V3SessionMutationDeleteArtifactVariant, V3SessionMutationDeleteArtifactCollection:
 		return true
 	default:
 		return false
@@ -1447,6 +1449,11 @@ func validateV3ArtifactMutation(input V3SessionMutationInput) error {
 		}
 	}
 	switch input.Kind {
+	case V3SessionMutationImportArtifact:
+		v := input.Artifact.Variant
+		if input.Artifact.ProjectionOnly || v == nil || !v.AutoAccept || v.Lineage.SourceSessionID == "" || input.Artifact.Transaction == nil || input.Artifact.Transaction.State != "committed" || len(input.Artifact.Transaction.ParentCommitOIDs) != 0 {
+			return errors.New("artifact import requires exact source and independent committed root")
+		}
 	case V3SessionMutationCreateArtifact:
 		if collection.Name == "" && input.Artifact.Variant == nil {
 			return errors.New("artifact collection name is required")
@@ -1802,7 +1809,10 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		prepared.DeleteCollection = true
 		return prepared, nil
 	}
-	if input.Kind == V3SessionMutationCreateArtifact {
+	if input.Kind == V3SessionMutationImportArtifact && collectionOK {
+		return preparedV3ArtifactMutation{}, errors.New("artifact import requires a new destination collection")
+	}
+	if input.Kind == V3SessionMutationCreateArtifact || input.Kind == V3SessionMutationImportArtifact {
 		if collectionOK && incoming.Variant == nil {
 			return preparedV3ArtifactMutation{}, fmt.Errorf("artifact collection %q already exists", incoming.Collection.ID)
 		}
@@ -1928,7 +1938,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		if variantOK && input.Kind == V3SessionMutationCreateArtifact && !(current.GraphState == "" && transaction != nil) {
 			return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q already exists", incoming.Variant.ID)
 		}
-		if !variantOK && input.Kind != V3SessionMutationCreateArtifact {
+		if !variantOK && input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationImportArtifact {
 			return preparedV3ArtifactMutation{}, fmt.Errorf("artifact variant %q was not found", incoming.Variant.ID)
 		}
 		next := *incoming.Variant
@@ -2000,6 +2010,9 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				var parent SessionArtifactSelectionReference
 				if lineage := next.Lineage; lineage.SourceSessionID != "" && lineage.SourceCollectionID != "" && lineage.SourceVariantID != "" && lineage.SourceEventSeq > 0 {
 					sourceSession, ok, sourceErr := s.GetSession(lineage.SourceSessionID)
+					if input.Kind == V3SessionMutationImportArtifact {
+						sourceSession, ok, sourceErr = s.GetRetainedArtifactSourceSession(lineage.SourceSessionID)
+					}
 					if sourceErr != nil {
 						return preparedV3ArtifactMutation{}, sourceErr
 					}
@@ -2010,18 +2023,34 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 					if sourceErr != nil {
 						return preparedV3ArtifactMutation{}, sourceErr
 					}
-					if !ok || source.Status != SessionArtifactStatusReady || source.EventSeq != lineage.SourceEventSeq {
+					exactSequence := source.EventSeq == lineage.SourceEventSeq
+					if input.Kind == V3SessionMutationImportArtifact && ok && !exactSequence {
+						collection, found, err := s.GetSessionArtifactCollection(input.AccountScopeID, lineage.SourceSessionID, lineage.SourceCollectionID)
+						if err != nil {
+							return preparedV3ArtifactMutation{}, err
+						}
+						exactSequence = found && collection.SelectedVariantID == source.ID && collection.EventSeq == lineage.SourceEventSeq
+					}
+					if !ok || source.Status != SessionArtifactStatusReady || !exactSequence {
 						return preparedV3ArtifactMutation{}, errors.New("artifact source chain requires an exact ready source")
 					}
-					projectedSource, chain, sourceErr := s.projectSessionArtifactVariantChain(input.AccountScopeID, input.UserID, source)
-					if sourceErr != nil {
-						return preparedV3ArtifactMutation{}, sourceErr
+					if input.Kind != V3SessionMutationImportArtifact {
+						projectedSource, chain, sourceErr := s.projectSessionArtifactVariantChain(input.AccountScopeID, input.UserID, source)
+						if sourceErr != nil {
+							return preparedV3ArtifactMutation{}, sourceErr
+						}
+						if chain.GraphState != SessionArtifactGraphProjection || source.RepositoryID != incoming.Transaction.RepositoryID || source.CommitOID == "" {
+							return preparedV3ArtifactMutation{}, errors.New("artifact source is not an exact Git projection in the transaction repository")
+						}
+						next.ArtifactChainID, next.RevisionNumber = chain.ID, projectedSource.RevisionNumber+1
+						parent = artifactSelectionForVariant(source)
+					} else {
+						next.ArtifactChainID = RootSessionArtifactChainID(input.SessionID, next.CollectionID, next.ID)
+						next.RevisionNumber = 1
+						if incoming.Transaction.RepositoryID != next.ArtifactChainID || source.RepositoryID == incoming.Transaction.RepositoryID {
+							return preparedV3ArtifactMutation{}, errors.New("artifact import must create an independent repository")
+						}
 					}
-					if chain.GraphState != SessionArtifactGraphProjection || source.RepositoryID != incoming.Transaction.RepositoryID || source.CommitOID == "" {
-						return preparedV3ArtifactMutation{}, errors.New("artifact source is not an exact Git projection in the transaction repository")
-					}
-					next.ArtifactChainID, next.RevisionNumber = chain.ID, projectedSource.RevisionNumber+1
-					parent = artifactSelectionForVariant(source)
 				} else {
 					// Root chain identity is derived from the immutable destination, not a
 					// caller- or round-authored step label. Initial byte-bearing parts can
@@ -2112,7 +2141,7 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 				}
 				next.Progress = &progress
 			}
-		case V3SessionMutationFinalizeArtifact:
+		case V3SessionMutationFinalizeArtifact, V3SessionMutationImportArtifact:
 			if current.Status == SessionArtifactStatusReady {
 				return preparedV3ArtifactMutation{}, errors.New("finalized artifact variant is immutable")
 			}
@@ -2122,7 +2151,11 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			next.Status = SessionArtifactStatusReady
 			next.FailureCode = ""
 			next.Progress = nil
-			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil {
+			priorStatus := current.Status
+			if input.Kind == V3SessionMutationImportArtifact {
+				priorStatus = SessionArtifactStatusStaging
+			}
+			if err := adjustArtifactCollectionStatusCount(&collection, priorStatus, -1); err != nil {
 				return preparedV3ArtifactMutation{}, err
 			}
 			if err := adjustArtifactCollectionStatusCount(&collection, next.Status, 1); err != nil {
@@ -2141,7 +2174,11 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 			} else {
 				next.Status = SessionArtifactStatusFailed
 			}
-			if err := adjustArtifactCollectionStatusCount(&collection, current.Status, -1); err != nil {
+			priorStatus := current.Status
+			if input.Kind == V3SessionMutationImportArtifact {
+				priorStatus = SessionArtifactStatusStaging
+			}
+			if err := adjustArtifactCollectionStatusCount(&collection, priorStatus, -1); err != nil {
 				return preparedV3ArtifactMutation{}, err
 			}
 			if err := adjustArtifactCollectionStatusCount(&collection, next.Status, 1); err != nil {
@@ -2154,8 +2191,13 @@ func (s *SessionStore) prepareV3ArtifactMutation(input V3SessionMutationInput, s
 		}
 		next.UpdatedAt = now
 		next.EventSeq = seq
+		if input.Kind == V3SessionMutationSelectArtifact {
+			// Selection changes the collection/chain, not the immutable ready
+			// version identity returned by publication and retained references.
+			next = current
+		}
 		variant = &next
-		if input.Kind == V3SessionMutationFinalizeArtifact && next.GraphState == SessionArtifactGraphAuthoritative {
+		if (input.Kind == V3SessionMutationFinalizeArtifact || input.Kind == V3SessionMutationImportArtifact) && next.GraphState == SessionArtifactGraphAuthoritative {
 			var step SessionArtifactStep
 			if prepared.Projection.Step != nil && prepared.Projection.Step.ID == next.ArtifactStepID {
 				step = *prepared.Projection.Step

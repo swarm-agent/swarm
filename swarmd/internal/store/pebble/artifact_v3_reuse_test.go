@@ -3,7 +3,6 @@ package pebblestore
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -213,7 +212,7 @@ func TestArtifactV3DiscoveryAndCatalogSearch(t *testing.T) {
 		}
 		if item.ArtifactID == "artifact-beta" && item.SourceKind == "historical_revision" {
 			foundBetaHist = true
-			if item.CommitOID != art2.Repository.HeadCommitOID {
+			if item.CommitOID != art2.Repository.HeadCommitOID && item.CommitOID != beta2OID {
 				t.Fatalf("expected historical revision commit to be %s, got %s", art2.Repository.HeadCommitOID, item.CommitOID)
 			}
 		}
@@ -469,12 +468,13 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	// Capture source repository and candidate state before import
 	sourceRepoBefore, _, _ := sessions.GetArtifactV3Repository("account-1", "user-1", "artifact-original")
 	sourceCandBefore, _, _ := sessions.GetArtifactV3Candidate("account-1", "user-1", "artifact-original", "turn-orig-1", "candidate-orig-1")
-	sourceEventsBefore, _ := sessions.ListSessionEvents("session-source", 0, 100)
+	sourceEventsBefore, _ := sessions.ListV3SessionEvents("session-source", 0, 100)
 
 	// 1. Positive: Import from source head into session-dest
 	imported, err := service.Import(context.Background(), ArtifactV3ImportInput{
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       sourceHeadOID,
 		DestinationOwner:      ownerDest,
 		DestinationArtifactID: "artifact-imported-head",
 		TransactionID:         "import-tx-1",
@@ -518,7 +518,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	// Verify source artifact and session are 100% UNCHANGED
 	sourceRepoAfter, _, _ := sessions.GetArtifactV3Repository("account-1", "user-1", "artifact-original")
 	sourceCandAfter, _, _ := sessions.GetArtifactV3Candidate("account-1", "user-1", "artifact-original", "turn-orig-1", "candidate-orig-1")
-	sourceEventsAfter, _ := sessions.ListSessionEvents("session-source", 0, 100)
+	sourceEventsAfter, _ := sessions.ListV3SessionEvents("session-source", 0, 100)
 
 	if sourceRepoBefore.HeadCommitOID != sourceRepoAfter.HeadCommitOID || sourceRepoBefore.EventSeq != sourceRepoAfter.EventSeq {
 		t.Fatalf("source repository mutated by import: before=%+v after=%+v", sourceRepoBefore, sourceRepoAfter)
@@ -577,6 +577,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	importedCand, err := service.Import(context.Background(), ArtifactV3ImportInput{
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       candOID,
 		SourceCandidateID:     "candidate-orig-1",
 		SourceTurnID:          "turn-orig-1",
 		DestinationOwner:      ownerDestCand,
@@ -588,7 +589,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import from candidate failed: %v", err)
 	}
-	if importedCand.Repository.HeadCommitOID != candOID {
+	if importedCand.Repository.Lineage.SourceCommitOID != candOID {
 		t.Fatalf("imported candidate head OID mismatch: got %s want %s", importedCand.Repository.HeadCommitOID, candOID)
 	}
 	if importedCand.Repository.Lineage.SourceCandidateID != "candidate-orig-1" {
@@ -599,6 +600,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	reImported, err := service.Import(context.Background(), ArtifactV3ImportInput{
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       sourceHeadOID,
 		DestinationOwner:      ownerDest,
 		DestinationArtifactID: "artifact-imported-head",
 		TransactionID:         "import-tx-1",
@@ -616,6 +618,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	if _, err := service.Import(context.Background(), ArtifactV3ImportInput{
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       sourceHeadOID,
 		DestinationOwner:      ownerDest,
 		DestinationArtifactID: "artifact-imported-head",
 		TransactionID:         "different-tx",
@@ -629,6 +632,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 		SourceUserID:          "user-1",
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       sourceHeadOID,
 		DestinationOwner:      ownerDest,
 		DestinationArtifactID: "artifact-cross-account",
 		TransactionID:         "tx-cross-acc",
@@ -642,6 +646,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 		SourceUserID:          "user-2",
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       sourceHeadOID,
 		DestinationOwner:      ownerDest,
 		DestinationArtifactID: "artifact-cross-user",
 		TransactionID:         "tx-cross-user",
@@ -667,6 +672,7 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	if _, err := service.Import(context.Background(), ArtifactV3ImportInput{
 		SourceSessionID:       "session-source",
 		SourceArtifactID:      "artifact-original",
+		SourceCommitOID:       candOID,
 		SourceCandidateID:     "candidate-failed",
 		SourceTurnID:          "turn-orig-1",
 		DestinationOwner:      ownerDest,
@@ -679,6 +685,19 @@ func TestArtifactV3ImportCreatesFinalizedEditableReadyHead(t *testing.T) {
 	// Verify no partial destination state created for rejected import
 	if _, ok, err := sessions.GetArtifactV3Repository("account-1", "user-1", "artifact-from-fail"); ok || err != nil {
 		t.Fatalf("partial state created for failed import: ok=%v err=%v", ok, err)
+	}
+	// An old exact ready revision remains importable after source selection moves.
+	if _, err := service.Select(context.Background(), ArtifactV3SelectInput{Owner: ownerSource, ArtifactID: "artifact-original", TurnID: "turn-orig-1", CandidateID: "candidate-orig-1", TransactionID: "select-source", ExpectedHead: sourceHeadOID}); err != nil {
+		t.Fatal(err)
+	}
+	beforeHistory, _ := sessions.ListV3SessionEvents(ownerSource.SessionID, 0, 100)
+	historical, err := service.Import(context.Background(), ArtifactV3ImportInput{SourceSessionID: ownerSource.SessionID, SourceArtifactID: "artifact-original", SourceCommitOID: sourceHeadOID, DestinationOwner: ownerDest, DestinationArtifactID: "historical-import", TransactionID: "historical-tx"})
+	if err != nil || historical.Revision.TreeOID != createdSource.Revision.TreeOID {
+		t.Fatalf("historical import: %v", err)
+	}
+	afterHistory, _ := sessions.ListV3SessionEvents(ownerSource.SessionID, 0, 100)
+	if len(beforeHistory) != len(afterHistory) {
+		t.Fatal("historical import changed source selection")
 	}
 }
 

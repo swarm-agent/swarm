@@ -33,6 +33,7 @@ const (
 	V3SessionMutationArchiveSession           = "session.archive"
 	V3SessionMutationReactivateSession        = "session.reactivate"
 	V3SessionMutationCreateArtifact           = "artifact.create"
+	V3SessionMutationImportArtifact           = "artifact.import"
 	V3SessionMutationUpdateArtifact           = "artifact.update"
 	V3SessionMutationFinalizeArtifact         = "artifact.finalize"
 	V3SessionMutationFailArtifact             = "artifact.fail"
@@ -624,6 +625,12 @@ func (s *SessionStore) SetCheckpointBoundaryCommitHookForTest(hook func(sessionI
 	previous := s.store.sessionMutations.beforeExecutionEpochCommit
 	s.store.sessionMutations.beforeExecutionEpochCommit = hook
 	return func() { s.store.sessionMutations.beforeExecutionEpochCommit = previous }
+}
+
+func (s *SessionStore) SetArtifactImportCommitHookForTest(hook func(sessionID string) error) func() {
+	previous := s.store.sessionMutations.beforeArtifactImportCommit
+	s.store.sessionMutations.beforeArtifactImportCommit = hook
+	return func() { s.store.sessionMutations.beforeArtifactImportCommit = previous }
 }
 
 func (s *SessionStore) SetArtifactV2CommitHookForTest(hook func(sessionID string) error) func() {
@@ -1469,6 +1476,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if input.CheckpointBoundary != nil {
 		if hook := s.store.sessionMutations.beforeExecutionEpochCommit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
+	if input.Kind == V3SessionMutationImportArtifact {
+		if hook := s.store.sessionMutations.beforeArtifactImportCommit; hook != nil {
 			if err := hook(input.SessionID); err != nil {
 				return V3SessionMutationResult{}, err
 			}
@@ -3435,6 +3449,10 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.plan.saved"
 	case V3SessionMutationAcceptPlan:
 		return "session.plan.saved"
+	case V3SessionMutationImportArtifact:
+		return "session.artifact.finalized"
+	case V3SessionMutationArtifactV3Imported:
+		return V3SessionMutationArtifactV3Imported
 	case V3SessionMutationCreateArtifact:
 		return "session.artifact.created"
 	case V3SessionMutationUpdateArtifact:

@@ -115,12 +115,23 @@ type ArtifactV3SceneEvidence struct {
 	DigestSHA256 string `json:"digest_sha256"`
 }
 
+// ArtifactV3EvidenceSource identifies the validated identical tree from which
+// evidence was inherited. Reference/digest remain the original attestation; no
+// destination build or render is claimed by an import.
+type ArtifactV3EvidenceSource struct {
+	Owner      ArtifactV3Owner `json:"owner"`
+	ArtifactID string          `json:"artifact_id"`
+	CommitOID  string          `json:"commit_oid"`
+	TreeOID    string          `json:"tree_oid"`
+}
+
 type ArtifactV3EvidenceProjection struct {
-	Scenes       []ArtifactV3SceneEvidence `json:"scenes,omitempty"`
-	Status       string                    `json:"status"`
-	CommitOID    string                    `json:"commit_oid"`
-	DigestSHA256 string                    `json:"digest_sha256"`
-	Reference    string                    `json:"reference"`
+	InheritedFrom *ArtifactV3EvidenceSource `json:"inherited_from,omitempty"`
+	Scenes        []ArtifactV3SceneEvidence `json:"scenes,omitempty"`
+	Status        string                    `json:"status"`
+	CommitOID     string                    `json:"commit_oid"`
+	DigestSHA256  string                    `json:"digest_sha256"`
+	Reference     string                    `json:"reference"`
 }
 
 type ArtifactV3CandidateProjection struct {
@@ -371,6 +382,44 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 		return preparedArtifactV3Mutation{}, errors.New("artifact v3 mutation session ownership does not match")
 	}
 	m := *input.ArtifactV3
+	if input.Kind == V3SessionMutationArtifactV3Imported {
+		if m.Repository == nil || m.Revision == nil || m.Repository.Lineage == nil || !reflect.DeepEqual(m.Repository.Lineage, m.Revision.Lineage) {
+			return preparedArtifactV3Mutation{}, ErrArtifactV3Integrity
+		}
+		lineage := m.Repository.Lineage
+		if lineage.SourceSessionID == "" || lineage.SourceArtifactID == "" || !validGitOID(lineage.SourceCommitOID) {
+			return preparedArtifactV3Mutation{}, ErrArtifactV3Integrity
+		}
+		sourceOwner, retained, err := s.GetRetainedArtifactSourceSession(lineage.SourceSessionID)
+		if err != nil {
+			return preparedArtifactV3Mutation{}, err
+		}
+		if !retained || sourceOwner.AccountScopeID != input.AccountScopeID || sourceOwner.UserID != input.UserID {
+			return preparedArtifactV3Mutation{}, ErrArtifactV3Unauthorized
+		}
+		source, found, err := s.GetArtifactV3Revision(input.AccountScopeID, input.UserID, lineage.SourceArtifactID, lineage.SourceCommitOID)
+		if err != nil {
+			return preparedArtifactV3Mutation{}, err
+		}
+		if !found || source.OwnerSessionID != lineage.SourceSessionID || source.TreeOID != m.Revision.TreeOID || source.ManifestBlobOID != m.Revision.ManifestBlobOID || !artifactV3EvidenceReady(source.Build, source.CommitOID) || !artifactV3EvidenceReady(source.Preview, source.CommitOID) {
+			return preparedArtifactV3Mutation{}, ErrArtifactV3Integrity
+		}
+		for _, pair := range [][2]ArtifactV3EvidenceProjection{{m.Revision.Build, source.Build}, {m.Revision.Preview, source.Preview}} {
+			evidence, original := pair[0], pair[1]
+			expected := original
+			expected.CommitOID = m.Revision.CommitOID
+			if expected.InheritedFrom == nil {
+				expected.InheritedFrom = &ArtifactV3EvidenceSource{Owner: ArtifactV3Owner{AccountScopeID: input.AccountScopeID, UserID: input.UserID, SessionID: lineage.SourceSessionID}, ArtifactID: lineage.SourceArtifactID, CommitOID: lineage.SourceCommitOID, TreeOID: source.TreeOID}
+			}
+			if !reflect.DeepEqual(evidence, expected) {
+				return preparedArtifactV3Mutation{}, ErrArtifactV3Integrity
+			}
+			p := evidence.InheritedFrom
+			if p == nil || p.Owner.AccountScopeID != input.AccountScopeID || p.Owner.UserID != input.UserID || p.Owner.SessionID == "" || p.ArtifactID == "" || !validGitOID(p.CommitOID) || p.TreeOID != m.Revision.TreeOID {
+				return preparedArtifactV3Mutation{}, ErrArtifactV3Integrity
+			}
+		}
+	}
 	p := ArtifactV3Projection{}
 	artifactID := artifactV3RepositoryID(m.Repository)
 	if artifactID == "" {

@@ -118,22 +118,53 @@ func (r *ArtifactV3Repository) env() []string {
 	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=Swarm Artifact", "GIT_AUTHOR_EMAIL=artifact@swarm.invalid", "GIT_COMMITTER_NAME=Swarm Artifact", "GIT_COMMITTER_EMAIL=artifact@swarm.invalid", "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z")
 }
 
+type artifactV3BoundedOutput struct {
+	buffer   bytes.Buffer
+	limit    int64
+	cancel   context.CancelFunc
+	exceeded bool
+}
+
+func (b *artifactV3BoundedOutput) Write(p []byte) (int, error) {
+	if int64(len(p)) > b.limit-int64(b.buffer.Len()) {
+		b.exceeded = true
+		b.cancel()
+		return 0, ErrArtifactV3Quota
+	}
+	return b.buffer.Write(p)
+}
+
 func (r *ArtifactV3Repository) raw(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	return r.rawBounded(ctx, input, 4<<20, args...)
+}
+
+func (r *ArtifactV3Repository) rawBounded(ctx context.Context, input []byte, limit int64, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, r.git, args...)
 	cmd.Env = r.env()
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("artifact v3 git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	out := &artifactV3BoundedOutput{limit: limit, cancel: cancel}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	if out.exceeded {
+		return nil, ErrArtifactV3Quota
 	}
-	return out, nil
+	if err != nil {
+		return nil, fmt.Errorf("artifact v3 git %s: %w: %s", args[0], err, strings.TrimSpace(out.buffer.String()))
+	}
+	return out.buffer.Bytes(), nil
 }
 
 func (r *ArtifactV3Repository) gitCommand(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	return r.gitCommandBounded(ctx, input, 4<<20, args...)
+}
+
+func (r *ArtifactV3Repository) gitCommandBounded(ctx context.Context, input []byte, limit int64, args ...string) ([]byte, error) {
 	base := []string{"--git-dir=" + r.path, "-c", "core.hooksPath=" + r.hooks, "-c", "core.attributesFile=" + os.DevNull, "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=never"}
-	return r.raw(ctx, input, append(base, args...)...)
+	return r.rawBounded(ctx, input, limit, append(base, args...)...)
 }
 
 func (r *ArtifactV3Repository) Genesis(ctx context.Context, req ArtifactV3GenesisRequest) (ArtifactV3Revision, error) {
@@ -622,6 +653,9 @@ func (r *ArtifactV3Repository) ReadRevision(ctx context.Context, commit string) 
 	if err != nil {
 		return ArtifactV3Revision{}, err
 	}
+	if page.NextCursor != "" {
+		return ArtifactV3Revision{}, ErrArtifactV3Quota
+	}
 	var total int64
 	manifestOID := ""
 	for _, file := range page.Files {
@@ -711,11 +745,17 @@ func validateArtifactV3ManifestForRevision(body []byte, files []ArtifactV3File, 
 }
 
 func (r *ArtifactV3Repository) ReadFile(ctx context.Context, commit, path string) ([]byte, error) {
+	if !artifactV3OIDPattern.MatchString(commit) {
+		return nil, ErrArtifactV3Invalid
+	}
 	clean, err := validateArtifactV3Path(path, r.limits)
 	if err != nil {
 		return nil, err
 	}
-	out, err := r.gitCommand(ctx, nil, "show", commit+":"+clean)
+	out, err := r.gitCommandBounded(ctx, nil, r.limits.MaxFileBytes, "show", commit+":"+clean)
+	if errors.Is(err, ErrArtifactV3Quota) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, ErrArtifactV3NotFound
 	}
@@ -738,7 +778,7 @@ func (r *ArtifactV3Repository) ReadProject(ctx context.Context, commit string) (
 	if err != nil {
 		return ArtifactV3Project{}, err
 	}
-	if len(page.Files) > r.limits.MaxFiles {
+	if page.NextCursor != "" || len(page.Files) > r.limits.MaxFiles {
 		return ArtifactV3Project{}, ErrArtifactV3Quota
 	}
 	files := make(map[string][]byte, len(page.Files))
@@ -784,7 +824,10 @@ func (r *ArtifactV3Repository) listFiles(ctx context.Context, commit, cursor str
 	} else if limit <= 0 || limit > r.limits.MaxFiles {
 		limit = r.limits.MaxFiles
 	}
-	out, err := r.gitCommand(ctx, nil, "ls-tree", "-r", "-l", "-z", commit)
+	out, err := r.gitCommandBounded(ctx, nil, int64(r.limits.MaxFiles+1)*int64(r.limits.MaxPathBytes+160), "ls-tree", "-r", "-l", "-z", commit)
+	if errors.Is(err, ErrArtifactV3Quota) {
+		return ArtifactV3FilePage{}, err
+	}
 	if err != nil {
 		return ArtifactV3FilePage{}, ErrArtifactV3NotFound
 	}
