@@ -186,6 +186,8 @@ type taskLaunchSpec struct {
 	Deliverable           string
 	ConcurrencyReason     string
 	RecoverySourceDigest  string `json:"recovery_source_digest,omitempty"`
+	CommittedSource       *tool.CommittedSourceRequest
+	CommittedSourceBinding *tool.CommittedSourceBinding
 	OwnedScope            []string
 	OutputMode            string
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
@@ -347,6 +349,8 @@ type taskLaunchManifestRow struct {
 	Deliverable           string                                         `json:"deliverable,omitempty"`
 	ConcurrencyReason     string                                         `json:"concurrency_reason,omitempty"`
 	RecoverySourceDigest  string                                         `json:"recovery_source_digest,omitempty"`
+	CommittedSource       *tool.CommittedSourceRequest                   `json:"committed_source,omitempty"`
+	CommittedSourceBinding *tool.CommittedSourceBinding                  `json:"committed_source_binding,omitempty"`
 	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
 	OutputMode            string                                         `json:"output_mode,omitempty"`
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
@@ -390,6 +394,42 @@ type taskLaunchResolvedToolSummary struct {
 	ProfileDisabledTools   []string `json:"profile_disabled_tools,omitempty"`
 	LaunchDisabledTools    []string `json:"launch_disabled_tools,omitempty"`
 	BashPrefixes           []string `json:"bash_prefixes,omitempty"`
+}
+
+func parseTaskCommittedSource(raw map[string]any, label string) (*tool.CommittedSourceRequest, error) {
+	val, ok := raw["committed_source"]
+	if !ok || val == nil {
+		return nil, nil
+	}
+	m, ok := val.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%s: committed_source must be an object", label)
+	}
+	req := tool.CommittedSourceRequest{
+		TaskCallID:     strings.TrimSpace(mapString(m, "task_call_id")),
+		ChildSessionID: strings.TrimSpace(mapString(m, "child_session_id")),
+		HeadCommit:     strings.TrimSpace(mapString(m, "head_commit")),
+	}
+	if err := req.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	return &req, nil
+}
+
+func cloneTaskCommittedSourceRequest(req *tool.CommittedSourceRequest) *tool.CommittedSourceRequest {
+	if req == nil {
+		return nil
+	}
+	cloned := *req
+	return &cloned
+}
+
+func cloneTaskCommittedSourceBinding(b *tool.CommittedSourceBinding) *tool.CommittedSourceBinding {
+	if b == nil {
+		return nil
+	}
+	cloned := *b
+	return &cloned
 }
 
 func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
@@ -487,6 +527,10 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if err != nil {
 			return taskLaunchSpec{}, err
 		}
+		committedSource, err := parseTaskCommittedSource(raw, label)
+		if err != nil {
+			return taskLaunchSpec{}, err
+		}
 		launch := taskLaunchSpec{
 			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(
 				mapString(raw, "subagent_type"),
@@ -506,6 +550,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			Deliverable:          strings.TrimSpace(mapString(raw, "deliverable")),
 			ConcurrencyReason:    strings.TrimSpace(mapString(raw, "concurrency_reason")),
 			RecoverySourceDigest: mapString(raw, "recovery_source_digest"),
+			CommittedSource:      committedSource,
 			OwnedScope:           ownedScope,
 			DependencyEvidence:   strings.TrimSpace(mapString(raw, "dependency_evidence")),
 			SourceArguments:      cloneGenericMap(raw),
@@ -522,6 +567,17 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			launch.RequestedSubagentType = "designer"
 		default:
 			return taskLaunchSpec{}, fmt.Errorf("%s subagent_type must be coder, finder, or designer; Idea is available only through task mode=swarm", label)
+		}
+		if committedSource != nil {
+			if launch.RequestedSubagentType != "coder" {
+				return taskLaunchSpec{}, fmt.Errorf("%s: committed_source is supported only for Coder launches", label)
+			}
+			if launch.RecoverySourceDigest != "" {
+				return taskLaunchSpec{}, fmt.Errorf("%s: cannot combine committed_source with recovery_source_digest", label)
+			}
+			if launch.TargetWorkspacePath != "" {
+				return taskLaunchSpec{}, fmt.Errorf("%s: cannot combine committed_source with workspace_path; destination is bound to original committed child repository", label)
+			}
 		}
 		if launch.MetaPrompt == "" {
 			return taskLaunchSpec{}, fmt.Errorf("%s requires meta_prompt or role assignment", label)
@@ -553,6 +609,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 
 	if hasProgram {
+		if _, exists := args["committed_source"]; exists {
+			return taskCallArguments{}, errors.New("task program start does not support committed_source")
+		}
 		if _, ok := args["launches"]; ok {
 			return taskCallArguments{}, errors.New("task program start declares jobs in program.jobs; launches must be omitted")
 		}
@@ -608,6 +667,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		if _, exists := args["animation_profile"]; exists {
 			return taskCallArguments{}, errors.New("task regular launches must declare animation_profile on each Designer launch, not at top level")
+		}
+		if _, exists := args["committed_source"]; exists {
+			return taskCallArguments{}, errors.New("task regular launches must declare committed_source on each Coder launch, not at top level")
 		}
 		typed, ok := rawLaunches.([]any)
 		if !ok {
@@ -1049,6 +1111,9 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		job.RecoverySourceDigest = mapString(row, "recovery_source_digest")
 		if err := validateRecoveryLaunch(job.RecoverySourceDigest, job.RequestedSubagentType, ownedScope); err != nil {
 			return nil, nil, err
+		}
+		if _, exists := row["committed_source"]; exists {
+			return nil, nil, fmt.Errorf("task program jobs[%d]: committed_source is not supported in Task Program job definitions", i)
 		}
 		job.OwnedScope = ownedScope
 		launch := taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath, OwnedScope: append([]string(nil), ownedScope...)}
@@ -3614,6 +3679,44 @@ func retainTaskResolvedWorkspace(launch *taskLaunchSpec, program *taskProgramSpe
 }
 
 func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
+	if launch.CommittedSourceBinding != nil {
+		binding := launch.CommittedSourceBinding
+		target := binding.DestinationPath
+		name := filepath.Base(binding.CanonicalSourcePath)
+		if s != nil && s.workspace != nil {
+			if resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, binding.CanonicalSourcePath); scopeErr == nil && strings.TrimSpace(resolved.WorkspaceName) != "" {
+				name = strings.TrimSpace(resolved.WorkspaceName)
+			}
+		}
+		return target, name, nil
+	}
+	if launch.CommittedSource != nil && launch.CommittedSourceBinding == nil {
+		if s == nil || s.tools == nil {
+			return "", "", errors.New("committed source authority unavailable")
+		}
+		p, pErr := principalForRunWorkspaceScope(parentSession, principal)
+		if pErr != nil {
+			return "", "", pErr
+		}
+		scope := tool.WorkspaceScope{
+			SessionID:   parentSession.ID,
+			PrimaryPath: parentSession.WorkspacePath,
+			Principal:   p,
+		}
+		binding, bErr := s.tools.ResolveCommittedSource(scope, *launch.CommittedSource)
+		if bErr != nil {
+			return "", "", fmt.Errorf("resolve committed source target workspace: %w", bErr)
+		}
+		launch.CommittedSourceBinding = &binding
+		target := binding.DestinationPath
+		name := filepath.Base(binding.CanonicalSourcePath)
+		if s != nil && s.workspace != nil {
+			if resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(p, binding.CanonicalSourcePath); scopeErr == nil && strings.TrimSpace(resolved.WorkspaceName) != "" {
+				name = strings.TrimSpace(resolved.WorkspaceName)
+			}
+		}
+		return target, name, nil
+	}
 	if launch.ProgramRepositoryLane != nil {
 		lane := launch.ProgramRepositoryLane
 		sourceLaunch := launch
@@ -3884,6 +3987,12 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 		if row.RecoverySourceDigest != launchSpecs[i].RecoverySourceDigest {
 			return taskLaunchManifest{}, errors.New("approved recovery source differs from requested digest")
 		}
+		if !reflect.DeepEqual(row.CommittedSource, launchSpecs[i].CommittedSource) {
+			return taskLaunchManifest{}, errors.New("approved committed source differs from requested tuple")
+		}
+		if !reflect.DeepEqual(row.CommittedSourceBinding, launchSpecs[i].CommittedSourceBinding) {
+			return taskLaunchManifest{}, errors.New("approved committed source binding differs from resolved binding")
+		}
 		if !reflect.DeepEqual(row.OwnedScope, launchSpecs[i].OwnedScope) {
 			return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d owned scope mismatch", i)
 		}
@@ -4140,6 +4249,29 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	resolvedAgentError := ""
 	requestedPrimary := ""
 	for i, launch := range parsed.Launches {
+		if launch.CommittedSource != nil {
+			if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
+				return taskLaunchManifest{}, fmt.Errorf("task launches[%d]: committed_source is supported only for Coder launches", i)
+			}
+			if s == nil || s.tools == nil {
+				return taskLaunchManifest{}, errors.New("committed source authority unavailable")
+			}
+			p, pErr := principalForRunWorkspaceScope(parentSession, identity.Principal{})
+			if pErr != nil {
+				return taskLaunchManifest{}, pErr
+			}
+			scope := tool.WorkspaceScope{
+				SessionID:   parentSession.ID,
+				PrimaryPath: parentSession.WorkspacePath,
+				Principal:   p,
+			}
+			binding, bErr := s.tools.ResolveCommittedSource(scope, *launch.CommittedSource)
+			if bErr != nil {
+				return taskLaunchManifest{}, fmt.Errorf("task launches[%d] committed_source: %w", i, bErr)
+			}
+			launch.CommittedSourceBinding = &binding
+			launch.TargetWorkspacePath = binding.DestinationPath
+		}
 		targetWorkspacePath, targetWorkspaceName, targetErr := s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, launch)
 		if targetErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
@@ -4216,6 +4348,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			Deliverable:           strings.TrimSpace(launch.Deliverable),
 			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
 			RecoverySourceDigest:  launch.RecoverySourceDigest,
+			CommittedSource:        cloneTaskCommittedSourceRequest(launch.CommittedSource),
+			CommittedSourceBinding: cloneTaskCommittedSourceBinding(launch.CommittedSourceBinding),
 			OwnedScope:            append([]string(nil), launch.OwnedScope...),
 			OutputMode:            strings.TrimSpace(launch.OutputMode),
 			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),

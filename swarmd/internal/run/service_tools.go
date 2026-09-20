@@ -78,6 +78,9 @@ type taskLaunchPrepared struct {
 	ReservationSessionID    string
 	ProgramID               string
 	ProgramJobID            string
+	CommittedSource         *tool.CommittedSourceRequest
+	CommittedSourceBinding  *tool.CommittedSourceBinding
+	Allocation              *worktreeruntime.Allocation
 }
 
 func cloneArtifactV3AuthorRunContext(input *tool.ArtifactV3AuthorRunContext) *tool.ArtifactV3AuthorRunContext {
@@ -211,6 +214,9 @@ type taskLaunchOutcome struct {
 	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
 	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
 	ArtifactReference     *taskArtifactReference
+	CommittedSource       *tool.CommittedSourceRequest
+	CommittedSourceBinding *tool.CommittedSourceBinding
+	IntegrationBaseCommit string
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -842,6 +848,11 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 		OutputMode:          strings.TrimSpace(launch.OutputMode),
 		OutputRequirements:  cloneTaskOutputRequirements(launch.OutputRequirements),
 		AnimationProfile:    cloneTaskAnimationProfile(launch.AnimationProfile),
+		CommittedSource:     cloneTaskCommittedSourceRequest(launch.CommittedSource),
+		CommittedSourceBinding: cloneTaskCommittedSourceBinding(launch.CommittedSourceBinding),
+	}
+	if launch.CommittedSourceBinding != nil {
+		outcome.IntegrationBaseCommit = strings.TrimSpace(launch.CommittedSourceBinding.IntegrationBaseCommit)
 	}
 	if launch.ArtifactV3AuthorContext != nil {
 		grant := launch.ArtifactV3AuthorContext.Grant
@@ -1255,6 +1266,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		defaultWorkspacePath = parentSession.WorktreeRootPath
 	}
 	targetWorkspacePath := strings.TrimSpace(firstNonEmptyString(launch.TargetWorkspacePath, defaultWorkspacePath))
+	if launch.CommittedSourceBinding != nil {
+		targetWorkspacePath = strings.TrimSpace(launch.CommittedSourceBinding.DestinationPath)
+	}
 	childWorkspacePath := targetWorkspacePath
 	childWorkspaceName := filepath.Base(targetWorkspacePath)
 	if targetWorkspacePath == strings.TrimSpace(parentSession.WorkspacePath) {
@@ -1454,6 +1468,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		childWorktreeBranch = strings.TrimSpace(allocation.BranchName)
 		childWorkspaceID = strings.TrimSpace(allocation.WorkspaceID)
 		childTemporaryWorkspaceRoots = nil
+		launch.Allocation = &allocation
 	}
 
 	if isManagedArtifactTarget && (launch.ArtifactRunContext != nil || launch.ArtifactV2AuthorContext != nil || launch.ArtifactV3AuthorContext != nil) {
@@ -1466,7 +1481,27 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if childWorkspaceID != "" {
 		childMetadata["workspace_id"] = childWorkspaceID
 	}
-	if targetWorkspacePath != "" {
+	if launch.CommittedSourceBinding != nil {
+		childMetadata["swarm_v3_source_workspace_path"] = launch.CommittedSourceBinding.CanonicalSourcePath
+		childMetadata["target_workspace_path"] = launch.CommittedSourceBinding.DestinationPath
+		childMetadata["parent_branch"] = launch.CommittedSourceBinding.DestinationBranch
+		childMetadata["destination_kind"] = launch.CommittedSourceBinding.DestinationKind
+		childMetadata["integration_base_commit"] = launch.CommittedSourceBinding.IntegrationBaseCommit
+		if launch.CommittedSourceBinding.CurrentWorkspaceID != "" {
+			childMetadata["swarm_v3_source_workspace_id"] = launch.CommittedSourceBinding.CurrentWorkspaceID
+		}
+		if launch.CommittedSourceBinding.CurrentWorkspaceGeneration != "" {
+			childMetadata["swarm_v3_source_workspace_generation"] = launch.CommittedSourceBinding.CurrentWorkspaceGeneration
+		}
+		if launch.CommittedSource != nil {
+			childMetadata["committed_source"] = map[string]any{
+				"task_call_id":     launch.CommittedSource.TaskCallID,
+				"child_session_id": launch.CommittedSource.ChildSessionID,
+				"head_commit":      launch.CommittedSource.HeadCommit,
+			}
+		}
+		childMetadata["committed_source_binding"] = *launch.CommittedSourceBinding
+	} else if targetWorkspacePath != "" {
 		childMetadata["swarm_v3_source_workspace_path"] = targetWorkspacePath
 		childMetadata["target_workspace_path"] = targetWorkspacePath
 	}
@@ -1552,6 +1587,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		NowUnixMs:         nowMS,
 	})
 	if err != nil {
+		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
+			_ = s.worktrees.RollbackAllocation(*launch.Allocation)
+		}
 		return taskLaunchPrepared{}, fmt.Errorf("task failed to create canonical v3 subagent session: %w", err)
 	}
 	if created.Session != nil {
@@ -1563,9 +1601,15 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		ProgramID: launch.ProgramID, JobID: launch.ProgramJobID,
 	}, generationRecord, "delegated-child-create:"+strings.TrimSpace(launch.LogicalTaskID))
 	if lineageErr != nil {
+		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
+			_ = s.worktrees.RollbackAllocation(*launch.Allocation)
+		}
 		return taskLaunchPrepared{}, fmt.Errorf("establish delegated child generation authority: %w", lineageErr)
 	}
 	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
+		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
+			_ = s.worktrees.RollbackAllocation(*launch.Allocation)
+		}
 		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
 	}
 
@@ -4591,6 +4635,17 @@ func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode st
 	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal, RunID: runID})
 }
 
+func (s *Service) rollbackPreparedAllocations(prepared []taskLaunchPrepared) {
+	if s == nil || s.worktrees == nil {
+		return
+	}
+	for _, p := range prepared {
+		if p.Allocation != nil {
+			_ = s.worktrees.RollbackAllocation(*p.Allocation)
+		}
+	}
+}
+
 func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (taskResult string, taskErr error) {
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
@@ -4964,6 +5019,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		for i := range launchSpecs {
 			row := manifest.Launches[i]
 			launchSpecs[i].RecoverySourceDigest = row.RecoverySourceDigest
+			launchSpecs[i].CommittedSource = cloneTaskCommittedSourceRequest(row.CommittedSource)
+			launchSpecs[i].CommittedSourceBinding = cloneTaskCommittedSourceBinding(row.CommittedSourceBinding)
 			launchSpecs[i].OwnedScope = append([]string(nil), row.OwnedScope...)
 			profile, err := cloneTaskAgentProfile(*row.ProfileSnapshot)
 			if err != nil {
@@ -5034,7 +5091,40 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", errors.New("write-capable Coders require separate worktree isolation")
 		}
 		for _, index := range coderIndexes {
-			targetPath := strings.TrimSpace(firstNonEmptyString(launchSpecs[index].TargetWorkspacePath, parentSession.WorkspacePath))
+			spec := launchSpecs[index]
+			if spec.CommittedSource != nil {
+				if s.tools == nil {
+					return "", errors.New("committed source authority unavailable")
+				}
+				p, pErr := principalForRunWorkspaceScope(parentSession, req.Principal)
+				if pErr != nil {
+					return "", pErr
+				}
+				scope := tool.WorkspaceScope{
+					SessionID:   parentSession.ID,
+					PrimaryPath: parentSession.WorkspacePath,
+					Principal:   p,
+				}
+				freshBinding, bErr := s.tools.ResolveCommittedSource(scope, *spec.CommittedSource)
+				if bErr != nil {
+					return "", fmt.Errorf("task launches[%d] committed_source recheck failed: %w", index, bErr)
+				}
+				if spec.CommittedSourceBinding != nil && *spec.CommittedSourceBinding != freshBinding {
+					return "", fmt.Errorf("task launches[%d] committed source binding changed between approval and execution", index)
+				}
+				spec.CommittedSourceBinding = &freshBinding
+				launchSpecs[index].CommittedSourceBinding = &freshBinding
+				resolved, resolveErr := s.worktrees.ResolveTaskBase(freshBinding.DestinationPath)
+				if resolveErr != nil {
+					return "", fmt.Errorf("task failed to resolve target Git state for committed source destination %q: %w", freshBinding.DestinationPath, resolveErr)
+				}
+				base := resolved
+				base.ParentBranch = freshBinding.DestinationBranch
+				base.BaseCommit = freshBinding.HeadCommit
+				coderTaskBases[fmt.Sprintf("committed_source:%d", index)] = &base
+				continue
+			}
+			targetPath := strings.TrimSpace(firstNonEmptyString(spec.TargetWorkspacePath, parentSession.WorkspacePath))
 			if _, exists := coderTaskBases[targetPath]; exists {
 				continue
 			}
@@ -5088,8 +5178,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launchTaskBase := (*worktreeruntime.TaskBase)(nil)
 		if agentruntime.IsCoderAgentName(requestedSubagent) {
-			targetPath := strings.TrimSpace(firstNonEmptyString(spec.TargetWorkspacePath, parentSession.WorkspacePath))
-			launchTaskBase = coderTaskBases[targetPath]
+			if spec.CommittedSource != nil {
+				launchTaskBase = coderTaskBases[fmt.Sprintf("committed_source:%d", i)]
+			} else {
+				targetPath := strings.TrimSpace(firstNonEmptyString(spec.TargetWorkspacePath, parentSession.WorkspacePath))
+				launchTaskBase = coderTaskBases[targetPath]
+			}
 		}
 		var managedArtifactContext *tool.ArtifactRunContext
 		var managedV3Context *tool.ArtifactV3AuthorRunContext
@@ -5114,6 +5208,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			AssignmentLabel:         spec.AssignmentLabel,
 			RecoverySourceDigest:    spec.RecoverySourceDigest,
 			RecoveryPrincipal:       req.Principal,
+			CommittedSource:         cloneTaskCommittedSourceRequest(spec.CommittedSource),
+			CommittedSourceBinding:  cloneTaskCommittedSourceBinding(spec.CommittedSourceBinding),
 			OwnedScope:              append([]string(nil), spec.OwnedScope...),
 			OutputMode:              strings.TrimSpace(spec.OutputMode),
 			OutputRequirements:      cloneTaskOutputRequirements(spec.OutputRequirements),
@@ -5142,6 +5238,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launchInput, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
+			s.rollbackPreparedAllocations(prepared)
 			return "", prepareErr
 		}
 		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
@@ -5149,7 +5246,32 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	if imageManaged {
 		if err := s.ensureManagedDesignerArtifactPlaceholders(parentSession, prepared, req.ApplySessionMutation); err != nil {
+			s.rollbackPreparedAllocations(prepared)
 			return "", err
+		}
+	}
+
+	for i, p := range prepared {
+		if p.CommittedSource != nil {
+			pPrincipal, pErr := principalForRunWorkspaceScope(parentSession, req.Principal)
+			if pErr != nil {
+				s.rollbackPreparedAllocations(prepared)
+				return "", pErr
+			}
+			scope := tool.WorkspaceScope{
+				SessionID:   parentSession.ID,
+				PrimaryPath: parentSession.WorkspacePath,
+				Principal:   pPrincipal,
+			}
+			recheckBinding, err := s.tools.ResolveCommittedSource(scope, *p.CommittedSource)
+			if err != nil {
+				s.rollbackPreparedAllocations(prepared)
+				return "", fmt.Errorf("recheck committed source before publication for launch %d: %w", i+1, err)
+			}
+			if p.CommittedSourceBinding == nil || recheckBinding != *p.CommittedSourceBinding {
+				s.rollbackPreparedAllocations(prepared)
+				return "", fmt.Errorf("recheck committed source before publication for launch %d: source binding changed", i+1)
+			}
 		}
 	}
 
@@ -5157,9 +5279,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if taskToolName == "" {
 		taskToolName = "task"
 	}
-	lineageUpdate := func(status string, launches []taskLaunchOutcome, extra map[string]any) {
+	lineageUpdate := func(status string, launches []taskLaunchOutcome, extra map[string]any) error {
 		if s == nil || s.sessions == nil {
-			return
+			return errors.New("sessions service unavailable")
 		}
 		metadata := cloneGenericMap(parentSession.Metadata)
 		if metadata == nil {
@@ -5216,6 +5338,19 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			entry["worktree_root_path"] = strings.TrimSpace(launches[0].WorktreeRootPath)
 			entry["worktree_base_branch"] = strings.TrimSpace(launches[0].WorktreeBaseBranch)
 			entry["worktree_branch"] = strings.TrimSpace(launches[0].WorktreeBranch)
+			if launches[0].CommittedSource != nil {
+				entry["committed_source"] = map[string]any{
+					"task_call_id":     launches[0].CommittedSource.TaskCallID,
+					"child_session_id": launches[0].CommittedSource.ChildSessionID,
+					"head_commit":      launches[0].CommittedSource.HeadCommit,
+				}
+			}
+			if launches[0].CommittedSourceBinding != nil {
+				entry["committed_source_binding"] = *launches[0].CommittedSourceBinding
+			}
+			if launches[0].IntegrationBaseCommit != "" {
+				entry["integration_base_commit"] = launches[0].IntegrationBaseCommit
+			}
 		}
 		launchRows := make([]map[string]any, 0, len(launches))
 		for _, launch := range launches {
@@ -5272,6 +5407,19 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"output_requirements":     launch.OutputRequirements,
 				"animation_profile":       launch.AnimationProfile,
 			}
+			if launch.CommittedSource != nil {
+				launchRow["committed_source"] = map[string]any{
+					"task_call_id":     launch.CommittedSource.TaskCallID,
+					"child_session_id": launch.CommittedSource.ChildSessionID,
+					"head_commit":      launch.CommittedSource.HeadCommit,
+				}
+			}
+			if launch.CommittedSourceBinding != nil {
+				launchRow["committed_source_binding"] = *launch.CommittedSourceBinding
+			}
+			if launch.IntegrationBaseCommit != "" {
+				launchRow["integration_base_commit"] = launch.IntegrationBaseCommit
+			}
 			if launch.ArtifactReference != nil {
 				launchRow["artifact_reference"] = launch.ArtifactReference
 				launchRow["artifact_status"] = launch.ArtifactReference.Status
@@ -5290,14 +5438,52 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launchMap[taskCallID] = entry
 		metadata["task_launches"] = launchMap
+
+		applyMutation := req.ApplySessionMutation
+		if applyMutation == nil && s.sessions != nil {
+			applyMutation = s.sessions.ApplySessionMutation
+		}
+		if applyMutation != nil {
+			nowMS := time.Now().UnixMilli()
+			reqKey := fmt.Sprintf("task-lineage:%s:%s", taskCallID, status)
+			updatedSession := parentSession
+			updatedSession.Metadata = metadata
+			updatedSession.UpdatedAt = nowMS
+
+			mutationInput := sessionruntime.SessionMutationInput{
+				SessionID:       parentSession.ID,
+				UserID:          strings.TrimSpace(parentSession.UserID),
+				AccountScopeID:  strings.TrimSpace(parentSession.AccountScopeID),
+				ClientRequestID: reqKey,
+				IdempotencyKey:  reqKey,
+				PayloadHash:     reqKey,
+				RequestHash:     reqKey,
+				Kind:            sessionruntime.SessionMutationUpdateMetadata,
+				Session:         &updatedSession,
+				NowUnixMs:       nowMS,
+			}
+			res, updateErr := applyMutation(mutationInput)
+			if updateErr != nil {
+				return updateErr
+			}
+			if res.Session != nil {
+				parentSession = *res.Session
+			}
+			for _, event := range res.Events {
+				s.publishEventEnvelope(event)
+			}
+			return nil
+		}
+
 		updated, env, updateErr := s.sessions.UpdateMetadata(parentSession.ID, metadata)
 		if updateErr != nil {
-			return
+			return updateErr
 		}
 		parentSession = updated
 		if env != nil {
 			s.publishEventEnvelope(*env)
 		}
+		return nil
 	}
 	emitTaskProgress := func(phase, summary string, launch taskLaunchOutcome) {
 		phase = strings.TrimSpace(phase)
@@ -5311,7 +5497,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		spawned = append(spawned, launch)
 		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
 	}
-	lineageUpdate("spawned", spawned, nil)
+	if err := lineageUpdate("spawned", spawned, nil); err != nil {
+		s.rollbackPreparedAllocations(prepared)
+		return "", fmt.Errorf("publish parent task launch lineage: %w", err)
+	}
 	if parsed.Program != nil {
 		nextAction := "await_running_jobs"
 		state := pebblestore.TaskProgramStateRunning
@@ -5960,7 +6149,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	integrationRequired, integrationStatus, readyForDependentWork := taskAssemblyIntegrationState(swarmStrategy, successCount, failedCount, cancelledCount, len(outcomes))
 	artifactReferences := collectTaskReadyArtifactReferences(outcomes, runErrs)
 	recoverableDesignerFailures := countRecoverableManagedDesignerInspectionFailures(outcomes, runErrs)
-	lineageUpdate(overallStatus, outcomes, map[string]any{
+	if err := lineageUpdate(overallStatus, outcomes, map[string]any{
 		"success_count":            successCount,
 		"failed_count":             failedCount,
 		"cancelled_count":          cancelledCount,
@@ -5973,7 +6162,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		"ready_for_dependent_work": readyForDependentWork,
 		"artifact_references":      artifactReferences,
 		"artifact_count":           len(artifactReferences),
-	})
+	}); err != nil {
+		return "", fmt.Errorf("finalize parent task launch lineage: %w", err)
+	}
 
 	payload := map[string]any{
 		"tool":                    "task",
