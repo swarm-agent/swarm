@@ -118,3 +118,19 @@ test('VideoToolPage integrates HistoricalMediaLibrary under Studio with navigati
   assert.match(source, /activeStudioTab === 'media'/)
   assert.match(source, /<HistoricalMediaLibrary/)
 })
+
+test('DesktopAppPage has Media navigation button below Studio in sidebar', () => {
+  const appPageSourceUrl = new URL('../../layout/desktop-app-page.tsx', import.meta.url)
+  const appPageSource = readFileSync(appPageSourceUrl, 'utf8')
+
+  assert.match(appPageSource, /aria-label="Open Media"/)
+  assert.match(appPageSource, /title="Media"/)
+  assert.match(appPageSource, /data-testid="sidebar-media-btn"/)
+  assert.match(appPageSource, /search:\s*\{\s*view:\s*'media'\s*\}/)
+
+  const studioIdx = appPageSource.indexOf('aria-label="Open Studio"')
+  const mediaIdx = appPageSource.indexOf('aria-label="Open Media"')
+  const environmentsIdx = appPageSource.indexOf('aria-label="Open Environments"')
+  assert.ok(studioIdx !== -1 && mediaIdx !== -1 && environmentsIdx !== -1)
+  assert.ok(studioIdx < mediaIdx && mediaIdx < environmentsIdx, 'expected Media to be below Studio and above Environments')
+})
