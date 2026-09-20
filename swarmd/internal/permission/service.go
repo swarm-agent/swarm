@@ -144,12 +144,12 @@ func NewService(store *pebblestore.PermissionStore, events *pebblestore.EventLog
 	}
 	s.capacity = executioncapacity.NewManager(executioncapacity.ManagerConfig{
 		DefaultLimit: DefaultActiveExecutionLimit,
-		LimitResolver: func(accountScopeID string) int {
+		LimitResolver: func(accountScopeID string) (int, error) {
 			policy, err := s.CurrentPolicyForAccount(accountScopeID)
 			if err != nil {
-				return DefaultActiveExecutionLimit
+				return 0, err
 			}
-			return policy.ActiveExecutionLimit
+			return policy.ActiveExecutionLimit, nil
 		},
 	})
 	return s
@@ -174,24 +174,23 @@ func (s *Service) SetExecutionCapacity(mgr *executioncapacity.Manager) {
 // ExecutionCapacitySnapshot returns the atomic capacity snapshot for an account.
 func (s *Service) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
 	if s == nil || s.capacity == nil {
-		limit := DefaultActiveExecutionLimit
-		if s != nil {
-			if pol, err := s.CurrentPolicyForAccount(accountScopeID); err == nil && pol.ActiveExecutionLimit > 0 {
-				limit = pol.ActiveExecutionLimit
-			}
-		}
 		return executioncapacity.Snapshot{
 			AccountScopeID:       strings.TrimSpace(accountScopeID),
-			EffectiveLimit:       limit,
-			TotalActive:          0,
-			DeployedActive:       0,
-			Pending:              0,
-			Available:            limit,
 			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
 			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+			Unavailable:          true,
+			Error:                "execution capacity service is unavailable",
 		}
 	}
 	return s.capacity.Snapshot(accountScopeID)
+}
+
+// ActiveLeaseForSession returns the active lease for a session, if any, for internal compact lookup.
+func (s *Service) ActiveLeaseForSession(accountScopeID, sessionID string) executioncapacity.Lease {
+	if s == nil || s.capacity == nil {
+		return nil
+	}
+	return s.capacity.ActiveLeaseForSession(accountScopeID, sessionID)
 }
 
 // AdmitExecution admits an execution request through the shared capacity manager.

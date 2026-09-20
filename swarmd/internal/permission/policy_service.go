@@ -56,12 +56,37 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 }
 
 func (s *Service) UpdateActiveExecutionLimitForAccount(accountScopeID string, limit int) (Policy, error) {
+	return s.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, nil, nil, &limit)
+}
+
+// UpdateExecutionCapabilityPoliciesForAccount atomically validates and updates session deploy,
+// plan acceptance, and/or active execution limit policies for an account. It notifies the shared
+// execution capacity manager after unlock, avoiding lock inversion between permission and capacity locks.
+func (s *Service) UpdateExecutionCapabilityPoliciesForAccount(
+	accountScopeID string,
+	sessionDeploy *SessionDeployPolicy,
+	planAcceptance *PlanAcceptancePolicy,
+	activeExecutionLimit *int,
+) (Policy, error) {
 	if s == nil {
 		return Policy{}, errors.New("permission service is not configured")
 	}
-	if err := ValidateActiveExecutionLimit(limit); err != nil {
-		return Policy{}, err
+	if sessionDeploy != nil {
+		if err := ValidateSessionDeployPolicy(*sessionDeploy); err != nil {
+			return Policy{}, err
+		}
 	}
+	if planAcceptance != nil {
+		if err := ValidatePlanAcceptancePolicy(*planAcceptance); err != nil {
+			return Policy{}, err
+		}
+	}
+	if activeExecutionLimit != nil {
+		if err := ValidateActiveExecutionLimit(*activeExecutionLimit); err != nil {
+			return Policy{}, err
+		}
+	}
+
 	s.mu.Lock()
 	state, err := s.loadPermissionStateLocked(accountScopeID)
 	if err != nil {
@@ -69,7 +94,15 @@ func (s *Service) UpdateActiveExecutionLimitForAccount(accountScopeID string, li
 		return Policy{}, err
 	}
 	policy := state.Policy
-	policy.ActiveExecutionLimit = limit
+	if sessionDeploy != nil {
+		policy.SessionDeploy = *sessionDeploy
+	}
+	if planAcceptance != nil {
+		policy.PlanAcceptance = *planAcceptance
+	}
+	if activeExecutionLimit != nil {
+		policy.ActiveExecutionLimit = *activeExecutionLimit
+	}
 	now := time.Now().UnixMilli()
 	policy.UpdatedAt = now
 	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
@@ -78,10 +111,11 @@ func (s *Service) UpdateActiveExecutionLimitForAccount(accountScopeID string, li
 	}
 	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
 	normalized := NormalizePolicy(policy)
+	limitChanged := activeExecutionLimit != nil
 	s.mu.Unlock()
 
-	if s.capacity != nil {
-		s.capacity.SetLimit(accountScopeID, normalized.ActiveExecutionLimit)
+	if limitChanged && s.capacity != nil {
+		s.capacity.NotifyLimitChanged(accountScopeID)
 	}
 	return normalized, nil
 }
@@ -112,31 +146,7 @@ func (s *Service) UpdateBashApprovalProfileForAccount(accountScopeID string, pro
 }
 
 func (s *Service) UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy SessionDeployPolicy, planAcceptance PlanAcceptancePolicy) (Policy, error) {
-	if s == nil {
-		return Policy{}, errors.New("permission service is not configured")
-	}
-	if err := ValidateSessionDeployPolicy(sessionDeploy); err != nil {
-		return Policy{}, err
-	}
-	if err := ValidatePlanAcceptancePolicy(planAcceptance); err != nil {
-		return Policy{}, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state, err := s.loadPermissionStateLocked(accountScopeID)
-	if err != nil {
-		return Policy{}, err
-	}
-	policy := state.Policy
-	policy.SessionDeploy = sessionDeploy
-	policy.PlanAcceptance = planAcceptance
-	now := time.Now().UnixMilli()
-	policy.UpdatedAt = now
-	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
-		return Policy{}, err
-	}
-	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
-	return NormalizePolicy(policy), nil
+	return s.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, &sessionDeploy, &planAcceptance, nil)
 }
 
 func (s *Service) CurrentSubagentPolicyForAccount(accountScopeID string) (map[string]any, error) {
@@ -319,16 +329,22 @@ func (s *Service) ResetPolicyForAccount(accountScopeID string) (Policy, error) {
 	policy.UpdatedAt = now
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	state, err := s.loadPermissionStateLocked(accountScopeID)
 	if err != nil {
+		s.mu.Unlock()
 		return Policy{}, err
 	}
 
 	if err := s.persistPolicyLocked(accountScopeID, policy); err != nil {
+		s.mu.Unlock()
 		return Policy{}, err
 	}
 	s.cachePermissionStateLocked(accountScopeID, policy, state.BypassPermissions, now, state.BypassUpdatedAt)
+	s.mu.Unlock()
+
+	if s.capacity != nil {
+		s.capacity.NotifyLimitChanged(accountScopeID)
+	}
 	return policy, nil
 }
 

@@ -309,8 +309,6 @@ func NormalizePolicy(policy Policy) Policy {
 	}
 	if policy.ActiveExecutionLimit == 0 {
 		policy.ActiveExecutionLimit = DefaultActiveExecutionLimit
-	} else if err := ValidateActiveExecutionLimit(policy.ActiveExecutionLimit); err != nil {
-		policy.ActiveExecutionLimit = DefaultActiveExecutionLimit
 	}
 	if policy.UpdatedAt < 0 {
 		policy.UpdatedAt = 0

@@ -13,9 +13,10 @@ type lease struct {
 	kind           ExecutionKind
 	m              *Manager
 
-	mu       sync.Mutex
-	parked   bool
-	released bool
+	mu          sync.Mutex
+	parked      bool
+	released    bool
+	reacquiring bool
 }
 
 func (l *lease) ID() string {

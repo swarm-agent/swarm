@@ -27,11 +27,28 @@ func (s *staticCapacityProvider) ExecutionCapacitySnapshot(accountScopeID string
 	}
 }
 
+// TestManageSessionsInspectCapacityUnavailable verifies that when no capacity provider
+// is configured, inspect returns an explicit error rather than fabricating 100 available.
+func TestManageSessionsInspectCapacityUnavailable(t *testing.T) {
+	runtime := &Runtime{sessions: &gitManageSessionService{}}
+	principal := identity.Principal{AccountScopeID: "account-default", UserID: "user-1"}
+	scope := WorkspaceScope{Principal: principal}
+
+	_, err := runtime.executeManageSessions(context.Background(), scope, map[string]any{"action": "inspect"})
+	if err == nil || !strings.Contains(err.Error(), "execution capacity service is unavailable") {
+		t.Fatalf("expected unavailable capacity error, got: %v", err)
+	}
+}
+
 // TestManageSessionsInspectCapacityDefaults verifies that manage-sessions inspect
 // returns standard execution capacity facts with default 100 ceiling, 8 batch bound,
-// and explicitly null saved_session_quota when no custom capacity is configured.
+// and explicitly null saved_session_quota when configured with a real capacity authority.
 func TestManageSessionsInspectCapacityDefaults(t *testing.T) {
 	runtime := &Runtime{sessions: &gitManageSessionService{}}
+	mgr := executioncapacity.NewManager(executioncapacity.ManagerConfig{DefaultLimit: 100})
+	defer mgr.Close()
+	runtime.SetManageSessionCapacityProvider(mgr)
+
 	principal := identity.Principal{AccountScopeID: "account-default", UserID: "user-1"}
 	scope := WorkspaceScope{Principal: principal}
 
@@ -103,7 +120,7 @@ func TestManageSessionsInspectCapacityDefaults(t *testing.T) {
 // reads live atomic capacity numbers from the shared execution capacity manager without
 // fabricated independent counters.
 func TestManageSessionsInspectCapacityIntegratedWithSharedAuthority(t *testing.T) {
-	mgr := executioncapacity.NewManager(100)
+	mgr := executioncapacity.NewManager(executioncapacity.ManagerConfig{DefaultLimit: 100})
 	defer mgr.Close()
 
 	accountID := "acc-shared-authority"

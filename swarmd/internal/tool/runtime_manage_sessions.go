@@ -65,6 +65,13 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 	action := strings.ToLower(strings.TrimSpace(stringValue(args["action"])))
 	if action == "inspect" {
 		snap := r.capacitySnapshot(scope.Principal.AccountScopeID)
+		if snap.Unavailable || snap.Error != "" {
+			errStr := snap.Error
+			if errStr == "" {
+				errStr = "execution capacity service is unavailable"
+			}
+			return "", fmt.Errorf("execution capacity service is unavailable: %s", errStr)
+		}
 		return marshalManageSessions(map[string]any{
 			"tool":    "manage_sessions",
 			"action":  "inspect",

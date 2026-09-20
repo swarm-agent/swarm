@@ -920,10 +920,10 @@ func (r *Runtime) capacitySnapshot(accountScopeID string) executioncapacity.Snap
 	}
 	return executioncapacity.Snapshot{
 		AccountScopeID:       strings.TrimSpace(accountScopeID),
-		EffectiveLimit:       executioncapacity.DefaultActiveExecutionLimit,
-		Available:            executioncapacity.DefaultActiveExecutionLimit,
 		DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
 		SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+		Unavailable:          true,
+		Error:                "execution capacity service is unavailable",
 	}
 }
 

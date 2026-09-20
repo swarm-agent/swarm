@@ -46,8 +46,9 @@ var (
 	ErrQueueFull         = errors.New("execution capacity queue is full")
 	ErrLeaseReleased      = errors.New("execution capacity lease already released")
 	ErrLeaseAlreadyParked = errors.New("execution capacity lease already parked")
-	ErrLeaseNotParked     = errors.New("execution capacity lease is not parked")
-	ErrSessionRequired    = errors.New("session ID is required for execution capacity admission")
+	ErrLeaseNotParked          = errors.New("execution capacity lease is not parked")
+	ErrLeaseAlreadyReacquiring = errors.New("execution capacity lease is already reacquiring")
+	ErrSessionRequired         = errors.New("session ID is required for execution capacity admission")
 	ErrRunRequired        = errors.New("run ID is required for execution capacity admission")
 	ErrClosed             = errors.New("execution capacity manager is closed")
 )
@@ -81,6 +82,8 @@ type Snapshot struct {
 	Available            int    `json:"available"`
 	DeploymentBatchBound int    `json:"deployment_batch_bound"`
 	SavedQuota           string `json:"saved_quota"`
+	Unavailable          bool   `json:"unavailable,omitempty"`
+	Error                string `json:"error,omitempty"`
 }
 
 // Lease represents an admitted execution slot and session ownership.

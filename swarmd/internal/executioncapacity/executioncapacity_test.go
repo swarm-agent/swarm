@@ -714,3 +714,625 @@ func TestContextHelpers(t *testing.T) {
 		t.Fatalf("stripped context still returned lease")
 	}
 }
+
+// TestCap1ParentParkWithSecondRunQueued tests the critical case where capacity is 1,
+// parent Run 1 is active, parent Run 2 is queued (blocked by session ownership),
+// parent Run 1 parks, an unrelated session acquires the freed slot, parent Run 1
+// attempts Reacquire and queues behind Run 2, the unrelated session releases,
+// and parent Run 1 reacquires without deadlocking with Run 2. Once parent Run 1
+// finally releases, Run 2 unblocks and executes.
+func TestCap1ParentParkWithSecondRunQueued(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 1})
+	defer mgr.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// 1. Parent Run 1 acquires slot 1
+	p1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-cap1",
+		SessionID:      "sess-parent",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("p1 acquire: %v", err)
+	}
+
+	// 2. Parent Run 2 arrives for same session: blocked by session serialization
+	p2ErrCh := make(chan error, 1)
+	var p2 Lease
+	go func() {
+		var err error
+		p2, err = mgr.Acquire(ctx, AcquireRequest{
+			AccountScopeID: "acc-cap1",
+			SessionID:      "sess-parent",
+			RunID:          "run-2",
+		})
+		p2ErrCh <- err
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	snap := mgr.Snapshot("acc-cap1")
+	if snap.TotalActive != 1 || snap.Pending != 1 {
+		t.Fatalf("expected 1 active, 1 pending; got %+v", snap)
+	}
+
+	// 3. Parent Run 1 parks: slot freed, but sess-parent ownership is still held by p1
+	if err := p1.Park(); err != nil {
+		t.Fatalf("p1 park: %v", err)
+	}
+	snap = mgr.Snapshot("acc-cap1")
+	if snap.TotalActive != 0 || snap.Available != 1 {
+		t.Fatalf("after p1 park expected 0 active, 1 available; got %+v", snap)
+	}
+
+	// 4. Unrelated session can acquire the freed slot because p2 cannot run while p1 holds sess-parent
+	u1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-cap1",
+		SessionID:      "sess-unrelated",
+		RunID:          "run-u1",
+	})
+	if err != nil {
+		t.Fatalf("u1 acquire: %v", err)
+	}
+
+	snap = mgr.Snapshot("acc-cap1")
+	if snap.TotalActive != 1 || snap.Available != 0 {
+		t.Fatalf("after u1 acquire expected 1 active, 0 available; got %+v", snap)
+	}
+
+	// 5. Parent Run 1 attempts Reacquire while u1 holds the slot.
+	// Reacquire queues behind p2 in waiters.
+	p1ReacquiredCh := make(chan error, 1)
+	go func() {
+		p1ReacquiredCh <- p1.Reacquire(ctx)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	snap = mgr.Snapshot("acc-cap1")
+	if snap.Pending != 2 {
+		t.Fatalf("expected 2 pending waiters (p2 and p1-reacquire), got %d", snap.Pending)
+	}
+
+	// 6. Unrelated session u1 releases.
+	// p1 MUST be dispatched and reacquire successfully, NOT deadlocking with p2!
+	if err := u1.Release(); err != nil {
+		t.Fatalf("u1 release: %v", err)
+	}
+
+	select {
+	case err := <-p1ReacquiredCh:
+		if err != nil {
+			t.Fatalf("p1 reacquire failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("p1 reacquire DEADLOCKED behind p2 in queue")
+	}
+
+	if !p1.IsActive() || p1.IsParked() {
+		t.Fatalf("p1 should be active after reacquire")
+	}
+
+	// p2 should STILL be pending because p1 is active
+	select {
+	case err := <-p2ErrCh:
+		t.Fatalf("p2 should not have completed while p1 is active, err: %v", err)
+	default:
+	}
+
+	// 7. p1 finishes and releases.
+	// Now sess-parent is freed and p2 unblocks!
+	if err := p1.Release(); err != nil {
+		t.Fatalf("p1 release: %v", err)
+	}
+
+	select {
+	case err := <-p2ErrCh:
+		if err != nil {
+			t.Fatalf("p2 acquire failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("p2 did not unblock after p1 released")
+	}
+
+	if p2 == nil || !p2.IsActive() {
+		t.Fatalf("p2 lease not active")
+	}
+	_ = p2.Release()
+}
+
+// TestCloseSignalsErrClosedNoFakeSuccess verifies that closing the manager signals
+// ErrClosed to all queued waiters in both Acquire and Reacquire, without fake nil-lease successes or panics.
+func TestCloseSignalsErrClosedNoFakeSuccess(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 1})
+
+	ctx := context.Background()
+
+	// Fill slot
+	l1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-close",
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("l1: %v", err)
+	}
+	defer l1.Release()
+
+	// Park lParked in another account
+	lParked, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-close-2",
+		SessionID:      "sess-parked",
+		RunID:          "run-p",
+	})
+	if err != nil {
+		t.Fatalf("lParked: %v", err)
+	}
+	if err := lParked.Park(); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+
+	// Saturate acc-close-2
+	lOther, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-close-2",
+		SessionID:      "sess-other",
+		RunID:          "run-o",
+	})
+	if err != nil {
+		t.Fatalf("lOther: %v", err)
+	}
+	defer lOther.Release()
+
+	// Enqueue Acquire waiter in acc-close
+	acquireErrCh := make(chan error, 1)
+	go func() {
+		lease, err := mgr.Acquire(ctx, AcquireRequest{
+			AccountScopeID: "acc-close",
+			SessionID:      "sess-2",
+			RunID:          "run-2",
+		})
+		if lease != nil {
+			t.Errorf("expected nil lease on closed manager, got %v", lease)
+		}
+		acquireErrCh <- err
+	}()
+
+	// Enqueue Reacquire waiter in acc-close-2
+	reacquireErrCh := make(chan error, 1)
+	go func() {
+		reacquireErrCh <- lParked.Reacquire(ctx)
+	}()
+
+	time.Sleep(40 * time.Millisecond)
+
+	// Close manager
+	mgr.Close()
+
+	select {
+	case err := <-acquireErrCh:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("expected ErrClosed for acquire, got: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("acquire waiter did not receive signal on close")
+	}
+
+	select {
+	case err := <-reacquireErrCh:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("expected ErrClosed for reacquire, got: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("reacquire waiter did not receive signal on close")
+	}
+
+	// Further acquire calls fail immediately with ErrClosed
+	_, err = mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-close",
+		SessionID:      "sess-3",
+		RunID:          "run-3",
+	})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("expected ErrClosed for post-close acquire, got: %v", err)
+	}
+}
+
+// TestReleaseParkedWithQueuedReacquireDoesNotResurrectOrGoNegative verifies that
+// releasing a parked lease while its Reacquire is queued cleans up the waiter,
+// returns ErrLeaseReleased to the reacquire call, does not resurrect the lease,
+// and prevents totalActive from going negative.
+func TestReleaseParkedWithQueuedReacquireDoesNotResurrectOrGoNegative(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 1})
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	// 1. Acquire and park l1
+	l1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-resurrect",
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("l1: %v", err)
+	}
+	if err := l1.Park(); err != nil {
+		t.Fatalf("park l1: %v", err)
+	}
+
+	// 2. Saturate slot with l2
+	l2, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-resurrect",
+		SessionID:      "sess-2",
+		RunID:          "run-2",
+	})
+	if err != nil {
+		t.Fatalf("l2: %v", err)
+	}
+	defer l2.Release()
+
+	// 3. l1 attempts Reacquire and queues
+	reacquireErrCh := make(chan error, 1)
+	go func() {
+		reacquireErrCh <- l1.Reacquire(ctx)
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	snap := mgr.Snapshot("acc-resurrect")
+	if snap.Pending != 1 {
+		t.Fatalf("expected 1 pending reacquire, got %d", snap.Pending)
+	}
+
+	// 4. Release l1 while Reacquire is queued
+	if err := l1.Release(); err != nil {
+		t.Fatalf("l1 release: %v", err)
+	}
+
+	// Reacquire should wake and return ErrLeaseReleased
+	select {
+	case err := <-reacquireErrCh:
+		if !errors.Is(err, ErrLeaseReleased) {
+			t.Fatalf("expected ErrLeaseReleased, got: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("reacquire did not wake on release")
+	}
+
+	// 5. Release l2: capacity must return to 0 active, 1 available (never negative!)
+	if err := l2.Release(); err != nil {
+		t.Fatalf("l2 release: %v", err)
+	}
+
+	snap = mgr.Snapshot("acc-resurrect")
+	if snap.TotalActive != 0 || snap.Available != 1 || snap.Pending != 0 {
+		t.Fatalf("unexpected snapshot after release: %+v", snap)
+	}
+
+	// l1 must remain released and not active
+	if l1.IsActive() || !l1.IsReleased() {
+		t.Fatalf("l1 should remain released and inactive")
+	}
+}
+
+// TestConcurrentDuplicateReacquire verifies that calling Reacquire concurrently
+// on the same parked lease rejects duplicate calls and does not double-increment totalActive.
+func TestConcurrentDuplicateReacquire(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 1})
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	l1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-dup-reacquire",
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("l1: %v", err)
+	}
+	if err := l1.Park(); err != nil {
+		t.Fatalf("l1 park: %v", err)
+	}
+
+	// Occupy slot with l2 so Reacquire must wait
+	l2, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-dup-reacquire",
+		SessionID:      "sess-2",
+		RunID:          "run-2",
+	})
+	if err != nil {
+		t.Fatalf("l2: %v", err)
+	}
+	defer l2.Release()
+
+	// Launch two concurrent Reacquire calls on l1
+	errCh1 := make(chan error, 1)
+	errCh2 := make(chan error, 1)
+
+	go func() { errCh1 <- l1.Reacquire(ctx) }()
+	time.Sleep(10 * time.Millisecond)
+	go func() { errCh2 <- l1.Reacquire(ctx) }()
+
+	// One should fail immediately with ErrLeaseAlreadyReacquiring (or ErrLeaseNotParked)
+	var err2 error
+	select {
+	case err2 = <-errCh2:
+		if !errors.Is(err2, ErrLeaseAlreadyReacquiring) && !errors.Is(err2, ErrLeaseNotParked) {
+			t.Fatalf("expected ErrLeaseAlreadyReacquiring or ErrLeaseNotParked, got: %v", err2)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("second Reacquire did not reject promptly")
+	}
+
+	// Release l2 to let the first Reacquire complete
+	_ = l2.Release()
+
+	select {
+	case err := <-errCh1:
+		if err != nil {
+			t.Fatalf("first Reacquire failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("first Reacquire did not complete")
+	}
+
+	snap := mgr.Snapshot("acc-dup-reacquire")
+	if snap.TotalActive != 1 {
+		t.Fatalf("totalActive should be exactly 1, got %d", snap.TotalActive)
+	}
+	_ = l1.Release()
+}
+
+// TestUnrelatedSessionBehindBlockedSameSessionWaiter verifies that when an unrelated session
+// enqueues behind a waiter blocked by same-session serialization, it dispatches immediately
+// without deadlocking when capacity is available.
+func TestUnrelatedSessionBehindBlockedSameSessionWaiter(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 2})
+	defer mgr.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Session 1 acquires slot 1
+	l1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-noblock",
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("l1: %v", err)
+	}
+	defer l1.Release()
+
+	// Session 1 Run 2 enqueues (blocked by session serialization, even though limit=2)
+	run2ErrCh := make(chan error, 1)
+	go func() {
+		l, err := mgr.Acquire(ctx, AcquireRequest{
+			AccountScopeID: "acc-noblock",
+			SessionID:      "sess-1",
+			RunID:          "run-2",
+		})
+		if err == nil {
+			_ = l.Release()
+		}
+		run2ErrCh <- err
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+
+	// Session 2 Run 1 arrives. Since capacity=2 (totalActive=1) and sess-2 is free,
+	// it must NOT deadlock behind sess-1 run-2!
+	l2, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-noblock",
+		SessionID:      "sess-2",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("sess-2 acquire failed: %v", err)
+	}
+	defer l2.Release()
+
+	if !l2.IsActive() {
+		t.Fatalf("sess-2 lease should be active")
+	}
+}
+
+// TestCancellationDispatchesOthers verifies that removing a cancelled waiter from the queue
+// immediately dispatches other eligible waiters.
+func TestCancellationDispatchesOthers(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 1})
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	// Saturated slot
+	l1, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-cancel-dispatch",
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("l1: %v", err)
+	}
+
+	// Waiter 1 arrives with cancellable context
+	ctx1, cancel1 := context.WithCancel(ctx)
+	w1ErrCh := make(chan error, 1)
+	go func() {
+		l, err := mgr.Acquire(ctx1, AcquireRequest{
+			AccountScopeID: "acc-cancel-dispatch",
+			SessionID:      "sess-2",
+			RunID:          "run-2",
+		})
+		if err == nil {
+			_ = l.Release()
+		}
+		w1ErrCh <- err
+	}()
+
+	// Waiter 2 arrives
+	w2ErrCh := make(chan error, 1)
+	var l2 Lease
+	go func() {
+		var err error
+		l2, err = mgr.Acquire(ctx, AcquireRequest{
+			AccountScopeID: "acc-cancel-dispatch",
+			SessionID:      "sess-3",
+			RunID:          "run-3",
+		})
+		w2ErrCh <- err
+	}()
+
+	time.Sleep(30 * time.Millisecond)
+	snap := mgr.Snapshot("acc-cancel-dispatch")
+	if snap.Pending != 2 {
+		t.Fatalf("expected 2 pending waiters, got %d", snap.Pending)
+	}
+
+	// Cancel Waiter 1
+	cancel1()
+	if err := <-w1ErrCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got: %v", err)
+	}
+
+	// Release l1: Waiter 2 must be dispatched immediately
+	_ = l1.Release()
+
+	select {
+	case err := <-w2ErrCh:
+		if err != nil {
+			t.Fatalf("waiter 2 failed: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("waiter 2 was not dispatched")
+	}
+
+	if l2 == nil || !l2.IsActive() {
+		t.Fatalf("l2 should be active")
+	}
+	_ = l2.Release()
+}
+
+// TestLimitResolverFailClosed verifies that when LimitResolver returns a persistence/lookup
+// error, the manager fails closed (limit 0, no admissions, snapshot shows Unavailable=true and Error).
+func TestLimitResolverFailClosed(t *testing.T) {
+	expectedErr := errors.New("pebble disk error")
+	mgr := NewManager(ManagerConfig{
+		DefaultLimit: 100,
+		LimitResolver: func(accountScopeID string) (int, error) {
+			return 0, expectedErr
+		},
+	})
+	defer mgr.Close()
+
+	ctx := context.Background()
+	_, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-err",
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "pebble disk error") {
+		t.Fatalf("expected limit resolution error, got: %v", err)
+	}
+
+	snap := mgr.Snapshot("acc-err")
+	if !snap.Unavailable {
+		t.Fatalf("expected snap.Unavailable = true on resolver error")
+	}
+	if snap.Error != expectedErr.Error() {
+		t.Fatalf("expected snap.Error = %q, got %q", expectedErr.Error(), snap.Error)
+	}
+	if snap.EffectiveLimit != 0 || snap.Available != 0 {
+		t.Fatalf("expected limit=0 and available=0 when failing closed, got: %+v", snap)
+	}
+}
+
+// TestActiveLeaseForSession verifies active lease lookup by session ID.
+func TestActiveLeaseForSession(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 5})
+	defer mgr.Close()
+
+	ctx := context.Background()
+	acc := "acc-lookup"
+	sess := "sess-compact"
+
+	if l := mgr.ActiveLeaseForSession(acc, sess); l != nil {
+		t.Fatalf("expected nil before acquire")
+	}
+
+	lease, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: acc,
+		SessionID:      sess,
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer lease.Release()
+
+	if l := mgr.ActiveLeaseForSession(acc, sess); l == nil || l.ID() != lease.ID() {
+		t.Fatalf("expected active lease %s, got %v", lease.ID(), l)
+	}
+
+	if err := lease.Park(); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+	if l := mgr.ActiveLeaseForSession(acc, sess); l != nil {
+		t.Fatalf("expected nil when parked")
+	}
+
+	if err := lease.Reacquire(ctx); err != nil {
+		t.Fatalf("reacquire: %v", err)
+	}
+	if l := mgr.ActiveLeaseForSession(acc, sess); l == nil {
+		t.Fatalf("expected active lease after reacquire")
+	}
+
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if l := mgr.ActiveLeaseForSession(acc, sess); l != nil {
+		t.Fatalf("expected nil after release")
+	}
+}
+
+// TestLeaseFromContextReleasedAndAccount verifies that released leases are never returned
+// by LeaseFromContext, and LeaseFromContextForAccount validates accountScopeID.
+func TestLeaseFromContextReleasedAndAccount(t *testing.T) {
+	mgr := NewManager(ManagerConfig{DefaultLimit: 5})
+	defer mgr.Close()
+
+	ctx := context.Background()
+	lease, err := mgr.Acquire(ctx, AcquireRequest{
+		AccountScopeID: "acc-ctx-rel",
+		SessionID:      "sess-parent",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	boundCtx := WithLease(ctx, lease)
+
+	// Valid with account check
+	if got, ok := LeaseFromContextForAccount(boundCtx, "acc-ctx-rel", "sess-parent", "run-1"); !ok || got != lease {
+		t.Fatalf("expected lease with matching account")
+	}
+	// Wrong account returns false
+	if _, ok := LeaseFromContextForAccount(boundCtx, "wrong-acc", "sess-parent", "run-1"); ok {
+		t.Fatalf("expected false for wrong account")
+	}
+
+	// Release lease
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+
+	// Released lease must NOT be returned from context
+	if _, ok := LeaseFromContext(boundCtx, "sess-parent", "run-1"); ok {
+		t.Fatalf("expected false for released lease from context")
+	}
+	if _, ok := LeaseFromContextForAccount(boundCtx, "acc-ctx-rel", "sess-parent", "run-1"); ok {
+		t.Fatalf("expected false for released lease from context with account")
+	}
+}

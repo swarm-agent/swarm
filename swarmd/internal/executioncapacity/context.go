@@ -19,8 +19,8 @@ func WithLease(ctx context.Context, lease Lease) context.Context {
 }
 
 // LeaseFromContext retrieves the execution capacity lease from ctx if and only if
-// the sessionID and runID match the lease. If sessionID or runID differ (such as in
-// delegated subagent tasks or child sessions), it returns nil, false to prevent child
+// the sessionID and runID match the lease and the lease is not released. If sessionID or runID
+// differ (such as in delegated subagent tasks or child sessions), it returns nil, false to prevent child
 // contexts from accidentally inheriting or reusing parent execution leases.
 func LeaseFromContext(ctx context.Context, sessionID, runID string) (Lease, bool) {
 	if ctx == nil {
@@ -36,6 +36,22 @@ func LeaseFromContext(ctx context.Context, sessionID, runID string) (Lease, bool
 	}
 	if strings.TrimSpace(lease.SessionID()) != strings.TrimSpace(sessionID) ||
 		strings.TrimSpace(lease.RunID()) != strings.TrimSpace(runID) {
+		return nil, false
+	}
+	if lease.IsReleased() {
+		return nil, false
+	}
+	return lease, true
+}
+
+// LeaseFromContextForAccount retrieves the execution capacity lease from ctx if and only if
+// the accountScopeID, sessionID, and runID match the lease and the lease is not released.
+func LeaseFromContextForAccount(ctx context.Context, accountScopeID, sessionID, runID string) (Lease, bool) {
+	lease, ok := LeaseFromContext(ctx, sessionID, runID)
+	if !ok || lease == nil {
+		return nil, false
+	}
+	if accountScopeID != "" && strings.TrimSpace(lease.AccountScopeID()) != strings.TrimSpace(accountScopeID) {
 		return nil, false
 	}
 	return lease, true

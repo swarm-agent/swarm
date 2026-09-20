@@ -34,14 +34,20 @@ func TestPolicyActiveExecutionLimitDefaultsAndPreservesExplicit(t *testing.T) {
 		t.Fatalf("NormalizePolicy should preserve explicit limit 42, got %d", explicit.ActiveExecutionLimit)
 	}
 
-	// 4. Invalid limits reset to default
+	// 4. Invalid limits are preserved (not reset to default 100) so validation fails closed
 	neg := NormalizePolicy(Policy{ActiveExecutionLimit: -10})
-	if neg.ActiveExecutionLimit != DefaultActiveExecutionLimit {
-		t.Fatalf("negative limit should normalize to %d, got %d", DefaultActiveExecutionLimit, neg.ActiveExecutionLimit)
+	if neg.ActiveExecutionLimit != -10 {
+		t.Fatalf("negative limit should be preserved as -10, got %d", neg.ActiveExecutionLimit)
 	}
 	tooHigh := NormalizePolicy(Policy{ActiveExecutionLimit: 50000})
-	if tooHigh.ActiveExecutionLimit != DefaultActiveExecutionLimit {
-		t.Fatalf("excessive limit should normalize to %d, got %d", DefaultActiveExecutionLimit, tooHigh.ActiveExecutionLimit)
+	if tooHigh.ActiveExecutionLimit != 50000 {
+		t.Fatalf("excessive limit should be preserved as 50000, got %d", tooHigh.ActiveExecutionLimit)
+	}
+	if err := ValidateActiveExecutionLimit(neg.ActiveExecutionLimit); err == nil {
+		t.Fatalf("expected ValidateActiveExecutionLimit to reject negative limit")
+	}
+	if err := ValidateActiveExecutionLimit(tooHigh.ActiveExecutionLimit); err == nil {
+		t.Fatalf("expected ValidateActiveExecutionLimit to reject excessive limit")
 	}
 
 	// 5. JSON serialization with explicit value
@@ -82,11 +88,11 @@ func TestPermissionServiceExecutionCapacityAuthority(t *testing.T) {
 	if snap.EffectiveLimit != DefaultActiveExecutionLimit {
 		t.Fatalf("EffectiveLimit = %d, want %d", snap.EffectiveLimit, DefaultActiveExecutionLimit)
 	}
-	if snap.DeploymentBatchBound != executioncapacity.DeploymentBatchBound || snap.DeploymentBatchBound != 8 {
-		t.Fatalf("DeploymentBatchBound = %d, want 8", snap.DeploymentBatchBound)
+	if snap.DeploymentBatchBound != executioncapacity.DeploymentBatchBound {
+		t.Fatalf("DeploymentBatchBound = %d, want %d", snap.DeploymentBatchBound, executioncapacity.DeploymentBatchBound)
 	}
-	if snap.SavedQuota != executioncapacity.SavedQuotaNoneConfigured || snap.SavedQuota != "none configured" {
-		t.Fatalf("SavedQuota = %q, want 'none configured'", snap.SavedQuota)
+	if snap.SavedQuota != executioncapacity.SavedQuotaNoneConfigured {
+		t.Fatalf("SavedQuota = %q, want %q", snap.SavedQuota, executioncapacity.SavedQuotaNoneConfigured)
 	}
 	if snap.TotalActive != 0 || snap.DeployedActive != 0 || snap.Pending != 0 {
 		t.Fatalf("initial counts should be 0: %+v", snap)
@@ -226,5 +232,168 @@ func TestAdmitAndReleaseExecutionFlow(t *testing.T) {
 	snap = svc.ExecutionCapacitySnapshot("acc-flow")
 	if snap.TotalActive != 0 || snap.DeployedActive != 0 {
 		t.Fatalf("expected 0 active after release, got: %+v", snap)
+	}
+}
+
+// TestUpdateExecutionCapabilityPoliciesForAccountAtomic verifies atomic validation, update,
+// and notification across sessionDeploy, planAcceptance, and activeExecutionLimit.
+func TestUpdateExecutionCapabilityPoliciesForAccountAtomic(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "cap-atomic.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	svc := NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	accountID := "acc-atomic"
+
+	// 1. Validation failure rejects all changes without partial mutation
+	invalidLimit := -5
+	deployPolicy := SessionDeployPolicy{RequireApproval: "always"}
+	_, err = svc.UpdateExecutionCapabilityPoliciesForAccount(accountID, &deployPolicy, nil, &invalidLimit)
+	if err == nil {
+		t.Fatalf("expected error for invalid limit in atomic update")
+	}
+	// Verify state was not modified
+	pol, err := svc.CurrentPolicyForAccount(accountID)
+	if err != nil {
+		t.Fatalf("current policy: %v", err)
+	}
+	if pol.ActiveExecutionLimit != DefaultActiveExecutionLimit {
+		t.Fatalf("limit should remain default, got %d", pol.ActiveExecutionLimit)
+	}
+
+	// 2. Atomic update with all non-nil fields
+	validLimit := 55
+	planPolicy := PlanAcceptancePolicy{AutoAcceptFastPlan: true}
+	updated, err := svc.UpdateExecutionCapabilityPoliciesForAccount(accountID, &deployPolicy, &planPolicy, &validLimit)
+	if err != nil {
+		t.Fatalf("atomic update failed: %v", err)
+	}
+	if updated.ActiveExecutionLimit != 55 {
+		t.Fatalf("limit = %d, want 55", updated.ActiveExecutionLimit)
+	}
+	if updated.SessionDeploy.RequireApproval != "always" {
+		t.Fatalf("deploy require approval = %s, want always", updated.SessionDeploy.RequireApproval)
+	}
+	if !updated.PlanAcceptance.AutoAcceptFastPlan {
+		t.Fatalf("plan acceptance auto accept fast plan = false, want true")
+	}
+
+	// Verify capacity manager synchronized via NotifyLimitChanged
+	snap := svc.ExecutionCapacitySnapshot(accountID)
+	if snap.EffectiveLimit != 55 {
+		t.Fatalf("capacity snapshot effective limit = %d, want 55", snap.EffectiveLimit)
+	}
+
+	// 3. Partial update preserves omitted fields
+	newLimit := 75
+	partialUpdated, err := svc.UpdateExecutionCapabilityPoliciesForAccount(accountID, nil, nil, &newLimit)
+	if err != nil {
+		t.Fatalf("partial update failed: %v", err)
+	}
+	if partialUpdated.ActiveExecutionLimit != 75 {
+		t.Fatalf("limit = %d, want 75", partialUpdated.ActiveExecutionLimit)
+	}
+	if partialUpdated.SessionDeploy.RequireApproval != "always" {
+		t.Fatalf("preserved deploy require approval = %s, want always", partialUpdated.SessionDeploy.RequireApproval)
+	}
+	if !partialUpdated.PlanAcceptance.AutoAcceptFastPlan {
+		t.Fatalf("preserved plan acceptance auto accept fast plan = false, want true")
+	}
+	if snap := svc.ExecutionCapacitySnapshot(accountID); snap.EffectiveLimit != 75 {
+		t.Fatalf("capacity snapshot after partial update = %d, want 75", snap.EffectiveLimit)
+	}
+
+	// 4. ResetPolicyForAccount restores default policy and synchronizes capacity
+	resetPol, err := svc.ResetPolicyForAccount(accountID)
+	if err != nil {
+		t.Fatalf("reset policy: %v", err)
+	}
+	if resetPol.ActiveExecutionLimit != DefaultActiveExecutionLimit {
+		t.Fatalf("reset policy limit = %d, want default %d", resetPol.ActiveExecutionLimit, DefaultActiveExecutionLimit)
+	}
+	if snap := svc.ExecutionCapacitySnapshot(accountID); snap.EffectiveLimit != DefaultActiveExecutionLimit {
+		t.Fatalf("capacity snapshot after reset = %d, want default %d", snap.EffectiveLimit, DefaultActiveExecutionLimit)
+	}
+}
+
+// TestExecutionCapacitySnapshotUnavailable verifies that when capacity service is unavailable
+// (e.g. nil capacity manager), Snapshot reports Unavailable=true and Error rather than fabricating 100.
+func TestExecutionCapacitySnapshotUnavailable(t *testing.T) {
+	svc := &Service{}
+	snap := svc.ExecutionCapacitySnapshot("acc-unavail")
+	if !snap.Unavailable {
+		t.Fatalf("expected Unavailable=true when capacity manager is nil")
+	}
+	if snap.Error == "" {
+		t.Fatalf("expected non-empty Error when capacity manager is nil")
+	}
+	if snap.EffectiveLimit != 0 || snap.Available != 0 {
+		t.Fatalf("expected EffectiveLimit=0 and Available=0 when unavailable, got: %+v", snap)
+	}
+}
+
+// TestActiveLeaseForSessionLookup verifies lookup of active leases for internal compact.
+func TestActiveLeaseForSessionLookup(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "cap-active-lease.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	svc := NewService(pebblestore.NewPermissionStore(store), nil, nil)
+	accountID := "acc-lookup"
+	ctx := context.Background()
+
+	// Initially no lease
+	if l := svc.ActiveLeaseForSession(accountID, "sess-1"); l != nil {
+		t.Fatalf("expected nil active lease initially, got %v", l)
+	}
+
+	// Admit session 1
+	lease, err := svc.AdmitExecution(ctx, executioncapacity.AcquireRequest{
+		AccountScopeID: accountID,
+		SessionID:      "sess-1",
+		RunID:          "run-1",
+	})
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	defer lease.Release()
+
+	// Found while active
+	found := svc.ActiveLeaseForSession(accountID, "sess-1")
+	if found == nil || found.ID() != lease.ID() {
+		t.Fatalf("expected active lease %s, got %v", lease.ID(), found)
+	}
+
+	// Different session returns nil
+	if l := svc.ActiveLeaseForSession(accountID, "sess-2"); l != nil {
+		t.Fatalf("expected nil for different session, got %v", l)
+	}
+
+	// Parked lease returns nil (not active)
+	if err := lease.Park(); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+	if l := svc.ActiveLeaseForSession(accountID, "sess-1"); l != nil {
+		t.Fatalf("expected nil active lease when parked, got %v", l)
+	}
+
+	// Reacquire restores lookup
+	if err := lease.Reacquire(ctx); err != nil {
+		t.Fatalf("reacquire: %v", err)
+	}
+	if l := svc.ActiveLeaseForSession(accountID, "sess-1"); l == nil {
+		t.Fatalf("expected active lease after reacquire")
+	}
+
+	// Released lease returns nil
+	if err := lease.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if l := svc.ActiveLeaseForSession(accountID, "sess-1"); l != nil {
+		t.Fatalf("expected nil active lease after release, got %v", l)
 	}
 }

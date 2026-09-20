@@ -12,7 +12,7 @@ import (
 type ManagerConfig struct {
 	DefaultLimit    int
 	MaxQueueWaiters int
-	LimitResolver   func(accountScopeID string) int
+	LimitResolver   func(accountScopeID string) (int, error)
 }
 
 // Manager coordinates execution admission, per-session serialization,
@@ -20,7 +20,7 @@ type ManagerConfig struct {
 type Manager struct {
 	defaultLimit    int
 	maxQueueWaiters int
-	limitResolver   func(accountScopeID string) int
+	limitResolver   func(accountScopeID string) (int, error)
 
 	mu       sync.Mutex
 	accounts map[string]*accountState
@@ -106,7 +106,11 @@ func (m *Manager) Acquire(ctx context.Context, req AcquireRequest) (Lease, error
 	}
 
 	acc := m.getAccountLocked(req.AccountScopeID)
-	limit := m.effectiveLimitLocked(req.AccountScopeID)
+	limit, err := m.effectiveLimitLocked(req.AccountScopeID)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("execution capacity limit resolution failed: %w", err)
+	}
 
 	// Can we admit immediately?
 	// Must have: no waiters ahead of us, session not busy/parked, and totalActive < limit.
@@ -135,10 +139,15 @@ func (m *Manager) Acquire(ctx context.Context, req AcquireRequest) (Lease, error
 		grant:     make(chan struct{}),
 	}
 	acc.waiters = append(acc.waiters, w)
+	// Dispatch immediately on enqueue so unrelated free sessions or eligible waiters don't stall
+	m.wakeEligibleWaitersLocked(acc)
 	m.mu.Unlock()
 
 	select {
 	case <-w.grant:
+		if !w.granted {
+			return nil, ErrClosed
+		}
 		if ctx.Err() != nil {
 			// Grant raced with context cancellation:
 			// Release granted lease immediately to prevent slot/session leak.
@@ -155,6 +164,7 @@ func (m *Manager) Acquire(ctx context.Context, req AcquireRequest) (Lease, error
 			return nil, ctx.Err()
 		}
 		m.removeWaiterLocked(acc, w)
+		m.wakeEligibleWaitersLocked(acc)
 		m.mu.Unlock()
 		return nil, ctx.Err()
 	}
@@ -184,7 +194,19 @@ func (m *Manager) SetLimit(accountScopeID string, limit int) {
 	m.wakeEligibleWaitersLocked(acc)
 }
 
-// NotifyLimitChanged re-evaluates the limit for an account and wakes eligible waiters.
+// ClearLimitOverride clears any limit override for an account.
+func (m *Manager) ClearLimitOverride(accountScopeID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return
+	}
+	acc := m.getAccountLocked(accountScopeID)
+	acc.limitOverride = 0
+	m.wakeEligibleWaitersLocked(acc)
+}
+
+// NotifyLimitChanged clears any stale limit override, re-evaluates the limit for an account, and wakes eligible waiters.
 func (m *Manager) NotifyLimitChanged(accountScopeID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -192,6 +214,9 @@ func (m *Manager) NotifyLimitChanged(accountScopeID string) {
 		return
 	}
 	acc := m.getAccountLocked(accountScopeID)
+	if m.limitResolver != nil {
+		acc.limitOverride = 0
+	}
 	m.wakeEligibleWaitersLocked(acc)
 }
 
@@ -201,8 +226,22 @@ func (m *Manager) Snapshot(accountScopeID string) Snapshot {
 	defer m.mu.Unlock()
 
 	key := strings.TrimSpace(accountScopeID)
-	limit := m.effectiveLimitLocked(key)
 	acc := m.getAccountLocked(key)
+	limit, err := m.effectiveLimitLocked(key)
+	if err != nil {
+		return Snapshot{
+			AccountScopeID:       key,
+			EffectiveLimit:       0,
+			TotalActive:          acc.totalActive,
+			DeployedActive:       acc.deployedActive,
+			Pending:              len(acc.waiters),
+			Available:            0,
+			DeploymentBatchBound: DeploymentBatchBound,
+			SavedQuota:           SavedQuotaNoneConfigured,
+			Unavailable:          true,
+			Error:                err.Error(),
+		}
+	}
 
 	avail := limit - acc.totalActive
 	if avail < 0 {
@@ -219,6 +258,32 @@ func (m *Manager) Snapshot(accountScopeID string) Snapshot {
 		DeploymentBatchBound: DeploymentBatchBound,
 		SavedQuota:           SavedQuotaNoneConfigured,
 	}
+}
+
+// ExecutionCapacitySnapshot returns the atomic capacity snapshot for an account, implementing manageSessionCapacityProvider.
+func (m *Manager) ExecutionCapacitySnapshot(accountScopeID string) Snapshot {
+	return m.Snapshot(accountScopeID)
+}
+
+// ActiveLeaseForSession returns the current active (non-parked, non-released) lease
+// for the given account and session, if any.
+func (m *Manager) ActiveLeaseForSession(accountScopeID, sessionID string) Lease {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	acc := m.accounts[strings.TrimSpace(accountScopeID)]
+	if acc == nil {
+		return nil
+	}
+	l := acc.sessions[strings.TrimSpace(sessionID)]
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.released || l.parked {
+		return nil
+	}
+	return l
 }
 
 // TotalActive returns the count of active executions for an account.
@@ -246,7 +311,7 @@ func (m *Manager) EffectiveLimit(accountScopeID string) int {
 	return m.Snapshot(accountScopeID).EffectiveLimit
 }
 
-// Close closes the manager and signals any waiting admissions.
+// Close closes the manager and signals any waiting admissions with ErrClosed.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -256,6 +321,7 @@ func (m *Manager) Close() {
 	m.closed = true
 	for _, acc := range m.accounts {
 		for _, w := range acc.waiters {
+			w.granted = false
 			close(w.grant)
 		}
 		acc.waiters = nil
@@ -306,15 +372,29 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 		m.mu.Unlock()
 		return ErrLeaseNotParked
 	}
+	if l.reacquiring {
+		l.mu.Unlock()
+		m.mu.Unlock()
+		return ErrLeaseAlreadyReacquiring
+	}
+	l.reacquiring = true
 	l.mu.Unlock()
 
 	acc := m.getAccountLocked(l.accountScopeID)
-	limit := m.effectiveLimitLocked(l.accountScopeID)
+	limit, err := m.effectiveLimitLocked(l.accountScopeID)
+	if err != nil {
+		l.mu.Lock()
+		l.reacquiring = false
+		l.mu.Unlock()
+		m.mu.Unlock()
+		return fmt.Errorf("execution capacity limit resolution failed: %w", err)
+	}
 
 	// Can reacquire immediately if no waiters in queue and totalActive < limit
 	if len(acc.waiters) == 0 && acc.totalActive < limit {
 		l.mu.Lock()
 		l.parked = false
+		l.reacquiring = false
 		l.mu.Unlock()
 
 		acc.totalActive++
@@ -327,6 +407,9 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 
 	// Must enqueue waiter
 	if len(acc.waiters) >= m.maxQueueWaiters {
+		l.mu.Lock()
+		l.reacquiring = false
+		l.mu.Unlock()
 		m.mu.Unlock()
 		return ErrQueueFull
 	}
@@ -339,16 +422,29 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 		grant:     make(chan struct{}),
 	}
 	acc.waiters = append(acc.waiters, w)
+	// Dispatch immediately on enqueue so reacquire behind own-session blocked waiter succeeds
+	m.wakeEligibleWaitersLocked(acc)
 	m.mu.Unlock()
 
 	select {
 	case <-w.grant:
+		if !w.granted {
+			l.mu.Lock()
+			l.reacquiring = false
+			wasReleased := l.released
+			l.mu.Unlock()
+			if wasReleased {
+				return ErrLeaseReleased
+			}
+			return ErrClosed
+		}
 		if ctx.Err() != nil {
 			// Grant raced with context cancellation.
 			// Return active slot back to pool and stay parked!
 			m.mu.Lock()
 			l.mu.Lock()
 			l.parked = true
+			l.reacquiring = false
 			l.mu.Unlock()
 
 			acc.totalActive--
@@ -364,9 +460,9 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 	case <-ctx.Done():
 		m.mu.Lock()
 		if w.granted {
-			// Raced with grant
 			l.mu.Lock()
 			l.parked = true
+			l.reacquiring = false
 			l.mu.Unlock()
 
 			acc.totalActive--
@@ -377,7 +473,11 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 			m.mu.Unlock()
 			return ctx.Err()
 		}
+		l.mu.Lock()
+		l.reacquiring = false
+		l.mu.Unlock()
 		m.removeWaiterLocked(acc, w)
+		m.wakeEligibleWaitersLocked(acc)
 		m.mu.Unlock()
 		return ctx.Err()
 	}
@@ -395,9 +495,21 @@ func (m *Manager) releaseLease(l *lease) error {
 	wasParked := l.parked
 	l.released = true
 	l.parked = false
+	l.reacquiring = false
 	l.mu.Unlock()
 
 	acc := m.getAccountLocked(l.accountScopeID)
+
+	// Remove any pending reacquire waiter for this lease
+	for i := 0; i < len(acc.waiters); i++ {
+		w := acc.waiters[i]
+		if w.reacquire == l {
+			acc.waiters = append(acc.waiters[:i], acc.waiters[i+1:]...)
+			w.granted = false
+			close(w.grant)
+			i--
+		}
+	}
 
 	// Release session ownership
 	if acc.sessions[l.sessionID] == l {
@@ -410,6 +522,12 @@ func (m *Manager) releaseLease(l *lease) error {
 		if l.kind == ExecutionKindDeployed {
 			acc.deployedActive--
 		}
+		if acc.totalActive < 0 {
+			acc.totalActive = 0
+		}
+		if acc.deployedActive < 0 {
+			acc.deployedActive = 0
+		}
 	}
 
 	m.wakeEligibleWaitersLocked(acc)
@@ -420,7 +538,11 @@ func (m *Manager) wakeEligibleWaitersLocked(acc *accountState) {
 	if len(acc.waiters) == 0 {
 		return
 	}
-	limit := m.effectiveLimitLocked(acc.accountScopeID)
+	limit, err := m.effectiveLimitLocked(acc.accountScopeID)
+	if err != nil || limit <= 0 {
+		// Fail closed: cannot admit any waiters when limit resolution fails
+		return
+	}
 
 	i := 0
 	for i < len(acc.waiters) && acc.totalActive < limit {
@@ -434,10 +556,15 @@ func (m *Manager) wakeEligibleWaitersLocked(acc *accountState) {
 
 		// 1. Reacquiring waiter:
 		if w.reacquire != nil {
-			// Already owns the session. Only needs capacity slot.
-			w.granted = true
 			w.reacquire.mu.Lock()
+			if w.reacquire.released {
+				w.reacquire.mu.Unlock()
+				acc.waiters = append(acc.waiters[:i], acc.waiters[i+1:]...)
+				continue
+			}
+			w.granted = true
 			w.reacquire.parked = false
+			w.reacquire.reacquiring = false
 			w.reacquire.mu.Unlock()
 
 			acc.totalActive++
@@ -498,17 +625,21 @@ func (m *Manager) getAccountLocked(accountScopeID string) *accountState {
 	return acc
 }
 
-func (m *Manager) effectiveLimitLocked(accountScopeID string) int {
+func (m *Manager) effectiveLimitLocked(accountScopeID string) (int, error) {
 	key := strings.TrimSpace(accountScopeID)
 	if acc, ok := m.accounts[key]; ok && acc.limitOverride > 0 {
-		return acc.limitOverride
+		return acc.limitOverride, nil
 	}
 	if m.limitResolver != nil {
-		if lim := m.limitResolver(key); lim > 0 {
-			return lim
+		lim, err := m.limitResolver(key)
+		if err != nil {
+			return 0, err
+		}
+		if lim > 0 {
+			return lim, nil
 		}
 	}
-	return m.defaultLimit
+	return m.defaultLimit, nil
 }
 
 func (m *Manager) newLeaseLocked(acc *accountState, req AcquireRequest) *lease {
