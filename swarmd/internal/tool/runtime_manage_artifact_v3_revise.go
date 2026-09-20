@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,7 +37,7 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 		return nil, errors.New("manage_artifact read_v3 caller is not authenticated for the current session")
 	}
 	var project map[string][]byte
-	var parts []pebblestore.ArtifactV3PartProjection
+	var parts []pebblestore.ArtifactV3Part
 	if reference.SessionID == callerSessionID {
 		reader, ok := r.artifactV3Author.repository.(ArtifactV3DirectRevisionReader)
 		if !ok {
@@ -46,8 +47,7 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 	} else {
 		if retainedReader, ok := r.artifactV3Author.repository.(ArtifactV3RetainedSourceReader); ok {
 			project, parts, err = retainedReader.ReadArtifactV3RetainedRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
-		} else if directReader, ok := r.artifactV3Author.repository.(ArtifactV3DirectRevisionReader); ok {
-			project, parts, err = directReader.ReadArtifactV3DirectRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
+
 		} else {
 			return nil, errors.New("manage_artifact read_v3 requires native Artifact V3 revision reading")
 		}
@@ -411,6 +411,10 @@ func parseDirectArtifactV3RevisionInput(raw any) (directArtifactV3RevisionInput,
 	out := directArtifactV3RevisionInput{SessionID: strings.TrimSpace(asString(value["session_id"])), ArtifactID: strings.TrimSpace(asString(value["artifact_id"])), RevisionRef: strings.TrimSpace(asString(value["revision_ref"]))}
 	if out.SessionID == "" || out.ArtifactID == "" || !strings.HasPrefix(out.RevisionRef, "revision-") || len(strings.TrimPrefix(out.RevisionRef, "revision-")) != 40 {
 		return directArtifactV3RevisionInput{}, errors.New("manage_artifact revise_v3 requires complete session_id, artifact_id, and exact revision_ref")
+	}
+	commit := strings.TrimPrefix(out.RevisionRef, "revision-")
+	if decoded, err := hex.DecodeString(commit); err != nil || len(decoded) != 20 || commit != strings.ToLower(commit) {
+		return directArtifactV3RevisionInput{}, errors.New("manage_artifact requires an exact lowercase hexadecimal revision_ref")
 	}
 	return out, nil
 }

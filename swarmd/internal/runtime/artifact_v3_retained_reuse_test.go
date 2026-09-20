@@ -41,6 +41,7 @@ type retainedReuseHarness struct {
 func setupRetainedReuseHarness(t *testing.T) *retainedReuseHarness {
 	t.Helper()
 	root := t.TempDir()
+	t.Setenv("STATE_DIRECTORY", filepath.Join(root, "state"))
 	store, err := pebblestore.Open(filepath.Join(root, "session.pebble"))
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +114,7 @@ func setupRetainedReuseHarness(t *testing.T) *retainedReuseHarness {
 	toolRuntime.SetArtifactV3VideoConversionService(videoBridge)
 
 	// Legacy artifact authority
-	legacyAuthority := artifact.NewAuthority(artifact.NewRegistry(sessions, artifact.Limits{}), sessions)
+	legacyAuthority := artifact.NewAuthority(artifact.NewRegistry(sessions, artifact.Limits{}), &artifactMetadataBoundary{Service: sessions})
 	toolRuntime.SetArtifactAuthority(legacyAuthority)
 
 	return &retainedReuseHarness{
@@ -198,6 +199,13 @@ func (h *retainedReuseHarness) invokeTool(t *testing.T, sessionID, runID string,
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		t.Fatalf("unmarshal tool response: %v; raw=%s", err, out)
 	}
+	// Native payloads use the existing artifact_v3 envelope. Import keeps its
+	// discriminated reference alongside that payload at the outer level.
+	if args["action"] != "import" {
+		if native, ok := result["artifact_v3"].(map[string]any); ok {
+			return native, nil
+		}
+	}
 	return result, nil
 }
 
@@ -215,13 +223,7 @@ func (h *retainedReuseHarness) createTestArtifact(t *testing.T, sessionID, title
 	if err != nil {
 		t.Fatalf("create artifact for %s: %v", title, err)
 	}
-	ref, ok := created["reference"].(map[string]any)
-	if !ok {
-		v3, ok := created["artifact_v3"].(map[string]any)
-		if ok {
-			ref, _ = v3["reference"].(map[string]any)
-		}
-	}
+	ref, _ := created["media_inspect_reference"].(map[string]any)
 	if ref == nil {
 		t.Fatalf("create artifact for %s missing reference: %#v", title, created)
 	}
@@ -248,13 +250,7 @@ func (h *retainedReuseHarness) createTestMotionArtifact(t *testing.T, sessionID,
 	if err != nil {
 		t.Fatalf("create motion artifact for %s: %v", title, err)
 	}
-	ref, ok := created["reference"].(map[string]any)
-	if !ok {
-		v3, ok := created["artifact_v3"].(map[string]any)
-		if ok {
-			ref, _ = v3["reference"].(map[string]any)
-		}
-	}
+	ref, _ := created["media_inspect_reference"].(map[string]any)
 	if ref == nil {
 		t.Fatalf("create motion artifact for %s missing reference: %#v", title, created)
 	}
@@ -266,7 +262,7 @@ func (h *retainedReuseHarness) createTestMotionArtifact(t *testing.T, sessionID,
 
 // Purpose: Verify tool-level discovery (list_v3, source_v3) queries the canonical
 // cross-session Artifact V3 catalog, returns copyable next calls with import guidance,
-// handles historical revisions, candidates, archived tombstones, and rejects deleted/foreign sources.
+// handles archived tombstones and rejects deleted/foreign sources.
 // Regression: Prevents tool-level re-isolation from hiding retained cross-session artifacts.
 // Authority: artifactV3RuntimeAdapter (SearchArtifactV3Catalog, ResolveArtifactV3SelectedSource) -> ArtifactV3Service.
 func TestRetainedArtifactToolDiscovery(t *testing.T) {
@@ -275,8 +271,8 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 	// 1. Create artifacts across sessions
 	artSource, commitSource := h.createTestArtifact(t, "session-source", "Source Artifact")
 	artArchived, commitArchived := h.createTestArtifact(t, "session-archived", "Archived Artifact")
-	artDeleted, _ := h.createTestArtifact(t, "session-deleted", "Deleted Artifact")
-	artForeignUser, _ := h.createTestArtifact(t, "session-foreign-user", "Foreign User Artifact")
+	artDeleted, commitDeleted := h.createTestArtifact(t, "session-deleted", "Deleted Artifact")
+	artForeignUser, commitForeignUser := h.createTestArtifact(t, "session-foreign-user", "Foreign User Artifact")
 
 	// Archive session-archived and delete session-deleted
 	if err := h.sessions.ArchiveSession("session-archived"); err != nil {
@@ -342,7 +338,8 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 		t.Fatalf("list_v3 leaked foreign user artifact %s", artForeignUser)
 	}
 
-	// 3. Test empty continuation pagination
+	// 3. Test a filtered empty page. Scan-budget continuation is separately
+	// asserted against real Pebble in TestArtifactV3CatalogScanBudgetAndPrincipalCursor.
 	queryResp, err := h.invokeTool(t, "session-dest", "run-list-query", map[string]any{
 		"action": "list_v3",
 		"query":  "non-matching-query-xyz",
@@ -368,7 +365,7 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 		t.Fatalf("source_v3 for cross-session source failed: %v", err)
 	}
 	srcNextCalls, ok := srcResp["copyable_next_calls"].([]any)
-	if !ok || len(srcNextCalls) == 0 {
+	if !ok || len(srcNextCalls) < 2 {
 		t.Fatalf("source_v3 missing copyable next calls: %#v", srcResp)
 	}
 	if srcNextCalls[1].(map[string]any)["action"] != "import" {
@@ -390,13 +387,20 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 	if archResp["reference"].(map[string]any)["artifact_id"] != artArchived {
 		t.Fatalf("source_v3 on archived session returned unexpected artifact: %#v", archResp)
 	}
+	if _, err := h.invokeTool(t, "session-dest", "run-import-archived", map[string]any{"action": "import", "artifact_v3_reference": archResp["reference"]}); err != nil {
+		t.Fatalf("archived import failed: %v", err)
+	}
+	if _, live, err := h.sessionStore.GetSession("session-archived"); err != nil || live {
+		t.Fatalf("archived import reactivated its source: live=%v err=%v", live, err)
+	}
 
 	// 6. Test source_v3 on deleted session source -> rejected
 	if _, err := h.invokeTool(t, "session-dest", "run-source-del", map[string]any{
 		"action": "source_v3",
 		"artifact_v3_reference": map[string]any{
-			"session_id":  "session-deleted",
-			"artifact_id": artDeleted,
+			"session_id":   "session-deleted",
+			"artifact_id":  artDeleted,
+			"revision_ref": "revision-" + commitDeleted,
 		},
 	}); err == nil {
 		t.Fatal("source_v3 accepted deleted session source")
@@ -406,8 +410,9 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 	if _, err := h.invokeTool(t, "session-dest", "run-source-foreign", map[string]any{
 		"action": "source_v3",
 		"artifact_v3_reference": map[string]any{
-			"session_id":  "session-foreign-user",
-			"artifact_id": artForeignUser,
+			"session_id":   "session-foreign-user",
+			"artifact_id":  artForeignUser,
+			"revision_ref": "revision-" + commitForeignUser,
 		},
 	}); err == nil {
 		t.Fatal("source_v3 accepted foreign user source")
@@ -694,18 +699,26 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 		t.Fatalf("finished turn status = %v, want awaiting_selection", finishResp["status"])
 	}
 
-	// Select the finished candidate as the new ready head
-	selectResp, err := h.invokeTool(t, "session-dest", "run-select-imported", map[string]any{
-		"action":       "select_v3",
-		"artifact_id":  destArtifactID,
-		"turn_id":      draftHandle["turn_id"],
-		"candidate_id": draftHandle["candidate_id"],
-	})
+	// Copy exact CAS guidance from current-session discovery. This exercises
+	// dispatch only; permission approval is separately tested at its boundary.
+	selectionSource, err := h.invokeTool(t, "session-dest", "run-discover-selection", map[string]any{"action": "source_v3", "artifact_id": destArtifactID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectionCalls, ok := selectionSource["selection_calls"].([]any)
+	if !ok || len(selectionCalls) != 1 {
+		t.Fatalf("expected one exact selection call: %#v", selectionSource)
+	}
+	selectResp, err := h.invokeTool(t, "session-dest", "run-select-imported", selectionCalls[0].(map[string]any))
 	if err != nil {
 		t.Fatalf("select_v3 failed: %v", err)
 	}
-	if selectResp["status"] != "ready" && selectResp["artifact_v3"].(map[string]any)["status"] != "ready" {
+	if selectResp["status"] != "selected" {
 		t.Fatalf("selected head not ready: %#v", selectResp)
+	}
+	selectedRead, err := h.invokeTool(t, "session-dest", "read-edited-head", map[string]any{"action": "read_v3", "artifact_v3_reference": selectResp["reference"]})
+	if err != nil || !strings.Contains(fmt.Sprint(selectedRead["content"]), newHTML) || strings.Contains(fmt.Sprint(selectedRead["content"]), oldHTML) {
+		t.Fatalf("selected destination did not retain the edit: %#v %v", selectedRead, err)
 	}
 
 	// 9. Verify source artifact in session-source remains completely unchanged after destination edit
@@ -795,6 +808,17 @@ func TestRetainedArtifactDownstreamVideoStudioConversion(t *testing.T) {
 	}
 	if part.ArtifactV3Source.ArtifactID != destArtifactID {
 		t.Fatalf("part source artifactID = %s, want %s", part.ArtifactV3Source.ArtifactID, destArtifactID)
+	}
+	if part.DurationMS != 4000 {
+		t.Fatalf("conversion changed animation duration: %d", part.DurationMS)
+	}
+	sourceRead, err := h.invokeTool(t, "session-dest", "read-motion-source", map[string]any{"action": "read_v3", "artifact_v3_reference": map[string]any{"session_id": "session-source", "artifact_id": artSource, "revision_ref": "revision-" + commitSource}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyRead, err := h.invokeTool(t, "session-dest", "read-motion-copy", map[string]any{"action": "read_v3", "artifact_v3_reference": importResp["artifact_v3_reference"]})
+	if err != nil || !reflect.DeepEqual(sourceRead["files_base64"], copyRead["files_base64"]) || !reflect.DeepEqual(sourceRead["parts"], copyRead["parts"]) {
+		t.Fatalf("motion import changed project or temporal parts: %v", err)
 	}
 }
 
@@ -892,7 +916,7 @@ func TestRetainedArtifactLegacyImportActualDispatch(t *testing.T) {
 		t.Fatalf("expected copyable next call read, got: %#v", nextCalls)
 	}
 
-	sourceVariantAfter, ok, err := h.sessionStore.GetSessionArtifactVariant("session-source", variant.CollectionID, variant.ID)
+	sourceVariantAfter, ok, err := h.sessionStore.GetSessionArtifactVariant("account-1", "session-source", variant.CollectionID, variant.ID)
 	if err != nil || !ok {
 		t.Fatalf("source legacy variant missing: %v", err)
 	}
@@ -943,6 +967,9 @@ func TestRetainedArtifactInheritedEvidenceAndIntegrity(t *testing.T) {
 	if rev.Lineage == nil || rev.Lineage.SourceArtifactID != artSource {
 		t.Fatalf("revision lineage missing or incorrect: %+v", rev.Lineage)
 	}
+	if rev.Build == nil || rev.Validation == nil || rev.Build.InheritedFrom == nil || rev.Validation.InheritedFrom == nil || rev.Build.InheritedFrom.Owner.SessionID != "session-source" || rev.Validation.InheritedFrom.CommitOID != commitSource || rev.Build.CommitOID != commitSource || rev.Validation.CommitOID != commitSource || rev.CommitOID == commitSource {
+		t.Fatalf("API lost inherited evidence or rebound it to destination: %+v", rev)
+	}
 
 	preview, err := h.adapter.OpenPreview(context.Background(), destPrincipal, "session-dest", destArtifactID, importedRevRef, "", "")
 	if err != nil {
@@ -990,5 +1017,122 @@ func TestRetainedArtifactInheritedEvidenceAndIntegrity(t *testing.T) {
 	// ReadArtifactV3PreviewEvidence must detect corruption and reject with ErrArtifactV3Integrity
 	if _, err := h.adapter.ReadArtifactV3PreviewEvidence(context.Background(), "account-1", "user-1", "session-dest", destArtifactID, importedRevRef); !errors.Is(err, pebblestore.ErrArtifactV3Integrity) {
 		t.Fatalf("expected ErrArtifactV3Integrity on corrupted evidence file, got: %v", err)
+	}
+}
+
+// Requirement: an exact ready unselected revision and an earlier immutable
+// revision can be read/imported without selecting a source candidate. Threat:
+// head-only adapters lose historical work or mutate selection as a shortcut.
+// Real dispatch/Git/Pebble is the narrowest integration layer; rendering is fake.
+func TestRetainedArtifactUnselectedAndHistoricalDispatch(t *testing.T) {
+	h := setupRetainedReuseHarness(t)
+	id, original := h.createTestArtifact(t, "session-source", "Original")
+	exact := func(commit string) map[string]any {
+		return map[string]any{"session_id": "session-source", "artifact_id": id, "revision_ref": "revision-" + commit}
+	}
+	candidate, err := h.invokeTool(t, "session-source", "run-new-candidate", map[string]any{
+		"action": "revise_v3", "artifact_v3_reference": exact(original), "revision_intent": "whole_project",
+		"content": `<html><body><main id="hero"><h1>Unselected</h1></main><section id="pricing">Pricing</section><footer id="footer">Footer</footer></body></html>`,
+	})
+	if err != nil || candidate["status"] != "awaiting_selection" {
+		t.Fatalf("prepare real candidate: %#v %v", candidate, err)
+	}
+	candidateRef := candidate["media_inspect_reference"].(map[string]any)
+	before, _, err := h.sessionStore.GetArtifactV3Repository("account-1", "user-1", id)
+	if err != nil || before.HeadCommitOID != original {
+		t.Fatalf("candidate changed selected head: %+v %v", before, err)
+	}
+	eventsBefore, err := h.sessionStore.ListV3SessionEvents("session-source", 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ref := range []map[string]any{exact(original), candidateRef} {
+		read, err := h.invokeTool(t, "session-dest", fmt.Sprintf("exact-read-%d", i), map[string]any{"action": "read_v3", "artifact_v3_reference": ref})
+		if err != nil || read["content"] == "" {
+			t.Fatalf("exact read: %#v %v", read, err)
+		}
+		imported, err := h.invokeTool(t, "session-dest", fmt.Sprintf("exact-import-%d", i), map[string]any{"action": "import", "artifact_v3_reference": ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		copyRef := imported["artifact_v3_reference"].(map[string]any)
+		copyRead, err := h.invokeTool(t, "session-dest", fmt.Sprintf("copy-read-%d", i), map[string]any{"action": "read_v3", "artifact_v3_reference": copyRef})
+		if err != nil || !reflect.DeepEqual(read["files_base64"], copyRead["files_base64"]) || !reflect.DeepEqual(read["parts"], copyRead["parts"]) {
+			t.Fatalf("import lost exact project/parts: %v", err)
+		}
+	}
+	after, _, _ := h.sessionStore.GetArtifactV3Repository("account-1", "user-1", id)
+	eventsAfter, _ := h.sessionStore.ListV3SessionEvents("session-source", 0, 500)
+	if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(eventsBefore, eventsAfter) {
+		t.Fatal("retained reads/imports mutated source selection or events")
+	}
+	// Explicit selection is a separate source action; only after it is accepted
+	// does the original become historical. The same original reference still reads.
+	discovery, err := h.invokeTool(t, "session-source", "selection-discovery", map[string]any{"action": "source_v3", "artifact_id": id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := discovery["selection_calls"].([]any)
+	if len(calls) != 1 {
+		t.Fatalf("selection guidance: %#v", discovery)
+	}
+	if _, err := h.invokeTool(t, "session-source", "explicit-select", calls[0].(map[string]any)); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := h.invokeTool(t, "session-dest", "read-historical", map[string]any{"action": "read_v3", "artifact_v3_reference": exact(original)})
+	if err != nil || !strings.Contains(fmt.Sprint(historical["content"]), "Original") {
+		t.Fatalf("historical read: %#v %v", historical, err)
+	}
+	historicalImport, err := h.invokeTool(t, "session-dest", "import-historical", map[string]any{"action": "import", "artifact_v3_reference": exact(original)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	historicalCopy, err := h.invokeTool(t, "session-dest", "read-historical-copy", map[string]any{"action": "read_v3", "artifact_v3_reference": historicalImport["artifact_v3_reference"]})
+	if err != nil || !reflect.DeepEqual(historical["files_base64"], historicalCopy["files_base64"]) || !reflect.DeepEqual(historical["parts"], historicalCopy["parts"]) {
+		t.Fatalf("historical import changed content: %#v %v", historicalCopy, err)
+	}
+}
+
+// Requirement: cross-user/account and deleted sources cannot create destination
+// state. Threat: argument validation tests alone miss authority-layer partial writes.
+// Real dispatch plus before/after repository and filesystem snapshots proves the
+// rejection postcondition at the canonical service/store boundary (fake renderer).
+func TestRetainedArtifactImportDeniedWithoutDestinationWrites(t *testing.T) {
+	h := setupRetainedReuseHarness(t)
+	for _, sourceSession := range []string{"session-foreign-user", "session-foreign-account", "session-deleted"} {
+		id, commit := h.createTestArtifact(t, sourceSession, "Denied")
+		if sourceSession == "session-deleted" {
+			if err := h.sessions.DeleteSession(sourceSession); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before, err := h.sessionStore.ListArtifactV3Repositories("account-1", "user-1", "session-dest", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filesBefore, err := os.ReadDir(h.repositoryRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = h.invokeTool(t, "session-dest", "denied-"+sourceSession, map[string]any{"action": "import", "artifact_v3_reference": map[string]any{"session_id": sourceSession, "artifact_id": id, "revision_ref": "revision-" + commit}})
+		if err == nil {
+			t.Fatalf("import accepted %s", sourceSession)
+		}
+		after, err := h.sessionStore.ListArtifactV3Repositories("account-1", "user-1", "session-dest", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		filesAfter, err := os.ReadDir(h.repositoryRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(before, after) || len(filesBefore) != len(filesAfter) {
+			t.Fatalf("denied %s created destination state", sourceSession)
+		}
+		for i := range filesBefore {
+			if filesBefore[i].Name() != filesAfter[i].Name() {
+				t.Fatal("denied import changed repository entries")
+			}
+		}
 	}
 }

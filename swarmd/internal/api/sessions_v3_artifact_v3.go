@@ -118,10 +118,10 @@ type ArtifactV3RevisionPage struct {
 }
 
 type ArtifactV3BuildEvidence struct {
-	ID          string                 `json:"id"`
-	Status      string                 `json:"status"`
-	CommitOID   string                 `json:"commit_oid"`
-	TreeOID     string                 `json:"tree_oid"`
+	ID            string                                `json:"id"`
+	Status        string                                `json:"status"`
+	CommitOID     string                                `json:"commit_oid"`
+	TreeOID       string                                `json:"tree_oid"`
 	Diagnostics   []ArtifactV3Diagnostic                `json:"diagnostics,omitempty"`
 	InheritedFrom *pebblestore.ArtifactV3EvidenceSource `json:"inherited_from,omitempty"`
 }

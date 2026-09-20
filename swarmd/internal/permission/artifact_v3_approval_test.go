@@ -29,6 +29,8 @@ func TestArtifactV3ExactActionApproval(t *testing.T) {
 
 // Requirement: import must be classified as a write action (denied in read-only execution setting,
 // allowed in auto mode), while discovery and reading are classified as read actions (allowed in read-only).
+// Threat: read-only execution accidentally authorizes destination mutation.
+// ExplainPolicy is the narrow policy boundary; adapter tests own write effects.
 func TestArtifactImportAndDiscoveryPolicyClassification(t *testing.T) {
 	writeActions := []string{"import", "create", "create_package", "revise_v3", "begin_v3", "author_v3", "publish_workspace", "materialize", "promote", "delete"}
 	for _, action := range writeActions {

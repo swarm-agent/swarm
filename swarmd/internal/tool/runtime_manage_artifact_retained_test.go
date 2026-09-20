@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"swarm/packages/swarmd/internal/artifact"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -15,6 +14,7 @@ type fakeNativeImporter struct {
 	importCalls   int
 	importErr     error
 	projection    pebblestore.ArtifactV3Projection
+	returnExact   bool
 }
 
 func (f *fakeNativeImporter) ImportArtifactV3(_ context.Context, input pebblestore.ArtifactV3ImportInput) (pebblestore.ArtifactV3Projection, error) {
@@ -23,28 +23,33 @@ func (f *fakeNativeImporter) ImportArtifactV3(_ context.Context, input pebblesto
 	if f.importErr != nil {
 		return pebblestore.ArtifactV3Projection{}, f.importErr
 	}
-	proj := f.projection
-	if proj.ArtifactID == "" {
-		proj.ArtifactID = input.DestinationArtifactID
+	if f.returnExact {
+		return f.projection, nil
 	}
-	if proj.OwnerSessionID == "" {
-		proj.OwnerSessionID = input.DestinationOwner.SessionID
-	}
-	if proj.HeadCommitOID == "" {
-		proj.HeadCommitOID = input.SourceCommitOID
-	}
-	return proj, nil
+	return pebblestore.ArtifactV3Projection{
+		Repository: &pebblestore.ArtifactV3RepositoryProjection{
+			ArtifactID: input.DestinationArtifactID, OwnerSessionID: input.DestinationOwner.SessionID,
+			AccountScopeID: input.DestinationOwner.AccountScopeID, UserID: input.DestinationOwner.UserID,
+			HeadCommitOID: input.SourceCommitOID,
+		},
+		Revision: &pebblestore.ArtifactV3RevisionProjection{
+			ArtifactID: input.DestinationArtifactID, OwnerSessionID: input.DestinationOwner.SessionID,
+			CommitOID: input.SourceCommitOID,
+			Build:     pebblestore.ArtifactV3EvidenceProjection{Status: "succeeded"},
+			Preview:   pebblestore.ArtifactV3EvidenceProjection{Status: "succeeded"},
+		},
+	}, nil
 }
 
 type fakeRetainedReaderRepo struct {
 	directArtifactV3RepoFake
 	retainedReadCalls int
 	retainedProject   map[string][]byte
-	retainedParts     []pebblestore.ArtifactV3PartProjection
+	retainedParts     []pebblestore.ArtifactV3Part
 	retainedErr       error
 }
 
-func (f *fakeRetainedReaderRepo) ReadArtifactV3RetainedRevision(_ context.Context, account, user, sourceSession, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3PartProjection, error) {
+func (f *fakeRetainedReaderRepo) ReadArtifactV3RetainedRevision(_ context.Context, account, user, sourceSession, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3Part, error) {
 	f.retainedReadCalls++
 	if f.retainedErr != nil {
 		return nil, nil, f.retainedErr
@@ -69,8 +74,17 @@ func (f *fakeNativeCatalogRepo) SearchArtifactV3Catalog(_ context.Context, accou
 	return f.page, nil
 }
 
+// Requirement: the provider-facing Runtime.Definitions must advertise exact
+// import references without exposing authority or destination identity inputs.
+// Threat: a private helper-only schema leaves the actual provider unable to reuse
+// retained artifacts. This registration-layer assertion is the narrowest proof.
 func TestManageArtifactDefinitionExposesImportAndNestedReferences(t *testing.T) {
-	def := manageArtifactDefinition()
+	var def Definition
+	for _, candidate := range NewRuntime(1).Definitions() {
+		if candidate.Name == "manage_artifact" {
+			def = candidate
+		}
+	}
 	if def.Name != "manage_artifact" {
 		t.Fatalf("tool name = %q, want manage_artifact", def.Name)
 	}
@@ -108,15 +122,26 @@ func TestManageArtifactDefinitionExposesImportAndNestedReferences(t *testing.T) 
 		t.Fatal("manage_artifact schema missing library discriminator")
 	}
 
-	// Invariant: provider and model are never exposed in public schema
+	// Import authority stays internal; preserve the existing audio model field.
 	if _, ok := props["provider"]; ok {
 		t.Fatal("manage_artifact schema exposes provider")
 	}
-	if _, ok := props["model"]; ok {
-		t.Fatal("manage_artifact schema exposes model")
+	for _, name := range []string{"artifact_reference", "artifact_v3_reference"} {
+		ref := props[name].(map[string]any)
+		if ref["additionalProperties"] != false {
+			t.Fatalf("%s permits invented authority fields", name)
+		}
+	}
+	for _, name := range []string{"account_scope_id", "user_id", "destination_artifact_id", "destination_collection_id", "destination_variant_id"} {
+		if _, exists := props[name]; exists {
+			t.Fatalf("schema exposes runtime-derived %s", name)
+		}
 	}
 }
 
+// Requirement: import accepts one complete discriminated exact reference only.
+// Threat: mixed identities, forged authority and partial input reach writes.
+// Actual Runtime dispatch with recording adapters proves pre-authority rejection.
 func TestManageArtifactImportValidationRejectsBeforeWrites(t *testing.T) {
 	runtime := NewRuntime(1)
 	authority := &fakeArtifactAuthority{}
@@ -180,7 +205,7 @@ func TestManageArtifactImportValidationRejectsBeforeWrites(t *testing.T) {
 				},
 				"collection_id": "forged",
 			},
-			wantErr: "cannot be combined with legacy field",
+			wantErr: "contains unsupported field \"collection_id\"",
 		},
 		{
 			name: "incomplete native reference missing revision_ref",
@@ -222,6 +247,9 @@ func TestManageArtifactImportValidationRejectsBeforeWrites(t *testing.T) {
 	}
 }
 
+// Requirement: native import binds destination owner/IDs to trusted run/call context.
+// Threat: model-chosen identities mutate an existing artifact; this dispatch test
+// observes the exact canonical importer input, not real store persistence.
 func TestManageArtifactNativeImportSuccess(t *testing.T) {
 	runtime := NewRuntime(1)
 	importer := &fakeNativeImporter{}
@@ -289,6 +317,9 @@ func TestManageArtifactNativeImportSuccess(t *testing.T) {
 	}
 }
 
+// Requirement: legacy exact references reach the legacy authority unchanged,
+// with independently derived destination identities. Dispatch recording is the
+// narrowest proof; runtime canonical-store tests cover durable copy fidelity.
 func TestManageArtifactLegacyImportSuccess(t *testing.T) {
 	runtime := NewRuntime(1)
 	authority := &fakeArtifactAuthority{}
@@ -339,6 +370,9 @@ func TestManageArtifactLegacyImportSuccess(t *testing.T) {
 	}
 }
 
+// Requirement: cross-session reads use the retained reader and remain bounded.
+// Threat: same-session policy accidentally blocks reuse or silently truncates.
+// Recording reader tests dispatch only; runtime tests own source authentication.
 func TestManageArtifactReadV3RetainedCrossSession(t *testing.T) {
 	manifest := pebblestore.ArtifactV3Manifest{
 		SchemaVersion: pebblestore.ArtifactV3ManifestVersion,
@@ -353,7 +387,7 @@ func TestManageArtifactReadV3RetainedCrossSession(t *testing.T) {
 
 	repo := &fakeRetainedReaderRepo{
 		retainedProject: project,
-		retainedParts:   []pebblestore.ArtifactV3PartProjection{{ID: "main", Label: "Main"}},
+		retainedParts:   []pebblestore.ArtifactV3Part{{ID: "main", Label: "Main"}},
 	}
 	runtime := NewRuntime(1)
 	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repo, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
@@ -382,6 +416,7 @@ func TestManageArtifactReadV3RetainedCrossSession(t *testing.T) {
 		t.Fatalf("json unmarshal: %v", err)
 	}
 
+	resp = resp["artifact_v3"].(map[string]any)
 	if resp["status"] != "ok" || resp["content"] != htmlContent {
 		t.Fatalf("unexpected read_v3 response: %#v", resp)
 	}
@@ -410,6 +445,9 @@ func TestManageArtifactReadV3RetainedCrossSession(t *testing.T) {
 	}
 }
 
+// Requirement: native catalog pagination preserves an empty continuation page.
+// Threat: losing opaque cursors silently hides later retained sources. This
+// dispatch fixture exercises the empty-page contract independently of scan order.
 func TestManageArtifactListV3NativeCatalogPaging(t *testing.T) {
 	repo := &fakeNativeCatalogRepo{
 		page: pebblestore.ArtifactV3CatalogPage{
@@ -437,6 +475,7 @@ func TestManageArtifactListV3NativeCatalogPaging(t *testing.T) {
 		t.Fatalf("json unmarshal: %v", err)
 	}
 
+	resp = resp["artifact_v3"].(map[string]any)
 	if resp["next_cursor"] != "opaque-cursor-cont" {
 		t.Fatalf("next_cursor lost on empty continuation page: %#v", resp)
 	}
@@ -450,8 +489,21 @@ func TestManageArtifactListV3NativeCatalogPaging(t *testing.T) {
 	if repo.searchCalls != 1 || repo.lastOptions.Cursor != "cursor-0" {
 		t.Fatalf("search catalog was not called with cursor: %+v", repo.lastOptions)
 	}
+	// The explicit library alias must not depend on a configured legacy authority.
+	for _, library := range []string{"native", " Native "} {
+		body, _ := json.Marshal(map[string]any{"action": "search", "library": library, "cursor": "opaque-cursor-cont"})
+		if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "native-search", Name: "manage_artifact", Arguments: string(body)}); err != nil {
+			t.Fatalf("native alias failed: %v", err)
+		}
+		if repo.lastOptions.Cursor != "opaque-cursor-cont" {
+			t.Fatal("native alias lost continuation")
+		}
+	}
 }
 
+// Requirement: retained sources cannot be directly revised by another session.
+// Threat: relaxed read authority accidentally grants source writes. The earliest
+// dispatch rejection must explain import-first recovery without preparing a turn.
 func TestManageArtifactReviseRejectsRetainedSessionWithImportGuidance(t *testing.T) {
 	runtime := NewRuntime(1)
 	repo := &directArtifactV3RepoFake{}
@@ -477,5 +529,72 @@ func TestManageArtifactReviseRejectsRetainedSessionWithImportGuidance(t *testing
 	}
 	if !strings.Contains(err.Error(), "action='import'") || !strings.Contains(err.Error(), "retained artifacts are immutable") {
 		t.Fatalf("error missing import-first guidance: %v", err)
+	}
+}
+
+// Requirement: runtime-owned import identity and evidence cannot be overridden,
+// even with null discriminators or near-valid malformed exact references.
+// Threat: coercion/mixed fields produce a write under an unintended identity.
+// Actual dispatch recording asserts rejection AND zero authority side effects.
+func TestManageArtifactImportRejectsForgedIdentity(t *testing.T) {
+	r := NewRuntime(1)
+	native := &fakeNativeImporter{}
+	legacy := &fakeArtifactAuthority{}
+	r.SetArtifactV3NativeImporter(native)
+	r.SetArtifactAuthority(legacy)
+	ctx, scope := artifactToolContext()
+	for _, nativeRef := range []bool{true, false} {
+		base := func() map[string]any {
+			if nativeRef {
+				return map[string]any{"action": "import", "artifact_v3_reference": map[string]any{"session_id": "source", "artifact_id": "source-art", "revision_ref": "revision-" + strings.Repeat("a", 40)}}
+			}
+			return map[string]any{"action": "import", "artifact_reference": map[string]any{"session_id": "source", "collection_id": "source-col", "variant_id": "source-var", "event_seq": 1}}
+		}
+		for _, key := range []string{"account_scope_id", "user_id", "session_id", "collection_id", "variant_id", "event_seq", "destination_artifact_id", "destination_collection_id", "destination_variant_id", "request_id", "transaction_id", "lineage", "build", "preview", "provider", "model"} {
+			args := base()
+			args[key] = "forged"
+			body, _ := json.Marshal(args)
+			if _, err := r.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "forged", Name: "manage_artifact", Arguments: string(body)}); err == nil {
+				t.Fatalf("accepted forged %s (native=%v)", key, nativeRef)
+			}
+		}
+	}
+	for _, args := range []map[string]any{
+		{"action": "import", "artifact_reference": nil},
+		{"action": "import", "artifact_v3_reference": nil},
+		{"action": "import", "artifact_reference": nil, "artifact_v3_reference": nil},
+		{"action": "import", "artifact_reference": map[string]any{"session_id": "source", "collection_id": "c", "variant_id": "v", "event_seq": 1.5}},
+		{"action": "import", "artifact_v3_reference": map[string]any{"session_id": "source", "artifact_id": "a", "revision_ref": "revision-" + strings.Repeat("z", 40)}},
+		{"action": "import", "artifact_v3_reference": map[string]any{"session_id": "source", "artifact_id": "a", "revision_ref": "revision-" + strings.Repeat("a", 40), "preview": "forged"}},
+	} {
+		body, _ := json.Marshal(args)
+		if _, err := r.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "malformed", Name: "manage_artifact", Arguments: string(body)}); err == nil {
+			t.Fatalf("accepted malformed reference: %s", body)
+		}
+	}
+	if native.importCalls != 0 || legacy.importCalls != 0 {
+		t.Fatalf("invalid import caused writes: native=%d legacy=%d", native.importCalls, legacy.importCalls)
+	}
+}
+
+// Requirement: an incomplete importer result cannot be advertised as ready.
+// Threat: wiring regressions fabricate a reusable reference from metadata only.
+// Actual dispatch with an injected malformed projection is the narrowest layer;
+// the canonical store, not this response check, owns atomic publication.
+func TestManageArtifactImportRejectsIncompleteProjection(t *testing.T) {
+	ctx, scope := artifactToolContext()
+	for _, projection := range []pebblestore.ArtifactV3Projection{
+		{},
+		{Repository: &pebblestore.ArtifactV3RepositoryProjection{ArtifactID: "foreign", OwnerSessionID: "other"}},
+		{Revision: &pebblestore.ArtifactV3RevisionProjection{CommitOID: strings.Repeat("a", 40)}},
+	} {
+		r := NewRuntime(1)
+		importer := &fakeNativeImporter{projection: projection, returnExact: true}
+		r.SetArtifactV3NativeImporter(importer)
+		args, _ := json.Marshal(map[string]any{"action": "import", "artifact_v3_reference": map[string]any{"session_id": "source", "artifact_id": "original", "revision_ref": "revision-" + strings.Repeat("a", 40)}})
+		out, err := r.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "incomplete", Name: "manage_artifact", Arguments: string(args)})
+		if err == nil || !strings.Contains(err.Error(), "destination-owned ready revision") || out != "" || importer.importCalls != 1 {
+			t.Fatalf("incomplete result advertised: output=%q err=%v calls=%d", out, err, importer.importCalls)
+		}
 	}
 }

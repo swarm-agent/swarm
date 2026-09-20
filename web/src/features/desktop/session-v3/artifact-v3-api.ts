@@ -239,13 +239,14 @@ function normalizeLineage(value: unknown): DesktopV3NativeArtifactLineage | null
 function normalizeEvidenceSource(value: unknown): DesktopV3NativeArtifactEvidenceSource | null {
   const item = record(value)
   if (!item) return null
-  const sessionId = stringValue(field(item, 'session_id', 'sessionId'))
+  const owner = record(item.owner)
+  const sessionId = stringValue(field(owner, 'session_id', 'sessionId'))
   const artifactId = stringValue(field(item, 'artifact_id', 'artifactId'))
   const commitOid = stringValue(field(item, 'commit_oid', 'commitOid'))
   if (!sessionId || !artifactId || !commitOid) return null
   return {
-    accountScopeId: stringValue(field(item, 'account_scope_id', 'accountScopeId')) || undefined,
-    userId: stringValue(field(item, 'user_id', 'userId')) || undefined,
+    accountScopeId: stringValue(field(owner, 'account_scope_id', 'accountScopeId')) || undefined,
+    userId: stringValue(field(owner, 'user_id', 'userId')) || undefined,
     sessionId,
     artifactId,
     commitOid,
@@ -291,7 +292,10 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     pendingTurns: pendingDesktopV3NativeArtifactTurns(Array.isArray(item.turns) ? item.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : []),
     updatedAt: numberValue(field(item, 'updated_at', 'updatedAt')),
     lineage: normalizeLineage(item.lineage),
-    inheritedFrom: normalizeEvidenceSource(field(item, 'inherited_from', 'inheritedFrom')),
+    inheritedFrom: (() => {
+      const head = record(item.head) || record(field(item, 'current_revision', 'currentRevision'))
+      return normalizeEvidenceSource(field(record(head?.validation), 'inherited_from', 'inheritedFrom') || field(record(head?.build), 'inherited_from', 'inheritedFrom'))
+    })(),
   }
 }
 

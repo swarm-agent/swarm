@@ -74,6 +74,10 @@ func (r *nativeHandoffRepo) ResolveArtifactV3SelectedSource(_ context.Context, a
 	}
 	return pebblestore.ArtifactV3SelectedSource{SessionID: session, ArtifactID: id, CommitOID: strings.Repeat("a", 40), RevisionRef: "revision-" + strings.Repeat("a", 40), ProjectionSeq: 7}, nil
 }
+func (r *nativeHandoffRepo) ResolveArtifactV3RetainedSource(ctx context.Context, account, user, session, id, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+	return r.ResolveArtifactV3SelectedSource(ctx, account, user, session, id, commit, seq)
+}
+
 func (r *nativeHandoffRepo) ListArtifactV3SelectedSources(ctx context.Context, account, user, session string, limit int) ([]pebblestore.ArtifactV3SelectedSource, error) {
 	source, err := r.ResolveArtifactV3SelectedSource(ctx, account, user, session, "fictional", "", 0)
 	return []pebblestore.ArtifactV3SelectedSource{source}, err

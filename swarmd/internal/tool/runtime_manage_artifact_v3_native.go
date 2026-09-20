@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"swarm/packages/swarmd/internal/artifact"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -21,9 +22,14 @@ type ArtifactV3NativeCatalogSearcher interface {
 	SearchArtifactV3Catalog(ctx context.Context, accountScopeID, userID string, options pebblestore.ArtifactV3CatalogOptions) (pebblestore.ArtifactV3CatalogPage, error)
 }
 
+// ArtifactV3RetainedSourceResolver verifies exact retained sources without touching selection state.
+type ArtifactV3RetainedSourceResolver interface {
+	ResolveArtifactV3RetainedSource(context.Context, string, string, string, string, string, uint64) (pebblestore.ArtifactV3SelectedSource, error)
+}
+
 // ArtifactV3RetainedSourceReader reads project files and parts from a retained source artifact.
 type ArtifactV3RetainedSourceReader interface {
-	ReadArtifactV3RetainedRevision(ctx context.Context, accountScopeID, userID, sourceSessionID, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3PartProjection, error)
+	ReadArtifactV3RetainedRevision(ctx context.Context, accountScopeID, userID, sourceSessionID, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3Part, error)
 }
 
 // ArtifactV3NativeImporter imports an exact retained Artifact V3 version into a destination session as an editable head.
@@ -49,10 +55,6 @@ func directArtifactV3ProjectManifest(project map[string][]byte) (pebblestore.Art
 func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, args map[string]any) (map[string]any, error) {
 	if r.artifactV3Author == nil || scope.SessionID != principal.SessionID {
 		return nil, ErrArtifactV3AuthorInvalid
-	}
-	discovery, ok := r.artifactV3Author.repository.(ArtifactV3NativeDiscovery)
-	if !ok {
-		return nil, errors.New("native Artifact V3 discovery unavailable")
 	}
 	action := asString(args["action"])
 	if action == "list_v3" {
@@ -105,6 +107,11 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 					"commit_oid":            item.CommitOID,
 					"revision_ref":          item.RevisionRef,
 					"source_kind":           item.SourceKind,
+					"turn_id":               item.TurnID,
+					"candidate_id":          item.CandidateID,
+					"intent":                item.Intent,
+					"file_count":            item.FileCount,
+					"tree_bytes":            item.TreeBytes,
 					"status":                item.Status,
 					"media_type":            item.MediaType,
 					"entrypoint":            item.Entrypoint,
@@ -116,7 +123,7 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 				if item.SessionID == principal.SessionID {
 					itemMap["copyable_next_calls"] = []map[string]any{
 						{"action": "read_v3", "artifact_v3_reference": refMap},
-						{"action": "revise_v3", "artifact_v3_reference": refMap},
+						{"action": "source_v3", "artifact_v3_reference": refMap},
 					}
 				} else {
 					itemMap["copyable_next_calls"] = []map[string]any{
@@ -137,28 +144,25 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 			}
 			return resp, nil
 		}
-		sources, err := discovery.ListArtifactV3SelectedSources(ctx, principal.AccountScopeID, principal.UserID, principal.SessionID, limit)
-		return map[string]any{"sources": sources, "limit": limit, "count": len(sources)}, err
+		return nil, errors.New("native Artifact V3 retained catalog unavailable")
 	}
 
 	// source_v3
-	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id", "session_id", "commit_oid", "revision_ref", "projection_seq", "artifact_v3_reference"); err != nil {
+	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id", "session_id", "artifact_v3_reference"); err != nil {
 		return nil, fmt.Errorf("manage_artifact source_v3 contains unsupported field: %w", err)
 	}
 	var id, targetSessionID, commitOID string
-	var projectionSeq uint64
-	if refRaw, ok := args["artifact_v3_reference"].(map[string]any); ok {
-		for key := range refRaw {
-			if key != "session_id" && key != "artifact_id" && key != "revision_ref" {
-				return nil, fmt.Errorf("manage_artifact source_v3 artifact_v3_reference contains unsupported field %q", key)
-			}
+	var err error
+	if refRaw, supplied := args["artifact_v3_reference"]; supplied {
+		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference"); err != nil {
+			return nil, err
 		}
-		id = strings.TrimSpace(asString(refRaw["artifact_id"]))
-		targetSessionID = strings.TrimSpace(asString(refRaw["session_id"]))
-		revRef := strings.TrimSpace(asString(refRaw["revision_ref"]))
-		if strings.HasPrefix(revRef, "revision-") {
-			commitOID = strings.TrimPrefix(revRef, "revision-")
+		ref, err := parseDirectArtifactV3RevisionInput(refRaw)
+		if err != nil {
+			return nil, err
 		}
+		id, targetSessionID = ref.ArtifactID, ref.SessionID
+		commitOID = strings.TrimPrefix(ref.RevisionRef, "revision-")
 	}
 	if id == "" {
 		id = strings.TrimSpace(asString(args["artifact_id"]))
@@ -169,23 +173,23 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 	if targetSessionID == "" {
 		targetSessionID = principal.SessionID
 	}
-	if commitOID == "" {
-		commitOID = strings.TrimSpace(asString(args["commit_oid"]))
-		if commitOID == "" && strings.HasPrefix(asString(args["revision_ref"]), "revision-") {
-			commitOID = strings.TrimPrefix(asString(args["revision_ref"]), "revision-")
-		}
-	}
-	seqVal, seqSupplied, err := optionalArtifactInt64(args, "projection_seq")
-	if err != nil {
-		return nil, err
-	}
-	if seqSupplied && seqVal > 0 {
-		projectionSeq = uint64(seqVal)
-	}
 	if id == "" {
 		return nil, ErrArtifactV3AuthorInvalid
 	}
-	source, err := discovery.ResolveArtifactV3SelectedSource(ctx, principal.AccountScopeID, principal.UserID, targetSessionID, id, commitOID, projectionSeq)
+	var source pebblestore.ArtifactV3SelectedSource
+	if targetSessionID != principal.SessionID {
+		resolver, ok := r.artifactV3Author.repository.(ArtifactV3RetainedSourceResolver)
+		if !ok {
+			return nil, errors.New("native Artifact V3 retained resolution unavailable")
+		}
+		source, err = resolver.ResolveArtifactV3RetainedSource(ctx, principal.AccountScopeID, principal.UserID, targetSessionID, id, commitOID, 0)
+	} else {
+		discovery, ok := r.artifactV3Author.repository.(ArtifactV3NativeDiscovery)
+		if !ok {
+			return nil, errors.New("native Artifact V3 discovery unavailable")
+		}
+		source, err = discovery.ResolveArtifactV3SelectedSource(ctx, principal.AccountScopeID, principal.UserID, targetSessionID, id, commitOID, 0)
+	}
 	if err != nil {
 		return nil, err
 	}
