@@ -1643,11 +1643,11 @@ func TestRenderJobForkedProjectRendersAndAttachesDestinationArtifact(t *testing.
 
 	// Destination project and revision
 	store.projects[destProjectID] = pebblestore.VideoProjectSnapshot{
-		ID:             destProjectID,
-		AccountScopeID: principal.AccountScopeID,
-		UserID:         principal.UserID,
-		SessionID:      destSessionID,
-		Title:          "Forked Video",
+		ID:                destProjectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         destSessionID,
+		Title:             "Forked Video",
 		CurrentRevisionID: destRevID,
 		Metadata: map[string]any{
 			"source_session_id":  sourceSessionID,
@@ -1740,11 +1740,11 @@ func TestRenderJobDanglingForkRecoversViaSourceLineageAndRenders(t *testing.T) {
 
 	// Source project, revision, and accepted proposal
 	store.projects[sourceProjectID] = pebblestore.VideoProjectSnapshot{
-		ID:             sourceProjectID,
-		AccountScopeID: principal.AccountScopeID,
-		UserID:         principal.UserID,
-		SessionID:      sourceSessionID,
-		Title:          "Source Video",
+		ID:                sourceProjectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         sourceSessionID,
+		Title:             "Source Video",
 		CurrentRevisionID: sourceRevID,
 	}
 	store.revisions[sourceRevID] = pebblestore.VideoProjectRevisionSnapshot{
@@ -1769,11 +1769,11 @@ func TestRenderJobDanglingForkRecoversViaSourceLineageAndRenders(t *testing.T) {
 
 	// Destination project has lineage metadata pointing to source, but NO proposal in destination
 	store.projects[destProjectID] = pebblestore.VideoProjectSnapshot{
-		ID:             destProjectID,
-		AccountScopeID: principal.AccountScopeID,
-		UserID:         principal.UserID,
-		SessionID:      destSessionID,
-		Title:          "Dangling Forked Video",
+		ID:                destProjectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         destSessionID,
+		Title:             "Dangling Forked Video",
 		CurrentRevisionID: destRevID,
 		Metadata: map[string]any{
 			"source_session_id":  sourceSessionID,

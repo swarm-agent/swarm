@@ -1087,13 +1087,13 @@ func TestForkRevisionPreservesRenderAuthorityAndAdmitsRender(t *testing.T) {
 		RevisionNumber: 1,
 		Timeline: pebblestore.VideoProjectTimeline{
 			Clips: []pebblestore.VideoTimelineClip{{
-				ID:              "clip_1",
-				SourceKind:      pebblestore.VideoClipSourceKindManagedArtifact,
-				ArtifactRef:     fallback,
-				MediaType:       "image/png",
-				DurationMs:      1000,
-				TimelineEndMs:   1000,
-				Visible:         true,
+				ID:            "clip_1",
+				SourceKind:    pebblestore.VideoClipSourceKindManagedArtifact,
+				ArtifactRef:   fallback,
+				MediaType:     "image/png",
+				DurationMs:    1000,
+				TimelineEndMs: 1000,
+				Visible:       true,
 			}},
 			Metadata: map[string]any{
 				"accepted_video_plan":             unlocked,
