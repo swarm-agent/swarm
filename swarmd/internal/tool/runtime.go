@@ -1479,7 +1479,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote"},
+					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
 					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs"},
 					"child_session_id":      map[string]any{"type": "string"},
 					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -1695,6 +1695,17 @@ func (r *Runtime) Definitions() []Definition {
 					"deliverable":        map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason": map[string]any{"type": "string", "description": "Omit in mode=swarm; swarm concurrency is defined by count."},
 					"workspace_path":     map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target. Coder worktrees are based on the selected target repository HEAD."},
+					"committed_source": map[string]any{
+						"type":        "object",
+						"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
+						"properties": map[string]any{
+							"task_call_id":     map[string]any{"type": "string"},
+							"child_session_id": map[string]any{"type": "string"},
+							"head_commit":      map[string]any{"type": "string"},
+						},
+						"required":             []string{"task_call_id", "child_session_id", "head_commit"},
+						"additionalProperties": false,
+					},
 					"owned_scope":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
 					"launches": map[string]any{
 						"type":        "array",
@@ -1711,6 +1722,17 @@ func (r *Runtime) Definitions() []Definition {
 								"animation_profile": map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
 								"output_mode":       map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed."},
 								"workspace_path":    map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder."},
+								"committed_source": map[string]any{
+									"type":        "object",
+									"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
+									"properties": map[string]any{
+										"task_call_id":     map[string]any{"type": "string"},
+										"child_session_id": map[string]any{"type": "string"},
+										"head_commit":      map[string]any{"type": "string"},
+									},
+									"required":             []string{"task_call_id", "child_session_id", "head_commit"},
+									"additionalProperties": false,
+								},
 							},
 							"additionalProperties": true,
 						},
@@ -6474,6 +6496,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 		return r.manageWorktreeIntegrate(scope, args)
 	case "promote":
 		return r.manageWorktreePromote(scope, args)
+	case "help":
+		return r.manageWorktreeHelp(args)
 	default:
 		return "", fmt.Errorf("manage-worktree action %q is unsupported", action)
 	}
@@ -6829,9 +6853,35 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 			return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", branch, c.head, sourceState.BranchName, sourceState.HeadCommit)
 		}
 
+		deliveryBase := capturedHead
+		hasCorrection := false
+		inheritedBase := strings.TrimSpace(asString(source.Metadata["integration_base_commit"]))
+		if inheritedBase != "" {
+			hasCorrection = true
+		} else if _, ok := source.Metadata["committed_source"]; ok {
+			hasCorrection = true
+		} else if _, ok := source.Metadata["committed_source_binding"]; ok {
+			hasCorrection = true
+		}
+		if hasCorrection {
+			if inheritedBase == "" {
+				if bindingMap, ok := source.Metadata["committed_source_binding"].(map[string]any); ok {
+					inheritedBase = strings.TrimSpace(asString(bindingMap["integration_base_commit"]))
+				}
+			}
+			if inheritedBase == "" || !validCommitID(inheritedBase) {
+				return "", fmt.Errorf("invalid committed source binding for promotion source %q: invalid or missing integration_base_commit", c.sessionID)
+			}
+			descends, dErr := r.worktrees.TaskCommitDescendsFrom(sourcePath, inheritedBase, capturedHead)
+			if dErr != nil || !descends {
+				return "", fmt.Errorf("invalid committed source binding for promotion source %q: allocation base %s does not descend from delivery base %s", c.sessionID, capturedHead, inheritedBase)
+			}
+			deliveryBase = inheritedBase
+		}
+
 		children = append(children, worktreeruntime.TaskIntegrationChild{
 			SessionID:  c.sessionID,
-			BaseCommit: capturedHead,
+			BaseCommit: deliveryBase,
 			HeadCommit: sourceState.HeadCommit,
 		})
 		resolvedBranches = append(resolvedBranches, branch)
@@ -6978,7 +7028,41 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			if !state.Clean {
 				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
 			}
-			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: resolvedParentPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
+			deliveryBase := baseCommit
+			hasCorrection := false
+			inheritedBase := strings.TrimSpace(firstNonEmptyString(
+				asString(row["integration_base_commit"]),
+				asString(childSession.Metadata["integration_base_commit"]),
+			))
+			if inheritedBase != "" {
+				hasCorrection = true
+			} else if _, ok := row["committed_source"]; ok {
+				hasCorrection = true
+			} else if _, ok := childSession.Metadata["committed_source"]; ok {
+				hasCorrection = true
+			} else if _, ok := row["committed_source_binding"]; ok {
+				hasCorrection = true
+			} else if _, ok := childSession.Metadata["committed_source_binding"]; ok {
+				hasCorrection = true
+			}
+			if hasCorrection {
+				if inheritedBase == "" {
+					if bindingMap, ok := row["committed_source_binding"].(map[string]any); ok {
+						inheritedBase = strings.TrimSpace(asString(bindingMap["integration_base_commit"]))
+					} else if bindingMap, ok := childSession.Metadata["committed_source_binding"].(map[string]any); ok {
+						inheritedBase = strings.TrimSpace(asString(bindingMap["integration_base_commit"]))
+					}
+				}
+				if inheritedBase == "" || !validCommitID(inheritedBase) {
+					return "", fmt.Errorf("invalid committed source binding for child %q: invalid or missing integration_base_commit", id)
+				}
+				descends, dErr := r.worktrees.TaskCommitDescendsFrom(path, inheritedBase, baseCommit)
+				if dErr != nil || !descends {
+					return "", fmt.Errorf("invalid committed source binding for child %q: allocation base %s does not descend from delivery base %s", id, baseCommit, inheritedBase)
+				}
+				deliveryBase = inheritedBase
+			}
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: resolvedParentPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: deliveryBase, HeadCommit: state.HeadCommit}})
 		}
 	}
 	if len(candidates) != len(selectedSet) {
@@ -7124,7 +7208,26 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 			}
 			parentPath, parentPathErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
 			parentState := worktreeruntime.TaskWorkspaceState{}
-			if parentPathErr == nil {
+			isCapturedDestination := false
+			if parentPathErr != nil {
+				targetWorkspace := strings.TrimSpace(firstNonEmptyString(
+					asString(childSession.Metadata["target_workspace_path"]),
+					asString(row["parent_workspace_path"]),
+					asString(childSession.Metadata["swarm_v3_source_workspace_path"]),
+				))
+				if targetWorkspace != "" && r.workspace != nil {
+					saved, scopeErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, targetWorkspace)
+					if scopeErr == nil && saved.Matched && saved.WorkspacePath == targetWorkspace && saved.ResolvedPath == targetWorkspace {
+						targetState, targetInspectErr := r.worktrees.InspectTaskWorkspace(targetWorkspace)
+						if targetInspectErr == nil {
+							parentPath = targetWorkspace
+							parentState = targetState
+							parentPathErr = nil
+							isCapturedDestination = true
+						}
+					}
+				}
+			} else {
 				parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
 			}
 			if parentPathErr != nil {
@@ -7134,6 +7237,12 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 				continue
 			}
 			child["parent_workspace_path"] = parentPath
+			if isCapturedDestination {
+				child["destination_kind"] = DestinationKindCapturedPromotionOnly
+				child["promotion_only"] = true
+			} else {
+				child["destination_kind"] = DestinationKindOwnedLane
+			}
 			path := childSession.WorktreeRootPath
 			childState := "blocked"
 			if path != "" {
@@ -7170,6 +7279,20 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 							childState = "integrated"
 						} else {
 							childState = "committed"
+						}
+					}
+					if (childState == "committed" || childState == "integrated") && state.Clean {
+						req := CommittedSourceRequest{
+							TaskCallID:     callID,
+							ChildSessionID: childSession.ID,
+							HeadCommit:     state.HeadCommit,
+						}
+						if _, resolveErr := r.ResolveCommittedSource(scope, req); resolveErr == nil {
+							child["committed_source"] = map[string]any{
+								"task_call_id":     callID,
+								"child_session_id": childSession.ID,
+								"head_commit":      state.HeadCommit,
+							}
 						}
 					}
 				}
@@ -7210,7 +7333,9 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		state := strings.TrimSpace(asString(child["child_state"]))
 		stateCounts[state]++
 		if strings.EqualFold(state, "committed") {
-			committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
+			if !asBool(child["promotion_only"]) {
+				committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
+			}
 		}
 	}
 	if len(committedIDs) > 0 {
@@ -7246,6 +7371,31 @@ func (r *Runtime) manageWorktreeCommitIntegrated(parentPath, baseCommit, headCom
 	// Compatibility for narrow test doubles and alternate implementations: the
 	// canonical worktree service provides patch-equivalent range classification.
 	return r.worktrees.TaskCommitDescendsFrom(parentPath, headCommit, parentHead)
+}
+
+func (r *Runtime) manageWorktreeHelp(args map[string]any) (string, error) {
+	help := map[string]any{
+		"status":      "ok",
+		"action":      "help",
+		"tool":        "manage-worktree",
+		"description": "Worktree lineage recall, integration, promotion, and source recovery manager. Call action='help' for workflow guidance.",
+		"actions": map[string]any{
+			"inspect":        "Inspect git commit history and integration status for workspace worktrees.",
+			"list":           "Alias for inspect.",
+			"recall":         "Read-only recall of delegated child Coder worktree states. Returns committed_source for eligible validated sources. Distinguishes session-owned lanes from promotion-only captured destinations.",
+			"inspect_source": "Inspect bounded UTF-8 files from an unfinished/blocked Coder child worktree.",
+			"retain_source":  "Retain bounded UTF-8 recovery files in parent metadata.",
+			"integrate":      "Preflight and integrate committed child worktree changes into the session-owned parent lane. Delivers inherited base commits (B..H) for corrected children while validating new handoff (C..H). Rejects captured promotion-only destinations.",
+			"promote":        "Promote committed child or session worktrees into captured workspace checkouts. Delivers full commit stack (B..H for corrected children).",
+			"help":           "Show workflow guidance and supported actions.",
+		},
+		"path_id": toolPathID("manage-worktree"),
+	}
+	encoded, err := json.Marshal(help)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]any) (string, error) {
