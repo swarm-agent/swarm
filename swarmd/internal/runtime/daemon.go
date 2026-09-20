@@ -349,6 +349,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	artifactV3Runtime := newArtifactV3RuntimeAdapter(artifactV3Service, sessionSvc.Store(), artifactV3RepositoryRoot, artifactV3EvidenceRoot, pebblestore.ArtifactV3Limits{}, artifactV3Renderer)
 	toolRuntime.SetArtifactV3AuthorService(tool.NewArtifactV3AuthorService(artifactV3WorkspaceRoot, artifactV3Runtime, artifactV3Runtime, artifactV3Runtime))
+	toolRuntime.SetArtifactV3NativeImporter(artifactV3Runtime)
 	toolRuntime.SetArtifactRegistry(artifactRegistry)
 	toolRuntime.SetArtifactAuthority(artifactAuthority)
 	mediaStagingSvc := mediastaging.NewService(pebblestore.NewMediaStagingStore(store))

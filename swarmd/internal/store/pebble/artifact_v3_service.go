@@ -713,6 +713,24 @@ func (s *ArtifactV3Service) ResolveRetainedSource(accountScopeID, userID, source
 	return source, nil
 }
 
+// ReadRetainedRevision reads the verified project files and parts of an exact retained revision
+// from any retained session belonging to the authenticated account and user.
+func (s *ArtifactV3Service) ReadRetainedRevision(ctx context.Context, accountScopeID, userID, sourceSessionID, artifactID, commitOID string) (map[string][]byte, []ArtifactV3PartProjection, error) {
+	source, err := s.ResolveRetainedSource(accountScopeID, userID, sourceSessionID, artifactID, commitOID, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	git, err := s.openRetained(ctx, source.Owner, artifactID)
+	if err != nil {
+		return nil, nil, err
+	}
+	project, err := git.ReadProject(ctx, source.CommitOID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return project.Files, source.Revision.Parts, nil
+}
+
 // SearchCatalog searches the authenticated account and user's native Artifact V3 library across sessions.
 func (s *ArtifactV3Service) SearchCatalog(ctx context.Context, accountScopeID, userID string, options ArtifactV3CatalogOptions) (ArtifactV3CatalogPage, error) {
 	if s == nil || s.sessions == nil {

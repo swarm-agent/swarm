@@ -36,6 +36,23 @@ export interface DesktopV3NativeGenerationGroup {
   members: DesktopV3NativeGenerationMember[]
 }
 
+export interface DesktopV3NativeArtifactEvidenceSource {
+  accountScopeId?: string
+  userId?: string
+  sessionId: string
+  artifactId: string
+  commitOid: string
+  treeOid?: string
+}
+
+export interface DesktopV3NativeArtifactLineage {
+  sourceSessionId: string
+  sourceArtifactId: string
+  sourceCommitOid: string
+  sourceTurnId?: string
+  sourceCandidateId?: string
+}
+
 export interface DesktopV3NativeArtifactSummary {
   generations?: { waveId: string; index: number; count: number }[]
   generationGroups?: DesktopV3NativeGenerationGroup[]
@@ -51,6 +68,7 @@ export interface DesktopV3NativeArtifactSummary {
   currentDraft?: { status: string; sequence: number; diagnostics: DesktopV3NativeArtifactDiagnostic[]; history: { ready: boolean; diagnostics: DesktopV3NativeArtifactDiagnostic[] }[] }
   pendingTurns?: DesktopV3NativeArtifactTurn[]
   updatedAt: number
+  lineage?: DesktopV3NativeArtifactLineage | null
 }
 
 export interface DesktopV3NativeArtifactPart {
@@ -106,6 +124,8 @@ export interface DesktopV3NativeArtifactRevision {
   changedFiles: DesktopV3NativeArtifactChangedFile[]
   affectedPartIds: string[]
   diagnostics: DesktopV3NativeArtifactDiagnostic[]
+  lineage?: DesktopV3NativeArtifactLineage | null
+  inheritedFrom?: DesktopV3NativeArtifactEvidenceSource | null
 }
 
 export interface DesktopV3NativeArtifactCandidate {
@@ -199,6 +219,39 @@ function normalizeHead(value: unknown): DesktopV3NativeArtifactHead | null {
   }
 }
 
+function normalizeLineage(value: unknown): DesktopV3NativeArtifactLineage | null {
+  const item = record(value)
+  if (!item) return null
+  const sourceSessionId = stringValue(field(item, 'source_session_id', 'sourceSessionId'))
+  const sourceArtifactId = stringValue(field(item, 'source_artifact_id', 'sourceArtifactId'))
+  const sourceCommitOid = stringValue(field(item, 'source_commit_oid', 'sourceCommitOid'))
+  if (!sourceSessionId || !sourceArtifactId || !sourceCommitOid) return null
+  return {
+    sourceSessionId,
+    sourceArtifactId,
+    sourceCommitOid,
+    sourceTurnId: stringValue(field(item, 'source_turn_id', 'sourceTurnId')) || undefined,
+    sourceCandidateId: stringValue(field(item, 'source_candidate_id', 'sourceCandidateId')) || undefined,
+  }
+}
+
+function normalizeEvidenceSource(value: unknown): DesktopV3NativeArtifactEvidenceSource | null {
+  const item = record(value)
+  if (!item) return null
+  const sessionId = stringValue(field(item, 'session_id', 'sessionId'))
+  const artifactId = stringValue(field(item, 'artifact_id', 'artifactId'))
+  const commitOid = stringValue(field(item, 'commit_oid', 'commitOid'))
+  if (!sessionId || !artifactId || !commitOid) return null
+  return {
+    accountScopeId: stringValue(field(item, 'account_scope_id', 'accountScopeId')) || undefined,
+    userId: stringValue(field(item, 'user_id', 'userId')) || undefined,
+    sessionId,
+    artifactId,
+    commitOid,
+    treeOid: stringValue(field(item, 'tree_oid', 'treeOid')) || undefined,
+  }
+}
+
 export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallbackSessionId = ''): DesktopV3NativeArtifactSummary | null {
   const item = record(value)
   if (!item) return null
@@ -236,6 +289,7 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     turnCount: numberValue(field(item, 'turn_count', 'turnCount')) || (Array.isArray(item.turns) ? item.turns.length : 0),
     pendingTurns: pendingDesktopV3NativeArtifactTurns(Array.isArray(item.turns) ? item.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : []),
     updatedAt: numberValue(field(item, 'updated_at', 'updatedAt')),
+    lineage: normalizeLineage(item.lineage),
   }
 }
 
@@ -366,6 +420,8 @@ export function normalizeDesktopV3NativeArtifactRevision(value: unknown): Deskto
       ? strings(field(item, 'affected_part_ids', 'affectedPartIds'))
       : strings(field(item, 'changed_parts', 'changedParts')),
     diagnostics: rawDiagnostics.map(normalizeDiagnostic).filter((diagnostic): diagnostic is DesktopV3NativeArtifactDiagnostic => diagnostic !== null),
+    lineage: normalizeLineage(item.lineage),
+    inheritedFrom: normalizeEvidenceSource(field(validation, 'inherited_from', 'inheritedFrom') || field(build, 'inherited_from', 'inheritedFrom')),
   }
 }
 
