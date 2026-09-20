@@ -337,18 +337,8 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	if err != nil {
 		return FrameInspectionResult{}, fmt.Errorf("copy exact revision for frame inspection: %w", err)
 	}
-	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
-		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
-		if proposalErr != nil {
-			return FrameInspectionResult{}, fmt.Errorf("resolve video plan inspection authority: %w", proposalErr)
-		}
-		if !found {
-			return FrameInspectionResult{}, fmt.Errorf("video plan inspection authority proposal %q not found", proposalID)
-		}
-		if proposal.UserID != "" && proposal.UserID != principal.UserID {
-			return FrameInspectionResult{}, errors.New("video plan inspection authority ownership does not match authenticated principal")
-		}
-		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal)
+	if revision.Timeline.Metadata["accepted_video_plan"] != nil || pebblestore.VideoPlanRenderAuthorityProposalID(timeline) != "" {
+		plan, resolveErr := pebblestore.ResolveAuthoritativeVideoPlan(principal.AccountScopeID, principal.UserID, revision, s.store)
 		if resolveErr != nil {
 			return FrameInspectionResult{}, resolveErr
 		}
@@ -623,20 +613,12 @@ func (s *Service) RenderJob(ctx context.Context, principal identity.Principal, r
 	if pending := pebblestore.PendingVideoEditProposalForRevision(revision, proposals); pending != nil {
 		return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("final render blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before rendering", revision.ID, pending.ID)
 	}
-	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
-		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
-		if proposalErr != nil {
-			return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("resolve video plan render authority: %w", proposalErr)
-		}
-		if !found {
-			return pebblestore.VideoRenderJobSnapshot{}, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
-		}
-		if proposal.UserID != "" && proposal.UserID != principal.UserID {
-			return pebblestore.VideoRenderJobSnapshot{}, errors.New("video plan render authority ownership does not match authenticated principal")
-		}
-		if plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal); resolveErr != nil {
+	if revision.Timeline.Metadata["accepted_video_plan"] != nil || pebblestore.VideoPlanRenderAuthorityProposalID(timeline) != "" {
+		plan, resolveErr := pebblestore.ResolveAuthoritativeVideoPlan(principal.AccountScopeID, principal.UserID, revision, s.store)
+		if resolveErr != nil {
 			return pebblestore.VideoRenderJobSnapshot{}, resolveErr
-		} else if plan != nil {
+		}
+		if plan != nil {
 			if timeline.Metadata == nil {
 				timeline.Metadata = make(map[string]any)
 			}
