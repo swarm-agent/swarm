@@ -347,6 +347,10 @@ func TestCalculateTurnCostFormulas(t *testing.T) {
 	}
 }
 
+// Requirement: handleSessionsV3Usage must count and list only sessions with matching
+// period rollups, including archived sessions, without importing lifetime summaries.
+// This API/store fixture is the narrowest layer exercising archive metadata and
+// the historical-only fallback regression together.
 func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	now := time.Now().UTC().UnixMilli()
@@ -447,11 +451,11 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 		t.Fatalf("unmarshal respAll: %v", err)
 	}
 
-	if respAll.Summary.TotalSessions != 52 {
-		t.Fatalf("expected 52 total sessions, got %d", respAll.Summary.TotalSessions)
+	if respAll.Summary.TotalSessions != 2 {
+		t.Fatalf("expected 2 participating sessions, got %d", respAll.Summary.TotalSessions)
 	}
-	if respAll.Summary.ActiveSessions != 51 {
-		t.Fatalf("expected 51 active sessions, got %d", respAll.Summary.ActiveSessions)
+	if respAll.Summary.ActiveSessions != 1 {
+		t.Fatalf("expected 1 participating active session, got %d", respAll.Summary.ActiveSessions)
 	}
 	if respAll.Summary.ArchivedSessions != 1 {
 		t.Fatalf("expected 1 archived session, got %d", respAll.Summary.ArchivedSessions)
@@ -574,29 +578,14 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 	if err := json.Unmarshal(wArchived2.Body.Bytes(), &respArchived2); err != nil {
 		t.Fatalf("unmarshal respArchived2: %v", err)
 	}
-	if len(respArchived2.RecentSessions) != 2 {
-		t.Fatalf("expected 2 archived sessions with archived_mode=only, got %d", len(respArchived2.RecentSessions))
+	if len(respArchived2.RecentSessions) != 1 || respArchived2.Summary.TotalSessions != 1 {
+		t.Fatalf("expected only the archived session with period usage, got %+v", respArchived2)
 	}
-	foundLegacy := false
-	for _, s := range respArchived2.RecentSessions {
-		if s.SessionID == legacyArchivedID {
-			foundLegacy = true
-			if !s.Archived {
-				t.Fatalf("expected session %s to be marked archived", legacyArchivedID)
-			}
-			if s.Title != "Historical Deep Analysis" {
-				t.Fatalf("expected title 'Historical Deep Analysis', got %q", s.Title)
-			}
-			if s.TotalTokens != 75000 {
-				t.Fatalf("expected 75000 total tokens from lifetime summary, got %d", s.TotalTokens)
-			}
-			if s.TurnCount != 10 {
-				t.Fatalf("expected 10 turns from lifetime summary, got %d", s.TurnCount)
-			}
-		}
+	if respArchived2.RecentSessions[0].SessionID != archivedID {
+		t.Fatalf("lifetime-only session leaked into period rows: %+v", respArchived2.RecentSessions)
 	}
-	if !foundLegacy {
-		t.Fatalf("expected legacy archived session %s in response", legacyArchivedID)
+	if respArchived2.Summary.TotalTokens != respArchived.Summary.TotalTokens || respArchived2.Summary.TotalCostUSD != respArchived.Summary.TotalCostUSD {
+		t.Fatal("lifetime-only session changed period totals")
 	}
 }
 

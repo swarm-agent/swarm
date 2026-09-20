@@ -155,6 +155,10 @@ type catalogPricingLookup struct {
 }
 
 func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
+	s.handleSessionsV3UsageAt(w, r, time.Now().UTC())
+}
+
+func (s *Server) handleSessionsV3UsageAt(w http.ResponseWriter, r *http.Request, now time.Time) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
 		return
@@ -203,7 +207,7 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	now := time.Now().UTC()
+	now = now.UTC()
 	var cutoffTime int64
 	switch timeRange {
 	case "today":
@@ -242,6 +246,8 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 	modelMap := make(map[string]*SessionUsageModelItem)
 	sessionUsageMap := make(map[string]*SessionUsageSessionItem)
 	uniqueSessions := make(map[string]struct{})
+	providerSessions := make(map[string]map[string]struct{})
+	modelSessions := make(map[string]map[string]struct{})
 
 	// Session metadata resolver with point-lookup caching: resolves title and archived
 	// state on-demand for active/participating sessions without performing a full-table
@@ -321,6 +327,15 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 
 		uniqueSessions[row.SessionID] = struct{}{}
+		if providerSessions[provID] == nil {
+			providerSessions[provID] = make(map[string]struct{})
+		}
+		providerSessions[provID][row.SessionID] = struct{}{}
+		modelKey := provID + ":" + modelID
+		if modelSessions[modelKey] == nil {
+			modelSessions[modelKey] = make(map[string]struct{})
+		}
+		modelSessions[modelKey][row.SessionID] = struct{}{}
 
 		// Summary
 		summary.TotalTokens += row.TotalTokens
@@ -395,7 +410,6 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Model fold
-		modelKey := provID + ":" + modelID
 		mItem, exists := modelMap[modelKey]
 		if !exists {
 			pInfo := pricingMap[modelKey]
@@ -502,33 +516,14 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-	// Calculate session counts from fast library summary index if available,
-	// ensuring all active and archived sessions in the account are counted accurately.
-	searchLimit := sessionLimit
-	if searchLimit < 100 {
-		searchLimit = 100
-	}
-	searchOpts := pebblestore.V3SessionSearchOptions{
-		AccountScopeID: principal.AccountScopeID,
-		UserID:         principal.UserID,
-		Global:         true,
-		ArchivedMode:   archivedMode,
-		Limit:          searchLimit,
-	}
-	searchResult, searchErr := s.sessions.SearchSessions(searchOpts)
-	if searchErr == nil && (searchResult.Summary.ActiveConversationCount > 0 || searchResult.Summary.ArchivedConversationCount > 0) {
-		summary.ActiveSessions = searchResult.Summary.ActiveConversationCount
-		summary.ArchivedSessions = searchResult.Summary.ArchivedConversationCount
-		summary.TotalSessions = summary.ActiveSessions + summary.ArchivedSessions
-	} else {
-		summary.TotalSessions = len(uniqueSessions)
-		for sid := range uniqueSessions {
-			meta := resolveSessionMeta(sid)
-			if meta.archived {
-				summary.ArchivedSessions++
-			} else {
-				summary.ActiveSessions++
-			}
+	// Counts and rows share the same filtered accounting population, not the
+	// account-wide session library or lifetime usage summaries.
+	summary.TotalSessions = len(uniqueSessions)
+	for sid := range uniqueSessions {
+		if resolveSessionMeta(sid).archived {
+			summary.ArchivedSessions++
+		} else {
+			summary.ActiveSessions++
 		}
 	}
 
@@ -557,68 +552,9 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		return modelList[i].TotalTokens > modelList[j].TotalTokens
 	})
 
-	seenSessionIDs := make(map[string]struct{})
 	sessionList := make([]SessionUsageSessionItem, 0, len(sessionUsageMap))
-	for sid, item := range sessionUsageMap {
-		seenSessionIDs[sid] = struct{}{}
+	for _, item := range sessionUsageMap {
 		sessionList = append(sessionList, *item)
-	}
-	if searchErr == nil {
-		for _, sItem := range searchResult.Items {
-			if _, seen := seenSessionIDs[sItem.ID]; seen {
-				continue
-			}
-			meta := resolveSessionMeta(sItem.ID)
-			if archivedMode == "exclude" && meta.archived {
-				continue
-			}
-			if archivedMode == "only" && !meta.archived {
-				continue
-			}
-			if sessionFilter != "" && sItem.ID != sessionFilter {
-				continue
-			}
-			seenSessionIDs[sItem.ID] = struct{}{}
-			sessEntry := SessionUsageSessionItem{
-				SessionID:    sItem.ID,
-				Title:        meta.title,
-				Archived:     meta.archived,
-				LastActiveAt: sItem.UpdatedAt,
-			}
-			store := s.sessions.Store()
-			if store != nil {
-				if sum, hasSum, _ := store.GetUsageSummary(sItem.ID); hasSum {
-					sessEntry.TotalTokens = sum.TotalTokens
-					sessEntry.InputTokens = sum.InputTokens
-					sessEntry.OutputTokens = sum.OutputTokens
-					sessEntry.CachedTokens = sum.CacheReadTokens
-					sessEntry.ThinkingTokens = sum.ThinkingTokens
-					sessEntry.TurnCount = sum.TurnCount
-					sessEntry.CostUSD = sum.EstimatedCostUSD
-					sessEntry.Provider = sum.Provider
-					sessEntry.Model = sum.Model
-				}
-			}
-			sessionList = append(sessionList, sessEntry)
-		}
-	}
-
-	// Apply session, provider, model filters to the session list
-	if sessionFilter != "" || providerFilter != "" || modelFilter != "" {
-		filtered := make([]SessionUsageSessionItem, 0, len(sessionList))
-		for _, s := range sessionList {
-			if sessionFilter != "" && s.SessionID != sessionFilter {
-				continue
-			}
-			if providerFilter != "" && !strings.EqualFold(s.Provider, providerFilter) {
-				continue
-			}
-			if modelFilter != "" && !strings.Contains(strings.ToLower(s.Model), modelFilter) {
-				continue
-			}
-			filtered = append(filtered, s)
-		}
-		sessionList = filtered
 	}
 
 	sort.Slice(sessionList, func(i, j int) bool {
@@ -633,19 +569,13 @@ func (s *Server) handleSessionsV3Usage(w http.ResponseWriter, r *http.Request) {
 		sessionList = sessionList[:sessionLimit]
 	}
 
-	// Calculate session counts per provider
-	provSessionSet := make(map[string]map[string]struct{})
-	for _, item := range sessionList {
-		if item.Provider == "" {
-			continue
-		}
-		if provSessionSet[item.Provider] == nil {
-			provSessionSet[item.Provider] = make(map[string]struct{})
-		}
-		provSessionSet[item.Provider][item.SessionID] = struct{}{}
-	}
+	// Count every matching session per provider/model before the display limit;
+	// a mixed-provider session participates in each matching group.
 	for i := range providerList {
-		providerList[i].Sessions = len(provSessionSet[providerList[i].Provider])
+		providerList[i].Sessions = len(providerSessions[providerList[i].Provider])
+	}
+	for i := range modelList {
+		modelList[i].Sessions = len(modelSessions[modelList[i].Provider+":"+modelList[i].Model])
 	}
 
 	limitRec, _, _ := s.sessions.GetUsageLimit(principal.AccountScopeID)

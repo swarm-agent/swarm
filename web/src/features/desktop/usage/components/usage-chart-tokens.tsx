@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { SessionUsageDailyItem } from '../services/usage-api'
+import { dailyUsageCost } from '../services/usage-costs'
 
 interface UsageChartTokensProps {
   daily: SessionUsageDailyItem[]
@@ -21,7 +22,7 @@ export function UsageChartTokens({ daily, selectedDate, onSelectDate }: UsageCha
   const maxVal = useMemo(() => {
     if (items.length === 0) return 1
     if (metric === 'cost') {
-      const maxCost = Math.max(...items.map((d) => d.cost_usd + (d.media_cost_usd || 0)))
+      const maxCost = Math.max(...items.map(dailyUsageCost))
       return maxCost > 0 ? maxCost : 1
     }
     const maxTokens = Math.max(...items.map((d) => d.total_tokens))
@@ -183,7 +184,7 @@ export function UsageChartTokens({ daily, selectedDate, onSelectDate }: UsageCha
                 const isSelected = selectedDate === item.date
 
                 if (metric === 'cost') {
-                  const dayCost = item.cost_usd + (item.media_cost_usd || 0)
+                  const dayCost = dailyUsageCost(item)
                   const height = Math.max(2, (dayCost / maxVal) * innerHeight)
                   const y = padding.top + innerHeight - height
                   return (
@@ -418,7 +419,7 @@ export function UsageChartTokens({ daily, selectedDate, onSelectDate }: UsageCha
                   <div className="border-t border-[var(--app-border)] pt-1 flex justify-between gap-4 font-medium text-[var(--app-text)]">
                     <span>Estimated Cost:</span>
                     <span className="font-mono text-emerald-500">
-                      ${(hoveredItem.cost_usd + (hoveredItem.media_cost_usd || 0)).toFixed(4)}
+                      ${dailyUsageCost(hoveredItem).toFixed(4)}
                     </span>
                   </div>
                   {hoveredItem.media_calls > 0 && (
