@@ -1631,10 +1631,10 @@ func TestRenderJobForkedProjectRendersAndAttachesDestinationArtifact(t *testing.
 
 	plan := pebblestore.VideoPlanProposal{
 		Kind:  pebblestore.VideoPlanKindInitial,
-		Parts: []pebblestore.VideoPlanPart{{ID: "c1", DurationMs: 1000}},
+		Parts: []pebblestore.VideoPlanPart{{ID: "c1", Title: "Hook", DurationMs: 1000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1}, VisualMediaType: "image/png"}},
 	}
 	timeline := pebblestore.VideoProjectTimeline{
-		Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+		Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
 		Metadata: map[string]any{
 			"accepted_video_plan":             plan,
 			"accepted_video_plan_proposal_id": "vprop_accepted",
@@ -1728,10 +1728,10 @@ func TestRenderJobDanglingForkRecoversViaSourceLineageAndRenders(t *testing.T) {
 
 	plan := pebblestore.VideoPlanProposal{
 		Kind:  pebblestore.VideoPlanKindInitial,
-		Parts: []pebblestore.VideoPlanPart{{ID: "c1", DurationMs: 1000}},
+		Parts: []pebblestore.VideoPlanPart{{ID: "c1", Title: "Hook", DurationMs: 1000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1}, VisualMediaType: "image/png"}},
 	}
 	timeline := pebblestore.VideoProjectTimeline{
-		Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+		Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
 		Metadata: map[string]any{
 			"accepted_video_plan":             plan,
 			"accepted_video_plan_proposal_id": "vprop_source_only",
@@ -1836,9 +1836,9 @@ func TestRenderJobDanglingForkSecurityRejections(t *testing.T) {
 		s := newFakeSessionStore()
 		s.sessions[sourceSessionID] = pebblestore.SessionSnapshot{ID: sourceSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 		s.sessions[destSessionID] = pebblestore.SessionSnapshot{ID: destSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
-		plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "c1", DurationMs: 1000}}}
+		plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "c1", Title: "Hook", DurationMs: 1000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1}, VisualMediaType: "image/png"}}}
 		tl := pebblestore.VideoProjectTimeline{
-			Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+			Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
 			Metadata: map[string]any{
 				"accepted_video_plan":             plan,
 				"accepted_video_plan_proposal_id": "vprop_rej_src",
@@ -1881,6 +1881,9 @@ func TestRenderJobDanglingForkSecurityRejections(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "timeline does not match exact source revision") {
 		t.Fatalf("expected diverged timeline rejection, got: %v", err)
 	}
+	if store.jobs["vjob_diverged"].Status != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job state mutated after failure: %s", store.jobs["vjob_diverged"].Status)
+	}
 
 	// 2. Rejected source proposal rejected
 	store2, _, _ := setupStore()
@@ -1900,6 +1903,9 @@ func TestRenderJobDanglingForkSecurityRejections(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("expected rejected proposal rejection, got: %v", err)
 	}
+	if store2.jobs["vjob_rej_prop"].Status != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job state mutated after failure: %s", store2.jobs["vjob_rej_prop"].Status)
+	}
 
 	// 3. Cross-user source project rejected
 	store3, _, _ := setupStore()
@@ -1918,5 +1924,8 @@ func TestRenderJobDanglingForkSecurityRejections(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "ownership does not match") {
 		t.Fatalf("expected cross-user source project rejection, got: %v", err)
+	}
+	if store3.jobs["vjob_cross_user"].Status != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job state mutated after failure: %s", store3.jobs["vjob_cross_user"].Status)
 	}
 }

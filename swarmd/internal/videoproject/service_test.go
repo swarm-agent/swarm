@@ -91,6 +91,22 @@ func (f *fakeSessionStore) CreateVideoProject(input pebblestore.CreateVideoProje
 		rev = &r
 	}
 	if input.InitialProposal != nil {
+		if rev == nil || input.InitialTimeline == nil {
+			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("initial edit proposal requires initial revision timeline")
+		}
+		if input.InitialProposal.Status != pebblestore.VideoEditProposalStatusAccepted {
+			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("initial edit proposal status must be accepted")
+		}
+		proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(*input.InitialTimeline)
+		if proposalID == "" || proposalID != input.InitialProposal.ID {
+			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("initial revision timeline does not carry matching accepted_video_plan_proposal_id")
+		}
+		if input.InitialProposal.Plan == nil {
+			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("initial edit proposal requires plan")
+		}
+		if err := pebblestore.ValidateVideoPlanForIntent(input.InitialProposal.Intent, *input.InitialProposal.Plan); err != nil {
+			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("initial edit proposal plan invalid: %w", err)
+		}
 		prop := *input.InitialProposal
 		prop.AccountScopeID = input.AccountScopeID
 		prop.UserID = input.UserID
@@ -1027,9 +1043,11 @@ func TestForkRevisionPreservesRenderAuthorityAndAdmitsRender(t *testing.T) {
 	unlocked := pebblestore.VideoPlanProposal{
 		Kind: pebblestore.VideoPlanKindInitial,
 		Parts: []pebblestore.VideoPlanPart{{
-			ID:         "clip_1",
-			DurationMs: 1000,
-			Visual:     fallback,
+			ID:              "clip_1",
+			Title:           "Hook",
+			DurationMs:      1000,
+			Visual:          fallback,
+			VisualMediaType: "image/png",
 			AnimationCandidates: &pebblestore.VideoAnimationCandidateSet{
 				Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection,
 				Candidates: []pebblestore.VideoAnimationCandidate{
@@ -1202,6 +1220,16 @@ func TestForkRevisionAndStartRenderJobSecurityRejections(t *testing.T) {
 	}
 
 	// 2. Rejected proposal fork rejection
+	rejectedPlan := pebblestore.VideoPlanProposal{
+		Kind: pebblestore.VideoPlanKindInitial,
+		Parts: []pebblestore.VideoPlanPart{{
+			ID:              "c1",
+			Title:           "Rejected Cut",
+			DurationMs:      1000,
+			Visual:          &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1},
+			VisualMediaType: "image/png",
+		}},
+	}
 	rejectedRev := pebblestore.VideoProjectRevisionSnapshot{
 		ID:             "vrev_rejected",
 		ProjectID:      proj.ID,
@@ -1209,8 +1237,9 @@ func TestForkRevisionAndStartRenderJobSecurityRejections(t *testing.T) {
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
 		Timeline: pebblestore.VideoProjectTimeline{
-			Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+			Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
 			Metadata: map[string]any{
+				"accepted_video_plan":             rejectedPlan,
 				"accepted_video_plan_proposal_id": "vprop_rejected",
 			},
 		},
@@ -1222,6 +1251,7 @@ func TestForkRevisionAndStartRenderJobSecurityRejections(t *testing.T) {
 		SessionID:      sourceSessionID,
 		AccountScopeID: principal.AccountScopeID,
 		UserID:         principal.UserID,
+		Plan:           &rejectedPlan,
 		Status:         pebblestore.VideoEditProposalStatusRejected,
 	}
 	store.proposals[rejectedProp.SessionID+":"+rejectedProp.ProjectID+":"+rejectedProp.ID] = rejectedProp

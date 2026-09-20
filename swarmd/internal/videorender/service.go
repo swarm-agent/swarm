@@ -338,7 +338,22 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 		return FrameInspectionResult{}, fmt.Errorf("copy exact revision for frame inspection: %w", err)
 	}
 	if revision.Timeline.Metadata["accepted_video_plan"] != nil || pebblestore.VideoPlanRenderAuthorityProposalID(timeline) != "" {
-		plan, resolveErr := pebblestore.ResolveAuthoritativeVideoPlan(principal.AccountScopeID, principal.UserID, revision, s.store)
+		var sourceProposal *pebblestore.VideoEditProposalSnapshot
+		if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
+			proposal, ok, err := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+			if err != nil {
+				return FrameInspectionResult{}, fmt.Errorf("resolve video plan render authority: %w", err)
+			}
+			if ok {
+				sourceProposal = &proposal
+			} else {
+				lineageRes, err := pebblestore.ResolveAuthoritativeVideoPlanDetails(principal.AccountScopeID, principal.UserID, revision, s.store)
+				if err == nil && lineageRes.Plan != nil {
+					sourceProposal = &lineageRes.SourceProposal
+				}
+			}
+		}
+		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, sourceProposal)
 		if resolveErr != nil {
 			return FrameInspectionResult{}, resolveErr
 		}

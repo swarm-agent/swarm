@@ -885,7 +885,7 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if ep.Plan == nil {
 				return errors.New("initial edit proposal requires plan")
 			}
-			if err := validateVideoPlan(*ep.Plan); err != nil {
+			if err := ValidateVideoPlanForIntent(ep.Intent, *ep.Plan); err != nil {
 				return fmt.Errorf("initial edit proposal plan invalid: %w", err)
 			}
 			if err := validateV3MutationEmbeddedOwnership(input, "video edit proposal", ep.SessionID, ep.UserID, ep.AccountScopeID); err != nil {
@@ -1646,10 +1646,6 @@ func PendingVideoEditProposalForRevision(revision VideoProjectRevisionSnapshot, 
 func ResolveVideoPlanRenderAuthority(revision VideoProjectRevisionSnapshot, sourceProposal *VideoEditProposalSnapshot) (*VideoPlanProposal, error) {
 	plan, err := acceptedVideoPlanFromTimeline(revision.Timeline)
 	if err != nil || plan == nil || sourceProposal == nil {
-		if plan == nil && sourceProposal != nil && sourceProposal.Plan != nil {
-			cloned := *sourceProposal.Plan
-			return &cloned, nil
-		}
 		return plan, err
 	}
 	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
@@ -1726,10 +1722,30 @@ type VideoPlanRenderAuthorityReader interface {
 	ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]VideoEditProposalSnapshot, error)
 }
 
+func cloneVideoTimeline(in VideoProjectTimeline) (VideoProjectTimeline, error) {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return VideoProjectTimeline{}, err
+	}
+	var out VideoProjectTimeline
+	if err := json.Unmarshal(data, &out); err != nil {
+		return VideoProjectTimeline{}, err
+	}
+	return out, nil
+}
+
+// CloneVideoTimeline returns an independent deep copy of a video timeline.
+func CloneVideoTimeline(in VideoProjectTimeline) (VideoProjectTimeline, error) {
+	return cloneVideoTimeline(in)
+}
+
 func sameExactVideoTimeline(left, right VideoProjectTimeline) bool {
-	lCopy := left
+	lCopy, err1 := cloneVideoTimeline(left)
+	rCopy, err2 := cloneVideoTimeline(right)
+	if err1 != nil || err2 != nil {
+		return false
+	}
 	normalizeVideoTimeline(&lCopy)
-	rCopy := right
 	normalizeVideoTimeline(&rCopy)
 	lJSON, err1 := json.Marshal(lCopy)
 	rJSON, err2 := json.Marshal(rCopy)
@@ -1748,6 +1764,189 @@ func firstNonEmptyMetadataString(metadata map[string]any, key, fallback string) 
 	return strings.TrimSpace(fallback)
 }
 
+// AuthoritativeVideoPlanResolution carries the resolved authoritative visual plan
+// and the authoritative proposal snapshot from which it originates.
+type AuthoritativeVideoPlanResolution struct {
+	Plan           *VideoPlanProposal
+	SourceProposal VideoEditProposalSnapshot
+}
+
+// ResolveAuthoritativeVideoPlanDetails resolves and strictly validates the authoritative visual plan
+// for a video project revision, across same-project records and authenticated exact-source lineage forks.
+// It fails if authority is missing, unowned, rejected, or belongs to a pending working cut.
+func ResolveAuthoritativeVideoPlanDetails(
+	accountScopeID, userID string,
+	revision VideoProjectRevisionSnapshot,
+	reader VideoPlanRenderAuthorityReader,
+) (AuthoritativeVideoPlanResolution, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	userID = strings.TrimSpace(userID)
+	if accountScopeID == "" || userID == "" {
+		return AuthoritativeVideoPlanResolution{}, errors.New("authenticated caller identity is required")
+	}
+	if reader == nil {
+		return AuthoritativeVideoPlanResolution{}, errors.New("video plan render authority reader is required")
+	}
+	if revision.AccountScopeID != "" && revision.AccountScopeID != accountScopeID {
+		return AuthoritativeVideoPlanResolution{}, errors.New("video revision ownership does not match authenticated principal")
+	}
+	if revision.UserID != "" && revision.UserID != userID {
+		return AuthoritativeVideoPlanResolution{}, errors.New("video revision ownership does not match authenticated principal")
+	}
+
+	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
+	if proposalID == "" {
+		plan, err := ResolveVideoPlanRenderAuthority(revision, nil)
+		if err != nil {
+			return AuthoritativeVideoPlanResolution{}, err
+		}
+		return AuthoritativeVideoPlanResolution{Plan: plan}, nil
+	}
+
+	// 1. Final render blocked: check if this revision is the pending working cut of any proposal in its project.
+	proposals, err := reader.ListVideoEditProposals(accountScopeID, revision.SessionID, revision.ProjectID, 100)
+	if err != nil {
+		return AuthoritativeVideoPlanResolution{}, fmt.Errorf("inspect pending video proposals before render: %w", err)
+	}
+	if pending := PendingVideoEditProposalForRevision(revision, proposals); pending != nil {
+		return AuthoritativeVideoPlanResolution{}, fmt.Errorf("final render blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before rendering", revision.ID, pending.ID)
+	}
+
+	// 2. Look up the authority proposal in the current project.
+	proposal, found, err := reader.GetVideoEditProposal(accountScopeID, revision.SessionID, revision.ProjectID, proposalID)
+	if err != nil {
+		return AuthoritativeVideoPlanResolution{}, fmt.Errorf("resolve video plan render authority: %w", err)
+	}
+	if found {
+		if proposal.ID != proposalID || proposal.ProjectID != revision.ProjectID || proposal.SessionID != revision.SessionID {
+			return AuthoritativeVideoPlanResolution{}, errors.New("video edit proposal identity mismatch")
+		}
+		if (proposal.AccountScopeID != "" && proposal.AccountScopeID != accountScopeID) ||
+			(proposal.UserID != "" && proposal.UserID != userID) {
+			return AuthoritativeVideoPlanResolution{}, errors.New("video plan render authority ownership does not match authenticated principal")
+		}
+		if proposal.Status == VideoEditProposalStatusRejected {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q is rejected", proposalID)
+		}
+		if proposal.Status != VideoEditProposalStatusAccepted {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q is not accepted (status %s)", proposalID, proposal.Status)
+		}
+		if proposal.Plan == nil {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q has no plan", proposalID)
+		}
+		plan, err := ResolveVideoPlanRenderAuthority(revision, &proposal)
+		if err != nil {
+			return AuthoritativeVideoPlanResolution{}, err
+		}
+		return AuthoritativeVideoPlanResolution{
+			Plan:           plan,
+			SourceProposal: proposal,
+		}, nil
+	}
+
+	// 3. Authority proposal not found in the current project: check authenticated bounded exact-source lineage.
+	visitedProjects := make(map[string]bool)
+	visitedProjects[revision.ProjectID] = true
+	currRev := revision
+	const maxLineageDepth = 16
+
+	for depth := 0; depth < maxLineageDepth; depth++ {
+		currProj, ok, err := reader.GetVideoProject(accountScopeID, currRev.SessionID, currRev.ProjectID)
+		if err != nil || !ok {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
+		}
+		if (currProj.AccountScopeID != "" && currProj.AccountScopeID != accountScopeID) ||
+			(currProj.UserID != "" && currProj.UserID != userID) {
+			return AuthoritativeVideoPlanResolution{}, errors.New("video project ownership does not match authenticated principal")
+		}
+
+		sourceSessionID := strings.TrimSpace(firstNonEmptyMetadataString(currProj.Metadata, "source_session_id", ""))
+		sourceProjectID := strings.TrimSpace(firstNonEmptyMetadataString(currProj.Metadata, "source_project_id", ""))
+		sourceRevisionID := strings.TrimSpace(firstNonEmptyMetadataString(currProj.Metadata, "source_revision_id", ""))
+		if sourceSessionID == "" || sourceProjectID == "" || sourceRevisionID == "" {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
+		}
+
+		if visitedProjects[sourceProjectID] {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("render authority lineage cycle detected at project %q", sourceProjectID)
+		}
+		visitedProjects[sourceProjectID] = true
+
+		sourceProject, ok, err := reader.GetVideoProject(accountScopeID, sourceSessionID, sourceProjectID)
+		if err != nil || !ok {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video project %q not found for render authority lineage: %w", sourceProjectID, err)
+		}
+		if sourceProject.ID != sourceProjectID || sourceProject.SessionID != sourceSessionID {
+			return AuthoritativeVideoPlanResolution{}, errors.New("source video project identity mismatch")
+		}
+		if (sourceProject.AccountScopeID != "" && sourceProject.AccountScopeID != accountScopeID) ||
+			(sourceProject.UserID != "" && sourceProject.UserID != userID) {
+			return AuthoritativeVideoPlanResolution{}, errors.New("source video project ownership does not match authenticated principal")
+		}
+
+		sourceRevision, ok, err := reader.GetVideoProjectRevision(accountScopeID, sourceSessionID, sourceProjectID, sourceRevisionID)
+		if err != nil || !ok {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video revision %q not found for render authority lineage", sourceRevisionID)
+		}
+		if sourceRevision.ID != sourceRevisionID || sourceRevision.ProjectID != sourceProjectID || sourceRevision.SessionID != sourceSessionID {
+			return AuthoritativeVideoPlanResolution{}, errors.New("source video revision identity mismatch")
+		}
+		if (sourceRevision.AccountScopeID != "" && sourceRevision.AccountScopeID != accountScopeID) ||
+			(sourceRevision.UserID != "" && sourceRevision.UserID != userID) {
+			return AuthoritativeVideoPlanResolution{}, errors.New("source video revision ownership does not match authenticated principal")
+		}
+
+		// Strict exact-timeline comparison: do not rewrite immutable revisions or trust arbitrary metadata to recover different cuts.
+		if !sameExactVideoTimeline(revision.Timeline, sourceRevision.Timeline) {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("render authority lineage rejected: revision %q timeline does not match exact source revision %q cut", revision.ID, sourceRevision.ID)
+		}
+
+		sourceProposals, err := reader.ListVideoEditProposals(accountScopeID, sourceSessionID, sourceProjectID, 100)
+		if err != nil {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("inspect source video edit proposals for lineage: %w", err)
+		}
+		if pending := PendingVideoEditProposalForRevision(sourceRevision, sourceProposals); pending != nil {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("render authority lineage blocked: source revision %q is pending working cut for proposal %q", sourceRevision.ID, pending.ID)
+		}
+
+		sourceProposal, ok, err := reader.GetVideoEditProposal(accountScopeID, sourceSessionID, sourceProjectID, proposalID)
+		if err != nil {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("get source video edit proposal %q: %w", proposalID, err)
+		}
+		if ok {
+			if sourceProposal.ID != proposalID || sourceProposal.ProjectID != sourceProjectID || sourceProposal.SessionID != sourceSessionID {
+				return AuthoritativeVideoPlanResolution{}, errors.New("source video edit proposal identity mismatch")
+			}
+			if (sourceProposal.AccountScopeID != "" && sourceProposal.AccountScopeID != accountScopeID) ||
+				(sourceProposal.UserID != "" && sourceProposal.UserID != userID) {
+				return AuthoritativeVideoPlanResolution{}, errors.New("source video edit proposal ownership does not match authenticated principal")
+			}
+			if sourceProposal.Status == VideoEditProposalStatusRejected {
+				return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video edit proposal %q is rejected", proposalID)
+			}
+			if sourceProposal.Status != VideoEditProposalStatusAccepted {
+				return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video edit proposal %q is not accepted (status %s)", proposalID, sourceProposal.Status)
+			}
+			if sourceProposal.Plan == nil {
+				return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video edit proposal %q has no plan", proposalID)
+			}
+			// Resolve against the exact source revision where this proposal was created and accepted.
+			plan, err := ResolveVideoPlanRenderAuthority(sourceRevision, &sourceProposal)
+			if err != nil {
+				return AuthoritativeVideoPlanResolution{}, err
+			}
+			return AuthoritativeVideoPlanResolution{
+				Plan:           plan,
+				SourceProposal: sourceProposal,
+			}, nil
+		}
+
+		currRev = sourceRevision
+	}
+
+	return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q exceeded maximum lineage depth limit", proposalID)
+}
+
 // ResolveAuthoritativeVideoPlan resolves and strictly validates the authoritative visual plan
 // for a video project revision, across same-project records and authenticated exact-source lineage forks.
 // It fails if authority is missing, unowned, rejected, or belongs to a pending working cut.
@@ -1756,125 +1955,11 @@ func ResolveAuthoritativeVideoPlan(
 	revision VideoProjectRevisionSnapshot,
 	reader VideoPlanRenderAuthorityReader,
 ) (*VideoPlanProposal, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
-	userID = strings.TrimSpace(userID)
-	if reader == nil {
-		return nil, errors.New("video plan render authority reader is required")
-	}
-	if revision.AccountScopeID != "" && accountScopeID != "" && revision.AccountScopeID != accountScopeID {
-		return nil, errors.New("video revision ownership does not match authenticated principal")
-	}
-	if revision.UserID != "" && userID != "" && revision.UserID != userID {
-		return nil, errors.New("video revision ownership does not match authenticated principal")
-	}
-
-	proposalID := VideoPlanRenderAuthorityProposalID(revision.Timeline)
-	if proposalID == "" {
-		return ResolveVideoPlanRenderAuthority(revision, nil)
-	}
-
-	// 1. Final render blocked: check if this revision is the pending working cut of any proposal in its project.
-	proposals, err := reader.ListVideoEditProposals(accountScopeID, revision.SessionID, revision.ProjectID, 100)
+	res, err := ResolveAuthoritativeVideoPlanDetails(accountScopeID, userID, revision, reader)
 	if err != nil {
-		return nil, fmt.Errorf("inspect pending video proposals before render: %w", err)
+		return nil, err
 	}
-	if pending := PendingVideoEditProposalForRevision(revision, proposals); pending != nil {
-		return nil, fmt.Errorf("final render blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before rendering", revision.ID, pending.ID)
-	}
-
-	// 2. Look up the authority proposal in the current project.
-	proposal, found, err := reader.GetVideoEditProposal(accountScopeID, revision.SessionID, revision.ProjectID, proposalID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve video plan render authority: %w", err)
-	}
-	if found {
-		if (proposal.AccountScopeID != "" && accountScopeID != "" && proposal.AccountScopeID != accountScopeID) ||
-			(proposal.UserID != "" && userID != "" && proposal.UserID != userID) {
-			return nil, errors.New("video plan render authority ownership does not match authenticated principal")
-		}
-		if proposal.Status == VideoEditProposalStatusRejected {
-			return nil, fmt.Errorf("video plan render authority proposal %q is rejected", proposalID)
-		}
-		if proposal.Status != VideoEditProposalStatusAccepted {
-			return nil, fmt.Errorf("video plan render authority proposal %q is not accepted (status %s)", proposalID, proposal.Status)
-		}
-		if proposal.Plan == nil {
-			return nil, fmt.Errorf("video plan render authority proposal %q has no plan", proposalID)
-		}
-		return ResolveVideoPlanRenderAuthority(revision, &proposal)
-	}
-
-	// 3. Authority proposal not found in the current project: check authenticated bounded exact-source lineage.
-	project, ok, err := reader.GetVideoProject(accountScopeID, revision.SessionID, revision.ProjectID)
-	if err != nil || !ok {
-		return nil, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
-	}
-	if (project.AccountScopeID != "" && accountScopeID != "" && project.AccountScopeID != accountScopeID) ||
-		(project.UserID != "" && userID != "" && project.UserID != userID) {
-		return nil, errors.New("video project ownership does not match authenticated principal")
-	}
-
-	sourceSessionID := strings.TrimSpace(firstNonEmptyMetadataString(project.Metadata, "source_session_id", ""))
-	sourceProjectID := strings.TrimSpace(firstNonEmptyMetadataString(project.Metadata, "source_project_id", ""))
-	sourceRevisionID := strings.TrimSpace(firstNonEmptyMetadataString(project.Metadata, "source_revision_id", ""))
-	if sourceSessionID == "" || sourceProjectID == "" || sourceRevisionID == "" {
-		return nil, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
-	}
-
-	sourceProject, ok, err := reader.GetVideoProject(accountScopeID, sourceSessionID, sourceProjectID)
-	if err != nil || !ok {
-		return nil, fmt.Errorf("source video project %q not found for render authority lineage: %w", sourceProjectID, err)
-	}
-	if (sourceProject.AccountScopeID != "" && accountScopeID != "" && sourceProject.AccountScopeID != accountScopeID) ||
-		(sourceProject.UserID != "" && userID != "" && sourceProject.UserID != userID) {
-		return nil, errors.New("source video project ownership does not match authenticated principal")
-	}
-
-	sourceRevision, ok, err := reader.GetVideoProjectRevision(accountScopeID, sourceSessionID, sourceProjectID, sourceRevisionID)
-	if err != nil || !ok {
-		return nil, fmt.Errorf("source video revision %q not found for render authority lineage", sourceRevisionID)
-	}
-	if (sourceRevision.AccountScopeID != "" && accountScopeID != "" && sourceRevision.AccountScopeID != accountScopeID) ||
-		(sourceRevision.UserID != "" && userID != "" && sourceRevision.UserID != userID) {
-		return nil, errors.New("source video revision ownership does not match authenticated principal")
-	}
-
-	// Strict exact-timeline comparison: do not rewrite immutable revisions or trust arbitrary metadata to recover different cuts.
-	if !sameExactVideoTimeline(revision.Timeline, sourceRevision.Timeline) {
-		return nil, fmt.Errorf("render authority lineage rejected: revision %q timeline does not match exact source revision %q cut", revision.ID, sourceRevision.ID)
-	}
-
-	sourceProposals, err := reader.ListVideoEditProposals(accountScopeID, sourceSessionID, sourceProjectID, 100)
-	if err == nil {
-		if pending := PendingVideoEditProposalForRevision(sourceRevision, sourceProposals); pending != nil {
-			return nil, fmt.Errorf("render authority lineage blocked: source revision %q is pending working cut for proposal %q", sourceRevision.ID, pending.ID)
-		}
-	}
-
-	sourceProposal, ok, err := reader.GetVideoEditProposal(accountScopeID, sourceSessionID, sourceProjectID, proposalID)
-	if err != nil || !ok {
-		return nil, fmt.Errorf("video plan render authority proposal %q not found in source lineage", proposalID)
-	}
-	if (sourceProposal.AccountScopeID != "" && accountScopeID != "" && sourceProposal.AccountScopeID != accountScopeID) ||
-		(sourceProposal.UserID != "" && userID != "" && sourceProposal.UserID != userID) {
-		return nil, errors.New("source video edit proposal ownership does not match authenticated principal")
-	}
-	if sourceProposal.Status == VideoEditProposalStatusRejected {
-		return nil, fmt.Errorf("source video edit proposal %q is rejected", proposalID)
-	}
-	if sourceProposal.Status != VideoEditProposalStatusAccepted {
-		return nil, fmt.Errorf("source video edit proposal %q is not accepted (status %s)", proposalID, sourceProposal.Status)
-	}
-	if sourceProposal.Plan == nil {
-		return nil, fmt.Errorf("source video edit proposal %q has no plan", proposalID)
-	}
-
-	boundProposal := sourceProposal
-	boundProposal.ProjectID = revision.ProjectID
-	boundProposal.SessionID = revision.SessionID
-	boundProposal.WorkingRevisionID = revision.ID
-
-	return ResolveVideoPlanRenderAuthority(revision, &boundProposal)
+	return res.Plan, nil
 }
 
 func mergeAcceptedVideoPlan(accepted *VideoPlanProposal, proposed VideoPlanProposal, selected []string) (VideoPlanProposal, error) {
@@ -3419,6 +3504,22 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 
 	var initialProposal *VideoEditProposalSnapshot
 	if input.InitialProposal != nil {
+		if revision == nil || input.InitialTimeline == nil {
+			return VideoProjectSnapshot{}, nil, errors.New("initial edit proposal requires initial revision timeline")
+		}
+		if input.InitialProposal.Status != VideoEditProposalStatusAccepted {
+			return VideoProjectSnapshot{}, nil, errors.New("initial edit proposal status must be accepted")
+		}
+		proposalID := VideoPlanRenderAuthorityProposalID(*input.InitialTimeline)
+		if proposalID == "" || proposalID != input.InitialProposal.ID {
+			return VideoProjectSnapshot{}, nil, errors.New("initial revision timeline does not carry matching accepted_video_plan_proposal_id")
+		}
+		if input.InitialProposal.Plan == nil {
+			return VideoProjectSnapshot{}, nil, errors.New("initial edit proposal requires plan")
+		}
+		if err := ValidateVideoPlanForIntent(input.InitialProposal.Intent, *input.InitialProposal.Plan); err != nil {
+			return VideoProjectSnapshot{}, nil, fmt.Errorf("initial edit proposal plan invalid: %w", err)
+		}
 		prop := *input.InitialProposal
 		prop.AccountScopeID = input.AccountScopeID
 		prop.UserID = input.UserID
@@ -3426,13 +3527,11 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		prop.ProjectID = project.ID
 		prop.SchemaVersion = VideoEditProposalSchemaVersion
 		prop.Status = VideoEditProposalStatusAccepted
-		if revision != nil {
-			prop.WorkingRevisionID = revision.ID
-			prop.WorkingRevisionNumber = revision.RevisionNumber
-			prop.AcceptedRevisionID = revision.ID
-			prop.BaseRevisionID = revision.ID
-			prop.BaseRevisionNumber = revision.RevisionNumber
-		}
+		prop.WorkingRevisionID = revision.ID
+		prop.WorkingRevisionNumber = revision.RevisionNumber
+		prop.AcceptedRevisionID = revision.ID
+		prop.BaseRevisionID = revision.ID
+		prop.BaseRevisionNumber = revision.RevisionNumber
 		if prop.CreatedAt == 0 {
 			prop.CreatedAt = now
 		}
@@ -3446,11 +3545,17 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 	}
 
 	mutPayloadMap := map[string]any{
-		"project_id": project.ID, "initial_revision_id": input.InitialRevisionID, "title": project.Title,
-		"project_metadata": input.Metadata, "session_metadata": input.SessionMetadata, "attachment_message": input.AttachmentMessage,
-	}
-	if initialProposal != nil {
-		mutPayloadMap["initial_proposal_id"] = initialProposal.ID
+		"project_id":          project.ID,
+		"initial_revision_id": input.InitialRevisionID,
+		"title":               project.Title,
+		"description":         project.Description,
+		"output_preset":       project.OutputPreset,
+		"project_kind":        project.ProjectKind,
+		"project_metadata":    input.Metadata,
+		"session_metadata":    input.SessionMetadata,
+		"attachment_message":  input.AttachmentMessage,
+		"initial_timeline":    input.InitialTimeline,
+		"initial_proposal":    initialProposal,
 	}
 	mutPayload, _ := json.Marshal(mutPayloadMap)
 	hash := sha256.Sum256(mutPayload)

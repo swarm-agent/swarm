@@ -679,6 +679,9 @@ func (s *Service) ForkRevision(ctx context.Context, principal identity.Principal
 	if !principal.Valid() {
 		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("authenticated principal is required")
 	}
+	if strings.TrimSpace(principal.AccountScopeID) == "" || strings.TrimSpace(principal.UserID) == "" {
+		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("authenticated principal requires account_scope_id and user_id")
+	}
 	sourceProject, ok, err := s.GetProject(principal, input.SourceSessionID, input.SourceProjectID)
 	if err != nil || !ok {
 		return pebblestore.VideoProjectSnapshot{}, nil, errors.New("source video project not found")
@@ -704,29 +707,31 @@ func (s *Service) ForkRevision(ctx context.Context, principal identity.Principal
 		return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("fork blocked: revision %q is the pending working cut for proposal %q; confirm or reject the pending changes before forking", sourceRevision.ID, pending.ID)
 	}
 
+	destTimeline, err := pebblestore.CloneVideoTimeline(sourceRevision.Timeline)
+	if err != nil {
+		return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("clone source revision timeline: %w", err)
+	}
+
 	var initialProposal *pebblestore.VideoEditProposalSnapshot
 	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(sourceRevision.Timeline); proposalID != "" {
-		sourceProposal, ok, err := s.sessions.GetVideoEditProposal(principal.AccountScopeID, input.SourceSessionID, input.SourceProjectID, proposalID)
+		res, err := pebblestore.ResolveAuthoritativeVideoPlanDetails(principal.AccountScopeID, principal.UserID, sourceRevision, s.sessions)
 		if err != nil {
 			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("resolve source video plan render authority: %w", err)
 		}
-		if !ok {
-			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("source video plan render authority proposal %q not found", proposalID)
+		if res.Plan == nil {
+			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("source video plan render authority proposal %q has no plan", proposalID)
 		}
-		if (sourceProposal.AccountScopeID != "" && sourceProposal.AccountScopeID != principal.AccountScopeID) ||
-			(sourceProposal.UserID != "" && sourceProposal.UserID != principal.UserID) {
-			return pebblestore.VideoProjectSnapshot{}, nil, errors.New("source video plan render authority ownership does not match authenticated principal")
+		if res.SourceProposal.Status != pebblestore.VideoEditProposalStatusAccepted {
+			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("source video edit proposal %q is not accepted (status %s)", proposalID, res.SourceProposal.Status)
 		}
-		if sourceProposal.Status == pebblestore.VideoEditProposalStatusRejected {
-			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("source video edit proposal %q is rejected", proposalID)
+		if destTimeline.Metadata == nil {
+			destTimeline.Metadata = make(map[string]any)
 		}
-		if sourceProposal.Status != pebblestore.VideoEditProposalStatusAccepted {
-			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("source video edit proposal %q is not accepted (status %s)", proposalID, sourceProposal.Status)
-		}
-		if sourceProposal.Plan == nil {
-			return pebblestore.VideoProjectSnapshot{}, nil, fmt.Errorf("source video edit proposal %q has no plan", proposalID)
-		}
-		destProposal := sourceProposal
+		destTimeline.Metadata["accepted_video_plan"] = *res.Plan
+		destTimeline.Metadata["accepted_video_plan_proposal_id"] = proposalID
+
+		destProposal := res.SourceProposal
+		destProposal.Plan = res.Plan
 		destProposal.Status = pebblestore.VideoEditProposalStatusAccepted
 		initialProposal = &destProposal
 	}
@@ -742,7 +747,7 @@ func (s *Service) ForkRevision(ctx context.Context, principal identity.Principal
 		AccountScopeID: principal.AccountScopeID, UserID: principal.UserID,
 		SessionID: input.DestinationSessionID, WorkspaceID: input.DestinationWorkspaceID, ProjectID: input.ProjectID, InitialRevisionID: input.InitialRevisionID,
 		Title: sourceProject.Title, Description: sourceProject.Description, OutputPreset: sourceProject.OutputPreset,
-		InitialTimeline: &sourceRevision.Timeline, InitialProposal: initialProposal, Metadata: metadata, ProjectKind: pebblestore.VideoProjectKindVideoTool,
+		InitialTimeline: &destTimeline, InitialProposal: initialProposal, Metadata: metadata, ProjectKind: pebblestore.VideoProjectKindVideoTool,
 		SessionMetadata: input.SessionMetadata, AttachmentMessage: input.AttachmentMessage, NowUnixMs: input.NowUnixMs,
 	})
 	if err != nil {
