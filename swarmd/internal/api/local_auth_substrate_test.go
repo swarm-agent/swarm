@@ -1,5 +1,10 @@
 package api
 
+// Cookie fixture maintenance: bootstrap and websocket tests exercise the real
+// Desktop/withAuth boundary using the issued origin-scoped cookie. Handshakes
+// build the cookie from the actual test server URL so a missing cookie cannot
+// masquerade as validation of the JWT or its retained principal.
+
 import (
 	"encoding/json"
 	"io"
@@ -26,7 +31,7 @@ import (
 func sessionCookieFromRecorder(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	for _, cookie := range rec.Result().Cookies() {
-		if cookie.Name == desktopLocalSessionCookieName {
+		if strings.HasPrefix(cookie.Name, desktopLocalSessionCookieName+"_") {
 			if strings.TrimSpace(cookie.Value) == "" {
 				t.Fatalf("expected %q cookie to have a value", desktopLocalSessionCookieName)
 			}
@@ -196,11 +201,10 @@ func TestDesktopWebsocketAllowsCookieAuthenticatedHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure desktop local session: %v", err)
 	}
-	cookie := buildDesktopLocalSessionCookie(token, expiresAt, false)
-
 	ts := httptest.NewServer(server.DesktopHandler())
 	defer ts.Close()
 
+	cookie := buildDesktopLocalSessionCookie(httptest.NewRequest(http.MethodGet, ts.URL, nil), token, expiresAt)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
 	headers := http.Header{}
 	headers.Set("Origin", ts.URL)
@@ -236,11 +240,10 @@ func TestMainHandlerWebsocketAllowsCookieAuthenticatedHandshake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure desktop local session: %v", err)
 	}
-	cookie := buildDesktopLocalSessionCookie(token, expiresAt, false)
-
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
+	cookie := buildDesktopLocalSessionCookie(httptest.NewRequest(http.MethodGet, ts.URL, nil), token, expiresAt)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
 	headers := http.Header{}
 	headers.Set("Origin", ts.URL)

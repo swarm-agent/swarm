@@ -1,5 +1,9 @@
 package api
 
+// Cookie assertion maintenance: withDesktopBoundary must reject a rebinding
+// authority before issuance. Match the entire Desktop-cookie namespace so the
+// HTTP boundary test forbids both retired and origin-scoped session cookies.
+
 import (
 	"context"
 	"errors"
@@ -26,7 +30,7 @@ func TestDesktopBoundaryRejectsDNSRebindingBeforeDesktopSurface(t *testing.T) {
 		t.Fatalf("status=%d want=%d body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 	for _, cookie := range rec.Result().Cookies() {
-		if cookie.Name == desktopLocalSessionCookieName {
+		if strings.HasPrefix(cookie.Name, desktopLocalSessionCookieName) {
 			t.Fatal("rejected authority issued a desktop session cookie")
 		}
 	}

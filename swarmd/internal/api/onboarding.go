@@ -219,7 +219,7 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if issued != nil {
-			http.SetCookie(w, buildDesktopLocalSessionCookie(issued.Token, issued.ExpiresAt, requestScheme(r) == "https"))
+			http.SetCookie(w, buildDesktopLocalSessionCookie(r, issued.Token, issued.ExpiresAt))
 		}
 		writeJSON(w, http.StatusOK, response)
 		if req.DesktopOnboardingComplete != nil && *req.DesktopOnboardingComplete {

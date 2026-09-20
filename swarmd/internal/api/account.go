@@ -118,7 +118,7 @@ func (s *Server) handleAccountTeamUpgrade(w http.ResponseWriter, r *http.Request
 	}
 	if s.identitySessions != nil {
 		if issued, err := s.identitySessions.IssueForCurrentSelection(); err == nil {
-			http.SetCookie(w, buildDesktopLocalSessionCookie(issued.Token, issued.ExpiresAt, requestScheme(r) == "https"))
+			http.SetCookie(w, buildDesktopLocalSessionCookie(r, issued.Token, issued.ExpiresAt))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

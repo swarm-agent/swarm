@@ -1,5 +1,10 @@
 package api
 
+// Cookie fixture maintenance: buildDesktopLocalSessionCookie now requires the
+// request origin. These API-layer JWT rejection/precedence tests must send the
+// selected cookie name so they still exercise token validation, not a missing
+// cookie. Bootstrap/restart assertions retain the server-issued cookie unchanged.
+
 import (
 	"crypto/hmac"
 	"crypto/sha256"
@@ -192,7 +197,7 @@ func TestXSwarmTokenPrincipalTakesPrecedenceOverInvalidDesktopCookie(t *testing.
 	validToken := sessionCookieFromRecorder(t, bootstrapRec).Value
 
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/me")
-	req.AddCookie(buildDesktopLocalSessionCookie("not-a-valid-product-jwt", time.Now().Add(time.Hour), false))
+	req.AddCookie(buildDesktopLocalSessionCookie(req, "not-a-valid-product-jwt", time.Now().Add(time.Hour)))
 	req.Header.Set("X-Swarm-Token", validToken)
 	rec := httptest.NewRecorder()
 	server.DesktopHandler().ServeHTTP(rec, req)
@@ -233,7 +238,7 @@ func TestDesktopSessionRejectsOldRandomSingletonCookie(t *testing.T) {
 	defer cleanup()
 
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
-	req.AddCookie(buildDesktopLocalSessionCookie("not-a-jwt-random-cookie", time.Now().Add(identity.LocalProductSessionTTL), false))
+	req.AddCookie(buildDesktopLocalSessionCookie(req, "not-a-jwt-random-cookie", time.Now().Add(identity.LocalProductSessionTTL)))
 	rec := httptest.NewRecorder()
 	server.DesktopHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -256,7 +261,7 @@ func TestDesktopSessionRejectsTeamOnlyJWTCookieForProtectedAPI(t *testing.T) {
 		"exp":              time.Now().Add(time.Hour).Unix(),
 	})
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
-	req.AddCookie(buildDesktopLocalSessionCookie(teamOnlyJWT, time.Now().Add(time.Hour), false))
+	req.AddCookie(buildDesktopLocalSessionCookie(req, teamOnlyJWT, time.Now().Add(time.Hour)))
 	rec := httptest.NewRecorder()
 	server.DesktopHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -281,7 +286,7 @@ func TestDesktopSessionRejectsStaleTeamMismatchJWTCookie(t *testing.T) {
 		"exp":              time.Now().Add(time.Hour).Unix(),
 	})
 	req := newSameOriginDesktopRequest(http.MethodGet, "/v1/vault")
-	req.AddCookie(buildDesktopLocalSessionCookie(staleTeamJWT, time.Now().Add(time.Hour), false))
+	req.AddCookie(buildDesktopLocalSessionCookie(req, staleTeamJWT, time.Now().Add(time.Hour)))
 	rec := httptest.NewRecorder()
 	server.DesktopHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
