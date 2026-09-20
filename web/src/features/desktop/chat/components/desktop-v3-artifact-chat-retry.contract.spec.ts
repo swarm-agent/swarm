@@ -41,7 +41,8 @@ test('artifact selections survive retained-operation retry and routed-session ha
 
   assert.match(pane, /initialArtifactSelections=\{storedOperation\?\.request\.artifact_selections \?\? \[\]\}/)
   assert.match(pane, /JSON\.stringify\(retainedArtifacts\) === JSON\.stringify\(artifactSelections\)/)
-  assert.match(pane, /Retry the retained message without changing its text or attachments/)
+  assert.doesNotMatch(pane, /Retry the retained message without changing its text or attachments/)
+  assert.match(pane, /isRetryingRetainedOperation/)
   assert.match(routedPane, /snapshot\.artifactSelections/)
   assert.match(routedPane, /artifactSelectionRequest=\{artifactSelectionRequest\}/)
   assert.match(composer, /routedComposerSnapshot\?\.artifactSelections \?\? initialArtifactSelections/)

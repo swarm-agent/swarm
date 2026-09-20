@@ -32,7 +32,7 @@ test('existing and routed panes preserve artifact refs across retry boundaries',
   assert.match(existing, /artifactSelectionRequest=\{galleryArtifactSelectionRequest\}/)
   assert.match(existing, /artifactSelections,/)
   assert.match(existing, /JSON\.stringify\(retainedArtifacts\) === JSON\.stringify\(artifactSelections\)/)
-  assert.match(existing, /Retry the retained message without changing its text or attachments/)
+  assert.doesNotMatch(existing, /Retry the retained message without changing its text or attachments/)
   assert.match(routed, /snapshot\.artifactSelections/)
   assert.match(routed, /artifactSelectionRequest=\{artifactSelectionRequest\}/)
 })
