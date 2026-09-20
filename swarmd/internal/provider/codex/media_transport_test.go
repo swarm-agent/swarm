@@ -103,6 +103,8 @@ func TestMaterializeSessionMediaInputBoundsCodexFullReplayToNewestImages(t *test
 		})
 	}
 
+	// The assistant has already consumed the historical images.
+	input = append(input, map[string]any{"role": "assistant", "content": "reviewed"})
 	materialized, err := materializeSessionMediaInputWithReplayBudget(Request{
 		ProviderConfigurationHash: "configuration-hash",
 		MediaContract:             contract,
@@ -110,14 +112,14 @@ func TestMaterializeSessionMediaInputBoundsCodexFullReplayToNewestImages(t *test
 	if err != nil {
 		t.Fatalf("materializeSessionMediaInputWithReplayBudget: %v", err)
 	}
-	if len(materialized) != 3 {
-		t.Fatalf("materialized input count = %d, want 3", len(materialized))
+	if len(materialized) != 4 {
+		t.Fatalf("materialized input count = %d, want 4", len(materialized))
 	}
 	oldContent, _ := inputContentMaps(materialized[0]["content"])
 	if len(oldContent) != 1 || oldContent[0]["type"] != "input_text" || !strings.Contains(asString(oldContent[0]["text"]), "omitted") {
 		t.Fatalf("old replay media was not replaced by an explicit marker: %#v", materialized[0])
 	}
-	for i := 1; i < len(materialized); i++ {
+	for i := 1; i < 3; i++ {
 		content, _ := inputContentMaps(materialized[i]["content"])
 		if len(content) != 1 || content[0]["type"] != "input_image" || !strings.HasPrefix(asString(content[0]["image_url"]), "data:image/png;base64,") {
 			t.Fatalf("new replay media %d was not retained: %#v", i, materialized[i])
@@ -231,6 +233,8 @@ func TestMaterializeSessionMediaInputBoundsCodexFullReplayToNewestImages21Retain
 		})
 	}
 
+	input = append(input, map[string]any{"role": "assistant", "content": "reviewed"})
+	original, _ := json.Marshal(input)
 	materialized, err := materializeSessionMediaInputWithReplayBudget(Request{
 		ProviderConfigurationHash: "configuration-hash",
 		MediaContract:             contract,
@@ -238,8 +242,12 @@ func TestMaterializeSessionMediaInputBoundsCodexFullReplayToNewestImages21Retain
 	if err != nil {
 		t.Fatalf("materializeSessionMediaInputWithReplayBudget: %v", err)
 	}
-	if len(materialized) != 22 {
-		t.Fatalf("materialized input count = %d, want 22", len(materialized))
+	after, _ := json.Marshal(input)
+	if string(original) != string(after) {
+		t.Fatal("materialization mutated original media history")
+	}
+	if len(materialized) != 23 {
+		t.Fatalf("materialized input count = %d, want 23", len(materialized))
 	}
 	// With 22 images and cap 20, the 2 oldest images (0 and 1) should be replaced with omission markers.
 	for i := 0; i < 2; i++ {
@@ -322,6 +330,7 @@ func TestMaterializeSessionMediaInputExactCountAndByteBoundaries(t *testing.T) {
 				"content": []map[string]any{{"type": "session_media", "media": testMediaPayload("image", "image/png", "", []byte("a"))}},
 			})
 		}
+		input = append(input, map[string]any{"role": "assistant", "content": "reviewed"})
 		materialized, err := materializeSessionMediaInputWithReplayBudget(Request{
 			ProviderConfigurationHash: "configuration-hash",
 			MediaContract:             contract,
@@ -371,9 +380,9 @@ func TestMaterializeSessionMediaInputPreservesMediaTextAndToolOrdering(t *testin
 			},
 		},
 		{
-			"role": "tool",
+			"role":         "tool",
 			"tool_call_id": "call_1",
-			"content": "inspection complete",
+			"content":      "inspection complete",
 		},
 		{
 			"role": "user",
@@ -405,7 +414,8 @@ func TestMaterializeSessionMediaInputPreservesMediaTextAndToolOrdering(t *testin
 	}
 
 	// Message 1: assistant tool calls preserved.
-	if asString(materialized[1]["role"]) != "assistant" || len(asSlice(materialized[1]["tool_calls"])) != 1 {
+	calls, ok := materialized[1]["tool_calls"].([]map[string]any)
+	if asString(materialized[1]["role"]) != "assistant" || !ok || len(calls) != 1 || calls[0]["id"] != "call_1" {
 		t.Fatalf("m1 assistant tool call not preserved: %#v", materialized[1])
 	}
 
@@ -511,6 +521,7 @@ func TestMaterializeSessionMediaInputRejectsInvalidForgedAndOversizedMediaOldAnd
 				"content": []map[string]any{{"type": "session_media", "media": tc.newMedia}},
 			})
 
+			input = append(input, map[string]any{"role": "assistant", "content": "reviewed"})
 			_, err := materializeSessionMediaInputWithReplayBudget(Request{
 				ProviderConfigurationHash: "configuration-hash",
 				MediaContract:             contract,

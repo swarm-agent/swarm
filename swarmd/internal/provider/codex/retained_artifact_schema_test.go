@@ -1,8 +1,9 @@
-package codex
+package codex_test
 
 import (
 	"testing"
 
+	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -16,7 +17,7 @@ func TestCodexRetainedArtifactRegisteredSchema(t *testing.T) {
 		if definition.Name != "manage_artifact" {
 			continue
 		}
-		cleaned := sanitizeCodexToolParameters(definition.Parameters)
+		cleaned := codex.SanitizeToolParametersForTest(definition.Parameters)
 		properties := cleaned["properties"].(map[string]any)
 		action := properties["action"].(map[string]any)
 		found := false

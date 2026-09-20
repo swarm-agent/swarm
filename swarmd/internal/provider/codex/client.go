@@ -945,24 +945,46 @@ func materializeSessionMediaInput(req Request, input []map[string]any) ([]map[st
 }
 
 func materializeSessionMediaDeltaInput(req Request, input []map[string]any) ([]map[string]any, error) {
-	return materializeSessionMediaInputWithReplayBudget(req, input, 0)
+	return materializeSessionMediaInputBudget(req, input, maxCodexFullReplayMediaBytes, false)
 }
 
 func materializeSessionMediaInputWithReplayBudget(req Request, input []map[string]any, replayBudget int64) ([]map[string]any, error) {
+	return materializeSessionMediaInputBudget(req, input, replayBudget, true)
+}
+
+func materializeSessionMediaInputBudget(req Request, input []map[string]any, byteBudget int64, replay bool) ([]map[string]any, error) {
 	if len(input) == 0 {
 		return nil, nil
 	}
-	// Upfront validation: validate every media part's integrity, contract, digest,
-	// MIME, and size limits before considering any replay omission. If any payload
-	// is forged, unsupported, malformed, or oversize, it fails immediately.
-	// Also ensure that no single message/batch item exceeds the contract count limit.
-	for _, item := range input {
+	codex := strings.EqualFold(strings.TrimSpace(req.MediaContract.ProviderID), "codex")
+	bounded := codex && byteBudget > 0
+	// Only media preceding the newest assistant/tool-call boundary is historical.
+	// Tool results may contain several synthetic user image messages in one batch.
+	// With no such boundary, protect the entire input rather than guess its age.
+	currentStart := 0
+	if bounded && replay {
+		for i, item := range input {
+			if strings.EqualFold(asString(item["role"]), "assistant") || strings.EqualFold(asString(item["type"]), "function_call") {
+				currentStart = i + 1
+			}
+		}
+	}
+	type mediaPart struct {
+		item, part int
+		payload    provideriface.SessionMediaPayload
+		capability provideriface.MediaContractCapability
+		omit       bool
+	}
+	var media []mediaPart
+	// Validate every payload once, including history that may be omitted. Replay
+	// pruning must not conceal a forged digest, denied surface/type or invalid size.
+	for i, item := range input {
 		content, ok := inputContentMaps(item["content"])
 		if !ok {
 			continue
 		}
-		itemModalityCounts := map[string]int{}
-		for _, part := range content {
+		counts := map[string]int{}
+		for j, part := range content {
 			if !strings.EqualFold(strings.TrimSpace(asString(part["type"])), "session_media") {
 				continue
 			}
@@ -975,63 +997,60 @@ func materializeSessionMediaInputWithReplayBudget(req Request, input []map[strin
 				return nil, err
 			}
 			modality := strings.ToLower(strings.TrimSpace(capability.Modality))
-			itemModalityCounts[modality]++
-			if capability.MaxCount > 0 && itemModalityCounts[modality] > capability.MaxCount {
+			counts[modality]++
+			if capability.MaxCount <= 0 || counts[modality] > capability.MaxCount {
 				return nil, errors.New("provider media payload exceeds the current contract count limit")
 			}
+			media = append(media, mediaPart{item: i, part: j, payload: payload, capability: capability})
 		}
 	}
-
-	remainingMediaBytes := sessionMediaInputBytes(input)
-	remainingMediaCounts := sessionMediaInputCounts(input)
-	boundCodexReplay := strings.EqualFold(strings.TrimSpace(req.MediaContract.ProviderID), "codex") && replayBudget > 0
-	out := make([]map[string]any, 0, len(input))
-	mediaCounts := map[string]int{}
-	for _, item := range input {
-		cloned := cloneMapAny(item)
-		content, ok := inputContentMaps(cloned["content"])
-		if !ok {
-			out = append(out, cloned)
-			continue
-		}
-		materialized := make([]map[string]any, 0, len(content))
-		for _, part := range content {
-			if !strings.EqualFold(strings.TrimSpace(asString(part["type"])), "session_media") {
-				materialized = append(materialized, cloneMapAny(part))
+	// Select newest first without allocating base64 for images we will omit.
+	// Current media is never omitted: an over-limit new batch fails explicitly.
+	counts := map[string]int{}
+	var retainedBytes int64
+	for i := len(media) - 1; i >= 0; i-- {
+		part := &media[i]
+		modality := strings.ToLower(strings.TrimSpace(part.capability.Modality))
+		countExceeded := counts[modality] >= part.capability.MaxCount
+		bytesExceeded := bounded && part.payload.Size > byteBudget-retainedBytes
+		if countExceeded || bytesExceeded {
+			if bounded && replay && part.item < currentStart {
+				part.omit = true
 				continue
 			}
-			payload, ok := part["media"].(provideriface.SessionMediaPayload)
-			if !ok {
-				return nil, errors.New("provider media input is malformed")
-			}
-			capability, err := validateProviderMediaPayloadItem(req, payload)
-			if err != nil {
-				return nil, err
-			}
-			modality := strings.ToLower(strings.TrimSpace(capability.Modality))
-			maxCount := capability.MaxCount
-			omitFromReplay := boundCodexReplay && (remainingMediaBytes > replayBudget || (maxCount > 0 && remainingMediaCounts[modality] > maxCount))
-			remainingMediaBytes -= int64(len(payload.Bytes))
-			remainingMediaCounts[modality]--
-			if omitFromReplay {
-				materialized = append(materialized, map[string]any{
-					"type": "input_text",
-					"text": "An earlier image payload was omitted from this full provider replay to keep the Codex websocket request bounded. The rest of its durable message or tool context remains; inspect the image again only if its pixels are still required.",
-				})
-				continue
-			}
-			mediaCounts[modality]++
-			if maxCount <= 0 || mediaCounts[modality] > maxCount {
+			if countExceeded {
 				return nil, errors.New("provider media payload exceeds the current contract count limit")
 			}
-			transport, err := providerMediaContentItem(req.MediaContract, capability, payload)
-			if err != nil {
-				return nil, err
-			}
-			materialized = append(materialized, transport)
+			return nil, errors.New("current provider media batch exceeds the Codex byte budget; inspect fewer or smaller images per batch")
 		}
-		cloned["content"] = materialized
-		out = append(out, cloned)
+		counts[modality]++
+		retainedBytes += part.payload.Size
+	}
+	out := make([]map[string]any, len(input))
+	for i, item := range input {
+		out[i] = cloneMapAny(item)
+		if content, ok := inputContentMaps(item["content"]); ok {
+			copied := make([]map[string]any, len(content))
+			for j, part := range content {
+				copied[j] = cloneMapAny(part)
+			}
+			out[i]["content"] = copied
+		}
+	}
+	for _, part := range media {
+		content, _ := inputContentMaps(out[part.item]["content"])
+		if part.omit {
+			content[part.part] = map[string]any{
+				"type": "input_text",
+				"text": "An earlier image payload was omitted from this full provider replay to keep the Codex request within its image-count and byte budgets. Its durable image reference and message or tool context remain; inspect it again if its pixels are required.",
+			}
+			continue
+		}
+		transport, err := providerMediaContentItem(req.MediaContract, part.capability, part.payload)
+		if err != nil {
+			return nil, err
+		}
+		content[part.part] = transport
 	}
 	return out, nil
 }
@@ -1054,29 +1073,6 @@ func sessionMediaInputBytes(input []map[string]any) int64 {
 		}
 	}
 	return total
-}
-
-func sessionMediaInputCounts(input []map[string]any) map[string]int {
-	counts := map[string]int{}
-	for _, item := range input {
-		content, ok := inputContentMaps(item["content"])
-		if !ok {
-			continue
-		}
-		for _, part := range content {
-			if !strings.EqualFold(strings.TrimSpace(asString(part["type"])), "session_media") {
-				continue
-			}
-			payload, ok := part["media"].(provideriface.SessionMediaPayload)
-			if ok {
-				modality := strings.ToLower(strings.TrimSpace(payload.Modality))
-				if modality != "" {
-					counts[modality]++
-				}
-			}
-		}
-	}
-	return counts
 }
 
 func validateProviderMediaPayloadItem(req Request, payload provideriface.SessionMediaPayload) (provideriface.MediaContractCapability, error) {
@@ -1111,19 +1107,6 @@ func validateProviderMediaPayloadItem(req Request, payload provideriface.Session
 	return provideriface.MediaContractCapability{}, errors.New("provider media payload is denied by the active contract")
 }
 
-func validateProviderMediaPayload(req Request, payload provideriface.SessionMediaPayload, counts map[string]int) (provideriface.MediaContractCapability, error) {
-	capability, err := validateProviderMediaPayloadItem(req, payload)
-	if err != nil {
-		return provideriface.MediaContractCapability{}, err
-	}
-	modality := strings.ToLower(strings.TrimSpace(capability.Modality))
-	counts[modality]++
-	if capability.MaxCount <= 0 || counts[modality] > capability.MaxCount {
-		return provideriface.MediaContractCapability{}, errors.New("provider media payload exceeds the current contract count limit")
-	}
-	return capability, nil
-}
-
 func inputContentMaps(value any) ([]map[string]any, bool) {
 	switch typed := value.(type) {
 	case []map[string]any:
@@ -1141,42 +1124,6 @@ func inputContentMaps(value any) ([]map[string]any, bool) {
 	default:
 		return nil, false
 	}
-}
-
-func validateProviderMediaPayload(req Request, payload provideriface.SessionMediaPayload, counts map[string]int) (provideriface.MediaContractCapability, error) {
-	contract := req.MediaContract
-	providerID := strings.ToLower(strings.TrimSpace(contract.ProviderID))
-	if contract.Hash == "" || req.ProviderConfigurationHash == "" || (providerID != "openai" && providerID != "codex") {
-		return provideriface.MediaContractCapability{}, errors.New("provider media contract is unavailable or outside the pilot")
-	}
-	if providerID == "openai" {
-		if contract.ProviderSurface != provideriface.MediaProviderSurfaceOpenAIResponses || contract.CredentialSurface != provideriface.MediaCredentialSurfaceOpenAIAPIKey || contract.AdapterID != provideriface.MediaAdapterIDOpenAIResponsesV1 {
-			return provideriface.MediaContractCapability{}, errors.New("OpenAI media payload does not match the active API-key Responses surface")
-		}
-	} else if contract.ProviderSurface != provideriface.MediaProviderSurfaceCodexChatGPT || contract.CredentialSurface != provideriface.MediaCredentialSurfaceCodexOAuth || contract.AdapterID != provideriface.MediaAdapterIDCodexChatGPTV1 {
-		return provideriface.MediaContractCapability{}, errors.New("Codex media payload does not match the active OAuth client surface")
-	}
-	if len(payload.Bytes) == 0 || payload.Size <= 0 || int64(len(payload.Bytes)) != payload.Size || strings.TrimSpace(payload.AssetID) == "" || strings.TrimSpace(payload.DigestSHA256) == "" {
-		return provideriface.MediaContractCapability{}, errors.New("provider media payload failed immutable size or identity validation")
-	}
-	digest := sha256.Sum256(payload.Bytes)
-	if !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(payload.DigestSHA256)) {
-		return provideriface.MediaContractCapability{}, errors.New("provider media payload failed immutable digest validation")
-	}
-	for _, capability := range contract.Capabilities {
-		if capability.State != provideriface.MediaCapabilityStateAllowed || !strings.EqualFold(capability.Modality, payload.Modality) {
-			continue
-		}
-		if !mediaStringAllowed(capability.MIMETypes, payload.MIMEType) || len(capability.FileTypes) > 0 && !mediaStringAllowed(capability.FileTypes, payload.FileType) || capability.MaxBytes <= 0 || payload.Size > capability.MaxBytes {
-			break
-		}
-		counts[capability.Modality]++
-		if capability.MaxCount <= 0 || counts[capability.Modality] > capability.MaxCount {
-			return provideriface.MediaContractCapability{}, errors.New("provider media payload exceeds the current contract count limit")
-		}
-		return capability, nil
-	}
-	return provideriface.MediaContractCapability{}, errors.New("provider media payload is denied by the active contract")
 }
 
 func mediaStringAllowed(allowed []string, value string) bool {
