@@ -154,6 +154,8 @@ type fakeArtifactAuthority struct {
 	createdFromFile   artifact.CreateFileInput
 	catalogOptions    pebblestore.SessionArtifactCatalogOptions
 	catalogPage       pebblestore.SessionArtifactCatalogPage
+	imported          artifact.ImportVariantInput
+	importCalls       int
 }
 
 func (f *fakeArtifactAuthority) Reserve(principal artifact.Principal, input artifact.CreateInput) (pebblestore.SessionArtifactVariant, error) {
@@ -297,6 +299,37 @@ func (f *fakeArtifactAuthority) DeleteVariant(principal artifact.Principal, _, c
 func (f *fakeArtifactAuthority) DeleteCollection(principal artifact.Principal, _, collectionID string) error {
 	f.principal, f.deleted = principal, collectionID
 	return nil
+}
+
+func (f *fakeArtifactAuthority) Import(_ context.Context, principal artifact.Principal, input artifact.ImportVariantInput) (pebblestore.SessionArtifactVariant, error) {
+	f.importCalls++
+	f.principal, f.imported = principal, input
+	source := input.SourceReference()
+	collectionID := input.CollectionID
+	if collectionID == "" {
+		collectionID = "collection-imported"
+	}
+	variantID := input.VariantID
+	if variantID == "" {
+		variantID = "variant-imported"
+	}
+	f.variant = pebblestore.SessionArtifactVariant{
+		ID:           variantID,
+		CollectionID: collectionID,
+		SessionID:    principal.SessionID,
+		EventSeq:     uint64(f.importCalls),
+		Status:       pebblestore.SessionArtifactStatusReady,
+		Filename:     "imported.txt",
+		MediaType:    "text/plain",
+		Size:         10,
+		Lineage: pebblestore.SessionArtifactLineage{
+			SourceSessionID:    source.SessionID,
+			SourceCollectionID: source.CollectionID,
+			SourceVariantID:    source.VariantID,
+			SourceEventSeq:     source.EventSeq,
+		},
+	}
+	return f.variant, nil
 }
 
 func artifactToolContext() (context.Context, WorkspaceScope) {

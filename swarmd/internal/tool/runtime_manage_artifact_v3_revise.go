@@ -20,6 +20,9 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 	}
 	for key := range args {
 		if key != "action" && key != "artifact_v3_reference" {
+			if key == "max_bytes" {
+				return nil, errors.New("manage_artifact read_v3 does not support max_bytes; complete project HTML is returned up to the authoring limit")
+			}
 			return nil, fmt.Errorf("manage_artifact read_v3 contains unsupported field %q", key)
 		}
 	}
@@ -27,14 +30,28 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 	if err != nil {
 		return nil, err
 	}
-	if reference.SessionID != strings.TrimSpace(principal.SessionID) || reference.SessionID != strings.TrimSpace(scope.SessionID) {
-		return nil, errors.New("manage_artifact read_v3 reference does not belong to the current authenticated session")
+	callerSessionID := strings.TrimSpace(principal.SessionID)
+	scopeSessionID := strings.TrimSpace(scope.SessionID)
+	if callerSessionID == "" || callerSessionID != scopeSessionID {
+		return nil, errors.New("manage_artifact read_v3 caller is not authenticated for the current session")
 	}
-	reader, ok := r.artifactV3Author.repository.(ArtifactV3DirectRevisionReader)
-	if !ok {
-		return nil, errors.New("manage_artifact read_v3 requires native Artifact V3 revision reading")
+	var project map[string][]byte
+	var parts []pebblestore.ArtifactV3PartProjection
+	if reference.SessionID == callerSessionID {
+		reader, ok := r.artifactV3Author.repository.(ArtifactV3DirectRevisionReader)
+		if !ok {
+			return nil, errors.New("manage_artifact read_v3 requires native Artifact V3 revision reading")
+		}
+		project, parts, err = reader.ReadArtifactV3DirectRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
+	} else {
+		if retainedReader, ok := r.artifactV3Author.repository.(ArtifactV3RetainedSourceReader); ok {
+			project, parts, err = retainedReader.ReadArtifactV3RetainedRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
+		} else if directReader, ok := r.artifactV3Author.repository.(ArtifactV3DirectRevisionReader); ok {
+			project, parts, err = directReader.ReadArtifactV3DirectRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
+		} else {
+			return nil, errors.New("manage_artifact read_v3 requires native Artifact V3 revision reading")
+		}
 	}
-	project, parts, err := reader.ReadArtifactV3DirectRevision(ctx, principal.AccountScopeID, principal.UserID, reference.SessionID, reference.ArtifactID, reference.RevisionRef)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +63,24 @@ func (r *Runtime) readDirectArtifactV3HTML(ctx context.Context, scope WorkspaceS
 	if len(html) == 0 || len(html) > manageArtifactMaxCreateBytes {
 		return nil, errors.New("manage_artifact read_v3 exact HTML is unavailable or exceeds the bounded authoring limit")
 	}
-	return map[string]any{"status": "ok", "reference": map[string]any{"session_id": reference.SessionID, "artifact_id": reference.ArtifactID, "revision_ref": reference.RevisionRef}, "media_type": "text/html", "content": string(html), "entrypoint": manifest.Entrypoint, "files_base64": project, "manifest": manifest, "parts": parts}, nil
+	refMap := map[string]any{"session_id": reference.SessionID, "artifact_id": reference.ArtifactID, "revision_ref": reference.RevisionRef}
+	resp := map[string]any{
+		"status":                "ok",
+		"reference":             refMap,
+		"artifact_v3_reference": refMap,
+		"media_type":            "text/html",
+		"content":               string(html),
+		"entrypoint":            manifest.Entrypoint,
+		"files_base64":          project,
+		"manifest":              manifest,
+		"parts":                 parts,
+	}
+	if reference.SessionID != callerSessionID {
+		resp["copyable_next_calls"] = []map[string]any{
+			{"action": "import", "artifact_v3_reference": refMap},
+		}
+	}
+	return resp, nil
 }
 
 type directArtifactV3Alternative struct {
@@ -134,7 +168,11 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 		return nil, err
 	}
 	if reference.SessionID != strings.TrimSpace(principal.SessionID) || reference.SessionID != strings.TrimSpace(scope.SessionID) {
-		return nil, errors.New("manage_artifact revise_v3 reference does not belong to the current authenticated session")
+		action := asString(args["action"])
+		if action == "" {
+			action = "revise_v3"
+		}
+		return nil, fmt.Errorf("manage_artifact %s reference belongs to retained session %q, not current authenticated session %q; retained artifacts are immutable: call action='import' first to import this artifact into the current session before revising", action, reference.SessionID, principal.SessionID)
 	}
 	beginOnly := asString(args["action"]) == "begin_v3"
 	body, ok := args["content"].(string)

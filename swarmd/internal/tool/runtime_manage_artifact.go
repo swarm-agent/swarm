@@ -74,6 +74,7 @@ type ArtifactAuthority interface {
 	Select(artifact.Principal, string, string, string) (pebblestore.SessionArtifactSelectionReference, error)
 	DeleteVariant(artifact.Principal, string, string, string) error
 	DeleteCollection(artifact.Principal, string, string) error
+	Import(context.Context, artifact.Principal, artifact.ImportVariantInput) (pebblestore.SessionArtifactVariant, error)
 }
 
 // ArtifactRunContext is trusted lineage supplied by run orchestration. Session
@@ -159,13 +160,35 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For images, call action='image_capabilities' first to read supported options and capability_token, then pass them to action='generate_image'. For audio, call action='audio_capabilities' first to inspect configured model duration limits and capability_token, then pass them to action='generate_audio'. For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
+		Description: "Create, revise, inspect, import, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For retained cross-session artifacts, call action='read_v3' with artifact_v3_reference to inspect, or action='import' to create an editable copy in the current session. For images, call action='image_capabilities' first to read supported options and capability_token, then pass them to action='generate_image'. For audio, call action='audio_capabilities' first to inspect configured model duration limits and capability_token, then pass them to action='generate_audio'. For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"artifact_id":          map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
+				"artifact_v3_reference": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"session_id":   map[string]any{"type": "string", "description": "Owner session ID."},
+						"artifact_id":  map[string]any{"type": "string", "description": "Native artifact identity."},
+						"revision_ref": map[string]any{"type": "string", "description": "Exact Git revision ref (e.g. revision-<commit_oid>)."},
+					},
+					"required":    []string{"session_id", "artifact_id", "revision_ref"},
+					"description": "Complete exact ready native Artifact V3 preview reference for read_v3, revise_v3, begin_v3, or import.",
+				},
+				"artifact_reference": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"session_id":    map[string]any{"type": "string", "description": "Owner session ID."},
+						"collection_id": map[string]any{"type": "string", "description": "Collection ID."},
+						"variant_id":    map[string]any{"type": "string", "description": "Variant ID."},
+						"event_seq":     map[string]any{"type": "integer", "minimum": 1, "description": "Exact event sequence number."},
+					},
+					"required":    []string{"session_id", "collection_id", "variant_id", "event_seq"},
+					"description": "Complete exact ready legacy managed artifact reference for read, get, materialize, or import.",
+				},
+				"library":              map[string]any{"type": "string", "enum": []string{"legacy", "native"}, "description": "Optional library discriminator for search/list: 'legacy' for managed artifacts, 'native' for Artifact V3 documents."},
 				"resume_draft":         map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
-				"action":               map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "audio_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, generate_video_story, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
+				"action":               map[string]any{"type": "string", "enum": []string{"create", "import", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "audio_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, import, search, get, read, materialize/materialize_batch, promote, publish_workspace, generate_video_story, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
 				"capability_token":     map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities or audio_capabilities; required for Google generative media calls."},
 				"scenes":               map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"prompt": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_seconds": map[string]any{"type": "integer"}}, "required": []string{"prompt"}}, "description": "Multi-scene video script for generate_video_story."},
 				"soundtrack":           map[string]any{"type": "string", "description": "Soundtrack music/audio description for generate_video_story."},
@@ -200,7 +223,6 @@ func manageArtifactDefinition() Definition {
 				"limit":                map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
 				"max_bytes":            map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize instead."},
 				"destination":          map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
-				"model":                map[string]any{"type": "string", "description": "Model identifier for generation (e.g. lyria-3.5, lyria-3-clip-preview, lyria-3-pro-preview)."},
 				"overwrite":            map[string]any{"type": "boolean", "description": "Permit replacement of destination files; defaults to false."},
 			},
 			"required":             []string{"action"},
@@ -265,7 +287,7 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "audio_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "audio_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3" || actionName == "import") && (r.artifactV3Author != nil || r.artifactV3Importer != nil)) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
@@ -481,6 +503,10 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		if audioResult.HasImageInput {
 			response["has_image_input"] = true
 		}
+	case "import":
+		if err := r.importManagedArtifact(ctx, scope, principal, callID, requestID, args, response); err != nil {
+			return "", err
+		}
 	case "create":
 		artifactV3Result, err := r.createDirectArtifactV3HTML(ctx, scope, principal, callID, args)
 		if err != nil {
@@ -663,6 +689,29 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["presets"] = presets
 		response["count"] = len(presets)
 	case "list", "search":
+		library := strings.ToLower(strings.TrimSpace(asString(args["library"])))
+		if library == "v3" || library == "native" {
+			v3Args := make(map[string]any, len(args))
+			for k, v := range args {
+				v3Args[k] = v
+			}
+			v3Args["action"] = "list_v3"
+			delete(v3Args, "library")
+			result, err := r.discoverDirectArtifactV3(ctx, scope, principal, v3Args)
+			if err != nil {
+				return "", err
+			}
+			response["artifact_v3"] = result
+			response["artifacts"] = result["artifacts"]
+			response["count"] = result["count"]
+			response["has_more"] = result["has_more"]
+			if nc, ok := result["next_cursor"]; ok && nc != "" {
+				response["next_cursor"] = nc
+			}
+			break
+		} else if library != "" && library != "legacy" {
+			return "", fmt.Errorf("manage_artifact %s library must be legacy or native, got %q", actionName, library)
+		}
 		limit := clampInt(asInt(args["limit"], manageArtifactDefaultListLimit), 1, manageArtifactMaxListLimit)
 		status := strings.ToLower(strings.TrimSpace(asString(args["status"])))
 		if status != "" && status != pebblestore.SessionArtifactStatusStaging && status != pebblestore.SessionArtifactStatusReady && status != pebblestore.SessionArtifactStatusFailed && status != pebblestore.SessionArtifactStatusUnavailable {
@@ -704,7 +753,15 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			for _, item := range page.Items {
 				entry := map[string]any{"collection": managedArtifactCollection(item.Collection), "artifact": managedArtifactVariant(item.Variant)}
 				if item.Reference != nil {
-					entry["reference"] = managedArtifactReferenceWithSession(item.Reference.SessionID, item.Reference.CollectionID, item.Reference.VariantID, item.Reference.EventSeq)
+					ref := managedArtifactReferenceWithSession(item.Reference.SessionID, item.Reference.CollectionID, item.Reference.VariantID, item.Reference.EventSeq)
+					entry["reference"] = ref
+					entry["artifact_reference"] = ref
+					if item.Reference.SessionID != principal.SessionID {
+						entry["copyable_next_calls"] = []map[string]any{
+							{"action": "read", "session_id": item.Reference.SessionID, "collection_id": item.Reference.CollectionID, "variant_id": item.Reference.VariantID, "event_seq": item.Reference.EventSeq},
+							{"action": "import", "artifact_reference": ref},
+						}
+					}
 				}
 				items = append(items, entry)
 			}
@@ -967,6 +1024,172 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func (r *Runtime) importManagedArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any, response map[string]any) error {
+	for key := range args {
+		switch key {
+		case "action", "artifact_v3_reference", "artifact_reference", "session_id", "collection_id", "variant_id", "event_seq", "title", "message", "collection_name", "collection_description", "destination_collection_id", "destination_variant_id":
+		default:
+			return fmt.Errorf("manage_artifact import contains unsupported field %q", key)
+		}
+	}
+	hasNative := args["artifact_v3_reference"] != nil
+	hasLegacyRef := args["artifact_reference"] != nil
+	hasLegacyFlat := args["collection_id"] != nil || args["variant_id"] != nil || args["event_seq"] != nil
+	hasLegacy := hasLegacyRef || hasLegacyFlat
+
+	if hasNative && hasLegacy {
+		return errors.New("manage_artifact import accepts exactly one native or legacy reference, not both")
+	}
+	if !hasNative && !hasLegacy {
+		return errors.New("manage_artifact import requires exactly one native or legacy reference")
+	}
+
+	if strings.TrimSpace(principal.SessionID) == "" || strings.TrimSpace(principal.SessionID) != strings.TrimSpace(scope.SessionID) {
+		return errors.New("manage_artifact import caller is not authenticated for the destination session")
+	}
+
+	if hasNative {
+		for _, legacyField := range []string{"collection_id", "variant_id", "event_seq", "collection_name", "collection_description", "destination_collection_id", "destination_variant_id"} {
+			if _, supplied := args[legacyField]; supplied {
+				return fmt.Errorf("manage_artifact import native reference cannot be combined with legacy field %q", legacyField)
+			}
+		}
+		rawRef, ok := args["artifact_v3_reference"].(map[string]any)
+		if !ok {
+			return errors.New("manage_artifact import artifact_v3_reference must be an object")
+		}
+		for key := range rawRef {
+			if key != "session_id" && key != "artifact_id" && key != "revision_ref" {
+				return fmt.Errorf("manage_artifact import artifact_v3_reference contains unsupported field %q", key)
+			}
+		}
+		sourceSessionID := strings.TrimSpace(asString(rawRef["session_id"]))
+		sourceArtifactID := strings.TrimSpace(asString(rawRef["artifact_id"]))
+		revisionRef := strings.TrimSpace(asString(rawRef["revision_ref"]))
+		if sourceSessionID == "" || sourceArtifactID == "" || !strings.HasPrefix(revisionRef, "revision-") || len(strings.TrimPrefix(revisionRef, "revision-")) != 40 {
+			return errors.New("manage_artifact import requires complete session_id, artifact_id, and exact revision_ref")
+		}
+		commitOID := strings.TrimPrefix(revisionRef, "revision-")
+		message := strings.TrimSpace(asString(args["message"]))
+		if message == "" {
+			message = strings.TrimSpace(asString(args["title"]))
+		}
+		destArtifactID := fmt.Sprintf("art-%s", requestID)
+		if len(destArtifactID) > 128 {
+			destArtifactID = destArtifactID[:128]
+		}
+		destOwner := pebblestore.ArtifactV3Owner{
+			AccountScopeID: principal.AccountScopeID,
+			UserID:         principal.UserID,
+			SessionID:      principal.SessionID,
+		}
+		importInput := pebblestore.ArtifactV3ImportInput{
+			SourceAccountScopeID:  principal.AccountScopeID,
+			SourceUserID:          principal.UserID,
+			SourceSessionID:       sourceSessionID,
+			SourceArtifactID:      sourceArtifactID,
+			SourceCommitOID:       commitOID,
+			DestinationOwner:      destOwner,
+			DestinationArtifactID: destArtifactID,
+			TransactionID:         requestID,
+			Message:               message,
+			NowUnixMs:             time.Now().UnixMilli(),
+		}
+		var importer ArtifactV3NativeImporter
+		if r.artifactV3Importer != nil {
+			importer = r.artifactV3Importer
+		} else if r.artifactV3Author != nil && r.artifactV3Author.repository != nil {
+			if imp, ok := r.artifactV3Author.repository.(ArtifactV3NativeImporter); ok {
+				importer = imp
+			}
+		}
+		if importer == nil {
+			return errors.New("native Artifact V3 importer is not configured")
+		}
+		projection, err := importer.ImportArtifactV3(ctx, importInput)
+		if err != nil {
+			return err
+		}
+		ref := map[string]any{
+			"session_id":   projection.OwnerSessionID,
+			"artifact_id":  projection.ArtifactID,
+			"revision_ref": "revision-" + projection.HeadCommitOID,
+		}
+		response["artifact_v3"] = map[string]any{
+			"artifact_id":  projection.ArtifactID,
+			"session_id":   projection.OwnerSessionID,
+			"head_commit":  projection.HeadCommitOID,
+			"revision_ref": "revision-" + projection.HeadCommitOID,
+			"status":       "ready",
+		}
+		response["reference"] = ref
+		response["artifact_v3_reference"] = ref
+		response["copyable_next_calls"] = []map[string]any{
+			{"action": "read_v3", "artifact_v3_reference": ref},
+			{"action": "revise_v3", "artifact_v3_reference": ref},
+		}
+		return nil
+	}
+
+	// Legacy branch
+	var sourceRef pebblestore.SessionArtifactSelectionReference
+	if rawRef, ok := args["artifact_reference"].(map[string]any); ok {
+		for key := range rawRef {
+			if key != "session_id" && key != "collection_id" && key != "variant_id" && key != "event_seq" {
+				return fmt.Errorf("manage_artifact import artifact_reference contains unsupported field %q", key)
+			}
+		}
+		sourceRef = pebblestore.SessionArtifactSelectionReference{
+			SessionID:    strings.TrimSpace(asString(rawRef["session_id"])),
+			CollectionID: strings.TrimSpace(asString(rawRef["collection_id"])),
+			VariantID:    strings.TrimSpace(asString(rawRef["variant_id"])),
+			EventSeq:     asUint64(rawRef["event_seq"]),
+		}
+	} else {
+		sourceRef = pebblestore.SessionArtifactSelectionReference{
+			SessionID:    strings.TrimSpace(asString(args["session_id"])),
+			CollectionID: strings.TrimSpace(asString(args["collection_id"])),
+			VariantID:    strings.TrimSpace(asString(args["variant_id"])),
+			EventSeq:     asUint64(args["event_seq"]),
+		}
+	}
+	if sourceRef.SessionID == "" || sourceRef.CollectionID == "" || sourceRef.VariantID == "" || sourceRef.EventSeq == 0 {
+		return errors.New("manage_artifact import requires complete session_id, collection_id, variant_id, and non-zero event_seq")
+	}
+
+	destCollectionID := strings.TrimSpace(asString(args["destination_collection_id"]))
+	if destCollectionID == "" {
+		destCollectionID = strings.TrimSpace(asString(args["collection_id"]))
+	}
+	destVariantID := strings.TrimSpace(asString(args["destination_variant_id"]))
+	if destVariantID == "" {
+		destVariantID = strings.TrimSpace(asString(args["variant_id"]))
+	}
+	input := artifact.ImportVariantInput{
+		RequestID:             requestID,
+		CollectionID:          destCollectionID,
+		CollectionName:        strings.TrimSpace(asString(args["collection_name"])),
+		CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
+		VariantID:             destVariantID,
+		Source:                sourceRef,
+	}
+	if r.artifactAuthority == nil {
+		return errors.New("manage_artifact authority is not configured")
+	}
+	variant, err := r.artifactAuthority.Import(ctx, principal, input)
+	if err != nil {
+		return err
+	}
+	ref := managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	response["artifact"] = managedArtifactVariant(variant)
+	response["reference"] = ref
+	response["artifact_reference"] = ref
+	response["copyable_next_calls"] = []map[string]any{
+		{"action": "read", "session_id": variant.SessionID, "collection_id": variant.CollectionID, "variant_id": variant.ID, "event_seq": variant.EventSeq},
+	}
+	return nil
 }
 
 func manageArtifactReadResponseQuotaError(code string) error {
@@ -1890,6 +2113,7 @@ func artifactHelpText(topic string) string {
 - export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states.
 - export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling.
 - Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous.
+- For retained cross-session artifacts, the source session and source artifact are immutable. To use or edit a retained artifact from another session, call action='read_v3' with artifact_v3_reference to inspect the HTML/manifest, or call action='import' with artifact_v3_reference (for native Artifact V3) or artifact_reference (for legacy managed artifacts) to import it into your session as a new, destination-owned editable head before calling revise_v3 or begin_v3.
 - Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call.
 - For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.`
 	default:
@@ -1903,6 +2127,10 @@ For detailed schema contracts and instructions, call action='help' with topic="<
 
 Quick Action References:
 - create (HTML V3): action='create', content='<!doctype html>...', parts=[{id, label, kind: 'temporal|spatial|selector|semantic', description}]. Do NOT substitute generate_image for native HTML documents.
+- import: action='import', artifact_v3_reference={session_id, artifact_id, revision_ref} (or artifact_reference={session_id, collection_id, variant_id, event_seq}). Imports an immutable retained artifact into the current session as a new destination-owned head.
+- read_v3: action='read_v3', artifact_v3_reference={session_id, artifact_id, revision_ref}. Reads complete project HTML and manifest for current or retained cross-session references.
+- list_v3: action='list_v3', cursor='...', limit=50. Queries the retained native Artifact V3 catalog across sessions.
+- source_v3: action='source_v3', artifact_id='...', session_id='...' (optional). Resolves exact source and candidate selection calls.
 - create (narration): action='create', narration_plan={title, scenes:[{id, title, narration, visual_direction, music_direction}]}.
 - revise_v3 (candidate revision): action='revise_v3', session_id, artifact_id, content='...', revision_intent='whole_project|focused_parts', target_part_ids=['...'].
 - begin_v3 / author_v3 (incremental repair): begin_v3 returns draft_handle; author_v3 accepts draft_handle and operation={action:'read_file|edit_file|build_preview|finish_turn', path, old_string, new_string}.

@@ -69,7 +69,7 @@ func TestNativeHandoffLastPartPreflightNoAllocation(t *testing.T) {
 type nativeHandoffRepo struct{ directArtifactV3RepoFake }
 
 func (r *nativeHandoffRepo) ResolveArtifactV3SelectedSource(_ context.Context, account, user, session, id, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
-	if account != "account-1" || user != "user-1" || session != "session-1" {
+	if account != "account-1" || user != "user-1" {
 		return pebblestore.ArtifactV3SelectedSource{}, pebblestore.ErrArtifactV3Unauthorized
 	}
 	return pebblestore.ArtifactV3SelectedSource{SessionID: session, ArtifactID: id, CommitOID: strings.Repeat("a", 40), RevisionRef: "revision-" + strings.Repeat("a", 40), ProjectionSeq: 7}, nil
@@ -77,6 +77,26 @@ func (r *nativeHandoffRepo) ResolveArtifactV3SelectedSource(_ context.Context, a
 func (r *nativeHandoffRepo) ListArtifactV3SelectedSources(ctx context.Context, account, user, session string, limit int) ([]pebblestore.ArtifactV3SelectedSource, error) {
 	source, err := r.ResolveArtifactV3SelectedSource(ctx, account, user, session, "fictional", "", 0)
 	return []pebblestore.ArtifactV3SelectedSource{source}, err
+}
+func (r *nativeHandoffRepo) SearchArtifactV3Catalog(_ context.Context, account, user string, options pebblestore.ArtifactV3CatalogOptions) (pebblestore.ArtifactV3CatalogPage, error) {
+	if account != "account-1" || user != "user-1" {
+		return pebblestore.ArtifactV3CatalogPage{}, pebblestore.ErrArtifactV3Unauthorized
+	}
+	return pebblestore.ArtifactV3CatalogPage{
+		Items: []pebblestore.ArtifactV3CatalogItem{
+			{
+				ArtifactID:  "fictional",
+				SessionID:   "session-retained",
+				CommitOID:   strings.Repeat("a", 40),
+				RevisionRef: "revision-" + strings.Repeat("a", 40),
+				SourceKind:  "head",
+				Status:      "ready",
+				MediaType:   "text/html",
+				Entrypoint:  "index.html",
+			},
+		},
+		HasMore: false,
+	}, nil
 }
 
 // Requirement: discovery returns both exact native identities without allocating
@@ -97,14 +117,25 @@ func TestNativeHandoffDiscoveryTuple(t *testing.T) {
 	if source["projection_seq"] != uint64(7) || source["commit_oid"] != strings.Repeat("a", 40) || source["session_id"] != reference["session_id"] || source["artifact_id"] != reference["artifact_id"] || reference["revision_ref"] != "revision-"+source["commit_oid"].(string) {
 		t.Fatalf("incomplete tuple: %+v", output)
 	}
-	// Requirement: action-specific guidance must reject caller-authored session
-	// and revision envelopes, not silently broaden discovery authority.
-	for _, field := range []string{"session_id", "artifact_v3_reference"} {
-		args[field] = "caller-authored"
-		if _, err := runtime.discoverDirectArtifactV3(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, args); err == nil || !strings.Contains(err.Error(), "source_v3 accepts only action and artifact_id") {
-			t.Fatalf("missing action-specific rejection for %s: %v", field, err)
-		}
-		delete(args, field)
+	// Requirement: source_v3 rejects unsupported fields before resolution.
+	args["unsupported_field"] = "value"
+	if _, err := runtime.discoverDirectArtifactV3(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, args); err == nil || !strings.Contains(err.Error(), "unsupported field") {
+		t.Fatalf("missing rejection for unsupported field: %v", err)
+	}
+	delete(args, "unsupported_field")
+
+	// Requirement: source_v3 resolves cross-session retained sources and returns import next calls.
+	retainedArgs := map[string]any{"action": "source_v3", "artifact_id": "fictional", "session_id": "session-retained"}
+	retainedOutput, err := runtime.discoverDirectArtifactV3(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, retainedArgs)
+	if err != nil {
+		t.Fatalf("retained source_v3 failed: %v", err)
+	}
+	retainedRef := retainedOutput["artifact_v3_reference"].(map[string]any)
+	if retainedRef["session_id"] != "session-retained" {
+		t.Fatalf("retained reference session = %v, want session-retained", retainedRef["session_id"])
+	}
+	if nextCalls, ok := retainedOutput["copyable_next_calls"].([]map[string]any); !ok || len(nextCalls) == 0 || nextCalls[1]["action"] != "import" {
+		t.Fatalf("expected copyable next calls with import guidance, got: %#v", retainedOutput["copyable_next_calls"])
 	}
 	principal.AccountScopeID = "foreign"
 	if _, err := runtime.discoverDirectArtifactV3(context.Background(), WorkspaceScope{SessionID: "session-1"}, principal, args); err == nil {

@@ -175,6 +175,7 @@ type Runtime struct {
 	themeWorkspace        manageThemeWorkspaceService
 	artifacts             *artifact.Registry
 	artifactAuthority     ArtifactAuthority
+	artifactV3Importer    ArtifactV3NativeImporter
 	artifactV2Author      *artifactv2.AuthorService
 	artifactV3Author      *ArtifactV3AuthorService
 	directArtifactV3Mu    sync.Mutex
@@ -596,6 +597,19 @@ func (r *Runtime) SetArtifactAuthority(authority ArtifactAuthority) {
 	if r != nil {
 		r.artifactAuthority = authority
 	}
+}
+
+func (r *Runtime) SetArtifactV3NativeImporter(importer ArtifactV3NativeImporter) {
+	if r != nil {
+		r.artifactV3Importer = importer
+	}
+}
+
+func (r *Runtime) ArtifactV3NativeImporter() ArtifactV3NativeImporter {
+	if r == nil {
+		return nil
+	}
+	return r.artifactV3Importer
 }
 
 func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {

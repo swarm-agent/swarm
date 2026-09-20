@@ -906,6 +906,16 @@ func explainBuiltinDeny(mode string, ctx policyEvalContext) (PolicyExplain, bool
 				Command:     ctx.BashCommand,
 				RulePreview: "",
 			}, true
+		case "manage_artifact":
+			if IsManageArtifactWriteAction(ctx.ToolArguments) {
+				return PolicyExplain{
+					Decision:    PolicyDecisionDeny,
+					Source:      "builtin",
+					Reason:      fmt.Sprintf("manage_artifact %s is unavailable for read execution setting", manageAction(ctx.ToolArguments)),
+					ToolName:    ctx.ToolName,
+					RulePreview: "",
+				}, true
+			}
 		}
 	}
 	if mode == "readwrite" {
@@ -1457,6 +1467,9 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// human acceptance/final-render boundary remain authoritative.
 		return PolicyDecisionAllow
 	case "manage_artifact":
+		if mode == "read" && IsManageArtifactWriteAction(toolArguments) {
+			return PolicyDecisionDeny
+		}
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow
 		// through the already-approved task manifest and permission-session scope.
