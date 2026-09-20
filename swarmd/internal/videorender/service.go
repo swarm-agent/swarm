@@ -337,22 +337,18 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	if err != nil {
 		return FrameInspectionResult{}, fmt.Errorf("copy exact revision for frame inspection: %w", err)
 	}
-	if revision.Timeline.Metadata["accepted_video_plan"] != nil || pebblestore.VideoPlanRenderAuthorityProposalID(timeline) != "" {
-		var sourceProposal *pebblestore.VideoEditProposalSnapshot
-		if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
-			proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
-			if proposalErr != nil {
-				return FrameInspectionResult{}, fmt.Errorf("resolve video plan inspection authority: %w", proposalErr)
-			}
-			if !found {
-				return FrameInspectionResult{}, fmt.Errorf("video plan inspection authority proposal %q not found", proposalID)
-			}
-			if proposal.UserID != "" && proposal.UserID != principal.UserID {
-				return FrameInspectionResult{}, errors.New("video plan inspection authority ownership does not match authenticated principal")
-			}
-			sourceProposal = &proposal
+	if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
+		proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+		if proposalErr != nil {
+			return FrameInspectionResult{}, fmt.Errorf("resolve video plan inspection authority: %w", proposalErr)
 		}
-		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, sourceProposal)
+		if !found {
+			return FrameInspectionResult{}, fmt.Errorf("video plan inspection authority proposal %q not found", proposalID)
+		}
+		if proposal.UserID != "" && proposal.UserID != principal.UserID {
+			return FrameInspectionResult{}, errors.New("video plan inspection authority ownership does not match authenticated principal")
+		}
+		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, &proposal)
 		if resolveErr != nil {
 			return FrameInspectionResult{}, resolveErr
 		}

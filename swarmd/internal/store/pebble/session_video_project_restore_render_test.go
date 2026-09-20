@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -457,35 +458,17 @@ func TestResolveAuthoritativeVideoPlanDanglingForkRecoversViaSourceLineage(t *te
 // Invariant: Render authority resolution must strictly compare proposal UpdatedAt with revision CreatedAt.
 // Authority: ResolveVideoPlanRenderAuthority, ResolveAuthoritativeVideoPlan, ForkRevision.
 func TestResolveAuthoritativeVideoPlanImmutableSelectionWinsOverLaterProposalUpdate(t *testing.T) {
-	store, cleanup := newTestSessionStoreForVideoProject(t)
-	defer cleanup()
-
 	const accountID, userID = "acc-immut", "user-immut"
-	const sessionID = "sess-immut"
+	const sourceSessionID = "sess-immut-src"
+	const sourceProjectID = "vproj-immut-src"
 	const destForkSessionID = "sess-immut-fork"
 	const destDangleSessionID = "sess-immut-dangle"
-	createTestSession(t, store, accountID, userID, sessionID)
-	createTestSession(t, store, accountID, userID, destForkSessionID)
-	createTestSession(t, store, accountID, userID, destDangleSessionID)
 
-	sourceTimeline := proposalTestTimeline()
-	proj, baseRev, err := store.CreateVideoProject(CreateVideoProjectInput{
-		AccountScopeID:  accountID,
-		UserID:          userID,
-		SessionID:       sessionID,
-		ProjectID:       "vproj-immut",
-		Title:           "Immutable Selection Project",
-		InitialTimeline: sourceTimeline,
-		NowUnixMs:       100,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	htmlRef1 := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "html-1", EventSeq: 2}
+	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "html-2", EventSeq: 3}
+	fallback := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "still", EventSeq: 1}
 
-	htmlRef := &SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: "col", VariantID: "html", EventSeq: 2}
-	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: "col", VariantID: "html-2", EventSeq: 3}
-	fallback := &SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: "col", VariantID: "still", EventSeq: 1}
-	unlockedPlan := VideoPlanProposal{
+	unselectedPlan := VideoPlanProposal{
 		Kind: VideoPlanKindInitial,
 		Parts: []VideoPlanPart{{
 			ID:              "clip_a",
@@ -496,150 +479,228 @@ func TestResolveAuthoritativeVideoPlanImmutableSelectionWinsOverLaterProposalUpd
 			AnimationCandidates: &VideoAnimationCandidateSet{
 				Status: VideoAnimationCandidateStatusAwaitingSelection,
 				Candidates: []VideoAnimationCandidate{
-					{ID: "cand-1", Source: htmlRef},
+					{ID: "cand-1", Source: htmlRef1},
 					{ID: "cand-2", Source: htmlRef2},
 				},
 			},
 		}},
 	}
+	selectedPlan := unselectedPlan
+	selectedPlan.Parts = append([]VideoPlanPart(nil), unselectedPlan.Parts...)
+	candSet := *unselectedPlan.Parts[0].AnimationCandidates
+	candSet.Status = VideoAnimationCandidateStatusAwaitingExport
+	candSet.SelectedCandidateID = "cand-1"
+	candSet.SelectedSource = htmlRef1
+	selectedPlan.Parts[0].AnimationCandidates = &candSet
 
-	// 1. Create proposal with unselected candidates at T=150
-	proposal, err := store.CreateVideoEditProposal(CreateVideoEditProposalInput{
+	// 1. Explicit historical snapshots:
+	// Older revision cut created at T=200 carrying unselected candidate plan
+	histRevision := VideoProjectRevisionSnapshot{
+		ID:             "vrev-hist-cut",
+		ProjectID:      sourceProjectID,
+		SessionID:      sourceSessionID,
 		AccountScopeID: accountID,
 		UserID:         userID,
-		SessionID:      sessionID,
-		ProjectID:      proj.ID,
-		ProposalID:     "vprop-immut",
-		BaseRevisionID: baseRev.ID,
-		Intent:         VideoEditProposalIntentHTMLIteration,
-		Plan:           &unlockedPlan,
-		NowUnixMs:      150,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// 2. Accept proposal into Revision 2 at T=200
-	_, rev2, _, err := store.ResolveVideoEditProposal(ResolveVideoEditProposalInput{
-		AccountScopeID: accountID,
-		UserID:         userID,
-		SessionID:      sessionID,
-		ProjectID:      proj.ID,
-		ProposalID:     proposal.ID,
-		NowUnixMs:      200,
-	})
-	if err != nil || rev2 == nil {
-		t.Fatalf("accept proposal failed: %v", err)
-	}
-
-	// 3. Later, at T=300, a candidate selection mutation updates the proposal
-	_, err = store.ApplyV3SessionMutation(V3SessionMutationInput{
-		SessionID:       sessionID,
-		UserID:          userID,
-		AccountScopeID:  accountID,
-		ClientRequestID: "select-cand-1",
-		IdempotencyKey:  "select-cand-1",
-		PayloadHash:     "select-cand-1-hash",
-		Kind:            V3SessionMutationSelectVideoAnimationCandidate,
-		NowUnixMs:       300,
-		VideoProject: &V3VideoProjectMutation{
-			EditProposal: &VideoEditProposalSnapshot{
-				ID:             proposal.ID,
-				ProjectID:      proj.ID,
-				BaseRevisionID: proposal.BaseRevisionID,
-			},
-			AnimationSelection: &VideoAnimationSelectionMutation{
-				PartID:              "clip_a",
-				SelectedCandidateID: "cand-1",
-				SelectedSource:      htmlRef,
+		RevisionNumber: 2,
+		CreatedAt:      200,
+		Timeline: VideoProjectTimeline{
+			Clips: []VideoTimelineClip{{ID: "clip_a", SourceKind: VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+			Metadata: map[string]any{
+				"accepted_video_plan":             unselectedPlan,
+				"accepted_video_plan_proposal_id": "vprop-hist",
 			},
 		},
-	})
-	if err != nil {
-		t.Fatalf("apply candidate selection mutation failed: %v", err)
+	}
+	// Accepted source proposal updated at T=300 (> CreatedAt 200) with candidate choice, WorkingRevisionID on later cut
+	histProposal := VideoEditProposalSnapshot{
+		ID:                    "vprop-hist",
+		ProjectID:             sourceProjectID,
+		SessionID:             sourceSessionID,
+		AccountScopeID:        accountID,
+		UserID:                userID,
+		Status:                VideoEditProposalStatusAccepted,
+		Plan:                  &selectedPlan,
+		WorkingRevisionID:     "vrev-later-3",
+		WorkingRevisionNumber: 3,
+		BaseRevisionID:        "vrev-base-1",
+		BaseRevisionNumber:    1,
+		AcceptedRevisionID:    histRevision.ID,
+		CreatedAt:             150,
+		UpdatedAt:             300,
+	}
+	histProject := VideoProjectSnapshot{
+		ID:                sourceProjectID,
+		SessionID:         sourceSessionID,
+		AccountScopeID:    accountID,
+		UserID:            userID,
+		CurrentRevisionID: "vrev-later-3",
 	}
 
-	// 4a. Local resolver: resolve authority for Revision 2 (created at T=200):
-	// Because proposal UpdatedAt (300) > rev2 CreatedAt (200), the later selection must NOT be applied to rev2!
-	resolvedPlan, err := ResolveAuthoritativeVideoPlan(accountID, userID, *rev2, store)
-	if err != nil {
-		t.Fatalf("ResolveAuthoritativeVideoPlan failed: %v", err)
-	}
-	if resolvedPlan == nil || len(resolvedPlan.Parts) == 0 {
-		t.Fatal("expected non-nil plan")
-	}
-	candSet := resolvedPlan.Parts[0].AnimationCandidates
-	if candSet != nil && candSet.SelectedCandidateID != "" {
-		t.Fatalf("local resolver: later candidate selection must not be donated to older revision: %+v", candSet)
+	reader := &strictHistoricalPlanReader{
+		projects:  map[string]VideoProjectSnapshot{sourceSessionID + ":" + sourceProjectID: histProject},
+		revisions: map[string]VideoProjectRevisionSnapshot{sourceSessionID + ":" + sourceProjectID + ":" + histRevision.ID: histRevision},
+		proposals: map[string]VideoEditProposalSnapshot{sourceSessionID + ":" + sourceProjectID + ":" + histProposal.ID: histProposal},
 	}
 
-	// 4b. Fork persistence: forking rev2 must resolve exact historical authority and NOT donate the later candidate
-	res, err := ResolveAuthoritativeVideoPlanDetails(accountID, userID, *rev2, store)
+	// 2a. Direct resolution on older revision cut: must NOT apply later candidate choice
+	directPlan, err := ResolveAuthoritativeVideoPlan(accountID, userID, histRevision, reader)
+	if err != nil {
+		t.Fatalf("direct ResolveAuthoritativeVideoPlan failed: %v", err)
+	}
+	if directPlan == nil || len(directPlan.Parts) == 0 {
+		t.Fatal("direct ResolveAuthoritativeVideoPlan returned empty plan")
+	}
+	directCand := directPlan.Parts[0].AnimationCandidates
+	if directCand == nil {
+		t.Fatal("expected non-nil candidate set")
+	}
+	if directCand.SelectedCandidateID != "" || directCand.SelectedSource != nil {
+		t.Fatalf("direct resolution: later candidate choice must not be donated to older cut: %+v", directCand)
+	}
+
+	// 2b. Legacy lineage resolution on dangling fork: must NOT apply later candidate choice
+	dangleRevision := VideoProjectRevisionSnapshot{
+		ID:             "vrev-dangle-cut",
+		ProjectID:      "vproj-dangle",
+		SessionID:      destDangleSessionID,
+		AccountScopeID: accountID,
+		UserID:         userID,
+		RevisionNumber: 1,
+		CreatedAt:      400,
+		Timeline:       histRevision.Timeline, // exact same cut
+	}
+	dangleProject := VideoProjectSnapshot{
+		ID:                "vproj-dangle",
+		SessionID:         destDangleSessionID,
+		AccountScopeID:    accountID,
+		UserID:            userID,
+		CurrentRevisionID: dangleRevision.ID,
+		Metadata: map[string]any{
+			"source_session_id":  sourceSessionID,
+			"source_project_id":  sourceProjectID,
+			"source_revision_id": histRevision.ID,
+		},
+	}
+	reader.projects[destDangleSessionID+":vproj-dangle"] = dangleProject
+	reader.revisions[destDangleSessionID+":vproj-dangle:"+dangleRevision.ID] = dangleRevision
+
+	danglePlan, err := ResolveAuthoritativeVideoPlan(accountID, userID, dangleRevision, reader)
+	if err != nil {
+		t.Fatalf("dangling lineage ResolveAuthoritativeVideoPlan failed: %v", err)
+	}
+	if danglePlan == nil || len(danglePlan.Parts) == 0 {
+		t.Fatal("dangling ResolveAuthoritativeVideoPlan returned empty plan")
+	}
+	dangleCand := danglePlan.Parts[0].AnimationCandidates
+	if dangleCand == nil {
+		t.Fatal("expected non-nil candidate set")
+	}
+	if dangleCand.SelectedCandidateID != "" || dangleCand.SelectedSource != nil {
+		t.Fatalf("dangling lineage: later candidate choice must not be donated to older cut: %+v", dangleCand)
+	}
+
+	// 2c. CreateVideoProject snapshot transfer into real destination Pebble store
+	realStore, cleanup := newTestSessionStoreForVideoProject(t)
+	defer cleanup()
+	createTestSession(t, realStore, accountID, userID, destForkSessionID)
+
+	res, err := ResolveAuthoritativeVideoPlanDetails(accountID, userID, histRevision, reader)
 	if err != nil {
 		t.Fatalf("ResolveAuthoritativeVideoPlanDetails failed: %v", err)
 	}
 	forkDestProp := res.SourceProposal
 	forkDestProp.Plan = res.Plan
 	forkDestProp.Status = VideoEditProposalStatusAccepted
-	forkDestTL, err := CloneVideoTimeline(rev2.Timeline)
+	forkDestTL, err := CloneVideoTimeline(histRevision.Timeline)
 	if err != nil {
 		t.Fatal(err)
 	}
 	forkDestTL.Metadata["accepted_video_plan"] = *res.Plan
-	forkDestTL.Metadata["accepted_video_plan_proposal_id"] = proposal.ID
+	forkDestTL.Metadata["accepted_video_plan_proposal_id"] = histProposal.ID
 
-	_, forkDestRev, err := store.CreateVideoProject(CreateVideoProjectInput{
+	destProj, destRev, err := realStore.CreateVideoProject(CreateVideoProjectInput{
 		AccountScopeID:    accountID,
 		UserID:            userID,
 		SessionID:         destForkSessionID,
 		ProjectID:         "vproj-immut-fork",
 		InitialRevisionID: "vrev-immut-fork",
-		Title:             "Fork Cut",
+		Title:             "Forked Historical",
 		InitialTimeline:   &forkDestTL,
 		InitialProposal:   &forkDestProp,
 		Metadata: map[string]any{
-			"source_session_id":  sessionID,
-			"source_project_id":  proj.ID,
-			"source_revision_id": rev2.ID,
-		},
-		NowUnixMs: 400,
-	})
-	if err != nil {
-		t.Fatalf("create fork project failed: %v", err)
-	}
-	resolvedForkPlan, err := ResolveAuthoritativeVideoPlan(accountID, userID, *forkDestRev, store)
-	if err != nil {
-		t.Fatalf("resolve fork plan failed: %v", err)
-	}
-	if resolvedForkPlan.Parts[0].AnimationCandidates != nil && resolvedForkPlan.Parts[0].AnimationCandidates.SelectedCandidateID != "" {
-		t.Fatalf("fork persistence: later candidate selection must not be donated to older cut: %+v", resolvedForkPlan.Parts[0].AnimationCandidates)
-	}
-
-	// 4c. Legacy lineage resolution: dangling fork resolving via lineage must NOT donate the later candidate
-	_, dangleRev, err := store.CreateVideoProject(CreateVideoProjectInput{
-		AccountScopeID:    accountID,
-		UserID:            userID,
-		SessionID:         destDangleSessionID,
-		ProjectID:         "vproj-immut-dangle",
-		InitialRevisionID: "vrev-immut-dangle",
-		Title:             "Dangling Cut",
-		InitialTimeline:   &rev2.Timeline,
-		Metadata: map[string]any{
-			"source_session_id":  sessionID,
-			"source_project_id":  proj.ID,
-			"source_revision_id": rev2.ID,
+			"source_session_id":  sourceSessionID,
+			"source_project_id":  sourceProjectID,
+			"source_revision_id": histRevision.ID,
 		},
 		NowUnixMs: 500,
 	})
 	if err != nil {
-		t.Fatalf("create dangling project failed: %v", err)
+		t.Fatalf("realStore.CreateVideoProject snapshot transfer failed: %v", err)
 	}
-	resolvedDanglePlan, err := ResolveAuthoritativeVideoPlan(accountID, userID, *dangleRev, store)
+	_ = destProj
+	resolvedForkPlan, err := ResolveAuthoritativeVideoPlan(accountID, userID, *destRev, realStore)
 	if err != nil {
-		t.Fatalf("resolve dangling plan failed: %v", err)
+		t.Fatalf("ResolveAuthoritativeVideoPlan on real destination failed: %v", err)
 	}
-	if resolvedDanglePlan.Parts[0].AnimationCandidates != nil && resolvedDanglePlan.Parts[0].AnimationCandidates.SelectedCandidateID != "" {
-		t.Fatalf("legacy lineage: later candidate selection must not be donated to older cut: %+v", resolvedDanglePlan.Parts[0].AnimationCandidates)
+	forkCand := resolvedForkPlan.Parts[0].AnimationCandidates
+	if forkCand == nil {
+		t.Fatal("expected non-nil candidate set in fork")
+	}
+	if forkCand.SelectedCandidateID != "" || forkCand.SelectedSource != nil {
+		t.Fatalf("fork persistence: later candidate choice must not be donated to older cut: %+v", forkCand)
+	}
+
+	// 3. Negative test: Lineage cycle detected
+	cycleReader := &strictHistoricalPlanReader{
+		projects: map[string]VideoProjectSnapshot{
+			"s:p1": {ID: "p1", SessionID: "s", AccountScopeID: accountID, UserID: userID, Metadata: map[string]any{"source_session_id": "s", "source_project_id": "p2", "source_revision_id": "r2"}},
+			"s:p2": {ID: "p2", SessionID: "s", AccountScopeID: accountID, UserID: userID, Metadata: map[string]any{"source_session_id": "s", "source_project_id": "p1", "source_revision_id": "r1"}},
+		},
+		revisions: map[string]VideoProjectRevisionSnapshot{
+			"s:p1:r1": {ID: "r1", ProjectID: "p1", SessionID: "s", AccountScopeID: accountID, UserID: userID, Timeline: histRevision.Timeline},
+			"s:p2:r2": {ID: "r2", ProjectID: "p2", SessionID: "s", AccountScopeID: accountID, UserID: userID, Timeline: histRevision.Timeline},
+		},
+		proposals: map[string]VideoEditProposalSnapshot{},
+	}
+	_, err = ResolveAuthoritativeVideoPlan(accountID, userID, cycleReader.revisions["s:p1:r1"], cycleReader)
+	if err == nil || !strings.Contains(err.Error(), "cycle detected") {
+		t.Fatalf("expected cycle detected error, got: %v", err)
+	}
+
+	// 4. Negative test: Lineage depth limit exceeded
+	depthReader := &strictHistoricalPlanReader{
+		projects:  make(map[string]VideoProjectSnapshot),
+		revisions: make(map[string]VideoProjectRevisionSnapshot),
+		proposals: make(map[string]VideoEditProposalSnapshot),
+	}
+	for i := 0; i <= 17; i++ {
+		pID := fmt.Sprintf("p%d", i)
+		rID := fmt.Sprintf("r%d", i)
+		nextPID := fmt.Sprintf("p%d", i+1)
+		nextRID := fmt.Sprintf("r%d", i+1)
+		depthReader.projects["s:"+pID] = VideoProjectSnapshot{
+			ID: pID, SessionID: "s", AccountScopeID: accountID, UserID: userID,
+			Metadata: map[string]any{"source_session_id": "s", "source_project_id": nextPID, "source_revision_id": nextRID},
+		}
+		depthReader.revisions["s:"+pID+":"+rID] = VideoProjectRevisionSnapshot{
+			ID: rID, ProjectID: pID, SessionID: "s", AccountScopeID: accountID, UserID: userID, Timeline: histRevision.Timeline,
+		}
+	}
+	_, err = ResolveAuthoritativeVideoPlan(accountID, userID, depthReader.revisions["s:p0:r0"], depthReader)
+	if err == nil || !strings.Contains(err.Error(), "exceeded maximum lineage depth limit") {
+		t.Fatalf("expected depth limit exceeded error, got: %v", err)
+	}
+
+	// 5. Negative test: Lineage proposal list failure fails closed
+	listErrReader := &strictHistoricalPlanReader{
+		projects:  reader.projects,
+		revisions: reader.revisions,
+		proposals: reader.proposals,
+		listErr:   errors.New("simulated database read failure"),
+	}
+	_, err = ResolveAuthoritativeVideoPlan(accountID, userID, histRevision, listErrReader)
+	if err == nil || !strings.Contains(err.Error(), "simulated database read failure") {
+		t.Fatalf("expected list error propagation, got: %v", err)
 	}
 }
 
@@ -1241,9 +1302,11 @@ func TestResolveAuthoritativeVideoPlanSecurityAndRejections(t *testing.T) {
 	}
 
 	// 7. Source proposal listing failure fails closed without writes
-	errReader := &failingProposalReader{
-		SessionStore: store,
-		listErr:      errors.New("simulated storage failure reading proposals"),
+	errReader := &strictHistoricalPlanReader{
+		projects:  map[string]VideoProjectSnapshot{sessionID + ":" + rev.ProjectID: {ID: rev.ProjectID, SessionID: sessionID, AccountScopeID: accountID, UserID: userID}},
+		revisions: map[string]VideoProjectRevisionSnapshot{sessionID + ":" + rev.ProjectID + ":" + rev.ID: rev},
+		proposals: map[string]VideoEditProposalSnapshot{},
+		listErr:   errors.New("simulated storage failure reading proposals"),
 	}
 	_, err = ResolveAuthoritativeVideoPlan(accountID, userID, rev, errReader)
 	if err == nil || !strings.Contains(err.Error(), "simulated storage failure reading proposals") {
@@ -1251,14 +1314,56 @@ func TestResolveAuthoritativeVideoPlanSecurityAndRejections(t *testing.T) {
 	}
 }
 
-type failingProposalReader struct {
-	*SessionStore
-	listErr error
+type strictHistoricalPlanReader struct {
+	projects  map[string]VideoProjectSnapshot
+	revisions map[string]VideoProjectRevisionSnapshot
+	proposals map[string]VideoEditProposalSnapshot
+	listErr   error
 }
 
-func (f *failingProposalReader) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]VideoEditProposalSnapshot, error) {
-	if f.listErr != nil {
-		return nil, f.listErr
+func (r *strictHistoricalPlanReader) GetVideoProject(accountScopeID, sessionID, projectID string) (VideoProjectSnapshot, bool, error) {
+	p, ok := r.projects[sessionID+":"+projectID]
+	if !ok {
+		return VideoProjectSnapshot{}, false, nil
 	}
-	return f.SessionStore.ListVideoEditProposals(accountScopeID, sessionID, projectID, limit)
+	if p.AccountScopeID != accountScopeID {
+		return VideoProjectSnapshot{}, false, nil
+	}
+	return p, true, nil
+}
+
+func (r *strictHistoricalPlanReader) GetVideoProjectRevision(accountScopeID, sessionID, projectID, revisionID string) (VideoProjectRevisionSnapshot, bool, error) {
+	rev, ok := r.revisions[sessionID+":"+projectID+":"+revisionID]
+	if !ok {
+		return VideoProjectRevisionSnapshot{}, false, nil
+	}
+	if rev.AccountScopeID != accountScopeID {
+		return VideoProjectRevisionSnapshot{}, false, nil
+	}
+	return rev, true, nil
+}
+
+func (r *strictHistoricalPlanReader) GetVideoEditProposal(accountScopeID, sessionID, projectID, proposalID string) (VideoEditProposalSnapshot, bool, error) {
+	prop, ok := r.proposals[sessionID+":"+projectID+":"+proposalID]
+	if !ok {
+		return VideoEditProposalSnapshot{}, false, nil
+	}
+	if prop.AccountScopeID != accountScopeID {
+		return VideoEditProposalSnapshot{}, false, nil
+	}
+	return prop, true, nil
+}
+
+func (r *strictHistoricalPlanReader) ListVideoEditProposals(accountScopeID, sessionID, projectID string, limit int) ([]VideoEditProposalSnapshot, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	var list []VideoEditProposalSnapshot
+	prefix := sessionID + ":" + projectID + ":"
+	for k, prop := range r.proposals {
+		if strings.HasPrefix(k, prefix) && prop.AccountScopeID == accountScopeID {
+			list = append(list, prop)
+		}
+	}
+	return list, nil
 }
