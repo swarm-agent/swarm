@@ -20,6 +20,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	compactruntime "swarm/packages/swarmd/internal/compact"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -868,6 +869,28 @@ func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
 	s.eventPublish = publish
 }
 
+// ExecutionCapacity returns the shared account-scoped execution capacity manager if configured.
+func (s *Service) ExecutionCapacity() *executioncapacity.Manager {
+	if s == nil || s.permissions == nil {
+		return nil
+	}
+	return s.permissions.ExecutionCapacity()
+}
+
+// ExecutionCapacitySnapshot returns the atomic capacity snapshot for an account.
+func (s *Service) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
+	if s == nil || s.permissions == nil {
+		return executioncapacity.Snapshot{
+			AccountScopeID:       strings.TrimSpace(accountScopeID),
+			EffectiveLimit:       executioncapacity.DefaultActiveExecutionLimit,
+			Available:            executioncapacity.DefaultActiveExecutionLimit,
+			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
+			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+		}
+	}
+	return s.permissions.ExecutionCapacitySnapshot(accountScopeID)
+}
+
 func (s *Service) maybeRefreshSessionGitState(sessionID string, sessionSnapshot pebblestore.SessionSnapshot) {
 	if s == nil || s.sessions == nil {
 		return
@@ -1492,6 +1515,36 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	defer runCancel()
 	ctx = runCtx
 	runnerCtx = runCtx
+
+	var executionLease executioncapacity.Lease
+	if !manualCompact && s.permissions != nil && s.permissions.ExecutionCapacity() != nil {
+		existingLease, hasLease := executioncapacity.LeaseFromContext(ctx, sessionID, runID)
+		if !hasLease || existingLease == nil {
+			kind := executioncapacity.ExecutionKindOrdinary
+			if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
+				kind = executioncapacity.ExecutionKindDeployed
+			}
+			var admitErr error
+			executionLease, admitErr = s.permissions.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
+				AccountScopeID: acctScope,
+				SessionID:      sessionID,
+				RunID:          runID,
+				Kind:           kind,
+			})
+			if admitErr != nil {
+				return RunResult{}, admitErr
+			}
+			defer func() {
+				if executionLease != nil {
+					_ = executionLease.Release()
+				}
+			}()
+			runCtx = executioncapacity.WithLease(runCtx, executionLease)
+			ctx = runCtx
+			runnerCtx = runCtx
+		}
+	}
+
 	startSnapshot, err := s.beginSessionLifecycle(sessionID, runID, s.effectiveRunOwnerTransport(options, onEvent))
 	if err != nil {
 		return RunResult{}, err

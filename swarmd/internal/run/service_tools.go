@@ -19,6 +19,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
 	"swarm/packages/swarmd/internal/permission"
@@ -1633,6 +1634,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 	}
 
 	var wg sync.WaitGroup
+	hasPendingApprovals := false
 	for i := range toolCalls {
 		if err := rejectMalformedToolCallArguments(toolCalls[i]); err != nil {
 			message := fmt.Sprintf("invalid tool arguments: %v", err)
@@ -1864,6 +1866,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Output = permissionOutputPayload(false, status, reason, toolCalls[i].Name, toolCalls[i].Arguments)
 			decisions[i].Result.Error = privacy.SanitizeText(reason)
 		case permission.AuthorizationPending:
+			hasPendingApprovals = true
 			record := auth.Record
 			if record == nil {
 				decisions[i].Err = errors.New("permission authorization returned no pending record")
@@ -1936,7 +1939,22 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = fmt.Sprintf("permission authorization failed: unsupported decision %q", auth.Decision)
 		}
 	}
+	var gateLease executioncapacity.Lease
+	if hasPendingApprovals {
+		if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, runID); ok && l != nil {
+			gateLease = l
+			_ = gateLease.Park()
+			defer func() {
+				_ = gateLease.Reacquire(ctx)
+			}()
+		}
+	}
 	wg.Wait()
+	if gateLease != nil && gateLease.IsParked() {
+		if reacquireErr := gateLease.Reacquire(ctx); reacquireErr != nil {
+			return nil, nil, nil, nil, nil, reacquireErr
+		}
+	}
 
 	for i := range decisions {
 		if !decisions[i].Approved && canonicalToolName(toolCalls[i].Name) == "task" && strings.TrimSpace(runID) != "" && strings.TrimSpace(toolCalls[i].CallID) != "" {
@@ -4570,7 +4588,7 @@ func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode st
 	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal})
 }
 
-func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (string, error) {
+func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (taskResult string, taskErr error) {
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")
 	}
@@ -4619,6 +4637,21 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", fmt.Errorf("task program %q not found for calling parent session", parsed.ProgramID)
 		}
 		return marshalTaskProgramStatus(record, false)
+	}
+
+	var executionLease executioncapacity.Lease
+	if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, req.RunID); ok && l != nil {
+		executionLease = l
+	}
+	if executionLease != nil {
+		if parkErr := executionLease.Park(); parkErr != nil {
+			return "", parkErr
+		}
+		defer func() {
+			if reacquireErr := executionLease.Reacquire(ctx); reacquireErr != nil && taskErr == nil {
+				taskErr = reacquireErr
+			}
+		}()
 	}
 	description := parsed.Description
 	if strings.TrimSpace(req.DescriptionOverride) != "" {
