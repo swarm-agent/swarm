@@ -882,11 +882,34 @@ func validateV3VideoProjectMutationInput(input V3SessionMutationInput) error {
 			if ep.Status != VideoEditProposalStatusAccepted {
 				return errors.New("initial edit proposal status must be accepted")
 			}
+			if input.VideoProject.Revision == nil {
+				return errors.New("initial edit proposal requires initial revision snapshot")
+			}
+			r := input.VideoProject.Revision
+			if ep.WorkingRevisionID != "" && ep.WorkingRevisionID != r.ID {
+				return errors.New("initial edit proposal working_revision_id does not match initial revision")
+			}
+			if ep.AcceptedRevisionID != "" && ep.AcceptedRevisionID != r.ID {
+				return errors.New("initial edit proposal accepted_revision_id does not match initial revision")
+			}
+			proposalID := VideoPlanRenderAuthorityProposalID(r.Timeline)
+			if proposalID == "" || proposalID != ep.ID {
+				return errors.New("initial revision timeline does not carry matching accepted_video_plan_proposal_id")
+			}
 			if ep.Plan == nil {
 				return errors.New("initial edit proposal requires plan")
 			}
 			if err := ValidateVideoPlanForIntent(ep.Intent, *ep.Plan); err != nil {
 				return fmt.Errorf("initial edit proposal plan invalid: %w", err)
+			}
+			acceptedPlan, err := acceptedVideoPlanFromTimeline(r.Timeline)
+			if err != nil || acceptedPlan == nil {
+				return errors.New("initial revision timeline requires valid accepted_video_plan")
+			}
+			encodedTimelinePlan, _ := json.Marshal(acceptedPlan)
+			encodedPropPlan, _ := json.Marshal(ep.Plan)
+			if !bytes.Equal(encodedTimelinePlan, encodedPropPlan) {
+				return errors.New("initial revision accepted_video_plan does not match initial proposal plan")
 			}
 			if err := validateV3MutationEmbeddedOwnership(input, "video edit proposal", ep.SessionID, ep.UserID, ep.AccountScopeID); err != nil {
 				return err
@@ -1845,14 +1868,17 @@ func ResolveAuthoritativeVideoPlanDetails(
 	}
 
 	// 3. Authority proposal not found in the current project: check authenticated bounded exact-source lineage.
-	visitedProjects := make(map[string]bool)
-	visitedProjects[revision.ProjectID] = true
+	visited := make(map[string]bool)
+	visited[revision.SessionID+":"+revision.ProjectID+":"+revision.ID] = true
 	currRev := revision
 	const maxLineageDepth = 16
 
 	for depth := 0; depth < maxLineageDepth; depth++ {
 		currProj, ok, err := reader.GetVideoProject(accountScopeID, currRev.SessionID, currRev.ProjectID)
 		if err != nil || !ok {
+			if err != nil {
+				return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video project %q lookup failed: %w", currRev.ProjectID, err)
+			}
 			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
 		}
 		if (currProj.AccountScopeID != "" && currProj.AccountScopeID != accountScopeID) ||
@@ -1867,14 +1893,18 @@ func ResolveAuthoritativeVideoPlanDetails(
 			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("video plan render authority proposal %q not found", proposalID)
 		}
 
-		if visitedProjects[sourceProjectID] {
-			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("render authority lineage cycle detected at project %q", sourceProjectID)
+		lineageTuple := sourceSessionID + ":" + sourceProjectID + ":" + sourceRevisionID
+		if visited[lineageTuple] {
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("render authority lineage cycle detected at %s", lineageTuple)
 		}
-		visitedProjects[sourceProjectID] = true
+		visited[lineageTuple] = true
 
 		sourceProject, ok, err := reader.GetVideoProject(accountScopeID, sourceSessionID, sourceProjectID)
 		if err != nil || !ok {
-			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video project %q not found for render authority lineage: %w", sourceProjectID, err)
+			if err != nil {
+				return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video project %q lookup failed: %w", sourceProjectID, err)
+			}
+			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video project %q not found for render authority lineage", sourceProjectID)
 		}
 		if sourceProject.ID != sourceProjectID || sourceProject.SessionID != sourceSessionID {
 			return AuthoritativeVideoPlanResolution{}, errors.New("source video project identity mismatch")
@@ -1886,6 +1916,9 @@ func ResolveAuthoritativeVideoPlanDetails(
 
 		sourceRevision, ok, err := reader.GetVideoProjectRevision(accountScopeID, sourceSessionID, sourceProjectID, sourceRevisionID)
 		if err != nil || !ok {
+			if err != nil {
+				return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video revision %q lookup failed: %w", sourceRevisionID, err)
+			}
 			return AuthoritativeVideoPlanResolution{}, fmt.Errorf("source video revision %q not found for render authority lineage", sourceRevisionID)
 		}
 		if sourceRevision.ID != sourceRevisionID || sourceRevision.ProjectID != sourceProjectID || sourceRevision.SessionID != sourceSessionID {
@@ -3555,9 +3588,12 @@ func (s *SessionStore) CreateVideoProject(input CreateVideoProjectInput) (VideoP
 		"session_metadata":    input.SessionMetadata,
 		"attachment_message":  input.AttachmentMessage,
 		"initial_timeline":    input.InitialTimeline,
-		"initial_proposal":    initialProposal,
+		"initial_proposal":    input.InitialProposal,
 	}
-	mutPayload, _ := json.Marshal(mutPayloadMap)
+	mutPayload, err := json.Marshal(mutPayloadMap)
+	if err != nil {
+		return VideoProjectSnapshot{}, nil, fmt.Errorf("marshal create video project payload: %w", err)
+	}
 	hash := sha256.Sum256(mutPayload)
 	payloadHash := hex.EncodeToString(hash[:])
 

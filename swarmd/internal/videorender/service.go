@@ -346,11 +346,6 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 			}
 			if ok {
 				sourceProposal = &proposal
-			} else {
-				lineageRes, err := pebblestore.ResolveAuthoritativeVideoPlanDetails(principal.AccountScopeID, principal.UserID, revision, s.store)
-				if err == nil && lineageRes.Plan != nil {
-					sourceProposal = &lineageRes.SourceProposal
-				}
 			}
 		}
 		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, sourceProposal)
