@@ -20,7 +20,17 @@ const (
 	V3SessionMutationArtifactV3CandidateCancelled = "artifact.v3.candidate.cancelled"
 	V3SessionMutationArtifactV3HeadSelected       = "artifact.v3.head.selected"
 	V3SessionMutationArtifactV3Recovered          = "artifact.v3.recovered"
+	V3SessionMutationArtifactV3Imported           = "artifact.v3.imported"
 )
+
+// ArtifactV3Lineage records the trusted retained source of an imported native artifact.
+type ArtifactV3Lineage struct {
+	SourceSessionID   string `json:"source_session_id,omitempty"`
+	SourceArtifactID  string `json:"source_artifact_id,omitempty"`
+	SourceCommitOID   string `json:"source_commit_oid,omitempty"`
+	SourceTurnID      string `json:"source_turn_id,omitempty"`
+	SourceCandidateID string `json:"source_candidate_id,omitempty"`
+}
 
 // Draft source is private storage state, never part of session/realtime JSON.
 type ArtifactV3DraftProjection struct {
@@ -46,6 +56,7 @@ type ArtifactV3RepositoryProjection struct {
 	OwnerSessionID  string                               `json:"owner_session_id"`
 	IntentReference string                               `json:"intent_reference,omitempty"`
 	HeadCommitOID   string                               `json:"head_commit_oid"`
+	Lineage         *ArtifactV3Lineage                   `json:"lineage,omitempty"`
 	CreatedAt       int64                                `json:"created_at"`
 	UpdatedAt       int64                                `json:"updated_at"`
 	EventSeq        uint64                               `json:"event_seq"`
@@ -77,6 +88,7 @@ type ArtifactV3RevisionProjection struct {
 	Preview          ArtifactV3EvidenceProjection `json:"preview"`
 	FileCount        int                          `json:"file_count"`
 	TreeBytes        int64                        `json:"tree_bytes"`
+	Lineage          *ArtifactV3Lineage           `json:"lineage,omitempty"`
 	CreatedAt        int64                        `json:"created_at"`
 	EventSeq         uint64                       `json:"event_seq"`
 }
@@ -160,14 +172,29 @@ type preparedArtifactV3Mutation struct{ Projection ArtifactV3Projection }
 func KeyArtifactV3Repository(accountScopeID, artifactID string) string {
 	return fmt.Sprintf("v3/artifact/repository/%s/%s", keyPart(accountScopeID), keyPart(artifactID))
 }
+
+func KeyArtifactV3RepositoryPrefix(accountScopeID string) string {
+	return fmt.Sprintf("v3/artifact/repository/%s/", keyPart(accountScopeID))
+}
+
 func KeyArtifactV3Revision(accountScopeID, artifactID, commitOID string) string {
 	return fmt.Sprintf("v3/artifact/revision/%s/%s/%s", keyPart(accountScopeID), keyPart(artifactID), keyPart(commitOID))
 }
+
+func KeyArtifactV3RevisionPrefix(accountScopeID, artifactID string) string {
+	return fmt.Sprintf("v3/artifact/revision/%s/%s/", keyPart(accountScopeID), keyPart(artifactID))
+}
+
 func KeyArtifactV3Turn(accountScopeID, artifactID, turnID string) string {
 	return fmt.Sprintf("v3/artifact/turn/%s/%s/%s", keyPart(accountScopeID), keyPart(artifactID), keyPart(turnID))
 }
+
 func KeyArtifactV3Candidate(accountScopeID, artifactID, turnID, candidateID string) string {
 	return fmt.Sprintf("v3/artifact/candidate/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(artifactID), keyPart(turnID), keyPart(candidateID))
+}
+
+func KeyArtifactV3CandidatePrefix(accountScopeID, artifactID string) string {
+	return fmt.Sprintf("v3/artifact/candidate/%s/%s/", keyPart(accountScopeID), keyPart(artifactID))
 }
 
 func isArtifactV3MutationKind(kind string) bool {
@@ -175,7 +202,7 @@ func isArtifactV3MutationKind(kind string) bool {
 	case V3SessionMutationArtifactV3DraftSaved, V3SessionMutationArtifactV3GenesisCommitted, V3SessionMutationArtifactV3TurnOpened,
 		V3SessionMutationArtifactV3CandidateCommitted, V3SessionMutationArtifactV3CandidateFailed,
 		V3SessionMutationArtifactV3CandidateCancelled, V3SessionMutationArtifactV3HeadSelected,
-		V3SessionMutationArtifactV3Recovered:
+		V3SessionMutationArtifactV3Recovered, V3SessionMutationArtifactV3Imported:
 		return true
 	default:
 		return false
@@ -251,10 +278,10 @@ func validateArtifactV3MutationInput(input V3SessionMutationInput) error {
 			return errors.New("artifact v3 repository ownership or Git identity is invalid")
 		}
 	}
-	if (input.Kind == V3SessionMutationArtifactV3GenesisCommitted || input.Kind == V3SessionMutationArtifactV3Recovered || input.Kind == V3SessionMutationArtifactV3HeadSelected) && m.Repository == nil {
+	if (input.Kind == V3SessionMutationArtifactV3GenesisCommitted || input.Kind == V3SessionMutationArtifactV3Recovered || input.Kind == V3SessionMutationArtifactV3HeadSelected || input.Kind == V3SessionMutationArtifactV3Imported) && m.Repository == nil {
 		return errors.New("artifact v3 head-changing mutation requires repository projection")
 	}
-	if input.Kind == V3SessionMutationArtifactV3GenesisCommitted && (m.Revision == nil || m.Turn == nil || m.Candidate == nil) {
+	if (input.Kind == V3SessionMutationArtifactV3GenesisCommitted || input.Kind == V3SessionMutationArtifactV3Imported) && (m.Revision == nil || m.Turn == nil || m.Candidate == nil) {
 		return errors.New("artifact v3 genesis requires revision, turn, and selected candidate projections")
 	}
 	if input.Kind == V3SessionMutationArtifactV3TurnOpened && m.Turn == nil {
@@ -300,7 +327,7 @@ func validateArtifactV3MutationInput(input V3SessionMutationInput) error {
 		if (m.Candidate.Status == "ready" || m.Candidate.Status == "selected") && (!validGitOID(m.Candidate.CommitOID) || !validArtifactGitRef(m.Candidate.CandidateRef)) {
 			return errors.New("artifact v3 ready candidate Git identity is incomplete")
 		}
-		if input.Kind == V3SessionMutationArtifactV3GenesisCommitted && (m.Candidate.Status != "selected" || m.Candidate.CommitOID != m.Repository.HeadCommitOID || m.Turn.Status != "selected" || !artifactV3EvidenceReady(m.Candidate.Build, m.Candidate.CommitOID) || !artifactV3EvidenceReady(m.Candidate.Preview, m.Candidate.CommitOID)) {
+		if (input.Kind == V3SessionMutationArtifactV3GenesisCommitted || input.Kind == V3SessionMutationArtifactV3Imported) && (m.Candidate.Status != "selected" || m.Candidate.CommitOID != m.Repository.HeadCommitOID || m.Turn.Status != "selected" || !artifactV3EvidenceReady(m.Candidate.Build, m.Candidate.CommitOID) || !artifactV3EvidenceReady(m.Candidate.Preview, m.Candidate.CommitOID)) {
 			return errors.New("artifact v3 genesis selected candidate does not match head or evidence")
 		}
 	}
@@ -359,10 +386,10 @@ func (s *SessionStore) prepareArtifactV3Mutation(input V3SessionMutationInput, s
 	if err != nil {
 		return preparedArtifactV3Mutation{}, err
 	}
-	if !currentOK && input.Kind != V3SessionMutationArtifactV3GenesisCommitted && input.Kind != V3SessionMutationArtifactV3Recovered && input.Kind != V3SessionMutationArtifactV3DraftSaved {
+	if !currentOK && input.Kind != V3SessionMutationArtifactV3GenesisCommitted && input.Kind != V3SessionMutationArtifactV3Recovered && input.Kind != V3SessionMutationArtifactV3DraftSaved && input.Kind != V3SessionMutationArtifactV3Imported {
 		return preparedArtifactV3Mutation{}, errors.New("artifact v3 repository was not found")
 	}
-	if currentOK && input.Kind == V3SessionMutationArtifactV3GenesisCommitted && current.HeadCommitOID != "" && current.HeadCommitOID != m.Repository.HeadCommitOID {
+	if currentOK && (input.Kind == V3SessionMutationArtifactV3GenesisCommitted || input.Kind == V3SessionMutationArtifactV3Imported) && current.HeadCommitOID != "" && current.HeadCommitOID != m.Repository.HeadCommitOID {
 		return preparedArtifactV3Mutation{}, errors.New("artifact v3 genesis conflicts with existing head")
 	}
 	if currentOK && current.OwnerSessionID != input.SessionID {
@@ -646,6 +673,38 @@ func (s *SessionStore) ListArtifactV3CandidateProjections(accountScopeID, userID
 			return nil, err
 		}
 		if value.OwnerSessionID != repository.OwnerSessionID || value.ArtifactID != artifactID || string(iter.Key()) != KeyArtifactV3Candidate(accountScopeID, artifactID, value.TurnID, value.CandidateID) {
+			return nil, ErrArtifactV3Integrity
+		}
+		out = append(out, value)
+	}
+	return out, iter.Error()
+}
+
+// ListArtifactV3RevisionProjections enumerates durable revisions for an artifact.
+func (s *SessionStore) ListArtifactV3RevisionProjections(accountScopeID, userID, artifactID string) ([]ArtifactV3RevisionProjection, error) {
+	repository, ok, err := s.GetArtifactV3Repository(accountScopeID, userID, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrArtifactV3NotFound
+	}
+	prefix := KeyArtifactV3RevisionPrefix(accountScopeID, artifactID)
+	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	out := make([]ArtifactV3RevisionProjection, 0)
+	for iter.First(); iter.Valid(); iter.Next() {
+		if len(out) >= 4096 {
+			return nil, errors.New("artifact v3 revision history exceeds bounded limit")
+		}
+		var value ArtifactV3RevisionProjection
+		if err := json.Unmarshal(iter.Value(), &value); err != nil {
+			return nil, err
+		}
+		if value.OwnerSessionID != repository.OwnerSessionID || value.ArtifactID != artifactID || string(iter.Key()) != KeyArtifactV3Revision(accountScopeID, artifactID, value.CommitOID) {
 			return nil, ErrArtifactV3Integrity
 		}
 		out = append(out, value)

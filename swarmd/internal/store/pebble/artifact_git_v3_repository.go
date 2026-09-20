@@ -725,6 +725,52 @@ func (r *ArtifactV3Repository) ReadFile(ctx context.Context, commit, path string
 	return out, nil
 }
 
+// ReadProject reads the entire project tree for an exact commit, enforcing all limits
+// and verifying manifest integrity and path containment.
+func (r *ArtifactV3Repository) ReadProject(ctx context.Context, commit string) (ArtifactV3Project, error) {
+	if !artifactV3OIDPattern.MatchString(commit) {
+		return ArtifactV3Project{}, ErrArtifactV3Invalid
+	}
+	if _, err := r.ReadRevision(ctx, commit); err != nil {
+		return ArtifactV3Project{}, err
+	}
+	page, err := r.listFiles(ctx, commit, "", r.limits.MaxFiles, false)
+	if err != nil {
+		return ArtifactV3Project{}, err
+	}
+	if len(page.Files) > r.limits.MaxFiles {
+		return ArtifactV3Project{}, ErrArtifactV3Quota
+	}
+	files := make(map[string][]byte, len(page.Files))
+	var total int64
+	for _, f := range page.Files {
+		clean, err := validateArtifactV3Path(f.Path, r.limits)
+		if err != nil {
+			return ArtifactV3Project{}, ErrArtifactV3Integrity
+		}
+		if f.Mode != "100644" || f.Size < 0 || f.Size > r.limits.MaxFileBytes {
+			return ArtifactV3Project{}, ErrArtifactV3Integrity
+		}
+		total += f.Size
+		if total > r.limits.MaxTreeBytes {
+			return ArtifactV3Project{}, ErrArtifactV3Quota
+		}
+		body, err := r.ReadFile(ctx, commit, clean)
+		if err != nil {
+			return ArtifactV3Project{}, err
+		}
+		files[clean] = body
+	}
+	manifestBody, ok := files[ArtifactV3ManifestFilename]
+	if !ok {
+		return ArtifactV3Project{}, ErrArtifactV3Integrity
+	}
+	if _, err := validateArtifactV3Manifest(manifestBody, files, r.limits); err != nil {
+		return ArtifactV3Project{}, err
+	}
+	return ArtifactV3Project{Files: files}, nil
+}
+
 func (r *ArtifactV3Repository) ListFiles(ctx context.Context, commit, cursor string, limit int) (ArtifactV3FilePage, error) {
 	return r.listFiles(ctx, commit, cursor, limit, true)
 }
