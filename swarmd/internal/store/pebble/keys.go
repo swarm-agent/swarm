@@ -1000,6 +1000,50 @@ func KeyDailyUsageAccumulator(accountScopeID, date string) string {
 	return fmt.Sprintf("daily_usage_accumulator/%s/%s", accountPart, keyPart(date))
 }
 
+func DailyUsageAccumulatorPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "daily_usage_accumulator/"
+	}
+	return fmt.Sprintf("daily_usage_accumulator/%s/", accountPart)
+}
+
+func KeyAccountUsageRollup(accountScopeID, date, sessionID, provider, model string) string {
+	return fmt.Sprintf("account_usage_rollup/%s/%s/%s/%s/%s", keyPart(accountScopeID), keyPart(date), keyPart(sessionID), keyPart(provider), keyPart(model))
+}
+
+func AccountUsageRollupPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "account_usage_rollup/"
+	}
+	return fmt.Sprintf("account_usage_rollup/%s/", accountPart)
+}
+
+func KeySessionMediaUsage(accountScopeID, id string) string {
+	return fmt.Sprintf("session_media_usage/%s/%s", keyPart(accountScopeID), keyPart(id))
+}
+
+func SessionMediaUsagePrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return "session_media_usage/"
+	}
+	return fmt.Sprintf("session_media_usage/%s/", accountPart)
+}
+
+func KeySessionMediaUsageBySession(sessionID, id string) string {
+	return fmt.Sprintf("session_media_usage_by_session/%s/%s", keyPart(sessionID), keyPart(id))
+}
+
+func SessionMediaUsageBySessionPrefix(sessionID string) string {
+	sessionPart := keyPart(sessionID)
+	if sessionPart == "" {
+		return "session_media_usage_by_session/"
+	}
+	return fmt.Sprintf("session_media_usage_by_session/%s/", sessionPart)
+}
+
 func KeySessionLifecycleByAccount(accountScopeID, sessionID string) string {
 	return fmt.Sprintf("session_lifecycle_by_account/%s/%s", keyPart(accountScopeID), keyPart(sessionID))
 }

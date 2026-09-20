@@ -22,6 +22,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -73,6 +74,7 @@ type ArtifactAuthority interface {
 	Select(artifact.Principal, string, string, string) (pebblestore.SessionArtifactSelectionReference, error)
 	DeleteVariant(artifact.Principal, string, string, string) error
 	DeleteCollection(artifact.Principal, string, string) error
+	Import(context.Context, artifact.Principal, artifact.ImportVariantInput) (pebblestore.SessionArtifactVariant, error)
 }
 
 // ArtifactRunContext is trusted lineage supplied by run orchestration. Session
@@ -158,45 +160,81 @@ func manageArtifactDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_artifact",
-		Description: "Create, revise, inspect, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For ANY artifact creation, revision, or media task, first call action='help' (with optional topic: 'animation', 'video', 'audio', 'narration', 'workflow') to obtain complete schema contracts, examples, and authoring guidelines. Do not substitute generate_image for native HTML documents.",
+		Description: "Create, revise, inspect, import, and export native Artifact V3 documents, HTML animations, and generative AI media (images, video, audio). For retained cross-session artifacts, call action='read_v3' with artifact_v3_reference to inspect, or action='import' to create an editable copy in the current session. For images, call action='image_capabilities' first to read supported options and capability_token, then pass them to action='generate_image'. For audio, call action='audio_capabilities' first to inspect configured model duration limits and capability_token, then pass them to action='generate_audio'. For multi-scene video stories with soundtrack, use action='generate_video_story' with scenes and soundtrack directly. For help, call action='help'. Do not substitute generate_image for native HTML documents.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"artifact_id":          map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
-				"resume_draft":         map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
-				"action":               map[string]any{"type": "string", "enum": []string{"create", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, search, get, read, materialize/materialize_batch, promote, publish_workspace, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
-				"topic":                map[string]any{"type": "string", "description": "Optional topic for action=help (animation, video, audio, narration, workflow)."},
-				"prompt":               map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt for generation. Call action='help' for schema."},
-				"title":                map[string]any{"type": "string", "maxLength": 160, "description": "Human-readable title."},
-				"image_settings":       map[string]any{"type": "object", "properties": map[string]any{"size": map[string]any{"type": "string"}, "aspect_ratio": map[string]any{"type": "string"}, "image_size": map[string]any{"type": "string"}}, "additionalProperties": false, "description": "Optional image settings. Call action='help' for schema."},
-				"session_id":           map[string]any{"type": "string", "description": "Combined with collection_id, variant_id, and event_seq for exact artifact reference."},
-				"collection_id":        map[string]any{"type": "string", "description": "Combined with session_id, variant_id, and event_seq for exact artifact reference."},
-				"variant_id":           map[string]any{"type": "string", "description": "Combined with session_id, collection_id, and event_seq for exact artifact reference."},
-				"filename":             map[string]any{"type": "string", "maxLength": 255},
-				"media_type":           map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type."},
-				"content":              map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content."},
-				"draft_handle":         map[string]any{"type": "object", "description": "Draft handle from begin_v3/create/revise_v3. Call action='help' topic='workflow'."},
-				"operation":            map[string]any{"type": "object", "description": "Artifact V3 authoring operation. Call action='help' topic='workflow'."},
-				"content_base64":       map[string]any{"type": "string", "description": "Bounded base64 replacement bytes."},
-				"initial_parts":        map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Two or more real independently byte-bearing initial parts for create (server owns all chain, composition, part identities). Mutually exclusive with monolithic content. Call action='help' for schema."},
-				"parts":                map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact (never create or prove independently replaceable bytes). For text/html, omit parts to let the server derive useful targets without splitting or rewriting the file; explicitly supplied parts remain authoritative. Use initial_parts only when independently stored bytes are required. Call action='help' for schema."},
-				"references":           map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": map[string]any{"type": "object"}, "description": "Complete exact ready references from discovery results, imported atomically by materialize_batch into one destination directory. The whole batch is preflighted; filenames come from trusted artifact metadata."},
-				"source":               map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
-				"presentation":         presentation,
-				"animation_profile":    map[string]any{"type": "object", "description": "Animation profile: motion_ui, spatial_3d, vector_playback, or final_render. Export actions like export_html_animation and export_html_animation_fallback inherit the exact source artifact's reviewed animation profile; omit this field for exports. See action='help' topic='animation'."},
-				"source_session_id":    map[string]any{"type": "string", "description": "For every image remix, copy source_session_id from the reusable exact reference."},
-				"source_collection_id": map[string]any{"type": "string", "description": "For every image remix, copy source_collection_id from the reusable exact reference."},
-				"source_variant_id":    map[string]any{"type": "string", "description": "For every image remix, copy source_variant_id from the reusable exact reference."},
-				"source_event_seq":     map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix, copy source_event_seq from the reusable exact reference."},
-				"alternatives":         map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Multi-candidate revise_v3 request array ([{candidate_index, content}]). See action='help'."},
-				"event_seq":            map[string]any{"type": "integer", "minimum": 1, "description": "Combined with session_id, collection_id, and variant_id for exact artifact reference."},
-				"query":                map[string]any{"type": "string", "description": "Authenticated cross-session search; ready items return complete exact references."},
-				"status":               map[string]any{"type": "string", "description": "Status filter: staging|ready|failed|unavailable."},
-				"cursor":               map[string]any{"type": "string", "description": "Opaque continuation cursor from next_cursor unchanged; never parse or construct it."},
-				"limit":                map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
-				"max_bytes":            map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize for workspace use instead of bulk-reading it."},
-				"destination":          map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
-				"overwrite":            map[string]any{"type": "boolean", "description": "Permit replacement of destination files; defaults to false."},
+				"artifact_id": map[string]any{"type": "string", "description": "Native artifact identity for source_v3, draft_status_v3."},
+				"artifact_v3_reference": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"session_id":   map[string]any{"type": "string", "description": "Owner session ID."},
+						"artifact_id":  map[string]any{"type": "string", "description": "Native artifact identity."},
+						"revision_ref": map[string]any{"type": "string", "description": "Exact Git revision ref (e.g. revision-<commit_oid>)."},
+					},
+					"additionalProperties": false,
+					"required":             []string{"session_id", "artifact_id", "revision_ref"},
+					"description":          "Complete exact ready native Artifact V3 preview reference for read_v3, revise_v3, begin_v3, or import.",
+				},
+				"artifact_reference": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"session_id":    map[string]any{"type": "string", "description": "Owner session ID."},
+						"collection_id": map[string]any{"type": "string", "description": "Collection ID."},
+						"variant_id":    map[string]any{"type": "string", "description": "Variant ID."},
+						"event_seq":     map[string]any{"type": "integer", "minimum": 1, "description": "Exact event sequence number."},
+					},
+					"additionalProperties": false,
+					"required":             []string{"session_id", "collection_id", "variant_id", "event_seq"},
+					"description":          "Complete exact ready legacy managed artifact reference for import. For read/get/materialize, copy the four reference fields to the top level.",
+				},
+				"revision_intent":        map[string]any{"type": "string", "enum": []string{"whole_project", "focused_parts"}, "description": "Destination-owned revision scope for begin_v3/revise_v3."},
+				"target_part_ids":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact semantic Part IDs for focused destination revisions."},
+				"source_kind":            map[string]any{"type": "string", "enum": []string{"head", "historical_revision", "candidate"}, "description": "Native retained catalog filter."},
+				"created_after":          map[string]any{"type": "integer", "minimum": 0, "description": "Catalog creation lower bound in Unix milliseconds."},
+				"created_before":         map[string]any{"type": "integer", "minimum": 0, "description": "Catalog creation upper bound in Unix milliseconds."},
+				"library":                map[string]any{"type": "string", "enum": []string{"legacy", "native"}, "description": "Optional library discriminator for search/list: 'legacy' for managed artifacts, 'native' for Artifact V3 documents."},
+				"resume_draft":           map[string]any{"type": "object", "description": "Draft identity for resume_v3. See action='help' topic='workflow'."},
+				"action":                 map[string]any{"type": "string", "enum": []string{"create", "import", "list_v3", "source_v3", "select_v3", "read_v3", "revise_v3", "begin_v3", "author_v3", "resume_v3", "draft_status_v3", "image_capabilities", "audio_capabilities", "generate_image", "generate_video", "generate_video_story", "generate_audio", "extract_video_frame", "chain_video", "export_html_stills", "export_html_animation", "export_html_animation_fallback", "cancel_html_animation_export", "derive_text", "read_part", "publish_part", "read_parts", "publish_parts", "select_parts", "list_presets", "list", "search", "get", "read", "materialize", "materialize_batch", "promote", "publish_workspace", "select", "delete", "help"}, "description": "Artifact operation: create, import, search, get, read, materialize/materialize_batch, promote, publish_workspace, generate_video_story, etc. Call action='help' with optional topic (animation, video, audio, narration, workflow) for complete schemas."},
+				"capability_token":       map[string]any{"type": "string", "description": "Fresh token returned by image_capabilities or audio_capabilities; required for Google generative media calls."},
+				"scenes":                 map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"prompt": map[string]any{"type": "string"}, "title": map[string]any{"type": "string"}, "duration_seconds": map[string]any{"type": "integer"}}, "required": []string{"prompt"}}, "description": "Multi-scene video script for generate_video_story."},
+				"soundtrack":             map[string]any{"type": "string", "description": "Soundtrack music/audio description for generate_video_story."},
+				"topic":                  map[string]any{"type": "string", "description": "Optional topic for action=help (animation, video, audio, narration, workflow)."},
+				"prompt":                 map[string]any{"type": "string", "maxLength": manageArtifactMaxPromptRunes, "description": "Prompt for generation. Call action='help' for schema."},
+				"title":                  map[string]any{"type": "string", "maxLength": 160, "description": "Human-readable title."},
+				"image_settings":         map[string]any{"type": "object", "properties": map[string]any{"size": map[string]any{"type": "string"}, "aspect_ratio": map[string]any{"type": "string"}, "image_size": map[string]any{"type": "string"}}, "additionalProperties": false, "description": "Optional image settings. Call action='help' for schema."},
+				"session_id":             map[string]any{"type": "string", "description": "Combined with collection_id, variant_id, and event_seq for exact artifact reference."},
+				"collection_id":          map[string]any{"type": "string", "description": "Combined with session_id, variant_id, and event_seq for exact artifact reference."},
+				"variant_id":             map[string]any{"type": "string", "description": "Combined with session_id, collection_id, and event_seq for exact artifact reference."},
+				"filename":               map[string]any{"type": "string", "maxLength": 255},
+				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type."},
+				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content."},
+				"draft_handle":           map[string]any{"type": "object", "description": "Draft handle from begin_v3/create/revise_v3. Call action='help' topic='workflow'."},
+				"operation":              map[string]any{"type": "object", "description": "Artifact V3 authoring operation. Call action='help' topic='workflow'."},
+				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes."},
+				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Two or more real independently byte-bearing initial parts for create (server owns all chain, composition, part identities). Mutually exclusive with monolithic content. Call action='help' for schema."},
+				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact (never create or prove independently replaceable bytes). For text/html, omit parts to let the server derive useful targets without splitting or rewriting the file; explicitly supplied parts remain authoritative. Use initial_parts only when independently stored bytes are required. Call action='help' for schema."},
+				"references":             map[string]any{"type": "array", "minItems": 1, "maxItems": manageArtifactMaxBatchItems, "items": map[string]any{"type": "object"}, "description": "Complete exact ready references imported atomically by materialize_batch into destination directory; whole batch is preflighted."},
+				"source":                 map[string]any{"type": "string", "maxLength": 4096, "description": "Trusted canonical workspace-relative regular file or bounded package directory for publish_workspace. Build or revise it with normal workspace tools before publication."},
+				"presentation":           presentation,
+				"animation_profile":      map[string]any{"type": "object", "description": "Animation profile: motion_ui, spatial_3d, vector_playback, or final_render. Exports like export_html_animation_fallback inherit the exact source artifact's reviewed animation profile; omit this field for exports. Call action='help' topic='animation'."},
+				"source_session_id":      map[string]any{"type": "string", "description": "For every image remix, copy source_session_id from the reusable exact reference."},
+				"source_collection_id":   map[string]any{"type": "string", "description": "For every image remix, copy source_collection_id from the reusable exact reference."},
+				"source_variant_id":      map[string]any{"type": "string", "description": "For every image remix, copy source_variant_id from the reusable exact reference."},
+				"source_event_seq":       map[string]any{"type": "integer", "minimum": 1, "description": "For every image remix, copy source_event_seq from the reusable exact reference."},
+				"alternatives":           map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Multi-candidate revise_v3 request array ([{candidate_index, content}]). See action='help'."},
+				"event_seq":              map[string]any{"type": "integer", "minimum": 1, "description": "Combined with session_id, collection_id, and variant_id for exact artifact reference."},
+				"query":                  map[string]any{"type": "string", "description": "Authenticated cross-session search; ready items return complete exact references."},
+				"status":                 map[string]any{"type": "string", "description": "Status filter: native list_v3/search accepts ready|selected; legacy accepts staging|ready|failed|unavailable."},
+				"cursor":                 map[string]any{"type": "string", "description": "Opaque continuation cursor from next_cursor unchanged; never parse or construct it."},
+				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
+				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize instead."},
+				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
+				"model":                  map[string]any{"type": "string", "description": "Model identifier for audio generation/capability discovery only; not accepted for artifact import."},
+				"message":                map[string]any{"type": "string", "description": "Optional native import commit message."},
+				"collection_name":        map[string]any{"type": "string", "description": "Optional destination collection label for legacy import."},
+				"collection_description": map[string]any{"type": "string", "description": "Optional destination collection description for legacy import."},
+				"overwrite":              map[string]any{"type": "boolean", "description": "Permit replacement of destination files; defaults to false."},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": true,
@@ -260,7 +298,8 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", errors.New("manage_artifact animation_profile is valid only for create, create_package, publish_workspace, or derive_text; export actions inherit the exact source animation profile and must omit animation_profile")
 		}
 	}
-	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "help" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3") && r.artifactV3Author != nil) && r.artifactAuthority == nil {
+	nativeDiscovery := (actionName == "list" || actionName == "search") && strings.ToLower(strings.TrimSpace(asString(args["library"]))) == "native"
+	if actionName != "list_presets" && actionName != "image_capabilities" && actionName != "audio_capabilities" && actionName != "help" && actionName != "import" && !((actionName == "create" || actionName == "list_v3" || actionName == "source_v3" || actionName == "select_v3" || actionName == "read_v3" || actionName == "revise_v3" || actionName == "begin_v3" || actionName == "author_v3" || actionName == "resume_v3" || actionName == "draft_status_v3" || nativeDiscovery) && r.artifactV3Author != nil) && r.artifactAuthority == nil {
 		return "", errors.New("manage_artifact authority is not configured")
 	}
 
@@ -275,6 +314,13 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			return "", err
 		}
 		response["image_capabilities"] = capabilities
+	case "audio_capabilities":
+		modelArg := strings.TrimSpace(asString(args["model"]))
+		capabilities, err := r.managedAudioCapabilitiesWithModel(principal.AccountScopeID, modelArg)
+		if err != nil {
+			return "", err
+		}
+		response["audio_capabilities"] = capabilities
 	case "read_part":
 		part, err := r.readManagedArtifactPart(ctx, principal, args)
 		if err != nil {
@@ -395,7 +441,14 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["duration_seconds"] = videoResult.DurationSeconds
 		response["estimated_cost_usd"] = videoResult.TotalEstimatedCostUSD
 		response["cost_per_video_usd"] = videoResult.CostPerVideoUSD
+		response["price_status"] = videoResult.PriceStatus
 		response["pricing_summary"] = videoResult.PricingSummary
+		if videoResult.SnapshotID != "" {
+			response["snapshot_id"] = videoResult.SnapshotID
+		}
+		if videoResult.SnapshotVersion != "" {
+			response["snapshot_version"] = videoResult.SnapshotVersion
+		}
 		response["artifact"] = managedArtifactVariant(videoResult.LastVariant)
 		response["reference"] = managedArtifactReferenceWithSession(videoResult.LastVariant.SessionID, videoResult.LastVariant.CollectionID, videoResult.LastVariant.ID, videoResult.LastVariant.EventSeq)
 		response["variants"] = videoResult.Variants
@@ -461,6 +514,10 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["metadata"] = audioResult.Metadata
 		if audioResult.HasImageInput {
 			response["has_image_input"] = true
+		}
+	case "import":
+		if err := r.importManagedArtifact(ctx, scope, principal, requestID, args, response); err != nil {
+			return "", err
 		}
 	case "create":
 		artifactV3Result, err := r.createDirectArtifactV3HTML(ctx, scope, principal, callID, args)
@@ -644,6 +701,29 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		response["presets"] = presets
 		response["count"] = len(presets)
 	case "list", "search":
+		library := strings.ToLower(strings.TrimSpace(asString(args["library"])))
+		if library == "native" {
+			v3Args := make(map[string]any, len(args))
+			for k, v := range args {
+				v3Args[k] = v
+			}
+			v3Args["action"] = "list_v3"
+			delete(v3Args, "library")
+			result, err := r.discoverDirectArtifactV3(ctx, scope, principal, v3Args)
+			if err != nil {
+				return "", err
+			}
+			response["artifact_v3"] = result
+			response["artifacts"] = result["artifacts"]
+			response["count"] = result["count"]
+			response["has_more"] = result["has_more"]
+			if nc, ok := result["next_cursor"]; ok && nc != "" {
+				response["next_cursor"] = nc
+			}
+			break
+		} else if library != "" && library != "legacy" {
+			return "", fmt.Errorf("manage_artifact %s library must be legacy or native, got %q", actionName, library)
+		}
 		limit := clampInt(asInt(args["limit"], manageArtifactDefaultListLimit), 1, manageArtifactMaxListLimit)
 		status := strings.ToLower(strings.TrimSpace(asString(args["status"])))
 		if status != "" && status != pebblestore.SessionArtifactStatusStaging && status != pebblestore.SessionArtifactStatusReady && status != pebblestore.SessionArtifactStatusFailed && status != pebblestore.SessionArtifactStatusUnavailable {
@@ -685,7 +765,15 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 			for _, item := range page.Items {
 				entry := map[string]any{"collection": managedArtifactCollection(item.Collection), "artifact": managedArtifactVariant(item.Variant)}
 				if item.Reference != nil {
-					entry["reference"] = managedArtifactReferenceWithSession(item.Reference.SessionID, item.Reference.CollectionID, item.Reference.VariantID, item.Reference.EventSeq)
+					ref := managedArtifactReferenceWithSession(item.Reference.SessionID, item.Reference.CollectionID, item.Reference.VariantID, item.Reference.EventSeq)
+					entry["reference"] = ref
+					entry["artifact_reference"] = ref
+					if item.Reference.SessionID != principal.SessionID {
+						entry["copyable_next_calls"] = []map[string]any{
+							{"action": "read", "session_id": item.Reference.SessionID, "collection_id": item.Reference.CollectionID, "variant_id": item.Reference.VariantID, "event_seq": item.Reference.EventSeq},
+							{"action": "import", "artifact_reference": ref},
+						}
+					}
 				}
 				items = append(items, entry)
 			}
@@ -948,6 +1036,173 @@ func (r *Runtime) executeManageArtifact(ctx context.Context, scope WorkspaceScop
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func (r *Runtime) importManagedArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, requestID string, args map[string]any, response map[string]any) error {
+	for key := range args {
+		switch key {
+		case "action", "artifact_v3_reference", "artifact_reference", "title", "message", "collection_name", "collection_description":
+		default:
+			return fmt.Errorf("manage_artifact import contains unsupported field %q", key)
+		}
+	}
+	_, hasNative := args["artifact_v3_reference"]
+	_, hasLegacy := args["artifact_reference"]
+
+	if hasNative && hasLegacy {
+		return errors.New("manage_artifact import accepts exactly one native or legacy reference, not both")
+	}
+	if !hasNative && !hasLegacy {
+		return errors.New("manage_artifact import requires exactly one native or legacy reference")
+	}
+
+	if strings.TrimSpace(principal.SessionID) == "" || strings.TrimSpace(principal.SessionID) != strings.TrimSpace(scope.SessionID) {
+		return errors.New("manage_artifact import caller is not authenticated for the destination session")
+	}
+
+	for _, key := range []string{"title", "message", "collection_name", "collection_description"} {
+		if value, supplied := args[key]; supplied {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("manage_artifact import %s must be a string", key)
+			}
+		}
+	}
+	if hasNative {
+		for _, legacyField := range []string{"collection_id", "variant_id", "event_seq", "collection_name", "collection_description", "destination_collection_id", "destination_variant_id"} {
+			if _, supplied := args[legacyField]; supplied {
+				return fmt.Errorf("manage_artifact import native reference cannot be combined with legacy field %q", legacyField)
+			}
+		}
+		rawRef, ok := args["artifact_v3_reference"].(map[string]any)
+		if !ok {
+			return errors.New("manage_artifact import artifact_v3_reference must be an object")
+		}
+		reference, err := parseDirectArtifactV3RevisionInput(rawRef)
+		if err != nil {
+			return err
+		}
+		sourceSessionID, sourceArtifactID := reference.SessionID, reference.ArtifactID
+		commitOID := strings.TrimPrefix(reference.RevisionRef, "revision-")
+		message := strings.TrimSpace(asString(args["message"]))
+		if message == "" {
+			message = strings.TrimSpace(asString(args["title"]))
+		}
+		destArtifactID := "art-" + requestID
+		destOwner := pebblestore.ArtifactV3Owner{
+			AccountScopeID: principal.AccountScopeID,
+			UserID:         principal.UserID,
+			SessionID:      principal.SessionID,
+		}
+		importInput := pebblestore.ArtifactV3ImportInput{
+			SourceAccountScopeID:  principal.AccountScopeID,
+			SourceUserID:          principal.UserID,
+			SourceSessionID:       sourceSessionID,
+			SourceArtifactID:      sourceArtifactID,
+			SourceCommitOID:       commitOID,
+			DestinationOwner:      destOwner,
+			DestinationArtifactID: destArtifactID,
+			TransactionID:         requestID,
+			Message:               message,
+			NowUnixMs:             time.Now().UnixMilli(),
+		}
+		var importer ArtifactV3NativeImporter
+		if r.artifactV3Importer != nil {
+			importer = r.artifactV3Importer
+		} else if r.artifactV3Author != nil && r.artifactV3Author.repository != nil {
+			if imp, ok := r.artifactV3Author.repository.(ArtifactV3NativeImporter); ok {
+				importer = imp
+			}
+		}
+		if importer == nil {
+			return errors.New("native Artifact V3 importer is not configured")
+		}
+		projection, err := importer.ImportArtifactV3(ctx, importInput)
+		if err != nil {
+			return err
+		}
+		repository, revision := projection.Repository, projection.Revision
+		if repository == nil || revision == nil || repository.ArtifactID != destArtifactID || repository.OwnerSessionID != principal.SessionID || repository.AccountScopeID != principal.AccountScopeID || repository.UserID != principal.UserID || repository.HeadCommitOID == "" || revision.CommitOID != repository.HeadCommitOID || revision.ArtifactID != repository.ArtifactID || revision.OwnerSessionID != repository.OwnerSessionID || revision.Build.Status != "succeeded" || revision.Preview.Status != "succeeded" {
+			return fmt.Errorf("%w: native import did not return a destination-owned ready revision", pebblestore.ErrArtifactV3Integrity)
+		}
+		ref := map[string]any{
+			"session_id":   repository.OwnerSessionID,
+			"artifact_id":  repository.ArtifactID,
+			"revision_ref": "revision-" + repository.HeadCommitOID,
+		}
+		response["artifact_v3"] = map[string]any{
+			"artifact_id":  repository.ArtifactID,
+			"session_id":   repository.OwnerSessionID,
+			"head_commit":  repository.HeadCommitOID,
+			"revision_ref": "revision-" + repository.HeadCommitOID,
+			"status":       "ready",
+		}
+		response["reference"] = ref
+		response["artifact_v3_reference"] = ref
+		response["copyable_next_calls"] = []map[string]any{
+			{"action": "read_v3", "artifact_v3_reference": ref},
+			{"action": "begin_v3", "artifact_v3_reference": ref, "revision_intent": "whole_project"},
+		}
+		return nil
+	}
+
+	// Legacy imports also derive every destination identity from trusted context.
+	if _, supplied := args["message"]; supplied {
+		return errors.New("manage_artifact import legacy reference does not accept native message")
+	}
+	if _, supplied := args["title"]; supplied {
+		return errors.New("manage_artifact import legacy reference uses collection_name, not title")
+	}
+	rawRef, ok := args["artifact_reference"].(map[string]any)
+	if !ok {
+		return errors.New("manage_artifact import artifact_reference must be an object")
+	}
+	var sourceRef pebblestore.SessionArtifactSelectionReference
+	{
+		for key := range rawRef {
+			if key != "session_id" && key != "collection_id" && key != "variant_id" && key != "event_seq" {
+				return fmt.Errorf("manage_artifact import artifact_reference contains unsupported field %q", key)
+			}
+		}
+		eventSeq, _, err := optionalArtifactInt64(rawRef, "event_seq")
+		if err != nil {
+			return err
+		}
+		sourceRef = pebblestore.SessionArtifactSelectionReference{
+			SessionID:    strings.TrimSpace(asString(rawRef["session_id"])),
+			CollectionID: strings.TrimSpace(asString(rawRef["collection_id"])),
+			VariantID:    strings.TrimSpace(asString(rawRef["variant_id"])),
+			EventSeq:     uint64(eventSeq),
+		}
+	}
+	if sourceRef.SessionID == "" || sourceRef.CollectionID == "" || sourceRef.VariantID == "" || sourceRef.EventSeq == 0 {
+		return errors.New("manage_artifact import requires complete session_id, collection_id, variant_id, and non-zero event_seq")
+	}
+
+	destCollectionID := "collection-" + requestID
+	destVariantID := "variant-" + requestID
+	input := artifact.ImportVariantInput{
+		RequestID:             requestID,
+		CollectionID:          destCollectionID,
+		CollectionName:        strings.TrimSpace(asString(args["collection_name"])),
+		CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
+		VariantID:             destVariantID,
+		Source:                sourceRef,
+	}
+	if r.artifactAuthority == nil {
+		return errors.New("manage_artifact authority is not configured")
+	}
+	variant, err := r.artifactAuthority.Import(ctx, principal, input)
+	if err != nil {
+		return err
+	}
+	ref := managedArtifactReferenceWithSession(variant.SessionID, variant.CollectionID, variant.ID, variant.EventSeq)
+	response["artifact"] = managedArtifactVariant(variant)
+	response["reference"] = ref
+	response["artifact_reference"] = ref
+	response["copyable_next_calls"] = []map[string]any{
+		{"action": "read", "session_id": variant.SessionID, "collection_id": variant.CollectionID, "variant_id": variant.ID, "event_seq": variant.EventSeq},
+	}
+	return nil
 }
 
 func manageArtifactReadResponseQuotaError(code string) error {
@@ -1410,10 +1665,30 @@ func (r *Runtime) managedImageCapabilities(accountScopeID string) (imagegen.Mana
 	return r.imageGeneration.ManagedImageCapabilities(selectionID)
 }
 
+func (r *Runtime) managedAudioCapabilities(accountScopeID string) (audiogen.ManagedAudioCapabilities, error) {
+	return r.managedAudioCapabilitiesWithModel(accountScopeID, "")
+}
+
+func (r *Runtime) managedAudioCapabilitiesWithModel(accountScopeID, modelOverride string) (audiogen.ManagedAudioCapabilities, error) {
+	if r == nil || r.audioGeneration == nil {
+		return audiogen.ManagedAudioCapabilities{}, errors.New("manage_artifact audio generation is not configured")
+	}
+	modelID := strings.TrimSpace(modelOverride)
+	if modelID == "" && r.uiSettings != nil && strings.TrimSpace(accountScopeID) != "" {
+		if ui, err := r.uiSettings.GetForAccount(strings.TrimSpace(accountScopeID)); err == nil {
+			modelID = strings.TrimSpace(ui.Tools.Audio.DefaultModel)
+		}
+	}
+	if modelID == "" {
+		modelID = audiogen.DefaultAudioSongModel
+	}
+	return r.audioGeneration.ManagedAudioCapabilities(modelID)
+}
+
 func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, error) {
 	for key := range args {
 		switch key {
-		case "action", "prompt", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+		case "action", "prompt", "title", "label", "image_settings", "capability_token", "collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation", "output_requirements", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
 			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("manage_artifact generate_image contains unsupported field %q", key)
 		}
@@ -1442,6 +1717,12 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 
 	collectionID, variantID := managedArtifactOpaqueID("collection", principal.SessionID, callID), managedArtifactOpaqueID("variant", principal.SessionID, callID)
 	collectionName, collectionDescription := strings.TrimSpace(asString(args["collection_name"])), strings.TrimSpace(asString(args["collection_description"]))
+	if collectionName == "" {
+		collectionName = strings.TrimSpace(asString(args["title"]))
+	}
+	if collectionName == "" {
+		collectionName = strings.TrimSpace(asString(args["label"]))
+	}
 	if collectionName == "" {
 		collectionName = "Generated image"
 	}
@@ -1530,9 +1811,15 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if selectionID == "" {
 		selectionID = imagegen.DefaultModelSelectionID
 	}
+	capabilityToken := strings.TrimSpace(asString(args["capability_token"]))
+	if capabilityToken == "" {
+		if capabilities, err := r.managedImageCapabilities(principal.AccountScopeID); err == nil && capabilities.CapabilityToken != "" {
+			capabilityToken = capabilities.CapabilityToken
+		}
+	}
 	generated, err := r.imageGeneration.GenerateManagedImage(identity.ContextWithPrincipal(ctx, scope.Principal), imagegen.ManagedGenerateRequest{
 		SelectionID: selectionID, Prompt: prompt, Size: size, Settings: settings,
-		CapabilityToken: strings.TrimSpace(asString(args["capability_token"])), Principal: scope.Principal, Source: source,
+		CapabilityToken: capabilityToken, Principal: scope.Principal, Source: source,
 	})
 	if err != nil {
 		return pebblestore.SessionArtifactVariant{}, fmt.Errorf("generate managed image: %w", err)
@@ -1554,6 +1841,12 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	presentation.Kind, presentation.Previewable, presentation.Width, presentation.Height = "image", true, config.Width, config.Height
 	if strings.TrimSpace(presentation.Label) == "" {
 		presentation.Label = strings.TrimSpace(asString(args["collection_name"]))
+	}
+	if strings.TrimSpace(presentation.Label) == "" {
+		presentation.Label = strings.TrimSpace(asString(args["title"]))
+	}
+	if strings.TrimSpace(presentation.Label) == "" {
+		presentation.Label = strings.TrimSpace(asString(args["label"]))
 	}
 	if strings.TrimSpace(presentation.Description) == "" {
 		presentation.Description = strings.TrimSpace(asString(args["collection_description"]))
@@ -1580,7 +1873,74 @@ func (r *Runtime) generateManagedImageArtifact(ctx context.Context, scope Worksp
 	if sourceRef != nil {
 		create.SourceSessionID, create.SourceCollectionID, create.SourceVariantID, create.SourceEventSeq = sourceRef.SessionID, sourceRef.CollectionID, sourceRef.VariantID, sourceRef.EventSeq
 	}
-	return r.artifactAuthority.Create(ctx, principal, create)
+	var estimate pebblestore.MediaCostEstimate
+	imageProvider := "codex"
+	imageModel := "gpt-image-1"
+	if selectionID != "" && selectionID != imagegen.DefaultModelSelectionID && selectionID != "codex-image-gen" {
+		imageProvider = "google"
+		imageModel = selectionID
+	}
+	if r.sessions != nil {
+		requestedAspectRatio := ""
+		if ar, ok := settings["aspect_ratio"].(string); ok {
+			requestedAspectRatio = ar
+		}
+		requestedImageSize := size
+		if is, ok := settings["image_size"].(string); ok && is != "" {
+			requestedImageSize = is
+		}
+		effectiveImageResolution := fmt.Sprintf("%dx%d", config.Width, config.Height)
+		if requestedImageSize != "" && (config.Width < 1 || config.Height < 1) {
+			effectiveImageResolution = requestedImageSize
+		}
+
+		estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+			Provider:     imageProvider,
+			Model:        imageModel,
+			Kind:         "image",
+			Count:        1,
+			OutputTokens: generated.OutputTokens,
+			Resolution:   effectiveImageResolution,
+			ImageSize:    requestedImageSize,
+			AspectRatio:  requestedAspectRatio,
+			IsIteration:  sourceRef != nil,
+		})
+	}
+
+	mediaID := variantID
+	if mediaID == "" {
+		mediaID = fmt.Sprintf("media_%s_%s", callID, requestID)
+	}
+	mediaRec := pebblestore.SessionMediaUsageRecord{
+		ID:              mediaID,
+		SessionID:       principal.SessionID,
+		AccountScopeID:  principal.AccountScopeID,
+		UserID:          principal.UserID,
+		MediaType:       canonicalArtifactMediaType(generated.MediaType),
+		Kind:            "image",
+		Provider:        imageProvider,
+		Model:           imageModel,
+		Filename:        filename,
+		Label:           presentation.Label,
+		Size:            int64(len(generated.Bytes)),
+		CostUSD:         estimate.CostUSD,
+		PriceStatus:     estimate.PriceStatus,
+		PricingSummary:  estimate.PricingSummary,
+		SnapshotID:      estimate.SnapshotID,
+		SnapshotVersion: estimate.SnapshotVersion,
+		CreatedAt:       time.Now().UnixMilli(),
+	}
+	if r.sessions != nil {
+		if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
+			return pebblestore.SessionArtifactVariant{}, fmt.Errorf("record image media usage: %w", recErr)
+		}
+	}
+
+	published, err := r.artifactAuthority.Create(ctx, principal, create)
+	if err != nil {
+		return pebblestore.SessionArtifactVariant{}, err
+	}
+	return published, nil
 }
 
 type managedVideoArtifactResult struct {
@@ -1596,7 +1956,10 @@ type managedVideoArtifactResult struct {
 	DurationSeconds       int
 	CostPerVideoUSD       float64
 	TotalEstimatedCostUSD float64
+	PriceStatus           string
 	PricingSummary        string
+	SnapshotID            string
+	SnapshotVersion       string
 	HasImageInput         bool `json:"has_image_input,omitempty"`
 }
 
@@ -1711,10 +2074,11 @@ func artifactHelpText(topic string) string {
 	case "animation", "motion":
 		return `Artifact Animation & Motion Contract:
 - Direct native HTML accepts animation_profile motion_ui or spatial_3d (pinned offline Three.js; import from 'three' in module script).
-- Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready().
-- Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
-- Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready(), and seek(ms) returning {time_ms: ms}.
+- Requires exactly one #swarm-animation-manifest (application/json, version swarm.animation/v1, duration_ms >= 100, fps 1-60, ceil(duration_ms*fps/1000) <= 36000 at 1920x1080) matching ready(). Unknown manifest fields are strictly disallowed.
+- Requires at least one semantic region with an id attribute on <main id="...">. Semantic regions with data-swarm-capture-ui are excluded from derived Parts; Parts must target output regions only.
+- Expose globalThis.__SWARM_ANIMATION_V1__ with version swarm.animation/v1, ready() returning { duration_ms, fps } matching the manifest, and seek(ms) returning { time_ms: ms }.
 - seek must pause all rAF/timers and deterministically render the exact timestamp.
+- To use the animation in Video Studio, call manage_video action="convert_artifact_v3" with project_id, base_revision_id, artifact_v3_session_id, artifact_v3_artifact_id, and artifact_v3_revision_ref.
 - data-swarm-capture-ui are excluded from derived Parts
 - explicit Parts must target output regions only
 - remaining meaningful output regions still required
@@ -1739,11 +2103,13 @@ func artifactHelpText(topic string) string {
 - action="generate_video_story": end-to-end multi-scene story with automatic Lyria soundtrack and Foley ducking in one atomic operation.`
 	case "audio", "lyria":
 		return `Artifact AI Audio (Google Lyria) Contract:
-- When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. Omit provider/model: the backend resolves your account-configured audio model (Google Lyria).
+- Before generating audio, call manage_artifact action="audio_capabilities" to inspect the configured audio model, duration limits, and capability_token.
+- When the user asks to generate audio, sound clips, music, or sound effects, use manage_artifact action=generate_audio. You can specify model (e.g. lyria-3.5, lyria-3-clip-preview, lyria-3-pro-preview), or omit it to resolve your account-configured audio model (Google Lyria).
 - The AI can generate multiple sound clips or audio variations in ONE tool call: provide an array of descriptive style/mood prompts via prompts: ["...", "..."] (up to 8 clips, e.g. prompts: ["Upbeat funk groove with slapping bass", "Ambient calm piano with rain sounds", "High-energy rock guitar solo"]), or specify count: N (1 to 8) to generate multiple variations from a single prompt.
 - Each generated sound clip is published as a distinct variant in the artifact collection with its own title and description, and Desktop renders an interactive Sound Clips selector so users can preview and play each clip directly.
-- Specify duration_seconds (e.g. 15, 30, 60, 120s; default 30s) and optional image or image_path for multimodal audio inspiration.
-- To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.`
+- Specify duration_seconds (respecting model limits from audio_capabilities, e.g. 5-30s for clip preview, 30-300s for full songs) and optional image or image_path for multimodal audio inspiration.
+- To iterate, remix, or continue an existing audio artifact, provide source_session_id, source_collection_id, source_variant_id, and source_event_seq from its exact ready reference alongside your delta prompt.
+- Video Studio Ingestion: To use a generated audio artifact as soundtrack audio in Video Studio timeline projects, call manage_video action="import_audio_artifact" with its exact reference ({session_id, collection_id, variant_id, event_seq}). This persists an authenticated AudioSourceRecord and returns the exact audio_source object ({ref, name, mime_type, size_bytes, source_fingerprint, fingerprint_version: "v1"}) ready for create_edit_proposal operations: [{type: "add_clip", clip: {source_kind: "source_audio", audio_source: ...}}] or create_project initial_timeline.`
 	case "narration":
 		return `Narration Plan Draft Contract:
 - For narration-plan drafts, use manage_artifact action=create with the built-in narration_plan object and its complete schema example instead of inventing HTML, selectors, or Parts.
@@ -1760,6 +2126,7 @@ func artifactHelpText(topic string) string {
 - export_html_stills accepts one complete exact ready text/html or canonical HTML-package reference containing the swarm.capture/v1 manifest/runtime contract, optionally selects declared state_ids, and returns managed 1920x1080 image/png references in manifest order; when the same HTML also declares swarm.storyboard/v1, the response includes a storyboard_handoff that binds every stable section to its capture state, filming requirements, production state, exact source, and exported PNG. For pre-production, pass that complete handoff to manage_video import_storyboard so Video Studio receives the pending storyboard in the same workflow; do not stop after export or manually rebuild plan parts. The trusted renderer removes data-swarm-capture-ui and rejects blockers or unstable states.
 - export_html_animation accepts one complete exact ready HTML/package reference with a reviewed animation profile and the separate swarm.animation/v1 manifest/runtime; long exports return a durable staging reference promptly for list/status inspection or cancel_html_animation_export, then publish one silent managed video/mp4 with exact source lineage after background renderer-controlled sampling.
 - Use search (or list with cross-session filters) to discover the authenticated user's prior-session artifact library without scanning transcripts or storage folders. Discovery results are flattened explicit candidates, ready items include complete exact references, and next_cursor is an opaque continuation that must be passed back unchanged as cursor. Never infer a selection when human names are ambiguous.
+- For retained cross-session artifacts, the source session and source artifact are immutable. To use or edit a retained artifact from another session, call action='read_v3' with artifact_v3_reference to inspect the HTML/manifest, or call action='import' with artifact_v3_reference (for native Artifact V3) or artifact_reference (for legacy managed artifacts) to import it into your session as a new, destination-owned editable head before calling revise_v3 or begin_v3.
 - Collection-list results are not complete ready references and cannot be passed directly to get/read; when a list result contains only collection metadata, call list again with collection_id (and session_id for an attached cross-session artifact) to list its artifacts and obtain variant_id and event_seq. To retrieve, read, materialize, promote, or export an attached ready artifact, copy session_id, collection_id, variant_id, and event_seq together from the same artifact reference into the call.
 - For repository or other workspace end products, prefer materialize or atomic materialize_batch over bulk read responses, manipulate the imported files with normal workspace tools, then use publish_workspace to publish the finished file or package; copy the original exact reference into source_session_id, source_collection_id, source_variant_id, and source_event_seq when the result derives from one source. Provider/model identifiers, browser/runtime overrides, arbitrary capture dimensions, and private storage paths are never accepted or exposed.`
 	default:
@@ -1773,12 +2140,18 @@ For detailed schema contracts and instructions, call action='help' with topic="<
 
 Quick Action References:
 - create (HTML V3): action='create', content='<!doctype html>...', parts=[{id, label, kind: 'temporal|spatial|selector|semantic', description}]. Do NOT substitute generate_image for native HTML documents.
+- import: action='import', artifact_v3_reference={session_id, artifact_id, revision_ref} (or artifact_reference={session_id, collection_id, variant_id, event_seq}). Imports an immutable retained artifact into the current session as a new destination-owned head.
+- read_v3: action='read_v3', artifact_v3_reference={session_id, artifact_id, revision_ref}. Reads complete project HTML and manifest for current or retained cross-session references.
+- list_v3: action='list_v3', cursor='...', limit=50. Queries the retained native Artifact V3 catalog across sessions.
+- source_v3: action='source_v3', artifact_id='...', session_id='...' (optional). Resolves exact source and candidate selection calls.
 - create (narration): action='create', narration_plan={title, scenes:[{id, title, narration, visual_direction, music_direction}]}.
 - revise_v3 (candidate revision): action='revise_v3', session_id, artifact_id, content='...', revision_intent='whole_project|focused_parts', target_part_ids=['...'].
 - begin_v3 / author_v3 (incremental repair): begin_v3 returns draft_handle; author_v3 accepts draft_handle and operation={action:'read_file|edit_file|build_preview|finish_turn', path, old_string, new_string}.
+- image_capabilities: action='image_capabilities'. Inspect image settings and get capability_token.
 - generate_image: action='generate_image', prompt='...', capability_token='...' (call action='image_capabilities' first).
+- audio_capabilities: action='audio_capabilities', model='...' (optional). Inspect duration constraints and get capability_token.
 - generate_video: action='generate_video', prompt='...', duration_seconds=8, aspect_ratio='16:9'.
-- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), duration_seconds=30.
+- generate_audio: action='generate_audio', prompt='...' (or prompts=['...']), model='...' (optional), duration_seconds=30, capability_token='...' (call action='audio_capabilities' first).
 - materialize: action='materialize', session_id, collection_id, variant_id, event_seq, destination='path/to/file'.
 - publish_workspace: action='publish_workspace', source='path/to/file', media_type='...'.`
 	}
@@ -2001,7 +2374,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "chain_from", "chain":
+			"image", "image_path", "chain_from", "chain", "includes_audio":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
 		}
@@ -2179,7 +2552,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 	var allVariants []map[string]any
 	var allReferences []map[string]any
 	var costPerVideo, totalCost float64
-	var pricingSummary, lastModel, lastProvider string
+	var pricingSummary, priceStatus, snapshotID, snapshotVersion, lastModel, lastProvider string
+	var lastAspectRatio, lastResolution string
+	var lastDurationSeconds int
 
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
@@ -2258,6 +2633,80 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
+		effectiveVideoDurationSeconds := generated.DurationSeconds
+		if effectiveVideoDurationSeconds <= 0 {
+			effectiveVideoDurationSeconds = durationSeconds
+			if generated.DurationMs > 0 {
+				effectiveVideoDurationSeconds = (generated.DurationMs + 500) / 1000
+			}
+		}
+		effectiveVideoResolution := generated.Resolution
+		if effectiveVideoResolution == "" {
+			effectiveVideoResolution = resolution
+			if effectiveVideoResolution == "" && generated.Height > 0 {
+				effectiveVideoResolution = fmt.Sprintf("%dp", generated.Height)
+			}
+		}
+		effectiveAspectRatio := generated.AspectRatio
+		if effectiveAspectRatio == "" {
+			effectiveAspectRatio = aspectRatio
+		}
+
+		effectiveIncludesAudio := true
+		if incVal, ok := args["includes_audio"].(bool); ok && !strings.Contains(strings.ToLower(generated.Model), "veo") {
+			effectiveIncludesAudio = incVal
+		}
+
+		estimate := pebblestore.MediaCostEstimate{
+			CostUSD:         generated.EstimatedCostUSD,
+			PriceStatus:     generated.PriceStatus,
+			PricingSummary:  generated.PricingSummary,
+			SnapshotID:      generated.SnapshotID,
+			SnapshotVersion: generated.SnapshotVersion,
+		}
+		if estimate.PriceStatus == "" {
+			if r.sessions != nil {
+				estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+					Provider:        generated.Provider,
+					Model:           generated.Model,
+					Kind:            "video",
+					Count:           1,
+					DurationSeconds: effectiveVideoDurationSeconds,
+					Resolution:      effectiveVideoResolution,
+					AspectRatio:     effectiveAspectRatio,
+					IncludesAudio:   effectiveIncludesAudio,
+					IsIteration:     sourceRef != nil,
+					ServiceTier:     "standard",
+				})
+			} else {
+				estimate.PriceStatus = "unknown"
+			}
+		}
+		mediaRec := pebblestore.SessionMediaUsageRecord{
+			ID:              currentVariantID,
+			SessionID:       principal.SessionID,
+			AccountScopeID:  principal.AccountScopeID,
+			UserID:          principal.UserID,
+			MediaType:       "video/mp4",
+			Kind:            "video",
+			Provider:        generated.Provider,
+			Model:           generated.Model,
+			Filename:        filename,
+			Label:           presentation.Label,
+			Size:            int64(len(generated.Bytes)),
+			CostUSD:         estimate.CostUSD,
+			PriceStatus:     estimate.PriceStatus,
+			PricingSummary:  estimate.PricingSummary,
+			SnapshotID:      estimate.SnapshotID,
+			SnapshotVersion: estimate.SnapshotVersion,
+			CreatedAt:       time.Now().UnixMilli(),
+		}
+		if r.sessions != nil {
+			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
+				return managedVideoArtifactResult{}, fmt.Errorf("record video media usage: %w", recErr)
+			}
+		}
+
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedVideoArtifactResult{}, fmt.Errorf("publish video artifact: %w", err)
@@ -2265,11 +2714,20 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))
 		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
-		costPerVideo = generated.EstimatedCostUSD
-		totalCost += generated.EstimatedCostUSD
-		pricingSummary = generated.PricingSummary
+		costPerVideo = estimate.CostUSD
+		totalCost += estimate.CostUSD
+		pricingSummary = estimate.PricingSummary
+		// A later priced result must not hide an unpriced member of the batch.
+		if priceStatus != "unknown" {
+			priceStatus = estimate.PriceStatus
+		}
+		snapshotID = estimate.SnapshotID
+		snapshotVersion = estimate.SnapshotVersion
 		lastModel = generated.Model
 		lastProvider = generated.Provider
+		lastResolution = effectiveVideoResolution
+		lastDurationSeconds = effectiveVideoDurationSeconds
+		lastAspectRatio = effectiveAspectRatio
 	}
 
 	return managedVideoArtifactResult{
@@ -2280,12 +2738,15 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		Prompt:                prompt,
 		Model:                 lastModel,
 		Provider:              lastProvider,
-		AspectRatio:           aspectRatio,
-		Resolution:            resolution,
-		DurationSeconds:       durationSeconds,
+		AspectRatio:           lastAspectRatio,
+		Resolution:            lastResolution,
+		DurationSeconds:       lastDurationSeconds,
 		CostPerVideoUSD:       costPerVideo,
 		TotalEstimatedCostUSD: totalCost,
+		PriceStatus:           priceStatus,
 		PricingSummary:        pricingSummary,
+		SnapshotID:            snapshotID,
+		SnapshotVersion:       snapshotVersion,
 		HasImageInput:         videoImage != nil,
 	}, nil
 }
@@ -2302,7 +2763,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 		case "action", "prompt", "prompts", "title", "label", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path":
+			"image", "image_path", "model", "capability_token":
 		default:
 			return managedAudioArtifactResult{}, fmt.Errorf("manage_artifact generate_audio contains unsupported field %q", key)
 		}
@@ -2501,6 +2962,34 @@ func (r *Runtime) generateManagedAudioArtifact(
 	var lastDurationMs int
 	var lastMetadata audiogen.AudioMetadata
 
+	requestedModel := strings.TrimSpace(asString(args["model"]))
+	if requestedModel == "" && r.uiSettings != nil && strings.TrimSpace(principal.AccountScopeID) != "" {
+		if ui, err := r.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
+			requestedModel = strings.TrimSpace(ui.Tools.Audio.DefaultModel)
+		}
+	}
+	if requestedModel == "" {
+		requestedModel = audiogen.DefaultAudioSongModel
+	}
+
+	capabilityToken := strings.TrimSpace(asString(args["capability_token"]))
+	caps, capsErr := r.managedAudioCapabilitiesWithModel(principal.AccountScopeID, requestedModel)
+	if capsErr == nil && caps.Available {
+		if capabilityToken != "" && caps.CapabilityToken != "" && capabilityToken != caps.CapabilityToken {
+			return managedAudioArtifactResult{}, errors.New("manage_artifact generate_audio capability_token does not match current audio model capabilities; call action='audio_capabilities' first")
+		}
+		if durationSeconds > 0 {
+			if caps.DurationSeconds.MaxSeconds > 0 && durationSeconds > caps.DurationSeconds.MaxSeconds {
+				return managedAudioArtifactResult{}, fmt.Errorf("requested duration %ds exceeds maximum duration of %ds for audio model %q; call action='audio_capabilities' to check model limits or choose a full-song model in Settings -> Media", durationSeconds, caps.DurationSeconds.MaxSeconds, caps.Model)
+			}
+			if caps.DurationSeconds.MinSeconds > 0 && durationSeconds < caps.DurationSeconds.MinSeconds {
+				return managedAudioArtifactResult{}, fmt.Errorf("requested duration %ds is below minimum duration of %ds for audio model %q", durationSeconds, caps.DurationSeconds.MinSeconds, caps.Model)
+			}
+		} else if caps.DurationSeconds.DefaultValue > 0 {
+			durationSeconds = caps.DurationSeconds.DefaultValue
+		}
+	}
+
 	for i := 0; i < count; i++ {
 		currentVariantID := variantID
 		if i > 0 && !managedDestination {
@@ -2516,8 +3005,10 @@ func (r *Runtime) generateManagedAudioArtifact(
 			Prompt:          currentPrompt,
 			DurationSeconds: durationSeconds,
 			Principal:       scope.Principal,
+			Model:           requestedModel,
 			Source:          source,
 			Image:           audioImage,
+			CapabilityToken: capabilityToken,
 		})
 		if err != nil {
 			return managedAudioArtifactResult{}, fmt.Errorf("generate managed audio: %w", err)
@@ -2596,6 +3087,47 @@ func (r *Runtime) generateManagedAudioArtifact(
 			create.SourceEventSeq = sourceRef.EventSeq
 		}
 
+		effectiveAudioDurationSeconds := durationSeconds
+		if generated.DurationMs > 0 {
+			effectiveAudioDurationSeconds = (generated.DurationMs + 500) / 1000
+		}
+
+		estimate := pebblestore.MediaCostEstimate{CostUSD: generated.EstimatedCostUSD, PriceStatus: "known", PricingSummary: generated.PricingSummary}
+		if r.sessions != nil {
+			estimate = r.sessions.EstimateMediaCostWithOptions(pebblestore.MediaCostEstimateOptions{
+				Provider:        lastProvider,
+				Model:           requestedModel,
+				Kind:            "audio",
+				Count:           1,
+				DurationSeconds: effectiveAudioDurationSeconds,
+				IsIteration:     sourceRef != nil,
+			})
+		}
+		mediaRec := pebblestore.SessionMediaUsageRecord{
+			ID:              currentVariantID,
+			SessionID:       principal.SessionID,
+			AccountScopeID:  principal.AccountScopeID,
+			UserID:          principal.UserID,
+			MediaType:       mediaType,
+			Kind:            "audio",
+			Provider:        lastProvider,
+			Model:           requestedModel,
+			Filename:        filename,
+			Label:           presentation.Label,
+			Size:            int64(len(generated.Bytes)),
+			CostUSD:         estimate.CostUSD,
+			PriceStatus:     estimate.PriceStatus,
+			PricingSummary:  estimate.PricingSummary,
+			SnapshotID:      estimate.SnapshotID,
+			SnapshotVersion: estimate.SnapshotVersion,
+			CreatedAt:       time.Now().UnixMilli(),
+		}
+		if r.sessions != nil {
+			if recErr := r.sessions.RecordMediaUsage(mediaRec); recErr != nil {
+				return managedAudioArtifactResult{}, fmt.Errorf("record audio media usage: %w", recErr)
+			}
+		}
+
 		published, err := r.artifactAuthority.Create(ctx, principal, create)
 		if err != nil {
 			return managedAudioArtifactResult{}, fmt.Errorf("publish audio artifact: %w", err)
@@ -2603,7 +3135,7 @@ func (r *Runtime) generateManagedAudioArtifact(
 		lastVariant = published
 		allVariants = append(allVariants, managedArtifactVariant(published))
 		allReferences = append(allReferences, managedArtifactReferenceWithSession(published.SessionID, published.CollectionID, published.ID, published.EventSeq))
-		costPerAudio = generated.EstimatedCostUSD
+		costPerAudio = estimate.CostUSD
 		totalCost += generated.EstimatedCostUSD
 		pricingSummary = generated.PricingSummary
 		lastModel = generated.Model
@@ -3211,7 +3743,7 @@ func managedArtifactPresentation(p pebblestore.SessionArtifactPresentation) map[
 }
 
 func managedArtifactVariant(v pebblestore.SessionArtifactVariant) map[string]any {
-	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "progress": v.Progress, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq}
+	result := map[string]any{"id": v.ID, "collection_id": v.CollectionID, "session_id": v.SessionID, "status": v.Status, "filename": v.Filename, "media_type": v.MediaType, "digest_sha256": v.DigestSHA256, "size": v.Size, "failure_code": v.FailureCode, "progress": v.Progress, "presentation": managedArtifactPresentation(v.Presentation), "output_requirements": v.OutputRequirements, "animation_profile": v.AnimationProfile, "part_graph_state": v.PartGraphState, "created_at": v.CreatedAt, "updated_at": v.UpdatedAt, "event_seq": v.EventSeq, "label": firstNonEmptyString(v.Presentation.Label, v.Filename), "description": v.Presentation.Description, "kind": v.Presentation.Kind, "previewable": v.Presentation.Previewable}
 	if v.Lineage != (pebblestore.SessionArtifactLineage{}) {
 		result["lineage"] = v.Lineage
 	}

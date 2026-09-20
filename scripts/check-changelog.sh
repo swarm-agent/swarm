@@ -53,6 +53,9 @@ check_range() {
   printf 'changelog check: PASS (%s...%s updates CHANGELOG.md)\n' "${base_ref}" "${head_ref}"
 }
 
+# Purpose: exercise check_range acceptance/rejection with real fixture commits.
+# Repository routing inherited from hooks must not mutate the caller's Git state;
+# this shell fixture is the narrowest layer exercising the actual Git commands.
 self_test() {
   local test_root
   local fixture
@@ -68,10 +71,15 @@ self_test() {
   mkdir -p "${fixture}"
 
   (
+    # Hooks can export GIT_DIR and other repository-local routing variables.
+    # A directory change alone does not isolate fixture commands from that repo.
+    while IFS= read -r git_env; do
+      unset "${git_env}"
+    done < <(git rev-parse --local-env-vars)
+    export GIT_AUTHOR_NAME="Swarm" GIT_COMMITTER_NAME="Swarm"
+    export GIT_AUTHOR_EMAIL="swarm@swarmagent.dev" GIT_COMMITTER_EMAIL="swarm@swarmagent.dev"
     cd "${fixture}"
     git init --quiet
-    git config user.name "Swarm Changelog Check"
-    git config user.email "changelog-check@example.invalid"
     cat >CHANGELOG.md <<'EOF_CHANGELOG'
 # Changelog
 

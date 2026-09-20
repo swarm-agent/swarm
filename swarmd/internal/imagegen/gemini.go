@@ -152,7 +152,6 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 		}},
 		GenerationConfig: geminiRESTGenerationConfig{
 			ResponseModalities: []string{"IMAGE"},
-			ThinkingConfig:     map[string]any{"includeThoughts": true},
 			ImageConfig: geminiRESTImageConfig{
 				AspectRatio: strings.TrimSpace(req.AspectRatio),
 				ImageSize:   strings.TrimSpace(req.ImageSize),

@@ -1614,3 +1614,318 @@ func TestCancelRenderJobRejectsTerminalStates(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: Verify that RenderJob succeeds on a forked video project carrying destination-scoped
+// authority proposal, completing the render and attaching the output artifact to the destination project.
+// Invariant: Restored video projects rendered in a new session must produce output artifacts owned by
+// the destination session/project rather than source project.
+// Authority: Service.RenderJob, pebblestore.ResolveAuthoritativeVideoPlan.
+func TestRenderJobForkedProjectRendersAndAttachesDestinationArtifact(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_fork", UserID: "usr_fork"}
+	const sourceSessionID, sourceProjectID, sourceRevID = "sess_src", "vproj_src", "vrev_src"
+	const destSessionID, destProjectID, destRevID, destJobID = "sess_dest", "vproj_dest", "vrev_dest", "vjob_dest"
+
+	store := newFakeSessionStore()
+	store.sessions[sourceSessionID] = pebblestore.SessionSnapshot{ID: sourceSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	store.sessions[destSessionID] = pebblestore.SessionSnapshot{ID: destSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+
+	plan := pebblestore.VideoPlanProposal{
+		Kind:  pebblestore.VideoPlanKindInitial,
+		Parts: []pebblestore.VideoPlanPart{{ID: "c1", Title: "Hook", DurationMs: 1000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1}, VisualMediaType: "image/png"}},
+	}
+	timeline := pebblestore.VideoProjectTimeline{
+		Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+		Metadata: map[string]any{
+			"accepted_video_plan":             plan,
+			"accepted_video_plan_proposal_id": "vprop_accepted",
+		},
+	}
+
+	// Destination project and revision
+	store.projects[destProjectID] = pebblestore.VideoProjectSnapshot{
+		ID:                destProjectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         destSessionID,
+		Title:             "Forked Video",
+		CurrentRevisionID: destRevID,
+		Metadata: map[string]any{
+			"source_session_id":  sourceSessionID,
+			"source_project_id":  sourceProjectID,
+			"source_revision_id": sourceRevID,
+		},
+	}
+	destRev := pebblestore.VideoProjectRevisionSnapshot{
+		ID:             destRevID,
+		ProjectID:      destProjectID,
+		RevisionNumber: 1,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      destSessionID,
+		Timeline:       timeline,
+	}
+	store.revisions[destRevID] = destRev
+
+	// Destination proposal persisted during fork
+	store.proposals["vprop_accepted"] = pebblestore.VideoEditProposalSnapshot{
+		ID:                "vprop_accepted",
+		ProjectID:         destProjectID,
+		SessionID:         destSessionID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		Status:            pebblestore.VideoEditProposalStatusAccepted,
+		Plan:              &plan,
+		WorkingRevisionID: destRevID,
+	}
+
+	store.jobs[destJobID] = pebblestore.VideoRenderJobSnapshot{
+		ID:             destJobID,
+		ProjectID:      destProjectID,
+		RevisionID:     destRevID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      destSessionID,
+		Status:         pebblestore.VideoRenderJobStatusQueued,
+	}
+
+	runner := &fakeCommandRunner{}
+	artAuth := &fakeArtifactAuthority{}
+	svc := NewService(Config{}, store, artAuth, nil, nil, runner)
+
+	result, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID:  destSessionID,
+		ProjectID:  destProjectID,
+		RevisionID: destRevID,
+		JobID:      destJobID,
+	})
+	if err != nil {
+		t.Fatalf("RenderJob on forked project failed: %v", err)
+	}
+	if result.Status != pebblestore.VideoRenderJobStatusReady {
+		t.Fatalf("expected job status ready, got: %s", result.Status)
+	}
+	if result.OutputArtifact == nil || result.OutputArtifact.SessionID != destSessionID {
+		t.Fatalf("expected output artifact attached to destination session, got: %+v", result.OutputArtifact)
+	}
+	if len(artAuth.createInputs) != 1 || artAuth.createInputs[0].VideoProjectID != destProjectID || artAuth.createInputs[0].VideoRevisionID != destRevID {
+		t.Fatalf("artifact authority input lineage mismatch: %+v", artAuth.createInputs)
+	}
+}
+
+// Purpose: Verify that RenderJob on an already-created dangling fork (without destination proposal)
+// recovers authority through authenticated exact-source lineage and exact-timeline match.
+// Invariant: Existing dangling forks must remain renderable without mutating immutable revisions
+// or losing strict source authentication.
+// Authority: Service.RenderJob, pebblestore.ResolveAuthoritativeVideoPlan.
+func TestRenderJobDanglingForkRecoversViaSourceLineageAndRenders(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_dangle", UserID: "usr_dangle"}
+	const sourceSessionID, sourceProjectID, sourceRevID = "sess_dangle_src", "vproj_dangle_src", "vrev_dangle_src"
+	const destSessionID, destProjectID, destRevID, destJobID = "sess_dangle_dest", "vproj_dangle_dest", "vrev_dangle_dest", "vjob_dangle_dest"
+
+	store := newFakeSessionStore()
+	store.sessions[sourceSessionID] = pebblestore.SessionSnapshot{ID: sourceSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+	store.sessions[destSessionID] = pebblestore.SessionSnapshot{ID: destSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+
+	plan := pebblestore.VideoPlanProposal{
+		Kind:  pebblestore.VideoPlanKindInitial,
+		Parts: []pebblestore.VideoPlanPart{{ID: "c1", Title: "Hook", DurationMs: 1000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1}, VisualMediaType: "image/png"}},
+	}
+	timeline := pebblestore.VideoProjectTimeline{
+		Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+		Metadata: map[string]any{
+			"accepted_video_plan":             plan,
+			"accepted_video_plan_proposal_id": "vprop_source_only",
+		},
+	}
+
+	// Source project, revision, and accepted proposal
+	store.projects[sourceProjectID] = pebblestore.VideoProjectSnapshot{
+		ID:                sourceProjectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         sourceSessionID,
+		Title:             "Source Video",
+		CurrentRevisionID: sourceRevID,
+	}
+	store.revisions[sourceRevID] = pebblestore.VideoProjectRevisionSnapshot{
+		ID:             sourceRevID,
+		ProjectID:      sourceProjectID,
+		RevisionNumber: 1,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      sourceSessionID,
+		Timeline:       timeline,
+	}
+	store.proposals["vprop_source_only"] = pebblestore.VideoEditProposalSnapshot{
+		ID:                "vprop_source_only",
+		ProjectID:         sourceProjectID,
+		SessionID:         sourceSessionID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		Status:            pebblestore.VideoEditProposalStatusAccepted,
+		Plan:              &plan,
+		WorkingRevisionID: sourceRevID,
+	}
+
+	// Destination project has lineage metadata pointing to source, but NO proposal in destination
+	store.projects[destProjectID] = pebblestore.VideoProjectSnapshot{
+		ID:                destProjectID,
+		AccountScopeID:    principal.AccountScopeID,
+		UserID:            principal.UserID,
+		SessionID:         destSessionID,
+		Title:             "Dangling Forked Video",
+		CurrentRevisionID: destRevID,
+		Metadata: map[string]any{
+			"source_session_id":  sourceSessionID,
+			"source_project_id":  sourceProjectID,
+			"source_revision_id": sourceRevID,
+		},
+	}
+	destRev := pebblestore.VideoProjectRevisionSnapshot{
+		ID:             destRevID,
+		ProjectID:      destProjectID,
+		RevisionNumber: 1,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      destSessionID,
+		Timeline:       timeline, // exact same cut
+	}
+	store.revisions[destRevID] = destRev
+
+	store.jobs[destJobID] = pebblestore.VideoRenderJobSnapshot{
+		ID:             destJobID,
+		ProjectID:      destProjectID,
+		RevisionID:     destRevID,
+		AccountScopeID: principal.AccountScopeID,
+		UserID:         principal.UserID,
+		SessionID:      destSessionID,
+		Status:         pebblestore.VideoRenderJobStatusQueued,
+	}
+
+	runner := &fakeCommandRunner{}
+	artAuth := &fakeArtifactAuthority{}
+	svc := NewService(Config{}, store, artAuth, nil, nil, runner)
+
+	result, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID:  destSessionID,
+		ProjectID:  destProjectID,
+		RevisionID: destRevID,
+		JobID:      destJobID,
+	})
+	if err != nil {
+		t.Fatalf("RenderJob on dangling fork failed: %v", err)
+	}
+	if result.Status != pebblestore.VideoRenderJobStatusReady {
+		t.Fatalf("expected job status ready, got: %s", result.Status)
+	}
+	if result.OutputArtifact == nil || result.OutputArtifact.SessionID != destSessionID {
+		t.Fatalf("expected output artifact attached to destination session, got: %+v", result.OutputArtifact)
+	}
+}
+
+// Purpose: Verify worker rejection of invalid dangling forks: diverged timeline cuts,
+// rejected source proposals, and cross-user foreign source projects.
+// Threat/regression: Prevent rendering untracked edits or unauthorized foreign authorities.
+// Authority: Service.RenderJob, pebblestore.ResolveAuthoritativeVideoPlan.
+func TestRenderJobDanglingForkSecurityRejections(t *testing.T) {
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc_rej", UserID: "usr_rej"}
+	const sourceSessionID, sourceProjectID, sourceRevID = "sess_rej_src", "vproj_rej_src", "vrev_rej_src"
+	const destSessionID, destProjectID = "sess_rej_dest", "vproj_rej_dest"
+
+	setupStore := func() (*fakeSessionStore, pebblestore.VideoProjectTimeline, pebblestore.VideoPlanProposal) {
+		s := newFakeSessionStore()
+		s.sessions[sourceSessionID] = pebblestore.SessionSnapshot{ID: sourceSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+		s.sessions[destSessionID] = pebblestore.SessionSnapshot{ID: destSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
+		plan := pebblestore.VideoPlanProposal{Kind: pebblestore.VideoPlanKindInitial, Parts: []pebblestore.VideoPlanPart{{ID: "c1", Title: "Hook", DurationMs: 1000, Visual: &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "v1", EventSeq: 1}, VisualMediaType: "image/png"}}}
+		tl := pebblestore.VideoProjectTimeline{
+			Clips: []pebblestore.VideoTimelineClip{{ID: "c1", SourceKind: pebblestore.VideoClipSourceKindColor, Name: "#000000", DurationMs: 1000, TimelineEndMs: 1000, Visible: true}},
+			Metadata: map[string]any{
+				"accepted_video_plan":             plan,
+				"accepted_video_plan_proposal_id": "vprop_rej_src",
+			},
+		}
+		s.projects[sourceProjectID] = pebblestore.VideoProjectSnapshot{
+			ID: sourceProjectID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sourceSessionID, CurrentRevisionID: sourceRevID,
+		}
+		s.revisions[sourceRevID] = pebblestore.VideoProjectRevisionSnapshot{
+			ID: sourceRevID, ProjectID: sourceProjectID, RevisionNumber: 1, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: sourceSessionID, Timeline: tl,
+		}
+		s.proposals["vprop_rej_src"] = pebblestore.VideoEditProposalSnapshot{
+			ID: "vprop_rej_src", ProjectID: sourceProjectID, SessionID: sourceSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, Status: pebblestore.VideoEditProposalStatusAccepted, Plan: &plan, WorkingRevisionID: sourceRevID,
+		}
+		s.projects[destProjectID] = pebblestore.VideoProjectSnapshot{
+			ID: destProjectID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, CurrentRevisionID: "vrev_rej_dest",
+			Metadata: map[string]any{
+				"source_session_id": sourceSessionID, "source_project_id": sourceProjectID, "source_revision_id": sourceRevID,
+			},
+		}
+		return s, tl, plan
+	}
+
+	// 1. Diverged timeline cut rejected
+	store, tl, _ := setupStore()
+	divergedTL := tl
+	divergedTL.Clips = append([]pebblestore.VideoTimelineClip(nil), tl.Clips...)
+	divergedTL.Clips[0].DurationMs = 5000
+	divergedTL.Clips[0].TimelineEndMs = 5000
+	store.revisions["vrev_rej_dest"] = pebblestore.VideoProjectRevisionSnapshot{
+		ID: "vrev_rej_dest", ProjectID: destProjectID, RevisionNumber: 1, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, Timeline: divergedTL,
+	}
+	store.jobs["vjob_diverged"] = pebblestore.VideoRenderJobSnapshot{
+		ID: "vjob_diverged", ProjectID: destProjectID, RevisionID: "vrev_rej_dest", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, Status: pebblestore.VideoRenderJobStatusQueued,
+	}
+	svc := NewService(Config{}, store, &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+	_, err := svc.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID: destSessionID, ProjectID: destProjectID, RevisionID: "vrev_rej_dest", JobID: "vjob_diverged",
+	})
+	if err == nil || !strings.Contains(err.Error(), "timeline does not match exact source revision") {
+		t.Fatalf("expected diverged timeline rejection, got: %v", err)
+	}
+	if store.jobs["vjob_diverged"].Status != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job state mutated after failure: %s", store.jobs["vjob_diverged"].Status)
+	}
+
+	// 2. Rejected source proposal rejected
+	store2, _, _ := setupStore()
+	store2.revisions["vrev_rej_dest"] = pebblestore.VideoProjectRevisionSnapshot{
+		ID: "vrev_rej_dest", ProjectID: destProjectID, RevisionNumber: 1, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, Timeline: tl,
+	}
+	store2.jobs["vjob_rej_prop"] = pebblestore.VideoRenderJobSnapshot{
+		ID: "vjob_rej_prop", ProjectID: destProjectID, RevisionID: "vrev_rej_dest", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, Status: pebblestore.VideoRenderJobStatusQueued,
+	}
+	srcProp := store2.proposals["vprop_rej_src"]
+	srcProp.Status = pebblestore.VideoEditProposalStatusRejected
+	store2.proposals["vprop_rej_src"] = srcProp
+	svc2 := NewService(Config{}, store2, &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+	_, err = svc2.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID: destSessionID, ProjectID: destProjectID, RevisionID: "vrev_rej_dest", JobID: "vjob_rej_prop",
+	})
+	if err == nil || !strings.Contains(err.Error(), "rejected") {
+		t.Fatalf("expected rejected proposal rejection, got: %v", err)
+	}
+	if store2.jobs["vjob_rej_prop"].Status != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job state mutated after failure: %s", store2.jobs["vjob_rej_prop"].Status)
+	}
+
+	// 3. Cross-user source project rejected
+	store3, _, _ := setupStore()
+	store3.revisions["vrev_rej_dest"] = pebblestore.VideoProjectRevisionSnapshot{
+		ID: "vrev_rej_dest", ProjectID: destProjectID, RevisionNumber: 1, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, Timeline: tl,
+	}
+	store3.jobs["vjob_cross_user"] = pebblestore.VideoRenderJobSnapshot{
+		ID: "vjob_cross_user", ProjectID: destProjectID, RevisionID: "vrev_rej_dest", AccountScopeID: principal.AccountScopeID, UserID: principal.UserID, SessionID: destSessionID, Status: pebblestore.VideoRenderJobStatusQueued,
+	}
+	srcProj := store3.projects[sourceProjectID]
+	srcProj.UserID = "other_user"
+	store3.projects[sourceProjectID] = srcProj
+	svc3 := NewService(Config{}, store3, &fakeArtifactAuthority{}, nil, nil, &fakeCommandRunner{})
+	_, err = svc3.RenderJob(context.Background(), principal, RenderJobRequest{
+		SessionID: destSessionID, ProjectID: destProjectID, RevisionID: "vrev_rej_dest", JobID: "vjob_cross_user",
+	})
+	if err == nil || !strings.Contains(err.Error(), "ownership does not match") {
+		t.Fatalf("expected cross-user source project rejection, got: %v", err)
+	}
+	if store3.jobs["vjob_cross_user"].Status != pebblestore.VideoRenderJobStatusQueued {
+		t.Fatalf("job state mutated after failure: %s", store3.jobs["vjob_cross_user"].Status)
+	}
+}

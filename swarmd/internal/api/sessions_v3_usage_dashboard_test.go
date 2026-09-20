@@ -91,48 +91,57 @@ func TestSessionsV3UsageDashboard(t *testing.T) {
 		t.Fatalf("record anthropic turn: %v", err)
 	}
 
-	// 4. Record media artifact variants
-	mediaVariants := []pebblestore.SessionArtifactVariant{
+	// 4. Record media usage
+	mediaRecords := []pebblestore.SessionMediaUsageRecord{
 		{
-			Version:        1,
 			ID:             "media-img-1",
 			SessionID:      sessionID,
 			AccountScopeID: testPrincipal().AccountScopeID,
-			Status:         pebblestore.SessionArtifactStatusReady,
 			MediaType:      "image/png",
+			Kind:           "image",
+			Provider:       "google",
+			Model:          "imagen-3.0",
 			Filename:       "hero-banner.png",
 			Size:           102400,
+			CostUSD:        0.04,
+			PriceStatus:    "known",
+			PricingSummary: "$0.04 per image (snapshot snap-1)",
 			CreatedAt:      now - 4000,
-			UpdatedAt:      now - 4000,
 		},
 		{
-			Version:        1,
 			ID:             "media-vid-1",
 			SessionID:      sessionID,
 			AccountScopeID: testPrincipal().AccountScopeID,
-			Status:         pebblestore.SessionArtifactStatusReady,
 			MediaType:      "video/mp4",
+			Kind:           "video",
+			Provider:       "google",
+			Model:          "veo-2.0",
 			Filename:       "feature-teaser.mp4",
 			Size:           2048000,
+			CostUSD:        1.20,
+			PriceStatus:    "known",
+			PricingSummary: "$1.20 per video (snapshot snap-1)",
 			CreatedAt:      now - 2000,
-			UpdatedAt:      now - 2000,
 		},
 		{
-			Version:        1,
 			ID:             "media-aud-1",
 			SessionID:      sessionID,
 			AccountScopeID: testPrincipal().AccountScopeID,
-			Status:         pebblestore.SessionArtifactStatusReady,
 			MediaType:      "audio/mp3",
+			Kind:           "audio",
+			Provider:       "google",
+			Model:          "lyria-3.5",
 			Filename:       "background-music.mp3",
 			Size:           512000,
+			CostUSD:        0.08,
+			PriceStatus:    "known",
+			PricingSummary: "$0.08 per audio (snapshot snap-1)",
 			CreatedAt:      now - 1000,
-			UpdatedAt:      now - 1000,
 		},
 	}
-	for _, v := range mediaVariants {
-		if err := sessionSvc.Store().PutArtifactVariant(v); err != nil {
-			t.Fatalf("put media variant: %v", err)
+	for _, m := range mediaRecords {
+		if err := sessionSvc.RecordMediaUsage(m); err != nil {
+			t.Fatalf("record media usage: %v", err)
 		}
 	}
 
@@ -338,6 +347,10 @@ func TestCalculateTurnCostFormulas(t *testing.T) {
 	}
 }
 
+// Requirement: handleSessionsV3Usage must count and list only sessions with matching
+// period rollups, including archived sessions, without importing lifetime summaries.
+// This API/store fixture is the narrowest layer exercising archive metadata and
+// the historical-only fallback regression together.
 func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	now := time.Now().UTC().UnixMilli()
@@ -438,11 +451,11 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 		t.Fatalf("unmarshal respAll: %v", err)
 	}
 
-	if respAll.Summary.TotalSessions != 52 {
-		t.Fatalf("expected 52 total sessions, got %d", respAll.Summary.TotalSessions)
+	if respAll.Summary.TotalSessions != 2 {
+		t.Fatalf("expected 2 participating sessions, got %d", respAll.Summary.TotalSessions)
 	}
-	if respAll.Summary.ActiveSessions != 51 {
-		t.Fatalf("expected 51 active sessions, got %d", respAll.Summary.ActiveSessions)
+	if respAll.Summary.ActiveSessions != 1 {
+		t.Fatalf("expected 1 participating active session, got %d", respAll.Summary.ActiveSessions)
 	}
 	if respAll.Summary.ArchivedSessions != 1 {
 		t.Fatalf("expected 1 archived session, got %d", respAll.Summary.ArchivedSessions)
@@ -565,28 +578,116 @@ func TestSessionsV3UsageDashboard_ArchivedSessionsAndOptimization(t *testing.T) 
 	if err := json.Unmarshal(wArchived2.Body.Bytes(), &respArchived2); err != nil {
 		t.Fatalf("unmarshal respArchived2: %v", err)
 	}
-	if len(respArchived2.RecentSessions) != 2 {
-		t.Fatalf("expected 2 archived sessions with archived_mode=only, got %d", len(respArchived2.RecentSessions))
+	if len(respArchived2.RecentSessions) != 1 || respArchived2.Summary.TotalSessions != 1 {
+		t.Fatalf("expected only the archived session with period usage, got %+v", respArchived2)
 	}
-	foundLegacy := false
-	for _, s := range respArchived2.RecentSessions {
-		if s.SessionID == legacyArchivedID {
-			foundLegacy = true
-			if !s.Archived {
-				t.Fatalf("expected session %s to be marked archived", legacyArchivedID)
-			}
-			if s.Title != "Historical Deep Analysis" {
-				t.Fatalf("expected title 'Historical Deep Analysis', got %q", s.Title)
-			}
-			if s.TotalTokens != 75000 {
-				t.Fatalf("expected 75000 total tokens from lifetime summary, got %d", s.TotalTokens)
-			}
-			if s.TurnCount != 10 {
-				t.Fatalf("expected 10 turns from lifetime summary, got %d", s.TurnCount)
-			}
-		}
+	if respArchived2.RecentSessions[0].SessionID != archivedID {
+		t.Fatalf("lifetime-only session leaked into period rows: %+v", respArchived2.RecentSessions)
 	}
-	if !foundLegacy {
-		t.Fatalf("expected legacy archived session %s in response", legacyArchivedID)
+	if respArchived2.Summary.TotalTokens != respArchived.Summary.TotalTokens || respArchived2.Summary.TotalCostUSD != respArchived.Summary.TotalCostUSD {
+		t.Fatal("lifetime-only session changed period totals")
+	}
+}
+
+// TestAnalyticsReadsPersistedAccountingReadOnly verifies that handleSessionsV3Usage reads
+// already-persisted accounting totals and media usage records directly without mutating
+// daily usage accumulators, creating phantom records, or re-pricing models on GET.
+// Production authority: Server.handleSessionsV3Usage, SessionStore.ListMediaUsage.
+func TestAnalyticsReadsPersistedAccountingReadOnly(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	now := time.Now().UTC().UnixMilli()
+	today := time.Now().UTC().Format("2006-01-02")
+	acctID := testPrincipal().AccountScopeID
+
+	sessionID := "sess_analytics_readonly_test"
+	_, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      sessionID,
+		Title:          "Readonly Accounting Verification",
+		AccountScopeID: acctID,
+		UserID:         testPrincipal().UserID,
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "test-ws",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// 1. Record a turn with exact persisted cost
+	_, _, _, err = sessionSvc.RecordTurnUsage(sessionID, pebblestore.SessionTurnUsageSnapshot{
+		SessionID:        sessionID,
+		AccountScopeID:   acctID,
+		UserID:           testPrincipal().UserID,
+		RunID:            "run-ro-1",
+		Provider:         "google",
+		Model:            "gemini-3.8-flash",
+		Source:           "google_api_usage",
+		InputTokens:      50000,
+		OutputTokens:     1000,
+		TotalTokens:      51000,
+		BilledTokens:     51000,
+		EstimatedCostUSD: 0.04125,
+		CreatedAt:        now - 2000,
+		UpdatedAt:        now - 2000,
+	})
+	if err != nil {
+		t.Fatalf("record turn: %v", err)
+	}
+
+	// 2. Record media usage via PutMediaUsage
+	if err := sessionSvc.RecordMediaUsage(pebblestore.SessionMediaUsageRecord{
+		ID:             "media-ro-img-1",
+		SessionID:      sessionID,
+		AccountScopeID: acctID,
+		MediaType:      "image/png",
+		Kind:           "image",
+		Provider:       "google",
+		Model:          "imagen-3.0",
+		Filename:       "generated-hero.png",
+		Label:          "Generated hero image",
+		Size:           54321,
+		CostUSD:        0.04,
+		CreatedAt:      now - 1000,
+	}); err != nil {
+		t.Fatalf("record media: %v", err)
+	}
+
+	// Capture daily accumulator before GET
+	accBefore, ok, err := sessionSvc.Store().GetDailyUsageAccumulator(acctID, today)
+	if err != nil || !ok {
+		t.Fatalf("get daily accumulator before: ok=%v err=%v", ok, err)
+	}
+
+	// 3. Make GET /v3/usage call
+	req := httptest.NewRequest(http.MethodGet, "/v3/usage?time_range=today", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, withTestPrincipal(req))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp SessionUsageDashboardResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+
+	// Verify exact persisted cost was read without repricing (turn cost 0.04125, media cost 0.04)
+	expectedTotalCost := 0.04125 + 0.04
+	if resp.Summary.TotalCostUSD < expectedTotalCost-0.00001 || resp.Summary.TotalCostUSD > expectedTotalCost+0.00001 {
+		t.Fatalf("expected total cost %f, got %f", expectedTotalCost, resp.Summary.TotalCostUSD)
+	}
+	if resp.Summary.MediaCostUSD != 0.04 {
+		t.Fatalf("expected media cost 0.04, got %f", resp.Summary.MediaCostUSD)
+	}
+	if resp.Summary.TotalMediaCalls != 1 {
+		t.Fatalf("expected 1 media call, got %d", resp.Summary.TotalMediaCalls)
+	}
+
+	// Verify daily accumulator was NOT mutated by page visit (read-only guarantee)
+	accAfter, ok, err := sessionSvc.Store().GetDailyUsageAccumulator(acctID, today)
+	if err != nil || !ok {
+		t.Fatalf("get daily accumulator after: ok=%v err=%v", ok, err)
+	}
+	if accBefore.TotalCostUSD != accAfter.TotalCostUSD || accBefore.TotalTokens != accAfter.TotalTokens || accBefore.TurnCount != accAfter.TurnCount {
+		t.Fatalf("daily accumulator was mutated on GET: before=%+v after=%+v", accBefore, accAfter)
 	}
 }

@@ -97,10 +97,12 @@ func newPlanTestService(t *testing.T) (*Service, func()) {
 func createPlanTestSession(t *testing.T, svc *Service) string {
 	t.Helper()
 	snapshot, _, err := svc.CreateSessionWithOptions(CreateSessionOptions{
-		SessionID:     "session-plan-test",
-		Title:         "Plan Test",
-		WorkspacePath: t.TempDir(),
-		WorkspaceName: "workspace",
+		SessionID:      "session-plan-test",
+		Title:          "Plan Test",
+		WorkspacePath:  t.TempDir(),
+		WorkspaceName:  "workspace",
+		UserID:         "user-plan-test",
+		AccountScopeID: "account-plan-test",
 		Preference: &pebblestore.ModelPreference{
 			Provider: "codex",
 			Model:    "gpt-5.4",

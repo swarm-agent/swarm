@@ -60,6 +60,34 @@ func Open(ctx context.Context, root, repositoryID string, limits Limits) (*Repos
 	return r, nil
 }
 
+// OpenExisting opens retained bytes without creating storage or changing modes.
+// Imports must not recreate a missing source repository, even on a failed read.
+func OpenExisting(ctx context.Context, root, repositoryID string, limits Limits) (*Repository, error) {
+	if !idPattern.MatchString(repositoryID) || repositoryID == "." || repositoryID == ".." {
+		return nil, invalid("repository id")
+	}
+	path := filepath.Join(root, repositoryID+".git")
+	for _, p := range []string{root, path} {
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, ErrIntegrity
+		}
+	}
+	git, err := lookPath("git")
+	if err != nil {
+		return nil, err
+	}
+	r := &Repository{root: root, path: path, hooks: filepath.Join(root, ".empty-hooks"), git: git, id: repositoryID, limits: limits.normalized()}
+	bare, err := r.gitCmd(ctx, nil, "rev-parse", "--is-bare-repository")
+	if err != nil || strings.TrimSpace(string(bare)) != "true" {
+		return nil, ErrIntegrity
+	}
+	return r, nil
+}
+
 func ensurePrivate(path string, directory bool) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -83,21 +111,52 @@ func (r *Repository) env() []string {
 	return append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_AUTHOR_NAME=Swarm Artifact", "GIT_AUTHOR_EMAIL=artifact@swarm.invalid", "GIT_COMMITTER_NAME=Swarm Artifact", "GIT_COMMITTER_EMAIL=artifact@swarm.invalid", "GIT_AUTHOR_DATE=2000-01-01T00:00:00Z", "GIT_COMMITTER_DATE=2000-01-01T00:00:00Z")
 }
 
+type boundedGitOutput struct {
+	buffer   bytes.Buffer
+	limit    int64
+	cancel   context.CancelFunc
+	exceeded bool
+}
+
+func (b *boundedGitOutput) Write(p []byte) (int, error) {
+	if int64(len(p)) > b.limit-int64(b.buffer.Len()) {
+		b.exceeded = true
+		b.cancel()
+		return 0, ErrQuotaExceeded
+	}
+	return b.buffer.Write(p)
+}
+
 func (r *Repository) raw(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	return r.rawBounded(ctx, input, 4<<20, args...)
+}
+
+func (r *Repository) rawBounded(ctx context.Context, input []byte, limit int64, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, r.git, args...)
 	cmd.Env = r.env()
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)
 	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("artifactgit: git %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	out := &boundedGitOutput{limit: limit, cancel: cancel}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	if out.exceeded {
+		return nil, ErrQuotaExceeded
 	}
-	return out, nil
+	if err != nil {
+		return nil, fmt.Errorf("artifactgit: git %s: %w: %s", args[0], err, strings.TrimSpace(out.buffer.String()))
+	}
+	return out.buffer.Bytes(), nil
 }
 func (r *Repository) gitCmd(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	return r.gitCmdBounded(ctx, input, 4<<20, args...)
+}
+
+func (r *Repository) gitCmdBounded(ctx context.Context, input []byte, limit int64, args ...string) ([]byte, error) {
 	base := []string{"--git-dir=" + r.path, "-c", "core.hooksPath=" + r.hooks, "-c", "core.attributesFile=" + os.DevNull, "-c", "commit.gpgSign=false", "-c", "tag.gpgSign=false", "-c", "protocol.file.allow=never", "-c", "protocol.allow=never"}
-	return r.raw(ctx, input, append(base, args...)...)
+	return r.rawBounded(ctx, input, limit, append(base, args...)...)
 }
 
 func (r *Repository) Genesis(ctx context.Context, value Genesis) (string, error) {
@@ -160,6 +219,7 @@ func (r *Repository) manifestFromGenesis(ctx context.Context, g Genesis) (Manife
 		if err != nil {
 			return m, err
 		}
+		p.Locked = g.LockedParts[id]
 		m.Parts = append(m.Parts, p)
 	}
 	if m.Content == nil && len(m.Parts) == 0 {
@@ -354,7 +414,7 @@ func (r *Repository) ReadBlob(ctx context.Context, commit, partID string) ([]byt
 	if !ok {
 		return nil, ErrNotFound
 	}
-	out, err := r.gitCmd(ctx, nil, "cat-file", "blob", p.Blob)
+	out, err := r.gitCmdBounded(ctx, nil, p.Size, "cat-file", "blob", p.Blob)
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,17 @@ import (
 	"swarm/packages/swarmd/internal/workspace"
 )
 
+func initWorkspaceGitFixture(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("initialize fixture: %v: %s", err, output)
+		}
+	}
+}
+
 func TestManageVideoDefinitionExposesOnlyOpaqueReferences(t *testing.T) {
 	raw, err := json.Marshal(manageVideoDefinition().Parameters)
 	if err != nil {
@@ -102,8 +113,21 @@ func TestManageVideoHelpAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("help action failed: %v", err)
 	}
-	if !strings.Contains(output, "Video Studio") {
-		t.Fatalf("help output missing video studio guidance: %s", output)
+	for _, expected := range []string{
+		"Video Studio",
+		"completely different from generating a single AI video",
+		"propose_plan",
+		"create_project",
+		"create_edit_proposal",
+		"convert_artifact_v3",
+		"initial_timeline",
+		"source_audio",
+		"source_start_ms",
+		"source_end_ms",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("help output missing %q: %s", expected, output)
+		}
 	}
 }
 
@@ -211,13 +235,7 @@ func TestManageVideoListsRegisteredSourcesWithoutTriggerAttachment(t *testing.T)
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
 	// Source discovery requires a committed workspace; media remains separately registered.
-	for _, args := range [][]string{{"init", "--quiet"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"}} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = workspacePath
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("initialize fixture: %v: %s", err, output)
-		}
-	}
+	initWorkspaceGitFixture(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
@@ -606,6 +624,7 @@ func TestManageVideoProjectLifecycle(t *testing.T) {
 	}
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "session-1", UserID: "user-1", AccountScopeID: "account-1"}
 	workspacePath := t.TempDir()
+	initWorkspaceGitFixture(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	if _, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false); err != nil {
 		t.Fatal(err)
@@ -853,6 +872,85 @@ func TestManageVideoChildSessionUsesParentVideoProject(t *testing.T) {
 	}
 }
 
+func TestManageVideoDeployedSessionDoesNotHijackParentVideoProject(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-deploy.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "deployed", UserID: "user-1", AccountScopeID: "account-1"}
+	sessionStore := pebblestore.NewSessionStore(store)
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "parent", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"lineage_kind": "video_project"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionStore.CreateSession(pebblestore.SessionSnapshot{ID: "deployed", UserID: "user-1", AccountScopeID: "account-1", WorkspacePath: "/ws", Mode: "auto", Metadata: map[string]any{"parent_session_id": "parent", "lineage_kind": "session_deploy"}}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	runtime.sessions = sessionruntime.NewService(sessionStore, events)
+	runtime.videoProjects = videoproject.NewService(sessionStore)
+	ctx := WithVideoRunContext(context.Background(), VideoRunContext{SessionID: "deployed", RunID: "run-deploy-1"})
+	scope := WorkspaceScope{SessionID: "deployed", Principal: principal}
+	payload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-create", Name: "manage_video", Arguments: `{"action":"create_project","title":"Deployed Video"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Project struct {
+			ID        string `json:"id"`
+			SessionID string `json:"session_id"`
+		} `json:"project"`
+		Revision struct {
+			ID string `json:"revision_id"`
+		} `json:"revision"`
+		RevisionID string `json:"revision_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &response); err != nil || response.Project.SessionID != "deployed" {
+		t.Fatalf("deployed project must belong to deployed session, payload=%s err=%v", payload, err)
+	}
+
+	// Submit an edit proposal to verify upgrade occurs on the deployed session, not the parent
+	propArgs, _ := json.Marshal(map[string]any{
+		"action":           "create_edit_proposal",
+		"project_id":       response.Project.ID,
+		"base_revision_id": response.RevisionID,
+		"title":            "Add intro",
+		"operations": []map[string]any{{
+			"id":   "clip-1",
+			"type": "add_clip",
+			"clip": map[string]any{
+				"id":                "intro",
+				"track":             0,
+				"sequence":          0,
+				"source_kind":       "color",
+				"duration_ms":       1000,
+				"timeline_start_ms": 0,
+				"timeline_end_ms":   1000,
+				"visible":           true,
+			},
+		}},
+	})
+	propPayload, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "call-prop", Name: "manage_video", Arguments: string(propArgs)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(propPayload, `"session_upgraded_to_video_studio":true`) {
+		t.Fatalf("expected deployed session to be upgraded to video studio, got: %s", propPayload)
+	}
+
+	upgraded, ok, err := sessionStore.GetSession("deployed")
+	if err != nil || !ok {
+		t.Fatalf("deployed session not found: ok=%v err=%v", ok, err)
+	}
+	if upgraded.Metadata["lineage_kind"] != "video_project" || upgraded.Metadata["experience"] != "video_studio" || upgraded.Metadata["video_project_id"] != response.Project.ID {
+		t.Fatalf("deployed session metadata not properly upgraded: %+v", upgraded.Metadata)
+	}
+}
+
 func TestManageVideoStudioCreatesAdditionalProjectWithExplicitID(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "manage-video-multiple-projects.pebble"))
 	if err != nil {
@@ -899,6 +997,7 @@ func TestManageVideoStudioInitialTimelineCreatesDistinctProjectAndPreservesInput
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, SessionID: "studio", UserID: "user-1", AccountScopeID: "account-1"}
 	workspacePath, mediaPath := t.TempDir(), t.TempDir()
+	initWorkspaceGitFixture(t, workspacePath)
 	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(store))
 	workspaceResolution, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false)
 	if err != nil {

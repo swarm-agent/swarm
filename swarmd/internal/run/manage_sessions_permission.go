@@ -54,6 +54,30 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 	}
 
 	ids := manageSessionsPermissionIDs(args)
+	if len(ids) == 0 && action == "archive" && (mapBool(args, "all") || strings.TrimSpace(mapString(args, "category")) != "") {
+		categoryFilter := strings.ToLower(strings.TrimSpace(mapString(args, "category")))
+		searchOpts := pebblestore.V3SessionSearchOptions{
+			AccountScopeID: owner.AccountScopeID,
+			UserID:         owner.UserID,
+			Global:         true,
+			ArchivedMode:   "exclude",
+			Limit:          50,
+		}
+		if result, searchErr := s.sessions.SearchSessions(searchOpts); searchErr == nil {
+			for _, item := range result.Items {
+				if item.ID == sessionID {
+					continue
+				}
+				if categoryFilter != "" && categoryFilter != "all" {
+					cat := tool.ManageSessionSidebarCategory(item.Archived, item.Metadata, item.Attention, manageSessionsPermissionState(item.Lifecycle))
+					if cat != categoryFilter {
+						continue
+					}
+				}
+				ids = append(ids, item.ID)
+			}
+		}
+	}
 	facts := make([]any, 0, len(ids))
 	expectedVersions := make(map[string]any, len(ids))
 	for _, id := range ids {
@@ -73,7 +97,7 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 			target = tombstone.Session
 			mutationVersion = tombstone.UpdatedAt
 		}
-		if target.AccountScopeID != owner.AccountScopeID || target.UserID != owner.UserID {
+		if target.AccountScopeID != owner.AccountScopeID || (owner.UserID != "" && target.UserID != "" && target.UserID != owner.UserID) {
 			return nil, fmt.Errorf("session not found")
 		}
 		if action == "archive" && !found {

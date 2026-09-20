@@ -99,7 +99,9 @@ func mergeSnapshotTokenUsage(acc, next provideriface.TokenUsage) provideriface.T
 	acc.CacheWriteTokens = next.CacheWriteTokens
 	acc.TotalTokens = next.TotalTokens
 	acc.ServiceTier = strings.ToLower(strings.TrimSpace(next.ServiceTier))
-	acc.EstimatedCostUSD = next.EstimatedCostUSD
+	if next.EstimatedCostUSD > 0 {
+		acc.EstimatedCostUSD = next.EstimatedCostUSD
+	}
 	if strings.TrimSpace(next.Source) != "" {
 		acc.Source = strings.TrimSpace(next.Source)
 	}
@@ -194,7 +196,7 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 	}
 }
 
-func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
+func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, modelName string, contextWindow, stepsCompleted int, usage provideriface.TokenUsage, principal identity.Principal, apply func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), billedTokens ...int64) (pebblestore.SessionTurnUsageSnapshot, pebblestore.SessionUsageSummary, *pebblestore.EventEnvelope, error) {
 	if s == nil || s.sessions == nil {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("session service is not configured")
 	}
@@ -202,27 +204,67 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 	if providerID == "" {
 		return pebblestore.SessionTurnUsageSnapshot{}, pebblestore.SessionUsageSummary{}, nil, errors.New("provider id is required")
 	}
+	var cumulativeBilled int64 = usage.TotalTokens
+	var cumulativeBilledInput int64 = usage.InputTokens
+	var cumulativeBilledOutput int64 = usage.OutputTokens
+	var cumulativeBilledCacheRead int64 = usage.CacheReadTokens
+	var cumulativeBilledCacheWrite int64 = usage.CacheWriteTokens
+	var cumulativeBilledThinking int64 = usage.ThinkingTokens
+	if len(billedTokens) > 0 && billedTokens[0] > 0 {
+		cumulativeBilled = billedTokens[0]
+	}
+	if len(billedTokens) > 1 && billedTokens[1] > 0 {
+		cumulativeBilledInput = billedTokens[1]
+	}
+	if len(billedTokens) > 2 && billedTokens[2] > 0 {
+		cumulativeBilledOutput = billedTokens[2]
+	}
+	if len(billedTokens) > 3 && billedTokens[3] > 0 {
+		cumulativeBilledCacheRead = billedTokens[3]
+	}
+	if len(billedTokens) > 4 && billedTokens[4] > 0 {
+		cumulativeBilledCacheWrite = billedTokens[4]
+	}
+	if len(billedTokens) > 5 && billedTokens[5] > 0 {
+		cumulativeBilledThinking = billedTokens[5]
+	}
 	turnUsage := pebblestore.SessionTurnUsageSnapshot{
-		RunID:            runID,
-		Provider:         providerID,
-		Model:            modelName,
-		Source:           normalizeUsageSource(usage.Source),
-		Transport:        strings.ToLower(strings.TrimSpace(usage.Transport)),
-		ConnectedViaWS:   cloneBoolPointer(usage.ConnectedViaWS),
-		APIUsageRaw:      cloneGenericMap(usage.APIUsageRaw),
-		APIUsageRawPath:  strings.TrimSpace(usage.APIUsageRawPath),
-		APIUsageHistory:  cloneUsageHistory(usage.APIUsageHistory),
-		APIUsagePaths:    cloneUsagePaths(usage.APIUsagePaths),
-		ContextWindow:    contextWindow,
-		Steps:            stepsCompleted,
-		InputTokens:      usage.InputTokens,
-		OutputTokens:     usage.OutputTokens,
-		ThinkingTokens:   usage.ThinkingTokens,
-		CacheReadTokens:  usage.CacheReadTokens,
-		CacheWriteTokens: usage.CacheWriteTokens,
-		TotalTokens:      usage.TotalTokens,
-		ServiceTier:      strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
-		EstimatedCostUSD: usage.EstimatedCostUSD,
+		RunID:                  runID,
+		Provider:               providerID,
+		Model:                  modelName,
+		Source:                 normalizeUsageSource(usage.Source),
+		Transport:              strings.ToLower(strings.TrimSpace(usage.Transport)),
+		ConnectedViaWS:         cloneBoolPointer(usage.ConnectedViaWS),
+		APIUsageRaw:            cloneGenericMap(usage.APIUsageRaw),
+		APIUsageRawPath:        strings.TrimSpace(usage.APIUsageRawPath),
+		APIUsageHistory:        cloneUsageHistory(usage.APIUsageHistory),
+		APIUsagePaths:          cloneUsagePaths(usage.APIUsagePaths),
+		ContextWindow:          contextWindow,
+		Steps:                  stepsCompleted,
+		InputTokens:            usage.InputTokens,
+		OutputTokens:           usage.OutputTokens,
+		ThinkingTokens:         usage.ThinkingTokens,
+		CacheReadTokens:        usage.CacheReadTokens,
+		CacheWriteTokens:       usage.CacheWriteTokens,
+		TotalTokens:            usage.TotalTokens,
+		BilledTokens:           cumulativeBilled,
+		BilledInputTokens:      cumulativeBilledInput,
+		BilledOutputTokens:     cumulativeBilledOutput,
+		BilledCacheReadTokens:  cumulativeBilledCacheRead,
+		BilledCacheWriteTokens: cumulativeBilledCacheWrite,
+		BilledThinkingTokens:   cumulativeBilledThinking,
+		ServiceTier:            strings.ToLower(strings.TrimSpace(usage.ServiceTier)),
+		EstimatedCostUSD:       usage.EstimatedCostUSD,
+	}
+	if s.sessions != nil && s.sessions.Store() != nil {
+		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
+			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.EstimatedCostUSD = cost
+			turnUsage.PriceStatus = status
+		} else if turnUsage.PriceStatus == "" {
+			_, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.PriceStatus = status
+		}
 	}
 	if apply == nil {
 		return s.sessions.RecordTurnUsage(sessionID, turnUsage)

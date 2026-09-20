@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Image,
   Info,
+  Music,
   Sparkles,
   Video,
 } from 'lucide-react'
@@ -26,11 +27,13 @@ import { listWorkspaces } from '../../../../workspaces/launcher/queries/list-wor
 import type { WorkspaceBrowseResult } from '../../../../workspaces/launcher/types/workspace'
 import { resolveWorkspaceBySlug } from '../../../../workspaces/launcher/services/workspace-route'
 import { browseDesktopVideoSource, DESKTOP_VIDEO_ATTACHMENT_MAX_COUNT } from '../../../chat/services/video-source-attachments'
+import { saveAudioDefaultModel } from '../../swarm/mutations/save-audio-models'
 import { saveImageDefaultModel } from '../../swarm/mutations/save-image-default-model'
 import { saveMediaTranscriptionModel } from '../../swarm/mutations/save-media-transcription-model'
 import { saveVideoDefaultModel, saveVideoIterationModel } from '../../swarm/mutations/save-video-models'
 import { getUISettings } from '../../swarm/queries/get-ui-settings'
 import {
+  normalizeAudioDefaultModel,
   normalizeImageDefaultModel,
   normalizeMediaTranscriptionModel,
   normalizeVideoDefaultModel,
@@ -463,6 +466,10 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
     mutationFn: (iterationModel: string) => saveVideoIterationModel({ current: settingsQuery.data ?? {}, iterationModel }),
     onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
   })
+  const audioDefaultSave = useMutation({
+    mutationFn: (defaultModel: string) => saveAudioDefaultModel({ current: settingsQuery.data ?? {}, defaultModel }),
+    onSuccess: (settings) => queryClient.setQueryData<UISettingsWire>(uiSettingsQueryKey, settings),
+  })
   const addFolder = useMutation({
     mutationFn: (directoryPath: string) => addSourceMediaDirectory(workspacePath, directoryPath),
     onSuccess: (directories) => {
@@ -520,11 +527,13 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
   const transcriptionModels = catalogQuery.data?.transcription_models ?? []
   const videoGenerationModels = catalogQuery.data?.video_generation_models ?? catalogQuery.data?.video_models ?? []
   const videoIterationModels = catalogQuery.data?.video_iteration_models ?? []
+  const audioModels = catalogQuery.data?.audio_models ?? []
   const configuredImage = normalizeImageDefaultModel(settingsQuery.data)
   const configuredImageID = configuredImage === 'gpt-5.5' ? 'codex-image-gen' : configuredImage
   const configuredTranscription = normalizeMediaTranscriptionModel(settingsQuery.data)
   const configuredVideoDefault = normalizeVideoDefaultModel(settingsQuery.data)
   const configuredVideoIteration = normalizeVideoIterationModel(settingsQuery.data)
+  const configuredAudioDefault = normalizeAudioDefaultModel(settingsQuery.data)
   const selectedImage = imageModels.some((model) => model.id === configuredImageID) ? configuredImageID : ''
   const selectedTranscription = transcriptionModels.some((model) => model.id === configuredTranscription) ? configuredTranscription : ''
   const selectedVideoDefault = videoGenerationModels.some((model) => model.id === configuredVideoDefault)
@@ -533,11 +542,16 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
   const selectedVideoIteration = videoIterationModels.some((model) => model.id === configuredVideoIteration)
     ? configuredVideoIteration
     : videoIterationModels.find((model) => model.id === 'gemini-omni-1.1-flash')?.id ?? videoIterationModels[0]?.id ?? ''
+  const selectedAudioDefault = audioModels.some((model) => model.id === configuredAudioDefault)
+    ? configuredAudioDefault
+    : audioModels.find((model) => model.id === 'lyria-3.5' || model.id === 'lyria-3-clip-preview')?.id ?? audioModels[0]?.id ?? ''
   const selectedImageOption = imageModels.find((model) => model.id === selectedImage)
   const selectedTranscriptionOption = transcriptionModels.find((model) => model.id === selectedTranscription)
   const selectedVideoDefaultOption = videoGenerationModels.find((model) => model.id === selectedVideoDefault)
   const selectedVideoIterationOption = videoIterationModels.find((model) => model.id === selectedVideoIteration)
-  const settingsError = imageSave.error || transcriptionSave.error || videoDefaultSave.error || videoIterationSave.error || settingsQuery.error || catalogQuery.error
+  const selectedAudioDefaultOption = audioModels.find((model) => model.id === selectedAudioDefault)
+
+  const settingsError = imageSave.error || transcriptionSave.error || videoDefaultSave.error || videoIterationSave.error || audioDefaultSave.error || settingsQuery.error || catalogQuery.error
   const folders = sourceQuery.data ?? []
 
   const activeTranscriptionJobRefs = transcriptionJobs.filter((job) => !isTerminalVideoTranscriptionStatus(job.status)).map((job) => job.ref).join(',')
@@ -801,6 +815,32 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
               </section>
             </div>
 
+            {/* Music & Audio Generation */}
+            <div className="flex flex-col justify-between rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
+              <section aria-labelledby="audio-generation-title" className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Music size={16} className="text-[var(--app-primary)]" />
+                    <h4 id="audio-generation-title" className="text-sm font-semibold text-[var(--app-text)]">Music & audio generation</h4>
+                  </div>
+                  <span className="rounded bg-[var(--app-surface)] px-2 py-0.5 text-xs text-[var(--app-text-subtle)]">Soundtrack</span>
+                </div>
+                <p className="text-xs text-[var(--app-text-muted)]">
+                  Used when generating soundtracks, musical tracks, and sound clips (e.g. Lyria 3.5, Lyria 3 Clip Preview).
+                </p>
+                <div className="space-y-1.5">
+                  <span className="text-xs font-medium text-[var(--app-text)]">Music & audio model</span>
+                  <ModelSelect ariaLabel="Music & audio model" models={audioModels} value={selectedAudioDefault} disabled={audioDefaultSave.isPending} onChange={(value) => audioDefaultSave.mutate(value)} />
+                </div>
+                {selectedAudioDefaultOption && !selectedAudioDefaultOption.ready ? (
+                  <p className="text-xs text-[var(--app-warning)]">
+                    {selectedAudioDefaultOption.reason || `${providerLabel(selectedAudioDefaultOption.provider)} needs authentication before it can generate audio.`}
+                  </p>
+                ) : null}
+                {audioDefaultSave.isSuccess ? <p className="text-xs text-[var(--app-success)]">Audio model saved.</p> : null}
+              </section>
+            </div>
+
             {/* Video Understanding & Transcription */}
             <div className="flex flex-col justify-between rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4">
               <section aria-labelledby="transcription-model-title" className="space-y-3">
@@ -839,7 +879,7 @@ export function MediaSettingsPage({ workspaceSlug = '', workspacePath: requested
             <div className="space-y-1">
               <p className="font-medium text-[var(--app-text)]">How media models work:</p>
               <p>
-                Selected default models are used automatically by the AI when generating images, creating video clips, or transcribing video sources. Video iteration requests automatically route to your configured iteration model to edit scenes with visual consistency.
+                Selected default models are used automatically by the AI when generating images, producing soundtracks and music, creating video clips, or transcribing video sources. Video iteration requests automatically route to your configured iteration model to edit scenes with visual consistency.
               </p>
             </div>
           </div>

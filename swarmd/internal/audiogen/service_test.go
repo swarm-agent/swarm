@@ -15,6 +15,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/uisettings"
 )
 
 func setupTestAuthStore(t *testing.T, googleKey string) (*pebblestore.AuthStore, string) {
@@ -286,6 +287,7 @@ func TestGenerateManagedAudio_ClipPreview(t *testing.T) {
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURL(server.URL)
+	svc.SetCommandRunner(&fakeCommandRunner{})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
@@ -370,6 +372,7 @@ func TestGenerateManagedAudio_Song(t *testing.T) {
 	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
 	svc := NewService(authStore, nil, nil)
 	svc.SetBaseURL(server.URL)
+	svc.SetCommandRunner(&fakeCommandRunner{})
 
 	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
 	res, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
@@ -906,4 +909,224 @@ func TestProbeAudioDurationMs(t *testing.T) {
 			t.Errorf("ProbeAudioDurationMs = %d, want 28500", durationMs)
 		}
 	})
+}
+
+func TestGenerateManagedAudio_ResolvesConfiguredUIModel(t *testing.T) {
+	fakeAudio := []byte("fake-mp3-audio-clip-data")
+	encodedAudio := base64.StdEncoding.EncodeToString(fakeAudio)
+
+	var requestModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lyriaInteractionRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestModel = body.Model
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(lyriaInteractionResponse{
+			ID:     "inter_ui_model",
+			Status: "completed",
+			Model:  requestModel,
+			Steps: []lyriaStep{
+				{
+					Type: "model_output",
+					Content: []lyriaContent{
+						{
+							Type:     "audio",
+							MIMEType: "audio/mp3",
+							Data:     encodedAudio,
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	uiSettingsStore := pebblestore.NewUISettingsStore(store)
+	uiSettingsSvc := uisettings.NewService(uiSettingsStore)
+
+	// Configure default audio model in UI settings
+	_, err = uiSettingsSvc.SetForAccount(accountScopeID, uisettings.UISettings{
+		Tools: uisettings.ToolSettings{
+			Audio: uisettings.ToolAudioSettings{
+				DefaultModel: "lyria-3-pro-preview",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("set ui settings: %v", err)
+	}
+
+	svc := NewService(authStore, uiSettingsSvc, nil)
+	svc.SetBaseURL(server.URL)
+	svc.SetCommandRunner(&fakeCommandRunner{})
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	// Do not specify requested model; should resolve to configured "lyria-3-pro-preview"
+	res, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "ambient piano",
+		DurationSeconds: 30,
+		Principal:       principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedAudio failed: %v", err)
+	}
+	if requestModel != "lyria-3-pro-preview" {
+		t.Errorf("requestModel = %q, want lyria-3-pro-preview", requestModel)
+	}
+	if res.Model != "lyria-3-pro-preview" {
+		t.Errorf("res.Model = %q, want lyria-3-pro-preview", res.Model)
+	}
+}
+
+func TestGenerateManagedAudio_ExplicitModelOverride(t *testing.T) {
+	fakeAudio := []byte("fake-mp3-audio-clip-data")
+	encodedAudio := base64.StdEncoding.EncodeToString(fakeAudio)
+
+	var requestModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body lyriaInteractionRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requestModel = body.Model
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(lyriaInteractionResponse{
+			ID:     "inter_explicit_model",
+			Status: "completed",
+			Model:  requestModel,
+			Steps: []lyriaStep{
+				{
+					Type: "model_output",
+					Content: []lyriaContent{
+						{
+							Type:     "audio",
+							MIMEType: "audio/mp3",
+							Data:     encodedAudio,
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	svc := NewService(authStore, nil, nil)
+	svc.SetBaseURL(server.URL)
+	svc.SetCommandRunner(&fakeCommandRunner{})
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+	// Explicitly requested model overrides default duration routing
+	res, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "techno beat",
+		DurationSeconds: 15,
+		Model:           "lyria-3.5",
+		Principal:       principal,
+	})
+	if err != nil {
+		t.Fatalf("GenerateManagedAudio failed: %v", err)
+	}
+	if requestModel != ModelLyriaSong {
+		t.Errorf("requestModel = %q, want %q", requestModel, ModelLyriaSong)
+	}
+	if res.Model != ModelLyriaSong {
+		t.Errorf("res.Model = %q, want %q", res.Model, ModelLyriaSong)
+	}
+}
+
+func TestManagedAudioCapabilities(t *testing.T) {
+	svc := NewService(nil, nil, nil)
+
+	t.Run("clip model capabilities", func(t *testing.T) {
+		caps, err := svc.ManagedAudioCapabilities(ModelLyriaClip)
+		if err != nil {
+			t.Fatalf("ManagedAudioCapabilities failed: %v", err)
+		}
+		if !caps.Available {
+			t.Error("expected available=true")
+		}
+		if caps.Kind != "clip" {
+			t.Errorf("caps.Kind = %q, want clip", caps.Kind)
+		}
+		if caps.DurationSeconds.MaxSeconds != 30 {
+			t.Errorf("max_seconds = %d, want 30", caps.DurationSeconds.MaxSeconds)
+		}
+		if caps.DurationSeconds.MinSeconds != 1 {
+			t.Errorf("min_seconds = %d, want 1", caps.DurationSeconds.MinSeconds)
+		}
+		if caps.DurationSeconds.DefaultValue != 30 {
+			t.Errorf("default_value = %d, want 30", caps.DurationSeconds.DefaultValue)
+		}
+		if caps.CapabilityToken == "" {
+			t.Error("expected non-empty capability token")
+		}
+	})
+
+	t.Run("song model capabilities", func(t *testing.T) {
+		caps, err := svc.ManagedAudioCapabilities(ModelLyriaSong)
+		if err != nil {
+			t.Fatalf("ManagedAudioCapabilities failed: %v", err)
+		}
+		if !caps.Available {
+			t.Error("expected available=true")
+		}
+		if caps.Kind != "full_song" {
+			t.Errorf("caps.Kind = %q, want full_song", caps.Kind)
+		}
+		if caps.DurationSeconds.MaxSeconds != 300 {
+			t.Errorf("max_seconds = %d, want 300", caps.DurationSeconds.MaxSeconds)
+		}
+		if caps.DurationSeconds.DefaultValue != 120 {
+			t.Errorf("default_value = %d, want 120", caps.DurationSeconds.DefaultValue)
+		}
+		if caps.CapabilityToken == "" {
+			t.Error("expected non-empty capability token")
+		}
+	})
+}
+
+func TestGenerateManagedAudio_DurationExceedsClipLimit(t *testing.T) {
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	svc := NewService(authStore, nil, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	_, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "bassline",
+		DurationSeconds: 60,
+		Model:           ModelLyriaClip,
+		Principal:       principal,
+	})
+	if err == nil {
+		t.Fatal("expected error when duration exceeds clip model limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum duration") {
+		t.Errorf("expected duration error message, got: %v", err)
+	}
+}
+
+func TestGenerateManagedAudio_CapabilityTokenValidation(t *testing.T) {
+	authStore, accountScopeID := setupTestAuthStore(t, "test-google-key")
+	svc := NewService(authStore, nil, nil)
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "u1", AccountScopeID: accountScopeID}
+
+	_, err := svc.GenerateManagedAudio(context.Background(), ManagedAudioRequest{
+		Prompt:          "bassline",
+		DurationSeconds: 15,
+		Model:           ModelLyriaClip,
+		Principal:       principal,
+		CapabilityToken: "invalid-token",
+	})
+	if err == nil {
+		t.Fatal("expected error when capability token is invalid, got nil")
+	}
+	if !strings.Contains(err.Error(), "capability_token does not match") {
+		t.Errorf("expected capability_token mismatch error, got: %v", err)
+	}
 }

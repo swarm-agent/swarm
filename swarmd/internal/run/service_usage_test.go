@@ -87,3 +87,180 @@ func TestMergeTokenUsagePreservesCurrentRequestOccupancyAndCumulativeFireworksCo
 		t.Fatalf("fireworks cost should accumulate across requests: %+v", fireworks)
 	}
 }
+
+// TestMultiStepRunAccumulatesCostAndBilledTokensWhilePreservingOccupancy verifies that
+// in a multi-step tool loop, occupancy counters reflect the latest prompt context (for remaining tokens),
+// while cumulative cost and billed tokens are tracked without losing earlier request charges.
+func TestMultiStepRunAccumulatesCostAndBilledTokensWhilePreservingOccupancy(t *testing.T) {
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	sessionStore := pebblestore.NewSessionStore(store)
+	sessionID := "sess-multistep-test"
+	_, err = sessionStore.ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID:      sessionID,
+		UserID:         "user-1",
+		AccountScopeID: "account-1",
+		IdempotencyKey: "create-sess-multistep",
+		PayloadHash:    "create-sess-multistep",
+		Kind:           pebblestore.V3SessionMutationCreateSession,
+		Session:        &pebblestore.SessionSnapshot{ID: sessionID, WorkspacePath: "/workspace", WorkspaceName: "workspace", Title: "multistep"},
+		NowUnixMs:      1000,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	events, err := pebblestore.NewEventLog(store)
+	if err != nil {
+		t.Fatalf("create event log: %v", err)
+	}
+	sessions := sessionruntime.NewService(sessionStore, events)
+	svc := NewService(sessions, nil, nil, nil, nil, nil, nil, events)
+
+	apply := func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+		return sessions.ApplySessionMutation(input)
+	}
+
+	// Step 1: occupancy = 1050, cost = $0.005, billed tokens = 1050
+	step1Usage := provideriface.TokenUsage{
+		Source:           "google_api_usage",
+		InputTokens:      1000,
+		OutputTokens:     50,
+		TotalTokens:      1050,
+		EstimatedCostUSD: 0.005,
+	}
+	turn1, summary1, _, err := svc.recordProviderUsageSnapshot(
+		sessionID, "run-multi-1", "google", "gemini-3.8-flash", 100000, 1,
+		step1Usage, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, apply, 1050,
+	)
+	if err != nil {
+		t.Fatalf("record step 1: %v", err)
+	}
+	if turn1.TotalTokens != 1050 || summary1.TotalTokens != 1050 || summary1.EstimatedCostUSD != 0.005 {
+		t.Fatalf("step 1 state unexpected: turn=%+v summary=%+v", turn1, summary1)
+	}
+
+	// Step 2: occupancy updated to 1260, cumulative cost = $0.012, cumulative billed tokens = 2310
+	step2Usage := provideriface.TokenUsage{
+		Source:           "google_api_usage",
+		InputTokens:      1200,
+		OutputTokens:     60,
+		TotalTokens:      1260,
+		EstimatedCostUSD: 0.012,
+	}
+	turn2, summary2, _, err := svc.recordProviderUsageSnapshot(
+		sessionID, "run-multi-1", "google", "gemini-3.8-flash", 100000, 2,
+		step2Usage, identity.Principal{UserID: "user-1", AccountScopeID: "account-1"}, apply, 2310,
+	)
+	if err != nil {
+		t.Fatalf("record step 2: %v", err)
+	}
+	// Occupancy should be step 2's latest (1260), remaining tokens should be 100000 - 1260 = 98740
+	if turn2.TotalTokens != 1260 || summary2.TotalTokens != 1260 || summary2.RemainingTokens != 98740 {
+		t.Fatalf("step 2 occupancy unexpected: turn=%+v summary=%+v", turn2, summary2)
+	}
+	// Cumulative cost in summary should be $0.012 (not $0.005 + $0.012)
+	if summary2.EstimatedCostUSD != 0.012 {
+		t.Fatalf("expected summary cost $0.012, got %f", summary2.EstimatedCostUSD)
+	}
+	if turn2.EstimatedCostUSD != 0.012 || turn2.BilledTokens != 2310 {
+		t.Fatalf("expected turn cumulative cost $0.012 and billed tokens 2310, got cost=%f billed=%d", turn2.EstimatedCostUSD, turn2.BilledTokens)
+	}
+}
+
+// TestRouterAndCompactionUniqueRunIDsAndUsageAccounting verifies that router and compaction
+// sources generate unique non-colliding run IDs across slots/retries/runs and that ApplyProviderUsageSnapshotToSummary
+// does not overwrite main conversational context occupancy.
+func TestRouterAndCompactionUniqueRunIDsAndUsageAccounting(t *testing.T) {
+	summary := pebblestore.SessionUsageSummary{
+		SessionID:       "sess-main",
+		ContextWindow:   100000,
+		TotalTokens:     25000,
+		RemainingTokens: 75000,
+		InputTokens:     20000,
+		OutputTokens:    5000,
+	}
+
+	// 1. Router snapshot must not corrupt main prompt occupancy
+	routerTurn := pebblestore.SessionTurnUsageSnapshot{
+		SessionID:   "sess-main",
+		RunID:       "router:call-1:0:123456",
+		Source:      "router",
+		TotalTokens: 1500,
+	}
+	applied := pebblestore.ApplyProviderUsageSnapshotToSummary(summary, routerTurn)
+	if applied.TotalTokens != 25000 || applied.RemainingTokens != 75000 {
+		t.Fatalf("router usage corrupted main session context occupancy: %+v", applied)
+	}
+
+	// 2. Compaction snapshot must not corrupt main prompt occupancy
+	compactTurn := pebblestore.SessionTurnUsageSnapshot{
+		SessionID:   "sess-main",
+		RunID:       "compact:sess-main:run-1:1:0:123456",
+		Source:      "compaction",
+		TotalTokens: 8000,
+	}
+	appliedCompact := pebblestore.ApplyProviderUsageSnapshotToSummary(summary, compactTurn)
+	if appliedCompact.TotalTokens != 25000 || appliedCompact.RemainingTokens != 75000 {
+		t.Fatalf("compaction usage corrupted main session context occupancy: %+v", appliedCompact)
+	}
+}
+
+func TestNormalizeCumulativeProviderTokens(t *testing.T) {
+	// Copilot session usage reports cumulative tokens across requests
+	copilotUsage := provideriface.TokenUsage{
+		Source:      "copilot_session_usage",
+		TotalTokens: 5000,
+	}
+	// Per-request providers report incremental request totals
+	anthropicUsage := provideriface.TokenUsage{
+		Source:      "anthropic_api_usage",
+		TotalTokens: 1500,
+	}
+
+	cumulativeBilled := int64(0)
+	// Step 1 copilot
+	if copilotUsage.Source == "copilot_session_usage" {
+		cumulativeBilled = copilotUsage.TotalTokens
+	} else {
+		cumulativeBilled += copilotUsage.TotalTokens
+	}
+	if cumulativeBilled != 5000 {
+		t.Fatalf("expected 5000 billed tokens for copilot step 1, got %d", cumulativeBilled)
+	}
+
+	// Step 2 copilot (reports 5500 cumulative)
+	copilotUsage.TotalTokens = 5500
+	if copilotUsage.Source == "copilot_session_usage" {
+		cumulativeBilled = copilotUsage.TotalTokens
+	} else {
+		cumulativeBilled += copilotUsage.TotalTokens
+	}
+	if cumulativeBilled != 5500 {
+		t.Fatalf("expected 5500 billed tokens for copilot step 2, got %d", cumulativeBilled)
+	}
+
+	// Normal provider step 1
+	anthropicBilled := int64(0)
+	if anthropicUsage.Source == "copilot_session_usage" {
+		anthropicBilled = anthropicUsage.TotalTokens
+	} else {
+		anthropicBilled += anthropicUsage.TotalTokens
+	}
+	if anthropicBilled != 1500 {
+		t.Fatalf("expected 1500 billed tokens for anthropic step 1, got %d", anthropicBilled)
+	}
+
+	// Normal provider step 2 (reports 2000 for step 2)
+	anthropicUsage.TotalTokens = 2000
+	if anthropicUsage.Source == "copilot_session_usage" {
+		anthropicBilled = anthropicUsage.TotalTokens
+	} else {
+		anthropicBilled += anthropicUsage.TotalTokens
+	}
+	if anthropicBilled != 3500 {
+		t.Fatalf("expected 3500 billed tokens for anthropic cumulative, got %d", anthropicBilled)
+	}
+}

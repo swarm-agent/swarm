@@ -108,3 +108,59 @@ func TestMediaCatalogResponsePopulatesVideoGenerationAndIterationModels(t *testi
 		t.Fatalf("expected 1 video iteration model (gemini-omni-1.1-flash), got: %#v", response.VideoIterationModels)
 	}
 }
+
+func TestMediaCatalogResponsePopulatesAudioGenerationModels(t *testing.T) {
+	store, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	catalogStore := pebblestore.NewModelCatalogStore(store)
+	pricing := json.RawMessage(`{"audio_output":0.08}`)
+
+	lyriaSongRecord := pebblestore.ModelCatalogRecord{
+		Provider: "google", Model: "lyria-3.5", DisplayName: "Lyria 3.5",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"audio", "text"}, Categories: []string{"audio_generation"}},
+		Pricing:           pricing,
+	}
+	lyriaClipRecord := pebblestore.ModelCatalogRecord{
+		Provider: "google", Model: "lyria-3-clip-preview", DisplayName: "Lyria 3 Clip Preview",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"audio", "text"}, Categories: []string{"audio_generation"}},
+		Pricing:           json.RawMessage(`{"audio_output":0.04}`),
+	}
+	openRouterLyriaRecord := pebblestore.ModelCatalogRecord{
+		Provider: "openrouter", Model: "google/lyria-3.5", DisplayName: "Google: Lyria 3.5",
+		CatalogModalities: pebblestore.ModelCatalogModalities{Inputs: []string{"text"}, Outputs: []string{"audio", "text"}, Categories: []string{"audio_generation"}},
+		Pricing:           pricing,
+	}
+
+	for _, rec := range []pebblestore.ModelCatalogRecord{lyriaSongRecord, lyriaClipRecord, openRouterLyriaRecord} {
+		if err := catalogStore.SetRecord(rec); err != nil {
+			t.Fatalf("seed record: %v", err)
+		}
+	}
+
+	server := NewServer(nil, nil, model.NewService(pebblestore.NewModelStore(store), nil, model.NewCatalogService(catalogStore)), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	server.imageGen = imagegen.NewService(nil, nil, nil, server.model)
+
+	caps := imagegen.Capabilities{Providers: []imagegen.ProviderStatus{{ID: imagegen.ProviderGoogleGemini, Ready: true}}}
+	openRouterStatus := imagegen.ProviderStatus{ID: "openrouter", Ready: true}
+
+	response, err := server.mediaCatalogResponse(caps, openRouterStatus)
+	if err != nil {
+		t.Fatalf("mediaCatalogResponse: %v", err)
+	}
+
+	if !response.AudioReady || response.AudioStatus != "ready" {
+		t.Fatalf("audio readiness = %v/%q, want true/ready", response.AudioReady, response.AudioStatus)
+	}
+	if len(response.AudioModels) != 3 {
+		t.Fatalf("expected 3 audio generation models, got %d: %#v", len(response.AudioModels), response.AudioModels)
+	}
+	if response.AudioModels[0].Model != "lyria-3.5" {
+		t.Errorf("top priority audio model = %q, want lyria-3.5", response.AudioModels[0].Model)
+	}
+	if response.AudioModels[1].Model != "lyria-3-clip-preview" {
+		t.Errorf("second priority audio model = %q, want lyria-3-clip-preview", response.AudioModels[1].Model)
+	}
+}

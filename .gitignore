@@ -47,6 +47,11 @@ coverage.out
 *.swp
 *.swo
 
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Local env files
 .env
 .env.*

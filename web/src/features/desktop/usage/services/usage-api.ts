@@ -18,6 +18,7 @@ export interface SessionUsageDashboardSummary {
   output_tokens: number
   cached_tokens: number
   thinking_tokens: number
+  /** Billed token + media cost; media_cost_usd is already included. */
   total_cost_usd: number
   codex_nominal_cost_usd: number
   total_turns: number
@@ -26,6 +27,7 @@ export interface SessionUsageDashboardSummary {
   archived_sessions?: number
   total_media_calls: number
   media_cost_usd: number
+  has_unknown_pricing?: boolean
 }
 
 export interface SessionUsageDailyItem {
@@ -36,6 +38,7 @@ export interface SessionUsageDailyItem {
   output_tokens: number
   cached_tokens: number
   thinking_tokens: number
+  /** Billed token + media cost for this UTC day. */
   cost_usd: number
   codex_nominal_cost_usd: number
   turns: number
@@ -87,6 +90,10 @@ export interface SessionUsageMediaSummary {
   video_cost_usd: number
   audio_count: number
   audio_cost_usd: number
+  has_unknown_pricing?: boolean
+  has_unknown_image?: boolean
+  has_unknown_video?: boolean
+  has_unknown_audio?: boolean
   recent_items: SessionUsageMediaItem[]
 }
 
@@ -99,6 +106,8 @@ export interface SessionUsageMediaItem {
   label: string
   size: number
   cost_usd: number
+  price_status?: string
+  pricing_summary?: string
   created_at: number
 }
 

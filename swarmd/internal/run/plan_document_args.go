@@ -142,7 +142,7 @@ func planManageApprovedArgumentKeys(action string) map[string]bool {
 	case "resolve_blocked_checkpoint", "resolve_block", "clear_block", "unblock_checkpoint":
 		add("plan_id", "id", "checkpoint_id", "active_checkpoint_id", "active_checkpoint", "result", "resolution_result", "notes", "resolution_notes", "report", "reviewed_at", "start_next", "continue_next", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
 	case "start_session_checkpoint":
-		add("checkpoint_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
+		add("checkpoint_id", "id", "checkpoint", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at", "fresh_context", "execution_context")
 	case "request_followup_checkpoint":
 		add("plan_id", "id", "change_request", "user_request", "request", "prompt", "text", "checkpoint_title", "title", "tasks", "acceptance_criteria", "artifacts", "notes", "handoff_notes", "context", "source_message_id", "source_message", "approval_confirmed", "attempt_id", "run_id", "run_session_id", "session_id", "parent_session_id", "started_at")
 	case "amend_plan":

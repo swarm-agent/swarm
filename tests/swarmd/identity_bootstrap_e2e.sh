@@ -96,7 +96,7 @@ record_request() {
   elif [[ "${auth}" == bearer:* ]]; then
     curl_args+=(-H "Authorization: Bearer ${auth#bearer:}")
   elif [[ "${auth}" == cookie-value:* ]]; then
-    curl_args+=(-H "Cookie: swarm_desktop_session=${auth#cookie-value:}")
+    curl_args+=(-H "Cookie: ${SESSION_COOKIE_NAME:?missing issued cookie name}=${auth#cookie-value:}")
   fi
   if [[ -n "${body}" ]]; then
     curl_args+=(-H 'Content-Type: application/json' --data "${body}")
@@ -264,7 +264,10 @@ jq -e '.identity.bootstrapped == true and .identity.user_id != "" and .identity.
 auth_after_status="$(record_request auth-session-after-bootstrap GET "${DESKTOP_URL}/v1/auth/desktop/session" "" "${EVIDENCE_DIR}/auth-session-after-bootstrap.json")"
 [[ "${auth_after_status}" == "200" ]] || fail "desktop session after bootstrap status ${auth_after_status}, want 200"
 jq -e '.ok == true and .user_id != "" and .username == "slice17-user"' "${EVIDENCE_DIR}/auth-session-after-bootstrap.json" >/dev/null || fail "session after bootstrap missing user actor"
-TOKEN="$(awk '$6 == "swarm_desktop_session" { value=$7 } END { print value }' "${COOKIE_JAR}")"
+# Preserve the server-issued origin-scoped name; cookies are not port-scoped.
+SESSION_COOKIE_NAME="$(awk '$6 ~ /^swarm_desktop_session_[a-f0-9]+$/ { name=$6 } END { print name }' "${COOKIE_JAR}")"
+[[ -n "${SESSION_COOKIE_NAME}" ]] || fail "missing origin-scoped desktop session cookie"
+TOKEN="$(awk -v name="${SESSION_COOKIE_NAME}" '$6 == name { value=$7 } END { print value }' "${COOKIE_JAR}")"
 [[ -n "${TOKEN}" ]] || fail "missing desktop session cookie token"
 printf '%s\n' "${TOKEN}" | awk -F. 'NF == 3 { ok = 1 } END { exit(ok ? 0 : 1) }' || fail "desktop cookie is not a compact JWT"
 write_tui_session_artifact "${EVIDENCE_DIR}/tui-session-after-bootstrap.json" after-bootstrap "${EVIDENCE_DIR}/onboarding-bootstrap.json" "${EVIDENCE_DIR}/auth-session-after-bootstrap.json"

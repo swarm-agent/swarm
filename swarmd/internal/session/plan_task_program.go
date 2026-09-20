@@ -97,12 +97,19 @@ func ValidatePlanTaskProgramDefinition(program *pebblestore.TaskProgramDefinitio
 			if mode == "workspace" && len(job.OwnedScope) == 0 {
 				return fmt.Errorf("jobs[%d] workspace Designer requires owned_scope", i)
 			}
-		} else {
+		} else if agentType == "coder" {
 			if mode != "" {
 				return fmt.Errorf("jobs[%d] non-Designer cannot set output_mode", i)
 			}
 			if len(job.OwnedScope) == 0 {
 				return fmt.Errorf("jobs[%d] requires owned_scope", i)
+			}
+		} else if agentType == "finder" {
+			if mode != "" {
+				return fmt.Errorf("jobs[%d] non-Designer cannot set output_mode", i)
+			}
+			if len(job.OwnedScope) == 0 {
+				job.OwnedScope = []string{"."}
 			}
 		}
 		for scopeIndex, scope := range job.OwnedScope {

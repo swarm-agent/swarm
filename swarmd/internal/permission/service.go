@@ -1486,6 +1486,9 @@ func authorizationRequirement(mode, toolName, toolArguments string) string {
 	toolName = normalizePolicyToolName(toolName)
 	switch toolName {
 	case "task":
+		if !ShouldApproveTaskLaunch(toolArguments) {
+			return "none"
+		}
 		return "task_launch"
 	case "manage_skill":
 		if ShouldApproveManageSkillMutation(toolArguments) {
@@ -1577,6 +1580,29 @@ func ShouldApproveManageArtifactGenerateAudio(toolArguments string) bool {
 	return manageAction(toolArguments) == "generate_audio"
 }
 
+// IsManageArtifactWriteAction returns true if the manage_artifact action mutates artifacts or files.
+func IsManageArtifactWriteAction(toolArguments string) bool {
+	switch manageAction(toolArguments) {
+	case "create", "create_package", "import", "revise_v3", "begin_v3", "author_v3",
+		"publish_workspace", "publish_part", "publish_parts", "select_parts",
+		"materialize", "materialize_batch", "promote", "delete":
+		return true
+	default:
+		return false
+	}
+}
+
+// IsManageArtifactReadAction returns true if the manage_artifact action is a read-only inspection or discovery operation.
+func IsManageArtifactReadAction(toolArguments string) bool {
+	switch manageAction(toolArguments) {
+	case "list", "search", "get", "read", "list_v3", "source_v3", "read_v3",
+		"draft_status_v3", "image_capabilities", "audio_capabilities", "list_presets", "help":
+		return true
+	default:
+		return false
+	}
+}
+
 // ShouldApproveManageWorktreePromotion identifies the distinct authority that
 // may advance a captured checkout branch. Internal child-to-session-lane
 // integration remains approval-free because it cannot promote into dev.
@@ -1600,6 +1626,16 @@ func ShouldApproveManageAgentMutation(toolArguments string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func ShouldApproveTaskLaunch(toolArguments string) bool {
+	action := manageAction(toolArguments)
+	switch action {
+	case "help", "status":
+		return false
+	default:
+		return true
 	}
 }
 

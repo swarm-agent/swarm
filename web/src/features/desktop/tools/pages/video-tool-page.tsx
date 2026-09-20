@@ -1,7 +1,7 @@
 import { type CSSProperties, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useMatchRoute, useNavigate } from '@tanstack/react-router'
-import { Check, Download, Eye, EyeOff, Film, FolderOpen, Library, ListVideo, Loader2, LockKeyhole, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
+import { useMatchRoute, useNavigate, useSearch } from '@tanstack/react-router'
+import { Check, Download, Eye, EyeOff, Film, FolderOpen, Layers, Library, ListVideo, Loader2, LockKeyhole, MessageSquare, Moon, Music, Pause, Play, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../../components/ui/dialog'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -25,6 +25,7 @@ import { saveVideoSessionViewPreference } from '../video-studio/video-session-vi
 import { VideoCompositionEditor, VideoCompositionOverlay, resolveVideoComposition, type VideoCompositionCatalogWire, type VideoCompositionLinkWire } from '../video-studio/video-composition'
 import { VIDEO_RENDER_PRESETS, VideoRenderCenter, videoRenderJobActive, type VideoRenderJobSnapshotWire, type VideoRenderPreset } from '../video-studio/video-render-center'
 import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
+import { HistoricalMediaLibrary } from '../media-library'
 
 export type VideoClip = {
   id: string
@@ -1514,6 +1515,18 @@ export function VideoToolPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const matchRoute = useMatchRoute()
+  const studioSearch = useSearch({ strict: false }) as { view?: string; type?: string }
+  const [activeStudioTab, setActiveStudioTab] = useState<'editor' | 'media'>(() => {
+    return studioSearch.view === 'media' ? 'media' : 'editor'
+  })
+
+  useEffect(() => {
+    if (studioSearch.view === 'media') {
+      setActiveStudioTab('media')
+    } else if (studioSearch.view === 'editor') {
+      setActiveStudioTab('editor')
+    }
+  }, [studioSearch.view])
   const workspaceStudioSessionMatch = matchRoute({ to: '/$workspaceSlug/studio/$videoSessionId', fuzzy: false })
   const workspaceStudioMatch = matchRoute({ to: '/$workspaceSlug/studio', fuzzy: false })
   const workspaceVideoToolMatch = matchRoute({ to: '/$workspaceSlug/tools/video', fuzzy: false })
@@ -3195,10 +3208,60 @@ export function VideoToolPage() {
   return (
     <div className="absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-[var(--app-bg)] text-[var(--app-text)]">
         <header className="flex min-h-[60px] shrink-0 items-center justify-between gap-3 border-b border-[var(--app-border)] bg-[var(--app-surface)] px-3 pb-2 pt-[calc(var(--app-safe-area-top)+0.5rem)] sm:h-[60px] sm:px-4 sm:py-0">
-          <div className="inline-flex min-w-0 items-center gap-2">
-            <Film size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
-            <span className="truncate text-sm font-semibold">Video Studio</span>
-            {selectedThread ? <span className="truncate text-xs text-[var(--app-text-muted)]">/ {selectedThread.title || 'Video session'}</span> : null}
+          <div className="inline-flex min-w-0 items-center gap-3">
+            <div className="inline-flex min-w-0 items-center gap-2">
+              <Film size={17} className="shrink-0 text-[var(--app-primary)]" aria-hidden="true" />
+              <span className="truncate text-sm font-semibold">Video Studio</span>
+              {activeStudioTab === 'editor' && selectedThread ? <span className="truncate text-xs text-[var(--app-text-muted)]">/ {selectedThread.title || 'Video session'}</span> : null}
+            </div>
+
+            <div className="inline-flex rounded-lg bg-[var(--app-surface-subtle)] p-0.5" role="tablist" aria-label="Studio views">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeStudioTab === 'editor'}
+                onClick={() => {
+                  setActiveStudioTab('editor')
+                  void navigate({
+                    to: routeWorkspaceSlug ? '/$workspaceSlug/studio' : '/studio',
+                    ...(routeWorkspaceSlug ? { params: { workspaceSlug: routeWorkspaceSlug } } : {}),
+                    search: { view: 'editor' },
+                  })
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
+                  activeStudioTab === 'editor'
+                    ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-xs'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                }`}
+                aria-label="Video Editor"
+              >
+                <Film size={12} />
+                <span>Video Editor</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeStudioTab === 'media'}
+                onClick={() => {
+                  setActiveStudioTab('media')
+                  void navigate({
+                    to: routeWorkspaceSlug ? '/$workspaceSlug/studio' : '/studio',
+                    ...(routeWorkspaceSlug ? { params: { workspaceSlug: routeWorkspaceSlug } } : {}),
+                    search: { view: 'media' },
+                  })
+                }}
+                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition cursor-pointer ${
+                  activeStudioTab === 'media'
+                    ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-xs'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                }`}
+                aria-label="Media Library"
+              >
+                <Layers size={12} />
+                <span>Media Library</span>
+              </button>
+            </div>
           </div>
           {selectedThread && routeWorkspaceSlug ? (
             <div className="flex items-center gap-1">
@@ -3226,7 +3289,21 @@ export function VideoToolPage() {
           </div>
         ) : null}
 
-        {renderCenterOpen && selectedThread && videoProject ? <VideoRenderCenter jobs={renderJobs} loading={renderJobsLoading} error={renderJobsError} cancellingJobId={cancellingRenderJobId} onRefresh={() => void refreshRenderJobs()} onCancel={(job) => void handleCancelRender(job)} onOpenOutput={(job) => { selectedRenderJobIdRef.current = job.id; setRenderJob(job); setRenderProgress(job.progress); setRenderCenterOpen(false); setExportPath((current) => current.trim() || defaultRenderedVideoExportPath(selectedWorkspacePath, videoProject.title || selectedThread.title, job.revision_number)); setExportedPath('') }} /> : <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
+        {activeStudioTab === 'media' ? (
+          <HistoricalMediaLibrary
+            workspaceSlug={routeWorkspaceSlug}
+            onOpenSession={(sessionId) => {
+              if (routeWorkspaceSlug) {
+                void navigate({
+                  to: '/$workspaceSlug/$sessionId',
+                  params: { workspaceSlug: routeWorkspaceSlug, sessionId },
+                })
+              } else {
+                void navigate({ to: '/' })
+              }
+            }}
+          />
+        ) : renderCenterOpen && selectedThread && videoProject ? <VideoRenderCenter jobs={renderJobs} loading={renderJobsLoading} error={renderJobsError} cancellingJobId={cancellingRenderJobId} onRefresh={() => void refreshRenderJobs()} onCancel={(job) => void handleCancelRender(job)} onOpenOutput={(job) => { selectedRenderJobIdRef.current = job.id; setRenderJob(job); setRenderProgress(job.progress); setRenderCenterOpen(false); setExportPath((current) => current.trim() || defaultRenderedVideoExportPath(selectedWorkspacePath, videoProject.title || selectedThread.title, job.revision_number)); setExportedPath('') }} /> : <main className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain lg:flex-row lg:overflow-hidden">
           <div className="contents">
             <SwarmToolSidebar
             workspaceSlug={routeWorkspaceSlug}

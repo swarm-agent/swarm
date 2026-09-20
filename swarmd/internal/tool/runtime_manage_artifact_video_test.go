@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,10 +49,33 @@ func (f *fakeVideoGenerationService) GenerateManagedVideo(ctx context.Context, r
 		res.Model = "veo-3.1-generate-preview"
 		res.Provider = "google"
 	}
-	if res.EstimatedCostUSD == 0 && res.PricingSummary == "" {
+	if res.EstimatedCostUSD == 0 && res.PricingSummary == "" && res.PriceStatus == "" {
 		cost, summary := videogen.EstimateVideoCost(res.Provider, res.Model, req.DurationSeconds, req.Source != nil, nil)
 		res.EstimatedCostUSD = cost
 		res.PricingSummary = summary
+		if cost > 0 {
+			res.PriceStatus = "known"
+		} else {
+			res.PriceStatus = "unknown"
+		}
+	}
+	if res.Resolution == "" {
+		res.Resolution = req.Resolution
+		if res.Resolution == "" {
+			res.Resolution = "720p"
+		}
+	}
+	if res.DurationSeconds == 0 {
+		res.DurationSeconds = req.DurationSeconds
+		if res.DurationSeconds == 0 {
+			res.DurationSeconds = 8
+		}
+	}
+	if res.AspectRatio == "" {
+		res.AspectRatio = req.AspectRatio
+		if res.AspectRatio == "" {
+			res.AspectRatio = "16:9"
+		}
 	}
 	return res, nil
 }
@@ -680,5 +704,142 @@ func TestManageArtifactGenerateVideoImageNotFound(t *testing.T) {
 	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
 	if err == nil || !strings.Contains(err.Error(), "resolve image input") {
 		t.Fatalf("expected error containing 'resolve image input', got: %v", err)
+	}
+}
+
+type fakeSessionUsageRecordingService struct {
+	manageSessionService
+	recorded []pebblestore.SessionMediaUsageRecord
+}
+
+func (f *fakeSessionUsageRecordingService) RecordMediaUsage(rec pebblestore.SessionMediaUsageRecord) error {
+	f.recorded = append(f.recorded, rec)
+	return nil
+}
+
+// Requirement: generateManagedVideoArtifact must send the same captured estimate
+// to RecordMediaUsage and its tool response, including unknown status. A recording
+// fake proves this handoff without claiming storage durability or provider billing.
+func TestManageArtifactGenerateVideoResponseAndPersistedUsagePricingAgreement(t *testing.T) {
+	runtime := NewRuntime(1)
+	authority := &fakeArtifactAuthority{}
+	runtime.SetArtifactAuthority(authority)
+
+	recService := &fakeSessionUsageRecordingService{}
+	runtime.SetManageSessionService(recService)
+
+	generator := &fakeVideoGenerationService{
+		result: videogen.ManagedVideoResult{
+			Bytes:            []byte("veo-output-video-snap-priced"),
+			MediaType:        "video/mp4",
+			Model:            "veo-3.1-lite-generate-preview",
+			Provider:         "google",
+			Resolution:       "720p",
+			DurationSeconds:  8,
+			AspectRatio:      "16:9",
+			EstimatedCostUSD: 0.40,
+			PriceStatus:      "known",
+			PricingSummary:   "$0.050/sec ($0.40 for 8s) (catalog swarm-models-v1-c1ef3f604dea5bc9)",
+			SnapshotID:       "swarm-models-v1-c1ef3f604dea5bc9",
+			SnapshotVersion:  "v1",
+		},
+	}
+	runtime.SetManagedVideoGenerationService(generator)
+
+	ctx, scope := artifactToolContext()
+	call := Call{
+		CallID:    "video-agree-call",
+		Name:      "manage_artifact",
+		Arguments: `{"action":"generate_video","prompt":"A cute red panda in autumn leaves"}`,
+	}
+
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, call)
+	if err != nil {
+		t.Fatalf("execute generate_video: %v", err)
+	}
+
+	var res map[string]any
+	if err := json.Unmarshal([]byte(output), &res); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+
+	if res["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", res["status"])
+	}
+	if res["price_status"] != "known" {
+		t.Fatalf("response price_status = %v, want known", res["price_status"])
+	}
+	if math.Abs(res["estimated_cost_usd"].(float64)-0.40) > 0.0001 {
+		t.Fatalf("response estimated_cost_usd = %v, want 0.40", res["estimated_cost_usd"])
+	}
+	if math.Abs(res["cost_per_video_usd"].(float64)-0.40) > 0.0001 {
+		t.Fatalf("response cost_per_video_usd = %v, want 0.40", res["cost_per_video_usd"])
+	}
+	if res["resolution"] != "720p" {
+		t.Fatalf("response resolution = %v, want 720p", res["resolution"])
+	}
+	if int(res["duration_seconds"].(float64)) != 8 {
+		t.Fatalf("response duration_seconds = %v, want 8", res["duration_seconds"])
+	}
+	if res["snapshot_id"] != "swarm-models-v1-c1ef3f604dea5bc9" {
+		t.Fatalf("response snapshot_id = %v, want swarm-models-v1-c1ef3f604dea5bc9", res["snapshot_id"])
+	}
+
+	// Verify agreement with recorded media usage
+	if len(recService.recorded) != 1 {
+		t.Fatalf("expected 1 recorded usage record, got %d", len(recService.recorded))
+	}
+	usage := recService.recorded[0]
+	if usage.PriceStatus != "known" {
+		t.Fatalf("persisted price_status = %q, want known", usage.PriceStatus)
+	}
+	if math.Abs(usage.CostUSD-0.40) > 0.0001 {
+		t.Fatalf("persisted cost = %f, want 0.40", usage.CostUSD)
+	}
+	if usage.PricingSummary != res["pricing_summary"].(string) {
+		t.Fatalf("pricing summary mismatch: persisted %q vs response %q", usage.PricingSummary, res["pricing_summary"])
+	}
+	if usage.SnapshotID != "swarm-models-v1-c1ef3f604dea5bc9" {
+		t.Fatalf("persisted snapshot_id = %q, want swarm-models-v1-c1ef3f604dea5bc9", usage.SnapshotID)
+	}
+
+	// Test unknown pricing behavior
+	generator.result = videogen.ManagedVideoResult{
+		Bytes:            []byte("veo-output-unpriced"),
+		MediaType:        "video/mp4",
+		Model:            "unpriced-video-model",
+		Provider:         "google",
+		Resolution:       "720p",
+		DurationSeconds:  8,
+		EstimatedCostUSD: 0.0,
+		PriceStatus:      "unknown",
+		PricingSummary:   "unknown pricing (model unpriced)",
+	}
+	recService.recorded = nil
+
+	callUnknown := Call{
+		CallID:    "video-unknown-call",
+		Name:      "manage_artifact",
+		Arguments: `{"action":"generate_video","prompt":"An unpriced video"}`,
+	}
+	outUnknown, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, callUnknown)
+	if err != nil {
+		t.Fatalf("execute generate_video unknown: %v", err)
+	}
+	var resUnknown map[string]any
+	if err := json.Unmarshal([]byte(outUnknown), &resUnknown); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if resUnknown["price_status"] != "unknown" {
+		t.Fatalf("response price_status = %v, want unknown", resUnknown["price_status"])
+	}
+	if resUnknown["estimated_cost_usd"].(float64) != 0.0 {
+		t.Fatalf("response estimated_cost_usd = %v, want 0.0", resUnknown["estimated_cost_usd"])
+	}
+	if len(recService.recorded) != 1 {
+		t.Fatalf("expected 1 recorded usage record, got %d", len(recService.recorded))
+	}
+	if recService.recorded[0].PriceStatus != "unknown" || recService.recorded[0].CostUSD != 0.0 {
+		t.Fatalf("persisted unknown mismatch: status=%s cost=%f", recService.recorded[0].PriceStatus, recService.recorded[0].CostUSD)
 	}
 }

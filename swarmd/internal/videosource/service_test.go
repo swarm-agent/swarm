@@ -236,3 +236,98 @@ func TestServiceRejectsTraversalUnknownRootAndSymlink(t *testing.T) {
 		t.Fatalf("symlink directory exposed: %+v", result.Directories)
 	}
 }
+
+func TestServiceImportAudioWorkflow(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "video-source-import.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1", SessionID: "session-1"}
+	workspacePath := t.TempDir()
+	makeVideoSourceReadyRepository(t, workspacePath)
+
+	workspaceService := workspace.NewService(pebblestore.NewWorkspaceStore(db))
+	res, err := workspaceService.AddForPrincipal(principal, workspacePath, "workspace", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sessionStore := pebblestore.NewSessionStore(db)
+	service := NewService(workspaceService, sessionStore)
+
+	// Verify no roots initially
+	_, roots, err := service.ListRoots(principal, workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 0 {
+		t.Fatalf("expected 0 roots initially, got %d", len(roots))
+	}
+
+	// 1. ImportAudio creates and registers a default source_media directory
+	audioBytes := []byte("RIFF\x0c\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
+	record, err := service.ImportAudio(principal, workspacePath, res.WorkspaceID, "sample.wav", "audio/wav", audioBytes, "")
+	if err != nil {
+		t.Fatalf("ImportAudio failed: %v", err)
+	}
+	if record.Ref == "" || record.DisplayName != "sample.wav" || record.MIMEType != "audio/wav" {
+		t.Fatalf("unexpected record metadata: %+v", record)
+	}
+	if record.SizeBytes != int64(len(audioBytes)) {
+		t.Fatalf("expected size %d, got %d", len(audioBytes), record.SizeBytes)
+	}
+
+	// Verify root now registered
+	_, roots, err = service.ListRoots(principal, workspacePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roots) != 1 {
+		t.Fatalf("expected 1 root registered after ImportAudio, got %d", len(roots))
+	}
+
+	// 2. Open validated audio source
+	file, err := pebblestore.OpenValidatedAudioSource(record)
+	if err != nil {
+		t.Fatalf("OpenValidatedAudioSource failed: %v", err)
+	}
+	file.Close()
+
+	// 3. ResolveAudioClips finds and verifies the imported audio
+	wsID, resolved, err := service.ResolveAudioClips(principal, workspacePath, []string{record.Ref})
+	if err != nil {
+		t.Fatalf("ResolveAudioClips failed: %v", err)
+	}
+	if wsID != res.WorkspaceID || len(resolved) != 1 || resolved[0].Ref != record.Ref {
+		t.Fatalf("unexpected resolved audio: wsID=%q resolved=%+v", wsID, resolved)
+	}
+
+	// 4. Browse finds the imported audio clip
+	browseRes, err := service.Browse(principal, workspacePath, roots[0].Ref, ".")
+	if err != nil {
+		t.Fatalf("Browse failed: %v", err)
+	}
+	if len(browseRes.AudioClips) != 1 || browseRes.AudioClips[0].Ref != record.Ref {
+		t.Fatalf("Browse expected 1 audio clip, got: %+v", browseRes.AudioClips)
+	}
+
+	// 5. Import audio with same name but different content generates disambiguated filename
+	otherAudioBytes := []byte("RIFF\x0c\x00\x00\x00WAVEfmt \x20\x00\x00\x00")
+	otherRecord, err := service.ImportAudio(principal, workspacePath, res.WorkspaceID, "sample.wav", "audio/wav", otherAudioBytes, "")
+	if err != nil {
+		t.Fatalf("second ImportAudio failed: %v", err)
+	}
+	if otherRecord.Ref == record.Ref {
+		t.Fatalf("expected different ref for different audio content")
+	}
+	if otherRecord.RelativePath == record.RelativePath {
+		t.Fatalf("expected disambiguated relative path, got same: %s", otherRecord.RelativePath)
+	}
+
+	// 6. ImportAudio rejects empty data
+	if _, err := service.ImportAudio(principal, workspacePath, res.WorkspaceID, "empty.wav", "audio/wav", nil, ""); err == nil {
+		t.Fatal("expected error for empty audio data")
+	}
+}

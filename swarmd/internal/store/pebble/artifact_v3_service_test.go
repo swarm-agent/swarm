@@ -28,8 +28,18 @@ func TestArtifactV3ServiceLifecycleCASAndRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := created.Repository.HeadCommitOID
-	if _, err := service.OpenTurn(context.Background(), ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: "artifact-1", TurnID: "turn-1", ExpectedHead: gitOID("f")}); !errors.Is(err, ErrArtifactV3Conflict) {
-		t.Fatalf("stale turn = %v", err)
+	// OpenTurn accepts exact retained ready bases, not only the current head.
+	// An unknown base is an integrity failure; selection alone owns head CAS.
+	beforeRejected, err := sessions.ListV3SessionEvents(owner.SessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.OpenTurn(context.Background(), ArtifactV3OpenTurnInput{Owner: owner, ArtifactID: "artifact-1", TurnID: "turn-1", ExpectedHead: gitOID("f")}); !errors.Is(err, ErrArtifactV3Integrity) {
+		t.Fatalf("unknown turn base = %v", err)
+	}
+	afterRejected, err := sessions.ListV3SessionEvents(owner.SessionID, 0, 100)
+	if err != nil || !reflect.DeepEqual(beforeRejected, afterRejected) {
+		t.Fatal("rejected base mutated session")
 	}
 	if created.Revision.Build.CommitOID != head || created.Revision.Preview.CommitOID != head || created.Candidate == nil || created.Candidate.Status != "selected" {
 		t.Fatalf("genesis evidence=%+v", created)

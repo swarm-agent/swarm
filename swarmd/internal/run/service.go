@@ -733,6 +733,9 @@ type runWorkspaceContext struct {
 }
 
 func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, providers *registry.Registry, tools *tool.Runtime, permissions *permission.Service, agents *agentruntime.Service, discoverySvc *discovery.Service, events *pebblestore.EventLog) *Service {
+	if tools != nil && sessions != nil {
+		tools.SetManageSessionService(sessions)
+	}
 	return &Service{
 		sessions:    sessions,
 		model:       modelSvc,
@@ -1628,6 +1631,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	}
 	planGuardFreshContext := false
 	accumulatedUsage := provideriface.TokenUsage{}
+	var cumulativeTurnCost float64
+	var (
+		cumulativeBilledTokens           int64
+		cumulativeBilledInputTokens      int64
+		cumulativeBilledOutputTokens     int64
+		cumulativeBilledCacheReadTokens  int64
+		cumulativeBilledCacheWriteTokens int64
+		cumulativeBilledThinkingTokens   int64
+	)
 	var (
 		turnUsageRecord   *pebblestore.SessionTurnUsageSnapshot
 		usageSummaryState *pebblestore.SessionUsageSummary
@@ -2259,6 +2271,55 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				emit(providerToolConstructionStreamEvent(step, event))
 			}
 		})
+		stepsCompleted = step
+		if hasConcreteUsageSnapshot(response.Usage) {
+			stepCost := 0.0
+			if response.Usage.EstimatedCostUSD > 0 {
+				stepCost = response.Usage.EstimatedCostUSD
+			} else if strings.EqualFold(providerID, "codex") {
+				stepCost = 0.0
+			} else if s.sessions != nil && s.sessions.Store() != nil {
+				stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+			}
+			cumulativeTurnCost += stepCost
+			if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {
+				cumulativeBilledTokens = response.Usage.TotalTokens
+				cumulativeBilledInputTokens = response.Usage.InputTokens
+				cumulativeBilledOutputTokens = response.Usage.OutputTokens
+				cumulativeBilledCacheReadTokens = response.Usage.CacheReadTokens
+				cumulativeBilledCacheWriteTokens = response.Usage.CacheWriteTokens
+				cumulativeBilledThinkingTokens = response.Usage.ThinkingTokens
+			} else {
+				cumulativeBilledTokens += response.Usage.TotalTokens
+				cumulativeBilledInputTokens += response.Usage.InputTokens
+				cumulativeBilledOutputTokens += response.Usage.OutputTokens
+				cumulativeBilledCacheReadTokens += response.Usage.CacheReadTokens
+				cumulativeBilledCacheWriteTokens += response.Usage.CacheWriteTokens
+				cumulativeBilledThinkingTokens += response.Usage.ThinkingTokens
+			}
+			accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
+			accumulatedUsage.EstimatedCostUSD = cumulativeTurnCost
+			if shouldPersistProviderUsage(providerID, accumulatedUsage) {
+				turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation, cumulativeBilledTokens, cumulativeBilledInputTokens, cumulativeBilledOutputTokens, cumulativeBilledCacheReadTokens, cumulativeBilledCacheWriteTokens, cumulativeBilledThinkingTokens)
+				if usageErr != nil {
+					return RunResult{}, usageErr
+				}
+				turnUsageCopy := turnUsage
+				usageSummaryCopy := usageSummary
+				turnUsageRecord = &turnUsageCopy
+				usageSummaryState = &usageSummaryCopy
+				if usageEvent != nil {
+					events = append(events, *usageEvent)
+				}
+				emit(StreamEvent{
+					Type:         StreamEventUsageUpdated,
+					Step:         step,
+					TurnUsage:    turnUsageRecord,
+					UsageSummary: usageSummaryState,
+				})
+			}
+		}
+
 		if stopErr := ctx.Err(); stopErr != nil {
 			if runErr != nil {
 				return RunResult{}, runErr
@@ -2296,33 +2357,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if stepReasoningErr != nil {
 			return RunResult{}, stepReasoningErr
 		}
-		stepsCompleted = step
-		accumulatedUsage = mergeTokenUsage(accumulatedUsage, response.Usage)
-		if shouldPersistProviderUsage(providerID, accumulatedUsage) {
-			turnUsage, usageSummary, usageEvent, usageErr := s.recordProviderUsageSnapshot(sessionID, runID, providerID, resolvedPreference.Preference.Model, resolvedPreference.ContextWindow, stepsCompleted, accumulatedUsage, options.Principal, options.ApplySessionMutation)
-			if usageErr != nil {
-				return RunResult{}, usageErr
-			}
-			turnUsageCopy := turnUsage
-			usageSummaryCopy := usageSummary
-			turnUsageRecord = &turnUsageCopy
-			usageSummaryState = &usageSummaryCopy
-			if usageEvent != nil {
-				events = append(events, *usageEvent)
-			}
-			emit(StreamEvent{
-				Type:         StreamEventUsageUpdated,
-				Step:         step,
-				TurnUsage:    turnUsageRecord,
-				UsageSummary: usageSummaryState,
-			})
-			if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) {
-				planContextGuard.observe(usageSummaryCopy)
-			}
-			if s.sessions != nil {
-				if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
-					return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
-				}
+		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && usageSummaryState != nil {
+			planContextGuard.observe(*usageSummaryState)
+		}
+		if s.sessions != nil {
+			if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
+				return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
 			}
 		}
 		if responseReasoningSummary := strings.TrimSpace(response.ReasoningSummary); responseReasoningSummary != "" {
@@ -3976,7 +4016,7 @@ func (s *Service) resolveCompactPreference(accountScopeID string, basePreference
 	return compactruntime.ResolvePreference(s.model, s.agents, s.agentModelSettings, accountScopeID, basePreference)
 }
 
-func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, _ string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
+func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, runPrompt, runID string, basePreference pebblestore.ModelPreference, contextWindow, maxOutputTokens int, returnFullCompactionResponse bool, origin string, preferV3Messages bool, step, attempt int, emit StreamHandler, streamOut ...**memoryCompactionToolStream) (string, error) {
 	toolStream := newMemoryCompactionToolStream(emit, step, origin, attempt)
 	if len(streamOut) > 0 && streamOut[0] != nil {
 		*streamOut[0] = toolStream
@@ -4113,6 +4153,36 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 		oneShotResult, reqErr := executeMemoryCompactionRequest(ctx, runner, compactModel, instructions, oneShotPrompt, contextWindow, summaryMaxRunes, func(message string) {
 			emitProgress(oneShotStatus + "; " + strings.TrimSpace(message))
 		})
+		// Account compaction response usage before downstream validation or error handling
+		if s.sessions != nil && hasConcreteUsageSnapshot(oneShotResult.Usage) {
+			compactCost := 0.0
+			if s.sessions.Store() != nil {
+				compactCost = s.sessions.Store().CalculateCost(compactModel.ProviderID, compactModel.Preference.Model, oneShotResult.Usage.InputTokens, oneShotResult.Usage.OutputTokens, oneShotResult.Usage.CacheReadTokens, oneShotResult.Usage.ThinkingTokens)
+			}
+			uniqueCompactRunID := fmt.Sprintf("compact:%s:%s:%d:%d:%d", sessionID, strings.TrimSpace(runID), compactIndex, attempt, time.Now().UnixNano())
+			compactTurn := pebblestore.SessionTurnUsageSnapshot{
+				SessionID:        sessionID,
+				AccountScopeID:   accountScopeID,
+				RunID:            uniqueCompactRunID,
+				Provider:         compactModel.ProviderID,
+				Model:            compactModel.Preference.Model,
+				Source:           "compaction",
+				InputTokens:      oneShotResult.Usage.InputTokens,
+				OutputTokens:     oneShotResult.Usage.OutputTokens,
+				ThinkingTokens:   oneShotResult.Usage.ThinkingTokens,
+				CacheReadTokens:  oneShotResult.Usage.CacheReadTokens,
+				CacheWriteTokens: oneShotResult.Usage.CacheWriteTokens,
+				TotalTokens:      oneShotResult.Usage.TotalTokens,
+				BilledTokens:     oneShotResult.Usage.TotalTokens,
+				EstimatedCostUSD: compactCost,
+				CreatedAt:        time.Now().UnixMilli(),
+				UpdatedAt:        time.Now().UnixMilli(),
+			}
+			if _, _, _, recErr := s.sessions.RecordTurnUsage(sessionID, compactTurn); recErr != nil {
+				finishFailure(recErr)
+				return "", fmt.Errorf("record compact turn usage: %w", recErr)
+			}
+		}
 		if reqErr == nil {
 			runCompactionDebugEvent("memory_compaction_one_shot_success", map[string]any{
 				"session_id": strings.TrimSpace(sessionID),
@@ -4977,6 +5047,7 @@ type memoryCompactionResult struct {
 	Summary          string
 	StopReason       string
 	ProviderResponse string
+	Usage            provideriface.TokenUsage
 }
 
 func (r memoryCompactionResult) trimmedSummary() string {
@@ -5086,6 +5157,7 @@ func executeMemoryCompactionRequest(ctx context.Context, runner provideriface.Ru
 		Summary:          summary,
 		StopReason:       strings.TrimSpace(response.StopReason),
 		ProviderResponse: strings.TrimSpace(summarizeProviderResponseDiagnostics(response)),
+		Usage:            response.Usage,
 	}
 	if result.isEmpty() {
 		detail := result.diagnosticDetail()

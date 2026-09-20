@@ -1485,6 +1485,16 @@ func (s *Service) RecordTurnUsage(sessionID string, usage pebblestore.SessionTur
 	usage.Model = strings.TrimSpace(usage.Model)
 	usage.Source = strings.TrimSpace(usage.Source)
 	normalizeTurnUsage(&usage)
+	if usage.EstimatedCostUSD <= 0 {
+		cost, status := s.store.CalculateCostWithStatus(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+		usage.EstimatedCostUSD = cost
+		if usage.PriceStatus == "" {
+			usage.PriceStatus = status
+		}
+	} else if usage.PriceStatus == "" {
+		_, status := s.store.CalculateCostWithStatus(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+		usage.PriceStatus = status
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1762,6 +1772,41 @@ func (s *Service) CheckDailyLimit(accountScopeID string) (exceeded bool, current
 		return true, cost, limit.DailyCostLimitUSD, nil
 	}
 	return false, cost, limit.DailyCostLimitUSD, nil
+}
+
+func (s *Service) EstimateMediaCost(provider, model, kind string, count int, durationSeconds int, isIteration bool) pebblestore.MediaCostEstimate {
+	if s == nil || s.store == nil {
+		return pebblestore.MediaCostEstimate{PriceStatus: "unknown", PricingSummary: "unknown pricing (session store not configured)"}
+	}
+	return s.store.EstimateMediaCost(provider, model, kind, count, durationSeconds, isIteration)
+}
+
+func (s *Service) EstimateMediaCostWithOptions(opts pebblestore.MediaCostEstimateOptions) pebblestore.MediaCostEstimate {
+	if s == nil || s.store == nil {
+		return pebblestore.MediaCostEstimate{PriceStatus: "unknown", PricingSummary: "unknown pricing (session store not configured)"}
+	}
+	return s.store.EstimateMediaCostWithOptions(opts)
+}
+
+func (s *Service) RecordMediaUsage(rec pebblestore.SessionMediaUsageRecord) error {
+	if s == nil || s.store == nil {
+		return errors.New("session service is not configured")
+	}
+	return s.store.PutMediaUsage(rec)
+}
+
+func (s *Service) ListMediaUsage(accountScopeID string, limit int) ([]pebblestore.SessionMediaUsageRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session service is not configured")
+	}
+	return s.store.ListMediaUsage(accountScopeID, limit)
+}
+
+func (s *Service) ListMediaUsageBySession(sessionID string, limit int) ([]pebblestore.SessionMediaUsageRecord, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("session service is not configured")
+	}
+	return s.store.ListMediaUsageBySession(sessionID, limit)
 }
 
 type PlanSaveMetadata struct {
@@ -2315,7 +2360,11 @@ func isAllowedRole(role string) bool {
 }
 
 func NormalizeMode(mode string) string {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	clean := strings.ToLower(strings.TrimSpace(mode))
+	if clean == ModeAuto || strings.HasPrefix(clean, ModeAuto+"+") {
+		return ModeAuto
+	}
+	switch clean {
 	case ModeAuto:
 		return ModeAuto
 	default:
@@ -2324,7 +2373,11 @@ func NormalizeMode(mode string) string {
 }
 
 func IsValidMode(mode string) bool {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
+	clean := strings.ToLower(strings.TrimSpace(mode))
+	if clean == ModeAuto || strings.HasPrefix(clean, ModeAuto+"+") {
+		return true
+	}
+	switch clean {
 	case ModePlan, ModeAuto:
 		return true
 	default:

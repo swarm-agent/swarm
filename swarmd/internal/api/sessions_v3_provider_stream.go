@@ -347,7 +347,12 @@ func sessionV3ProviderStepAssistantText(response provideriface.Response, streame
 			parts = append(parts, message.Text)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n\n")
+	}
+	// Reasoning has its own event channel. Promoting it to assistant text
+	// duplicates Thought entries in the transcript and provider continuation.
+	return ""
 }
 
 func firstNonNilErr(errs ...error) error {

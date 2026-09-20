@@ -19,6 +19,7 @@ const (
 	V3SessionMutationRecordRunIntent          = "run_intent.record"
 	V3SessionMutationRecordDiagnostic         = "diagnostic.record"
 	V3SessionMutationRecordUsage              = "usage.record"
+	V3SessionMutationRecordMediaUsage         = "media_usage.record"
 	V3SessionMutationUpdateMode               = "session.mode.update"
 	V3SessionMutationUpdatePreference         = "session.preference.update"
 	V3SessionMutationUpdateMetadata           = "session.metadata.update"
@@ -32,6 +33,7 @@ const (
 	V3SessionMutationArchiveSession           = "session.archive"
 	V3SessionMutationReactivateSession        = "session.reactivate"
 	V3SessionMutationCreateArtifact           = "artifact.create"
+	V3SessionMutationImportArtifact           = "artifact.import"
 	V3SessionMutationUpdateArtifact           = "artifact.update"
 	V3SessionMutationFinalizeArtifact         = "artifact.finalize"
 	V3SessionMutationFailArtifact             = "artifact.fail"
@@ -115,6 +117,7 @@ type V3SessionMutationInput struct {
 	MediaStagingBindings         []MediaStagingBinding         `json:"media_staging_bindings,omitempty"`
 	EpochID                      string                        `json:"epoch_id,omitempty"`
 	TurnUsage                    *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	MediaUsage                   *SessionMediaUsageRecord      `json:"media_usage,omitempty"`
 	ExpectedLastEventSeq         *uint64                       `json:"expected_last_event_seq,omitempty"`
 	NowUnixMs                    int64                         `json:"now_unix_ms,omitempty"`
 }
@@ -137,6 +140,7 @@ type V3SessionMutationResult struct {
 	Lifecycle        *SessionLifecycleSnapshot  `json:"lifecycle,omitempty"`
 	RunIntent        *V3SessionRunIntent        `json:"run_intent,omitempty"`
 	TurnUsage        *SessionTurnUsageSnapshot  `json:"turn_usage,omitempty"`
+	MediaUsage       *SessionMediaUsageRecord   `json:"media_usage,omitempty"`
 	UsageSummary     *SessionUsageSummary       `json:"usage_summary,omitempty"`
 	Projection       V3SessionProjection        `json:"projection"`
 	Idempotency      V3SessionIdempotencyRecord `json:"idempotency"`
@@ -477,6 +481,7 @@ type v3SessionEventReplayPayload struct {
 	Lifecycle          *SessionLifecycleSnapshot     `json:"lifecycle,omitempty"`
 	RunIntent          *V3SessionRunIntent           `json:"run_intent,omitempty"`
 	TurnUsage          *SessionTurnUsageSnapshot     `json:"turn_usage,omitempty"`
+	MediaUsage         *SessionMediaUsageRecord      `json:"media_usage,omitempty"`
 	UsageSummary       *SessionUsageSummary          `json:"usage_summary,omitempty"`
 	CheckpointBoundary *V3CheckpointBoundaryMutation `json:"checkpoint_boundary,omitempty"`
 	Tombstone          *V3SessionTombstone           `json:"tombstone,omitempty"`
@@ -622,6 +627,12 @@ func (s *SessionStore) SetCheckpointBoundaryCommitHookForTest(hook func(sessionI
 	return func() { s.store.sessionMutations.beforeExecutionEpochCommit = previous }
 }
 
+func (s *SessionStore) SetArtifactImportCommitHookForTest(hook func(sessionID string) error) func() {
+	previous := s.store.sessionMutations.beforeArtifactImportCommit
+	s.store.sessionMutations.beforeArtifactImportCommit = hook
+	return func() { s.store.sessionMutations.beforeArtifactImportCommit = previous }
+}
+
 func (s *SessionStore) SetArtifactV2CommitHookForTest(hook func(sessionID string) error) func() {
 	if s == nil || s.store == nil {
 		return func() {}
@@ -665,6 +676,9 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	lockIDs := []string{input.SessionID}
 	if input.WorktreeRecovery != nil {
 		lockIDs = append(lockIDs, input.WorktreeRecovery.OwnerSessionID)
+	}
+	if input.AccountScopeID != "" {
+		lockIDs = append(lockIDs, "account:"+input.AccountScopeID)
 	}
 	unlockSession := s.store.sessionMutations.lockSessions(lockIDs...)
 	defer unlockSession()
@@ -924,7 +938,7 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, errors.New("media staging bindings already committed without routed mutation authority")
 		}
 	}
-	turnUsage, usageSummary, usageProvided, err := s.prepareV3UsageForMutation(input, now)
+	turnUsage, usageSummary, previousTurnUsage, hadPreviousTurnUsage, usageProvided, err := s.prepareV3UsageForMutation(input, now)
 	if err != nil {
 		return V3SessionMutationResult{}, err
 	}
@@ -1201,8 +1215,15 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 		}
 	}
 	if usageProvided {
-		if turnUsage.EstimatedCostUSD <= 0 {
-			turnUsage.EstimatedCostUSD = CalculateBaselineCost(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+		if turnUsage.EstimatedCostUSD <= 0 && !strings.EqualFold(turnUsage.Provider, "codex") {
+			cost, status := s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.EstimatedCostUSD = cost
+			if turnUsage.PriceStatus == "" {
+				turnUsage.PriceStatus = status
+			}
+		} else if turnUsage.PriceStatus == "" {
+			_, status := s.CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+			turnUsage.PriceStatus = status
 		}
 		usagePayload, err := json.Marshal(turnUsage)
 		if err != nil {
@@ -1227,6 +1248,198 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(usageSummary.AccountScopeID, usageSummary.SessionID)), summaryPayload, nil); err != nil {
 				return V3SessionMutationResult{}, err
 			}
+		}
+
+		// Update DailyUsageAccumulator atomically inside the same batch
+		ts := turnUsage.CreatedAt
+		if ts <= 0 {
+			ts = turnUsage.UpdatedAt
+		}
+		if ts <= 0 {
+			ts = now
+		}
+		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
+		currTot, currIn, currOut, currCache, _, currThink := billedComponents(turnUsage)
+		costDelta := turnUsage.EstimatedCostUSD
+		tokensDelta := currTot
+		inputDelta := currIn
+		outputDelta := currOut
+		cachedDelta := currCache
+		thinkingDelta := currThink
+		if hadPreviousTurnUsage {
+			costDelta = turnUsage.EstimatedCostUSD - previousTurnUsage.EstimatedCostUSD
+			if costDelta < 0 {
+				costDelta = 0
+			}
+			prevTot, prevIn, prevOut, prevCache, _, prevThink := billedComponents(previousTurnUsage)
+			tokensDelta = currTot - prevTot
+			if tokensDelta < 0 {
+				tokensDelta = 0
+			}
+			inputDelta = currIn - prevIn
+			if inputDelta < 0 {
+				inputDelta = 0
+			}
+			outputDelta = currOut - prevOut
+			if outputDelta < 0 {
+				outputDelta = 0
+			}
+			cachedDelta = currCache - prevCache
+			if cachedDelta < 0 {
+				cachedDelta = 0
+			}
+			thinkingDelta = currThink - prevThink
+			if thinkingDelta < 0 {
+				thinkingDelta = 0
+			}
+		}
+		if costDelta > 0 || tokensDelta > 0 || !hadPreviousTurnUsage {
+			acc, _, err := s.GetDailyUsageAccumulator(turnUsage.AccountScopeID, dateStr)
+			if err != nil {
+				return V3SessionMutationResult{}, fmt.Errorf("get daily usage accumulator: %w", err)
+			}
+			if acc.AccountScopeID == "" {
+				acc.AccountScopeID = turnUsage.AccountScopeID
+				acc.Date = dateStr
+			}
+			acc.TotalCostUSD += costDelta
+			acc.TotalTokens += tokensDelta
+			acc.InputTokens += inputDelta
+			acc.OutputTokens += outputDelta
+			acc.CachedTokens += cachedDelta
+			acc.ThinkingTokens += thinkingDelta
+			if !hadPreviousTurnUsage {
+				acc.TurnCount++
+			}
+			if acc.ModelsUsed == nil {
+				acc.ModelsUsed = make(map[string]int64)
+			}
+			if turnUsage.Model != "" {
+				acc.ModelsUsed[turnUsage.Model] += tokensDelta
+			}
+			acc.UpdatedAt = now
+			accPayload, err := json.Marshal(acc)
+			if err != nil {
+				return V3SessionMutationResult{}, fmt.Errorf("marshal daily accumulator: %w", err)
+			}
+			if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+			turnsDelta := 0
+			if !hadPreviousTurnUsage {
+				turnsDelta = 1
+			}
+			unknownDelta := 0
+			if strings.EqualFold(turnUsage.PriceStatus, "unknown") || strings.EqualFold(turnUsage.ServiceTierStatus, "unknown") {
+				unknownDelta = 1
+			}
+			codexNominalDelta := 0.0
+			if strings.EqualFold(turnUsage.Provider, "codex") {
+				codexNominalDelta = CalculateBaselineCost("openai", turnUsage.Model, turnUsage.InputTokens, turnUsage.OutputTokens, turnUsage.CacheReadTokens, turnUsage.ThinkingTokens)
+				if hadPreviousTurnUsage {
+					prevNominal := CalculateBaselineCost("openai", previousTurnUsage.Model, previousTurnUsage.InputTokens, previousTurnUsage.OutputTokens, previousTurnUsage.CacheReadTokens, previousTurnUsage.ThinkingTokens)
+					codexNominalDelta -= prevNominal
+				}
+			}
+			if err := s.updateAccountUsageRollupInBatch(batch, turnUsage.AccountScopeID, dateStr, turnUsage.SessionID, turnUsage.Provider, turnUsage.Model, costDelta, codexNominalDelta, 0.0, tokensDelta, inputDelta, outputDelta, cachedDelta, thinkingDelta, turnsDelta, 0, 0, 0, 0, unknownDelta, ts, now); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
+	if input.MediaUsage != nil {
+		media := *input.MediaUsage
+		media.ID = strings.TrimSpace(media.ID)
+		media.SessionID = strings.TrimSpace(input.SessionID)
+		media.AccountScopeID = strings.TrimSpace(input.AccountScopeID)
+		if media.CreatedAt <= 0 {
+			media.CreatedAt = now
+		}
+		mediaKey := KeySessionMediaUsage(media.AccountScopeID, media.ID)
+		mediaPayload, err := json.Marshal(media)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal v3 media usage: %w", err)
+		}
+		if err := batch.Set([]byte(mediaKey), mediaPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		sessionMediaKey := KeySessionMediaUsageBySession(media.SessionID, media.ID)
+		if err := batch.Set([]byte(sessionMediaKey), mediaPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+
+		dateStr := time.UnixMilli(media.CreatedAt).UTC().Format("2006-01-02")
+		acc, _, err := s.GetDailyUsageAccumulator(media.AccountScopeID, dateStr)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("get daily usage accumulator: %w", err)
+		}
+		if acc.AccountScopeID == "" {
+			acc.AccountScopeID = media.AccountScopeID
+			acc.Date = dateStr
+		}
+		acc.TotalCostUSD += media.CostUSD
+		acc.MediaCostUSD += media.CostUSD
+		acc.MediaCalls++
+		switch strings.ToLower(media.Kind) {
+		case "image":
+			acc.ImageCount++
+			acc.ImageCostUSD += media.CostUSD
+		case "video":
+			acc.VideoCount++
+			acc.VideoCostUSD += media.CostUSD
+		case "audio":
+			acc.AudioCount++
+			acc.AudioCostUSD += media.CostUSD
+		}
+		acc.UpdatedAt = now
+		accPayload, err := json.Marshal(acc)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal daily accumulator: %w", err)
+		}
+		if err := batch.Set([]byte(KeyDailyUsageAccumulator(acc.AccountScopeID, acc.Date)), accPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+
+		summary, found, err := s.GetUsageSummary(media.SessionID)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("get usage summary: %w", err)
+		}
+		if !found {
+			summary = SessionUsageSummary{
+				SessionID:      media.SessionID,
+				AccountScopeID: media.AccountScopeID,
+				UserID:         input.UserID,
+			}
+		}
+		summary.EstimatedCostUSD += media.CostUSD
+		summary.UpdatedAt = now
+		summaryPayload, err := json.Marshal(summary)
+		if err != nil {
+			return V3SessionMutationResult{}, fmt.Errorf("marshal usage summary: %w", err)
+		}
+		if err := batch.Set([]byte(KeySessionUsageSummary(summary.SessionID)), summaryPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if summary.AccountScopeID != "" {
+			if err := batch.Set([]byte(KeySessionUsageSummaryByAccount(summary.AccountScopeID, summary.SessionID)), summaryPayload, nil); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+
+		imageDelta, videoDelta, audioDelta := 0, 0, 0
+		switch strings.ToLower(media.Kind) {
+		case "image":
+			imageDelta = 1
+		case "video":
+			videoDelta = 1
+		case "audio":
+			audioDelta = 1
+		}
+		unknownDelta := 0
+		if strings.EqualFold(media.PriceStatus, "unknown") {
+			unknownDelta = 1
+		}
+		if err := s.updateAccountUsageRollupInBatch(batch, media.AccountScopeID, dateStr, media.SessionID, media.Provider, media.Model, 0.0, 0.0, media.CostUSD, 0, 0, 0, 0, 0, 0, 1, imageDelta, videoDelta, audioDelta, unknownDelta, media.CreatedAt, now); err != nil {
+			return V3SessionMutationResult{}, err
 		}
 	}
 	if runIntentProvided {
@@ -1268,6 +1481,13 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			}
 		}
 	}
+	if input.Kind == V3SessionMutationImportArtifact {
+		if hook := s.store.sessionMutations.beforeArtifactImportCommit; hook != nil {
+			if err := hook(input.SessionID); err != nil {
+				return V3SessionMutationResult{}, err
+			}
+		}
+	}
 	if input.ArtifactV2 != nil {
 		if hook := s.store.sessionMutations.beforeArtifactV2Commit; hook != nil {
 			if err := hook(input.SessionID); err != nil {
@@ -1291,17 +1511,6 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	reservationCommitted = true
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
-	}
-	if usageProvided {
-		ts := turnUsage.CreatedAt
-		if ts <= 0 {
-			ts = turnUsage.UpdatedAt
-		}
-		if ts <= 0 {
-			ts = now
-		}
-		dateStr := time.UnixMilli(ts).UTC().Format("2006-01-02")
-		_, _ = s.IncrementDailyUsage(turnUsage.AccountScopeID, dateStr, turnUsage.EstimatedCostUSD, turnUsage.TotalTokens)
 	}
 	v3SuccessfulFreshMutations.Add(1)
 	v3EstimatedLogicalBytes.Add(estimatedSetBytes(KeyV3RealtimeOutbox(endpointSeq), realtimeOutboxPayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq), realtimeOutboxReferencePayload) + estimatedSetBytes(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq), realtimeOutboxReferencePayload))
@@ -1336,6 +1545,10 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if usageProvided {
 		result.TurnUsage = &turnUsage
 		result.UsageSummary = &usageSummary
+	}
+	if input.MediaUsage != nil {
+		media := *input.MediaUsage
+		result.MediaUsage = &media
 	}
 	result.Plan = committedV3PlanSaveResult(input.PlanSave)
 	if artifact.Projection.Collection.ID != "" {
@@ -2352,6 +2565,10 @@ func (s *SessionStore) resultFromV3IdempotencyRecord(record V3SessionIdempotency
 			artifactV3 := *payload.ArtifactV3
 			result.ArtifactV3 = &artifactV3
 		}
+		if payload.MediaUsage != nil {
+			media := *payload.MediaUsage
+			result.MediaUsage = &media
+		}
 	}
 	result.Projection = V3SessionProjection{
 		SessionID:                  record.Result.SessionID,
@@ -2630,29 +2847,29 @@ func v3RunIntentPriority(status string) int {
 	}
 }
 
-func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, now int64) (SessionTurnUsageSnapshot, SessionUsageSummary, bool, error) {
+func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, now int64) (SessionTurnUsageSnapshot, SessionUsageSummary, SessionTurnUsageSnapshot, bool, bool, error) {
 	if input.TurnUsage == nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, nil
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, nil
 	}
 	usage := sanitizeTurnUsageSnapshot(*input.TurnUsage)
 	usage.SessionID = input.SessionID
 	if usage.RunID == "" {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, errors.New("turn usage run id is required")
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, errors.New("turn usage run id is required")
 	}
 	session, ok, err := s.GetSession(input.SessionID)
 	if err != nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, err
 	}
 	if !ok {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, fmt.Errorf("session %q not found", input.SessionID)
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, fmt.Errorf("session %q not found", input.SessionID)
 	}
 	previous, hadPrevious, err := s.GetTurnUsage(input.SessionID, usage.RunID)
 	if err != nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, err
 	}
 	summary, hasSummary, err := s.GetUsageSummary(input.SessionID)
 	if err != nil {
-		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, false, err
+		return SessionTurnUsageSnapshot{}, SessionUsageSummary{}, SessionTurnUsageSnapshot{}, false, false, err
 	}
 	if !hasSummary {
 		summary = SessionUsageSummary{SessionID: input.SessionID}
@@ -2670,6 +2887,20 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 		}
 	}
 	usage.UpdatedAt = now
+	if usage.EstimatedCostUSD <= 0 {
+		usage.EstimatedCostUSD = s.CalculateCost(usage.Provider, usage.Model, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+	}
+	costDelta := usage.EstimatedCostUSD
+	if hadPrevious {
+		costDelta = usage.EstimatedCostUSD - previous.EstimatedCostUSD
+		if costDelta < 0 {
+			costDelta = 0
+		}
+	}
+	summary.EstimatedCostUSD += costDelta
+	if summary.EstimatedCostUSD < 0 {
+		summary.EstimatedCostUSD = 0
+	}
 	if usage.ContextWindow > 0 {
 		summary.ContextWindow = usage.ContextWindow
 	} else if summary.ContextWindow > 0 {
@@ -2701,7 +2932,7 @@ func (s *SessionStore) prepareV3UsageForMutation(input V3SessionMutationInput, n
 	} else {
 		summary = ApplyProviderUsageSnapshotToSummary(summary, usage)
 	}
-	return usage, summary, true, nil
+	return usage, summary, previous, hadPrevious, true, nil
 }
 
 func (s *SessionStore) prepareV3SessionForMutation(input V3SessionMutationInput, seq uint64, now int64) (SessionSnapshot, bool, error) {
@@ -3060,6 +3291,11 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 			return err
 		}
 	}
+	if input.MediaUsage != nil {
+		if err := validateV3MutationEmbeddedOwnership(input, "media usage", input.MediaUsage.SessionID, input.MediaUsage.UserID, input.MediaUsage.AccountScopeID); err != nil {
+			return err
+		}
+	}
 	if input.CheckpointBoundary != nil && input.Kind != V3SessionMutationCommitCheckpointBoundary {
 		return errors.New("checkpoint boundary payload requires checkpoint boundary mutation kind")
 	}
@@ -3195,6 +3431,8 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.diagnostic"
 	case V3SessionMutationRecordUsage:
 		return "run.usage.updated"
+	case V3SessionMutationRecordMediaUsage:
+		return "session.media_usage.recorded"
 	case V3SessionMutationUpdateMode:
 		return "session.mode.updated"
 	case V3SessionMutationUpdatePreference:
@@ -3211,6 +3449,10 @@ func normalizeV3SessionEventType(input V3SessionMutationInput) string {
 		return "session.plan.saved"
 	case V3SessionMutationAcceptPlan:
 		return "session.plan.saved"
+	case V3SessionMutationImportArtifact:
+		return "session.artifact.finalized"
+	case V3SessionMutationArtifactV3Imported:
+		return V3SessionMutationArtifactV3Imported
 	case V3SessionMutationCreateArtifact:
 		return "session.artifact.created"
 	case V3SessionMutationUpdateArtifact:
@@ -3339,6 +3581,10 @@ func (input V3SessionMutationInput) v3EventPayload(seq uint64, session SessionSn
 	if artifactV3.Repository != nil || artifactV3.Revision != nil || artifactV3.Turn != nil || artifactV3.Candidate != nil {
 		projection := artifactV3
 		payload.ArtifactV3 = &projection
+	}
+	if input.MediaUsage != nil {
+		copyMedia := *input.MediaUsage
+		payload.MediaUsage = &copyMedia
 	}
 	if transcription.AttachmentRef != "" || transcription.JobRef != "" {
 		projection := transcription

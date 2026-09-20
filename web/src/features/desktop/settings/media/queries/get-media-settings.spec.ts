@@ -88,8 +88,14 @@ test('media settings catalog decodes video generation and iteration options', as
       { id: 'gemini-omni-1.1-flash', provider: 'google', model: 'gemini-omni-1.1-flash', display_name: 'Gemini Omni 1.1 Flash', kind: 'video_iteration', ready: true },
     ],
     video_models: [],
+    audio_models: [
+      { id: 'lyria-3.5', provider: 'google', model: 'lyria-3.5', display_name: 'Lyria 3.5', kind: 'audio_generation', ready: true },
+      { id: 'lyria-3-clip-preview', provider: 'google', model: 'lyria-3-clip-preview', display_name: 'Lyria 3 Clip Preview', kind: 'audio_generation', ready: true },
+    ],
     video_ready: true,
     video_status: 'ready',
+    audio_ready: true,
+    audio_status: 'ready',
   }
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -107,6 +113,10 @@ test('media settings catalog decodes video generation and iteration options', as
   assert.equal(result.video_generation_models.length, 2)
   assert.equal(result.video_iteration_models.length, 1)
   assert.equal(result.video_iteration_models[0].model, 'gemini-omni-1.1-flash')
+  assert.equal(result.audio_models?.length, 2)
+  assert.equal(result.audio_ready, true)
+  assert.equal(result.audio_status, 'ready')
+  assert.equal(result.audio_models?.[0]?.model, 'lyria-3.5')
 })
 
 test('focus notes use the backend byte limit without splitting unicode', () => {

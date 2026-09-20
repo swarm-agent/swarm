@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"swarm/packages/swarmd/internal/artifact"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -14,6 +15,26 @@ import (
 type ArtifactV3NativeDiscovery interface {
 	ResolveArtifactV3SelectedSource(context.Context, string, string, string, string, string, uint64) (pebblestore.ArtifactV3SelectedSource, error)
 	ListArtifactV3SelectedSources(context.Context, string, string, string, int) ([]pebblestore.ArtifactV3SelectedSource, error)
+}
+
+// ArtifactV3NativeCatalogSearcher searches the retained native Artifact V3 catalog across sessions.
+type ArtifactV3NativeCatalogSearcher interface {
+	SearchArtifactV3Catalog(ctx context.Context, accountScopeID, userID string, options pebblestore.ArtifactV3CatalogOptions) (pebblestore.ArtifactV3CatalogPage, error)
+}
+
+// ArtifactV3RetainedSourceResolver verifies exact retained sources without touching selection state.
+type ArtifactV3RetainedSourceResolver interface {
+	ResolveArtifactV3RetainedSource(context.Context, string, string, string, string, string, uint64) (pebblestore.ArtifactV3SelectedSource, error)
+}
+
+// ArtifactV3RetainedSourceReader reads project files and parts from a retained source artifact.
+type ArtifactV3RetainedSourceReader interface {
+	ReadArtifactV3RetainedRevision(ctx context.Context, accountScopeID, userID, sourceSessionID, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3Part, error)
+}
+
+// ArtifactV3NativeImporter imports an exact retained Artifact V3 version into a destination session as an editable head.
+type ArtifactV3NativeImporter interface {
+	ImportArtifactV3(ctx context.Context, input pebblestore.ArtifactV3ImportInput) (pebblestore.ArtifactV3Projection, error)
 }
 
 func directArtifactV3ProjectManifest(project map[string][]byte) (pebblestore.ArtifactV3Manifest, error) {
@@ -35,26 +56,166 @@ func (r *Runtime) discoverDirectArtifactV3(ctx context.Context, scope WorkspaceS
 	if r.artifactV3Author == nil || scope.SessionID != principal.SessionID {
 		return nil, ErrArtifactV3AuthorInvalid
 	}
-	discovery, ok := r.artifactV3Author.repository.(ArtifactV3NativeDiscovery)
-	if !ok {
-		return nil, errors.New("native Artifact V3 discovery unavailable")
+	action := asString(args["action"])
+	if action == "list_v3" {
+		if err := requireOnlyArtifactV3Fields(args, "action", "limit", "cursor", "query", "status", "source_kind", "media_type", "session_id", "artifact_id", "created_after", "created_before"); err != nil {
+			return nil, fmt.Errorf("manage_artifact list_v3 contains unsupported field: %w", err)
+		}
+		limit := clampInt(asInt(args["limit"], pebblestore.ArtifactV3CatalogDefaultLimit), 1, pebblestore.ArtifactV3CatalogMaxLimit)
+		cursor := strings.TrimSpace(asString(args["cursor"]))
+		query := strings.TrimSpace(asString(args["query"]))
+		status := strings.TrimSpace(asString(args["status"]))
+		sourceKind := strings.TrimSpace(asString(args["source_kind"]))
+		mediaType := strings.TrimSpace(asString(args["media_type"]))
+		sessionFilter := strings.TrimSpace(asString(args["session_id"]))
+		artifactFilter := strings.TrimSpace(asString(args["artifact_id"]))
+		createdAfter, _, err := optionalArtifactInt64(args, "created_after")
+		if err != nil {
+			return nil, err
+		}
+		createdBefore, _, err := optionalArtifactInt64(args, "created_before")
+		if err != nil {
+			return nil, err
+		}
+		options := pebblestore.ArtifactV3CatalogOptions{
+			Query:         query,
+			Status:        status,
+			SourceKind:    sourceKind,
+			MediaType:     mediaType,
+			SessionID:     sessionFilter,
+			ArtifactID:    artifactFilter,
+			CreatedAfter:  createdAfter,
+			CreatedBefore: createdBefore,
+			Limit:         limit,
+			Cursor:        cursor,
+		}
+		if searcher, ok := r.artifactV3Author.repository.(ArtifactV3NativeCatalogSearcher); ok {
+			page, err := searcher.SearchArtifactV3Catalog(ctx, principal.AccountScopeID, principal.UserID, options)
+			if err != nil {
+				return nil, err
+			}
+			items := make([]map[string]any, 0, len(page.Items))
+			for _, item := range page.Items {
+				refMap := map[string]any{
+					"session_id":   item.SessionID,
+					"artifact_id":  item.ArtifactID,
+					"revision_ref": item.RevisionRef,
+				}
+				itemMap := map[string]any{
+					"artifact_id":           item.ArtifactID,
+					"session_id":            item.SessionID,
+					"commit_oid":            item.CommitOID,
+					"revision_ref":          item.RevisionRef,
+					"source_kind":           item.SourceKind,
+					"turn_id":               item.TurnID,
+					"candidate_id":          item.CandidateID,
+					"intent":                item.Intent,
+					"file_count":            item.FileCount,
+					"tree_bytes":            item.TreeBytes,
+					"status":                item.Status,
+					"media_type":            item.MediaType,
+					"entrypoint":            item.Entrypoint,
+					"parts":                 item.Parts,
+					"created_at":            item.CreatedAt,
+					"reference":             refMap,
+					"artifact_v3_reference": refMap,
+				}
+				if item.SessionID == principal.SessionID {
+					itemMap["copyable_next_calls"] = []map[string]any{
+						{"action": "read_v3", "artifact_v3_reference": refMap},
+						{"action": "source_v3", "artifact_v3_reference": refMap},
+					}
+				} else {
+					itemMap["copyable_next_calls"] = []map[string]any{
+						{"action": "read_v3", "artifact_v3_reference": refMap},
+						{"action": "import", "artifact_v3_reference": refMap},
+					}
+				}
+				items = append(items, itemMap)
+			}
+			resp := map[string]any{
+				"artifacts": items,
+				"count":     len(items),
+				"limit":     limit,
+				"has_more":  page.HasMore || page.NextCursor != "",
+			}
+			if page.NextCursor != "" {
+				resp["next_cursor"] = page.NextCursor
+			}
+			return resp, nil
+		}
+		return nil, errors.New("native Artifact V3 retained catalog unavailable")
 	}
-	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id"); err != nil {
-		return nil, fmt.Errorf("%w: native discovery is session-bound; source_v3 accepts only action and artifact_id, list_v3 needs only action; omit session_id and artifact_v3_reference", err)
+
+	// source_v3
+	if err := requireOnlyArtifactV3Fields(args, "action", "artifact_id", "session_id", "artifact_v3_reference"); err != nil {
+		return nil, fmt.Errorf("manage_artifact source_v3 contains unsupported field: %w", err)
 	}
-	if asString(args["action"]) == "list_v3" {
-		sources, err := discovery.ListArtifactV3SelectedSources(ctx, principal.AccountScopeID, principal.UserID, principal.SessionID, 50)
-		return map[string]any{"sources": sources, "limit": 50}, err
+	var id, targetSessionID, commitOID string
+	var err error
+	if refRaw, supplied := args["artifact_v3_reference"]; supplied {
+		if err := requireOnlyArtifactV3Fields(args, "action", "artifact_v3_reference"); err != nil {
+			return nil, err
+		}
+		ref, err := parseDirectArtifactV3RevisionInput(refRaw)
+		if err != nil {
+			return nil, err
+		}
+		id, targetSessionID = ref.ArtifactID, ref.SessionID
+		commitOID = strings.TrimPrefix(ref.RevisionRef, "revision-")
 	}
-	id := asString(args["artifact_id"])
+	if id == "" {
+		id = strings.TrimSpace(asString(args["artifact_id"]))
+	}
+	if targetSessionID == "" {
+		targetSessionID = strings.TrimSpace(asString(args["session_id"]))
+	}
+	if targetSessionID == "" {
+		targetSessionID = principal.SessionID
+	}
 	if id == "" {
 		return nil, ErrArtifactV3AuthorInvalid
 	}
-	source, err := discovery.ResolveArtifactV3SelectedSource(ctx, principal.AccountScopeID, principal.UserID, principal.SessionID, id, "", 0)
+	var source pebblestore.ArtifactV3SelectedSource
+	if targetSessionID != principal.SessionID {
+		resolver, ok := r.artifactV3Author.repository.(ArtifactV3RetainedSourceResolver)
+		if !ok {
+			return nil, errors.New("native Artifact V3 retained resolution unavailable")
+		}
+		source, err = resolver.ResolveArtifactV3RetainedSource(ctx, principal.AccountScopeID, principal.UserID, targetSessionID, id, commitOID, 0)
+	} else {
+		discovery, ok := r.artifactV3Author.repository.(ArtifactV3NativeDiscovery)
+		if !ok {
+			return nil, errors.New("native Artifact V3 discovery unavailable")
+		}
+		source, err = discovery.ResolveArtifactV3SelectedSource(ctx, principal.AccountScopeID, principal.UserID, targetSessionID, id, commitOID, 0)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"artifact_v3_source": map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "commit_oid": source.CommitOID, "projection_seq": source.ProjectionSeq}, "reference": map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "revision_ref": source.RevisionRef}, "parts": source.Revision.Parts, "turns": source.Turns, "candidates": source.Candidates, "selection_calls": artifactV3SelectionCalls(source)}, nil
+	refMap := map[string]any{"session_id": source.SessionID, "artifact_id": source.ArtifactID, "revision_ref": source.RevisionRef}
+	result := map[string]any{
+		"artifact_v3_source": map[string]any{
+			"session_id":     source.SessionID,
+			"artifact_id":    source.ArtifactID,
+			"commit_oid":     source.CommitOID,
+			"projection_seq": source.ProjectionSeq,
+		},
+		"reference":             refMap,
+		"artifact_v3_reference": refMap,
+		"parts":                 source.Revision.Parts,
+		"turns":                 source.Turns,
+		"candidates":            source.Candidates,
+	}
+	if source.SessionID == principal.SessionID {
+		result["selection_calls"] = artifactV3SelectionCalls(source)
+	} else {
+		result["copyable_next_calls"] = []map[string]any{
+			{"action": "read_v3", "artifact_v3_reference": refMap},
+			{"action": "import", "artifact_v3_reference": refMap},
+		}
+	}
+	return result, nil
 }
 
 // Selection deliberately requires caller-supplied CAS; discovery never selects.

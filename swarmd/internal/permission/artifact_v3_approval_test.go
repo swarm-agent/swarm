@@ -27,6 +27,38 @@ func TestArtifactV3ExactActionApproval(t *testing.T) {
 	}
 }
 
+// Requirement: import must be classified as a write action (denied in read-only execution setting,
+// allowed in auto mode), while discovery and reading are classified as read actions (allowed in read-only).
+// Threat: read-only execution accidentally authorizes destination mutation.
+// ExplainPolicy is the narrow policy boundary; adapter tests own write effects.
+func TestArtifactImportAndDiscoveryPolicyClassification(t *testing.T) {
+	writeActions := []string{"import", "create", "create_package", "revise_v3", "begin_v3", "author_v3", "publish_workspace", "materialize", "promote", "delete"}
+	for _, action := range writeActions {
+		args := `{"action":"` + action + `"}`
+		autoGot := ExplainPolicy("auto", "manage_artifact", args, Policy{})
+		if autoGot.Decision != PolicyDecisionAllow {
+			t.Fatalf("write action %s in auto mode = %q, want allow", action, autoGot.Decision)
+		}
+		readGot := ExplainPolicy("read", "manage_artifact", args, Policy{})
+		if readGot.Decision != PolicyDecisionDeny {
+			t.Fatalf("write action %s in read mode = %q, want deny", action, readGot.Decision)
+		}
+	}
+
+	readActions := []string{"list_v3", "source_v3", "read_v3", "draft_status_v3", "list", "search", "get", "read", "help"}
+	for _, action := range readActions {
+		args := `{"action":"` + action + `"}`
+		autoGot := ExplainPolicy("auto", "manage_artifact", args, Policy{})
+		if autoGot.Decision != PolicyDecisionAllow {
+			t.Fatalf("read action %s in auto mode = %q, want allow", action, autoGot.Decision)
+		}
+		readGot := ExplainPolicy("read", "manage_artifact", args, Policy{})
+		if readGot.Decision != PolicyDecisionAllow {
+			t.Fatalf("read action %s in read mode = %q, want allow", action, readGot.Decision)
+		}
+	}
+}
+
 // Requirement: an operator's exact native capability rule must resolve automation
 // without granting another artifact action. Threat: wildcard/generic rules leak
 // consent, or an allow masks denial. The policy evaluator is the narrow boundary.

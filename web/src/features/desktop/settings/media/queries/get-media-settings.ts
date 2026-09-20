@@ -5,7 +5,7 @@ export interface MediaCatalogModelOption {
   provider: string
   model: string
   display_name: string
-  kind: 'image_generation' | 'video_understanding' | 'video_generation' | 'video_iteration'
+  kind: 'image_generation' | 'video_understanding' | 'video_generation' | 'video_iteration' | 'audio_generation'
   ready: boolean
   reason?: string
   pricing?: unknown
@@ -17,8 +17,11 @@ export interface MediaSettingsCatalog {
   video_generation_models: MediaCatalogModelOption[]
   video_iteration_models: MediaCatalogModelOption[]
   video_models: MediaCatalogModelOption[]
+  audio_models?: MediaCatalogModelOption[]
   video_ready: boolean
   video_status: string
+  audio_ready?: boolean
+  audio_status?: string
 }
 
 export interface SourceMediaDirectoriesResponse {

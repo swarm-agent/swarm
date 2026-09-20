@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -100,8 +101,11 @@ var manageVideoActionRegistry = []manageVideoActionSpec{
 	{"inspect_accepted_cut", "Accepted cut loaded", "Inspecting accepted cut", true},
 	{"create_edit_proposal", "New change added", "Preparing video working change", true},
 	{"propose_plan", "New video change added", "Preparing visual video change", true},
+	{"propose_html_iteration", "HTML iteration added", "Preparing live HTML iteration", true},
 	{"convert_artifact_v2", "Artifact V2 proposal added", "Converting exact Artifact V2 head", true},
 	{"convert_artifact_v3", "Artifact V3 proposal added", "Rendering exact Artifact V3 revision", true},
+	{"import_audio_artifact", "Audio artifact imported", "Importing audio artifact into Video Studio", true},
+	{"register_audio_artifact", "Audio artifact registered", "Registering audio artifact into Video Studio", true},
 	{"select_animation_candidate", "Animation candidate selected", "Selecting exact HTML animation candidate", true},
 	{"promote_animation_derivative", "Animation derivative promoted", "Promoting exact MP4 animation derivative", true},
 	{"inspect_composition", "Composition loaded", "Inspecting pending spatial composition", true},
@@ -144,64 +148,108 @@ func manageVideoAction(action string) (manageVideoActionSpec, bool) {
 func manageVideoDefinition() Definition {
 	return Definition{
 		Type: "function", Name: "manage_video",
-		Description: "Inspect video/audio sources, create video projects, and submit timeline edit proposals. For detailed workflow instructions, timeline specifications, and composition guides, call action='help'.",
+		Description: "Video Studio multi-clip project management, timeline editing, visual plan proposals, soundtracks, and rendering. Distinct from single-pass AI video generation; creates and edits multi-part video timelines with ready media visuals. Call action='help' for detailed workflows, schemas, and examples.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":                   map[string]any{"type": "string", "enum": manageVideoActionNames(false), "description": "Call capabilities to discover the allowed action set. In Video Studio, call inspect_context first to load the exact attached project, revisions, selection, and proposal state without mutation."},
-				"source_root_ref":          map[string]any{"type": "string", "description": "Opaque root reference returned by list_source_roots."},
-				"relative_path":            map[string]any{"type": "string", "description": "Bounded path under source_root_ref; use directory relative_path values returned by browse_source."},
-				"video_refs":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Video references from browse_source."},
-				"audio_refs":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Audio references from browse_source."},
+				"action":                   map[string]any{"type": "string", "enum": manageVideoActionNames(false), "description": "Action name. Call capabilities or action='help' for details."},
+				"source_root_ref":          map[string]any{"type": "string", "description": "Source root ref from list_source_roots."},
+				"relative_path":            map[string]any{"type": "string", "description": "Path under source_root_ref."},
+				"video_refs":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Video refs from browse_source."},
+				"audio_refs":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Audio refs from browse_source."},
 				"job_refs":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"job_ref":                  map[string]any{"type": "string"},
 				"transcript_ref":           map[string]any{"type": "string"},
-				"source_fingerprint":       map[string]any{"type": "string", "description": "Exact source fingerprint for read_transcript/read_audio_analysis."},
-				"analysis_ref":             map[string]any{"type": "string", "description": "Exact audanalysis_ reference."},
-				"waveform_resolution_ms":   map[string]any{"type": "integer", "description": "Waveform bucket width in ms for read_audio_analysis."},
-				"focus_notes":              map[string]any{"type": "string", "description": "job-specific instructions from the initiating user or AI (e.g. 'Silent software demo; produce a dense play-by-play')."},
+				"source_fingerprint":       map[string]any{"type": "string", "description": "Source fingerprint."},
+				"analysis_ref":             map[string]any{"type": "string", "description": "Audio analysis reference."},
+				"waveform_resolution_ms":   map[string]any{"type": "integer"},
+				"focus_notes":              map[string]any{"type": "string", "maxLength": videotranscription.MaxFocusNotesBytes, "description": "Optional job-specific instructions from the initiating user or AI for start_transcription only, for example: 'Silent software demo; produce a dense play-by-play of cursor actions, navigation, text changes, and visible results.' Guidance cannot change the multimodal schema, factuality rules, or source authority."},
 				"max_bytes":                map[string]any{"type": "integer"},
 				"max_segments":             map[string]any{"type": "integer"},
-				"start_ms":                 map[string]any{"type": "integer", "description": "Optional evidence-range start in ms."},
-				"end_ms":                   map[string]any{"type": "integer", "description": "Optional evidence-range end in ms."},
-				"timestamps_ms":            map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Canonical timestamps for inspect_frames."},
-				"ranges":                   map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"start_ms": map[string]any{"type": "integer"}, "end_ms": map[string]any{"type": "integer"}, "count": map[string]any{"type": "integer"}}, "required": []string{"start_ms", "end_ms", "count"}}, "description": "Bounded ranges for inspect_frames. Call action='help' for schema."},
-				"max_width":                map[string]any{"type": "integer", "description": "Maximum PNG width."},
-				"include_index":            map[string]any{"type": "boolean", "description": "Derive section index and evidence manifest."},
-				"index_only":               map[string]any{"type": "boolean", "description": "Return metadata index without full text."},
-				"project_id":               map[string]any{"type": "string", "description": "Video project identifier."},
-				"revision_id":              map[string]any{"type": "string", "description": "Project revision identifier."},
-				"source_revision_id":       map[string]any{"type": "string", "description": "Exact immutable revision to copy when restoring a project."},
-				"render_job_id":            map[string]any{"type": "string", "description": "Render job identifier."},
-				"render_fps":               map[string]any{"type": "integer", "enum": []int{30, 60}, "description": "Output frame rate."},
-				"queue_grace_ms":           map[string]any{"type": "integer", "description": "Optional bounded delay before render leaves queued status."},
-				"title":                    map[string]any{"type": "string", "description": "Video project title."},
-				"description":              map[string]any{"type": "string", "description": "Video project or revision description."},
-				"output_preset":            map[string]any{"type": "string", "description": "Target video format preset."},
-				"change_summary":           map[string]any{"type": "string", "description": "Summary of changes made in this revision."},
+				"start_ms":                 map[string]any{"type": "integer"},
+				"end_ms":                   map[string]any{"type": "integer"},
+				"timestamps_ms":            map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+				"ranges":                   map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Ranges for inspect_frames ({start_ms, end_ms, count})."},
+				"max_width":                map[string]any{"type": "integer"},
+				"include_index":            map[string]any{"type": "boolean"},
+				"index_only":               map[string]any{"type": "boolean"},
+				"project_id":               map[string]any{"type": "string"},
+				"revision_id":              map[string]any{"type": "string"},
+				"source_revision_id":       map[string]any{"type": "string"},
+				"render_job_id":            map[string]any{"type": "string"},
+				"render_fps":               map[string]any{"type": "integer", "enum": []int{30, 60}},
+				"queue_grace_ms":           map[string]any{"type": "integer"},
+				"title":                    map[string]any{"type": "string"},
+				"description":              map[string]any{"type": "string"},
+				"output_preset":            map[string]any{"type": "string"},
+				"change_summary":           map[string]any{"type": "string"},
 				"timeline":                 map[string]any{"type": "object", "description": "Structured timeline. Call action='help' for schema."},
-				"initial_timeline":         map[string]any{"type": "object", "description": "Initial timeline. For soundtracks, include trimmed source_audio clip here; base revision owns that audio and subsequent propose_plan preserves it. Call action='help' for schema."},
-				"metadata":                 map[string]any{"type": "object", "description": "Optional unstructured metadata for the video project."},
-				"artifact_v3_session_id":   map[string]any{"type": "string", "description": "Exact owner session of the selected native Artifact V3 head."},
-				"artifact_v3_artifact_id":  map[string]any{"type": "string", "description": "Exact native Artifact V3 artifact identity."},
-				"artifact_v3_revision_ref": map[string]any{"type": "string", "description": "Exact revision-* reference currently selected as the Artifact V3 head."},
-				"expected_revision_id":     map[string]any{"type": "string", "description": "Exact current pending working revision required by update_composition; stale updates fail atomically."},
-				"part_id":                  map[string]any{"type": "string", "description": "Stable video-plan part id for animation candidate selection, storyboard replacement, derivative promotion, or composition inspection."},
-				"selected_candidate_id":    map[string]any{"type": "string", "description": "Exact candidate id already declared on the stable video-plan part."},
+				"initial_timeline":         map[string]any{"type": "object", "description": "Optional initial structured timeline when creating a video project. Omit it for a new visual plan without accepted media. When registered soundtrack audio must share the initial part playhead, include one exact trimmed source_audio clip here; the returned base revision owns that audio and a subsequent propose_plan preserves it. Call action='help' for schema."},
+				"metadata":                 map[string]any{"type": "object"},
+				"artifact_v3_session_id":   map[string]any{"type": "string"},
+				"artifact_v3_artifact_id":  map[string]any{"type": "string"},
+				"artifact_v3_revision_ref": map[string]any{"type": "string"},
+				"expected_revision_id":     map[string]any{"type": "string"},
+				"part_id":                  map[string]any{"type": "string"},
+				"selected_candidate_id":    map[string]any{"type": "string"},
 				"selected_source":          manageVideoArtifactReferenceSchema(),
 				"derivative":               manageVideoArtifactReferenceSchema(),
-				"base_revision_id":         map[string]any{"type": "string", "description": "Required exact immutable revision for propose_plan or create_edit_proposal. For a new visual plan, copy revision_id directly from create_project."},
-				"plan":                     map[string]any{"type": "object", "description": "Atomic visual video-plan proposal with kind ('initial'|'revision'), summary, optional composition_catalog, and parts array. Call action='help' to obtain detailed parameters and workflow schemas."},
+				"artifact_reference":       manageVideoArtifactReferenceSchema(),
+				"media_inspect_reference":  map[string]any{"type": "object", "description": "Media inspect reference containing session_id, collection_id, variant_id, event_seq or artifact_id."},
+				"artifact_id":              map[string]any{"type": "string", "description": "Artifact ID or variant ID of audio artifact to import."},
+				"directory":                map[string]any{"type": "string", "description": "Optional destination directory for the imported audio source."},
+				"destination_dir":          map[string]any{"type": "string", "description": "Alias for directory."},
+				"session_id":               map[string]any{"type": "string", "description": "Optional session ID for the audio artifact."},
+				"collection_id":            map[string]any{"type": "string", "description": "Optional collection ID for the audio artifact."},
+				"variant_id":               map[string]any{"type": "string", "description": "Optional variant ID for the audio artifact."},
+				"event_seq":                map[string]any{"type": "integer", "description": "Optional event sequence for the audio artifact."},
+				"base_revision_id":         map[string]any{"type": "string"},
+				"plan": map[string]any{
+					"type":        "object",
+					"description": "Visual video-plan proposal with kind ('initial'|'revision'), summary, and parts array. Call action='help' for schema and copyable examples.",
+					"properties": map[string]any{
+						"kind":    map[string]any{"type": "string", "enum": []string{pebblestore.VideoPlanKindInitial, pebblestore.VideoPlanKindRevision}, "description": "Plan kind: 'initial' for whole initial cut, 'revision' for updating specific parts."},
+						"summary": map[string]any{"type": "string", "description": "Concise summary of the plan."},
+						"parts": map[string]any{
+							"type":        "array",
+							"description": "Ordered timeline parts. Each part requires id, title, duration_ms, and visual artifact reference.",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"id":               map[string]any{"type": "string", "description": "Unique stable part ID (e.g. 'part-1')."},
+									"title":            map[string]any{"type": "string", "description": "Human-readable part title (required)."},
+									"duration_ms":      map[string]any{"type": "integer", "minimum": 1, "description": "Part duration in milliseconds (required)."},
+									"visual":           manageVideoArtifactReferenceSchema(),
+									"source_start_ms":  map[string]any{"type": "integer", "minimum": 0, "description": "Required for video/mp4 visual: source start in ms."},
+									"source_end_ms":    map[string]any{"type": "integer", "minimum": 1, "description": "Required for video/mp4 visual: source end in ms (source_end_ms - source_start_ms == duration_ms)."},
+									"narration":        map[string]any{"type": "string", "description": "Optional spoken narration text."},
+									"on_screen_text":   map[string]any{"type": "string", "description": "Optional on-screen text/titles."},
+									"visual_direction": map[string]any{"type": "string", "description": "Optional visual direction or scene notes."},
+									"transition_in":    map[string]any{"type": "string", "description": "Optional transition into this part."},
+								},
+								"required": []string{"id", "title"},
+							},
+						},
+					},
+					"required": []string{"parts"},
+				},
 				"operations": map[string]any{
 					"type":        "array",
-					"description": "Bounded typed add, update, replace, and remove operations. Call action='help' to obtain detailed parameters and workflow schemas.",
+					"description": "Bounded typed add, update, replace, and remove operations. Call action='help' for schema and examples.",
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"id":           map[string]any{"type": "string"},
-							"type":         map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
-							"source_kind":  map[string]any{"type": "string", "enum": []string{"source_audio"}},
-							"audio_source": map[string]any{"type": "object", "properties": map[string]any{"source_fingerprint": map[string]any{"type": "string"}, "fingerprint_version": map[string]any{"type": "string"}}},
+							"id":          map[string]any{"type": "string"},
+							"type":        map[string]any{"type": "string", "enum": []string{"add_clip", "update_clip", "replace_clip", "remove_clip"}},
+							"source_kind": map[string]any{"type": "string", "enum": []string{"source_audio"}},
+							"audio_source": map[string]any{
+								"type":        "object",
+								"description": "Complete exact trusted audio reference returned by browse_source.",
+								"properties": map[string]any{
+									"source_fingerprint":  map[string]any{"type": "string"},
+									"fingerprint_version": map[string]any{"type": "string"},
+								},
+							},
 						},
 					},
 				},
@@ -245,7 +293,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 	}
 	action = strings.ToLower(strings.TrimSpace(asString(args["action"])))
 	requestedAction := action
-	if action == "propose_plan" {
+	if action == "propose_plan" || action == "propose_html_iteration" {
 		// Providers get purpose-specific actions while storage continues to use
 		// the revision-gated edit proposal authority.
 		action = "create_edit_proposal"
@@ -503,6 +551,149 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		response["project_id"], response["revision_id"], response["revision_event_seq"] = result.ProjectID, result.RevisionID, result.RevisionEventSeq
 		response["duration_ms"], response["width"], response["height"] = result.DurationMs, result.Width, result.Height
 		response["frames"], response["count"] = frames, len(frames)
+
+	case "import_audio_artifact", "register_audio_artifact":
+		if r.artifactAuthority == nil {
+			return "", errors.New("manage_video audio import requires configured artifact authority")
+		}
+		var ref *pebblestore.SessionArtifactSelectionReference
+		var artifactID string
+		if rawRef := args["artifact_reference"]; rawRef != nil {
+			parsedRef, err := parseManageVideoArtifactReference(rawRef, "artifact_reference")
+			if err != nil {
+				return "", err
+			}
+			ref = parsedRef
+		} else if rawInspect := args["media_inspect_reference"]; rawInspect != nil {
+			if inspectObj, err := parseJSONEncodedObject(rawInspect, "media_inspect_reference"); err == nil {
+				if inspectObj["session_id"] != nil && inspectObj["collection_id"] != nil && inspectObj["variant_id"] != nil && inspectObj["event_seq"] != nil {
+					parsedRef, err := parseManageVideoArtifactReference(rawInspect, "media_inspect_reference")
+					if err != nil {
+						return "", err
+					}
+					ref = parsedRef
+				} else if idStr := strings.TrimSpace(asString(inspectObj["artifact_id"])); idStr != "" {
+					artifactID = idStr
+				}
+			}
+		}
+		if ref == nil && artifactID == "" {
+			sessionIDVal := strings.TrimSpace(asString(args["session_id"]))
+			collectionIDVal := strings.TrimSpace(asString(args["collection_id"]))
+			variantIDVal := strings.TrimSpace(asString(args["variant_id"]))
+			eventSeqVal := asUint64(args["event_seq"])
+			if sessionIDVal != "" && collectionIDVal != "" && variantIDVal != "" && eventSeqVal != 0 {
+				ref = &pebblestore.SessionArtifactSelectionReference{
+					SessionID:    sessionIDVal,
+					CollectionID: collectionIDVal,
+					VariantID:    variantIDVal,
+					EventSeq:     eventSeqVal,
+				}
+			} else if artIDVal := strings.TrimSpace(asString(args["artifact_id"])); artIDVal != "" {
+				artifactID = artIDVal
+			} else if variantIDVal != "" {
+				artifactID = variantIDVal
+			}
+		}
+		if ref == nil && artifactID == "" {
+			return "", errors.New("import_audio_artifact requires an exact artifact reference ({session_id, collection_id, variant_id, event_seq}) or artifact_id")
+		}
+
+		targetSessionID := scope.SessionID
+		if ref != nil && ref.SessionID != "" {
+			targetSessionID = ref.SessionID
+		}
+		artifactPrincipal := artifact.Principal{
+			SessionID:      targetSessionID,
+			AccountScopeID: scope.Principal.AccountScopeID,
+			UserID:         scope.Principal.UserID,
+		}
+
+		var body []byte
+		var variant pebblestore.SessionArtifactVariant
+		if ref != nil {
+			b, v, readErr := r.artifactAuthority.ReadReference(ctx, artifactPrincipal, *ref, 512<<20)
+			if readErr != nil {
+				return "", fmt.Errorf("read audio artifact reference: %w", readErr)
+			}
+			body = b
+			variant = v
+		} else {
+			v, getErr := r.artifactAuthority.Get(artifactPrincipal, artifactID)
+			if getErr != nil {
+				return "", fmt.Errorf("resolve audio artifact %q: %w", artifactID, getErr)
+			}
+			b, v, readErr := r.artifactAuthority.Read(ctx, artifactPrincipal, artifactID, 512<<20)
+			if readErr != nil {
+				return "", fmt.Errorf("read audio artifact %q: %w", artifactID, readErr)
+			}
+			body = b
+			variant = v
+		}
+
+		if variant.Status != pebblestore.SessionArtifactStatusReady {
+			return "", fmt.Errorf("audio artifact %q is not ready (status: %s)", variant.ID, variant.Status)
+		}
+		if len(body) == 0 {
+			return "", fmt.Errorf("audio artifact %q contains no data", variant.ID)
+		}
+
+		mediaType := canonicalArtifactMediaType(variant.MediaType)
+		if !strings.HasPrefix(mediaType, "audio/") && mediaType != "audio/mpeg" && mediaType != "audio/mp3" {
+			return "", fmt.Errorf("artifact %q is not an audio artifact (media_type: %s)", variant.ID, variant.MediaType)
+		}
+
+		workspacePath := manageVideoWorkspacePath(session)
+		if workspacePath == "" {
+			workspacePath = scope.PrimaryPath
+		}
+		preferredDir := strings.TrimSpace(firstNonEmptyString(asString(args["directory"]), asString(args["destination_dir"])))
+
+		displayName := strings.TrimSpace(firstNonEmptyString(asString(args["name"]), variant.Presentation.Label, variant.Filename))
+		if displayName == "" {
+			displayName = "audio_" + variant.ID
+		}
+
+		if r.videoSources == nil {
+			return "", errors.New("manage_video source service is not configured")
+		}
+		workspaceID := ""
+		wsIDs := pebblestore.SessionVideoWorkspaceIDs(session)
+		if len(wsIDs) > 0 {
+			workspaceID = wsIDs[0]
+		}
+		savedRecord, importErr := r.videoSources.ImportAudio(scope.Principal, workspacePath, workspaceID, displayName, mediaType, body, preferredDir)
+		if importErr != nil {
+			return "", importErr
+		}
+		if r.videoSources.Store() != nil {
+			for _, secondaryWSID := range wsIDs {
+				if secondaryWSID != "" && secondaryWSID != savedRecord.WorkspaceID {
+					secRecord := savedRecord
+					secRecord.WorkspaceID = secondaryWSID
+					_, _ = r.videoSources.Store().PutAudioSourceRecord(secRecord)
+				}
+			}
+		}
+
+		exactRef := pebblestore.AudioSourceReference{
+			Ref:                savedRecord.Ref,
+			Name:               savedRecord.DisplayName,
+			MIMEType:           savedRecord.MIMEType,
+			SizeBytes:          savedRecord.SizeBytes,
+			SourceFingerprint:  savedRecord.SourceFingerprint,
+			FingerprintVersion: savedRecord.FingerprintVersion,
+		}
+		response["audio_source"] = exactRef
+		response["audio_ref"] = savedRecord.Ref
+		response["source_root_path"] = savedRecord.RootPath
+		response["relative_path"] = savedRecord.RelativePath
+		response["workspace_id"] = savedRecord.WorkspaceID
+		response["name"] = savedRecord.DisplayName
+		response["mime_type"] = savedRecord.MIMEType
+		response["size_bytes"] = savedRecord.SizeBytes
+		response["source_fingerprint"] = savedRecord.SourceFingerprint
+		response["fingerprint_version"] = savedRecord.FingerprintVersion
 
 	case "list_source_roots":
 		if r.videoSources == nil {
@@ -950,6 +1141,8 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 				return "", err
 			}
 			response["session_upgraded_to_video_studio"] = true
+		} else if strings.TrimSpace(asString(session.Metadata["launch_source"])) == "chat_upgrade" {
+			response["session_upgraded_to_video_studio"] = true
 		}
 		if projectID == "" || baseRevisionID == "" {
 			return "", errors.New("create_edit_proposal requires project_id and exact base_revision_id")
@@ -958,7 +1151,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		if err != nil {
 			return "", err
 		}
-		if requestedAction == "propose_plan" && plan == nil {
+		if (requestedAction == "propose_plan" || requestedAction == "propose_html_iteration") && plan == nil {
 			return "", fmt.Errorf("%s requires one atomic plan", requestedAction)
 		}
 		var operations []pebblestore.VideoEditOperation
@@ -982,13 +1175,16 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 			return "", err
 		}
 		intent := pebblestore.VideoEditProposalIntentGeneral
+		if requestedAction == "propose_html_iteration" {
+			intent = pebblestore.VideoEditProposalIntentHTMLIteration
+		}
 		proposal, err := r.videoProjects.CreateEditProposal(ctx, scope.Principal, videoproject.CreateEditProposalInput{SessionID: projectSessionID, ProjectID: projectID, ProposalID: strings.TrimSpace(asString(args["proposal_id"])), BaseRevisionID: baseRevisionID, Title: strings.TrimSpace(asString(args["title"])), Rationale: strings.TrimSpace(asString(args["rationale"])), Intent: intent, Plan: plan, Operations: operations, AffectedRanges: affectedRanges})
 		if err != nil {
 			return "", err
 		}
 		response["proposal"] = safeVideoEditProposal(proposal)
 		response["proposal_id"], response["project_id"], response["revision_id"] = proposal.ID, proposal.ProjectID, proposal.BaseRevisionID
-		if requestedAction == "propose_plan" {
+		if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" {
 			response["action"] = requestedAction
 		}
 		response["proposal_status"], response["stale_base"] = proposal.Status, false
@@ -1366,7 +1562,7 @@ func (r *Runtime) executeManageVideo(ctx context.Context, scope WorkspaceScope, 
 		return "", fmt.Errorf("unsupported manage_video action %q", action)
 	}
 	presentationAction := action
-	if requestedAction == "propose_plan" {
+	if requestedAction == "propose_plan" || requestedAction == "propose_html_iteration" {
 		presentationAction = requestedAction
 	}
 	response["presentation"] = manageVideoPresentation(presentationAction, args, response)
@@ -1391,6 +1587,7 @@ func manageVideoPresentation(action string, args, response map[string]any) map[s
 		"inspect_accepted_cut":      {"Accepted cut loaded", "Inspecting accepted cut"},
 		"create_edit_proposal":      {"New change added", "Preparing video working change"},
 		"propose_plan":              {"New video change added", "Preparing visual video change"},
+		"propose_html_iteration":    {"HTML iteration added", "Preparing live HTML iteration"},
 		"inspect_composition":       {"Composition loaded", "Inspecting pending spatial composition"},
 		"update_composition":        {"Composition updated", "Updating pending spatial composition"},
 		"proposal_status":           {"Proposal status updated", "Checking edit proposal"},
@@ -2105,6 +2302,10 @@ func (r *Runtime) manageVideoProjectSession(principal identity.Principal, sessio
 	if parentID == "" {
 		return session.ID, false, nil
 	}
+	lineageKind := strings.TrimSpace(asString(session.Metadata["lineage_kind"]))
+	if lineageKind != "system_sidechat" {
+		return session.ID, false, nil
+	}
 	parent, ok, err := r.sessions.GetSession(parentID)
 	if err != nil {
 		return "", false, err
@@ -2222,35 +2423,191 @@ func VideoHelpText() string {
 
 func videoHelpText() string {
 	return `Video Studio & Media Management Contracts:
+
+Overview & Distinction:
+- Video Studio (manage_video) manages multi-part video timeline projects, audio tracks, transitions, and rendering.
+- Making a video in Video Studio is completely different from generating a single AI video via manage_artifact action="generate_video" or "generate_video_story".
+- In Video Studio, videos are composed of ordered timeline parts (clips), each referencing an actual media artifact (still image or MP4 video clip), combined with background soundtrack audio clips, captions, and transitions within a persistent project.
+- The AI does not generate raw video pixels in manage_video; instead, you generate or select real media assets (images or MP4 clips) using manage_artifact, then assemble them into the studio timeline via manage_video action="propose_plan" or action="create_edit_proposal".
+
 1. Inspection & Discovery:
    - action="capabilities" or "help": list allowed actions and workflows.
    - Inspect trusted video and audio sources, browse registered source-media folders, and inspect selected opaque video or audio references or triggering-message video attachments.
    - action="inspect_context": inspects project, revision, and selection state.
    - action="inspect_frames": sample exact PNG frames (pass timestamps_ms or ranges).
    - list_source_roots and browse_source to discover registered audio and video sources.
+   - action="import_audio_artifact" (or "register_audio_artifact"): import an AI-generated audio artifact (from manage_artifact generate_audio) into Video Studio as an authenticated audio source, returning an exact audio_source object with ref, name, mime_type, size_bytes, source_fingerprint, and fingerprint_version.
    - action="start_transcription", "read_transcript", "read_audio_analysis": word-timed speech transcripts and audio waveforms.
+
 2. Projects & Timelines:
    - One-shot initial-plan workflow: call create_project without initial_timeline when no accepted media must precede the visual plan; use returned project_id and revision_id, then call propose_plan with base_revision_id and plan.kind="initial". propose_plan creates only a pending whole-plan review object.
    - action="create_project": create a project (pass title, optional initial_timeline with clips).
      When registered soundtrack audio must share the initial part playhead, browse it first, copy the complete exact audio object, and pass its complete exact trimmed source_audio clip in create_project initial_timeline; the returned base revision then owns that audio and a subsequent propose_plan preserves it.
    - action="read_project", "get_project", "list_projects": retrieve video project state.
    - action="restore_revision", "create_revision": manage timeline revisions.
+
 3. Edit Proposals & Operations:
    - action="create_edit_proposal": submit typed add_clip, update_clip, replace_clip, or remove_clip operations with affected_ranges against the exact base revision.
      Operations: add_clip, update_clip, replace_clip, remove_clip, trim_clip, move_clip, set_volume, set_mute, set_captions, replace_source.
      Soundtrack clips: use source_kind="source_audio" with audio_source carrying source_fingerprint and fingerprint_version. Copy the complete exact audio object into a source_audio clip; never pass a host path. Registered soundtrack audio must share the initial part playhead in create_project initial_timeline. Soundtrack proposals remain pending for explicit user acceptance; AI must never accept them or start final rendering.
+     Soundtrack workflow from generated audio:
+       (1) Generate music or sound effects with manage_artifact action="generate_audio" prompt="..." duration_seconds=N. This creates a ready audio artifact with {session_id, collection_id, variant_id, event_seq}.
+       (2) Ingest it into Video Studio using manage_video action="import_audio_artifact", passing the exact artifact reference. This persists an authenticated AudioSourceRecord and returns the exact audio_source object.
+       (3) Add the soundtrack to the timeline with manage_video action="create_edit_proposal" operations: [{type: "add_clip", clip: {source_kind: "source_audio", audio_source: ...}}] or in create_project initial_timeline.
    - action="propose_plan": initial visual plan proposal (base_revision_id, plan.kind="initial", parts array with visuals and captions).
-     Every newly proposed part must include an exact ready image/* or video/mp4 render-ready fallback. MP4 fallback parts require an explicit source range (source_start_ms, source_end_ms). Descriptive on_screen_text and transition_in never create timeline presentation; use typed caption and transition objects when presentation is intended.
+     Every newly proposed part must include an exact ready image/* or video/mp4 render-ready fallback. MP4 fallback parts require an explicit source range (source_start_ms, source_end_ms) where source_end_ms - source_start_ms == duration_ms.
+     For image/* visual fallbacks, source_start_ms and source_end_ms must be 0 or omitted.
+     Every part requires: id (unique stable string), title (human-readable string), duration_ms (positive integer ms), and visual (complete artifact reference: session_id, collection_id, variant_id, event_seq).
+     Descriptive on_screen_text and transition_in never create timeline presentation; use typed caption and transition objects when presentation is intended.
      Proposing HTML iterations accepts one or more stable parts in one atomic proposal; every part requires 2 to 16 compatible ready text/html candidates with per-part image-only downgrade.
      composition_catalog defines reusable layout geometry. Parts support detached_slots, clear_source, and audio_policy.
    - Storyboard Pre-Production: for pre-production requests, prefer a self-contained HTML swarm.storyboard/v1 source; use export_html_stills, then import_storyboard with storyboard_source and exports so Video Studio receives filming requirements and production state. Use propose_html_iteration for live animation iteration proposals. Each imported still remains the visible placeholder until a later plan.kind=revision replaces that same part ID with finished media. Do not stop after HTML authoring or still export while storyboard parts remain pending.
    - Convert a compatible exact Artifact V2 storyboard or motion Published Head to Video Studio only with manage_video convert_artifact_v2. The server validates exact V2 composition/build/validation evidence and constructs storyboard stills or animation candidates and fallback media; callers must not export V1 HTML, reconstruct arrays, or mix collection/variant references into the V2 path. The resulting proposal remains pending for user review and cannot accept itself or start final rendering. Server owns the fallback and pending candidate set; do not derive V1 HTML, allocate replacement variants, or export MP4 merely for live preview.
    - Convert an exact selected native Artifact V3 HTML revision to Video Studio only with manage_video convert_artifact_v3. Supply its exact artifact_v3_session_id, artifact_v3_artifact_id, artifact_v3_revision_ref, project_id, and base_revision_id. The server authenticates the selected Git head plus build/validation evidence, injects deterministic animation timing only into ephemeral render bytes, creates the fallback and silent MP4, and submits exactly one pending artifact_v3_conversion proposal; callers must not author plan arrays or translate through V1/V2 identity.
+     Native Artifact V3 HTML Animation Requirements:
+       - Manifest schema: declare exactly one <script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":...,"fps":...}</script>. Unknown fields are strictly disallowed.
+       - Semantic regions: requires at least one semantic region with an id attribute on <main id="...">.
+       - Animation API: expose globalThis.__SWARM_ANIMATION_V1__ with version "swarm.animation/v1", ready() returning { duration_ms, fps } matching the manifest, and seek(ms) returning { time_ms: ms }. seek(ms) must pause all animations/timers and deterministically render the requested playhead timestamp.
+       - Use manage_video action="convert_artifact_v3" to convert Artifact V3 HTML motion into Video Studio proposals with MP4 fallbacks.
    - For managed pre-production storyboards, use Artifact V2 storyboard section and catalog parts through managed Designer authoring. Stable ordered parts carry filming requirements, production state, capture-state identity, and optional spatial composition; the server owns capture HTML, state runtime, trusted rendering, exact still lineage, and the pending Video Studio adapter.
    - action="inspect_composition", "update_composition": inspect resolved slots and update spatial compositions.
    - action="select_animation_candidate", "promote_animation_derivative": manage HTML animation alternatives.
      immediate live Video Studio preview: selected HTML plays in a sandboxed swarm-player/v1 iframe while soundtrack audio follows the same playhead; no HTML-to-MP4 export is needed for preview. Export only when durable acceptance/promotion or final rendering requires an MP4 derivative; never replace a durable timeline artifact_ref with text/html.
+
 4. Renders:
    - action="recommend_render_settings": review server-allowlisted render qualities (preview, standard, high, master) and fps (30, 60).
-   - action="start_render", "render_status", "cancel_render": server-owned final MP4 render execution. AI cannot accept a proposal or start a final render.`
+   - action="start_render", "render_status", "cancel_render": server-owned final MP4 render execution. AI cannot accept a proposal or start a final render.
+
+5. Detailed Call Schemas & Examples:
+
+   a) Propose Initial Plan with Image and MP4 Parts:
+      manage_video {
+        "action": "propose_plan",
+        "project_id": "vproj_12345678",
+        "base_revision_id": "vrev_abcdef01",
+        "plan": {
+          "kind": "initial",
+          "summary": "2-scene cut with opening title and video body",
+          "parts": [
+            {
+              "id": "part-1",
+              "title": "Scene 1 - Title Card",
+              "duration_ms": 3000,
+              "visual": {
+                "session_id": "sess_abc",
+                "collection_id": "collection-1",
+                "variant_id": "variant-img1",
+                "event_seq": 10
+              },
+              "narration": "Welcome to our presentation."
+            },
+            {
+              "id": "part-2",
+              "title": "Scene 2 - Main Action",
+              "duration_ms": 5000,
+              "visual": {
+                "session_id": "sess_abc",
+                "collection_id": "collection-2",
+                "variant_id": "variant-vid1",
+                "event_seq": 15
+              },
+              "source_start_ms": 0,
+              "source_end_ms": 5000,
+              "on_screen_text": "System Online"
+            }
+          ]
+        }
+      }
+
+   b) Create Project with Initial Soundtrack Audio:
+      manage_video {
+        "action": "create_project",
+        "title": "Campaign Video",
+        "initial_timeline": {
+          "output_preset": "landscape_1080p",
+          "total_duration_ms": 8000,
+          "clips": [
+            {
+              "id": "soundtrack-1",
+              "track": 1,
+              "sequence": 0,
+              "source_kind": "source_audio",
+              "audio_source": {
+                "ref": "audiosrc_music_track",
+                "name": "theme.mp3",
+                "mime_type": "audio/mpeg",
+                "size_bytes": 256000,
+                "source_fingerprint": "fp_123456",
+                "fingerprint_version": "v1"
+              },
+              "duration_ms": 8000,
+              "timeline_start_ms": 0,
+              "timeline_end_ms": 8000,
+              "visible": false,
+              "volume": 1.0,
+              "muted": false
+            }
+          ]
+        }
+      }
+
+   c) Add Soundtrack via Edit Proposal:
+      manage_video {
+        "action": "create_edit_proposal",
+        "project_id": "vproj_12345678",
+        "base_revision_id": "vrev_abcdef01",
+        "rationale": "Layer continuous background soundtrack",
+        "operations": [
+          {
+            "id": "op-soundtrack",
+            "type": "add_clip",
+            "clip": {
+              "id": "bg-music",
+              "track": 1,
+              "sequence": 0,
+              "source_kind": "source_audio",
+              "audio_source": {
+                "ref": "audiosrc_bg_music",
+                "name": "ambient.mp3",
+                "mime_type": "audio/mpeg",
+                "size_bytes": 128000,
+                "source_fingerprint": "fp_654321",
+                "fingerprint_version": "v1"
+              },
+              "duration_ms": 8000,
+              "timeline_start_ms": 0,
+              "timeline_end_ms": 8000,
+              "visible": false,
+              "volume": 0.8
+            }
+          }
+        ],
+        "affected_ranges": [
+          {
+            "start_ms": 0,
+            "end_ms": 8000
+          }
+        ]
+      }
+
+   d) Convert Native Artifact V3 HTML Motion to Studio:
+      manage_video {
+        "action": "convert_artifact_v3",
+        "project_id": "vproj_12345678",
+        "base_revision_id": "vrev_abcdef01",
+        "artifact_v3_session_id": "sess_abc",
+        "artifact_v3_artifact_id": "art_123",
+        "artifact_v3_revision_ref": "rev-1"
+      }
+
+   e) Import Audio Artifact into Video Studio:
+      manage_video {
+        "action": "import_audio_artifact",
+        "artifact_reference": {
+          "session_id": "sess_abc",
+          "collection_id": "col_123",
+          "variant_id": "var_456",
+          "event_seq": 1
+        }
+      }`
 }

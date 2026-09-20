@@ -218,6 +218,66 @@ test('ready generated images use a wide clickable timeline preview', () => {
   assert(!markup.includes('Use design'), 'must not use obsolete design-specific copy')
 })
 
+test('audio generation artifact timeline renders soundbars with select action for each clip', () => {
+  const outputJson = {
+    tool: 'manage_artifact',
+    action: 'generate_audio',
+    status: 'ok',
+    variants: [
+      {
+        id: 'var-audio-1',
+        collection_id: 'col-audio',
+        session_id: 'sess-audio-1',
+        event_seq: 10,
+        status: 'ready',
+        filename: 'clip-1.mp3',
+        media_type: 'audio/mp3',
+        presentation: {
+          kind: 'audio',
+          label: '1. Neurofunk DnB',
+          description: 'High-energy neuro breaks',
+          previewable: true,
+        },
+      },
+      {
+        id: 'var-audio-2',
+        collection_id: 'col-audio',
+        session_id: 'sess-audio-1',
+        event_seq: 11,
+        status: 'ready',
+        filename: 'clip-2.mp3',
+        media_type: 'audio/mp3',
+        presentation: {
+          kind: 'audio',
+          label: '2. Cyberpunk Dubstep',
+          description: 'Heavy bass growls and half-time snares',
+          previewable: true,
+        },
+      },
+    ],
+  }
+  const toolMessage = buildStructuredToolMessage({
+    tool: 'manage_artifact',
+    callId: 'call_audio_ready',
+    outputText: JSON.stringify(outputJson),
+  })
+  assert(Boolean(toolMessage), 'toolMessage should be created')
+
+  const markup = renderToStaticMarkup(
+    <ToolMessageView
+      toolMessage={toolMessage!}
+      artifactHref={(entry) => `/ws/sess-audio-1?artifact=${entry.artifactId}`}
+      onArtifactSelections={() => undefined}
+    />,
+  )
+  assert(markup.includes('data-testid="audio-sound-bar"'), 'must render audio sound bars')
+  assert(markup.includes('data-testid="select-audio-clip-button"'), 'must render select button for audio clips')
+  assert(markup.includes('1. Neurofunk DnB'), 'must render clip title')
+  assert(markup.includes('High-energy neuro breaks'), 'must render clip prompt description')
+  assert(markup.includes('2. Cyberpunk Dubstep'), 'must render second clip title')
+  assert(markup.includes('data-testid="select-artifact-button"'), 'must expose card-level select button')
+})
+
 test('image capability lookup uses meaningful metadata without a fake artifact type', () => {
   const toolMessage = buildStructuredToolMessage({
     tool: 'manage_artifact',

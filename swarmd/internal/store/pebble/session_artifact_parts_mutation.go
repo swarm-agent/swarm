@@ -19,7 +19,7 @@ func (s *SessionStore) prepareAuthoritativeArtifactParts(input V3SessionMutation
 		}
 		return nil, nil, nil, nil
 	}
-	if (input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationUpdateArtifact) || mutation.Variant == nil {
+	if (input.Kind != V3SessionMutationCreateArtifact && input.Kind != V3SessionMutationUpdateArtifact && input.Kind != V3SessionMutationImportArtifact) || mutation.Variant == nil {
 		return nil, nil, nil, errors.New("artifact composition is accepted only while creating or filling an immutable staging revision")
 	}
 	composition := *mutation.Composition

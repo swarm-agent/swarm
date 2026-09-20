@@ -472,6 +472,62 @@ func TestCodexWebsocketContinuationMaterializesMediaInspectDelta(t *testing.T) {
 	}
 }
 
+// TestCodexWebsocketContinuationRejectsOverLimitIncrementalBatch verifies that when
+// websocket continuation receives an incremental delta batch exceeding the contract limit,
+// it fails closed instead of dropping images.
+// Requirement: Incremental current batches must fail closed on limit violation.
+// Threat/Regression: Delta batch could drop inspected images if full-replay omission was applied.
+// Symbols: codexWebsocketRequestPayload, materializeSessionMediaDeltaInput in client.go.
+// Narrowest layer: Transport test in lineage_test.go exercising codexWebsocketRequestPayload with cached session.
+func TestCodexWebsocketContinuationRejectsOverLimitIncrementalBatch(t *testing.T) {
+	client := NewClient(nil)
+	ctx := contextWithCodexTransportContext(context.Background(), codexTransportContext{
+		PromptCacheKey:            "cache-lineage-key",
+		SessionAffinityKey:        "affinity-media-key-overlimit",
+		NativeContinuationAllowed: true,
+	})
+	session := client.cachedWebsocketSession("affinity-media-key-overlimit")
+	session.lastRequestProperties = map[string]any{
+		"model":            "gpt-5.3-codex",
+		"stream":           true,
+		"store":            false,
+		"prompt_cache_key": "cache-lineage-key",
+		"text":             map[string]any{"verbosity": defaultCodexTextVerbosity},
+	}
+	session.lastInputLen = 1
+	session.lastResponseID = "resp-media-overlimit"
+
+	body := []byte("image-bytes")
+	payload := testMediaPayload("image", "image/png", "", body)
+	contract := allowedMediaContract("codex", "chatgpt_codex", "codex_oauth", "codex-chatgpt-v1", provideriface.MediaContractCapability{
+		Modality: "image", State: provideriface.MediaCapabilityStateAllowed, Semantics: pebblestore.ModelCatalogMediaSemanticsNative,
+		MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 20,
+	})
+
+	input := []map[string]any{
+		{"role": "user", "content": "baseline message"},
+	}
+	for i := 0; i < 21; i++ {
+		input = append(input, map[string]any{
+			"role":    "user",
+			"content": []map[string]any{{"type": "session_media", "media": payload}},
+		})
+	}
+
+	_, _, _, err := client.codexWebsocketRequestPayload(ctx, Request{
+		ProviderCacheKey:          "cache-lineage-key",
+		SessionAffinityKey:        "affinity-media-key-overlimit",
+		ProviderConfigurationHash: "configuration-hash",
+		Model:                     "gpt-5.3-codex",
+		NativeContinuationAllowed: true,
+		MediaContract:             contract,
+		Input:                     input,
+	})
+	if err == nil || !strings.Contains(err.Error(), "exceeds the current contract count limit") {
+		t.Fatalf("over-limit incremental delta batch error = %v, want exceeds contract count limit", err)
+	}
+}
+
 func TestCodexFreshWebsocketPayloadDoesNotReusePreviousResponseEvenWithSameProviderCacheKey(t *testing.T) {
 	current := map[string]any{
 		"model":            "gpt-5.3-codex",

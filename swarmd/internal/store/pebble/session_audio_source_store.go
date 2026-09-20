@@ -169,7 +169,12 @@ func DetectSupportedAudioMIME(file *os.File, extension string) (string, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
-	data := header[:n]
+	return DetectSupportedAudioMIMEBytes(header[:n], extension)
+}
+
+// DetectSupportedAudioMIMEBytes validates the extension and header bytes for
+// supported audio container or codec signatures.
+func DetectSupportedAudioMIMEBytes(data []byte, extension string) (string, error) {
 	extension = strings.ToLower(strings.TrimSpace(extension))
 	mimeType, ok := supportedAudioMIMEForExtension(extension)
 	if !ok {
@@ -197,6 +202,10 @@ func DetectSupportedAudioMIME(file *os.File, extension string) (string, error) {
 		return "", errors.New("file content does not match the supported audio extension")
 	}
 	return mimeType, nil
+}
+
+func SupportedAudioMIMEForExtension(extension string) (string, bool) {
+	return supportedAudioMIMEForExtension(extension)
 }
 
 func supportedAudioMIMEForExtension(extension string) (string, bool) {

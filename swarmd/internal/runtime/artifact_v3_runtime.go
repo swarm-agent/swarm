@@ -750,17 +750,33 @@ func digestArtifactProject(input map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (a *artifactV3RuntimeAdapter) ReadArtifactV3PreviewEvidence(_ context.Context, accountScopeID, userID, sessionID, artifactID, revisionRef string) ([]byte, error) {
+func (a *artifactV3RuntimeAdapter) ReadArtifactV3PreviewEvidence(ctx context.Context, accountScopeID, userID, sessionID, artifactID, revisionRef string) ([]byte, error) {
 	if a == nil || a.sessions == nil || strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || strings.TrimSpace(revisionRef) == "" {
 		return nil, pebblestore.ErrArtifactV3Unauthorized
 	}
-	repository, ok, err := a.sessions.GetArtifactV3Repository(accountScopeID, userID, artifactID)
-	if err != nil || !ok || repository.OwnerSessionID != sessionID {
-		return nil, pebblestore.ErrArtifactV3NotFound
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	} else {
+		ctx = context.Background()
 	}
-	commit := strings.TrimPrefix(strings.TrimSpace(revisionRef), "revision-")
-	revision, ok, err := a.sessions.GetArtifactV3Revision(accountScopeID, userID, artifactID, commit)
-	if err != nil || !ok || revision.Preview.CommitOID != commit || revision.Preview.Reference == "" || revision.Preview.DigestSHA256 == "" {
+	if a.service == nil || !strings.HasPrefix(revisionRef, "revision-") {
+		return nil, pebblestore.ErrArtifactV3Invalid
+	}
+	commit := strings.TrimPrefix(revisionRef, "revision-")
+	if commit == "" {
+		return nil, pebblestore.ErrArtifactV3Invalid
+	}
+	// The retained authority verifies destination ownership, retained session,
+	// exact Git/Pebble tree identity and inherited evidence without creating or
+	// repairing a repository. Provenance is not a live dependency on the source.
+	source, err := a.service.ResolveRetainedSource(accountScopeID, userID, sessionID, artifactID, commit, 0)
+	if err != nil {
+		return nil, err
+	}
+	revision := source.Revision
+	if revision.Preview.Reference == "" || filepath.Base(revision.Preview.Reference) != revision.Preview.Reference || strings.ContainsAny(revision.Preview.Reference, `/\\`) || revision.Preview.DigestSHA256 == "" {
 		return nil, pebblestore.ErrArtifactV3Integrity
 	}
 	body, err := os.ReadFile(filepath.Join(a.evidenceRoot, revision.Preview.Reference+".png"))
@@ -816,7 +832,7 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 		return api.ArtifactV3Artifact{}, err
 	}
 	if repository.HeadCommitOID == "" {
-		return api.ArtifactV3Artifact{Generations: repository.Generations, ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt}, nil
+		return api.ArtifactV3Artifact{Generations: repository.Generations, ID: repository.ArtifactID, Label: label, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, Status: repository.DraftStatus, CurrentDraft: draft, Revision: repository.EventSeq, UpdatedAt: repository.UpdatedAt, Lineage: repository.Lineage}, nil
 	}
 	revision, err := a.revision(ctx, principal, repository, repository.HeadCommitOID)
 	if err != nil {
@@ -834,7 +850,7 @@ func (a *artifactV3RuntimeAdapter) artifact(ctx context.Context, principal api.A
 	if err != nil {
 		return api.ArtifactV3Artifact{}, err
 	}
-	return api.ArtifactV3Artifact{Generations: repository.Generations, CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt}, nil
+	return api.ArtifactV3Artifact{Generations: repository.Generations, CurrentDraft: draft, Label: artifactV3DocumentTitle(entrypoint), ID: repository.ArtifactID, OwnerSessionID: repository.OwnerSessionID, IntentReference: repository.IntentReference, ArtifactRef: artifactV3Reference(repository), Status: "ready", Revision: repository.EventSeq, PartCount: len(revision.Manifest.Parts), Parts: revision.Manifest.Parts, Head: &revision, CurrentRevision: &revision, Revisions: []api.ArtifactV3Revision{revision}, Turns: turns, UpdatedAt: repository.UpdatedAt, Lineage: repository.Lineage}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) ListRevisions(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, cursor string, limit int) (api.ArtifactV3RevisionPage, error) {
@@ -894,7 +910,7 @@ func (a *artifactV3RuntimeAdapter) revision(ctx context.Context, principal api.A
 	if build == nil || validation == nil {
 		return api.ArtifactV3Revision{}, pebblestore.ErrArtifactV3Integrity
 	}
-	return api.ArtifactV3Revision{RevisionRef: "revision-" + commit, CommitOID: commit, TreeOID: projection.TreeOID, ManifestBlobOID: projection.ManifestBlobOID, Parents: projection.ParentCommitOIDs, Manifest: gitRevision.Manifest, FileCount: projection.FileCount, TreeBytes: projection.TreeBytes, ChangedFiles: projection.ChangedFiles, Build: build, Validation: validation, CreatedAt: projection.CreatedAt}, nil
+	return api.ArtifactV3Revision{RevisionRef: "revision-" + commit, CommitOID: commit, TreeOID: projection.TreeOID, ManifestBlobOID: projection.ManifestBlobOID, Parents: projection.ParentCommitOIDs, Manifest: gitRevision.Manifest, FileCount: projection.FileCount, TreeBytes: projection.TreeBytes, ChangedFiles: projection.ChangedFiles, Build: build, Validation: validation, CreatedAt: projection.CreatedAt, Lineage: projection.Lineage}, nil
 }
 
 func (a *artifactV3RuntimeAdapter) OpenPreview(ctx context.Context, principal api.ArtifactV3Principal, sessionID, artifactID, revisionRef, assetPath, accessToken string) (api.ArtifactV3Preview, error) {
@@ -997,14 +1013,14 @@ func artifactV3APIBuildEvidence(e pebblestore.ArtifactV3EvidenceProjection, tree
 	if e.Reference == "" || e.Status != "succeeded" || e.CommitOID == "" || e.DigestSHA256 == "" {
 		return nil
 	}
-	return &api.ArtifactV3BuildEvidence{ID: e.Reference, Status: e.Status, CommitOID: e.CommitOID, TreeOID: treeOID}
+	return &api.ArtifactV3BuildEvidence{ID: e.Reference, Status: e.Status, CommitOID: e.CommitOID, TreeOID: treeOID, InheritedFrom: e.InheritedFrom}
 }
 
 func artifactV3APIValidationEvidence(e pebblestore.ArtifactV3EvidenceProjection, treeOID string) *api.ArtifactV3ValidationEvidence {
 	if e.Reference == "" || e.Status != "succeeded" || e.CommitOID == "" || e.DigestSHA256 == "" {
 		return nil
 	}
-	return &api.ArtifactV3ValidationEvidence{Scenes: append([]pebblestore.ArtifactV3SceneEvidence(nil), e.Scenes...), ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}}
+	return &api.ArtifactV3ValidationEvidence{Scenes: append([]pebblestore.ArtifactV3SceneEvidence(nil), e.Scenes...), ID: e.Reference, Status: "valid", CommitOID: e.CommitOID, TreeOID: treeOID, EvidenceDigests: []string{e.DigestSHA256}, InheritedFrom: e.InheritedFrom}
 }
 
 func (a *artifactV3RuntimeAdapter) OpenTurn(ctx context.Context, principal api.ArtifactV3Principal, request api.ArtifactV3OpenTurnRequest) (api.ArtifactV3Turn, error) {
@@ -2092,8 +2108,52 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	return tool.ArtifactV3DraftResumeRequest{TurnID: grant.TurnID, CandidateID: grant.CandidateID, SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
 }
 
-func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(_ context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(ctx context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+	if a == nil || a.service == nil {
+		return pebblestore.ArtifactV3SelectedSource{}, pebblestore.ErrArtifactV3Invalid
+	}
 	return a.service.ResolveSelectedSource(pebblestore.ArtifactV3Owner{AccountScopeID: account, UserID: user, SessionID: session}, artifactID, commit, seq)
+}
+
+// Keep the tool/runtime seams compile-checked instead of failing optional
+// interface assertions only when a retained source is first requested.
+var (
+	_ tool.ArtifactV3NativeCatalogSearcher  = (*artifactV3RuntimeAdapter)(nil)
+	_ tool.ArtifactV3RetainedSourceResolver = (*artifactV3RuntimeAdapter)(nil)
+	_ tool.ArtifactV3RetainedSourceReader   = (*artifactV3RuntimeAdapter)(nil)
+	_ tool.ArtifactV3NativeImporter         = (*artifactV3RuntimeAdapter)(nil)
+)
+
+func (a *artifactV3RuntimeAdapter) ResolveArtifactV3RetainedSource(ctx context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+	if a == nil || a.service == nil {
+		return pebblestore.ArtifactV3SelectedSource{}, pebblestore.ErrArtifactV3Invalid
+	}
+	if err := ctx.Err(); err != nil {
+		return pebblestore.ArtifactV3SelectedSource{}, err
+	}
+	return a.service.ResolveRetainedSource(account, user, session, artifactID, commit, seq)
+}
+
+func (a *artifactV3RuntimeAdapter) SearchArtifactV3Catalog(ctx context.Context, accountScopeID, userID string, options pebblestore.ArtifactV3CatalogOptions) (pebblestore.ArtifactV3CatalogPage, error) {
+	if a == nil || a.service == nil {
+		return pebblestore.ArtifactV3CatalogPage{}, pebblestore.ErrArtifactV3Invalid
+	}
+	return a.service.SearchCatalog(ctx, accountScopeID, userID, options)
+}
+
+func (a *artifactV3RuntimeAdapter) ReadArtifactV3RetainedRevision(ctx context.Context, accountScopeID, userID, sourceSessionID, artifactID, revisionRef string) (map[string][]byte, []pebblestore.ArtifactV3Part, error) {
+	if a == nil || a.service == nil {
+		return nil, nil, pebblestore.ErrArtifactV3Invalid
+	}
+	commit := strings.TrimPrefix(strings.TrimSpace(revisionRef), "revision-")
+	return a.service.ReadRetainedRevision(ctx, accountScopeID, userID, sourceSessionID, artifactID, commit)
+}
+
+func (a *artifactV3RuntimeAdapter) ImportArtifactV3(ctx context.Context, input pebblestore.ArtifactV3ImportInput) (pebblestore.ArtifactV3Projection, error) {
+	if a == nil || a.service == nil {
+		return pebblestore.ArtifactV3Projection{}, pebblestore.ErrArtifactV3Invalid
+	}
+	return a.service.Import(ctx, input)
 }
 
 func (a *artifactV3RuntimeAdapter) ListArtifactV3SelectedSources(ctx context.Context, account, user, session string, limit int) ([]pebblestore.ArtifactV3SelectedSource, error) {

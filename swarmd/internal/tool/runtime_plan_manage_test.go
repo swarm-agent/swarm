@@ -214,6 +214,50 @@ func TestExitPlanModeDefinitionAcceptsStructuredDocument(t *testing.T) {
 	}
 }
 
+func TestPlanManageDefinitionExposesStartSessionCheckpointContract(t *testing.T) {
+	definition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(definition.Description, "start_session_checkpoint atomically creates and starts one bounded checkpoint", "change_request", "checkpoint_title", "tasks", "acceptance_criteria") {
+		t.Fatalf("plan_manage description %q does not advertise start_session_checkpoint parameters", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
+	}
+	for _, name := range []string{"checkpoint_title", "change_request", "tasks", "acceptance_criteria", "notes", "checkpoint"} {
+		if _, ok := params[name].(map[string]any); !ok {
+			t.Fatalf("plan_manage property %q is missing", name)
+		}
+	}
+	checkpointTitleDesc, _ := params["checkpoint_title"].(map[string]any)["description"].(string)
+	if !containsAll(checkpointTitleDesc, "start_session_checkpoint") {
+		t.Fatalf("checkpoint_title description %q does not mention start_session_checkpoint", checkpointTitleDesc)
+	}
+	checkpointDesc, _ := params["checkpoint"].(map[string]any)["description"].(string)
+	if !containsAll(checkpointDesc, "do not wrap fields inside a checkpoint object", "start_session_checkpoint") {
+		t.Fatalf("checkpoint description %q does not warn against wrapping start_session_checkpoint fields", checkpointDesc)
+	}
+}
+
+func TestPlanManageDefinitionGuidesSingleVsMultiCheckpointScope(t *testing.T) {
+	definition := mustFindDefinition(t, "plan_manage")
+	if !containsAll(definition.Description,
+		"distinguish single requests from multi-checkpoint workflows",
+		"start_session_checkpoint atomically creates and starts one bounded checkpoint",
+		"fix my cicd pipeline",
+		"optional embedded task_programs",
+	) {
+		t.Fatalf("plan_manage description does not guide single vs multi-checkpoint workflows: %s", definition.Description)
+	}
+	params, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("plan_manage properties type = %T", definition.Parameters["properties"])
+	}
+	actionDesc, _ := params["action"].(map[string]any)["description"].(string)
+	if !containsAll(actionDesc, "fix my sidebar", "fix my cicd pipeline", "multi-checkpoint plans") {
+		t.Fatalf("plan_manage action description does not contrast single vs multi-checkpoint: %s", actionDesc)
+	}
+}
+
 func mustFindDefinition(t *testing.T, name string) Definition {
 	t.Helper()
 	rt := NewRuntime(1)

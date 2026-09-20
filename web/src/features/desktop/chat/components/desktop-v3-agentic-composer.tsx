@@ -795,6 +795,16 @@ export function DesktopV3AgenticComposer({
       setAttachmentError(error instanceof Error ? error.message : String(error))
       return
     }
+    if (slashPalette.exactMatch?.action.kind === 'open-quick-settings') {
+      void onSlashCommand?.(slashPalette.exactMatch, rawDraft)
+      onDraftChange('')
+      return
+    }
+    if (slashPalette.exactMatch?.action.kind === 'open-studio-media') {
+      void onSlashCommand?.(slashPalette.exactMatch, rawDraft)
+      onDraftChange('')
+      return
+    }
     if (slashPalette.exactMatch?.action.kind === 'open-artifact-viewer' && !slashPalette.hasArguments) {
       setArtifactViewerOpen(true)
       onDraftChange('')
@@ -966,6 +976,10 @@ export function DesktopV3AgenticComposer({
       onDraftChange('')
       return
     }
+    if (command.action.kind === 'open-quick-settings' || command.action.kind === 'open-studio-media') {
+      onDraftChange('')
+      return
+    }
     if (!slashPalette.hasArguments) onDraftChange('')
   }, [currentAgent, developerMode, draft, handleSubmitClick, onCompact, onDraftChange, onSlashCommand, onThinkingTagsToggle, openAgentSetup, openModelFavorites, openWorkspaceActionChooser, routedNewSession, slashPalette.hasArguments, thinkingTagsBusy, thinkingTagsEnabled])
 
@@ -1009,7 +1023,7 @@ export function DesktopV3AgenticComposer({
         if (command) onDraftChange(command.command + ' ')
         return
       }
-      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips' || slashPalette.exactMatch?.action.kind === 'open-action-chooser')) {
+      if (event.key === 'Enter' && !event.shiftKey && (!slashPalette.hasArguments || slashPalette.exactMatch?.action.kind === 'open-quick-settings' || slashPalette.exactMatch?.action.kind === 'open-studio-media' || slashPalette.exactMatch?.action.kind === 'start-background-router-session' || slashPalette.exactMatch?.action.kind === 'new-session' || slashPalette.exactMatch?.action.kind === 'toggle-tips' || slashPalette.exactMatch?.action.kind === 'open-action-chooser')) {
         event.preventDefault()
         if (slashPalette.exactMatch?.action.kind === 'start-background-router-session') {
           void handleSubmitClick()

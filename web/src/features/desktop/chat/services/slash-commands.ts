@@ -5,6 +5,7 @@ export type DesktopSlashCommandState = 'ready' | 'coming-soon'
 export type DesktopSlashCommandAction =
   | { kind: 'open-settings'; tab: SettingsTabID | 'agents' }
   | { kind: 'open-quick-settings'; tab: Extract<SettingsTabID, 'media' | 'permissions' | 'themes' | 'worktrees'> }
+  | { kind: 'open-studio-media' }
   | { kind: 'open-permissions' }
   | { kind: 'open-workspace-launcher' }
   | { kind: 'open-model-picker' }
@@ -223,14 +224,24 @@ const DESKTOP_SLASH_COMMANDS: DesktopSlashCommand[] = [
     action: { kind: 'toggle-thinking' },
   },
   {
-    id: 'media',
-    command: '/media',
+    id: 'media-settings',
+    command: '/media settings',
     aliases: [],
     hint: 'Open media quick settings',
     actionLabel: 'Open Media Quick Settings',
-    tips: ['/media', 'Change source video folders and media models without leaving chat'],
+    tips: ['/media settings', 'Change source video folders and media models without leaving chat'],
     state: 'ready',
     action: { kind: 'open-quick-settings', tab: 'media' },
+  },
+  {
+    id: 'media',
+    command: '/media',
+    aliases: [],
+    hint: 'Open historical media library in Studio',
+    actionLabel: 'Open Studio Media',
+    tips: ['/media', 'Browse historical media artifacts and iteration groups in Studio', '/media settings to open media quick settings'],
+    state: 'ready',
+    action: { kind: 'open-studio-media' },
   },
   {
     id: 'models',
@@ -506,18 +517,41 @@ export function buildDesktopSlashPaletteState(input: string, options: DesktopSla
   const query = normalizeSlashToken(parts[0] ?? '')
   const hasArguments = parts.length > 1
   const fullQuery = normalizeSlashToken(parts.join(' '))
+  const scoredCandidates = commands
+    .flatMap((command) => commandTokens(command).map((token) => ({ command, token })))
+    .map(({ command, token }) => {
+      if (fullQuery === token) {
+        return { command, token, priority: 3, length: token.length }
+      }
+      if (hasArguments && token.startsWith(fullQuery)) {
+        return { command, token, priority: 2, length: token.length }
+      }
+      if (fullQuery.startsWith(`${token} `)) {
+        return { command, token, priority: 1, length: token.length }
+      }
+      return null
+    })
+    .filter((item): item is NonNullable<typeof item> => item !== null)
+    .sort((left, right) => {
+      if (left.priority !== right.priority) return right.priority - left.priority
+      if (left.priority === 2) return left.length - right.length
+      return right.length - left.length
+    })
+
   const exactMatch = query === ''
     ? null
-    : commands
-        .flatMap((command) => commandTokens(command).map((token) => ({ command, token })))
-        .filter(({ token }) => fullQuery === token || fullQuery.startsWith(`${token} `))
-        .sort((left, right) => right.token.length - left.token.length)[0]?.command
+    : scoredCandidates[0]?.command
       ?? commands.find((command) => commandTokens(command).includes(query))
       ?? null
 
-  const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `)))
+  const exactMatchHasPrefix = Boolean(exactMatch && commandTokens(exactMatch).some((token) => fullQuery === token || fullQuery.startsWith(`${token} `) || token.startsWith(fullQuery)))
   const matches = (hasArguments
-    ? exactMatch && exactMatchHasPrefix ? [exactMatch] : []
+    ? exactMatch && exactMatchHasPrefix
+      ? [
+          exactMatch,
+          ...commands.filter((cmd) => cmd !== exactMatch && commandTokens(cmd).some((t) => t.startsWith(fullQuery))),
+        ]
+      : []
     : commands
         .filter((command) => commandMatchRank(command, query) > 0)
         .sort((left, right) => sortCommands(left, right, query)))

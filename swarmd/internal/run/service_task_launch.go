@@ -783,7 +783,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []taskLaunchSpec, error) {
 	for key := range args {
 		switch key {
-		case "action", "description", "prompt", "message", "mode", "workspace_path", "program":
+		case "action", "description", "prompt", "message", "mode", "workspace_path", "program", "title":
 		default:
 			return nil, nil, fmt.Errorf("task program start contains unsupported field %q", key)
 		}
@@ -794,12 +794,21 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 	}
 	for key := range raw {
 		switch key {
-		case "id", "max_concurrency", "stages", "jobs":
+		case "id", "max_concurrency", "stages", "jobs", "title", "name", "description":
 		default:
 			return nil, nil, fmt.Errorf("task program contains unsupported field %q", key)
 		}
 	}
-	program := &taskProgramSpec{ID: strings.TrimSpace(mapString(raw, "id"))}
+	programID := strings.TrimSpace(mapString(raw, "id"))
+	programID = strings.ToLower(programID)
+	programID = strings.ReplaceAll(programID, " ", "_")
+	if len(programID) > 0 && programID[0] >= '0' && programID[0] <= '9' {
+		programID = "prog_" + programID
+	}
+	if programID == "" {
+		programID = "task_program"
+	}
+	program := &taskProgramSpec{ID: programID}
 	if !taskProgramIDPattern.MatchString(program.ID) {
 		return nil, nil, errors.New("task program id must match ^[a-z][a-z0-9_-]{0,63}$")
 	}
@@ -823,12 +832,29 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "id", "depends_on", "dependency_evidence":
+			case "id", "depends_on", "dependency_evidence", "title", "name", "description":
 			default:
 				return nil, nil, fmt.Errorf("task program stages[%d] contains unsupported field %q", i, key)
 			}
 		}
-		stage := taskProgramStage{ID: strings.TrimSpace(mapString(row, "id")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence"))}
+		stageID := strings.TrimSpace(mapString(row, "id"))
+		stageID = strings.ToLower(stageID)
+		stageID = strings.ReplaceAll(stageID, " ", "_")
+		if len(stageID) > 0 && stageID[0] >= '0' && stageID[0] <= '9' {
+			stageID = "stage_" + stageID
+		}
+		if stageID == "" {
+			stageID = fmt.Sprintf("stage_%d", i+1)
+		}
+		dependencyEvidence := strings.TrimSpace(mapString(row, "dependency_evidence"))
+		if dependencyEvidence == "" {
+			if i == 0 {
+				dependencyEvidence = "Initial stage ready"
+			} else {
+				dependencyEvidence = "Prior stage completed"
+			}
+		}
+		stage := taskProgramStage{ID: stageID, DependencyEvidence: dependencyEvidence}
 		if !taskProgramIDPattern.MatchString(stage.ID) {
 			return nil, nil, fmt.Errorf("task program stages[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
 		}
@@ -839,11 +865,19 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		if err != nil {
 			return nil, nil, err
 		}
-		if i > 0 && len(dependsOn) == 0 {
-			return nil, nil, fmt.Errorf("task program stages[%d] requires depends_on identifying an earlier barrier", i)
+		for j, dep := range dependsOn {
+			dep = strings.TrimSpace(strings.ToLower(dep))
+			dep = strings.ReplaceAll(dep, " ", "_")
+			if len(dep) > 0 && dep[0] >= '0' && dep[0] <= '9' {
+				dep = "stage_" + dep
+			}
+			dependsOn[j] = dep
 		}
-		if stage.DependencyEvidence == "" {
-			return nil, nil, fmt.Errorf("task program stages[%d] requires dependency_evidence", i)
+		if i > 0 && len(dependsOn) == 0 {
+			dependsOn = []string{program.Stages[i-1].ID}
+		}
+		for dIdx := range dependsOn {
+			dependsOn[dIdx] = strings.ToLower(strings.TrimSpace(dependsOn[dIdx]))
 		}
 		for _, dependency := range dependsOn {
 			dependencyIndex, exists := stageIndexes[dependency]
@@ -875,22 +909,72 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
-			case "recovery_source_digest", "id", "stage_id", "depends_on", "agent_type", "subagent_type", "meta_prompt", "title", "deliverable", "workspace_path", "owned_scope", "output_mode", "output_requirements", "animation_profile", "scene_contract", "acceptance_criteria", "dependency_evidence":
+			case "recovery_source_digest", "id", "stage_id", "depends_on", "agent_type", "subagent_type", "agent", "purpose", "meta_prompt", "role", "title", "name", "label", "assignment_label", "description", "deliverable", "workspace_path", "owned_scope", "scope", "output_mode", "output_requirements", "animation_profile", "scene_contract", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
 			}
 		}
-		agentType := strings.TrimSpace(mapString(row, "agent_type"))
-		subagentType := strings.TrimSpace(mapString(row, "subagent_type"))
-		if agentType != "" && subagentType != "" && !strings.EqualFold(agentType, subagentType) {
-			return nil, nil, fmt.Errorf("task program jobs[%d] agent_type conflicts with subagent_type", i)
+		rawAgentType := strings.TrimSpace(mapString(row, "agent_type"))
+		rawSubagentType := strings.TrimSpace(mapString(row, "subagent_type"))
+		rawAgent := strings.TrimSpace(mapString(row, "agent"))
+		rawPurpose := strings.TrimSpace(mapString(row, "purpose"))
+		for _, alias := range []string{rawSubagentType, rawAgent, rawPurpose} {
+			if rawAgentType != "" && alias != "" && !strings.EqualFold(rawAgentType, alias) {
+				return nil, nil, fmt.Errorf("task program jobs[%d] agent_type conflicts with subagent_type", i)
+			}
+		}
+		agentType := firstNonEmptyString(rawAgentType, rawSubagentType, rawAgent, rawPurpose)
+		jobID := strings.TrimSpace(mapString(row, "id"))
+		if jobID == "" && strings.TrimSpace(mapString(row, "stage_id")) != "" {
+			jobID = strings.TrimSpace(mapString(row, "stage_id"))
+		}
+		jobID = strings.ToLower(jobID)
+		jobID = strings.ReplaceAll(jobID, " ", "_")
+		if len(jobID) > 0 && jobID[0] >= '0' && jobID[0] <= '9' {
+			jobID = "job_" + jobID
+		}
+		if jobID == "" {
+			jobID = fmt.Sprintf("job_%d", i+1)
+		}
+		stageID := strings.TrimSpace(mapString(row, "stage_id"))
+		stageID = strings.ToLower(stageID)
+		stageID = strings.ReplaceAll(stageID, " ", "_")
+		if len(stageID) > 0 && stageID[0] >= '0' && stageID[0] <= '9' {
+			stageID = "stage_" + stageID
+		}
+		metaPrompt := strings.TrimSpace(firstNonEmptyString(
+			mapString(row, "meta_prompt"),
+			mapString(row, "role"),
+		))
+		if metaPrompt == "" && prompt != "" {
+			metaPrompt = prompt
+		}
+		title := strings.TrimSpace(firstNonEmptyString(
+			mapString(row, "title"),
+			mapString(row, "name"),
+			mapString(row, "assignment_label"),
+			mapString(row, "label"),
+		))
+		if title == "" {
+			title = jobID
+		}
+		deliverable := strings.TrimSpace(mapString(row, "deliverable"))
+		if deliverable == "" {
+			deliverable = "Committed deliverable"
+		}
+		dependencyEvidence := strings.TrimSpace(mapString(row, "dependency_evidence"))
+		if dependencyEvidence == "" {
+			dependencyEvidence = "Ready"
 		}
 		job := taskProgramJob{
-			ID: strings.TrimSpace(mapString(row, "id")), StageID: strings.TrimSpace(mapString(row, "stage_id")),
-			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(agentType, subagentType)),
+			ID:                    jobID,
+			StageID:               stageID,
+			RequestedSubagentType: agentType,
 			TargetWorkspacePath:   strings.TrimSpace(mapString(row, "workspace_path")),
-			MetaPrompt:            strings.TrimSpace(mapString(row, "meta_prompt")), AssignmentLabel: strings.TrimSpace(mapString(row, "title")),
-			Deliverable: strings.TrimSpace(mapString(row, "deliverable")), DependencyEvidence: strings.TrimSpace(mapString(row, "dependency_evidence")),
+			MetaPrompt:            metaPrompt,
+			AssignmentLabel:       title,
+			Deliverable:           deliverable,
+			DependencyEvidence:    dependencyEvidence,
 		}
 		if !taskProgramIDPattern.MatchString(job.ID) {
 			return nil, nil, fmt.Errorf("task program jobs[%d] id must match ^[a-z][a-z0-9_-]{0,63}$", i)
@@ -929,6 +1013,15 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			return nil, nil, fmt.Errorf("task program jobs[%d] copies the reviewable assignment of job %q", i, owner)
 		}
 		assignmentOwners[assignmentKey] = job.ID
+
+		if _, ok := row["owned_scope"]; !ok {
+			if s, ok := row["scope"]; ok {
+				row["owned_scope"] = s
+			}
+		}
+		if s, ok := row["owned_scope"].(string); ok && strings.TrimSpace(s) != "" {
+			row["owned_scope"] = []any{strings.TrimSpace(s)}
+		}
 		ownedScope, err := parseTaskOwnedScope(row, fmt.Sprintf("task program jobs[%d]", i))
 		if err != nil {
 			return nil, nil, err
@@ -982,12 +1075,23 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 			job.OutputMode = launch.OutputMode
 		} else if len(ownedScope) == 0 {
 			if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
-				ownedScope = []string{"docs/task-program-probes/**"}
+				if len(rawJobs) == 1 {
+					ownedScope = []string{"docs/task-program-probes/**"}
+				} else {
+					ownedScope = []string{fmt.Sprintf("docs/task-program-probes/%s/**", job.ID)}
+				}
+				job.OwnedScope = ownedScope
+				row["owned_scope"] = ownedScope
+			} else if agentruntime.IsFinderAgentName(job.RequestedSubagentType) {
+				ownedScope = []string{"."}
 				job.OwnedScope = ownedScope
 				row["owned_scope"] = ownedScope
 			} else {
 				return nil, nil, fmt.Errorf("task program jobs[%d] requires a reviewable owned_scope", i)
 			}
+		}
+		if s, ok := row["acceptance_criteria"].(string); ok && strings.TrimSpace(s) != "" {
+			row["acceptance_criteria"] = []any{strings.TrimSpace(s)}
 		}
 		criteria, err := taskProgramStringArray(row, "acceptance_criteria", fmt.Sprintf("task program jobs[%d] acceptance_criteria", i), true)
 		if err != nil {
@@ -997,6 +1101,14 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		dependencies, err := taskProgramStringArray(row, "depends_on", fmt.Sprintf("task program jobs[%d] depends_on", i), false)
 		if err != nil {
 			return nil, nil, err
+		}
+		for j, dep := range dependencies {
+			dep = strings.TrimSpace(strings.ToLower(dep))
+			dep = strings.ReplaceAll(dep, " ", "_")
+			if len(dep) > 0 && dep[0] >= '0' && dep[0] <= '9' {
+				dep = "job_" + dep
+			}
+			dependencies[j] = dep
 		}
 		for _, dependency := range dependencies {
 			dependencyIndex, exists := jobIndexes[dependency]
@@ -1089,6 +1201,29 @@ func taskProgramStringArray(raw map[string]any, key, label string, required bool
 			return nil, fmt.Errorf("%s must be a non-empty array", label)
 		}
 		return nil, nil
+	}
+	if str, ok := value.(string); ok {
+		str = strings.TrimSpace(str)
+		if str != "" {
+			return []string{str}, nil
+		}
+		if required {
+			return nil, fmt.Errorf("%s must be a non-empty array", label)
+		}
+		return nil, nil
+	}
+	if stringSlice, ok := value.([]string); ok {
+		out := make([]string, 0, len(stringSlice))
+		for _, s := range stringSlice {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		if required && len(out) == 0 {
+			return nil, fmt.Errorf("%s must be a non-empty array", label)
+		}
+		return out, nil
 	}
 	rows, ok := value.([]any)
 	if !ok || (required && len(rows) == 0) {
@@ -3803,6 +3938,25 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	}
 	if err := validateTaskSwarmLaunchEnabled(parsed); err != nil {
 		return taskLaunchManifest{}, err
+	}
+	if parsed.Action == "help" {
+		manifest := taskLaunchManifest{
+			PathID:          taskLaunchPermissionPathID,
+			Goal:            "task help",
+			Description:     parsed.Description,
+			Action:          parsed.Action,
+			ParentMode:      sessionruntime.NormalizeMode(sessionMode),
+			TaskMode:        parsed.Mode,
+			SourceArguments: parsed.SourceArguments,
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash task help manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
 	}
 	if parsed.Action == taskProgramActionStatus {
 		manifest := taskLaunchManifest{

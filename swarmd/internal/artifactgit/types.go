@@ -77,6 +77,8 @@ type BlobInput struct {
 }
 
 type Genesis struct {
+	// LockedParts preserves canonical part locks when importing an independent root.
+	LockedParts  map[string]bool
 	MediaType    string
 	Content      *BlobInput
 	Parts        map[string]BlobInput

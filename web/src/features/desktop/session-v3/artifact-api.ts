@@ -722,6 +722,7 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
   const projectedParentCommitOids = Array.isArray(record.parent_commit_oids)
     ? record.parent_commit_oids.map(artifactCatalogString).filter(Boolean)
     : composition?.parentCommitOids ?? step?.parentCommitOids ?? []
+  const presentation = artifactCatalogRecord(record.presentation)
   return {
     artifactId,
     sourceRef: artifactCatalogString(record.source_ref),
@@ -734,17 +735,17 @@ export function normalizeDesktopV3ArtifactCatalogEntry(value: unknown): DesktopV
     planTitle: artifactCatalogString(record.plan_title),
     checkpointId: artifactCatalogString(record.checkpoint_id),
     checkpointTitle: artifactCatalogString(record.checkpoint_title),
-    label: artifactCatalogString(record.label) || artifactCatalogString(record.filename) || 'Artifact',
-    description: artifactCatalogString(record.description),
-    collectionName: artifactCatalogString(record.collection_name),
-    collectionDescription: artifactCatalogString(record.collection_description),
+    label: artifactCatalogString(record.label) || artifactCatalogString(presentation?.label) || artifactCatalogString(record.filename) || 'Artifact',
+    description: artifactCatalogString(record.description) || artifactCatalogString(presentation?.description),
+    collectionName: artifactCatalogString(record.collection_name) || artifactCatalogString(artifactCatalogRecord(record.collection)?.name),
+    collectionDescription: artifactCatalogString(record.collection_description) || artifactCatalogString(artifactCatalogRecord(record.collection)?.description),
     filename: artifactCatalogString(record.filename),
     mediaType: artifactCatalogString(record.media_type) || 'application/octet-stream',
-    kind: artifactCatalogString(record.kind),
+    kind: artifactCatalogString(record.kind) || artifactCatalogString(presentation?.kind),
     role,
     status,
     failureCode: artifactCatalogString(record.failure_code),
-    previewable: record.previewable === true,
+    previewable: record.previewable === true || presentation?.previewable === true,
     selected: record.selected === true,
     category,
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,

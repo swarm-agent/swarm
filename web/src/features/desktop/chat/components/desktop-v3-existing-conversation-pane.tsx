@@ -2901,18 +2901,16 @@ export function DesktopV3ExistingConversationPane({
       }
       await persistVisibleSettings();
       const retainedOperation = operationRef.current;
-      if (retainedOperation) {
-        const sameDraft = retainedOperation.request.content === submittedDraft.trim();
-        const sameMedia = JSON.stringify(retainedOperation.request.media ?? []) === JSON.stringify(attachments);
-        const retainedArtifacts = retainedOperation.request.artifact_selections ?? [];
-        const sameArtifacts = JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections);
-        const sameVideos = JSON.stringify(retainedOperation.request.video_attachments ?? []) === JSON.stringify(videoAttachments);
-        if (!sameDraft || !sameMedia || !sameArtifacts || !sameVideos) {
-          throw new Error("Retry the retained message without changing its text or attachments");
-        }
-      }
+      const sameDraft = retainedOperation ? retainedOperation.request.content === submittedDraft.trim() : false;
+      const sameMedia = retainedOperation ? JSON.stringify(retainedOperation.request.media ?? []) === JSON.stringify(attachments) : false;
+      const retainedArtifacts = retainedOperation?.request.artifact_selections ?? [];
+      const sameArtifacts = retainedOperation ? JSON.stringify(retainedArtifacts) === JSON.stringify(artifactSelections) : false;
+      const sameVideos = retainedOperation ? JSON.stringify(retainedOperation.request.video_attachments ?? []) === JSON.stringify(videoAttachments) : false;
+      const isRetryingRetainedOperation = Boolean(
+        retainedOperation && sameDraft && sameMedia && sameArtifacts && sameVideos,
+      );
       const operation =
-        retainedOperation ??
+        (isRetryingRetainedOperation ? retainedOperation : null) ??
         createDesktopV3ExistingMessageOperation({
           sessionId: normalizedSessionId,
           prompt: submittedDraft,

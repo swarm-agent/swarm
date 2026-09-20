@@ -39,17 +39,31 @@ function testCodexOpensUsageWithoutChangingModels(): void {
   assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
 }
 
-function testMediaCommandOpensQuickSettings(): void {
-  const media = getDesktopSlashCommands().find((command) => command.command === '/media')
+function testMediaCommandOpensStudioMedia(): void {
+  const commands = getDesktopSlashCommands()
+  const media = commands.find((command) => command.command === '/media')
+  const mediaSettings = commands.find((command) => command.command === '/media settings')
   assert(Boolean(media), 'expected /media command to exist')
   assert(media?.state === 'ready', 'expected /media command to be ready')
-  assert(media?.action.kind === 'open-quick-settings', 'expected /media to open quick settings')
-  if (media?.action.kind === 'open-quick-settings') {
-    assert(media.action.tab === 'media', 'expected /media to target media quick settings')
-  }
+  assert(media?.action.kind === 'open-studio-media', 'expected /media to open studio media')
+
+  assert(Boolean(mediaSettings), 'expected /media settings command to exist')
+  assert(mediaSettings?.state === 'ready', 'expected /media settings command to be ready')
+  assert(mediaSettings?.action.kind === 'open-quick-settings', 'expected /media settings to open quick settings')
+  assert((mediaSettings?.action as { tab?: string })?.tab === 'media', 'expected /media settings tab to be media')
+
   const palette = buildDesktopSlashPaletteState('/media')
   assert(palette.exactMatch?.id === 'media', 'expected /media to resolve exactly')
   assert(palette.matches[0]?.id === 'media', 'expected /media to lead palette matches')
+  assert(palette.matches.some((cmd) => cmd.id === 'media-settings'), 'expected /media settings to be in /media matches')
+
+  const settingsPalette = buildDesktopSlashPaletteState('/media settings')
+  assert(settingsPalette.exactMatch?.id === 'media-settings', 'expected /media settings to resolve exactly')
+  assert(settingsPalette.matches[0]?.id === 'media-settings', 'expected /media settings to lead palette matches')
+
+  const partialSettingsPalette = buildDesktopSlashPaletteState('/media set')
+  assert(partialSettingsPalette.exactMatch?.id === 'media-settings', 'expected /media set to match media-settings')
+  assert(partialSettingsPalette.matches[0]?.id === 'media-settings', 'expected /media set to lead matches with media-settings')
 }
 
 function testAICommitCommandTriggersCanonicalWorkflow(): void {
@@ -249,7 +263,7 @@ function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
-  testMediaCommandOpensQuickSettings()
+  testMediaCommandOpensStudioMedia()
   testAICommitCommandTriggersCanonicalWorkflow()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()

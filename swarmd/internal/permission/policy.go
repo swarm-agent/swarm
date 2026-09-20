@@ -458,7 +458,7 @@ func canonicalManageWorkspaceAction(raw any) (string, bool) {
 		action = "delete"
 	}
 	switch action {
-	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map":
+	case "cancel_worktree_recovery", "reclaim_worktree", "copy_worktree", "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "create", "update", "delete", "update_map", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory":
 		return action, true
 	default:
 		return "", false
@@ -510,7 +510,7 @@ func manageWorkspacePolicyIdentity(arguments string) (string, string) {
 		return "workspace_reclaim", ""
 	case "copy_worktree":
 		return "workspace_copy", ""
-	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree":
+	case "discover_worktrees", "inspect", "list", "inspect_map", "get_map", "set_session", "set_default", "adopt_worktree", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory":
 		return "manage_workspace", ""
 	case "create":
 		return policyToolWorkspaceCreate, ""
@@ -906,6 +906,16 @@ func explainBuiltinDeny(mode string, ctx policyEvalContext) (PolicyExplain, bool
 				Command:     ctx.BashCommand,
 				RulePreview: "",
 			}, true
+		case "manage_artifact":
+			if IsManageArtifactWriteAction(ctx.ToolArguments) {
+				return PolicyExplain{
+					Decision:    PolicyDecisionDeny,
+					Source:      "builtin",
+					Reason:      fmt.Sprintf("manage_artifact %s is unavailable for read execution setting", manageAction(ctx.ToolArguments)),
+					ToolName:    ctx.ToolName,
+					RulePreview: "",
+				}, true
+			}
 		}
 	}
 	if mode == "readwrite" {
@@ -1457,6 +1467,9 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// human acceptance/final-render boundary remain authoritative.
 		return PolicyDecisionAllow
 	case "manage_artifact":
+		if mode == "read" && IsManageArtifactWriteAction(toolArguments) {
+			return PolicyDecisionDeny
+		}
 		// Image generation is a billed external provider operation. Ordinary
 		// callers must explicitly approve it; trusted delegated Image workers flow
 		// through the already-approved task manifest and permission-session scope.
@@ -1501,6 +1514,9 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		}
 		return PolicyDecisionAllow
 	case "task":
+		if !ShouldApproveTaskLaunch(toolArguments) {
+			return PolicyDecisionAllow
+		}
 		return PolicyDecisionAsk
 	case "compact":
 		return PolicyDecisionAllow

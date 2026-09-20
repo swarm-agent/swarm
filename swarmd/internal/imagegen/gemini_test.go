@@ -87,6 +87,43 @@ func TestGoogleGeminiImageClientGenerateImageUsesRESTGenerateContent(t *testing.
 	}
 }
 
+func TestExtractImageOutputTokens(t *testing.T) {
+	// Case 1: candidatesTokensDetails has modality IMAGE -> extracts tokenCount
+	usageWithImage := map[string]any{
+		"promptTokenCount":     100,
+		"candidatesTokenCount": 1500,
+		"totalTokenCount":      1600,
+		"candidatesTokensDetails": []any{
+			map[string]any{"modality": "IMAGE", "tokenCount": 1290},
+			map[string]any{"modality": "TEXT", "tokenCount": 210},
+		},
+	}
+	if got := extractImageOutputTokens(usageWithImage); got != 1290 {
+		t.Fatalf("expected 1290 image tokens, got %d", got)
+	}
+
+	// Case 2: Only totalTokenCount or candidatesTokenCount (no IMAGE modality) -> must return 0 (never use total as image)
+	usageOnlyTotals := map[string]any{
+		"promptTokenCount":     500,
+		"candidatesTokenCount": 1000,
+		"totalTokenCount":      1500,
+	}
+	if got := extractImageOutputTokens(usageOnlyTotals); got != 0 {
+		t.Fatalf("expected 0 image tokens when candidatesTokensDetails missing, got %d", got)
+	}
+
+	// Case 3: candidatesTokensDetails only has TEXT -> returns 0
+	usageOnlyText := map[string]any{
+		"totalTokenCount": 500,
+		"candidatesTokensDetails": []any{
+			map[string]any{"modality": "TEXT", "tokenCount": 500},
+		},
+	}
+	if got := extractImageOutputTokens(usageOnlyText); got != 0 {
+		t.Fatalf("expected 0 image tokens when modality is TEXT, got %d", got)
+	}
+}
+
 type blockingGeminiImageClient struct {
 	ready chan struct{}
 	start chan struct{}

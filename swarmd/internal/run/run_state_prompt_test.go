@@ -102,6 +102,7 @@ func TestDurableRunStateInstructionsRoutesAutoModeWithoutActivePlan(t *testing.T
 		"Do not call plan_manage get-active merely to determine whether a plan exists",
 		"Auto session mode does not mean an active plan exists", "The retired request_followup_checkpoint action and aliases are always invalid",
 		"for a clear bounded task call plan_manage start_session_checkpoint directly", "that single action atomically creates and starts the checkpoint in the current run", "do not call start_checkpoint afterward",
+		"distinguish single scoped requests from broad multi-phase workflows", "fix my sidebar", "fix my cicd pipeline", "optionally coding task_programs into checkpoints",
 		"make exactly one approval-gated plan_manage request_new_plan call with a complete multi-checkpoint structured document",
 		"Do not create a draft with new/save", "do not propose a plan and then manually start it",
 	} {

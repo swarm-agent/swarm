@@ -175,6 +175,7 @@ type Runtime struct {
 	themeWorkspace        manageThemeWorkspaceService
 	artifacts             *artifact.Registry
 	artifactAuthority     ArtifactAuthority
+	artifactV3Importer    ArtifactV3NativeImporter
 	artifactV2Author      *artifactv2.AuthorService
 	artifactV3Author      *ArtifactV3AuthorService
 	directArtifactV3Mu    sync.Mutex
@@ -261,6 +262,10 @@ type manageSessionService interface {
 	CurrentRealtimeOutboxRevision() (uint64, error)
 	LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID string, endpointSeq uint64) (pebblestore.V3RealtimeOutboxRecord, bool, error)
 	ReadSessionMediaAsset(accountScopeID, sessionID, assetID string) (pebblestore.SessionMediaAsset, []byte, error)
+	EstimateMediaCost(provider, model, kind string, count int, durationSeconds int, isIteration bool) pebblestore.MediaCostEstimate
+	EstimateMediaCostWithOptions(opts pebblestore.MediaCostEstimateOptions) pebblestore.MediaCostEstimate
+	RecordMediaUsage(pebblestore.SessionMediaUsageRecord) error
+	ListMediaUsage(accountScopeID string, limit int) ([]pebblestore.SessionMediaUsageRecord, error)
 }
 
 type manageWorktreeWorkspaceService interface {
@@ -397,6 +402,7 @@ type ManagedVideoGenerationService interface {
 
 type ManagedAudioGenerationService interface {
 	GenerateManagedAudio(context.Context, audiogen.ManagedAudioRequest) (audiogen.ManagedAudioResult, error)
+	ManagedAudioCapabilities(modelID string) (audiogen.ManagedAudioCapabilities, error)
 }
 
 type manageThemeUISettingsService interface {
@@ -591,6 +597,19 @@ func (r *Runtime) SetArtifactAuthority(authority ArtifactAuthority) {
 	if r != nil {
 		r.artifactAuthority = authority
 	}
+}
+
+func (r *Runtime) SetArtifactV3NativeImporter(importer ArtifactV3NativeImporter) {
+	if r != nil {
+		r.artifactV3Importer = importer
+	}
+}
+
+func (r *Runtime) ArtifactV3NativeImporter() ArtifactV3NativeImporter {
+	if r == nil {
+		return nil
+	}
+	return r.artifactV3Importer
 }
 
 func (r *Runtime) SetHTMLCaptureRenderer(renderer htmlcapture.Renderer) {
@@ -1160,17 +1179,17 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "ask-user",
-			Description: "Request user input through the permission interaction flow. Supply at least two concrete choices per question. The backend always appends a protected option labeled exactly \"Custom response\" so the user can freely type a different answer. Never add a custom/other/input-box option; returned answers may not match any supplied choice.",
+			Description: "Request user input with at least two concrete choices per question. The backend always appends a protected option labeled exactly \"Custom response\" so the user can freely type a different answer.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"title":    map[string]any{"type": "string", "description": "Optional modal title"},
-					"context":  map[string]any{"type": "string", "description": "Optional context shown above questions"},
-					"question": map[string]any{"type": "string", "description": "Single-question prompt shown to the user"},
+					"context":  map[string]any{"type": "string", "description": "Optional context"},
+					"question": map[string]any{"type": "string", "description": "Single-question prompt"},
 					"options": map[string]any{
 						"type":        "array",
 						"minItems":    2,
-						"description": "At least two concrete suggested answers for the single-question path. Do not add a custom/other/input-box option; the backend appends \"Custom response\" automatically.",
+						"description": "At least two concrete choices",
 						"items": map[string]any{
 							"oneOf": []any{
 								map[string]any{"type": "string"},
@@ -1181,7 +1200,6 @@ func (r *Runtime) Definitions() []Definition {
 										"value":       map[string]any{"type": "string"},
 										"description": map[string]any{"type": "string"},
 									},
-									"required":             []string{},
 									"additionalProperties": false,
 								},
 							},
@@ -1190,7 +1208,7 @@ func (r *Runtime) Definitions() []Definition {
 					"questions": map[string]any{
 						"type":        "array",
 						"minItems":    1,
-						"description": "Structured questions. Every question needs at least two concrete choices; the backend separately appends a protected \"Custom response\" option.",
+						"description": "Structured questions (min 2 choices per question)",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -1201,7 +1219,7 @@ func (r *Runtime) Definitions() []Definition {
 								"options": map[string]any{
 									"type":        "array",
 									"minItems":    2,
-									"description": "At least two concrete suggested answers. Do not add a custom/other/input-box option; the backend appends \"Custom response\" automatically.",
+									"description": "At least two concrete choices",
 									"items": map[string]any{
 										"oneOf": []any{
 											map[string]any{"type": "string"},
@@ -1212,7 +1230,6 @@ func (r *Runtime) Definitions() []Definition {
 													"value":       map[string]any{"type": "string"},
 													"description": map[string]any{"type": "string"},
 												},
-												"required":             []string{},
 												"additionalProperties": false,
 											},
 										},
@@ -1228,7 +1245,6 @@ func (r *Runtime) Definitions() []Definition {
 					map[string]any{"required": []string{"question", "options"}},
 					map[string]any{"required": []string{"questions"}},
 				},
-				"required":             []string{},
 				"additionalProperties": false,
 			},
 		},
@@ -1318,30 +1334,32 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage_workspace",
-			Description: "Inspect and manage saved workspaces and the Workspace Map. Update map only on explicit user request; mutating actions require permissions. Call action='help' for workflow guidance.",
+			Description: "Workspace catalog and Workspace Map manager. Call action='help' for workflow guidance.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"}},
-					"workspace_id":           map[string]any{"type": "string", "description": "Target workspace identity for update/delete/selection."},
-					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1, "description": "Expected target generation for update/delete."},
-					"workspace_path":         map[string]any{"type": "string", "description": "Directory path for create/update."},
-					"workspace_name":         map[string]any{"type": "string", "description": "Display name for create/update."},
-					"theme_id":               map[string]any{"type": "string", "description": "Optional workspace theme ID."},
-					"intent":                 map[string]any{"type": "string", "maxLength": 500, "description": "Short user-readable reason for catalog or map change."},
-					"expected_revision":      map[string]any{"type": "integer", "minimum": 1, "description": "update_map only: current Workspace Map revision."},
-					"content":                map[string]any{"type": "string", "maxLength": 32768, "description": "update_map only: complete replacement Markdown document beginning with '# Workspace Map'."},
-					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Exact flat attachment set for set_session (maximum 64)."},
-					"primary_workspace_id":   map[string]any{"type": "string", "description": "Explicit session default identity for set_session."},
-					"owner_session_id":       map[string]any{"type": "string", "description": "Recovery: authorized inventory owner."},
+					"action":                 map[string]any{"type": "string", "enum": []string{"inspect", "list", "inspect_map", "get_map", "update_map", "create", "update", "delete", "set_session", "set_default", "adopt_worktree", "discover_worktrees", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery", "add_source_media_directory", "list_source_media_directories", "remove_source_media_directory"}},
+					"workspace_id":           map[string]any{"type": "string", "description": "Target workspace identity"},
+					"workspace_generation":   map[string]any{"type": "integer", "minimum": 1},
+					"workspace_path":         map[string]any{"type": "string"},
+					"workspace_name":         map[string]any{"type": "string"},
+					"theme_id":               map[string]any{"type": "string"},
+					"intent":                 map[string]any{"type": "string", "maxLength": 500},
+					"expected_revision":      map[string]any{"type": "integer", "minimum": 1},
+					"content":                map[string]any{"type": "string", "maxLength": 32768, "description": "update_map replacement Markdown beginning with '# Workspace Map'"},
+					"workspace_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"primary_workspace_id":   map[string]any{"type": "string"},
+					"owner_session_id":       map[string]any{"type": "string"},
 					"ownership_revision":     map[string]any{"type": "integer", "minimum": 1},
-					"head":                   map[string]any{"type": "string", "description": "Recovery: inventory HEAD."},
-					"fingerprint":            map[string]any{"type": "string", "description": "Recovery: inventory fingerprint."},
-					"operation_id":           map[string]any{"type": "string", "description": "Recovery: unique operation ID."},
-					"files":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "copy_worktree requires explicit relative files."},
-					"worktree_name":          map[string]any{"type": "string", "description": "adopt_worktree only: requested name for new managed worktree."},
-					"worktree_path":          map[string]any{"type": "string", "description": "Target worktree path for discover_worktrees, adopt_worktree, reclaim_worktree, copy_worktree, cancel_worktree_recovery."},
-					"expected_worktree_path": map[string]any{"type": "string", "description": "adopt_worktree only: optional stale-reference guard."},
+					"head":                   map[string]any{"type": "string"},
+					"fingerprint":            map[string]any{"type": "string"},
+					"operation_id":           map[string]any{"type": "string"},
+					"files":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"worktree_name":          map[string]any{"type": "string"},
+					"worktree_path":          map[string]any{"type": "string"},
+					"expected_worktree_path": map[string]any{"type": "string"},
+					"directory_path":         map[string]any{"type": "string", "description": "Directory path for source media operations"},
+					"directory":              map[string]any{"type": "string", "description": "Alias for directory_path"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -1350,28 +1368,28 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "manage-worktree",
-			Description: "Recall durable Coder child lineage, integrate committed child batches into parent session lane, or promote owned session lanes into captured checkout. Call action='help' for workflow guidance.",
+			Description: "Worktree lineage recall, integration, and promotion manager. Call action='help' for workflow guidance.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote"},
-					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs from parent lineage; mutually exclusive with task_call_id"},
-					"child_session_id":      map[string]any{"type": "string", "description": "Recalled child ID for inspect_source/retain_source"},
-					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "1–32 source-relative text files for recovery"},
-					"expected_digest":       map[string]any{"type": "string", "description": "Inspected source digest required by retain_source"},
-					"task_call_id":          map[string]any{"type": "string", "description": "Parent task call to recall/integrate as one Coder wave; mutually exclusive with session_ids"},
-					"workspace_path":        map[string]any{"type": "string", "description": "Optional workspace path; defaults to active workspace"},
-					"source_session_id":     map[string]any{"type": "string", "description": "Promote only: owned session lane source session id"},
-					"source_session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Promote only: explicit owned session lane IDs to batch-promote"},
-					"sources":               map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Promote only: source candidates list. Call action='help' for schema."},
-					"source_branch":         map[string]any{"type": "string", "description": "Promote only: expected source lane branch"},
-					"source_head":           map[string]any{"type": "string", "description": "Promote only: source lane head_oid"},
-					"target_workspace_path": map[string]any{"type": "string", "description": "Promote only: target checkout path to advance"},
-					"target_branch":         map[string]any{"type": "string", "description": "Promote only: target checkout branch"},
-					"target_head":           map[string]any{"type": "string", "description": "Promote only: git rev-parse HEAD of target checkout"},
-					"branch_name":           map[string]any{"type": "string", "description": "Optional worktree branch prefix override"},
-					"limit":                 map[string]any{"type": "integer", "description": "Page size for returned children (default 25, max 100)"},
-					"cursor":                map[string]any{"type": "integer", "description": "0-based result offset for pagination"},
+					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs"},
+					"child_session_id":      map[string]any{"type": "string"},
+					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"expected_digest":       map[string]any{"type": "string"},
+					"task_call_id":          map[string]any{"type": "string"},
+					"workspace_path":        map[string]any{"type": "string"},
+					"source_session_id":     map[string]any{"type": "string"},
+					"source_session_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"sources":               map[string]any{"type": "array", "items": map[string]any{"type": "object"}},
+					"source_branch":         map[string]any{"type": "string"},
+					"source_head":           map[string]any{"type": "string"},
+					"target_workspace_path": map[string]any{"type": "string"},
+					"target_branch":         map[string]any{"type": "string"},
+					"target_head":           map[string]any{"type": "string"},
+					"branch_name":           map[string]any{"type": "string"},
+					"limit":                 map[string]any{"type": "integer"},
+					"cursor":                map[string]any{"type": "integer"},
 				},
 				"required":             []string{"action"},
 				"additionalProperties": false,
@@ -1449,20 +1467,21 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "plan_manage",
-			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes. document is authoritative; markdown is display-only. Do not use manage_todos for agent progress; plan_manage is the canonical agent checklist/progress surface. In auto mode with no active plan, start_session_checkpoint atomically creates and starts one bounded checkpoint; use request_new_plan for broad, uncertain, high-risk, multi-phase, or approval-gated work. From a trusted parent provider turn with an active plan, transition_checkpoint_boundary is the only action that appends one self-contained checkpoint and assigns it to the already-current run; its successful result preserves context and continues that provider turn. The retired request_followup_checkpoint action and all aliases are rejected. Do not call transition_checkpoint_boundary from a checkpoint-owned run. Classify feedback by contract impact: guidance needs no mutation; bounded additive work uses add_subtask; a superseded checklist uses replace_subtasks; invalidated objectives use restart_checkpoint; independently shippable work from a parent turn uses transition_checkpoint_boundary; future-plan rewrites use amend_plan; whole-plan replacement uses request_new_plan. action=new never replaces an active plan: use request_new_plan with current plan_id; use patch and update_section for targeted partial edits. Put terminal report, changed_files, validation, and result on the terminal checkpoint action.",
+			Description: "Manage the canonical structured session plan, agent execution progress, and typed plan lifecycle changes. document is authoritative; markdown is display-only. Do not use manage_todos for agent progress; plan_manage is the canonical agent checklist/progress surface. In auto mode with no active plan, distinguish single requests from multi-checkpoint workflows: start_session_checkpoint atomically creates and starts one bounded checkpoint (pass top-level change_request with the verbatim user request, checkpoint_title, tasks, and acceptance_criteria; do not wrap in checkpoint object); use request_new_plan for broad, uncertain, high-risk, multi-phase, or multi-checkpoint work (e.g. 'fix my cicd pipeline') with optional embedded task_programs. From a trusted parent provider turn with an active plan, transition_checkpoint_boundary is the only action that appends one self-contained checkpoint and assigns it to the already-current run; its successful result preserves context and continues that provider turn. The retired request_followup_checkpoint action and all aliases are rejected. Do not call transition_checkpoint_boundary from a checkpoint-owned run. Classify feedback by contract impact: guidance needs no mutation; bounded additive work uses add_subtask; a superseded checklist uses replace_subtasks; invalidated objectives use restart_checkpoint; independently shippable work from a parent turn uses transition_checkpoint_boundary; future-plan rewrites use amend_plan; whole-plan replacement uses request_new_plan. action=new never replaces an active plan: use request_new_plan with current plan_id; use patch and update_section for targeted partial edits. Put terminal report, changed_files, validation, and result on the terminal checkpoint action.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":               map[string]any{"type": "string", "description": "Action: help|list|get|get-active|save|patch/update_section/update_info/upsert_checkpoint/update_checkpoint/approve_and_start/restart_checkpoint/rewind_to_checkpoint/resolve_blocked_checkpoint/start_session_checkpoint/transition_checkpoint_boundary/amend_plan/request_new_plan/start_checkpoint/continue_checkpoint/complete_checkpoint/checkpoint_outcome/mark_needs_review/mark_blocked/mark_failed/remove_checkpoint/reorder_checkpoints/set_active_checkpoint/add_subtask/replace_subtasks/update_subtask/remove_subtask/reorder_subtasks/focus_subtask/complete_subtask/set-active/new/history. For progress, pass subtask_ids to batch every task completed since the last update; skip it for discovery-only work and single-step checkpoints; when done, set complete_checkpoint=true instead of making a second call; use update_checkpoint only for meaningful intermediate state, not routine agent progress/checklist transitions. transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action and is valid only in a trusted parent provider turn: it assigns checkpoint ownership to the already-current run and continues the parent turn without allocating another run; request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected. Call action='help' for guide."},
+					"action":               map[string]any{"type": "string", "description": "Action: help|list|get|save|patch|start_session_checkpoint|transition_checkpoint_boundary|amend_plan|request_new_plan|complete_checkpoint|add_subtask|replace_subtasks|complete_subtask. In auto mode with no active plan, use start_session_checkpoint for single scoped requests (e.g. 'fix my sidebar') with top-level change_request, checkpoint_title, tasks, and acceptance_criteria, or request_new_plan for broad multi-phase workflows (e.g. 'fix my cicd pipeline') or multi-checkpoint plans. For progress, pass subtask_ids to batch every task completed since the last update (skip for discovery-only work and single-step checkpoints); when done, set complete_checkpoint=true instead of making a second call; use update_checkpoint only for meaningful intermediate state, not routine agent progress/checklist transitions. transition_checkpoint_boundary is the sole active-plan checkpoint-boundary action and is valid only in a trusted parent provider turn: it assigns checkpoint ownership to the already-current run and continues the parent turn without allocating another run; request_followup_checkpoint, request_changes, and all follow-up aliases are retired and rejected. Call action='help' for guide."},
 					"plan_id":              map[string]any{"type": "string", "description": "Plan id for get/set-active/save/patch or typed lifecycle actions."},
-					"checkpoint_id":        map[string]any{"type": "string", "description": "Target checkpoint id for checkpoint document operations."},
+					"checkpoint_id":        map[string]any{"type": "string", "description": "Target checkpoint id for checkpoint document operations. For start_session_checkpoint, optional id for the created checkpoint (defaults to cp-1)."},
 					"subtask":              map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}, "title": map[string]any{"type": "string", "minLength": 1}, "status": map[string]any{"type": "string"}, "notes": map[string]any{"type": "string"}, "result": map[string]any{"type": "string"}, "order": map[string]any{"type": "integer"}}, "additionalProperties": false, "description": "For add_subtask, pass subtask object in same call: {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}. Do not put title at the top level, pass bare text, or issue an incomplete format-probing call. add_subtask applies when existing checklist remains valid; keeps the checkpoint boundary and attempt history; must not clear blocked or failed state."},
 					"subtasks":             map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Complete authoritative subtask list for replace_subtasks. Omitted stale subtasks are removed atomically; checkpoint contract and attempt history are preserved."},
 					"subtask_id":           map[string]any{"type": "string", "description": "Stable subtask id for update/remove/focus/complete operations."},
 					"subtask_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "For complete_subtask, stable ids of multiple completed subtasks."},
-					"tasks":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint tasks."},
-					"acceptance_criteria":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint acceptance criteria."},
-					"notes":                map[string]any{"type": "string", "description": "Checkpoint notes or handoff context."},
+					"tasks":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint tasks. Pass at the top level for start_session_checkpoint, transition_checkpoint_boundary, and restart_checkpoint."},
+					"acceptance_criteria":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Proposed checkpoint acceptance criteria (at least one required). Pass at the top level for start_session_checkpoint, transition_checkpoint_boundary, and restart_checkpoint."},
+					"checkpoint_title":     map[string]any{"type": "string", "description": "Proposed title for start_session_checkpoint or transition_checkpoint_boundary. Required for a requirement-changing restart_checkpoint so the replacement definition is complete."},
+					"notes":                map[string]any{"type": "string", "description": "Checkpoint notes or handoff context. For start_session_checkpoint, transition_checkpoint_boundary, or restart_checkpoint, use this for self-contained context, constraints, and validation expectations."},
 					"report":               map[string]any{"type": "string", "description": "Checkpoint report for update/complete checkpoint operations."},
 					"result":               map[string]any{"type": "string", "description": "Checkpoint result for update/complete checkpoint operations."},
 					"handoff_overview":     map[string]any{"type": "string", "description": "Concise overview for final checkpoint completion or blocked handoffs."},
@@ -1470,8 +1489,8 @@ func (r *Runtime) Definitions() []Definition {
 					"recommendation":       map[string]any{"type": "object", "description": "Single final-review recommendation object (decision, action, reason, action_state)."},
 					"complete_checkpoint":  map[string]any{"type": "boolean", "description": "For complete_subtask: complete checkpoint atomically when all work is done."},
 					"document":             sessionPlanDocumentToolSchema(),
-					"checkpoint":           map[string]any{"type": "object", "description": "Structured checkpoint object for checkpoint document operations (tasks, notes, agent progress/checklist). Call action='help' for schema."},
-					"change_request":       map[string]any{"type": "string", "description": "Required for start_session_checkpoint, transition_checkpoint_boundary, or restart_checkpoint when feedback invalidates the current checkpoint objective or acceptance criteria (atomically replaces the checkpoint definition; localized additive refinements use add_subtask)."},
+					"checkpoint":           map[string]any{"type": "object", "description": "Structured checkpoint object for checkpoint document operations (tasks, notes, agent progress/checklist). Call action='help' for schema. For start_session_checkpoint, transition_checkpoint_boundary, or restart_checkpoint, do not wrap fields inside a checkpoint object; pass change_request, checkpoint_title, tasks, acceptance_criteria, and notes directly at the top level."},
+					"change_request":       map[string]any{"type": "string", "description": "Required for start_session_checkpoint, transition_checkpoint_boundary, or restart_checkpoint when feedback invalidates the current checkpoint objective or acceptance criteria: verbatim full original user request text (atomically replaces the checkpoint definition; localized additive refinements use add_subtask). Pass with top-level checkpoint_title, tasks, and acceptance_criteria."},
 					"override":             map[string]any{"type": "boolean", "description": "Legacy action=new field. Replacement is rejected; use request_new_plan with current plan_id."},
 					"patch":                map[string]any{"type": "object", "description": "Optional object form for action=patch. Fields: operation, section, old_text, new_text, text, checklist_item, checked, replace_all."},
 					"operation":            map[string]any{"type": "string", "description": "Patch operation: replace_text, replace_section, append_to_section, append_text, append_checklist_item, or set_checkbox."},
@@ -1494,20 +1513,20 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm (fast parallel alternatives or independent trials; internal explore strategy remains implicit for backward compatibility). Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. In regular mode, use the structured launches array; Do not embed launch JSON as text embedded in prompt. Designer requires explicitly requested multiple UI/design iterations or variants (prohibited for ordinary UI work and single-design requests); workspace Designers share the parent checkout with read/search/find/list and write/edit (no Bash or Git) on distinct non-overlapping workspace-relative scopes, while managed Designers produce ordinary reusable artifacts. Approved-checkpoint starts omit program and max_concurrency because the runtime loads the canonical definition. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode uses the same subagent policy: agent_type and count generate the wave; omit launches and regular-launch fields such as concurrency_reason, meta_prompt, deliverable, dependency_evidence, and owned_scope. Idea Swarms send the same question directly without Router.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials (internal explore strategy remains implicit for backward compatibility). When asked for multiple images, an image swarm, or a high numbered image count (e.g. '10 images of x', 'make an image swarm of 5 logos'), use mode=swarm with agent_type=image and count=N directly—do not search workspace code or generate images one by one with manage_artifact. When asked for creative video swarms or multiple video variants, use mode=swarm with agent_type=video and count=N directly. When asked for multiple UI/design iterations or variants, use mode=swarm with agent_type=designer and count=N (managed artifacts) or regular workspace Designer launches. Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. In regular mode, use the structured launches array; Do not embed launch JSON as text embedded in prompt (not text embedded in prompt). Designer requires explicitly requested multiple UI/design iterations or variants (prohibited for ordinary UI work and single-design requests); workspace Designers share the parent checkout with read/search/find/list and write/edit (no Bash or Git) on distinct non-overlapping workspace-relative scopes, while managed Designers produce ordinary reusable artifacts. Approved-checkpoint starts omit program and max_concurrency. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode uses the same subagent policy: agent_type and count generate the wave; omit launches and regular-launch fields such as concurrency_reason; Omit in mode=swarm; swarm concurrency is defined by count. Idea Swarms send the same question directly without Router.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"action": map[string]any{
 						"type":        "string",
-						"description": "Optional action. Supported: spawn (default); Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted.",
+						"description": "Optional action. Supported: spawn (default), help; Task Programs use start or status. Start uses program when supplied, or the canonical task_program on the active approved checkpoint when program is omitted. Call action='help' with optional topic='program' or topic='swarm' for guide and schema.",
 					},
 					"mode":       map[string]any{"type": "string", "enum": []string{"regular", "swarm"}, "description": "regular uses explicit dependency-ready launches or an optional staged program. swarm generates a rapid wave from agent_type and count; omit launches and regular-launch fields such as concurrency_reason."},
 					"program_id": map[string]any{"type": "string", "description": "Stable program ID for status. A new start carries a new ID inside program.id; existing IDs cannot be continued."},
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
-					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "video", "idea"}, "description": "Required for mode=swarm. image and video independently Router-hydrate the parent brief plus each base theme and dispatch directly to the account image or video model without agent sessions. Idea is tool-free and available only in swarm mode."},
+					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "video", "idea"}, "description": "Required for mode=swarm (coder, designer, image, video, idea). image and video independently Router-hydrate the parent brief plus each base theme and dispatch directly to the account image or video model without agent sessions. Use image for image swarms or generating multiple images/variations (e.g. '10 images of x'), video for direct video swarms/variations, designer for managed design iteration swarms, coder for code trials, idea for parallel answering."},
 					"count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
 					"themes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
 					"groups":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Optional Coder/Designer groups. Call action='help' for schema."},
@@ -1515,18 +1534,18 @@ func (r *Runtime) Definitions() []Definition {
 						"preserve": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored details every Router and worker must preserve."},
 						"change":   map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}, "description": "The only dimensions the Router may vary during this focused iteration."},
 						"exclude":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored additions or directions every Router and worker must avoid."},
-					}, "required": []string{"change"}, "additionalProperties": false, "description": "Optional parent-controlled focused iteration boundary for Designer and image swarms. Router may elaborate execution detail only inside this boundary and cannot add, remove, weaken, or reinterpret the parent brief."},
+					}, "required": []string{"change"}, "additionalProperties": false, "description": "Parent iteration boundary for Designer/image swarms."},
 					"output_contract":   map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
 					"animation_profile": artifact.AnimationProfileToolSchema(),
 					"source_artifact": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
 						"variant_id": map[string]any{"type": "string"}, "event_seq": map[string]any{"type": "integer", "minimum": 1},
-					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Optional exact ready managed artifact reference for Designer work (regular launches or managed Iteration Swarms) or direct image Iteration Swarms. Regular workspace Designers require exactly one concrete owned_scope output target; trusted orchestration authenticates and materializes the artifact there before the child runs. Managed Designers receive the opaque reference and preserve source lineage. Direct image swarms resolve bounded image bytes only at the trusted generation boundary."},
+					}, "required": []string{"session_id", "collection_id", "variant_id", "event_seq"}, "additionalProperties": false, "description": "Ready managed artifact reference for Designer/image work."},
 					"artifact_v3_source": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string", "minLength": 1}, "artifact_id": map[string]any{"type": "string", "minLength": 1}, "commit_oid": map[string]any{"type": "string", "minLength": 1}, "projection_seq": map[string]any{"type": "integer", "minimum": 1},
 						"target_part_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}},
 						"revision_intent": map[string]any{"type": "string", "enum": []string{"focused_parts", "whole_project"}},
-					}, "required": []string{"session_id", "artifact_id", "commit_oid", "projection_seq"}, "additionalProperties": false, "description": "Exact native Artifact V3 source for managed Designer follow-up work. session_id must own the artifact. Trusted orchestration authenticates the artifact, exact immutable head commit, projection sequence, and target Part IDs before branching a complete candidate."},
+					}, "required": []string{"session_id", "artifact_id", "commit_oid", "projection_seq"}, "additionalProperties": false, "description": "Native Artifact V3 source for managed Designer follow-up work."},
 					"section_target": map[string]any{"type": "object", "properties": map[string]any{
 						"id": map[string]any{"type": "string", "minLength": 1}, "label": map[string]any{"type": "string", "minLength": 1},
 						"kind": map[string]any{"type": "string", "enum": []string{"temporal", "spatial", "page", "state", "selector", "semantic"}, "description": "Media-agnostic part kind; defaults to temporal for backward compatibility."},
@@ -1534,7 +1553,7 @@ func (r *Runtime) Definitions() []Definition {
 						"width": map[string]any{"type": "number"}, "height": map[string]any{"type": "number"},
 						"page": map[string]any{"type": "integer"}, "state_id": map[string]any{"type": "string"},
 						"selector": map[string]any{"type": "string"},
-					}, "required": []string{"id", "label"}, "additionalProperties": true, "description": "Optional exact artifact part target for managed Designer work. Requires source_artifact. Mutually exclusive with section_targets."},
+					}, "required": []string{"id", "label"}, "additionalProperties": true, "description": "Artifact part target for managed Designer work."},
 					"output_mode": map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract. Designer and image Iteration Swarms are always managed; swarm calls may omit this field or set managed. Workspace is available only for regular Designer launches and requires concrete owned_scope targets."},
 					"prompt": map[string]any{
 						"type":        "string",
@@ -1598,17 +1617,117 @@ func (r *Runtime) Definitions() []Definition {
 }
 
 func taskProgramToolSchema() map[string]any {
+	id := map[string]any{
+		"type":        "string",
+		"pattern":     "^[a-z][a-z0-9_-]{0,63}$",
+		"description": "Unique lowercase identifier matching ^[a-z][a-z0-9_-]{0,63}$",
+	}
 	return map[string]any{
 		"type":        "object",
-		"description": "Task Program object. Call task action='help' topic='program' for the staged program schema.",
+		"description": "Task Program object for staged multi-agent execution across coders, finders, and designers. Call task action='help' topic='program' for guide and schema.",
+		"properties": map[string]any{
+			"id": id,
+			"max_concurrency": map[string]any{
+				"type":        "integer",
+				"minimum":     1,
+				"description": "Optional explicit concurrency limit across ready jobs. Omit to run ready jobs bounded by account capacity.",
+			},
+			"stages": map[string]any{
+				"type":        "array",
+				"minItems":    1,
+				"description": "Ordered execution stages. Each stage defines an integration barrier.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":          id,
+						"title":       map[string]any{"type": "string", "description": "Optional human-readable stage title."},
+						"description": map[string]any{"type": "string", "description": "Optional stage description."},
+						"depends_on": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Earlier stage IDs that must integrate before this stage starts. Required for stages after the first stage.",
+						},
+						"dependency_evidence": map[string]any{
+							"type":        "string",
+							"description": "Explanation of why this stage is ready initially or what prior integrated state unlocks it.",
+						},
+					},
+					"required": []string{"id", "dependency_evidence"},
+				},
+			},
+			"jobs": map[string]any{
+				"type":        "array",
+				"minItems":    1,
+				"description": "Job assignments across stages. Supports coder, finder, and designer agents.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":       id,
+						"stage_id": map[string]any{"type": "string", "description": "ID of the stage this job belongs to."},
+						"agent_type": map[string]any{
+							"type":        "string",
+							"enum":        []string{"coder", "finder", "designer"},
+							"description": "Subagent type: 'coder' for code implementation/tests/commits; 'finder' for read-only research/discovery; 'designer' for visual/UI artifacts.",
+						},
+						"subagent_type": map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer"}, "description": "Alias for agent_type."},
+						"title":         map[string]any{"type": "string", "description": "Concise cosmetic title for the job, ideally three words."},
+						"meta_prompt":   map[string]any{"type": "string", "description": "Required full instructive assignment for the subagent worker."},
+						"deliverable":   map[string]any{"type": "string", "description": "Specific child output the parent will verify upon completion."},
+						"acceptance_criteria": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Criteria for job completion and verification.",
+						},
+						"dependency_evidence": map[string]any{
+							"type":        "string",
+							"description": "Why this job is ready initially or what dependency unlocks it.",
+						},
+						"depends_on": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Earlier-stage job IDs whose accepted handoffs are required.",
+						},
+						"workspace_path": map[string]any{
+							"type":        "string",
+							"description": "Optional target workspace root (supported for Coder or Finder only).",
+						},
+						"owned_scope": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "Workspace-relative file or directory paths. For Coders: concurrent Coders in the same stage must have non-overlapping scopes (e.g. distinct files/dirs); defaults to isolated worktree if omitted. For Finders: search paths (defaults to ['.']). For Designers: must be omitted for managed output; required concrete paths for workspace output.",
+						},
+						"output_mode": map[string]any{
+							"type":        "string",
+							"enum":        []string{"managed", "workspace"},
+							"description": "Designer jobs only: 'managed' (default) produces native Artifact V3 reusable artifacts and must omit owned_scope; 'workspace' edits files in place and requires concrete non-overlapping owned_scope without wildcards.",
+						},
+						"output_requirements": map[string]any{
+							"type":        "object",
+							"description": "Designer jobs only: optional preset (e.g. twitter_header, landscape_video) or dimensions.",
+						},
+						"animation_profile": map[string]any{
+							"type":        "object",
+							"description": "Designer jobs only: optional animation profile (motion_ui, spatial_3d, vector_playback, final_render).",
+						},
+						"recovery_source_digest": map[string]any{
+							"type":        "string",
+							"description": "Optional retained recovery digest from manage-worktree retain_source (Coder only).",
+						},
+					},
+					"required": []string{"id", "stage_id", "title", "meta_prompt", "deliverable"},
+				},
+			},
+		},
+		"required": []string{"id", "stages", "jobs"},
 	}
 }
 
 func taskProgramDefinitionToolSchema(description string) map[string]any {
-	return map[string]any{
-		"type":        "object",
-		"description": description,
+	schema := taskProgramToolSchema()
+	if strings.TrimSpace(description) != "" {
+		schema["description"] = description
 	}
+	return schema
 }
 
 func sessionPlanDocumentToolSchema() map[string]any {

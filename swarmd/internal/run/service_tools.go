@@ -1709,21 +1709,25 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = "task manifest is invalid"
 				continue
 			}
-			if manifest.Action == taskProgramActionStatus {
-				// Status is a read-only lookup scoped to the authenticated parent session.
-				// It must never create an approval interaction.
-				if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
-					decisions[i].Err = statusErr
-					decisions[i].Result.Error = statusErr.Error()
-				} else if !ok {
-					decisions[i].Err = fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
-					decisions[i].Result.Error = decisions[i].Err.Error()
+			if manifest.Action == taskProgramActionStatus || manifest.Action == "help" {
+				// Status and help are read-only operations scoped to the authenticated parent session.
+				// They must never create an approval interaction.
+				if manifest.Action == taskProgramActionStatus {
+					if _, ok, statusErr := s.sessions.GetTaskProgram(sessionID, manifest.ProgramID); statusErr != nil {
+						decisions[i].Err = statusErr
+						decisions[i].Result.Error = statusErr.Error()
+					} else if !ok {
+						decisions[i].Err = fmt.Errorf("task program %q not found for calling parent session", manifest.ProgramID)
+						decisions[i].Result.Error = decisions[i].Err.Error()
+					} else {
+						decisions[i].Approved = true
+					}
 				} else {
 					decisions[i].Approved = true
 				}
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
+			if manifest.Action != taskProgramActionStatus && manifest.Action != "help" && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
 				// Program status and direct image generation do not allocate delegated
 				// child sessions, so neither consumes a subagent-wave reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
@@ -3552,6 +3556,11 @@ func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, argume
 		}
 		if documentPatch != nil && isTrustedSubtaskResumeAction(action) {
 			if lifecycleRun.Inline {
+				if plan, ok, planErr := s.sessions.GetActivePlan(sessionID); planErr == nil && ok && plan.Document != nil {
+					if plan.Document.ExecutionState != nil && plan.Document.ExecutionState.Status == sessionruntime.PlanExecutionStateWaitingReview {
+						return "", errors.New("cannot add or update subtasks on a plan awaiting review; wait for user feedback or call transition_checkpoint_boundary for new work")
+					}
+				}
 				if err := applyTrustedSubtaskResumeOwnership(documentPatch, lifecycleRun); err != nil {
 					return "", err
 				}
@@ -3905,15 +3914,39 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 			result, err = lifecycle.StartPlanCheckpointed(input)
 		}
 	case "restart_checkpoint":
-		input.ReplacementRequest = strings.TrimSpace(firstNonEmptyString(mapString(args, "change_request"), mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text")))
-		input.ReplacementTitle = strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
-		input.ReplacementTasks = mapStringSlice(args, "tasks")
-		input.ReplacementCriteria = mapStringSlice(args, "acceptance_criteria")
+		var checkpointObj map[string]any
+		if cpRaw, ok := args["checkpoint"].(map[string]any); ok {
+			checkpointObj = cpRaw
+		}
+		changeRequest := strings.TrimSpace(firstNonEmptyString(mapString(args, "change_request"), mapString(args, "user_request"), mapString(args, "request"), mapString(args, "prompt"), mapString(args, "text")))
+		if changeRequest == "" && checkpointObj != nil {
+			changeRequest = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "change_request"), mapString(checkpointObj, "objective"), mapString(checkpointObj, "user_request"), mapString(checkpointObj, "request"), mapString(checkpointObj, "prompt"), mapString(checkpointObj, "text")))
+		}
+		title := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
+		if title == "" && checkpointObj != nil {
+			title = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "checkpoint_title"), mapString(checkpointObj, "title")))
+		}
+		tasks := mapStringSlice(args, "tasks")
+		if len(tasks) == 0 && checkpointObj != nil {
+			tasks = mapStringSlice(checkpointObj, "tasks")
+		}
+		acceptanceCriteria := mapStringSlice(args, "acceptance_criteria")
+		if len(acceptanceCriteria) == 0 && checkpointObj != nil {
+			acceptanceCriteria = mapStringSlice(checkpointObj, "acceptance_criteria")
+		}
+		notes := strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context")))
+		if notes == "" && checkpointObj != nil {
+			notes = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "notes"), mapString(checkpointObj, "handoff_notes"), mapString(checkpointObj, "context")))
+		}
+		input.ReplacementRequest = changeRequest
+		input.ReplacementTitle = title
+		input.ReplacementTasks = tasks
+		input.ReplacementCriteria = acceptanceCriteria
 		input.ReplacementArtifacts, err = planArtifactsFromArgs(args)
 		if err != nil {
 			return "", err
 		}
-		input.ReplacementNotes = strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context")))
+		input.ReplacementNotes = notes
 		input.ReplacementSourceID = strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message")))
 		result, err = lifecycle.RestartCheckpointFromZero(input)
 	case "rewind_to_checkpoint":
@@ -3940,14 +3973,38 @@ func (s *Service) executePlanLifecycleControlAction(sessionID, action string, ar
 		}
 		result, err = lifecycle.ResolveBlockedCheckpoint(input)
 	case "start_session_checkpoint":
+		var checkpointObj map[string]any
+		if cpRaw, ok := args["checkpoint"].(map[string]any); ok {
+			checkpointObj = cpRaw
+		}
+		changeRequest := strings.TrimSpace(mapString(args, "change_request"))
+		if changeRequest == "" && checkpointObj != nil {
+			changeRequest = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "change_request"), mapString(checkpointObj, "objective"), mapString(checkpointObj, "user_request"), mapString(checkpointObj, "request"), mapString(checkpointObj, "prompt"), mapString(checkpointObj, "text")))
+		}
+		title := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
+		if title == "" && checkpointObj != nil {
+			title = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "checkpoint_title"), mapString(checkpointObj, "title")))
+		}
+		tasks := mapStringSlice(args, "tasks")
+		if len(tasks) == 0 && checkpointObj != nil {
+			tasks = mapStringSlice(checkpointObj, "tasks")
+		}
+		acceptanceCriteria := mapStringSlice(args, "acceptance_criteria")
+		if len(acceptanceCriteria) == 0 && checkpointObj != nil {
+			acceptanceCriteria = mapStringSlice(checkpointObj, "acceptance_criteria")
+		}
+		notes := strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context")))
+		if notes == "" && checkpointObj != nil {
+			notes = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "notes"), mapString(checkpointObj, "handoff_notes"), mapString(checkpointObj, "context")))
+		}
 		input := sessionruntime.PlanLifecycleSessionCheckpointInput{
 			SessionID:          sessionID,
-			ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
-			Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
+			ChangeRequest:      changeRequest,
+			Title:              title,
 			CheckpointID:       strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_id"), mapString(args, "id"))),
-			Tasks:              mapStringSlice(args, "tasks"),
-			AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
-			Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
+			Tasks:              tasks,
+			AcceptanceCriteria: acceptanceCriteria,
+			Notes:              notes,
 			SourceMessageID:    strings.TrimSpace(firstNonEmptyString(mapString(args, "source_message_id"), mapString(args, "source_message"), lifecycleRun.SourceMessageID)),
 			RunID:              strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunID, mapString(args, "run_id"))),
 			RunSessionID:       strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, mapString(args, "run_session_id"), mapString(args, "session_id"))),
@@ -4052,15 +4109,39 @@ func (s *Service) executeCheckpointBoundaryTransition(sessionID string, args map
 	}
 	boundary := sessionruntime.NewCheckpointBoundaryService(s.sessions)
 	boundary.SetApplySessionMutation(applySessionMutation)
+	var checkpointObj map[string]any
+	if cpRaw, ok := args["checkpoint"].(map[string]any); ok {
+		checkpointObj = cpRaw
+	}
+	changeRequest := strings.TrimSpace(mapString(args, "change_request"))
+	if changeRequest == "" && checkpointObj != nil {
+		changeRequest = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "change_request"), mapString(checkpointObj, "objective"), mapString(checkpointObj, "user_request"), mapString(checkpointObj, "request"), mapString(checkpointObj, "prompt"), mapString(checkpointObj, "text")))
+	}
+	title := strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title")))
+	if title == "" && checkpointObj != nil {
+		title = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "checkpoint_title"), mapString(checkpointObj, "title")))
+	}
+	tasks := mapStringSlice(args, "tasks")
+	if len(tasks) == 0 && checkpointObj != nil {
+		tasks = mapStringSlice(checkpointObj, "tasks")
+	}
+	acceptanceCriteria := mapStringSlice(args, "acceptance_criteria")
+	if len(acceptanceCriteria) == 0 && checkpointObj != nil {
+		acceptanceCriteria = mapStringSlice(checkpointObj, "acceptance_criteria")
+	}
+	notes := strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context")))
+	if notes == "" && checkpointObj != nil {
+		notes = strings.TrimSpace(firstNonEmptyString(mapString(checkpointObj, "notes"), mapString(checkpointObj, "handoff_notes"), mapString(checkpointObj, "context")))
+	}
 	result, err := boundary.Transition(sessionruntime.CheckpointBoundaryTransitionInput{
 		SessionID:          sessionID,
 		PlanID:             strings.TrimSpace(firstNonEmptyString(mapString(args, "plan_id"), mapString(args, "id"))),
-		ChangeRequest:      strings.TrimSpace(mapString(args, "change_request")),
-		Title:              strings.TrimSpace(firstNonEmptyString(mapString(args, "checkpoint_title"), mapString(args, "title"))),
-		Tasks:              mapStringSlice(args, "tasks"),
-		AcceptanceCriteria: mapStringSlice(args, "acceptance_criteria"),
+		ChangeRequest:      changeRequest,
+		Title:              title,
+		Tasks:              tasks,
+		AcceptanceCriteria: acceptanceCriteria,
 		Artifacts:          artifacts,
-		Notes:              strings.TrimSpace(firstNonEmptyString(mapString(args, "notes"), mapString(args, "handoff_notes"), mapString(args, "context"))),
+		Notes:              notes,
 		SourceMessageID:    strings.TrimSpace(lifecycleRun.SourceMessageID),
 		SourceRunID:        strings.TrimSpace(lifecycleRun.RunID),
 		RunSessionID:       strings.TrimSpace(firstNonEmptyString(lifecycleRun.RunSessionID, sessionID)),

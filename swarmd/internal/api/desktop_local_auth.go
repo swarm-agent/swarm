@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -148,7 +150,7 @@ func (s *Server) issueDesktopLocalSession(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return r, err
 	}
-	http.SetCookie(w, buildDesktopLocalSessionCookie(issued.Token, issued.ExpiresAt, requestScheme(r) == "https"))
+	http.SetCookie(w, buildDesktopLocalSessionCookie(r, issued.Token, issued.ExpiresAt))
 	if r != nil {
 		r = requestWithActorContext(r.WithContext(context.WithValue(r.Context(), desktopLocalAuthIssuedTokenKey, issued.Token)), issued.Actor)
 	}
@@ -162,25 +164,47 @@ func desktopLocalSessionTokenFromRequest(r *http.Request) string {
 	if issued, _ := r.Context().Value(desktopLocalAuthIssuedTokenKey).(string); strings.TrimSpace(issued) != "" {
 		return strings.TrimSpace(issued)
 	}
-	cookie, err := r.Cookie(desktopLocalSessionCookieName)
+	cookie, err := r.Cookie(desktopLocalSessionCookieNameForRequest(r))
 	if err != nil {
 		return ""
 	}
 	return strings.TrimSpace(cookie.Value)
 }
 
-func buildDesktopLocalSessionCookie(token string, expiresAt time.Time, secure bool) *http.Cookie {
+// Cookies are host-scoped, not port-scoped. A shared name lets another local
+// daemon (including a forwarded testbench) overwrite the credential between a
+// media HEAD preflight and a browser-owned GET/Range request. Namespace both
+// issuance and lookup by the browser-facing origin; never fall back to the old
+// shared cookie. Header-based product/attach tokens remain unchanged.
+func desktopLocalSessionCookieNameForRequest(r *http.Request) string {
+	scheme := requestScheme(r)
+	authority := strings.ToLower(strings.TrimSpace(requestHost(r)))
+	host, port, err := net.SplitHostPort(authority)
+	if err != nil {
+		host = strings.Trim(authority, "[]")
+		if scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	origin := scheme + "://" + net.JoinHostPort(host, port)
+	digest := sha256.Sum256([]byte(origin))
+	return desktopLocalSessionCookieName + "_" + hex.EncodeToString(digest[:])
+}
+
+func buildDesktopLocalSessionCookie(r *http.Request, token string, expiresAt time.Time) *http.Cookie {
 	maxAge := int(time.Until(expiresAt).Seconds())
 	if maxAge < 0 {
 		maxAge = 0
 	}
 	return &http.Cookie{
-		Name:     desktopLocalSessionCookieName,
+		Name:     desktopLocalSessionCookieNameForRequest(r),
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   secure,
+		Secure:   requestScheme(r) == "https",
 		Expires:  expiresAt,
 		MaxAge:   maxAge,
 	}
@@ -294,7 +318,7 @@ func productSessionTokenFromRequest(r *http.Request) string {
 	if authz := strings.TrimSpace(r.Header.Get("Authorization")); strings.HasPrefix(strings.ToLower(authz), "bearer ") {
 		return strings.TrimSpace(authz[7:])
 	}
-	if cookie, err := r.Cookie(desktopLocalSessionCookieName); err == nil {
+	if cookie, err := r.Cookie(desktopLocalSessionCookieNameForRequest(r)); err == nil {
 		return strings.TrimSpace(cookie.Value)
 	}
 	return ""

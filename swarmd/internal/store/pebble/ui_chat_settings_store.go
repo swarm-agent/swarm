@@ -103,6 +103,10 @@ type UIToolVideoSettingsRecord struct {
 	IterationModel string `json:"iteration_model,omitempty"`
 }
 
+type UIToolAudioSettingsRecord struct {
+	DefaultModel string `json:"default_model,omitempty"`
+}
+
 type UIMediaSettingsRecord struct {
 	TranscriptionModel string `json:"transcription_model,omitempty"`
 }
@@ -114,6 +118,7 @@ type UIArtifactSettingsRecord struct {
 type UIToolSettingsRecord struct {
 	Image UIToolImageSettingsRecord `json:"image,omitempty"`
 	Video UIToolVideoSettingsRecord `json:"video,omitempty"`
+	Audio UIToolAudioSettingsRecord `json:"audio,omitempty"`
 }
 
 type UISettingsRecord struct {
@@ -332,6 +337,7 @@ func normalizeUISettingsRecord(record UISettingsRecord) UISettingsRecord {
 	record.Tools.Image.DefaultModel = strings.TrimSpace(record.Tools.Image.DefaultModel)
 	record.Tools.Video.DefaultModel = strings.TrimSpace(record.Tools.Video.DefaultModel)
 	record.Tools.Video.IterationModel = strings.TrimSpace(record.Tools.Video.IterationModel)
+	record.Tools.Audio.DefaultModel = strings.TrimSpace(record.Tools.Audio.DefaultModel)
 	return record
 }
 

@@ -117,6 +117,63 @@ func TestProviderManagedAutoStartSessionCheckpointContinuesCurrentRun(t *testing
 	}
 }
 
+func TestProviderManagedAutoStartSessionCheckpointAcceptsNestedCheckpointObject(t *testing.T) {
+	runSvc, sessionSvc, cleanup := newPlanManageRunTestService(t)
+	defer cleanup()
+
+	sessionID := createPlanManageTestSession(t, sessionSvc)
+	if _, _, err := sessionSvc.SetMode(sessionID, sessionruntime.ModeAuto); err != nil {
+		t.Fatalf("set auto mode: %v", err)
+	}
+	principal := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-test", AccountScopeID: "account-test"}
+	invoker := runSvc.NewProviderManagedToolInvoker(ProviderManagedToolInvokerConfig{
+		SessionID: sessionID, PermissionSessionID: sessionID, RunID: "run-inline", Step: 7,
+		SessionMode: sessionruntime.ModeAuto, Principal: principal, ProviderManagedV3: true,
+		ApplySessionMutation: func(input sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error) {
+			if input.UserID == "" {
+				input.UserID = principal.UserID
+			}
+			if input.AccountScopeID == "" {
+				input.AccountScopeID = principal.AccountScopeID
+			}
+			return sessionSvc.ApplySessionMutation(input)
+		},
+	})
+	result, err := invoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{
+		CallID:    "call-nested",
+		Name:      "plan_manage",
+		Arguments: `{"action":"start_session_checkpoint","change_request":"Inspect compute snapshots","checkpoint":{"title":"Inspect snapshots","tasks":["List compute snapshots"],"acceptance_criteria":["All snapshots analyzed"],"notes":"Relevant files: scripts/"}}`,
+	})
+	if err != nil {
+		t.Fatalf("execute nested checkpoint start: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("unexpected tool error: %s", result.Error)
+	}
+	var payload struct {
+		NextAction       string `json:"next_action"`
+		ContextPreserved bool   `json:"context_preserved"`
+		CheckpointID     string `json:"checkpoint_id"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &payload); err != nil {
+		t.Fatalf("decode output: %v, raw=%s", err, result.Output)
+	}
+	if payload.NextAction != "continue_current_run" || !payload.ContextPreserved || payload.CheckpointID != "cp-1" {
+		t.Fatalf("nested payload = %#v output=%s", payload, result.Output)
+	}
+	plan, ok, err := sessionSvc.GetActivePlan(sessionID)
+	if err != nil || !ok {
+		t.Fatalf("active plan: ok=%v err=%v", ok, err)
+	}
+	cp := plan.Document.Checkpoints[0]
+	if cp.Title != "Inspect snapshots" || len(cp.Tasks) != 1 || cp.Tasks[0] != "List compute snapshots" {
+		t.Fatalf("checkpoint mismatch: %#v", cp)
+	}
+	if len(cp.AcceptanceCriteria) != 1 || cp.AcceptanceCriteria[0] != "All snapshots analyzed" {
+		t.Fatalf("checkpoint criteria mismatch: %#v", cp.AcceptanceCriteria)
+	}
+}
+
 // Purpose: the provider tool boundary must persist a genuine blocker and resume
 // only that checkpoint after explicit resolution, without memory consent or
 // advancing later work. A temporary V3 session proves durable postconditions.

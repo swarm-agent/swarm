@@ -3589,9 +3589,14 @@ type uiToolVideoSettingsPatchPresence struct {
 	IterationModel *string `json:"iteration_model"`
 }
 
+type uiToolAudioSettingsPatchPresence struct {
+	DefaultModel *string `json:"default_model"`
+}
+
 type uiToolSettingsPatchPresence struct {
 	Image *uiToolImageSettingsPatchPresence `json:"image"`
 	Video *uiToolVideoSettingsPatchPresence `json:"video"`
+	Audio *uiToolAudioSettingsPatchPresence `json:"audio"`
 }
 
 type uiMediaSettingsPatchPresence struct {
@@ -3705,6 +3710,9 @@ func mergeUISettingsPatch(current, patch uisettings.UISettings, raw uiSettingsPa
 			if raw.Tools.Video.IterationModel != nil {
 				settings.Tools.Video.IterationModel = patch.Tools.Video.IterationModel
 			}
+		}
+		if raw.Tools.Audio != nil && raw.Tools.Audio.DefaultModel != nil {
+			settings.Tools.Audio.DefaultModel = patch.Tools.Audio.DefaultModel
 		}
 	}
 	if raw.Media != nil && raw.Media.TranscriptionModel != nil {

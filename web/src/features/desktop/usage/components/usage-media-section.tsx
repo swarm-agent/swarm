@@ -38,6 +38,11 @@ export function UsageMediaSection({ media }: UsageMediaSectionProps) {
               <span className="font-mono text-xs text-emerald-600 dark:text-emerald-400">
                 ${media.image_cost_usd.toFixed(2)}
               </span>
+              {media.has_unknown_image ? (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-sans font-normal" title="Includes generations with unverified or unknown rates">
+                  (incomplete)
+                </span>
+              ) : null}
             </div>
             <p className="text-[10px] text-[var(--app-text-subtle)]">~$0.04 per generated image</p>
           </div>
@@ -55,6 +60,11 @@ export function UsageMediaSection({ media }: UsageMediaSectionProps) {
               <span className="font-mono text-xs text-emerald-600 dark:text-emerald-400">
                 ${media.video_cost_usd.toFixed(2)}
               </span>
+              {media.has_unknown_video ? (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-sans font-normal" title="Includes generations with unverified or unknown rates">
+                  (incomplete)
+                </span>
+              ) : null}
             </div>
             <p className="text-[10px] text-[var(--app-text-subtle)]">Google Veo 3.1 clips</p>
           </div>
@@ -72,6 +82,11 @@ export function UsageMediaSection({ media }: UsageMediaSectionProps) {
               <span className="font-mono text-xs text-emerald-600 dark:text-emerald-400">
                 ${media.audio_cost_usd.toFixed(2)}
               </span>
+              {media.has_unknown_audio ? (
+                <span className="text-[10px] text-amber-600 dark:text-amber-400 font-sans font-normal" title="Includes generations with unverified or unknown rates">
+                  (incomplete)
+                </span>
+              ) : null}
             </div>
             <p className="text-[10px] text-[var(--app-text-subtle)]">Google Lyria soundtracks</p>
           </div>
@@ -119,7 +134,17 @@ export function UsageMediaSection({ media }: UsageMediaSectionProps) {
                         {formatRelativeTime(item.created_at)}
                       </td>
                       <td className="py-2.5 pl-3 pr-4 text-right font-mono font-medium text-emerald-600 dark:text-emerald-400">
-                        ${item.cost_usd.toFixed(2)}
+                        {item.price_status === 'unknown' ? (
+                          <span className="text-amber-600 dark:text-amber-400 font-sans text-[11px]" title={item.pricing_summary || 'Unknown pricing'}>
+                            Unknown
+                          </span>
+                        ) : item.price_status === 'free' ? (
+                          <span className="text-emerald-600 dark:text-emerald-400 font-sans text-[11px]">
+                            Free
+                          </span>
+                        ) : (
+                          `$${item.cost_usd.toFixed(2)}`
+                        )}
                       </td>
                     </tr>
                   )

@@ -47,6 +47,7 @@ type manageWorkspaceArguments struct {
 	ExpectedRevision     int64
 	Content              string
 	ContentSet           bool
+	DirectoryPath        string
 }
 
 func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
@@ -78,6 +79,9 @@ func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, princi
 	}
 	if s.workspace == nil {
 		return "", errors.New("manage_workspace catalog is not configured")
+	}
+	if args.Action == "add_source_media_directory" || args.Action == "list_source_media_directories" || args.Action == "remove_source_media_directory" {
+		return s.manageSourceMediaDirectories(strings.TrimSpace(sessionID), ownedSession, principal, args)
 	}
 	if args.Action == "reclaim_worktree" || args.Action == "copy_worktree" || args.Action == "cancel_worktree_recovery" {
 		return s.recoverSessionWorktree(sessionID, principal, args, applySessionMutation)
@@ -135,7 +139,7 @@ func parseManageWorkspaceArguments(arguments string) (manageWorkspaceArguments, 
 	} else if !errors.Is(err, io.EOF) {
 		return manageWorkspaceArguments{}, fmt.Errorf("manage_workspace arguments invalid: %w", err)
 	}
-	allowed := map[string]bool{"action": true, "workspace_id": true, "workspace_generation": true, "workspace_ids": true, "primary_workspace_id": true, "worktree_name": true, "worktree_path": true, "expected_worktree_path": true, "workspace_path": true, "workspace_name": true, "theme_id": true, "intent": true, "permission_scope": true, "expected_revision": true, "content": true}
+	allowed := map[string]bool{"action": true, "workspace_id": true, "workspace_generation": true, "workspace_ids": true, "primary_workspace_id": true, "worktree_name": true, "worktree_path": true, "expected_worktree_path": true, "workspace_path": true, "workspace_name": true, "theme_id": true, "intent": true, "permission_scope": true, "expected_revision": true, "content": true, "directory_path": true, "directory": true}
 	for _, key := range []string{"owner_session_id", "ownership_revision", "head", "fingerprint", "operation_id", "files"} {
 		allowed[key] = true
 	}
@@ -168,6 +172,7 @@ func parseManageWorkspaceArguments(arguments string) (manageWorkspaceArguments, 
 		ExpectedRevision:     manageWorkspaceInt64(raw["expected_revision"]),
 		Content:              mapString(raw, "content"),
 		ContentSet:           raw["content"] != nil,
+		DirectoryPath:        strings.TrimSpace(firstNonEmptyString(mapString(raw, "directory_path"), mapString(raw, "directory"))),
 	}
 	if rawAction, provided := raw["action"]; provided {
 		if _, ok := rawAction.(string); !ok {
@@ -1461,4 +1466,77 @@ func marshalManageWorkspace(payload map[string]any) (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+func (s *Service) manageSourceMediaDirectories(sessionID string, session pebblestore.SessionSnapshot, principal identity.Principal, args manageWorkspaceArguments) (string, error) {
+	if s.workspace == nil {
+		return "", errors.New("manage_workspace catalog is not configured")
+	}
+	workspacePath := strings.TrimSpace(args.WorkspacePath)
+	if workspacePath == "" {
+		workspacePath = strings.TrimSpace(session.WorkspacePath)
+	}
+	if workspacePath == "" {
+		binding, found, err := s.workspace.CurrentBindingForPrincipal(principal)
+		if err == nil && found {
+			workspacePath = binding.WorkspacePath
+		}
+	}
+	if workspacePath == "" {
+		return "", errors.New("workspace_path is required for source media directory operations")
+	}
+
+	switch args.Action {
+	case "list_source_media_directories":
+		resolution, err := s.workspace.ListSourceMediaDirectoriesForPrincipal(principal, workspacePath)
+		if err != nil {
+			return "", err
+		}
+		return marshalManageWorkspace(map[string]any{
+			"action":                   "list_source_media_directories",
+			"status":                   "ok",
+			"workspace_id":             resolution.WorkspaceID,
+			"workspace_path":           resolution.WorkspacePath,
+			"source_media_directories": resolution.SourceMediaDirectories,
+			"count":                    len(resolution.SourceMediaDirectories),
+		})
+	case "add_source_media_directory":
+		targetDir := strings.TrimSpace(args.DirectoryPath)
+		if targetDir == "" {
+			return "", errors.New("add_source_media_directory requires directory_path")
+		}
+		resolution, err := s.workspace.AddSourceMediaDirectoryForPrincipal(principal, workspacePath, targetDir)
+		if err != nil {
+			return "", err
+		}
+		return marshalManageWorkspace(map[string]any{
+			"action":                   "add_source_media_directory",
+			"status":                   "ok",
+			"workspace_id":             resolution.WorkspaceID,
+			"workspace_path":           resolution.WorkspacePath,
+			"directory_path":           targetDir,
+			"source_media_directories": resolution.SourceMediaDirectories,
+			"count":                    len(resolution.SourceMediaDirectories),
+		})
+	case "remove_source_media_directory":
+		targetDir := strings.TrimSpace(args.DirectoryPath)
+		if targetDir == "" {
+			return "", errors.New("remove_source_media_directory requires directory_path")
+		}
+		resolution, err := s.workspace.RemoveSourceMediaDirectoryForPrincipal(principal, workspacePath, targetDir)
+		if err != nil {
+			return "", err
+		}
+		return marshalManageWorkspace(map[string]any{
+			"action":                   "remove_source_media_directory",
+			"status":                   "ok",
+			"workspace_id":             resolution.WorkspaceID,
+			"workspace_path":           resolution.WorkspacePath,
+			"directory_path":           targetDir,
+			"source_media_directories": resolution.SourceMediaDirectories,
+			"count":                    len(resolution.SourceMediaDirectories),
+		})
+	default:
+		return "", fmt.Errorf("unsupported source media directory action %q", args.Action)
+	}
 }

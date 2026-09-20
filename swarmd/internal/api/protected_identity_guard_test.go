@@ -1,5 +1,10 @@
 package api
 
+// Cookie fixture maintenance: protected create routes behind Server.withAuth
+// must reject invalid/incomplete product actors without persisting resources.
+// Negative JWT fixtures now use the request-scoped name to keep testing actor
+// validation rather than accidentally proving only missing-cookie rejection.
+
 import (
 	"bytes"
 	"encoding/json"
@@ -69,7 +74,7 @@ func TestProtectedCreateAPIsRejectNonProductAuthAndIncompleteActors(t *testing.T
 
 	t.Run("random old cookie is rejected", func(t *testing.T) {
 		req := newProtectedJSONRequest(t, http.MethodPut, "/v2/agents/random-cookie", map[string]any{"mode": "subagent"}, nil)
-		req.AddCookie(buildDesktopLocalSessionCookie("old-random-token", time.Now().Add(time.Hour), false))
+		req.AddCookie(buildDesktopLocalSessionCookie(req, "old-random-token", time.Now().Add(time.Hour)))
 		rec := httptest.NewRecorder()
 		server.DesktopHandler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -90,7 +95,7 @@ func TestProtectedCreateAPIsRejectNonProductAuthAndIncompleteActors(t *testing.T
 			"exp":              time.Now().Add(time.Hour).Unix(),
 		})
 		req := newProtectedJSONRequest(t, http.MethodPost, "/v1/workspace/add", map[string]any{"path": filepath.Join(t.TempDir(), "team-only")}, nil)
-		req.AddCookie(buildDesktopLocalSessionCookie(teamOnlyJWT, time.Now().Add(time.Hour), false))
+		req.AddCookie(buildDesktopLocalSessionCookie(req, teamOnlyJWT, time.Now().Add(time.Hour)))
 		rec := httptest.NewRecorder()
 		server.DesktopHandler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {
@@ -126,7 +131,7 @@ func TestProtectedCreateAPIsRejectNonProductAuthAndIncompleteActors(t *testing.T
 
 		jwt := signDesktopJWTForTest(t, store, validProtectedGuardClaims())
 		req := newProtectedJSONRequest(t, http.MethodPost, "/v1/auth/credentials", map[string]any{"provider": "codex", "type": "api", "api_key": "test-key"}, nil)
-		req.AddCookie(buildDesktopLocalSessionCookie(jwt, time.Now().Add(time.Hour), false))
+		req.AddCookie(buildDesktopLocalSessionCookie(req, jwt, time.Now().Add(time.Hour)))
 		rec := httptest.NewRecorder()
 		server.DesktopHandler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusUnauthorized {

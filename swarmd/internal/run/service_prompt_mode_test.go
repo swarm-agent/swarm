@@ -350,3 +350,24 @@ func TestMasterHarnessRoutesAgentProgressToPlanManageAndKeepsTodosUserOwned(t *t
 		}
 	}
 }
+
+func TestMasterHarnessDistinguishesSingleAndMultiCheckpointWorkflows(t *testing.T) {
+	prompt := masterHarnessPrompt("/workspace")
+	for _, want := range []string{
+		"Single scoped requests vs multi-checkpoint workflows",
+		"fix my sidebar",
+		"start_session_checkpoint atomically",
+		"fix my cicd pipeline",
+		"make a 3 point checkpoint plan",
+		"the multi-checkpoint way is beneficial",
+		"request_new_plan",
+		"checkpoint.task_program",
+		"plan_manage multi-checkpoint plan proposal with embedded task_program example",
+		"CI/CD Pipeline Overhaul",
+		`"id":"pipeline-audit"`,
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("master harness prompt missing multi-checkpoint workflow guidance %q\n--- prompt ---\n%s", want, prompt)
+		}
+	}
+}

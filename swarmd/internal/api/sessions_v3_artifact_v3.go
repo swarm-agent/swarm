@@ -92,6 +92,7 @@ type ArtifactV3Artifact struct {
 	Revisions        []ArtifactV3Revision                     `json:"revisions,omitempty"`
 	Turns            []ArtifactV3Turn                         `json:"turns,omitempty"`
 	UpdatedAt        int64                                    `json:"updated_at"`
+	Lineage          *pebblestore.ArtifactV3Lineage           `json:"lineage,omitempty"`
 }
 
 type ArtifactV3Revision struct {
@@ -108,6 +109,7 @@ type ArtifactV3Revision struct {
 	Build           *ArtifactV3BuildEvidence       `json:"build,omitempty"`
 	Validation      *ArtifactV3ValidationEvidence  `json:"validation,omitempty"`
 	CreatedAt       int64                          `json:"created_at,omitempty"`
+	Lineage         *pebblestore.ArtifactV3Lineage `json:"lineage,omitempty"`
 }
 
 type ArtifactV3RevisionPage struct {
@@ -116,11 +118,12 @@ type ArtifactV3RevisionPage struct {
 }
 
 type ArtifactV3BuildEvidence struct {
-	ID          string                 `json:"id"`
-	Status      string                 `json:"status"`
-	CommitOID   string                 `json:"commit_oid"`
-	TreeOID     string                 `json:"tree_oid"`
-	Diagnostics []ArtifactV3Diagnostic `json:"diagnostics,omitempty"`
+	ID            string                                `json:"id"`
+	Status        string                                `json:"status"`
+	CommitOID     string                                `json:"commit_oid"`
+	TreeOID       string                                `json:"tree_oid"`
+	Diagnostics   []ArtifactV3Diagnostic                `json:"diagnostics,omitempty"`
+	InheritedFrom *pebblestore.ArtifactV3EvidenceSource `json:"inherited_from,omitempty"`
 }
 
 type ArtifactV3ValidationEvidence struct {
@@ -131,6 +134,7 @@ type ArtifactV3ValidationEvidence struct {
 	TreeOID         string                                `json:"tree_oid"`
 	EvidenceDigests []string                              `json:"evidence_digests,omitempty"`
 	Diagnostics     []ArtifactV3Diagnostic                `json:"diagnostics,omitempty"`
+	InheritedFrom   *pebblestore.ArtifactV3EvidenceSource `json:"inherited_from,omitempty"`
 }
 
 type ArtifactV3Diagnostic struct {

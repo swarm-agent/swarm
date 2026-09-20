@@ -1,5 +1,9 @@
 package api
 
+// Cookie fixture maintenance: handleOnboarding's sensitive metadata gate must
+// still resolve an authenticated Desktop actor using the request-scoped cookie;
+// the HTTP-handler layer retains the existing negative disclosure assertions.
+
 import (
 	"bytes"
 	"encoding/json"
@@ -77,9 +81,8 @@ func TestOnboardingAllowsSensitiveMetadataWithDesktopSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure desktop local session: %v", err)
 	}
-	cookie := buildDesktopLocalSessionCookie(token, expiresAt, false)
-
 	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/onboarding", nil)
+	cookie := buildDesktopLocalSessionCookie(req, token, expiresAt)
 	req.RemoteAddr = "127.0.0.1:43210"
 	req.Header.Set("Origin", "http://127.0.0.1:5555")
 	req.Header.Set("Referer", "http://127.0.0.1:5555/app")
