@@ -3,9 +3,11 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,21 +20,27 @@ import (
 )
 
 type committedSourceTestFixture struct {
-	runtime        *Runtime
-	sessions       *sessionruntime.Service
-	workspace      *workspaceruntime.Service
-	sessionStore   *pebblestore.SessionStore
-	store          *pebblestore.Store
-	storeDir       string
-	primarySource  string
-	crossSource    string
-	primaryLane    string
-	scope          WorkspaceScope
-	principal      identity.Principal
-	baseCommit     string
-	childHead      string
-	childSessionID string
-	taskCallID     string
+	runtime             *Runtime
+	sessions            *sessionruntime.Service
+	workspace           *workspaceruntime.Service
+	sessionStore        *pebblestore.SessionStore
+	store               *pebblestore.Store
+	storeDir            string
+	closeStore          func() error
+	primarySource       string
+	crossSource         string
+	primaryLane         string
+	parentBranch        string
+	primaryWorkspaceID  string
+	primaryWorkspaceGen string
+	crossWorkspaceID    string
+	crossWorkspaceGen   string
+	scope               WorkspaceScope
+	principal           identity.Principal
+	baseCommit          string
+	childHead           string
+	childSessionID      string
+	taskCallID          string
 }
 
 func committedSourceGit(t *testing.T, dir string, args ...string) string {
@@ -57,6 +65,283 @@ func committedSourceRepo(t *testing.T) string {
 	return dir
 }
 
+type createChildOptions struct {
+	childID                  string
+	taskCallID               string
+	logicalTaskID            string
+	allocationParent         string
+	parentBranch             string
+	targetWorkspacePath      string
+	canonicalSourcePath      string
+	sourceWorkspaceID        string
+	sourceWorkspaceGen       string
+	baseCommit               string
+	inheritedIntegrationBase string
+	fileName                 string
+	fileContent              string
+	commitMessage            string
+	priorBinding             *CommittedSourceBinding
+	priorCommittedSource     map[string]any
+	destinationKind          string
+	promotionOnly            bool
+	launchIndex              int
+}
+
+// createCommittedSourceChild is a single portable synthetic helper that allocates real managed Git,
+// applies session admission with strict Coder evidence, creates durable rotation lineage/generation,
+// upserts completed lifecycle, and records the typed launch row in the parent's task_launches metadata.
+func createCommittedSourceChild(t *testing.T, f *committedSourceTestFixture, opts createChildOptions) (string, string, worktreeruntime.Allocation) {
+	t.Helper()
+	wt := &worktreeruntime.Service{}
+
+	taskBase := worktreeruntime.TaskBase{
+		RepoRoot:     opts.canonicalSourcePath,
+		ParentBranch: opts.parentBranch,
+		BaseCommit:   opts.baseCommit,
+	}
+	alloc, err := wt.AllocateTaskWorkspace(opts.allocationParent, taskBase, opts.childID, nil)
+	if err != nil {
+		t.Fatalf("AllocateTaskWorkspace for %s: %v", opts.childID, err)
+	}
+
+	if opts.fileName != "" {
+		filePath := filepath.Join(alloc.WorkspacePath, opts.fileName)
+		if err := os.WriteFile(filePath, []byte(opts.fileContent), 0600); err != nil {
+			t.Fatalf("write %s: %v", opts.fileName, err)
+		}
+		committedSourceGit(t, alloc.WorkspacePath, "add", opts.fileName)
+		committedSourceGit(t, alloc.WorkspacePath, "commit", "-m", opts.commitMessage)
+	}
+	childHead := committedSourceGit(t, alloc.WorkspacePath, "rev-parse", "HEAD")
+
+	childMeta := map[string]any{
+		"parent_session_id":                  "parent-session",
+		"parent_task_call_id":               opts.taskCallID,
+		"lineage_kind":                      "delegated_subagent",
+		"subagent":                          "system-coder",
+		"target_workspace_path":             opts.targetWorkspacePath,
+		"swarm_v3_source_workspace_path":   opts.canonicalSourcePath,
+		"swarm_v3_runtime_workspace_path":  alloc.WorkspacePath,
+		"swarm_v3_worktree_owner_session_id": opts.childID,
+		"swarm_v3_worktree_base_commit":    opts.baseCommit,
+		"base_commit":                       opts.baseCommit,
+		"head_commit":                       childHead,
+		"parent_branch":                     opts.parentBranch,
+	}
+	if opts.sourceWorkspaceID != "" {
+		childMeta["swarm_v3_source_workspace_id"] = opts.sourceWorkspaceID
+	}
+	if opts.sourceWorkspaceGen != "" {
+		childMeta["swarm_v3_source_workspace_generation"] = opts.sourceWorkspaceGen
+	}
+	if opts.inheritedIntegrationBase != "" {
+		childMeta["integration_base_commit"] = opts.inheritedIntegrationBase
+	}
+	if opts.priorCommittedSource != nil {
+		childMeta["committed_source"] = opts.priorCommittedSource
+	}
+	if opts.priorBinding != nil {
+		childMeta["committed_source_binding"] = *opts.priorBinding
+	}
+	if opts.destinationKind != "" {
+		childMeta["destination_kind"] = opts.destinationKind
+	}
+	if opts.promotionOnly {
+		childMeta["promotion_only"] = true
+	}
+
+	_, _, err = f.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      opts.childID,
+		UserID:         f.principal.UserID,
+		AccountScopeID: f.principal.AccountScopeID,
+		WorkspacePath:  alloc.WorkspacePath,
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"},
+		Worktree: &sessionruntime.CreateSessionWorktree{
+			RootPath:   alloc.WorkspacePath,
+			BranchName: alloc.BranchName,
+			BaseBranch: "dev",
+		},
+		Metadata: childMeta,
+	})
+	if err != nil {
+		t.Fatalf("CreateSessionWithOptions for %s: %v", opts.childID, err)
+	}
+
+	snap, found, err := f.sessions.GetSession(opts.childID)
+	if err != nil || !found {
+		t.Fatalf("GetSession for %s: %v (found=%v)", opts.childID, err, found)
+	}
+
+	admitRes, err := f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID:      opts.childID,
+		UserID:         f.principal.UserID,
+		AccountScopeID: f.principal.AccountScopeID,
+		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
+		Session:        &snap,
+		IdempotencyKey: "fixture-admit-" + opts.childID,
+		RequestHash:    "fixture-admit-" + opts.childID,
+		WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{
+			Kind:           "allocated",
+			Path:           alloc.WorkspacePath,
+			SourcePath:     opts.canonicalSourcePath,
+			OwnerSessionID: opts.childID,
+			Branch:         alloc.BranchName,
+			DelegatedCoder: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplySessionMutation admit %s: %v", opts.childID, err)
+	}
+	if admitRes.Error != nil {
+		t.Fatalf("ApplySessionMutation admit %s error: %v", opts.childID, admitRes.Error)
+	}
+	if admitRes.Conflict != nil {
+		t.Fatalf("ApplySessionMutation admit %s conflict: %v", opts.childID, admitRes.Conflict)
+	}
+
+	err = f.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
+		SessionID:      opts.childID,
+		UserID:         f.principal.UserID,
+		AccountScopeID: f.principal.AccountScopeID,
+		Phase:          "completed",
+		EndedAt:        time.Now().UnixMilli(),
+		Generation:     1,
+	})
+	if err != nil {
+		t.Fatalf("UpsertLifecycle for %s: %v", opts.childID, err)
+	}
+
+	_, _, err = f.sessions.CreateDelegatedChildLineage(
+		pebblestore.DelegatedChildLineageRecord{
+			AccountScopeID:    f.principal.AccountScopeID,
+			LogicalTaskID:     opts.logicalTaskID,
+			CurrentGeneration: 1,
+			CurrentSessionID:  opts.childID,
+		},
+		pebblestore.DelegatedChildGenerationRecord{
+			SessionID:           opts.childID,
+			AccountScopeID:      f.principal.AccountScopeID,
+			ParentSessionID:     "parent-session",
+			LogicalTaskID:       opts.logicalTaskID,
+			Generation:          1,
+			WorkspacePath:       alloc.WorkspacePath,
+			WorktreeBranch:      alloc.BranchName,
+			ParentBranch:        opts.parentBranch,
+			ImmutableBaseCommit: opts.baseCommit,
+		},
+		"fixture-lineage-" + opts.childID,
+	)
+	if err != nil {
+		t.Fatalf("CreateDelegatedChildLineage for %s: %v", opts.childID, err)
+	}
+
+	launchIndex := opts.launchIndex
+	if launchIndex <= 0 {
+		launchIndex = 1
+	}
+	launchRow := map[string]any{
+		"child_session_id":      opts.childID,
+		"subagent":              "system-coder",
+		"launch_index":          launchIndex,
+		"parent_workspace_path": opts.targetWorkspacePath,
+		"worktree_root_path":    alloc.WorkspacePath,
+		"worktree_branch":       alloc.BranchName,
+		"parent_branch":         opts.parentBranch,
+		"base_commit":           opts.baseCommit,
+		"head_commit":           childHead,
+	}
+	if opts.inheritedIntegrationBase != "" {
+		launchRow["integration_base_commit"] = opts.inheritedIntegrationBase
+	}
+	if opts.priorCommittedSource != nil {
+		launchRow["committed_source"] = opts.priorCommittedSource
+	}
+	if opts.priorBinding != nil {
+		launchRow["committed_source_binding"] = *opts.priorBinding
+	}
+	if opts.destinationKind != "" {
+		launchRow["destination_kind"] = opts.destinationKind
+	}
+	if opts.promotionOnly {
+		launchRow["promotion_only"] = true
+	}
+
+	parentSnap, found, err := f.sessions.GetSession("parent-session")
+	if err != nil || !found {
+		t.Fatalf("GetSession for parent-session: %v (found=%v)", err, found)
+	}
+	launches, _ := parentSnap.Metadata["task_launches"].(map[string]any)
+	if launches == nil {
+		launches = map[string]any{}
+	}
+	callEntry, _ := launches[opts.taskCallID].(map[string]any)
+	if callEntry == nil {
+		callEntry = map[string]any{}
+	}
+	rows, _ := callEntry["launches"].([]any)
+	rows = append(rows, launchRow)
+	callEntry["launches"] = rows
+	launches[opts.taskCallID] = callEntry
+	parentSnap.Metadata["task_launches"] = launches
+
+	pMutRes, err := f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		SessionID:      "parent-session",
+		UserID:         f.principal.UserID,
+		AccountScopeID: f.principal.AccountScopeID,
+		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
+		Session:        &parentSnap,
+		IdempotencyKey: "launch-" + opts.childID,
+		RequestHash:    "launch-" + opts.childID,
+	})
+	if err != nil {
+		t.Fatalf("ApplySessionMutation parent launches for %s: %v", opts.childID, err)
+	}
+	if pMutRes.Error != nil {
+		t.Fatalf("ApplySessionMutation parent launches error for %s: %v", opts.childID, pMutRes.Error)
+	}
+	if pMutRes.Conflict != nil {
+		t.Fatalf("ApplySessionMutation parent launches conflict for %s: %v", opts.childID, pMutRes.Conflict)
+	}
+
+	return opts.childID, childHead, alloc
+}
+
+func createTestCorrectionChildWithBinding(t *testing.T, f *committedSourceTestFixture, child1Binding CommittedSourceBinding) (string, string, worktreeruntime.Allocation) {
+	t.Helper()
+	child2ID := "coder-child-2"
+	taskCallID := "call-2"
+	logicalTaskID := "logical-task-2"
+	committedSource := map[string]any{
+		"task_call_id":     child1Binding.TaskCallID,
+		"child_session_id": child1Binding.ChildSessionID,
+		"head_commit":      child1Binding.HeadCommit,
+	}
+	return createCommittedSourceChild(t, f, createChildOptions{
+		childID:                  child2ID,
+		taskCallID:               taskCallID,
+		logicalTaskID:            logicalTaskID,
+		allocationParent:         f.primaryLane,
+		parentBranch:             f.parentBranch,
+		targetWorkspacePath:      f.primaryLane,
+		canonicalSourcePath:      f.primarySource,
+		sourceWorkspaceID:        f.primaryWorkspaceID,
+		sourceWorkspaceGen:       f.primaryWorkspaceGen,
+		baseCommit:               f.childHead,
+		inheritedIntegrationBase: f.baseCommit,
+		fileName:                 "part2.txt",
+		fileContent:              "correction 2",
+		commitMessage:            "child 2 correction commit",
+		priorBinding:             &child1Binding,
+		priorCommittedSource:     committedSource,
+		launchIndex:              1,
+	})
+}
+
+func createTestCorrectionChild(t *testing.T, f *committedSourceTestFixture, child1Binding CommittedSourceBinding) (string, string, worktreeruntime.Allocation) {
+	return createTestCorrectionChildWithBinding(t, f, child1Binding)
+}
+
 func newCommittedSourceTestFixture(t *testing.T) committedSourceTestFixture {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
@@ -65,7 +350,16 @@ func newCommittedSourceTestFixture(t *testing.T) committedSourceTestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	var storeClosed bool
+	closeStore := func() error {
+		if storeClosed {
+			return nil
+		}
+		storeClosed = true
+		return store.Close()
+	}
+	t.Cleanup(func() { _ = closeStore() })
+
 	events, err := pebblestore.NewEventLog(store)
 	if err != nil {
 		t.Fatal(err)
@@ -83,15 +377,6 @@ func newCommittedSourceTestFixture(t *testing.T) committedSourceTestFixture {
 	primarySource := committedSourceRepo(t)
 	crossSource := committedSourceRepo(t)
 
-	primaryBase, err := wt.ResolveTaskBase(primarySource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	primaryAllocation, err := wt.AllocateTaskWorkspace(primarySource, primaryBase, "parent-session", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	principal := identity.Principal{
 		Type:           identity.PrincipalTypeUser,
 		UserID:         "test-user",
@@ -99,169 +384,84 @@ func newCommittedSourceTestFixture(t *testing.T) committedSourceTestFixture {
 		SessionID:      "parent-session",
 	}
 
-	createSession := func(id string, allocation worktreeruntime.Allocation, metadata map[string]any) {
-		t.Helper()
-		wsPath := primarySource
-		if id != "parent-session" {
-			wsPath = allocation.WorkspacePath
-		}
-		_, _, sErr := sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-			SessionID:     id,
-			UserID:        principal.UserID,
-			AccountScopeID: principal.AccountScopeID,
-			WorkspacePath: wsPath,
-			Mode:          sessionruntime.ModeAuto,
-			Preference:    &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"},
-			Worktree: &sessionruntime.CreateSessionWorktree{
-				RootPath:    allocation.WorkspacePath,
-				BranchName:  allocation.BranchName,
-				BaseBranch:  "dev",
-			},
-			Metadata: metadata,
-		})
-		if sErr != nil {
-			t.Fatal(sErr)
-		}
-		snap, _, sErr := sessions.GetSession(id)
-		if sErr != nil {
-			t.Fatal(sErr)
-		}
-		delegated := id != "parent-session"
-		srcPath := primarySource
-		if delegated {
-			srcPath = primaryAllocation.WorkspacePath
-		}
-		_, sErr = sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-			SessionID:      id,
-			UserID:         principal.UserID,
-			AccountScopeID: principal.AccountScopeID,
-			Kind:           pebblestore.V3SessionMutationUpdateMetadata,
-			Session:        &snap,
-			IdempotencyKey: "admit-" + id,
-			RequestHash:    "admit-" + id,
-			WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{
-				Kind:           "allocated",
-				Path:           allocation.WorkspacePath,
-				SourcePath:     srcPath,
-				OwnerSessionID: id,
-				Branch:         allocation.BranchName,
-				DelegatedCoder: delegated,
-			},
-		})
-		if sErr != nil {
-			t.Fatal(sErr)
-		}
-	}
-
-	createSession("parent-session", primaryAllocation, map[string]any{
-		"swarm_v3_source_workspace_path": primarySource,
-		"swarm_v3_runtime_workspace_path": primaryAllocation.WorkspacePath,
-		"swarm_v3_worktree_owner_session_id": "parent-session",
-		"base_commit": primaryBase.BaseCommit,
-	})
-
-	// Allocate a Coder child in parent's lane
-	laneBase, err := wt.ResolveTaskBase(primaryAllocation.WorkspacePath)
+	wsStore := pebblestore.NewWorkspaceStore(store)
+	workspaceService := workspaceruntime.NewService(wsStore)
+	savedPrimary, err := workspaceService.AddForPrincipal(principal, primarySource, filepath.Base(primarySource), "", false)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("add primary workspace: %v", err)
 	}
-	childID := "coder-child-1"
-	childAlloc, err := wt.AllocateTaskWorkspace(primaryAllocation.WorkspacePath, laneBase, childID, nil)
+	savedCross, err := workspaceService.AddForPrincipal(principal, crossSource, filepath.Base(crossSource), "", false)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("add cross workspace: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(childAlloc.WorkspacePath, "solution.txt"), []byte("solution v1"), 0600); err != nil {
-		t.Fatal(err)
+	primaryBase, err := wt.ResolveTaskBase(primarySource)
+	if err != nil {
+		t.Fatalf("resolve primary base: %v", err)
 	}
-	committedSourceGit(t, childAlloc.WorkspacePath, "add", "solution.txt")
-	committedSourceGit(t, childAlloc.WorkspacePath, "commit", "-m", "child feature commit")
-	childHead := committedSourceGit(t, childAlloc.WorkspacePath, "rev-parse", "HEAD")
+	primaryAllocation, err := wt.AllocateTaskWorkspace(primarySource, primaryBase, "parent-session", nil)
+	if err != nil {
+		t.Fatalf("allocate primary lane: %v", err)
+	}
 
-	createSession(childID, childAlloc, map[string]any{
-		"parent_session_id":        "parent-session",
-		"parent_task_call_id":     "call-1",
-		"lineage_kind":            "delegated_subagent",
-		"subagent":                "system-coder",
-		"target_workspace_path":   primaryAllocation.WorkspacePath,
-		"base_commit":             primaryBase.BaseCommit,
-		"head_commit":             childHead,
-	})
+	parentMeta := map[string]any{
+		"swarm_v3_source_workspace_path":       primarySource,
+		"swarm_v3_source_workspace_id":         savedPrimary.WorkspaceID,
+		"swarm_v3_source_workspace_generation": strconv.FormatInt(savedPrimary.WorkspaceGeneration, 10),
+		"swarm_v3_runtime_workspace_path":      primaryAllocation.WorkspacePath,
+		"swarm_v3_worktree_owner_session_id":   "parent-session",
+		"swarm_v3_worktree_base_commit":        primaryBase.BaseCommit,
+		"base_commit":                          primaryBase.BaseCommit,
+	}
 
-	// Upsert completed lifecycle
-	err = sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
-		SessionID:      childID,
+	_, _, err = sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID:      "parent-session",
 		UserID:         principal.UserID,
 		AccountScopeID: principal.AccountScopeID,
-		Phase:          "completed",
-		EndedAt:        time.Now().UnixMilli(),
-		Generation:     1,
+		WorkspacePath:  primarySource,
+		Mode:           sessionruntime.ModeAuto,
+		Preference:     &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"},
+		Worktree: &sessionruntime.CreateSessionWorktree{
+			RootPath:   primaryAllocation.WorkspacePath,
+			BranchName: primaryAllocation.BranchName,
+			BaseBranch: "dev",
+		},
+		Metadata: parentMeta,
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create parent session: %v", err)
 	}
 
-	// Create delegated child lineage and generation record
-	_, _, err = sessions.CreateDelegatedChildLineage(
-		pebblestore.DelegatedChildLineageRecord{
-			AccountScopeID:    principal.AccountScopeID,
-			LogicalTaskID:     "logical-task-1",
-			CurrentGeneration: 1,
-			CurrentSessionID:  childID,
-		},
-		pebblestore.DelegatedChildGenerationRecord{
-			SessionID:           childID,
-			AccountScopeID:      principal.AccountScopeID,
-			ParentSessionID:     "parent-session",
-			LogicalTaskID:       "logical-task-1",
-			Generation:          1,
-			WorkspacePath:       childAlloc.WorkspacePath,
-			WorktreeBranch:      childAlloc.BranchName,
-			ParentBranch:        "dev",
-			ImmutableBaseCommit: primaryBase.BaseCommit,
-		},
-		"mutation-init",
-	)
-	if err != nil {
-		t.Fatal(err)
+	parentSnap, found, err := sessions.GetSession("parent-session")
+	if err != nil || !found {
+		t.Fatalf("get parent session: %v (found=%v)", err, found)
 	}
 
-	// Record task_launches in parent
-	taskCallID := "call-1"
-	launchRow := map[string]any{
-		"child_session_id":      childID,
-		"subagent":              "system-coder",
-		"launch_index":          1,
-		"parent_workspace_path": primaryAllocation.WorkspacePath,
-		"worktree_root_path":    childAlloc.WorkspacePath,
-		"worktree_branch":       childAlloc.BranchName,
-		"parent_branch":         "dev",
-		"base_commit":           primaryBase.BaseCommit,
-		"head_commit":           childHead,
-	}
-	parentSnap, _, _ := sessions.GetSession("parent-session")
-	parentSnap.Metadata["task_launches"] = map[string]any{
-		taskCallID: map[string]any{"launches": []any{launchRow}},
-	}
-	_, err = sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+	parentAdmitRes, err := sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 		SessionID:      "parent-session",
 		UserID:         principal.UserID,
 		AccountScopeID: principal.AccountScopeID,
 		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
 		Session:        &parentSnap,
-		IdempotencyKey: "parent-meta",
-		RequestHash:    "parent-meta",
+		IdempotencyKey: "fixture-admit-parent-session",
+		RequestHash:    "fixture-admit-parent-session",
+		WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{
+			Kind:           "allocated",
+			Path:           primaryAllocation.WorkspacePath,
+			SourcePath:     primarySource,
+			OwnerSessionID: "parent-session",
+			Branch:         primaryAllocation.BranchName,
+			DelegatedCoder: false,
+		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("admit parent session: %v", err)
 	}
-
-	wsStore := pebblestore.NewWorkspaceStore(store)
-	workspaceService := workspaceruntime.NewService(wsStore)
-	for _, p := range []string{primarySource, crossSource} {
-		if _, aErr := workspaceService.AddForPrincipal(principal, p, filepath.Base(p), "", false); aErr != nil {
-			t.Fatal(aErr)
-		}
+	if parentAdmitRes.Error != nil {
+		t.Fatalf("admit parent session error: %v", parentAdmitRes.Error)
+	}
+	if parentAdmitRes.Conflict != nil {
+		t.Fatalf("admit parent session conflict: %v", parentAdmitRes.Conflict)
 	}
 
 	scope := WorkspaceScope{
@@ -277,169 +477,56 @@ func newCommittedSourceTestFixture(t *testing.T) committedSourceTestFixture {
 		workspace: workspaceService,
 	}
 
-	return committedSourceTestFixture{
-		runtime:        runtime,
-		sessions:       sessions,
-		workspace:      workspaceService,
-		sessionStore:   sessionStore,
-		store:          store,
-		storeDir:       storeDir,
-		primarySource:  primarySource,
-		crossSource:    crossSource,
-		primaryLane:    primaryAllocation.WorkspacePath,
-		scope:          scope,
-		principal:      principal,
-		baseCommit:     primaryBase.BaseCommit,
-		childHead:      childHead,
-		childSessionID: childID,
-		taskCallID:     taskCallID,
-	}
-}
-
-// createTestCorrectionChild allocates and commits a Child 2 starting from Child 1's HEAD C,
-// inheriting delivery base B, and sets up full typed committed_source and committed_source_binding
-// in both child metadata and parent task_launches.
-func createTestCorrectionChild(t *testing.T, f *committedSourceTestFixture, child1Binding CommittedSourceBinding) (child2ID string, child2Head string, child2Alloc worktreeruntime.Allocation) {
-	t.Helper()
-	wt := &worktreeruntime.Service{}
-	child2ID = "coder-child-2"
-	var err error
-	child2Alloc, err = wt.AllocateTaskWorkspace(f.primaryLane, worktreeruntime.TaskBase{
-		RepoRoot:     f.primarySource,
-		ParentBranch: "agent/named-recovery",
-		BaseCommit:   f.childHead,
-	}, child2ID, nil)
-	if err != nil {
-		t.Fatal(err)
+	fixture := committedSourceTestFixture{
+		runtime:             runtime,
+		sessions:            sessions,
+		workspace:           workspaceService,
+		sessionStore:        sessionStore,
+		store:               store,
+		storeDir:            storeDir,
+		closeStore:          closeStore,
+		primarySource:       primarySource,
+		crossSource:         crossSource,
+		primaryLane:         primaryAllocation.WorkspacePath,
+		parentBranch:        primaryAllocation.BranchName,
+		primaryWorkspaceID:  savedPrimary.WorkspaceID,
+		primaryWorkspaceGen: strconv.FormatInt(savedPrimary.WorkspaceGeneration, 10),
+		crossWorkspaceID:    savedCross.WorkspaceID,
+		crossWorkspaceGen:   strconv.FormatInt(savedCross.WorkspaceGeneration, 10),
+		scope:               scope,
+		principal:           principal,
+		baseCommit:          primaryBase.BaseCommit,
+		taskCallID:          "call-1",
 	}
 
-	if err := os.WriteFile(filepath.Join(child2Alloc.WorkspacePath, "part2.txt"), []byte("correction 2"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	committedSourceGit(t, child2Alloc.WorkspacePath, "add", "part2.txt")
-	committedSourceGit(t, child2Alloc.WorkspacePath, "commit", "-m", "child 2 correction commit")
-	child2Head = committedSourceGit(t, child2Alloc.WorkspacePath, "rev-parse", "HEAD")
-
-	committedSource := map[string]any{
-		"task_call_id":     f.taskCallID,
-		"child_session_id": f.childSessionID,
-		"head_commit":      f.childHead,
-	}
-
-	_, _, err = f.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID:      child2ID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		WorkspacePath:  child2Alloc.WorkspacePath,
-		Mode:          sessionruntime.ModeAuto,
-		Preference:    &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"},
-		Worktree: &sessionruntime.CreateSessionWorktree{
-			RootPath:    child2Alloc.WorkspacePath,
-			BranchName:  child2Alloc.BranchName,
-			BaseBranch:  "dev",
-		},
-		Metadata: map[string]any{
-			"parent_session_id":        "parent-session",
-			"parent_task_call_id":     "call-2",
-			"lineage_kind":            "delegated_subagent",
-			"subagent":                "system-coder",
-			"target_workspace_path":   f.primaryLane,
-			"base_commit":             f.childHead,
-			"integration_base_commit": f.baseCommit,
-			"head_commit":             child2Head,
-			"committed_source":        committedSource,
-			"committed_source_binding": child1Binding,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	snap2, _, _ := f.sessions.GetSession(child2ID)
-	_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID:      child2ID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
-		Session:        &snap2,
-		IdempotencyKey: "admit-c2",
-		RequestHash:    "admit-c2",
-		WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{
-			Kind:           "allocated",
-			Path:           child2Alloc.WorkspacePath,
-			SourcePath:     f.primaryLane,
-			OwnerSessionID: child2ID,
-			Branch:         child2Alloc.BranchName,
-			DelegatedCoder: true,
-		},
+	childID, childHead, _ := createCommittedSourceChild(t, &fixture, createChildOptions{
+		childID:             "coder-child-1",
+		taskCallID:          "call-1",
+		logicalTaskID:       "logical-task-1",
+		allocationParent:    primaryAllocation.WorkspacePath,
+		parentBranch:        primaryAllocation.BranchName,
+		targetWorkspacePath: primaryAllocation.WorkspacePath,
+		canonicalSourcePath: primarySource,
+		sourceWorkspaceID:   savedPrimary.WorkspaceID,
+		sourceWorkspaceGen:  strconv.FormatInt(savedPrimary.WorkspaceGeneration, 10),
+		baseCommit:          primaryBase.BaseCommit,
+		fileName:            "solution.txt",
+		fileContent:         "solution v1",
+		commitMessage:       "child feature commit",
+		launchIndex:         1,
 	})
 
-	_ = f.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
-		SessionID:      child2ID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Phase:          "completed",
-		EndedAt:        time.Now().UnixMilli(),
-		Generation:     1,
-	})
+	fixture.childSessionID = childID
+	fixture.childHead = childHead
 
-	_, _, _ = f.sessions.CreateDelegatedChildLineage(
-		pebblestore.DelegatedChildLineageRecord{
-			AccountScopeID:    f.principal.AccountScopeID,
-			LogicalTaskID:     "logical-task-2",
-			CurrentGeneration: 1,
-			CurrentSessionID:  child2ID,
-		},
-		pebblestore.DelegatedChildGenerationRecord{
-			SessionID:           child2ID,
-			AccountScopeID:      f.principal.AccountScopeID,
-			ParentSessionID:     "parent-session",
-			LogicalTaskID:       "logical-task-2",
-			Generation:          1,
-			WorkspacePath:       child2Alloc.WorkspacePath,
-			WorktreeBranch:      child2Alloc.BranchName,
-			ParentBranch:        "dev",
-			ImmutableBaseCommit: f.childHead,
-		},
-		"c2-lineage",
-	)
-
-	parentSnap, _, _ := f.sessions.GetSession("parent-session")
-	launches := parentSnap.Metadata["task_launches"].(map[string]any)
-	launches["call-2"] = map[string]any{
-		"launches": []any{
-			map[string]any{
-				"child_session_id":        child2ID,
-				"subagent":                "system-coder",
-				"launch_index":            1,
-				"parent_workspace_path":   f.primaryLane,
-				"worktree_root_path":      child2Alloc.WorkspacePath,
-				"worktree_branch":         child2Alloc.BranchName,
-				"parent_branch":           "dev",
-				"base_commit":             f.childHead,
-				"integration_base_commit": f.baseCommit,
-				"head_commit":             child2Head,
-				"committed_source":        committedSource,
-				"committed_source_binding": child1Binding,
-			},
-		},
-	}
-	_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID:      "parent-session",
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
-		Session:        &parentSnap,
-		IdempotencyKey: "parent-c2-meta",
-		RequestHash:    "parent-c2-meta",
-	})
-	return child2ID, child2Head, child2Alloc
+	return fixture
 }
 
 // Purpose: ResolveCommittedSource must authenticate and resolve an immutable binding
 // for a same-workspace Coder child whose commits were made in an owned parent lane.
 // Threat: unauthorized access or inaccurate lineage binding leading to corrupted allocation.
 // Symbols: tool.ResolveCommittedSource, tool.CommittedSourceRequest, tool.CommittedSourceBinding.
+// Layer: Unit test on tool.Runtime with real pebble store and git worktrees.
 func TestCommittedSourceSameWorkspaceSuccess(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 	req := CommittedSourceRequest{
@@ -504,6 +591,7 @@ func TestCommittedSourceSameWorkspaceSuccess(t *testing.T) {
 // cross-workspace Coder children without an owned session lane, classifying them as promotion-only.
 // Threat: cross-workspace Coder children marked blocked and unable to be recalled or corrected.
 // Symbols: tool.ResolveCommittedSource, tool.manageWorktreeRecall, tool.DestinationKindCapturedPromotionOnly.
+// Layer: Unit test on tool.Runtime with real pebble store and git worktrees.
 func TestCommittedSourceCrossWorkspaceSuccess(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 	wt := &worktreeruntime.Service{}
@@ -512,126 +600,24 @@ func TestCommittedSourceCrossWorkspaceSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	crossChildID := "cross-coder-child"
-	crossAlloc, err := wt.AllocateTaskWorkspace(f.crossSource, crossBase, crossChildID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	if err := os.WriteFile(filepath.Join(crossAlloc.WorkspacePath, "cross.txt"), []byte("cross work"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	committedSourceGit(t, crossAlloc.WorkspacePath, "add", "cross.txt")
-	committedSourceGit(t, crossAlloc.WorkspacePath, "commit", "-m", "cross child commit")
-	crossHead := committedSourceGit(t, crossAlloc.WorkspacePath, "rev-parse", "HEAD")
-
-	_, _, err = f.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID:     crossChildID,
-		UserID:        f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		WorkspacePath: crossAlloc.WorkspacePath,
-		Mode:          sessionruntime.ModeAuto,
-		Preference:    &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"},
-		Worktree: &sessionruntime.CreateSessionWorktree{
-			RootPath:    crossAlloc.WorkspacePath,
-			BranchName:  crossAlloc.BranchName,
-			BaseBranch:  "dev",
-		},
-		Metadata: map[string]any{
-			"parent_session_id":        "parent-session",
-			"parent_task_call_id":     "cross-call",
-			"lineage_kind":            "delegated_subagent",
-			"subagent":                "system-coder",
-			"target_workspace_path":   f.crossSource,
-			"swarm_v3_source_workspace_path": f.crossSource,
-			"base_commit":             crossBase.BaseCommit,
-			"head_commit":             crossHead,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	snap, _, _ := f.sessions.GetSession(crossChildID)
-	_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID:      crossChildID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
-		Session:        &snap,
-		IdempotencyKey: "admit-cross",
-		RequestHash:    "admit-cross",
-		WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{
-			Kind:           "allocated",
-			Path:           crossAlloc.WorkspacePath,
-			SourcePath:     f.crossSource,
-			OwnerSessionID: crossChildID,
-			Branch:         crossAlloc.BranchName,
-			DelegatedCoder: true,
-		},
-	})
-
-	err = f.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
-		SessionID:      crossChildID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Phase:          "completed",
-		EndedAt:        time.Now().UnixMilli(),
-		Generation:     1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, _, err = f.sessions.CreateDelegatedChildLineage(
-		pebblestore.DelegatedChildLineageRecord{
-			AccountScopeID:    f.principal.AccountScopeID,
-			LogicalTaskID:     "logical-cross-1",
-			CurrentGeneration: 1,
-			CurrentSessionID:  crossChildID,
-		},
-		pebblestore.DelegatedChildGenerationRecord{
-			SessionID:           crossChildID,
-			AccountScopeID:      f.principal.AccountScopeID,
-			ParentSessionID:     "parent-session",
-			LogicalTaskID:       "logical-cross-1",
-			Generation:          1,
-			WorkspacePath:       crossAlloc.WorkspacePath,
-			WorktreeBranch:      crossAlloc.BranchName,
-			ParentBranch:        "dev",
-			ImmutableBaseCommit: crossBase.BaseCommit,
-		},
-		"cross-lineage",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	parentSnap, _, _ := f.sessions.GetSession("parent-session")
-	launches := parentSnap.Metadata["task_launches"].(map[string]any)
-	launches["cross-call"] = map[string]any{
-		"launches": []any{
-			map[string]any{
-				"child_session_id":      crossChildID,
-				"subagent":              "system-coder",
-				"launch_index":          1,
-				"parent_workspace_path": f.crossSource,
-				"worktree_root_path":    crossAlloc.WorkspacePath,
-				"worktree_branch":       crossAlloc.BranchName,
-				"parent_branch":         "dev",
-				"base_commit":           crossBase.BaseCommit,
-				"head_commit":           crossHead,
-			},
-		},
-	}
-	_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID:      "parent-session",
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
-		Session:        &parentSnap,
-		IdempotencyKey: "parent-cross-meta",
-		RequestHash:    "parent-cross-meta",
+	crossChildID, crossHead, _ := createCommittedSourceChild(t, &f, createChildOptions{
+		childID:             "cross-coder-child",
+		taskCallID:          "cross-call",
+		logicalTaskID:       "logical-cross-1",
+		allocationParent:    f.crossSource,
+		parentBranch:        "dev",
+		targetWorkspacePath: f.crossSource,
+		canonicalSourcePath: f.crossSource,
+		sourceWorkspaceID:   f.crossWorkspaceID,
+		sourceWorkspaceGen:  f.crossWorkspaceGen,
+		baseCommit:          crossBase.BaseCommit,
+		fileName:            "cross.txt",
+		fileContent:         "cross work",
+		commitMessage:       "cross child commit",
+		destinationKind:     DestinationKindCapturedPromotionOnly,
+		promotionOnly:       true,
+		launchIndex:         1,
 	})
 
 	// Resolve committed source for cross-workspace child
@@ -684,6 +670,7 @@ func TestCommittedSourceCrossWorkspaceSuccess(t *testing.T) {
 // caller scope does not carry the target source in its active scope roots (e.g. after restart).
 // Threat: legitimate cross-workspace redelegation failing after daemon/session restart.
 // Symbols: tool.ResolveCommittedSource, workspace.ScopeForPathForPrincipal.
+// Layer: Unit test on tool.Runtime with real pebble store and git worktrees.
 func TestCommittedSourceAbsentActiveRootsCurrentCatalog(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 	isolatedScope := WorkspaceScope{
@@ -711,11 +698,12 @@ func TestCommittedSourceAbsentActiveRootsCurrentCatalog(t *testing.T) {
 // committed_source descriptors from durable Pebble records without relying on memory caches.
 // Threat: loss of committed child recall across daemon or database restarts.
 // Symbols: tool.manageWorktreeRecall, pebblestore.Open, pebblestore.SessionStore.
+// Layer: Durability restart test on tool.Runtime and pebblestore.
 func TestCommittedSourceStoreCloseReopenRecall(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 
-	// Close the original store to simulate restart
-	if err := f.store.Close(); err != nil {
+	// Close the original store via safe helper to prevent double close
+	if err := f.closeStore(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
 
@@ -768,9 +756,13 @@ func TestCommittedSourceStoreCloseReopenRecall(t *testing.T) {
 // child Git worktree, index, HEAD, branch, or file contents.
 // Threat: side-effect mutations during inspection corrupting verifiable state.
 // Symbols: tool.ResolveCommittedSource, tool.manageWorktreeRecall.
+// Layer: Read-only immutability invariant test on tool.Runtime.
 func TestCommittedSourceImmutabilityAndNoStateLeakage(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
-	snap, _, _ := f.sessions.GetSession(f.childSessionID)
+	snap, found, err := f.sessions.GetSession(f.childSessionID)
+	if err != nil || !found {
+		t.Fatalf("get child session: %v", err)
+	}
 	childPath := snap.WorktreeRootPath
 
 	statusBefore := committedSourceGit(t, childPath, "status", "--porcelain")
@@ -813,76 +805,126 @@ func TestCommittedSourceImmutabilityAndNoStateLeakage(t *testing.T) {
 // dirty, superseded, forged, or malformed states, asserting relevant state remains unchanged.
 // Threat: bypassing isolation boundaries or launching corrections on corrupt bases.
 // Symbols: tool.ResolveCommittedSource.
+// Layer: Negative security and authority boundary tests on tool.Runtime.
 func TestCommittedSourceRejections(t *testing.T) {
-	assertUnchanged := func(t *testing.T, f committedSourceTestFixture, childPath string, headBefore, statusBefore string) {
+	assertUnchanged := func(t *testing.T, f committedSourceTestFixture, childID string, childPath string, headBefore, statusBefore string) {
 		t.Helper()
 		headAfter := committedSourceGit(t, childPath, "rev-parse", "HEAD")
 		statusAfter := committedSourceGit(t, childPath, "status", "--porcelain")
 		if headBefore != headAfter {
-			t.Fatalf("HEAD unexpectedly modified: before=%q after=%q", headBefore, headAfter)
+			t.Fatalf("child HEAD unexpectedly modified: before=%q after=%q", headBefore, headAfter)
 		}
 		if statusBefore != statusAfter {
-			t.Fatalf("status unexpectedly modified: before=%q after=%q", statusBefore, statusAfter)
+			t.Fatalf("child status unexpectedly modified: before=%q after=%q", statusBefore, statusAfter)
+		}
+		parentHead := committedSourceGit(t, f.primaryLane, "rev-parse", "HEAD")
+		parentStatus := committedSourceGit(t, f.primaryLane, "status", "--porcelain")
+		if parentStatus != "" {
+			t.Fatalf("parent lane dirty after rejection: %s", parentStatus)
+		}
+		if parentHead != f.baseCommit {
+			t.Fatalf("parent lane HEAD unexpectedly changed: %s", parentHead)
+		}
+		sourceStatus := committedSourceGit(t, f.primarySource, "status", "--porcelain")
+		if sourceStatus != "" {
+			t.Fatalf("primary source dirty after rejection: %s", sourceStatus)
+		}
+		if _, found, err := f.sessions.GetSession(childID); err != nil || !found {
+			t.Fatalf("child session missing after rejection: %v", err)
+		}
+		if _, found, err := f.sessions.GetSession("parent-session"); err != nil || !found {
+			t.Fatalf("parent session missing after rejection: %v", err)
 		}
 	}
 
 	t.Run("foreign principal", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
+
 		foreignScope := f.scope
 		foreignScope.Principal.AccountScopeID = "other-account"
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
 		if _, err := f.runtime.ResolveCommittedSource(foreignScope, req); err == nil {
 			t.Fatal("expected rejection for foreign principal")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("task call mismatch", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
-		req := CommittedSourceRequest{TaskCallID: "wrong-call", ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
-		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
+
+		badReq := req
+		badReq.TaskCallID = "wrong-call"
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, badReq); err == nil {
 			t.Fatal("expected rejection for wrong task_call_id")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("whitespace in commit OID or tuple", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
 
-		reqLeading := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: " " + f.childHead}
+		reqLeading := req
+		reqLeading.HeadCommit = " " + f.childHead
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, reqLeading); err == nil {
 			t.Fatal("expected rejection for leading whitespace in head commit")
 		}
-		reqTrailing := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead + "\n"}
+		reqTrailing := req
+		reqTrailing.HeadCommit = f.childHead + "\n"
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, reqTrailing); err == nil {
 			t.Fatal("expected rejection for trailing whitespace in head commit")
 		}
-		reqCallWS := CommittedSourceRequest{TaskCallID: " " + f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		reqCallWS := req
+		reqCallWS.TaskCallID = " " + f.taskCallID
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, reqCallWS); err == nil {
 			t.Fatal("expected rejection for whitespace in task_call_id")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("missing child session", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: "nonexistent", HeadCommit: f.childHead}
-		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
+		snap, _, _ := f.sessions.GetSession(f.childSessionID)
+		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
+		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
+
+		badReq := req
+		badReq.ChildSessionID = "nonexistent"
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, badReq); err == nil {
 			t.Fatal("expected rejection for nonexistent child session")
 		}
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("superseded child generation", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		lineage, _, err := f.sessions.GetDelegatedChildLineage(f.principal.AccountScopeID, "logical-task-1")
 		if err != nil {
 			t.Fatal(err)
@@ -914,25 +956,29 @@ func TestCommittedSourceRejections(t *testing.T) {
 				LogicalTaskID:  "logical-task-1",
 				WorkspacePath:  snap.WorktreeRootPath,
 				WorktreeBranch: snap.WorktreeBranch,
+				ParentBranch:   f.parentBranch,
 			},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
 			t.Fatal("expected rejection for superseded child generation")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("active child producer", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
 
-		_ = f.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
+		err := f.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
 			SessionID:      f.childSessionID,
 			UserID:         f.principal.UserID,
 			AccountScopeID: f.principal.AccountScopeID,
@@ -940,18 +986,26 @@ func TestCommittedSourceRejections(t *testing.T) {
 			Active:         true,
 			Generation:     1,
 		})
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
 			t.Fatal("expected rejection for active producer")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("dirty child worktree", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
-		snap, _, _ := f.sessions.GetSession(f.childSessionID)
-		_ = os.WriteFile(filepath.Join(snap.WorktreeRootPath, "dirty.txt"), []byte("dirty"), 0600)
 		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
+		snap, _, _ := f.sessions.GetSession(f.childSessionID)
+		err := os.WriteFile(filepath.Join(snap.WorktreeRootPath, "dirty.txt"), []byte("dirty"), 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
 			t.Fatal("expected rejection for dirty child worktree")
 		}
@@ -959,20 +1013,29 @@ func TestCommittedSourceRejections(t *testing.T) {
 
 	t.Run("stale OID", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
 
 		fakeHead := strings.Repeat("f", 40)
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: fakeHead}
-		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
+		badReq := req
+		badReq.HeadCommit = fakeHead
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, badReq); err == nil {
 			t.Fatal("expected rejection for stale head commit")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("non-ancestor commit", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		committedSourceGit(t, snap.WorktreeRootPath, "checkout", "--orphan", "orphan-branch")
 		committedSourceGit(t, snap.WorktreeRootPath, "commit", "--allow-empty", "-m", "orphan")
@@ -982,33 +1045,43 @@ func TestCommittedSourceRejections(t *testing.T) {
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
 
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: orphanHead}
-		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
+		badReq := req
+		badReq.HeadCommit = orphanHead
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, badReq); err == nil {
 			t.Fatal("expected rejection for non-ancestor commit")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("revoked workspace", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		headBefore := committedSourceGit(t, snap.WorktreeRootPath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, snap.WorktreeRootPath, "status", "--porcelain")
 
-		_, _ = f.workspace.DeleteForPrincipal(f.principal, f.primarySource)
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.workspace.DeleteForPrincipal(f.principal, f.primarySource); err != nil {
+			t.Fatalf("delete workspace: %v", err)
+		}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
 			t.Fatal("expected rejection when workspace is revoked from catalog")
 		}
-		assertUnchanged(t, f, snap.WorktreeRootPath, headBefore, statusBefore)
+		assertUnchanged(t, f, f.childSessionID, snap.WorktreeRootPath, headBefore, statusBefore)
 	})
 
 	t.Run("repository substitution", func(t *testing.T) {
 		f := newCommittedSourceTestFixture(t)
+		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed: %v", err)
+		}
 		foreignRepo := committedSourceRepo(t)
 		snap, _, _ := f.sessions.GetSession(f.childSessionID)
 		snap.WorktreeRootPath = foreignRepo
-		_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		mutRes, err := f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 			SessionID:      f.childSessionID,
 			UserID:         f.principal.UserID,
 			AccountScopeID: f.principal.AccountScopeID,
@@ -1017,7 +1090,15 @@ func TestCommittedSourceRejections(t *testing.T) {
 			IdempotencyKey: "subst",
 			RequestHash:    "subst",
 		})
-		req := CommittedSourceRequest{TaskCallID: f.taskCallID, ChildSessionID: f.childSessionID, HeadCommit: f.childHead}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mutRes.Error != nil {
+			t.Fatalf("mutation error: %v", mutRes.Error)
+		}
+		if mutRes.Conflict != nil {
+			t.Fatalf("mutation conflict: %v", mutRes.Conflict)
+		}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req); err == nil {
 			t.Fatal("expected rejection for repository substitution")
 		}
@@ -1031,14 +1112,18 @@ func TestCommittedSourceRejections(t *testing.T) {
 			t.Fatal(err)
 		}
 		child2ID, child2Head, alloc2 := createTestCorrectionChild(t, &f, binding1)
+		req2 := CommittedSourceRequest{TaskCallID: "call-2", ChildSessionID: child2ID, HeadCommit: child2Head}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req2); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed for Child 2: %v", err)
+		}
+
 		headBefore := committedSourceGit(t, alloc2.WorkspacePath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, alloc2.WorkspacePath, "status", "--porcelain")
 
-		// Forge integration_base_commit in child2 metadata
 		snap2, _, _ := f.sessions.GetSession(child2ID)
 		fakeBase := strings.Repeat("e", 40)
 		snap2.Metadata["integration_base_commit"] = fakeBase
-		_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		mutRes, err := f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 			SessionID:      child2ID,
 			UserID:         f.principal.UserID,
 			AccountScopeID: f.principal.AccountScopeID,
@@ -1047,12 +1132,20 @@ func TestCommittedSourceRejections(t *testing.T) {
 			IdempotencyKey: "forge-base",
 			RequestHash:    "forge-base",
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mutRes.Error != nil {
+			t.Fatalf("mutation error: %v", mutRes.Error)
+		}
+		if mutRes.Conflict != nil {
+			t.Fatalf("mutation conflict: %v", mutRes.Conflict)
+		}
 
-		req2 := CommittedSourceRequest{TaskCallID: "call-2", ChildSessionID: child2ID, HeadCommit: child2Head}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req2); err == nil {
 			t.Fatal("expected rejection for forged integration base commit")
 		}
-		assertUnchanged(t, f, alloc2.WorkspacePath, headBefore, statusBefore)
+		assertUnchanged(t, f, child2ID, alloc2.WorkspacePath, headBefore, statusBefore)
 	})
 
 	t.Run("forged committed source binding destination", func(t *testing.T) {
@@ -1064,7 +1157,7 @@ func TestCommittedSourceRejections(t *testing.T) {
 		}
 		forgedBinding := binding1
 		forgedBinding.DestinationPath = "/forged/destination/path"
-		child2ID, child2Head, alloc2 := createTestCorrectionChild(t, &f, forgedBinding)
+		child2ID, child2Head, alloc2 := createTestCorrectionChildWithBinding(t, &f, forgedBinding)
 		headBefore := committedSourceGit(t, alloc2.WorkspacePath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, alloc2.WorkspacePath, "status", "--porcelain")
 
@@ -1072,7 +1165,7 @@ func TestCommittedSourceRejections(t *testing.T) {
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req2); err == nil {
 			t.Fatal("expected rejection for forged committed_source_binding destination")
 		}
-		assertUnchanged(t, f, alloc2.WorkspacePath, headBefore, statusBefore)
+		assertUnchanged(t, f, child2ID, alloc2.WorkspacePath, headBefore, statusBefore)
 	})
 
 	t.Run("parent row lineage disagreement", func(t *testing.T) {
@@ -1083,17 +1176,24 @@ func TestCommittedSourceRejections(t *testing.T) {
 			t.Fatal(err)
 		}
 		child2ID, child2Head, alloc2 := createTestCorrectionChild(t, &f, binding1)
+		req2 := CommittedSourceRequest{TaskCallID: "call-2", ChildSessionID: child2ID, HeadCommit: child2Head}
+		if _, err := f.runtime.ResolveCommittedSource(f.scope, req2); err != nil {
+			t.Fatalf("prerequisite: valid resolver failed for Child 2: %v", err)
+		}
+
 		headBefore := committedSourceGit(t, alloc2.WorkspacePath, "rev-parse", "HEAD")
 		statusBefore := committedSourceGit(t, alloc2.WorkspacePath, "status", "--porcelain")
 
-		// Tamper parent task_launches launch row for child 2
-		parentSnap, _, _ := f.sessions.GetSession("parent-session")
+		parentSnap, found, err := f.sessions.GetSession("parent-session")
+		if err != nil || !found {
+			t.Fatal("get parent session failed")
+		}
 		launches := parentSnap.Metadata["task_launches"].(map[string]any)
 		entry := launches["call-2"].(map[string]any)
 		rows := entry["launches"].([]any)
 		row := rows[0].(map[string]any)
 		row["head_commit"] = strings.Repeat("d", 40)
-		_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+		mutRes, err := f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 			SessionID:      "parent-session",
 			UserID:         f.principal.UserID,
 			AccountScopeID: f.principal.AccountScopeID,
@@ -1102,12 +1202,20 @@ func TestCommittedSourceRejections(t *testing.T) {
 			IdempotencyKey: "tamper-parent-row",
 			RequestHash:    "tamper-parent-row",
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mutRes.Error != nil {
+			t.Fatalf("mutation error: %v", mutRes.Error)
+		}
+		if mutRes.Conflict != nil {
+			t.Fatalf("mutation conflict: %v", mutRes.Conflict)
+		}
 
-		req2 := CommittedSourceRequest{TaskCallID: "call-2", ChildSessionID: child2ID, HeadCommit: child2Head}
 		if _, err := f.runtime.ResolveCommittedSource(f.scope, req2); err == nil {
 			t.Fatal("expected rejection when parent row lineage disagrees with child")
 		}
-		assertUnchanged(t, f, alloc2.WorkspacePath, headBefore, statusBefore)
+		assertUnchanged(t, f, child2ID, alloc2.WorkspacePath, headBefore, statusBefore)
 	})
 }
 
@@ -1115,6 +1223,7 @@ func TestCommittedSourceRejections(t *testing.T) {
 // and delivery base B, correctly propagating inherited delivery base across corrections.
 // Threat: committing C into delivery base causes earlier child commits B..C to be lost.
 // Symbols: tool.ResolveCommittedSource, tool.CommittedSourceBinding.
+// Layer: Integration test on tool.Runtime verifying multi-generation lineage propagation.
 func TestCommittedSourceBCSeparation(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 
@@ -1160,6 +1269,7 @@ func TestCommittedSourceBCSeparation(t *testing.T) {
 // B->C->H into the parent lane for an owned-lane corrected child.
 // Threat: corrupting integration lanes with foreign promotion checkouts or losing prior commits.
 // Symbols: tool.manageWorktreeIntegrate, tool.manageWorktreeRecall.
+// Layer: Tool command execution test verifying end-to-end integration and rejection behavior.
 func TestCommittedSourceIntegrateCapturedRejectionAndOwnedDelivery(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 	wt := &worktreeruntime.Service{}
@@ -1169,97 +1279,23 @@ func TestCommittedSourceIntegrateCapturedRejectionAndOwnedDelivery(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	crossChildID := "cross-coder-child"
-	crossAlloc, err := wt.AllocateTaskWorkspace(f.crossSource, crossBase, crossChildID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(crossAlloc.WorkspacePath, "cross.txt"), []byte("cross work"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	committedSourceGit(t, crossAlloc.WorkspacePath, "add", "cross.txt")
-	committedSourceGit(t, crossAlloc.WorkspacePath, "commit", "-m", "cross child commit")
-	crossHead := committedSourceGit(t, crossAlloc.WorkspacePath, "rev-parse", "HEAD")
-
-	_, _, _ = f.sessions.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID:      crossChildID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		WorkspacePath:  crossAlloc.WorkspacePath,
-		Mode:          sessionruntime.ModeAuto,
-		Preference:    &pebblestore.ModelPreference{Provider: "codex", Model: "test", Thinking: "high"},
-		Worktree: &sessionruntime.CreateSessionWorktree{
-			RootPath:   crossAlloc.WorkspacePath,
-			BranchName: crossAlloc.BranchName,
-			BaseBranch: "dev",
-		},
-		Metadata: map[string]any{
-			"parent_session_id":              "parent-session",
-			"parent_task_call_id":           "cross-call",
-			"lineage_kind":                  "delegated_subagent",
-			"subagent":                      "system-coder",
-			"target_workspace_path":         f.crossSource,
-			"swarm_v3_source_workspace_path": f.crossSource,
-			"destination_kind":              DestinationKindCapturedPromotionOnly,
-			"promotion_only":                true,
-			"base_commit":                   crossBase.BaseCommit,
-			"head_commit":                   crossHead,
-		},
-	})
-	_ = f.sessions.UpsertLifecycle(pebblestore.SessionLifecycleSnapshot{
-		SessionID:      crossChildID,
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Phase:          "completed",
-		EndedAt:        time.Now().UnixMilli(),
-		Generation:     1,
-	})
-	_, _, _ = f.sessions.CreateDelegatedChildLineage(
-		pebblestore.DelegatedChildLineageRecord{
-			AccountScopeID:    f.principal.AccountScopeID,
-			LogicalTaskID:     "logical-cross-int",
-			CurrentGeneration: 1,
-			CurrentSessionID:  crossChildID,
-		},
-		pebblestore.DelegatedChildGenerationRecord{
-			SessionID:           crossChildID,
-			AccountScopeID:      f.principal.AccountScopeID,
-			ParentSessionID:     "parent-session",
-			LogicalTaskID:       "logical-cross-int",
-			Generation:          1,
-			WorkspacePath:       crossAlloc.WorkspacePath,
-			WorktreeBranch:      crossAlloc.BranchName,
-			ParentBranch:        "dev",
-			ImmutableBaseCommit: crossBase.BaseCommit,
-		},
-		"cross-lineage-int",
-	)
-	parentSnap, _, _ := f.sessions.GetSession("parent-session")
-	launches := parentSnap.Metadata["task_launches"].(map[string]any)
-	launches["cross-call"] = map[string]any{
-		"launches": []any{
-			map[string]any{
-				"child_session_id":      crossChildID,
-				"subagent":              "system-coder",
-				"launch_index":          1,
-				"parent_workspace_path": f.crossSource,
-				"worktree_root_path":    crossAlloc.WorkspacePath,
-				"worktree_branch":       crossAlloc.BranchName,
-				"parent_branch":         "dev",
-				"destination_kind":      DestinationKindCapturedPromotionOnly,
-				"base_commit":           crossBase.BaseCommit,
-				"head_commit":           crossHead,
-			},
-		},
-	}
-	_, _ = f.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
-		SessionID:      "parent-session",
-		UserID:         f.principal.UserID,
-		AccountScopeID: f.principal.AccountScopeID,
-		Kind:           pebblestore.V3SessionMutationUpdateMetadata,
-		Session:        &parentSnap,
-		IdempotencyKey: "cross-parent-row",
-		RequestHash:    "cross-parent-row",
+	crossChildID, _, _ := createCommittedSourceChild(t, &f, createChildOptions{
+		childID:             "cross-coder-child",
+		taskCallID:          "cross-call",
+		logicalTaskID:       "logical-cross-int",
+		allocationParent:    f.crossSource,
+		parentBranch:        "dev",
+		targetWorkspacePath: f.crossSource,
+		canonicalSourcePath: f.crossSource,
+		sourceWorkspaceID:   f.crossWorkspaceID,
+		sourceWorkspaceGen:  f.crossWorkspaceGen,
+		baseCommit:          crossBase.BaseCommit,
+		fileName:            "cross.txt",
+		fileContent:         "cross work",
+		commitMessage:       "cross child commit",
+		destinationKind:     DestinationKindCapturedPromotionOnly,
+		promotionOnly:       true,
+		launchIndex:         1,
 	})
 
 	parentHeadBefore := committedSourceGit(t, f.primaryLane, "rev-parse", "HEAD")
@@ -1312,6 +1348,7 @@ func TestCommittedSourceIntegrateCapturedRejectionAndOwnedDelivery(t *testing.T)
 // for a child carrying an inherited integration base commit B across correction C->H.
 // Threat: promotion promoting only C..H and dropping earlier commits B..C.
 // Symbols: tool.manageWorktreePromote.
+// Layer: Tool promotion test verifying git fast-forward/promotion and checkout cleanliness.
 func TestCommittedSourceSyntheticPromotionFullStack(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 
@@ -1361,6 +1398,7 @@ func TestCommittedSourceSyntheticPromotionFullStack(t *testing.T) {
 // Purpose: manage-worktree action="help" must return actionable workflow guidance.
 // Threat: missing or opaque help leading to incorrect tool usage by agents.
 // Symbols: tool.manageWorktreeHelp, tool.executeManageWorktree.
+// Layer: Action dispatch schema and help response test on tool.Runtime.
 func TestManageWorktreeHelp(t *testing.T) {
 	f := newCommittedSourceTestFixture(t)
 	out, err := f.runtime.executeManageWorktree(f.scope, map[string]any{"action": "help"})
