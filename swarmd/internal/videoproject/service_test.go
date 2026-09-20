@@ -771,7 +771,7 @@ func TestStartRenderJobRecoversExactLegacyLockedHTMLAuthority(t *testing.T) {
 	lockedCandidates.Status = pebblestore.VideoAnimationCandidateStatusAwaitingExport
 	locked.Parts[0].AnimationCandidates = &lockedCandidates
 	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"accepted": {ID: "accepted", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", CreatedAt: 200, Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "signal", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallback, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": unlocked, "accepted_video_plan_proposal_id": "initial-proposal"}}}}
-	store.proposals["initial-proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "initial-proposal", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Plan: &locked, WorkingRevisionID: "working", UpdatedAt: 150}
+	store.proposals["initial-proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "initial-proposal", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Plan: &locked, WorkingRevisionID: "working", UpdatedAt: 150, Status: pebblestore.VideoEditProposalStatusAccepted}
 
 	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "accepted", JobID: "legacy-job"}); err != nil {
 		t.Fatalf("legacy exact proposal selection should remain renderable: %v", err)
@@ -796,7 +796,7 @@ func TestStartRenderJobDoesNotUseProposalSelectionNewerThanRevision(t *testing.T
 	lockedCandidates.SelectedSource = htmlRef
 	locked.Parts[0].AnimationCandidates = &lockedCandidates
 	store.revisions["project"] = map[string]pebblestore.VideoProjectRevisionSnapshot{"history": {ID: "history", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", CreatedAt: 100, Timeline: pebblestore.VideoProjectTimeline{Clips: []pebblestore.VideoTimelineClip{{ID: "signal", SourceKind: pebblestore.VideoClipSourceKindManagedArtifact, ArtifactRef: fallback, MediaType: "image/png", DurationMs: 1000, SourceEndMs: 1000}}, Metadata: map[string]any{"accepted_video_plan": unlocked, "accepted_video_plan_proposal_id": "initial-proposal"}}}}
-	store.proposals["initial-proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "initial-proposal", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Plan: &locked, WorkingRevisionID: "working", UpdatedAt: 150}
+	store.proposals["initial-proposal"] = pebblestore.VideoEditProposalSnapshot{ID: "initial-proposal", ProjectID: "project", SessionID: "session", AccountScopeID: "acc", UserID: "user", Plan: &locked, WorkingRevisionID: "working", UpdatedAt: 150, Status: pebblestore.VideoEditProposalStatusAccepted}
 
 	if _, err := svc.StartRenderJob(context.Background(), principal, StartRenderJobInput{SessionID: "session", ProjectID: "project", RevisionID: "history", JobID: "history-job"}); err == nil || !strings.Contains(err.Error(), "durably locked") {
 		t.Fatalf("newer proposal selection must not rewrite historical render authority: %v", err)
@@ -1038,8 +1038,11 @@ func TestForkRevisionPreservesRenderAuthorityAndAdmitsRender(t *testing.T) {
 	store.sessions[destSessionID] = pebblestore.SessionSnapshot{ID: destSessionID, AccountScopeID: principal.AccountScopeID, UserID: principal.UserID}
 
 	store.artifacts["acc/sess_source/col/still"] = pebblestore.SessionArtifactVariant{ID: "still", Status: pebblestore.SessionArtifactStatusReady, MediaType: "image/png", EventSeq: 1}
+	store.artifacts["acc/sess_source/col/html"] = pebblestore.SessionArtifactVariant{ID: "html", Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", EventSeq: 2}
+	store.artifacts["acc/sess_source/col/html-2"] = pebblestore.SessionArtifactVariant{ID: "html-2", Status: pebblestore.SessionArtifactStatusReady, MediaType: "text/html", EventSeq: 3}
 	fallback := &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "still", EventSeq: 1}
 	htmlRef := &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "html", EventSeq: 2}
+	htmlRef2 := &pebblestore.SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col", VariantID: "html-2", EventSeq: 3}
 
 	unlocked := pebblestore.VideoPlanProposal{
 		Kind: pebblestore.VideoPlanKindInitial,
@@ -1053,6 +1056,7 @@ func TestForkRevisionPreservesRenderAuthorityAndAdmitsRender(t *testing.T) {
 				Status: pebblestore.VideoAnimationCandidateStatusAwaitingSelection,
 				Candidates: []pebblestore.VideoAnimationCandidate{
 					{ID: "orbit", Source: htmlRef},
+					{ID: "pulse", Source: htmlRef2},
 				},
 			},
 		}},

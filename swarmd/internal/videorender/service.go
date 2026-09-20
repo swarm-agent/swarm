@@ -340,13 +340,17 @@ func (s *Service) InspectFrames(ctx context.Context, principal identity.Principa
 	if revision.Timeline.Metadata["accepted_video_plan"] != nil || pebblestore.VideoPlanRenderAuthorityProposalID(timeline) != "" {
 		var sourceProposal *pebblestore.VideoEditProposalSnapshot
 		if proposalID := pebblestore.VideoPlanRenderAuthorityProposalID(timeline); proposalID != "" {
-			proposal, ok, err := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
-			if err != nil {
-				return FrameInspectionResult{}, fmt.Errorf("resolve video plan render authority: %w", err)
+			proposal, found, proposalErr := s.store.GetVideoEditProposal(principal.AccountScopeID, sessionID, projectID, proposalID)
+			if proposalErr != nil {
+				return FrameInspectionResult{}, fmt.Errorf("resolve video plan inspection authority: %w", proposalErr)
 			}
-			if ok {
-				sourceProposal = &proposal
+			if !found {
+				return FrameInspectionResult{}, fmt.Errorf("video plan inspection authority proposal %q not found", proposalID)
 			}
+			if proposal.UserID != "" && proposal.UserID != principal.UserID {
+				return FrameInspectionResult{}, errors.New("video plan inspection authority ownership does not match authenticated principal")
+			}
+			sourceProposal = &proposal
 		}
 		plan, resolveErr := pebblestore.ResolveVideoPlanRenderAuthority(revision, sourceProposal)
 		if resolveErr != nil {

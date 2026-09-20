@@ -1,10 +1,7 @@
 package pebblestore
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,6 +44,7 @@ func TestCreateVideoProjectAtomicallyPersistsInitialProposalAndSurvivesReload(t 
 	}
 
 	htmlRef := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-anim", VariantID: "var-html", EventSeq: 5}
+	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-anim", VariantID: "var-html-2", EventSeq: 6}
 	fallback := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-still", VariantID: "var-still", EventSeq: 4}
 	plan := VideoPlanProposal{
 		Kind: VideoPlanKindInitial,
@@ -60,6 +58,7 @@ func TestCreateVideoProjectAtomicallyPersistsInitialProposalAndSurvivesReload(t 
 				Status: VideoAnimationCandidateStatusAwaitingExport,
 				Candidates: []VideoAnimationCandidate{
 					{ID: "cand-html", Source: htmlRef},
+					{ID: "cand-html-2", Source: htmlRef2},
 				},
 				SelectedCandidateID: "cand-html",
 				SelectedSource:      htmlRef,
@@ -315,6 +314,7 @@ func TestResolveAuthoritativeVideoPlanDanglingForkRecoversViaSourceLineage(t *te
 	}
 
 	htmlRef := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-motion", VariantID: "var-orbit", EventSeq: 9}
+	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sourceSessionID, CollectionID: "col-motion", VariantID: "var-orbit-2", EventSeq: 10}
 	plan := VideoPlanProposal{
 		Kind: VideoPlanKindInitial,
 		Parts: []VideoPlanPart{{
@@ -329,6 +329,7 @@ func TestResolveAuthoritativeVideoPlanDanglingForkRecoversViaSourceLineage(t *te
 				SelectedSource:      htmlRef,
 				Candidates: []VideoAnimationCandidate{
 					{ID: "orbit", Source: htmlRef},
+					{ID: "pulse", Source: htmlRef2},
 				},
 			},
 		}},
@@ -431,6 +432,7 @@ func TestResolveAuthoritativeVideoPlanImmutableSelectionWinsOverLaterProposalUpd
 	}
 
 	htmlRef := &SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: "col", VariantID: "html", EventSeq: 2}
+	htmlRef2 := &SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: "col", VariantID: "html-2", EventSeq: 3}
 	fallback := &SessionArtifactSelectionReference{SessionID: sessionID, CollectionID: "col", VariantID: "still", EventSeq: 1}
 	unlockedPlan := VideoPlanProposal{
 		Kind: VideoPlanKindInitial,
@@ -444,6 +446,7 @@ func TestResolveAuthoritativeVideoPlanImmutableSelectionWinsOverLaterProposalUpd
 				Status: VideoAnimationCandidateStatusAwaitingSelection,
 				Candidates: []VideoAnimationCandidate{
 					{ID: "cand-1", Source: htmlRef},
+					{ID: "cand-2", Source: htmlRef2},
 				},
 			},
 		}},
