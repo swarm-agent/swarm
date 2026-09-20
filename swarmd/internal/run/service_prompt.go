@@ -10,6 +10,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	modelruntime "swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/permission"
@@ -342,14 +343,35 @@ func subagentPolicyInstructions(subagents permission.SubagentPolicy) string {
 	}, "\n"))
 }
 
+func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
+	lines := []string{
+		"Execution capacity facts (account-scoped, shared pool):",
+		fmt.Sprintf("- effective_overall_cap: %d (ceiling, not target; default 100; one shared pool across ordinary and deployed executions; no per-agent deployment execution limit)", snap.EffectiveLimit),
+		fmt.Sprintf("- total_active: %d", snap.TotalActive),
+		fmt.Sprintf("- deployed_active: %d", snap.DeployedActive),
+		fmt.Sprintf("- pending: %d", snap.Pending),
+		fmt.Sprintf("- available_slots: %d", snap.Available),
+		fmt.Sprintf("- deployment_batch_bound: %d (maximum proposals per manage-sessions deploy call)", snap.DeploymentBatchBound),
+		"- saved_session_quota: null (none configured; no external quota authority active)",
+	}
+	if snap.Available <= 0 {
+		lines = append(lines, "Capacity state: at capacity. Do not promise immediate execution launches; new requests will be queued until an active execution completes or releases its slot.")
+	} else {
+		lines = append(lines, "Capacity state: slots available. Avoid promising launches that exceed available capacity.")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
-	blocks := make([]string, 0, 6)
+	blocks := make([]string, 0, 7)
 	blocks = append(blocks, masterHarnessPromptWithScope(scope))
 	if s.permissions != nil {
 		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
 			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
 		}
 	}
+	capacitySnapshot := s.ExecutionCapacitySnapshot(scope.Principal.AccountScopeID)
+	blocks = append(blocks, executionCapacityInstructions(capacitySnapshot))
 	if workspaceMap := s.accountMemoryPromptBlock(scope, agentProfile); workspaceMap != "" {
 		// The account map is high-level orientation. Keep it before repository
 		// AGENTS.md blocks so those more specific rules remain adjacent to the

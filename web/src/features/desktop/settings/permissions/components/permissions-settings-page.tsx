@@ -5,7 +5,18 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../../../components/u
 import { Input } from '../../../../../components/ui/input'
 import { ModalCloseButton } from '../../../../../components/ui/modal-close-button'
 import { cn } from '../../../../../lib/cn'
-import { DEFAULT_PLAN_ACCEPTANCE_POLICY, DEFAULT_SESSION_DEPLOY_POLICY, fetchCapabilityPolicies, saveCapabilityPolicies, type PlanAcceptancePolicy, type SessionDeployPolicy } from '../../../permissions/services/capability-policy'
+import {
+  DEFAULT_ACTIVE_EXECUTION_LIMIT,
+  DEFAULT_PLAN_ACCEPTANCE_POLICY,
+  DEFAULT_SESSION_DEPLOY_POLICY,
+  MAX_ACTIVE_EXECUTION_LIMIT,
+  MIN_ACTIVE_EXECUTION_LIMIT,
+  fetchCapabilityPolicies,
+  saveCapabilityPolicies,
+  validateActiveExecutionLimit,
+  type PlanAcceptancePolicy,
+  type SessionDeployPolicy,
+} from '../../../permissions/services/capability-policy'
 
 export interface PermissionRule {
   id: string
@@ -194,6 +205,7 @@ export function PermissionsSettingsPage() {
   const [subagentBusy, setSubagentBusy] = useState(false)
   const [sessionDeployPolicy, setSessionDeployPolicy] = useState<SessionDeployPolicy>(DEFAULT_SESSION_DEPLOY_POLICY)
   const [planAcceptancePolicy, setPlanAcceptancePolicy] = useState<PlanAcceptancePolicy>(DEFAULT_PLAN_ACCEPTANCE_POLICY)
+  const [activeExecutionLimit, setActiveExecutionLimit] = useState<number>(DEFAULT_ACTIVE_EXECUTION_LIMIT)
   const [capabilityBusy, setCapabilityBusy] = useState(false)
   const [bypassBusy, setBypassBusy] = useState(false)
   const [bashProfileBusy, setBashProfileBusy] = useState(false)
@@ -213,6 +225,7 @@ export function PermissionsSettingsPage() {
       if (result.policy.subagents) setSubagentPolicy(result.policy.subagents)
       setSessionDeployPolicy(capabilities.session_deploy)
       setPlanAcceptancePolicy(capabilities.plan_acceptance)
+      setActiveExecutionLimit(capabilities.active_execution_limit)
       setBypassPermissionsState(result.bypassPermissions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load permission policy')
@@ -247,14 +260,24 @@ export function PermissionsSettingsPage() {
   }
 
   const handleSaveCapabilities = async () => {
+    const limitError = validateActiveExecutionLimit(activeExecutionLimit)
+    if (limitError) {
+      setError(limitError)
+      return
+    }
     setCapabilityBusy(true)
     setError(null)
     setStatus(null)
     try {
-      const saved = await saveCapabilityPolicies({ session_deploy: sessionDeployPolicy, plan_acceptance: planAcceptancePolicy })
+      const saved = await saveCapabilityPolicies({
+        session_deploy: sessionDeployPolicy,
+        plan_acceptance: planAcceptancePolicy,
+        active_execution_limit: activeExecutionLimit,
+      })
       setSessionDeployPolicy(saved.session_deploy)
       setPlanAcceptancePolicy(saved.plan_acceptance)
-      setStatus('Session deployment and plan acceptance policies saved')
+      setActiveExecutionLimit(saved.active_execution_limit)
+      setStatus('Session deployment, plan acceptance, and execution limit policies saved')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save capability policies')
     } finally {
@@ -493,10 +516,33 @@ export function PermissionsSettingsPage() {
 
         <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div><div className="text-sm font-semibold text-[var(--app-text)]">Session deployment &amp; plan acceptance</div><div className="mt-1 text-xs text-[var(--app-text-muted)]">Account-scoped capability policies. Fresh accounts ask for both operations.</div></div>
+            <div><div className="text-sm font-semibold text-[var(--app-text)]">Execution capacity &amp; session capabilities</div><div className="mt-1 text-xs text-[var(--app-text-muted)]">Account-scoped execution limit and capability policies. One shared pool; default 100 ceiling not target; no per-agent deployment execution limit.</div></div>
             <Button variant="outline" onClick={() => void handleSaveCapabilities()} disabled={loading || capabilityBusy}>{capabilityBusy ? 'Saving…' : 'Save'}</Button>
           </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
+              <div className="text-sm font-medium text-[var(--app-text)]">Active execution limit</div>
+              <div className="mt-1 text-xs text-[var(--app-text-muted)]">Account-wide ceiling (default 100; not a target). One shared pool; no per-agent limit.</div>
+              <label className="mt-3 grid gap-2">
+                <span className="text-xs text-[var(--app-text-muted)]">Max concurrent active executions (1–10000)</span>
+                <Input
+                  aria-label="Active execution limit"
+                  type="number"
+                  min={MIN_ACTIVE_EXECUTION_LIMIT}
+                  max={MAX_ACTIVE_EXECUTION_LIMIT}
+                  value={Number.isNaN(activeExecutionLimit) ? '' : activeExecutionLimit}
+                  onChange={(event) => {
+                    const rawVal = event.target.value
+                    if (rawVal === '') {
+                      setActiveExecutionLimit(NaN)
+                    } else {
+                      const num = Number(rawVal)
+                      setActiveExecutionLimit(Number.isFinite(num) ? Math.floor(num) : NaN)
+                    }
+                  }}
+                />
+              </label>
+            </div>
             <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">
               <div className="text-sm font-medium text-[var(--app-text)]">Session deployment</div>
               <label className="mt-3 grid gap-2"><span className="text-xs text-[var(--app-text-muted)]">Policy</span><select aria-label="Session deployment policy" value={sessionDeployPolicy.mode} onChange={(event) => setSessionDeployPolicy((current) => ({ ...current, mode: event.target.value as SessionDeployPolicy['mode'] }))} className="h-10 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 text-sm"><option value="ask">Ask every time</option><option value="always_allow">Always allow</option><option value="bounded">Bounded automatic</option></select></label>

@@ -36,6 +36,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -198,6 +199,7 @@ type Runtime struct {
 	focusedPartMu         sync.Mutex
 	focusedPartProtocols  map[string]focusedPartProtocolState
 	sessionController     manageSessionController
+	capacityProvider      manageSessionCapacityProvider
 	connections           manageConnectionStore
 	environmentsStore     manageEnvironmentStore
 	deploymentsStore      manageDeploymentStore
@@ -210,6 +212,10 @@ type manageSessionController interface {
 	CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error)
 	EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool
 	CompactSession(ctx context.Context, principal identity.Principal, sessionID, note string) (map[string]any, error)
+}
+
+type manageSessionCapacityProvider interface {
+	ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot
 }
 
 type ExaRuntimeConfig struct {
@@ -887,6 +893,37 @@ func (r *Runtime) SetManageSessionRealtimePublisher(publish func(pebblestore.V3R
 func (r *Runtime) SetManageSessionController(controller manageSessionController) {
 	if r != nil {
 		r.sessionController = controller
+	}
+}
+
+func (r *Runtime) SetManageSessionCapacityProvider(provider manageSessionCapacityProvider) {
+	if r != nil {
+		r.capacityProvider = provider
+	}
+}
+
+func (r *Runtime) capacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
+	if r != nil {
+		if r.capacityProvider != nil {
+			return r.capacityProvider.ExecutionCapacitySnapshot(accountScopeID)
+		}
+		if provider, ok := r.sessionController.(interface {
+			ExecutionCapacitySnapshot(string) executioncapacity.Snapshot
+		}); ok {
+			return provider.ExecutionCapacitySnapshot(accountScopeID)
+		}
+		if provider, ok := r.sessions.(interface {
+			ExecutionCapacitySnapshot(string) executioncapacity.Snapshot
+		}); ok {
+			return provider.ExecutionCapacitySnapshot(accountScopeID)
+		}
+	}
+	return executioncapacity.Snapshot{
+		AccountScopeID:       strings.TrimSpace(accountScopeID),
+		EffectiveLimit:       executioncapacity.DefaultActiveExecutionLimit,
+		Available:            executioncapacity.DefaultActiveExecutionLimit,
+		DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
+		SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
 	}
 }
 
