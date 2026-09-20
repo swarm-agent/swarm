@@ -6854,29 +6854,41 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 
 		deliveryBase := capturedHead
-		hasCorrection := false
-		inheritedBase := strings.TrimSpace(asString(source.Metadata["integration_base_commit"]))
-		if inheritedBase != "" {
-			hasCorrection = true
-		} else if _, ok := source.Metadata["committed_source"]; ok {
-			hasCorrection = true
-		} else if _, ok := source.Metadata["committed_source_binding"]; ok {
-			hasCorrection = true
-		}
-		if hasCorrection {
-			if inheritedBase == "" {
-				if bindingMap, ok := source.Metadata["committed_source_binding"].(map[string]any); ok {
-					inheritedBase = strings.TrimSpace(asString(bindingMap["integration_base_commit"]))
+		parentID := strings.TrimSpace(asString(source.Metadata["parent_session_id"]))
+		hasCorrection := (source.Metadata["integration_base_commit"] != nil && strings.TrimSpace(asString(source.Metadata["integration_base_commit"])) != "") ||
+			source.Metadata["committed_source"] != nil ||
+			source.Metadata["committed_source_binding"] != nil
+		if parentID != "" {
+			parentSession, found, pErr := r.sessions.GetSession(parentID)
+			if pErr != nil || !found {
+				return "", fmt.Errorf("promotion source %q parent session %q not found", c.sessionID, parentID)
+			}
+			if parentSession.AccountScopeID != scope.Principal.AccountScopeID || parentSession.UserID != scope.Principal.UserID {
+				return "", fmt.Errorf("promotion source %q parent session belongs to different principal", c.sessionID)
+			}
+			var launchRow map[string]any
+			if launches, ok := parentSession.Metadata["task_launches"].(map[string]any); ok {
+				for _, rawEntry := range launches {
+					entry, _ := rawEntry.(map[string]any)
+					for _, raw := range manageWorktreeLaunchRows(entry) {
+						rMap, _ := raw.(map[string]any)
+						if asString(rMap["child_session_id"]) == source.ID {
+							launchRow = rMap
+							break
+						}
+					}
+					if launchRow != nil {
+						break
+					}
 				}
 			}
-			if inheritedBase == "" || !validCommitID(inheritedBase) {
-				return "", fmt.Errorf("invalid committed source binding for promotion source %q: invalid or missing integration_base_commit", c.sessionID)
+			authBase, bErr := r.authenticateLineageDeliveryBase(parentSession, source, launchRow, sourcePath, capturedHead, sourceState.HeadCommit, 0)
+			if bErr != nil {
+				return "", fmt.Errorf("authenticate promotion source %q delivery base: %w", c.sessionID, bErr)
 			}
-			descends, dErr := r.worktrees.TaskCommitDescendsFrom(sourcePath, inheritedBase, capturedHead)
-			if dErr != nil || !descends {
-				return "", fmt.Errorf("invalid committed source binding for promotion source %q: allocation base %s does not descend from delivery base %s", c.sessionID, capturedHead, inheritedBase)
-			}
-			deliveryBase = inheritedBase
+			deliveryBase = authBase
+		} else if hasCorrection {
+			return "", fmt.Errorf("promotion source %q has correction markers but no parent session lineage", c.sessionID)
 		}
 
 		children = append(children, worktreeruntime.TaskIntegrationChild{
@@ -7017,52 +7029,26 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
 			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
 			headCommit := strings.TrimSpace(asString(row["head_commit"]))
-			resolvedParentPath, resolveErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
-			if resolveErr != nil {
-				return "", fmt.Errorf("resolve selected child %q parent workspace: %w", id, resolveErr)
+			isProgram := strings.TrimSpace(asString(childSession.Metadata["task_program_id"])) != ""
+			destKind, destPath, _, _, destErr := r.resolveCommittedSourceDestination(scope, parent, childSession, row, isProgram)
+			if destErr != nil {
+				return "", fmt.Errorf("resolve selected child %q destination: %w", id, destErr)
 			}
-			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(resolvedParentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
+			if destKind == DestinationKindCapturedPromotionOnly {
+				return "", fmt.Errorf("selected child %q has promotion-only captured destination and cannot be integrated; use promote instead", id)
+			}
+			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(destPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
 			if inspectErr != nil {
 				return "", fmt.Errorf("verify selected child %q lineage: %w", id, inspectErr)
 			}
 			if !state.Clean {
 				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
 			}
-			deliveryBase := baseCommit
-			hasCorrection := false
-			inheritedBase := strings.TrimSpace(firstNonEmptyString(
-				asString(row["integration_base_commit"]),
-				asString(childSession.Metadata["integration_base_commit"]),
-			))
-			if inheritedBase != "" {
-				hasCorrection = true
-			} else if _, ok := row["committed_source"]; ok {
-				hasCorrection = true
-			} else if _, ok := childSession.Metadata["committed_source"]; ok {
-				hasCorrection = true
-			} else if _, ok := row["committed_source_binding"]; ok {
-				hasCorrection = true
-			} else if _, ok := childSession.Metadata["committed_source_binding"]; ok {
-				hasCorrection = true
+			deliveryBase, bErr := r.authenticateLineageDeliveryBase(parent, childSession, row, path, baseCommit, state.HeadCommit, 0)
+			if bErr != nil {
+				return "", fmt.Errorf("authenticate child %q delivery base: %w", id, bErr)
 			}
-			if hasCorrection {
-				if inheritedBase == "" {
-					if bindingMap, ok := row["committed_source_binding"].(map[string]any); ok {
-						inheritedBase = strings.TrimSpace(asString(bindingMap["integration_base_commit"]))
-					} else if bindingMap, ok := childSession.Metadata["committed_source_binding"].(map[string]any); ok {
-						inheritedBase = strings.TrimSpace(asString(bindingMap["integration_base_commit"]))
-					}
-				}
-				if inheritedBase == "" || !validCommitID(inheritedBase) {
-					return "", fmt.Errorf("invalid committed source binding for child %q: invalid or missing integration_base_commit", id)
-				}
-				descends, dErr := r.worktrees.TaskCommitDescendsFrom(path, inheritedBase, baseCommit)
-				if dErr != nil || !descends {
-					return "", fmt.Errorf("invalid committed source binding for child %q: allocation base %s does not descend from delivery base %s", id, baseCommit, inheritedBase)
-				}
-				deliveryBase = inheritedBase
-			}
-			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: resolvedParentPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: deliveryBase, HeadCommit: state.HeadCommit}})
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: destPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: deliveryBase, HeadCommit: state.HeadCommit}})
 		}
 	}
 	if len(candidates) != len(selectedSet) {
@@ -7206,42 +7192,32 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 				children = append(children, child)
 				continue
 			}
-			parentPath, parentPathErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
+			isProgram := strings.TrimSpace(asString(childSession.Metadata["task_program_id"])) != ""
+			destKind, destPath, destBranch, canonicalSource, destErr := r.resolveCommittedSourceDestination(scope, parent, childSession, row, isProgram)
 			parentState := worktreeruntime.TaskWorkspaceState{}
-			isCapturedDestination := false
-			if parentPathErr != nil {
-				targetWorkspace := strings.TrimSpace(firstNonEmptyString(
-					asString(childSession.Metadata["target_workspace_path"]),
-					asString(row["parent_workspace_path"]),
-					asString(childSession.Metadata["swarm_v3_source_workspace_path"]),
-				))
-				if targetWorkspace != "" && r.workspace != nil {
-					saved, scopeErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, targetWorkspace)
-					if scopeErr == nil && saved.Matched && saved.WorkspacePath == targetWorkspace && saved.ResolvedPath == targetWorkspace {
-						targetState, targetInspectErr := r.worktrees.InspectTaskWorkspace(targetWorkspace)
-						if targetInspectErr == nil {
-							parentPath = targetWorkspace
-							parentState = targetState
-							parentPathErr = nil
-							isCapturedDestination = true
-						}
-					}
-				}
-			} else {
-				parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
-			}
-			if parentPathErr != nil {
-				child["parent_git_inspection_error"] = parentPathErr.Error()
+			if destErr != nil {
+				child["parent_git_inspection_error"] = destErr.Error()
 				child["child_state"] = "blocked"
+				child["source_eligibility_rejection_reason"] = fmt.Sprintf("destination resolution failed: %v", destErr)
 				children = append(children, child)
 				continue
 			}
-			child["parent_workspace_path"] = parentPath
-			if isCapturedDestination {
-				child["destination_kind"] = DestinationKindCapturedPromotionOnly
+			var parentPathErr error
+			parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(destPath)
+			if parentPathErr != nil {
+				child["parent_git_inspection_error"] = parentPathErr.Error()
+				child["child_state"] = "blocked"
+				child["source_eligibility_rejection_reason"] = fmt.Sprintf("inspect parent workspace failed: %v", parentPathErr)
+				children = append(children, child)
+				continue
+			}
+			parentPath := destPath
+			child["parent_workspace_path"] = destPath
+			child["parent_branch"] = destBranch
+			child["canonical_source_path"] = canonicalSource
+			child["destination_kind"] = destKind
+			if destKind == DestinationKindCapturedPromotionOnly {
 				child["promotion_only"] = true
-			} else {
-				child["destination_kind"] = DestinationKindOwnedLane
 			}
 			path := childSession.WorktreeRootPath
 			childState := "blocked"
@@ -7287,12 +7263,23 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 							ChildSessionID: childSession.ID,
 							HeadCommit:     state.HeadCommit,
 						}
-						if _, resolveErr := r.ResolveCommittedSource(scope, req); resolveErr == nil {
+						binding, resolveErr := r.ResolveCommittedSource(scope, req)
+						if resolveErr == nil {
 							child["committed_source"] = map[string]any{
 								"task_call_id":     callID,
 								"child_session_id": childSession.ID,
 								"head_commit":      state.HeadCommit,
 							}
+							child["committed_source_binding"] = binding
+							child["integration_base_commit"] = binding.IntegrationBaseCommit
+						} else {
+							child["source_eligibility_rejection_reason"] = resolveErr.Error()
+						}
+					} else {
+						if !state.Clean {
+							child["source_eligibility_rejection_reason"] = "child worktree is dirty"
+						} else {
+							child["source_eligibility_rejection_reason"] = fmt.Sprintf("child state is %s", childState)
 						}
 					}
 				}
