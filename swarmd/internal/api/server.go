@@ -227,6 +227,7 @@ type permissionService interface {
 	CurrentPolicy() (permission.Policy, error)
 	CurrentPolicyForAccount(accountScopeID string) (permission.Policy, error)
 	UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy permission.SessionDeployPolicy, planAcceptance permission.PlanAcceptancePolicy) (permission.Policy, error)
+	UpdateExecutionCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy *permission.SessionDeployPolicy, planAcceptance *permission.PlanAcceptancePolicy, activeExecutionLimit *int) (permission.Policy, error)
 	UpdateBashApprovalProfileForAccount(accountScopeID string, profile permission.BashApprovalProfile) (permission.Policy, error)
 	UpsertRule(rule permission.PolicyRule) (permission.PolicyRule, error)
 	UpsertRuleForAccount(accountScopeID string, rule permission.PolicyRule) (permission.PolicyRule, error)
@@ -512,7 +513,11 @@ func (s *Server) ExecutionCapacity() *executioncapacity.Manager {
 func (s *Server) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
 	if s == nil || s.perm == nil {
 		return executioncapacity.Snapshot{
-			AccountScopeID: strings.TrimSpace(accountScopeID),
+			AccountScopeID:       strings.TrimSpace(accountScopeID),
+			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
+			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+			Unavailable:          true,
+			Error:                "execution capacity service is unavailable",
 		}
 	}
 	return s.perm.ExecutionCapacitySnapshot(accountScopeID)
@@ -4503,38 +4508,10 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			type executionCapabilityPolicyService interface {
-				UpdateExecutionCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy *permission.SessionDeployPolicy, planAcceptance *permission.PlanAcceptancePolicy, activeExecutionLimit *int) (permission.Policy, error)
-			}
-			var policy permission.Policy
-			if updater, ok := s.perm.(executionCapabilityPolicyService); ok {
-				policy, err = updater.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, req.SessionDeploy, req.PlanAcceptance, req.ActiveExecutionLimit)
-				if err != nil {
-					writeError(w, http.StatusBadRequest, err)
-					return
-				}
-			} else {
-				if req.SessionDeploy != nil {
-					current.SessionDeploy = *req.SessionDeploy
-				}
-				if req.PlanAcceptance != nil {
-					current.PlanAcceptance = *req.PlanAcceptance
-				}
-				policy, err = s.perm.UpdateCapabilityPoliciesForAccount(accountScopeID, current.SessionDeploy, current.PlanAcceptance)
-				if err != nil {
-					writeError(w, http.StatusBadRequest, err)
-					return
-				}
-				if req.ActiveExecutionLimit != nil {
-					policy, err = s.perm.UpdateActiveExecutionLimitForAccount(accountScopeID, *req.ActiveExecutionLimit)
-					if err != nil {
-						writeError(w, http.StatusBadRequest, err)
-						return
-					}
-				}
-			}
-			if req.ActiveExecutionLimit != nil {
-				policy.ActiveExecutionLimit = *req.ActiveExecutionLimit
+			policy, err := s.perm.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, req.SessionDeploy, req.PlanAcceptance, req.ActiveExecutionLimit)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":                     true,
