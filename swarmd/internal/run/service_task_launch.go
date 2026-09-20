@@ -177,31 +177,31 @@ type taskSwarmSpec struct {
 
 type taskLaunchSpec struct {
 	// Scheduler-only runtime destination; never parsed from model arguments.
-	ProgramRepositoryLane *pebblestore.TaskProgramRepositoryLane
-	ProgramArtifactSource *taskArtifactV3Source // authenticated dependency, never parsed
-	RequestedSubagentType string
-	TargetWorkspacePath   string
-	MetaPrompt            string
-	AssignmentLabel       string
-	Deliverable           string
-	ConcurrencyReason     string
-	RecoverySourceDigest  string `json:"recovery_source_digest,omitempty"`
-	CommittedSource       *tool.CommittedSourceRequest
+	ProgramRepositoryLane  *pebblestore.TaskProgramRepositoryLane
+	ProgramArtifactSource  *taskArtifactV3Source // authenticated dependency, never parsed
+	RequestedSubagentType  string
+	TargetWorkspacePath    string
+	MetaPrompt             string
+	AssignmentLabel        string
+	Deliverable            string
+	ConcurrencyReason      string
+	RecoverySourceDigest   string `json:"recovery_source_digest,omitempty"`
+	CommittedSource        *tool.CommittedSourceRequest
 	CommittedSourceBinding *tool.CommittedSourceBinding
-	OwnedScope            []string
-	OutputMode            string
-	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
-	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
-	SourceArtifact        *pebblestore.SessionArtifactSelectionReference
-	ArtifactV3Source      *taskArtifactV3Source
-	ArtifactV2Source      *taskArtifactV2Source
-	DependencyEvidence    string
-	StreamKey             string
-	SwarmMode             bool
-	SwarmStrategy         string
-	AssemblyPart          *taskSwarmAssemblyPart
-	IntegrationContract   string
-	SourceArguments       map[string]any
+	OwnedScope             []string
+	OutputMode             string
+	OutputRequirements     *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile       *pebblestore.SessionArtifactAnimationProfile
+	SourceArtifact         *pebblestore.SessionArtifactSelectionReference
+	ArtifactV3Source       *taskArtifactV3Source
+	ArtifactV2Source       *taskArtifactV2Source
+	DependencyEvidence     string
+	StreamKey              string
+	SwarmMode              bool
+	SwarmStrategy          string
+	AssemblyPart           *taskSwarmAssemblyPart
+	IntegrationContract    string
+	SourceArguments        map[string]any
 }
 
 type taskImageManifestRow struct {
@@ -339,48 +339,48 @@ type taskLaunchParentInfo struct {
 }
 
 type taskLaunchManifestRow struct {
-	Description           string                                         `json:"description"`
-	RequestedSubagentType string                                         `json:"requested_subagent_type"`
-	ResolvedAgentName     string                                         `json:"resolved_agent_name"`
-	ResolvedAgentError    string                                         `json:"resolved_agent_error,omitempty"`
-	Action                string                                         `json:"action"`
-	MetaPrompt            string                                         `json:"meta_prompt,omitempty"`
-	AssignmentLabel       string                                         `json:"assignment_label,omitempty"`
-	Deliverable           string                                         `json:"deliverable,omitempty"`
-	ConcurrencyReason     string                                         `json:"concurrency_reason,omitempty"`
-	RecoverySourceDigest  string                                         `json:"recovery_source_digest,omitempty"`
-	CommittedSource       *tool.CommittedSourceRequest                   `json:"committed_source,omitempty"`
-	CommittedSourceBinding *tool.CommittedSourceBinding                  `json:"committed_source_binding,omitempty"`
-	OwnedScope            []string                                       `json:"owned_scope,omitempty"`
-	OutputMode            string                                         `json:"output_mode,omitempty"`
-	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
-	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
-	SourceArtifact        *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
-	ArtifactV3Source      *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
-	DependencyEvidence    string                                         `json:"dependency_evidence,omitempty"`
-	SubagentProvider      string                                         `json:"subagent_provider,omitempty"`
-	SubagentModel         string                                         `json:"subagent_model,omitempty"`
-	SubagentThinking      string                                         `json:"subagent_thinking,omitempty"`
-	SubagentServiceTier   string                                         `json:"subagent_service_tier,omitempty"`
-	ChildTitlePreview     string                                         `json:"child_title_preview,omitempty"`
-	ChildMode             string                                         `json:"effective_child_mode"`
-	DisabledTools         []string                                       `json:"disabled_tools,omitempty"`
-	ResolvedTools         *taskLaunchResolvedToolSummary                 `json:"resolved_tools,omitempty"`
-	Capabilities          map[string]any                                 `json:"capabilities,omitempty"`
-	TargetWorkspacePath   string                                         `json:"target_workspace_path,omitempty"`
-	TargetWorkspaceName   string                                         `json:"target_workspace_name,omitempty"`
-	SourceArguments       map[string]any                                 `json:"source_arguments,omitempty"`
-	ParentCopy            bool                                           `json:"parent_copy,omitempty"`
-	SourceAgentName       string                                         `json:"source_agent_name,omitempty"`
-	SourceProfileMode     string                                         `json:"source_profile_mode,omitempty"`
-	InheritedRuntimeMode  string                                         `json:"inherited_runtime_mode,omitempty"`
-	ProfileSnapshot       *pebblestore.AgentProfile                      `json:"profile_snapshot,omitempty"`
-	ModelProfileSnapshot  *pebblestore.SessionModelProfileSnapshot       `json:"model_profile_snapshot"`
-	StreamKey             string                                         `json:"stream_key,omitempty"`
-	SwarmMode             bool                                           `json:"swarm_mode,omitempty"`
-	SwarmStrategy         string                                         `json:"swarm_strategy,omitempty"`
-	AssemblyPart          *taskSwarmAssemblyPart                         `json:"assembly_part,omitempty"`
-	IntegrationContract   string                                         `json:"integration_contract,omitempty"`
+	Description            string                                         `json:"description"`
+	RequestedSubagentType  string                                         `json:"requested_subagent_type"`
+	ResolvedAgentName      string                                         `json:"resolved_agent_name"`
+	ResolvedAgentError     string                                         `json:"resolved_agent_error,omitempty"`
+	Action                 string                                         `json:"action"`
+	MetaPrompt             string                                         `json:"meta_prompt,omitempty"`
+	AssignmentLabel        string                                         `json:"assignment_label,omitempty"`
+	Deliverable            string                                         `json:"deliverable,omitempty"`
+	ConcurrencyReason      string                                         `json:"concurrency_reason,omitempty"`
+	RecoverySourceDigest   string                                         `json:"recovery_source_digest,omitempty"`
+	CommittedSource        *tool.CommittedSourceRequest                   `json:"committed_source,omitempty"`
+	CommittedSourceBinding *tool.CommittedSourceBinding                   `json:"committed_source_binding,omitempty"`
+	OwnedScope             []string                                       `json:"owned_scope,omitempty"`
+	OutputMode             string                                         `json:"output_mode,omitempty"`
+	OutputRequirements     *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile       *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	SourceArtifact         *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactV3Source       *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
+	DependencyEvidence     string                                         `json:"dependency_evidence,omitempty"`
+	SubagentProvider       string                                         `json:"subagent_provider,omitempty"`
+	SubagentModel          string                                         `json:"subagent_model,omitempty"`
+	SubagentThinking       string                                         `json:"subagent_thinking,omitempty"`
+	SubagentServiceTier    string                                         `json:"subagent_service_tier,omitempty"`
+	ChildTitlePreview      string                                         `json:"child_title_preview,omitempty"`
+	ChildMode              string                                         `json:"effective_child_mode"`
+	DisabledTools          []string                                       `json:"disabled_tools,omitempty"`
+	ResolvedTools          *taskLaunchResolvedToolSummary                 `json:"resolved_tools,omitempty"`
+	Capabilities           map[string]any                                 `json:"capabilities,omitempty"`
+	TargetWorkspacePath    string                                         `json:"target_workspace_path,omitempty"`
+	TargetWorkspaceName    string                                         `json:"target_workspace_name,omitempty"`
+	SourceArguments        map[string]any                                 `json:"source_arguments,omitempty"`
+	ParentCopy             bool                                           `json:"parent_copy,omitempty"`
+	SourceAgentName        string                                         `json:"source_agent_name,omitempty"`
+	SourceProfileMode      string                                         `json:"source_profile_mode,omitempty"`
+	InheritedRuntimeMode   string                                         `json:"inherited_runtime_mode,omitempty"`
+	ProfileSnapshot        *pebblestore.AgentProfile                      `json:"profile_snapshot,omitempty"`
+	ModelProfileSnapshot   *pebblestore.SessionModelProfileSnapshot       `json:"model_profile_snapshot"`
+	StreamKey              string                                         `json:"stream_key,omitempty"`
+	SwarmMode              bool                                           `json:"swarm_mode,omitempty"`
+	SwarmStrategy          string                                         `json:"swarm_strategy,omitempty"`
+	AssemblyPart           *taskSwarmAssemblyPart                         `json:"assembly_part,omitempty"`
+	IntegrationContract    string                                         `json:"integration_contract,omitempty"`
 }
 
 type taskLaunchResolvedToolSummary struct {
@@ -416,9 +416,9 @@ func parseTaskCommittedSource(raw map[string]any, label string) (*tool.Committed
 		}
 	}
 	req := tool.CommittedSourceRequest{
-		TaskCallID:     strings.TrimSpace(mapString(m, "task_call_id")),
-		ChildSessionID: strings.TrimSpace(mapString(m, "child_session_id")),
-		HeadCommit:     strings.TrimSpace(mapString(m, "head_commit")),
+		TaskCallID:     mapString(m, "task_call_id"),
+		ChildSessionID: mapString(m, "child_session_id"),
+		HeadCommit:     mapString(m, "head_commit"),
 	}
 	if err := req.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", label, err)
@@ -3718,19 +3718,10 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	if launch == nil {
 		return "", "", errors.New("task launch spec is required")
 	}
-	if launch.CommittedSourceBinding != nil {
-		binding := launch.CommittedSourceBinding
-		target := binding.DestinationPath
-		name := filepath.Base(binding.CanonicalSourcePath)
-		p, _ := principalForRunWorkspaceScope(parentSession, principal)
-		if s != nil && s.workspace != nil {
-			if resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(p, binding.CanonicalSourcePath); scopeErr == nil && strings.TrimSpace(resolved.WorkspaceName) != "" {
-				name = strings.TrimSpace(resolved.WorkspaceName)
-			}
-		}
-		return target, name, nil
+	if launch.CommittedSourceBinding != nil && launch.CommittedSource == nil {
+		return "", "", errors.New("committed source binding requires exact source tuple")
 	}
-	if launch.CommittedSource != nil && launch.CommittedSourceBinding == nil {
+	if launch.CommittedSource != nil {
 		if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
 			return "", "", fmt.Errorf("committed_source is supported only for Coder launches")
 		}
@@ -3749,6 +3740,9 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 		binding, bErr := s.tools.ResolveCommittedSource(scope, *launch.CommittedSource)
 		if bErr != nil {
 			return "", "", fmt.Errorf("resolve committed source target workspace: %w", bErr)
+		}
+		if launch.CommittedSourceBinding != nil && *launch.CommittedSourceBinding != binding {
+			return "", "", errors.New("committed source binding changed since approval")
 		}
 		launch.CommittedSourceBinding = &binding
 		launch.TargetWorkspacePath = binding.DestinationPath
@@ -4293,29 +4287,6 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	resolvedAgentError := ""
 	requestedPrimary := ""
 	for i, launch := range parsed.Launches {
-		if launch.CommittedSource != nil {
-			if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
-				return taskLaunchManifest{}, fmt.Errorf("task launches[%d]: committed_source is supported only for Coder launches", i)
-			}
-			if s == nil || s.tools == nil {
-				return taskLaunchManifest{}, errors.New("committed source authority unavailable")
-			}
-			p, pErr := principalForRunWorkspaceScope(parentSession, identity.Principal{})
-			if pErr != nil {
-				return taskLaunchManifest{}, pErr
-			}
-			scope := tool.WorkspaceScope{
-				SessionID:   parentSession.ID,
-				PrimaryPath: parentSession.WorkspacePath,
-				Principal:   p,
-			}
-			binding, bErr := s.tools.ResolveCommittedSource(scope, *launch.CommittedSource)
-			if bErr != nil {
-				return taskLaunchManifest{}, fmt.Errorf("task launches[%d] committed_source: %w", i, bErr)
-			}
-			launch.CommittedSourceBinding = &binding
-			launch.TargetWorkspacePath = binding.DestinationPath
-		}
 		targetWorkspacePath, targetWorkspaceName, targetErr := s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, &launch)
 		if targetErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
@@ -4383,34 +4354,34 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
-			Description:           parsed.Description,
-			RequestedSubagentType: requested,
-			ResolvedAgentName:     resolvedName,
-			Action:                parsed.Action,
-			MetaPrompt:            metaPrompt,
-			AssignmentLabel:       assignmentLabel,
-			Deliverable:           strings.TrimSpace(launch.Deliverable),
-			ConcurrencyReason:     strings.TrimSpace(launch.ConcurrencyReason),
-			RecoverySourceDigest:  launch.RecoverySourceDigest,
+			Description:            parsed.Description,
+			RequestedSubagentType:  requested,
+			ResolvedAgentName:      resolvedName,
+			Action:                 parsed.Action,
+			MetaPrompt:             metaPrompt,
+			AssignmentLabel:        assignmentLabel,
+			Deliverable:            strings.TrimSpace(launch.Deliverable),
+			ConcurrencyReason:      strings.TrimSpace(launch.ConcurrencyReason),
+			RecoverySourceDigest:   launch.RecoverySourceDigest,
 			CommittedSource:        cloneTaskCommittedSourceRequest(launch.CommittedSource),
 			CommittedSourceBinding: cloneTaskCommittedSourceBinding(launch.CommittedSourceBinding),
-			OwnedScope:            append([]string(nil), launch.OwnedScope...),
-			OutputMode:            strings.TrimSpace(launch.OutputMode),
-			OutputRequirements:    cloneTaskOutputRequirements(launch.OutputRequirements),
-			AnimationProfile:      cloneTaskAnimationProfile(launch.AnimationProfile),
-			SourceArtifact:        cloneTaskImageSourceArtifact(launch.SourceArtifact),
-			ArtifactV3Source:      cloneTaskArtifactV3Source(launch.ArtifactV3Source),
-			DependencyEvidence:    strings.TrimSpace(launch.DependencyEvidence),
-			SubagentProvider:      strings.TrimSpace(preference.Provider),
-			SubagentModel:         strings.TrimSpace(preference.Model),
-			SubagentThinking:      strings.TrimSpace(preference.Thinking),
-			SubagentServiceTier:   strings.TrimSpace(preference.ServiceTier),
-			ChildTitlePreview:     childTitle,
-			ChildMode:             childMode,
-			DisabledTools:         launchDisabledTools,
-			ResolvedTools:         resolvedTools,
-			TargetWorkspacePath:   launch.TargetWorkspacePath,
-			TargetWorkspaceName:   targetWorkspaceName,
+			OwnedScope:             append([]string(nil), launch.OwnedScope...),
+			OutputMode:             strings.TrimSpace(launch.OutputMode),
+			OutputRequirements:     cloneTaskOutputRequirements(launch.OutputRequirements),
+			AnimationProfile:       cloneTaskAnimationProfile(launch.AnimationProfile),
+			SourceArtifact:         cloneTaskImageSourceArtifact(launch.SourceArtifact),
+			ArtifactV3Source:       cloneTaskArtifactV3Source(launch.ArtifactV3Source),
+			DependencyEvidence:     strings.TrimSpace(launch.DependencyEvidence),
+			SubagentProvider:       strings.TrimSpace(preference.Provider),
+			SubagentModel:          strings.TrimSpace(preference.Model),
+			SubagentThinking:       strings.TrimSpace(preference.Thinking),
+			SubagentServiceTier:    strings.TrimSpace(preference.ServiceTier),
+			ChildTitlePreview:      childTitle,
+			ChildMode:              childMode,
+			DisabledTools:          launchDisabledTools,
+			ResolvedTools:          resolvedTools,
+			TargetWorkspacePath:    launch.TargetWorkspacePath,
+			TargetWorkspaceName:    targetWorkspaceName,
 			Capabilities: map[string]any{
 				"allow_bash":            false,
 				"disabled_tools":        launchDisabledTools,

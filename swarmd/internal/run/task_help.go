@@ -49,7 +49,11 @@ func taskHelpText(topic string) string {
   - Cannot be combined with recovery_source_digest or workspace_path.
   - Target destination, branch, and canonical repository are preserved from the original child.
   - The new Coder's worktree is checked out at head_commit C; inherited delivery base B is preserved for integration.
-  - The original child worktree and session are preserved immutable.
+  - Delegation does not modify the original child worktree or session; the source must remain clean and unchanged through launch.
+  - First use manage-worktree action=recall; copy the returned committed_source, never supply the sibling's private path as workspace_path.
+  - Source selection requires the original managed worktree to remain available. A completed program child whose worktree was removed after integration is ineligible; use a new normal launch from its already-integrated owned lane instead.
+  - Owned destinations use integrate; captured cross-workspace destinations remain promotion-only. Correction launch never advances either destination.
+  - If publication fails after child registration, the error reports preserved inactive child IDs. Inspect those children/recall before issuing a new task call; replaying the same call is rejected rather than starting duplicate workers. No automatic deletion occurs.
 - Example:
   {"prompt":"Fix failing test in prior child","subagent_type":"coder","meta_prompt":"Fix edge case in auth","owned_scope":["internal/auth/**"],"committed_source":{"task_call_id":"call_123","child_session_id":"sess_abc","head_commit":"1111222233334444555566667777888899990000"}}`
 

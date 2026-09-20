@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -224,15 +224,14 @@ func (r *Runtime) ResolveCommittedSource(scope WorkspaceScope, req CommittedSour
 		return CommittedSourceBinding{}, errors.New("child worktree repository identity does not match source repository")
 	}
 
-	var currentWorkspaceID, currentWorkspaceGen string
-	if r.workspace != nil {
-		saved, sErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, canonicalSource)
-		if sErr == nil && saved.Matched {
-			currentWorkspaceID = saved.WorkspaceID
-			if saved.WorkspaceGeneration != 0 {
-				currentWorkspaceGen = strconv.FormatInt(saved.WorkspaceGeneration, 10)
-			}
-		}
+	saved, sErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, canonicalSource)
+	if sErr != nil || !saved.Matched || saved.WorkspacePath != canonicalSource || saved.ResolvedPath != canonicalSource || saved.WorkspaceID == "" {
+		return CommittedSourceBinding{}, errors.New("canonical source catalog identity became unavailable")
+	}
+	currentWorkspaceID := saved.WorkspaceID
+	currentWorkspaceGen := strconv.FormatInt(saved.WorkspaceGeneration, 10)
+	if recorded := asString(child.Metadata["swarm_v3_source_workspace_generation"]); recorded != "" && recorded != currentWorkspaceGen {
+		return CommittedSourceBinding{}, errors.New("source workspace generation is stale")
 	}
 
 	return CommittedSourceBinding{
@@ -364,6 +363,9 @@ func (r *Runtime) authenticateCommittedSourceLineage(parent, child pebblestore.S
 	if selectedRow == nil {
 		return nil, false, "", errors.New("committed source child is not in the selected parent task call")
 	}
+	if asString(selectedRow["phase"]) != "completed" {
+		return nil, false, "", errors.New("committed source requires a successfully completed recorded handoff")
+	}
 	if errStr := asString(selectedRow["error"]); errStr != "" {
 		return nil, false, "", fmt.Errorf("committed source child recorded error: %s", errStr)
 	}
@@ -420,6 +422,9 @@ func (r *Runtime) checkDelegatedChildRotation(parent, child pebblestore.SessionS
 		return 0, errors.New("delegated child generation must be positive")
 	}
 	logicalTaskID := strings.TrimSpace(genRecord.LogicalTaskID)
+	if recorded := asString(child.Metadata["logical_task_id"]); recorded != "" && recorded != logicalTaskID {
+		return 0, errors.New("child logical task disagrees with generation authority")
+	}
 	if logicalTaskID == "" {
 		return 0, errors.New("delegated child generation record missing logical_task_id")
 	}
@@ -482,9 +487,11 @@ func (r *Runtime) resolveCommittedSourceDestination(scope WorkspaceScope, parent
 	if laneErr == nil {
 		destKind := DestinationKindOwnedLane
 		destPath := laneDest
-		var destBranch, canonicalSource string
+		var destBranch, canonicalSource, recordedWorkspaceID, recordedWorkspaceGeneration string
 		if parent.WorktreeEnabled && filepath.Clean(laneDest) == filepath.Clean(parent.WorktreeRootPath) {
 			destBranch = parent.WorktreeBranch
+			recordedWorkspaceID = asString(parent.Metadata["swarm_v3_source_workspace_id"])
+			recordedWorkspaceGeneration = asString(parent.Metadata["swarm_v3_source_workspace_generation"])
 			canonicalSource = strings.TrimSpace(asString(parent.Metadata["swarm_v3_source_workspace_path"]))
 			if canonicalSource == "" {
 				canonicalSource = strings.TrimSpace(parent.WorkspacePath)
@@ -509,6 +516,10 @@ func (r *Runtime) resolveCommittedSourceDestination(scope WorkspaceScope, parent
 							if filepath.Clean(lane.WorkspacePath) == filepath.Clean(laneDest) {
 								destBranch = strings.TrimSpace(lane.Branch)
 								canonicalSource = strings.TrimSpace(lane.SourcePath)
+								recordedWorkspaceID = lane.WorkspaceID
+								if lane.WorkspaceGeneration != 0 {
+									recordedWorkspaceGeneration = strconv.FormatInt(lane.WorkspaceGeneration, 10)
+								}
 								break
 							}
 						}
@@ -533,11 +544,13 @@ func (r *Runtime) resolveCommittedSourceDestination(scope WorkspaceScope, parent
 		if saved.WorkspaceID == "" {
 			return "", "", "", "", errors.New("canonical source missing workspace ID in catalog")
 		}
-		if parentID := strings.TrimSpace(asString(parent.Metadata["swarm_v3_source_workspace_id"])); parentID != "" && parentID != saved.WorkspaceID {
-			return "", "", "", "", errors.New("parent source workspace ID disagrees with catalog")
+		// A secondary or retained lane has its own catalog identity. The primary
+		// parent's source fields cannot authenticate a different repository.
+		if recordedWorkspaceID != "" && recordedWorkspaceID != saved.WorkspaceID {
+			return "", "", "", "", errors.New("owned lane source workspace ID disagrees with catalog")
 		}
-		if parentGen := strings.TrimSpace(asString(parent.Metadata["swarm_v3_source_workspace_generation"])); parentGen != "" && saved.WorkspaceGeneration != 0 && parentGen != strconv.FormatInt(saved.WorkspaceGeneration, 10) {
-			return "", "", "", "", errors.New("parent source workspace generation disagrees with catalog")
+		if recordedWorkspaceGeneration != "" && recordedWorkspaceGeneration != strconv.FormatInt(saved.WorkspaceGeneration, 10) {
+			return "", "", "", "", errors.New("owned lane source workspace generation disagrees with catalog")
 		}
 		if childSrcID := strings.TrimSpace(asString(child.Metadata["swarm_v3_source_workspace_id"])); childSrcID != "" && childSrcID != saved.WorkspaceID {
 			if filepath.Clean(asString(child.Metadata["swarm_v3_source_workspace_path"])) == filepath.Clean(canonicalSource) {
@@ -566,6 +579,9 @@ func (r *Runtime) resolveCommittedSourceDestination(scope WorkspaceScope, parent
 	}
 
 	childTarget := strings.TrimSpace(asString(child.Metadata["target_workspace_path"]))
+	if asString(child.Metadata["swarm_v3_source_workspace_path"]) != childTarget {
+		return "", "", "", "", errors.New("captured destination disagrees with canonical source")
+	}
 	rowDest := strings.TrimSpace(asString(selectedRow["parent_workspace_path"]))
 	if childTarget == "" || rowDest == "" || filepath.Clean(childTarget) != filepath.Clean(rowDest) {
 		return "", "", "", "", fmt.Errorf("resolve destination: %w", laneErr)
@@ -663,6 +679,15 @@ func (r *Runtime) resolveCommittedSourceDestination(scope WorkspaceScope, parent
 	return DestinationKindCapturedPromotionOnly, childTarget, recordedBranch, childTarget, nil
 }
 
+func committedCorrectionMetadataPresent(metadata map[string]any) bool {
+	for _, key := range []string{"integration_base_commit", "committed_source", "committed_source_binding"} {
+		if _, exists := metadata[key]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 // authenticateLineageDeliveryBase is the canonical strict helper for ResolveCommittedSource,
 // manageWorktreeIntegrate, and manageWorktreePromote. It validates the full committed_source
 // and committed_source_binding tuple, compares HEAD C == allocation base, verifies inherited B,
@@ -680,16 +705,7 @@ func (r *Runtime) authenticateLineageDeliveryBase(
 		return "", errors.New("exceeded maximum committed source correction depth")
 	}
 
-	hasMarker := (child.Metadata["integration_base_commit"] != nil && strings.TrimSpace(asString(child.Metadata["integration_base_commit"])) != "") ||
-		child.Metadata["committed_source"] != nil ||
-		child.Metadata["committed_source_binding"] != nil
-	if row != nil {
-		if (row["integration_base_commit"] != nil && strings.TrimSpace(asString(row["integration_base_commit"])) != "") ||
-			row["committed_source"] != nil ||
-			row["committed_source_binding"] != nil {
-			hasMarker = true
-		}
-	}
+	hasMarker := committedCorrectionMetadataPresent(child.Metadata) || committedCorrectionMetadataPresent(row)
 
 	if !hasMarker {
 		if sourceBaseCommit == "" || !validCommitID(sourceBaseCommit) {
@@ -747,6 +763,9 @@ func (r *Runtime) authenticateLineageDeliveryBase(
 		return "", errors.New("committed_source_binding has missing required fields")
 	}
 
+	if row == nil {
+		return "", errors.New("correction delivery requires exact parent launch membership")
+	}
 	if row != nil {
 		rowInteg := asString(row["integration_base_commit"])
 		if rowInteg == "" || rowInteg != integBase {
@@ -797,14 +816,33 @@ func (r *Runtime) authenticateLineageDeliveryBase(
 	if asString(priorChild.Metadata["parent_session_id"]) != parent.ID {
 		return "", errors.New("prior committed source child does not belong to parent")
 	}
-	if genAuth, ok := r.sessions.(interface {
+	priorRow, priorProgram, priorBase, err := r.authenticateCommittedSourceLineage(parent, priorChild, CommittedSourceRequest{TaskCallID: csTaskCallID, ChildSessionID: csChildSessionID, HeadCommit: csHeadCommit})
+	if err != nil {
+		return "", fmt.Errorf("authenticate prior committed handoff: %w", err)
+	}
+	if binding.SourceBaseCommit != priorBase || binding.SourceWorktreePath != priorChild.WorktreeRootPath || binding.SourceBranch != priorChild.WorktreeBranch {
+		return "", errors.New("prior source identity disagrees with binding")
+	}
+	ownerScope := WorkspaceScope{SessionID: parent.ID, Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: parent.AccountScopeID, UserID: parent.UserID, SessionID: parent.ID}}
+	kind, destination, branch, canonical, err := r.resolveCommittedSourceDestination(ownerScope, parent, priorChild, priorRow, priorProgram)
+	if err != nil {
+		return "", err
+	}
+	if kind != binding.DestinationKind || destination != binding.DestinationPath || branch != binding.DestinationBranch || canonical != binding.CanonicalSourcePath || asString(child.Metadata["target_workspace_path"]) != destination || child.WorktreeBaseBranch != branch {
+		return "", errors.New("inherited delivery destination disagrees with authenticated source")
+	}
+	genAuth, ok := r.sessions.(interface {
 		GetDelegatedChildGenerationBySession(accountScopeID, sessionID string) (pebblestore.DelegatedChildGenerationRecord, bool, error)
-	}); ok {
+	})
+	if !ok {
+		return "", errors.New("prior generation authority unavailable")
+	}
+	{
 		priorGen, found, gErr := genAuth.GetDelegatedChildGenerationBySession(parent.AccountScopeID, csChildSessionID)
 		if gErr != nil || !found {
 			return "", errors.New("prior committed source child generation record missing")
 		}
-		if uint64(priorGen.Generation) != binding.ChildGeneration || priorGen.Generation <= 0 {
+		if priorGen.SessionID != priorChild.ID || priorGen.AccountScopeID != parent.AccountScopeID || priorGen.ParentSessionID != parent.ID || priorGen.ImmutableBaseCommit != priorBase || priorGen.WorkspacePath != binding.SourceWorktreePath || priorGen.WorktreeBranch != binding.SourceBranch || uint64(priorGen.Generation) != binding.ChildGeneration || priorGen.Generation <= 0 {
 			return "", errors.New("prior committed source child generation disagrees with binding")
 		}
 	}
@@ -814,14 +852,12 @@ func (r *Runtime) authenticateLineageDeliveryBase(
 			return "", errors.New("child repository identity disagrees with binding")
 		}
 	}
-	priorRecordedHead := strings.TrimSpace(firstNonEmptyString(asString(priorChild.Metadata["head_commit"]), binding.HeadCommit))
+	priorRecordedHead := asString(priorRow["head_commit"])
 	if priorRecordedHead != csHeadCommit {
 		return "", errors.New("prior committed source recorded HEAD disagrees with committed_source tuple")
 	}
 
-	priorHasMarker := (priorChild.Metadata["integration_base_commit"] != nil && strings.TrimSpace(asString(priorChild.Metadata["integration_base_commit"])) != "") ||
-		priorChild.Metadata["committed_source"] != nil ||
-		priorChild.Metadata["committed_source_binding"] != nil
+	priorHasMarker := committedCorrectionMetadataPresent(priorChild.Metadata)
 	if !priorHasMarker {
 		priorBase := strings.TrimSpace(asString(priorChild.Metadata["base_commit"]))
 		if priorBase == "" || priorBase != integBase {
@@ -835,26 +871,7 @@ func (r *Runtime) authenticateLineageDeliveryBase(
 		return "", fmt.Errorf("inherited delivery base B (%s) widened or altered from prior child delivery base (%s)", integBase, priorIntegBase)
 	}
 
-	var priorRow map[string]any
-	if launches, ok := parent.Metadata["task_launches"].(map[string]any); ok {
-		for _, rawEntry := range launches {
-			entry, _ := rawEntry.(map[string]any)
-			for _, raw := range manageWorktreeLaunchRows(entry) {
-				rMap, _ := raw.(map[string]any)
-				if asString(rMap["child_session_id"]) == priorChild.ID {
-					priorRow = rMap
-					break
-				}
-			}
-			if priorRow != nil {
-				break
-			}
-		}
-	}
-	priorAllocBase := strings.TrimSpace(asString(priorChild.Metadata["base_commit"]))
-	verifyPath := priorChild.WorktreeRootPath
-	if _, err := os.Stat(verifyPath); err != nil {
-		verifyPath = childWorktreePath
-	}
-	return r.authenticateLineageDeliveryBase(parent, priorChild, priorRow, verifyPath, priorAllocBase, csHeadCommit, depth+1)
+	// Verify immutable ancestor objects in the current delivery tree, never read
+	// a prior producer's mutable checkout merely to deliver the authenticated stack.
+	return r.authenticateLineageDeliveryBase(parent, priorChild, priorRow, childWorktreePath, priorBase, csHeadCommit, depth+1)
 }

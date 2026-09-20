@@ -72,6 +72,7 @@ __pycache__/
 !/docs/testing/
 /docs/testing/*
 !/docs/testing/test-audit-ledger.tsv
+!/docs/testing/committed-child-correction.md
 !/docs/testing/testbench-container.md
 !/docs/testing/multi-workspace-session-matrix.md
 !/docs/testing/worktree-reclamation-matrix.md

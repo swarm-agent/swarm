@@ -1706,7 +1706,7 @@ func (r *Runtime) Definitions() []Definition {
 						"required":             []string{"task_call_id", "child_session_id", "head_commit"},
 						"additionalProperties": false,
 					},
-					"owned_scope":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
+					"owned_scope": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
 					"launches": map[string]any{
 						"type":        "array",
 						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Call action='help' for guide.",
@@ -6855,10 +6855,8 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 
 		deliveryBase := capturedHead
 		parentID := strings.TrimSpace(asString(source.Metadata["parent_session_id"]))
-		hasCorrection := (source.Metadata["integration_base_commit"] != nil && strings.TrimSpace(asString(source.Metadata["integration_base_commit"])) != "") ||
-			source.Metadata["committed_source"] != nil ||
-			source.Metadata["committed_source_binding"] != nil
-		if parentID != "" {
+		hasCorrection := committedCorrectionMetadataPresent(source.Metadata)
+		if hasCorrection && parentID != "" {
 			parentSession, found, pErr := r.sessions.GetSession(parentID)
 			if pErr != nil || !found {
 				return "", fmt.Errorf("promotion source %q parent session %q not found", c.sessionID, parentID)

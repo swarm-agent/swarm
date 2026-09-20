@@ -151,72 +151,72 @@ func (e taskChildBlockedError) Error() string {
 }
 
 type taskLaunchOutcome struct {
-	LaunchIndex           int
-	VirtualTarget         bool
-	RequestedSubagent     string
-	ResolvedSubagent      string
-	MetaPrompt            string
-	AssignmentLabel       string
-	OwnedScope            []string
-	SubagentProvider      string
-	SubagentModel         string
-	ChildSessionID        string
-	ChildRunID            string
-	ChildMode             string
-	TargetWorkspacePath   string
-	WorkspacePath         string
-	WorkspaceName         string
-	WorktreeEnabled       bool
-	WorktreeRootPath      string
-	WorktreeBaseBranch    string
-	WorktreeBranch        string
-	BaseCommit            string
-	ParentBranch          string
-	HeadCommit            string
-	GitStatus             string
-	WorktreeClean         bool
-	ChangedFiles          []string
-	LaunchStartedAtMS     int64
-	CurrentTool           string
-	CurrentToolIdentity   string
-	CurrentToolRunCount   int
-	CurrentToolDisplay    string
-	CurrentToolStarted    int64
-	CurrentToolMS         int64
-	ElapsedMS             int64
-	ToolStarted           int
-	ToolCompleted         int
-	ToolFailed            int
-	MediaInspectCompleted int
-	ToolOrder             []string
-	ReasoningSummary      string
-	CurrentPreviewKind    string
-	CurrentPreviewText    string
-	Phase                 string
-	ReportChars           int
-	ReportExcerpt         string
-	ReportRef             *taskReportRef
-	ReportTruncated       bool
-	Summary               string
-	Error                 string
-	Reason                string
-	BlockerCode           string
-	BlockerEvidence       []string
-	CompletedScope        []string
-	ResolutionRequired    string
-	StreamKey             string
-	SwarmMode             bool
-	SwarmStrategy         string
-	AssemblyPart          *taskSwarmAssemblyPart
-	IntegrationContract   string
-	IntegrationRequired   bool
-	OutputMode            string
-	OutputRequirements    *pebblestore.SessionArtifactOutputRequirements
-	AnimationProfile      *pebblestore.SessionArtifactAnimationProfile
-	ArtifactReference     *taskArtifactReference
-	CommittedSource       *tool.CommittedSourceRequest
+	LaunchIndex            int
+	VirtualTarget          bool
+	RequestedSubagent      string
+	ResolvedSubagent       string
+	MetaPrompt             string
+	AssignmentLabel        string
+	OwnedScope             []string
+	SubagentProvider       string
+	SubagentModel          string
+	ChildSessionID         string
+	ChildRunID             string
+	ChildMode              string
+	TargetWorkspacePath    string
+	WorkspacePath          string
+	WorkspaceName          string
+	WorktreeEnabled        bool
+	WorktreeRootPath       string
+	WorktreeBaseBranch     string
+	WorktreeBranch         string
+	BaseCommit             string
+	ParentBranch           string
+	HeadCommit             string
+	GitStatus              string
+	WorktreeClean          bool
+	ChangedFiles           []string
+	LaunchStartedAtMS      int64
+	CurrentTool            string
+	CurrentToolIdentity    string
+	CurrentToolRunCount    int
+	CurrentToolDisplay     string
+	CurrentToolStarted     int64
+	CurrentToolMS          int64
+	ElapsedMS              int64
+	ToolStarted            int
+	ToolCompleted          int
+	ToolFailed             int
+	MediaInspectCompleted  int
+	ToolOrder              []string
+	ReasoningSummary       string
+	CurrentPreviewKind     string
+	CurrentPreviewText     string
+	Phase                  string
+	ReportChars            int
+	ReportExcerpt          string
+	ReportRef              *taskReportRef
+	ReportTruncated        bool
+	Summary                string
+	Error                  string
+	Reason                 string
+	BlockerCode            string
+	BlockerEvidence        []string
+	CompletedScope         []string
+	ResolutionRequired     string
+	StreamKey              string
+	SwarmMode              bool
+	SwarmStrategy          string
+	AssemblyPart           *taskSwarmAssemblyPart
+	IntegrationContract    string
+	IntegrationRequired    bool
+	OutputMode             string
+	OutputRequirements     *pebblestore.SessionArtifactOutputRequirements
+	AnimationProfile       *pebblestore.SessionArtifactAnimationProfile
+	ArtifactReference      *taskArtifactReference
+	CommittedSource        *tool.CommittedSourceRequest
 	CommittedSourceBinding *tool.CommittedSourceBinding
-	IntegrationBaseCommit string
+	IntegrationBaseCommit  string
 }
 
 const taskLaunchReasonMaxRunes = 512
@@ -819,36 +819,36 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	requested := strings.TrimSpace(launch.RequestedSubagent)
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 	outcome := taskLaunchOutcome{
-		LaunchIndex:         launch.LaunchIndex,
-		VirtualTarget:       launch.VirtualTarget,
-		RequestedSubagent:   requested,
-		ResolvedSubagent:    resolved,
-		MetaPrompt:          metaPrompt,
-		AssignmentLabel:     strings.TrimSpace(launch.AssignmentLabel),
-		OwnedScope:          append([]string(nil), launch.OwnedScope...),
-		SubagentProvider:    strings.TrimSpace(launch.SubagentProvider),
-		SubagentModel:       strings.TrimSpace(launch.SubagentModel),
-		ChildSessionID:      strings.TrimSpace(launch.ChildSession.ID),
-		ChildMode:           strings.TrimSpace(launch.ChildMode),
-		TargetWorkspacePath: strings.TrimSpace(launch.TargetWorkspacePath),
-		WorkspacePath:       strings.TrimSpace(launch.ChildSession.WorkspacePath),
-		WorkspaceName:       strings.TrimSpace(launch.ChildSession.WorkspaceName),
-		WorktreeEnabled:     launch.ChildSession.WorktreeEnabled,
-		WorktreeRootPath:    strings.TrimSpace(launch.ChildSession.WorktreeRootPath),
-		WorktreeBaseBranch:  strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
-		WorktreeBranch:      strings.TrimSpace(launch.ChildSession.WorktreeBranch),
-		LaunchStartedAtMS:   launch.LaunchStartedAtMS,
-		WorktreeClean:       true,
-		StreamKey:           strings.TrimSpace(launch.StreamKey),
-		SwarmMode:           launch.SwarmMode,
-		SwarmStrategy:       strings.TrimSpace(launch.SwarmStrategy),
-		AssemblyPart:        launch.AssemblyPart,
-		IntegrationContract: strings.TrimSpace(launch.IntegrationContract),
-		IntegrationRequired: launch.IntegrationRequired,
-		OutputMode:          strings.TrimSpace(launch.OutputMode),
-		OutputRequirements:  cloneTaskOutputRequirements(launch.OutputRequirements),
-		AnimationProfile:    cloneTaskAnimationProfile(launch.AnimationProfile),
-		CommittedSource:     cloneTaskCommittedSourceRequest(launch.CommittedSource),
+		LaunchIndex:            launch.LaunchIndex,
+		VirtualTarget:          launch.VirtualTarget,
+		RequestedSubagent:      requested,
+		ResolvedSubagent:       resolved,
+		MetaPrompt:             metaPrompt,
+		AssignmentLabel:        strings.TrimSpace(launch.AssignmentLabel),
+		OwnedScope:             append([]string(nil), launch.OwnedScope...),
+		SubagentProvider:       strings.TrimSpace(launch.SubagentProvider),
+		SubagentModel:          strings.TrimSpace(launch.SubagentModel),
+		ChildSessionID:         strings.TrimSpace(launch.ChildSession.ID),
+		ChildMode:              strings.TrimSpace(launch.ChildMode),
+		TargetWorkspacePath:    strings.TrimSpace(launch.TargetWorkspacePath),
+		WorkspacePath:          strings.TrimSpace(launch.ChildSession.WorkspacePath),
+		WorkspaceName:          strings.TrimSpace(launch.ChildSession.WorkspaceName),
+		WorktreeEnabled:        launch.ChildSession.WorktreeEnabled,
+		WorktreeRootPath:       strings.TrimSpace(launch.ChildSession.WorktreeRootPath),
+		WorktreeBaseBranch:     strings.TrimSpace(launch.ChildSession.WorktreeBaseBranch),
+		WorktreeBranch:         strings.TrimSpace(launch.ChildSession.WorktreeBranch),
+		LaunchStartedAtMS:      launch.LaunchStartedAtMS,
+		WorktreeClean:          true,
+		StreamKey:              strings.TrimSpace(launch.StreamKey),
+		SwarmMode:              launch.SwarmMode,
+		SwarmStrategy:          strings.TrimSpace(launch.SwarmStrategy),
+		AssemblyPart:           launch.AssemblyPart,
+		IntegrationContract:    strings.TrimSpace(launch.IntegrationContract),
+		IntegrationRequired:    launch.IntegrationRequired,
+		OutputMode:             strings.TrimSpace(launch.OutputMode),
+		OutputRequirements:     cloneTaskOutputRequirements(launch.OutputRequirements),
+		AnimationProfile:       cloneTaskAnimationProfile(launch.AnimationProfile),
+		CommittedSource:        cloneTaskCommittedSourceRequest(launch.CommittedSource),
 		CommittedSourceBinding: cloneTaskCommittedSourceBinding(launch.CommittedSourceBinding),
 	}
 	if launch.CommittedSourceBinding != nil {
@@ -1453,6 +1453,19 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		if launch.TaskBase == nil {
 			return taskLaunchPrepared{}, errors.New("task failed to allocate Coder worktree: parent Git state was not resolved")
 		}
+		if launch.CommittedSource != nil {
+			principal, err := principalForRunWorkspaceScope(parentSession, launch.RecoveryPrincipal)
+			if err != nil {
+				return taskLaunchPrepared{}, err
+			}
+			binding, err := s.tools.ResolveCommittedSource(tool.WorkspaceScope{SessionID: parentSession.ID, Principal: principal}, *launch.CommittedSource)
+			if err != nil {
+				return taskLaunchPrepared{}, fmt.Errorf("recheck committed source before allocation: %w", err)
+			}
+			if launch.CommittedSourceBinding == nil || binding != *launch.CommittedSourceBinding || launch.TaskBase.BaseCommit != binding.HeadCommit || targetWorkspacePath != binding.DestinationPath {
+				return taskLaunchPrepared{}, errors.New("committed source allocation binding changed")
+			}
+		}
 		allocation, allocErr := s.allocateRecoveryTaskWorkspace(parentSession, launch, targetWorkspacePath, childSessionID)
 		if allocErr != nil {
 			return taskLaunchPrepared{}, fmt.Errorf("task failed to allocate subagent worktree: %w", allocErr)
@@ -1587,6 +1600,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		NowUnixMs:         nowMS,
 	})
 	if err != nil {
+		// A mutation error may follow persistence; never remove a recorded lane.
+		_, persisted, inspectErr := s.sessions.GetSession(childSessionID)
+		if inspectErr != nil || persisted {
+			return taskLaunchPrepared{}, fmt.Errorf("child creation failed; preserved possible durable child %s at %s: %w", childSessionID, childWorktreeRootPath, errors.Join(err, inspectErr))
+		}
 		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
 			if rErr := s.worktrees.RollbackAllocation(*launch.Allocation); rErr != nil {
 				return taskLaunchPrepared{}, errors.Join(fmt.Errorf("task failed to create canonical v3 subagent session: %w", err), rErr)
@@ -1594,16 +1612,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		}
 		return taskLaunchPrepared{}, fmt.Errorf("task failed to create canonical v3 subagent session: %w", err)
 	}
-	if created.Session != nil {
-		childSession = *created.Session
+	if created.Error != nil || created.Conflict != nil || created.Session == nil {
+		return taskLaunchPrepared{}, fmt.Errorf("canonical child creation rejected; preserved allocation %s: error=%+v conflict=%+v", childWorktreeRootPath, created.Error, created.Conflict)
 	}
+	childSession = *created.Session
 	generationRecord := delegatedGenerationRecordFromCurrentLaunch(launch, childSession)
 	lineage, _, lineageErr := s.sessions.CreateDelegatedChildLineage(pebblestore.DelegatedChildLineageRecord{
 		AccountScopeID: childSession.AccountScopeID, LogicalTaskID: launch.LogicalTaskID,
 		ProgramID: launch.ProgramID, JobID: launch.ProgramJobID,
 	}, generationRecord, "delegated-child-create:"+strings.TrimSpace(launch.LogicalTaskID))
 	if lineageErr != nil {
-		return taskLaunchPrepared{}, fmt.Errorf("establish delegated child generation authority: %w", lineageErr)
+		return taskLaunchPrepared{}, fmt.Errorf("establish delegated child generation authority (preserved inactive child %s at %s): %w", childSession.ID, childWorktreeRootPath, lineageErr)
 	}
 	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
 		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
@@ -4631,15 +4650,19 @@ func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode st
 	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal, RunID: runID})
 }
 
-func (s *Service) rollbackPreparedAllocations(prepared []taskLaunchPrepared) {
-	if s == nil || s.worktrees == nil {
-		return
+func taskLineageChildIDs(entry map[string]any) []string {
+	body, _ := json.Marshal(entry["launches"])
+	var rows []struct {
+		ChildSessionID string `json:"child_session_id"`
 	}
-	for _, p := range prepared {
-		if p.ChildSession.ID == "" && p.Allocation != nil {
-			_ = s.worktrees.RollbackAllocation(*p.Allocation)
-		}
+	if json.Unmarshal(body, &rows) != nil {
+		return nil
 	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ChildSessionID)
+	}
+	return ids
 }
 
 func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (taskResult string, taskErr error) {
@@ -4779,9 +4802,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
 	}
-	if launchesRaw, ok := parentSession.Metadata["task_launches"].(map[string]any); ok {
+	if launchesRaw, ok := parentSession.Metadata["task_launches"].(map[string]any); ok && !req.ProgramCohort {
 		if existing, exists := launchesRaw[taskCallID].(map[string]any); exists && existing != nil {
-			return "", fmt.Errorf("task call %q already exists in session metadata; duplicate task launch rejected", taskCallID)
+			return "", fmt.Errorf("task call %q already exists in session metadata; duplicate task launch rejected; recall this call and inspect its children before issuing a new task", taskCallID)
 		}
 	}
 	var programRecord pebblestore.TaskProgramRecord
@@ -5239,7 +5262,6 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 		launch, prepareErr := s.prepareDelegatedSubagentLaunchWithProfile(parentSession, sessionMode, launchInput, description, strings.TrimSpace(req.TargetedSubagentName), trustedProfiles[i], trustedSources[i], req.ApplySessionMutation)
 		if prepareErr != nil {
-			s.rollbackPreparedAllocations(prepared)
 			return "", prepareErr
 		}
 		launch.ContextWatcher = newTaskContextWatcher(s.sessions, launch)
@@ -5247,33 +5269,28 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	if imageManaged {
 		if err := s.ensureManagedDesignerArtifactPlaceholders(parentSession, prepared, req.ApplySessionMutation); err != nil {
-			s.rollbackPreparedAllocations(prepared)
 			return "", err
 		}
 	}
 
-	for i, p := range prepared {
-		if p.CommittedSource != nil {
-			pPrincipal, pErr := principalForRunWorkspaceScope(parentSession, req.Principal)
-			if pErr != nil {
-				s.rollbackPreparedAllocations(prepared)
-				return "", pErr
+	recheckCommittedSources := func() error {
+		for i, p := range prepared {
+			if p.CommittedSource == nil {
+				continue
 			}
-			scope := tool.WorkspaceScope{
-				SessionID:   parentSession.ID,
-				PrimaryPath: parentSession.WorkspacePath,
-				Principal:   pPrincipal,
-			}
-			recheckBinding, err := s.tools.ResolveCommittedSource(scope, *p.CommittedSource)
+			principal, err := principalForRunWorkspaceScope(parentSession, req.Principal)
 			if err != nil {
-				s.rollbackPreparedAllocations(prepared)
-				return "", fmt.Errorf("recheck committed source before publication for launch %d: %w", i+1, err)
+				return err
 			}
-			if p.CommittedSourceBinding == nil || recheckBinding != *p.CommittedSourceBinding {
-				s.rollbackPreparedAllocations(prepared)
-				return "", fmt.Errorf("recheck committed source before publication for launch %d: source binding changed", i+1)
+			binding, err := s.tools.ResolveCommittedSource(tool.WorkspaceScope{SessionID: parentSession.ID, Principal: principal}, *p.CommittedSource)
+			if err != nil {
+				return fmt.Errorf("recheck committed source before publication for launch %d: %w", i+1, err)
+			}
+			if p.CommittedSourceBinding == nil || binding != *p.CommittedSourceBinding {
+				return fmt.Errorf("recheck committed source before publication for launch %d: source binding changed", i+1)
 			}
 		}
+		return nil
 	}
 
 	taskToolName := strings.TrimSpace(call.Name)
@@ -5445,6 +5462,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		sum := sha256.Sum256(entryBytes)
 		payloadHash := hex.EncodeToString(sum[:])
 		idempotencyKey := fmt.Sprintf("task-lineage:%s:%s:%s", parentSession.ID, taskCallID, status)
+		if req.ProgramCohort {
+			idempotencyKey += ":" + payloadHash
+		}
 
 		applyMutation := req.ApplySessionMutation
 		if applyMutation == nil && s.sessions != nil {
@@ -5456,9 +5476,12 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 
 		const maxAttempts = 5
 		for attempt := 0; attempt < maxAttempts; attempt++ {
-			projection, _, projErr := s.sessions.GetSessionProjection(parentSession.ID)
+			projection, found, projErr := s.sessions.GetSessionProjection(parentSession.ID)
 			if projErr != nil {
 				return projErr
+			}
+			if !found {
+				return errors.New("parent projection missing during lineage registration")
 			}
 			expectedSeq := projection.LastEventSeq
 
@@ -5478,6 +5501,17 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			launchMap = cloneGenericMap(launchMap)
 			if launchMap == nil {
 				launchMap = map[string]any{}
+			}
+			if existing, exists := launchMap[taskCallID]; exists && !req.ProgramCohort {
+				oldEntry, ok := existing.(map[string]any)
+				if !ok {
+					return errors.New("existing task launch entry is malformed")
+				}
+				oldRows := taskLineageChildIDs(oldEntry)
+				newRows := taskLineageChildIDs(entry)
+				if !reflect.DeepEqual(oldRows, newRows) {
+					return errors.New("task call already belongs to different children; preserved new inactive allocations")
+				}
 			}
 			launchMap[taskCallID] = entry
 			metadata["task_launches"] = launchMap
@@ -5502,6 +5536,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			res, updateErr := applyMutation(mutationInput)
 			if updateErr != nil {
+				var conflict *pebblestore.V3ProjectionConflictError
+				if errors.As(updateErr, &conflict) && attempt < maxAttempts-1 {
+					continue
+				}
 				return updateErr
 			}
 			if res.Conflict != nil {
@@ -5513,9 +5551,10 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			if res.Error != nil {
 				return errors.New(res.Error.Message)
 			}
-			if res.Session != nil {
-				parentSession = *res.Session
+			if res.Session == nil {
+				return errors.New("parent lineage mutation returned no durable session")
 			}
+			parentSession = *res.Session
 			return nil
 		}
 		return errors.New("parent task launch lineage update exceeded retry attempts")
@@ -5532,15 +5571,22 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		launch.Phase = "spawned"
 		spawned = append(spawned, launch)
 	}
-	if err := lineageUpdate("spawned", spawned, nil); err != nil {
-		s.rollbackPreparedAllocations(prepared)
+	publicationErr := recheckCommittedSources()
+	if publicationErr == nil {
+		publicationErr = lineageUpdate("spawned", spawned, nil)
+	}
+	if err := publicationErr; err != nil {
 		blockedOutcomes := make([]taskLaunchOutcome, len(spawned))
 		for i, o := range spawned {
 			o.Phase = "blocked"
 			blockedOutcomes[i] = o
 		}
-		_ = lineageUpdate("blocked", blockedOutcomes, map[string]any{"error": err.Error()})
-		return "", fmt.Errorf("publish parent task launch lineage: %w", err)
+		recordErr := lineageUpdate("blocked", blockedOutcomes, map[string]any{"error": err.Error()})
+		childIDs := make([]string, 0, len(prepared))
+		for _, child := range prepared {
+			childIDs = append(childIDs, child.ChildSession.ID)
+		}
+		return "", fmt.Errorf("publish parent task launch lineage (preserved inactive children %v): %w", childIDs, errors.Join(err, recordErr))
 	}
 	for _, launch := range spawned {
 		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
