@@ -2195,29 +2195,43 @@ func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64
 }
 
 func (s *SessionStore) ListV3SessionRunIntentsByStatus(status string, limit int) ([]V3SessionRunIntent, error) {
+	out, _, err := s.ListV3SessionRunIntentsByStatusPaged(status, "", limit)
+	return out, err
+}
+
+func (s *SessionStore) ListV3SessionRunIntentsByStatusPaged(status string, afterKey string, limit int) ([]V3SessionRunIntent, string, error) {
 	status = strings.TrimSpace(status)
 	if status == "" {
-		return nil, errors.New("run intent status is required")
+		return nil, "", errors.New("run intent status is required")
 	}
 	if limit <= 0 {
 		limit = 500
 	}
+	prefix := V3SessionRunIntentStatusPrefix(status)
+	startKey := ""
+	if strings.TrimSpace(afterKey) != "" {
+		startKey = strings.TrimSpace(afterKey) + "\x00"
+	}
 	out := make([]V3SessionRunIntent, 0, limit)
-	err := s.store.IteratePrefix(V3SessionRunIntentStatusPrefix(status), 100000, func(_ string, value []byte) error {
-		if len(out) >= limit {
-			return nil
-		}
+	var nextKey string
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: limit}, func(key string, value []byte) (bool, error) {
+		nextKey = key
 		var intent V3SessionRunIntent
 		if err := json.Unmarshal(value, &intent); err != nil {
-			return err
+			return true, err
 		}
-		if strings.TrimSpace(intent.Status) != status {
-			return nil
+		if strings.TrimSpace(intent.Status) == status {
+			out = append(out, intent)
 		}
-		out = append(out, intent)
-		return nil
+		return true, nil
 	})
-	return out, err
+	if err != nil {
+		return nil, "", err
+	}
+	if len(out) < limit {
+		nextKey = ""
+	}
+	return out, nextKey, nil
 }
 
 func (s *SessionStore) ListV3SessionRecoverableRunIntents(staleRunningBeforeUnixMs int64, limit int) ([]V3SessionRunIntent, error) {

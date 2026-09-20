@@ -512,11 +512,7 @@ func (s *Server) ExecutionCapacity() *executioncapacity.Manager {
 func (s *Server) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
 	if s == nil || s.perm == nil {
 		return executioncapacity.Snapshot{
-			AccountScopeID:       strings.TrimSpace(accountScopeID),
-			EffectiveLimit:       executioncapacity.DefaultActiveExecutionLimit,
-			Available:            executioncapacity.DefaultActiveExecutionLimit,
-			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
-			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+			AccountScopeID: strings.TrimSpace(accountScopeID),
 		}
 	}
 	return s.perm.ExecutionCapacitySnapshot(accountScopeID)
@@ -4494,21 +4490,48 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 					writeError(w, http.StatusBadRequest, err)
 					return
 				}
-				if _, err := s.perm.UpdateActiveExecutionLimitForAccount(accountScopeID, *req.ActiveExecutionLimit); err != nil {
+			}
+			if req.SessionDeploy != nil {
+				if err := permission.ValidateSessionDeployPolicy(*req.SessionDeploy); err != nil {
 					writeError(w, http.StatusBadRequest, err)
 					return
 				}
 			}
-			if req.SessionDeploy != nil {
-				current.SessionDeploy = *req.SessionDeploy
-			}
 			if req.PlanAcceptance != nil {
-				current.PlanAcceptance = *req.PlanAcceptance
+				if err := permission.ValidatePlanAcceptancePolicy(*req.PlanAcceptance); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
 			}
-			policy, err := s.perm.UpdateCapabilityPoliciesForAccount(accountScopeID, current.SessionDeploy, current.PlanAcceptance)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
+			type executionCapabilityPolicyService interface {
+				UpdateExecutionCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy *permission.SessionDeployPolicy, planAcceptance *permission.PlanAcceptancePolicy, activeExecutionLimit *int) (permission.Policy, error)
+			}
+			var policy permission.Policy
+			if updater, ok := s.perm.(executionCapabilityPolicyService); ok {
+				policy, err = updater.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, req.SessionDeploy, req.PlanAcceptance, req.ActiveExecutionLimit)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			} else {
+				if req.SessionDeploy != nil {
+					current.SessionDeploy = *req.SessionDeploy
+				}
+				if req.PlanAcceptance != nil {
+					current.PlanAcceptance = *req.PlanAcceptance
+				}
+				policy, err = s.perm.UpdateCapabilityPoliciesForAccount(accountScopeID, current.SessionDeploy, current.PlanAcceptance)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				if req.ActiveExecutionLimit != nil {
+					policy, err = s.perm.UpdateActiveExecutionLimitForAccount(accountScopeID, *req.ActiveExecutionLimit)
+					if err != nil {
+						writeError(w, http.StatusBadRequest, err)
+						return
+					}
+				}
 			}
 			if req.ActiveExecutionLimit != nil {
 				policy.ActiveExecutionLimit = *req.ActiveExecutionLimit

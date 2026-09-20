@@ -107,8 +107,11 @@ func TestServiceRunTurn_ParentCap1DeadlockPrevention(t *testing.T) {
 			t.Fatalf("expected parked TotalActive=0, Available=1, got: %+v", parkedSnap)
 		}
 
+		// Strip parent lease when launching child
+		childCtx := executioncapacity.WithoutLease(parentCtx)
+
 		// Child admits into slot 1! (If parent hadn't parked, this would deadlock/timeout)
-		childLease, childAdmitErr := permSvc.AdmitExecution(parentCtx, executioncapacity.AcquireRequest{
+		childLease, childAdmitErr := permSvc.AdmitExecution(childCtx, executioncapacity.AcquireRequest{
 			AccountScopeID: accountID,
 			SessionID:      child.ID,
 			RunID:          "child-run",
@@ -151,13 +154,90 @@ func TestServiceRunTurn_ParentCap1DeadlockPrevention(t *testing.T) {
 	_ = svc
 }
 
+// TestServiceRunTurn_NestedTaskProgramSingleParkingOwner
+// Purpose:
+// - Invariant: Nested task calls inside the same session run do not attempt to double-park
+//   an already parked lease, preventing ErrLeaseAlreadyParked failures.
+// - Threat/regression: Inner scheduler or cohort task calls fail by double-parking parent's lease.
+// - Production boundary: runWithParkedExecutionLease, Service.executeTaskToolWithParsed.
+// - Narrowest test layer: nested runWithParkedExecutionLease invocation.
+func TestServiceRunTurn_NestedTaskProgramSingleParkingOwner(t *testing.T) {
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "nested-task-park.pebble"))
+	if err != nil {
+		t.Fatalf("open pebble: %v", err)
+	}
+	defer store.Close()
+
+	events, _ := pebblestore.NewEventLog(store)
+	sessionStore := pebblestore.NewSessionStore(store)
+	sessionSvc := sessionruntime.NewService(sessionStore, events)
+	permStore := pebblestore.NewPermissionStore(store)
+	permSvc := permission.NewService(permStore, events, nil)
+	permSvc.SetSessionResolver(sessionSvc)
+
+	accountID := "acc-nested-park"
+	if _, err := permSvc.UpdateActiveExecutionLimitForAccount(accountID, 1); err != nil {
+		t.Fatalf("set limit: %v", err)
+	}
+
+	sess, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "sess-nested-test", UserID: "user-1", AccountScopeID: accountID,
+		WorkspacePath: t.TempDir(), WorkspaceName: "nested", Mode: sessionruntime.ModeAuto,
+	})
+
+	ctx := context.Background()
+	lease, err := permSvc.AdmitExecution(ctx, executioncapacity.AcquireRequest{
+		AccountScopeID: accountID,
+		SessionID:      sess.ID,
+		RunID:          "run-nested",
+		Kind:           executioncapacity.ExecutionKindOrdinary,
+	})
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	defer lease.Release()
+
+	leaseCtx := executioncapacity.WithLease(ctx, lease)
+
+	// Outer task parks the lease
+	nestedExecuted := false
+	_, outerErr := runWithParkedExecutionLease(leaseCtx, sess.ID, "run-nested", func() (string, error) {
+		if !lease.IsParked() {
+			t.Fatalf("expected lease to be parked by outer caller")
+		}
+
+		// Inner nested call should NOT fail with ErrLeaseAlreadyParked; it detects parked state and runs cleanly!
+		_, innerErr := runWithParkedExecutionLease(leaseCtx, sess.ID, "run-nested", func() (string, error) {
+			nestedExecuted = true
+			return "nested success", nil
+		})
+		if innerErr != nil {
+			return "", innerErr
+		}
+		return "outer success", nil
+	})
+	if outerErr != nil {
+		t.Fatalf("nested park failed: %v", outerErr)
+	}
+	if !nestedExecuted {
+		t.Fatalf("nested function was not executed")
+	}
+
+	// After outer finishes, lease is reacquired
+	if lease.IsParked() {
+		t.Fatalf("expected lease to be reacquired after outer caller returns")
+	}
+}
+
 // TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting
 // Purpose:
 // - Invariant: Internal compaction on an active session runs without admitting a second capacity lease,
-//   preventing same-session deadlock and double counting.
-// - Threat/regression: Compaction acquiring an execution slot deadlocks against the parent session's existing lease.
-// - Production boundary: Service.runTurn compaction bypass, executioncapacity.LeaseFromContext.
-// - Narrowest test layer: runTurn invocation with Compact: true.
+//   preventing same-session deadlock and double counting. Standalone compaction without a lease
+//   in context admits a lease normally.
+// - Threat/regression: Compaction acquiring an execution slot deadlocks against the parent session's existing lease,
+//   or standalone compaction bypasses capacity limits.
+// - Production boundary: Service.runTurn compaction lease resolution, executioncapacity.LeaseFromContext.
+// - Narrowest test layer: runTurn lease acquisition logic for internal and standalone compaction.
 func TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "compact-nodeadlock.pebble"))
 	if err != nil {
@@ -190,7 +270,7 @@ func TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	// Acquire parent lease
+	// 1. Internal compaction: lease is already in context from the owning turn
 	ctx := context.Background()
 	parentLease, err := permSvc.AdmitExecution(ctx, executioncapacity.AcquireRequest{
 		AccountScopeID: accountID,
@@ -208,18 +288,32 @@ func TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting(t *testing.T) {
 		t.Fatalf("expected TotalActive=1, got %d", snap.TotalActive)
 	}
 
-	// When Compact: true is passed, runTurn does not acquire a lease
-	// Verify that LeaseFromContext recognizes the parent lease
+	// When internal compaction runs within the active turn, it reuses the lease from context
 	parentCtx := executioncapacity.WithLease(ctx, parentLease)
 	foundLease, ok := executioncapacity.LeaseFromContext(parentCtx, sess.ID, "run-parent")
 	if !ok || foundLease == nil {
 		t.Fatalf("expected lease to be found in context for session and run")
 	}
 
-	// Verify capacity did not change (no double count)
+	// Verify capacity did not double-count
 	snapAfter := permSvc.ExecutionCapacitySnapshot(accountID)
 	if snapAfter.TotalActive != 1 {
 		t.Fatalf("double counting detected: TotalActive=%d, want 1", snapAfter.TotalActive)
+	}
+
+	// 2. Standalone compaction: no lease in context
+	// When capacity limit is 1 and slot 1 is occupied, standalone compaction must wait/block rather than bypass!
+	standaloneCtx, standaloneCancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer standaloneCancel()
+	_, standaloneAdmitErr := permSvc.AdmitExecution(standaloneCtx, executioncapacity.AcquireRequest{
+		AccountScopeID: accountID,
+		SessionID:      "sess-standalone-compact",
+		RunID:          "run-standalone",
+		Kind:           executioncapacity.ExecutionKindOrdinary,
+	})
+	// With slot occupied, standalone admit must NOT succeed immediately
+	if standaloneAdmitErr == nil {
+		t.Fatalf("expected standalone compaction to block when at capacity limit, but it succeeded")
 	}
 }
 
@@ -282,13 +376,12 @@ func TestServiceRunTurn_PermissionWaitParksParent(t *testing.T) {
 
 	// Create pending permission record
 	pending, err := permSvc.CreatePending(permission.CreateInput{
-		SessionID:      sess.ID,
-		AccountScopeID: accountID,
-		RunID:          "run-gate",
-		Step:           1,
-		CallID:         "call-bash-1",
-		ToolName:       "bash",
-		ToolArguments:  `{"command":"ls"}`,
+		SessionID:     sess.ID,
+		RunID:         "run-gate",
+		Step:          1,
+		CallID:        "call-bash-1",
+		ToolName:      "bash",
+		ToolArguments: `{"command":"ls"}`,
 	})
 	if err != nil {
 		t.Fatalf("create pending: %v", err)

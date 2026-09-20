@@ -881,11 +881,7 @@ func (s *Service) ExecutionCapacity() *executioncapacity.Manager {
 func (s *Service) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
 	if s == nil || s.permissions == nil {
 		return executioncapacity.Snapshot{
-			AccountScopeID:       strings.TrimSpace(accountScopeID),
-			EffectiveLimit:       executioncapacity.DefaultActiveExecutionLimit,
-			Available:            executioncapacity.DefaultActiveExecutionLimit,
-			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
-			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+			AccountScopeID: strings.TrimSpace(accountScopeID),
 		}
 	}
 	return s.permissions.ExecutionCapacitySnapshot(accountScopeID)
@@ -1429,6 +1425,50 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
+	var runCancel context.CancelFunc
+	runCtx, cancelRun := context.WithCancel(ctx)
+	runCancel = cancelRun
+	defer runCancel()
+	ctx = runCtx
+	runnerCtx = runCtx
+	s.attachLifecycleCancel(sessionID, runID, runCancel)
+	defer s.detachLifecycleCancel(sessionID, runID)
+
+	var executionLease executioncapacity.Lease
+	if s.permissions != nil && s.permissions.ExecutionCapacity() != nil {
+		existingLease, hasLease := executioncapacity.LeaseFromContext(ctx, sessionID, runID)
+		if !hasLease || existingLease == nil {
+			kind := executioncapacity.ExecutionKindOrdinary
+			if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
+				kind = executioncapacity.ExecutionKindDeployed
+			}
+			var admitErr error
+			executionLease, admitErr = s.permissions.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
+				AccountScopeID: acctScope,
+				SessionID:      sessionID,
+				RunID:          runID,
+				Kind:           kind,
+			})
+			if admitErr != nil {
+				return RunResult{}, admitErr
+			}
+			defer func() {
+				if executionLease != nil {
+					_ = executionLease.Release()
+				}
+			}()
+			runCtx = executioncapacity.WithLease(runCtx, executionLease)
+			ctx = runCtx
+			runnerCtx = runCtx
+		}
+	}
+
+	if s.sessions != nil {
+		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
+			return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
+		}
+	}
+
 	if options.Background {
 		metadata := buildBackgroundRunMetadata(sessionSnapshot.Metadata, targetKind, targetName, resolvedExecutionContext)
 		updatedSession, _, updateErr := s.sessions.UpdateMetadata(sessionID, metadata)
@@ -1458,7 +1498,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		_, _ = s.permissions.CancelRunPending(permissionSessionID, runID, "run terminated before permission resolution")
 	}()
 
-	var runCancel context.CancelFunc
 	var emitMu sync.Mutex
 	emit = func(event StreamEvent) {
 		if strings.TrimSpace(event.SessionID) == "" {
@@ -1510,48 +1549,12 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		emitMu.Unlock()
 	}
-	runCtx, cancelRun := context.WithCancel(ctx)
-	runCancel = cancelRun
-	defer runCancel()
-	ctx = runCtx
-	runnerCtx = runCtx
-
-	var executionLease executioncapacity.Lease
-	if !manualCompact && s.permissions != nil && s.permissions.ExecutionCapacity() != nil {
-		existingLease, hasLease := executioncapacity.LeaseFromContext(ctx, sessionID, runID)
-		if !hasLease || existingLease == nil {
-			kind := executioncapacity.ExecutionKindOrdinary
-			if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
-				kind = executioncapacity.ExecutionKindDeployed
-			}
-			var admitErr error
-			executionLease, admitErr = s.permissions.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
-				AccountScopeID: acctScope,
-				SessionID:      sessionID,
-				RunID:          runID,
-				Kind:           kind,
-			})
-			if admitErr != nil {
-				return RunResult{}, admitErr
-			}
-			defer func() {
-				if executionLease != nil {
-					_ = executionLease.Release()
-				}
-			}()
-			runCtx = executioncapacity.WithLease(runCtx, executionLease)
-			ctx = runCtx
-			runnerCtx = runCtx
-		}
-	}
-
 	startSnapshot, err := s.beginSessionLifecycle(sessionID, runID, s.effectiveRunOwnerTransport(options, onEvent))
 	if err != nil {
 		return RunResult{}, err
 	}
 	lifecycleClaimed = true
 	emitLifecycleSnapshot(emit, startSnapshot)
-	s.attachLifecycleCancel(sessionID, runID, runCancel)
 	if runningSnapshot, changed, err := s.transitionSessionLifecycle(sessionID, runID, lifecyclePhaseRunning); err == nil && changed {
 		emitLifecycleSnapshot(emit, runningSnapshot)
 	}
@@ -1600,9 +1603,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 	if targetedSubagentViaTask {
-		result, err := s.runTargetedSubagent(ctx, sessionSnapshot, options, targetName, emit)
+		var result RunResult
+		var subagentErr error
+		_, err := runWithParkedExecutionLease(ctx, sessionID, runID, func() (string, error) {
+			childCtx := executioncapacity.WithoutLease(ctx)
+			result, subagentErr = s.runTargetedSubagent(childCtx, sessionSnapshot, options, targetName, emit)
+			return "", subagentErr
+		})
 		if err != nil {
 			return RunResult{}, err
+		}
+		if subagentErr != nil {
+			return RunResult{}, subagentErr
 		}
 		result.SessionID = sessionID
 		result.Agent = activeAgent

@@ -1941,12 +1941,11 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 	}
 	var gateLease executioncapacity.Lease
 	if hasPendingApprovals {
-		if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, runID); ok && l != nil {
+		if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, runID); ok && l != nil && !l.IsParked() {
 			gateLease = l
-			_ = gateLease.Park()
-			defer func() {
-				_ = gateLease.Reacquire(ctx)
-			}()
+			if parkErr := gateLease.Park(); parkErr != nil {
+				return nil, nil, nil, nil, nil, parkErr
+			}
 		}
 	}
 	wg.Wait()
@@ -4640,7 +4639,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 
 	var executionLease executioncapacity.Lease
-	if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, req.RunID); ok && l != nil {
+	if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, req.RunID); ok && l != nil && !l.IsParked() {
 		executionLease = l
 	}
 	if executionLease != nil {

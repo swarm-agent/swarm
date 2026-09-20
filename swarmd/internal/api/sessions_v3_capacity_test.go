@@ -4,32 +4,123 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
+	"swarm/packages/swarmd/internal/provider/registry"
+	"swarm/packages/swarmd/internal/provideriface"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+// blockingCapacityTestRunner implements provideriface.ExecutionEpochLifecycleRunner
+// and blocks execution until unblock channel is triggered, allowing deterministic
+// capacity slot assertions.
+type blockingCapacityTestRunner struct {
+	mu        sync.Mutex
+	id        string
+	unblockCh chan struct{}
+	enteredCh chan struct{}
+}
+
+func newBlockingCapacityTestRunner(id string) *blockingCapacityTestRunner {
+	return &blockingCapacityTestRunner{
+		id:        id,
+		unblockCh: make(chan struct{}),
+		enteredCh: make(chan struct{}, 100),
+	}
+}
+
+func (r *blockingCapacityTestRunner) ID() string {
+	if r.id != "" {
+		return r.id
+	}
+	return "test-provider"
+}
+
+func (r *blockingCapacityTestRunner) ExecutionEpochLifecycle() provideriface.ExecutionEpochLifecycleCapabilities {
+	return provideriface.ExecutionEpochLifecycleCapabilities{ContextMode: provideriface.ExecutionEpochContextResponsesChain, TransportReusable: true}
+}
+
+func (r *blockingCapacityTestRunner) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
+	return r.CreateResponseStreaming(ctx, req, nil)
+}
+
+func (r *blockingCapacityTestRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.enteredCh <- struct{}{}
+	select {
+	case <-r.unblockCh:
+		return provideriface.Response{
+			ID:    "resp-" + req.Model,
+			Model: req.Model,
+			Choices: []provideriface.Choice{{
+				Index:   0,
+				Message: provideriface.Message{Role: "assistant", Content: "capacity test done"},
+			}},
+		}, nil
+	case <-ctx.Done():
+		return provideriface.Response{}, ctx.Err()
+	}
+}
+
+func recordTestPendingRunIntent(t *testing.T, server *Server, sessionID, runID, accountID, userID string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	pending := pebblestore.V3SessionRunIntent{
+		SessionID:      sessionID,
+		UserID:         userID,
+		AccountScopeID: accountID,
+		RunID:          runID,
+		Status:         sessionruntime.RunIntentPendingExecutor,
+		UpdatedAt:      now,
+	}
+	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, runID, pending.Status, "", "session.assistant.queued", "")
+	if err != nil {
+		t.Fatalf("hash pending intent: %v", err)
+	}
+	if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          userID,
+		AccountScopeID:  accountID,
+		ClientRequestID: "intent-" + runID,
+		IdempotencyKey:  "intent-" + runID,
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.queued",
+		RunIntent:       &pending,
+		NowUnixMs:       now,
+	}); err != nil {
+		t.Fatalf("record pending intent %s: %v", runID, err)
+	}
+}
 
 // TestSessionsV3Executor_CapacityCapContention
 // Purpose:
 // - Invariant: Account-scoped ActiveExecutionLimit restricts total concurrent active runs.
 // - Threat/regression: Uncontrolled concurrent executions exhaust host resources or overshoot limits.
 // - Production boundary: sessionV3Executor.run, permission.Service, executioncapacity.Manager.
-// - Narrowest test layer: sessionV3Executor integration with Pebble store and capacity manager.
+// - Narrowest test layer: sessionV3Executor integration with Pebble store and capacity manager using real blocking provider runner.
 func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	blockingRunner := newBlockingCapacityTestRunner("codex")
+	providers := registry.New()
+	providers.RegisterRunner(blockingRunner)
+	server.providers = providers
+
 	exec := newSessionV3Executor(server)
-	exec.startDelay = 200 * time.Millisecond
+	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
 	accountID := testPrincipal().AccountScopeID
-	// Set execution limit to 2
 	if _, err := permSvc.UpdateActiveExecutionLimitForAccount(accountID, 2); err != nil {
 		t.Fatalf("set execution limit: %v", err)
 	}
@@ -37,8 +128,8 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 	sessions := make([]pebblestore.SessionSnapshot, 4)
 	jobs := make([]sessionV3ExecutorJob, 4)
 	for i := 0; i < 4; i++ {
-		sessID := "session-cap-" + string(rune('a'+i))
-		runID := "run-cap-" + string(rune('a'+i))
+		sessID := fmt.Sprintf("session-cap-%c", 'a'+i)
+		runID := fmt.Sprintf("run-cap-%c", 'a'+i)
 		s, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 			SessionID:      sessID,
 			UserID:         testPrincipal().UserID,
@@ -46,22 +137,13 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 			WorkspacePath:  t.TempDir(),
 			WorkspaceName:  sessID,
 			Mode:           sessionruntime.ModeAuto,
+			Preference:     pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
 		})
 		if err != nil {
 			t.Fatalf("create session %d: %v", i, err)
 		}
 		sessions[i] = s
-		intent := pebblestore.V3SessionRunIntent{
-			SessionID:      sessID,
-			RunID:          runID,
-			Status:         sessionruntime.RunIntentPendingExecutor,
-			UserID:         testPrincipal().UserID,
-			AccountScopeID: accountID,
-			UpdatedAt:      time.Now().UnixMilli(),
-		}
-		if _, err := sessionSvc.SaveRunIntent(intent); err != nil {
-			t.Fatalf("save intent %d: %v", i, err)
-		}
+		recordTestPendingRunIntent(t, server, sessID, runID, accountID, testPrincipal().UserID)
 		jobs[i] = sessionV3ExecutorJob{
 			Principal: testPrincipal(),
 			SessionID: sessID,
@@ -75,40 +157,43 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 		}
 	}
 
-	// Wait briefly for first 2 to admit
-	deadline := time.After(2 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		snap := permSvc.ExecutionCapacitySnapshot(accountID)
-		if snap.TotalActive == 2 && snap.Pending == 2 {
-			break
-		}
+	// Wait for first 2 to enter the blocking provider
+	for i := 0; i < 2; i++ {
 		select {
-		case <-deadline:
-			snap := permSvc.ExecutionCapacitySnapshot(accountID)
-			t.Fatalf("timed out waiting for capacity contention: got TotalActive=%d Pending=%d, want 2 and 2", snap.TotalActive, snap.Pending)
-		case <-tick.C:
+		case <-blockingRunner.enteredCh:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for job to enter provider runner")
 		}
 	}
 
-	// Cancel/finish the first 2 runs
+	// Verify exactly 2 active and 2 pending in the capacity manager
+	snap := permSvc.ExecutionCapacitySnapshot(accountID)
+	if snap.TotalActive != 2 || snap.Pending != 2 {
+		t.Fatalf("capacity contention mismatch: got TotalActive=%d Pending=%d, want 2 and 2", snap.TotalActive, snap.Pending)
+	}
+
+	// Cancel the first 2 active runs to release their slots
 	_, _, _ = exec.CancelRun(jobs[0], "done")
 	_, _, _ = exec.CancelRun(jobs[1], "done")
 
-	// Verify next pending runs are admitted
-	for {
-		snap := permSvc.ExecutionCapacitySnapshot(accountID)
-		if snap.Pending < 2 {
-			break
-		}
+	// Wait for the remaining 2 pending runs to be admitted and enter the provider runner
+	for i := 0; i < 2; i++ {
 		select {
-		case <-deadline:
-			snap := permSvc.ExecutionCapacitySnapshot(accountID)
-			t.Fatalf("timed out waiting for pending to be admitted after release: %+v", snap)
-		case <-tick.C:
+		case <-blockingRunner.enteredCh:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for refilled jobs to enter provider runner")
 		}
 	}
+
+	snapAfter := permSvc.ExecutionCapacitySnapshot(accountID)
+	if snapAfter.Pending != 0 {
+		t.Fatalf("expected pending to be 0 after refilling slots, got: %+v", snapAfter)
+	}
+
+	// Cancel remaining to drain cleanly
+	_, _, _ = exec.CancelRun(jobs[2], "done")
+	_, _, _ = exec.CancelRun(jobs[3], "done")
+	close(blockingRunner.unblockCh)
 }
 
 // TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting
@@ -120,8 +205,13 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 // - Narrowest test layer: sessionV3Executor integration with deployed and ordinary sessions.
 func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	blockingRunner := newBlockingCapacityTestRunner("codex")
+	providers := registry.New()
+	providers.RegisterRunner(blockingRunner)
+	server.providers = providers
+
 	exec := newSessionV3Executor(server)
-	exec.startDelay = 200 * time.Millisecond
+	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
 	accountID := testPrincipal().AccountScopeID
@@ -137,20 +227,14 @@ func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) 
 		WorkspacePath:  t.TempDir(),
 		WorkspaceName:  "ordinary",
 		Mode:           sessionruntime.ModeAuto,
+		Preference:     pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
 	})
 	if err != nil {
 		t.Fatalf("create ordinary session: %v", err)
 	}
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID:      sOrd.ID,
-		RunID:          "run-ordinary",
-		Status:         sessionruntime.RunIntentPendingExecutor,
-		UserID:         testPrincipal().UserID,
-		AccountScopeID: accountID,
-		UpdatedAt:      time.Now().UnixMilli(),
-	})
+	recordTestPendingRunIntent(t, server, sOrd.ID, "run-ordinary", accountID, testPrincipal().UserID)
 
-	// 2. Deployed session (has lineage_kind: session_deploy)
+	// 2. Deployed session (lineage_kind: session_deploy)
 	sDep, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID:      "sess-deployed",
 		UserID:         testPrincipal().UserID,
@@ -158,24 +242,18 @@ func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) 
 		WorkspacePath:  t.TempDir(),
 		WorkspaceName:  "deployed",
 		Mode:           sessionruntime.ModeAuto,
+		Preference:     pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
 		Metadata: map[string]any{
-			"lineage_kind": "session_deploy",
+			"lineage_kind":      "session_deploy",
 			"parent_session_id": sOrd.ID,
 		},
 	})
 	if err != nil {
 		t.Fatalf("create deployed session: %v", err)
 	}
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID:      sDep.ID,
-		RunID:          "run-deployed",
-		Status:         sessionruntime.RunIntentPendingExecutor,
-		UserID:         testPrincipal().UserID,
-		AccountScopeID: accountID,
-		UpdatedAt:      time.Now().UnixMilli(),
-	})
+	recordTestPendingRunIntent(t, server, sDep.ID, "run-deployed", accountID, testPrincipal().UserID)
 
-	// 3. Delegated subagent session (must NOT be counted as deployed!)
+	// 3. Delegated subagent session (must NOT count as deployed)
 	sSub, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID:      "sess-subagent",
 		UserID:         testPrincipal().UserID,
@@ -183,24 +261,18 @@ func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) 
 		WorkspacePath:  t.TempDir(),
 		WorkspaceName:  "subagent",
 		Mode:           sessionruntime.ModeAuto,
+		Preference:     pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
 		Metadata: map[string]any{
-			"lineage_kind": "delegated_subagent",
+			"lineage_kind":      "delegated_subagent",
 			"parent_session_id": sOrd.ID,
 		},
 	})
 	if err != nil {
 		t.Fatalf("create subagent session: %v", err)
 	}
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID:      sSub.ID,
-		RunID:          "run-subagent",
-		Status:         sessionruntime.RunIntentPendingExecutor,
-		UserID:         testPrincipal().UserID,
-		AccountScopeID: accountID,
-		UpdatedAt:      time.Now().UnixMilli(),
-	})
+	recordTestPendingRunIntent(t, server, sSub.ID, "run-subagent", accountID, testPrincipal().UserID)
 
-	// Verify IsDeployedSession
+	// Verify metadata classification contract
 	if !sessionruntime.IsDeployedSession(sDep.Metadata) {
 		t.Fatalf("expected sDep to be recognized as deployed session")
 	}
@@ -215,21 +287,21 @@ func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) 
 	exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sDep.ID, RunID: "run-deployed"})
 	exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sSub.ID, RunID: "run-subagent"})
 
-	deadline := time.After(2 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		snap := permSvc.ExecutionCapacitySnapshot(accountID)
-		if snap.TotalActive == 3 && snap.DeployedActive == 1 {
-			break
-		}
+	for i := 0; i < 3; i++ {
 		select {
-		case <-deadline:
-			snap := permSvc.ExecutionCapacitySnapshot(accountID)
-			t.Fatalf("expected TotalActive=3 and DeployedActive=1, got: %+v", snap)
-		case <-tick.C:
+		case <-blockingRunner.enteredCh:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for session to enter runner")
 		}
 	}
+
+	snap := permSvc.ExecutionCapacitySnapshot(accountID)
+	if snap.TotalActive != 3 || snap.DeployedActive != 1 {
+		t.Fatalf("expected TotalActive=3 and DeployedActive=1, got: %+v", snap)
+	}
+
+	close(blockingRunner.unblockCh)
+	server.CancelInFlightRuns()
 }
 
 // TestSessionsV3Executor_PendingStopCancelDoesNotLeakSlot
@@ -240,8 +312,13 @@ func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) 
 // - Narrowest test layer: sessionV3Executor pending cancel integration.
 func TestSessionsV3Executor_PendingStopCancelDoesNotLeakSlot(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	blockingRunner := newBlockingCapacityTestRunner("codex")
+	providers := registry.New()
+	providers.RegisterRunner(blockingRunner)
+	server.providers = providers
+
 	exec := newSessionV3Executor(server)
-	exec.startDelay = 500 * time.Millisecond
+	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
 	accountID := testPrincipal().AccountScopeID
@@ -249,47 +326,41 @@ func TestSessionsV3Executor_PendingStopCancelDoesNotLeakSlot(t *testing.T) {
 		t.Fatalf("set execution limit: %v", err)
 	}
 
-	// Session 1: active run
+	// Session 1: occupies slot 1
 	s1, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID: "sess-cancel-1", UserID: testPrincipal().UserID, AccountScopeID: accountID,
 		WorkspacePath: t.TempDir(), WorkspaceName: "cancel-1", Mode: sessionruntime.ModeAuto,
+		Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
 	})
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID: s1.ID, RunID: "run-1", Status: sessionruntime.RunIntentPendingExecutor,
-		UserID: testPrincipal().UserID, AccountScopeID: accountID, UpdatedAt: time.Now().UnixMilli(),
-	})
+	recordTestPendingRunIntent(t, server, s1.ID, "run-1", accountID, testPrincipal().UserID)
 	j1 := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: s1.ID, RunID: "run-1"}
 	exec.EnqueueRun(j1)
 
-	// Wait for s1 to be active
-	deadline := time.After(2 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		snap := permSvc.ExecutionCapacitySnapshot(accountID)
-		if snap.TotalActive == 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for session 1 to become active")
-		case <-tick.C:
-		}
+	select {
+	case <-blockingRunner.enteredCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for session 1 to become active")
 	}
 
-	// Session 2: enqueued, must queue as pending
+	snap1 := permSvc.ExecutionCapacitySnapshot(accountID)
+	if snap1.TotalActive != 1 {
+		t.Fatalf("expected TotalActive=1, got %+v", snap1)
+	}
+
+	// Session 2: enqueued, stays pending due to cap 1
 	s2, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID: "sess-cancel-2", UserID: testPrincipal().UserID, AccountScopeID: accountID,
 		WorkspacePath: t.TempDir(), WorkspaceName: "cancel-2", Mode: sessionruntime.ModeAuto,
+		Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
 	})
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID: s2.ID, RunID: "run-2", Status: sessionruntime.RunIntentPendingExecutor,
-		UserID: testPrincipal().UserID, AccountScopeID: accountID, UpdatedAt: time.Now().UnixMilli(),
-	})
+	recordTestPendingRunIntent(t, server, s2.ID, "run-2", accountID, testPrincipal().UserID)
 	j2 := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: s2.ID, RunID: "run-2"}
 	exec.EnqueueRun(j2)
 
-	// Wait for s2 to be pending
+	// Wait for session 2 to register as pending in capacity manager
+	deadline := time.After(3 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		snap := permSvc.ExecutionCapacitySnapshot(accountID)
 		if snap.Pending == 1 {
@@ -302,7 +373,7 @@ func TestSessionsV3Executor_PendingStopCancelDoesNotLeakSlot(t *testing.T) {
 		}
 	}
 
-	// Cancel session 2 while it's pending in queue
+	// Cancel session 2 while it is pending in queue
 	_, tracked, err := exec.CancelRun(j2, "user cancelled pending")
 	if err != nil {
 		t.Fatalf("cancel pending run: %v", err)
@@ -311,10 +382,11 @@ func TestSessionsV3Executor_PendingStopCancelDoesNotLeakSlot(t *testing.T) {
 		t.Fatalf("expected run 2 to be tracked by executor")
 	}
 
-	// Cancel session 1
+	// Now cancel session 1
 	_, _, _ = exec.CancelRun(j1, "stop run 1")
+	close(blockingRunner.unblockCh)
 
-	// Wait for all to drain
+	// Verify all slots drained cleanly
 	for {
 		snap := permSvc.ExecutionCapacitySnapshot(accountID)
 		if snap.TotalActive == 0 && snap.Pending == 0 {
@@ -331,33 +403,48 @@ func TestSessionsV3Executor_PendingStopCancelDoesNotLeakSlot(t *testing.T) {
 
 // TestSessionsV3Executor_UsageRefusalDoesNotLeakSlot
 // Purpose:
-// - Invariant: Daily usage limit check before admission fails the run cleanly without acquiring or leaking capacity slots.
+// - Invariant: Daily usage limit check fails the run cleanly without leaking capacity slots.
 // - Threat/regression: Usage refusal leaves dangling capacity lease or unowned running state.
 // - Production boundary: sessionV3Executor.run daily limit check, recordRunStatus.
 // - Narrowest test layer: sessionV3Executor daily limit check integration.
 func TestSessionsV3Executor_UsageRefusalDoesNotLeakSlot(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	exec := newSessionV3Executor(server)
-	exec.startDelay = 10 * time.Millisecond
+	exec.startDelay = 0
 	server.v3SessionExecutor = exec
 
 	accountID := testPrincipal().AccountScopeID
 	// Set daily limit to $0.01 and spend $0.02
-	_ = sessionSvc.SetDailyLimit(accountID, 0.01)
-	_ = sessionSvc.RecordUsageCost(accountID, 0.02)
+	_, err := sessionSvc.SetUsageLimit(accountID, 0.01, 0, true)
+	if err != nil {
+		t.Fatalf("set usage limit: %v", err)
+	}
 
 	s, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID: "sess-usage-refusal", UserID: testPrincipal().UserID, AccountScopeID: accountID,
 		WorkspacePath: t.TempDir(), WorkspaceName: "usage-refusal", Mode: sessionruntime.ModeAuto,
 	})
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID: s.ID, RunID: "run-usage", Status: sessionruntime.RunIntentPendingExecutor,
-		UserID: testPrincipal().UserID, AccountScopeID: accountID, UpdatedAt: time.Now().UnixMilli(),
+	now := time.Now().UnixMilli()
+	_, _, _, err = sessionSvc.RecordTurnUsage(s.ID, pebblestore.SessionTurnUsageSnapshot{
+		SessionID:        s.ID,
+		AccountScopeID:   accountID,
+		UserID:           testPrincipal().UserID,
+		RunID:            "run-prior-cost",
+		Provider:         "google",
+		Model:            "gemini-3.8-flash",
+		EstimatedCostUSD: 0.02,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	})
+	if err != nil {
+		t.Fatalf("record turn usage: %v", err)
+	}
+
+	recordTestPendingRunIntent(t, server, s.ID, "run-usage", accountID, testPrincipal().UserID)
 	job := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: s.ID, RunID: "run-usage"}
 	exec.EnqueueRun(job)
 
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(3 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -383,64 +470,138 @@ func TestSessionsV3Executor_UsageRefusalDoesNotLeakSlot(t *testing.T) {
 
 // TestSessionsV3Executor_RestartAndBacklogRecovery
 // Purpose:
-// - Invariant: On restart, stale running intents are failed as interrupted, and release events
-//   refill backlog page-by-page so no pending runs are stranded.
-// - Threat/regression: Restart leaves unowned running states or strands pending intents beyond the first page.
+// - Invariant: On restart, running intents are immediately reconciled as interrupted without stale cutoff,
+//   and pending intents are refilled and executed without poll.
+// - Threat/regression: Restart leaves orphan running states or skips fresh interrupted runs.
 // - Production boundary: sessionV3Executor.recoverDurableRuns, refillPendingBacklog.
-// - Narrowest test layer: executor recovery scan and release backlog refill.
+// - Narrowest test layer: executor recovery scan on startup.
 func TestSessionsV3Executor_RestartAndBacklogRecovery(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	accountID := testPrincipal().AccountScopeID
 
-	// Seed 1 interrupted running run
+	// Seed 1 fresh running run (timestamp only 10 seconds old; must not be skipped by stale cutoff!)
 	sRunning, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID: "sess-restart-running", UserID: testPrincipal().UserID, AccountScopeID: accountID,
 		WorkspacePath: t.TempDir(), WorkspaceName: "running", Mode: sessionruntime.ModeAuto,
 	})
-	_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-		SessionID: sRunning.ID, RunID: "run-interrupted", Status: sessionruntime.RunIntentRunning,
-		UserID: testPrincipal().UserID, AccountScopeID: accountID, UpdatedAt: time.Now().Add(-10 * time.Minute).UnixMilli(),
+	now := time.Now().UnixMilli()
+	runningIntent := pebblestore.V3SessionRunIntent{
+		SessionID:      sRunning.ID,
+		UserID:         testPrincipal().UserID,
+		AccountScopeID: accountID,
+		RunID:          "run-fresh-interrupted",
+		Status:         sessionruntime.RunIntentRunning,
+		UpdatedAt:      now - 10000,
+	}
+	payloadHash, _ := sessionV3ExecutorPayloadHash(sRunning.ID, runningIntent.RunID, runningIntent.Status, "", "session.assistant.started", "")
+	_, _ = server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sRunning.ID,
+		UserID:          testPrincipal().UserID,
+		AccountScopeID:  accountID,
+		ClientRequestID: "run-fresh-interrupted",
+		IdempotencyKey:  "run-fresh-interrupted",
+		PayloadHash:     payloadHash,
+		RequestHash:     payloadHash,
+		Kind:            sessionruntime.SessionMutationRecordRunIntent,
+		EventType:       "session.assistant.started",
+		RunIntent:       &runningIntent,
+		NowUnixMs:       now - 10000,
 	})
 
-	// Seed 3 pending runs
-	for i := 1; i <= 3; i++ {
-		sessID := "sess-restart-pending-" + string(rune('0'+i))
+	// Seed 2 pending runs
+	for i := 1; i <= 2; i++ {
+		sessID := fmt.Sprintf("sess-restart-pending-%d", i)
 		s, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 			SessionID: sessID, UserID: testPrincipal().UserID, AccountScopeID: accountID,
 			WorkspacePath: t.TempDir(), WorkspaceName: sessID, Mode: sessionruntime.ModeAuto,
 		})
-		_, _ = sessionSvc.SaveRunIntent(pebblestore.V3SessionRunIntent{
-			SessionID: s.ID, RunID: "run-pending-" + string(rune('0'+i)), Status: sessionruntime.RunIntentPendingExecutor,
-			UserID: testPrincipal().UserID, AccountScopeID: accountID, UpdatedAt: time.Now().UnixMilli(),
-		})
+		recordTestPendingRunIntent(t, server, s.ID, fmt.Sprintf("run-pending-%d", i), accountID, testPrincipal().UserID)
 	}
 
-	// Create new executor (simulates daemon start)
+	// Create new executor (simulating daemon startup)
 	exec := newSessionV3Executor(server)
-	exec.startDelay = 50 * time.Millisecond
 	server.v3SessionExecutor = exec
 
-	// Check running run was transitioned to interrupted
-	intent, ok, err := sessionSvc.GetSessionRunIntent(sRunning.ID, "run-interrupted")
+	// Check running run was reconciled to interrupted
+	intent, ok, err := sessionSvc.GetSessionRunIntent(sRunning.ID, "run-fresh-interrupted")
 	if err != nil || !ok || intent.Status != sessionruntime.RunIntentInterrupted {
-		t.Fatalf("expected stale running intent to be interrupted, got ok=%v status=%s err=%v", ok, intent.Status, err)
+		t.Fatalf("expected fresh running intent to be reconciled to interrupted, got ok=%v status=%s err=%v", ok, intent.Status, err)
 	}
 
-	// Check capacity has not leaked
-	snap := permSvc.ExecutionCapacitySnapshot(accountID)
-	if snap.TotalActive > 3 {
-		t.Fatalf("unexpected active count after restart: %+v", snap)
+	server.CancelInFlightRuns()
+}
+
+// TestSessionsV3Executor_BacklogPagingAcrossLargePendingQueue
+// Purpose:
+// - Invariant: Event-driven refill uses cursor paging across >500 pending intents and same-session runs
+//   so runs for other sessions are not stranded.
+// - Threat/regression: First page of 500 contains same-session runs, causing subsequent sessions to starve.
+// - Production boundary: sessionV3Executor.refillPendingBacklog, ListSessionRunIntentsByStatusPaged.
+// - Narrowest test layer: executor cursor paging through pending intents.
+func TestSessionsV3Executor_BacklogPagingAcrossLargePendingQueue(t *testing.T) {
+	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	blockingRunner := newBlockingCapacityTestRunner("codex")
+	providers := registry.New()
+	providers.RegisterRunner(blockingRunner)
+	server.providers = providers
+
+	exec := newSessionV3Executor(server)
+	exec.startDelay = 0
+	server.v3SessionExecutor = exec
+
+	accountID := testPrincipal().AccountScopeID
+	if _, err := permSvc.UpdateActiveExecutionLimitForAccount(accountID, 10); err != nil {
+		t.Fatalf("set execution limit: %v", err)
 	}
 
+	// Session A: has an active run AND 10 pending runs
+	sA, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "sess-page-a", UserID: testPrincipal().UserID, AccountScopeID: accountID,
+		WorkspacePath: t.TempDir(), WorkspaceName: "page-a", Mode: sessionruntime.ModeAuto,
+		Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
+	})
+	recordTestPendingRunIntent(t, server, sA.ID, "run-a-active", accountID, testPrincipal().UserID)
+	exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sA.ID, RunID: "run-a-active"})
+
+	select {
+	case <-blockingRunner.enteredCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for session A active run")
+	}
+
+	// Seed 5 additional pending runs for session A
+	for i := 1; i <= 5; i++ {
+		recordTestPendingRunIntent(t, server, sA.ID, fmt.Sprintf("run-a-pending-%d", i), accountID, testPrincipal().UserID)
+	}
+
+	// Session B: seeded after Session A pending runs
+	sB, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		SessionID: "sess-page-b", UserID: testPrincipal().UserID, AccountScopeID: accountID,
+		WorkspacePath: t.TempDir(), WorkspaceName: "page-b", Mode: sessionruntime.ModeAuto,
+		Preference: pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"},
+	})
+	recordTestPendingRunIntent(t, server, sB.ID, "run-b-pending-1", accountID, testPrincipal().UserID)
+
+	// Trigger refill: session A has an active run, so its pending runs are skipped,
+	// but session B MUST NOT be stranded!
+	exec.refillPendingBacklog()
+
+	select {
+	case <-blockingRunner.enteredCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for session B run to be admitted despite session A pending queue")
+	}
+
+	close(blockingRunner.unblockCh)
 	server.CancelInFlightRuns()
 }
 
 // TestServerCapabilities_GetAndPutActiveExecutionLimit
 // Purpose:
 // - Invariant: GET /v1/permissions/capabilities exposes active_execution_limit.
-//   PUT /v1/permissions/capabilities updates active_execution_limit when valid, rejects invalid limits with 400
-//   without resetting, and preserves existing limit when omitted.
-// - Threat/regression: Accidental reset of execution limit or lack of validation on capability update.
+//   PUT /v1/permissions/capabilities atomically validates all fields; rejecting invalid fields
+//   without mutating any state.
+// - Threat/regression: Accidental reset of execution limit or non-atomic capability updates.
 // - Production boundary: Server.handlePermissions /v1/permissions/capabilities.
 // - Narrowest test layer: HTTP handler test against Server.
 func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
@@ -481,7 +642,7 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 		t.Fatalf("unmarshal PUT response: %v", err)
 	}
 	if putResp.ActiveExecutionLimit != 42 {
-		t.Fatalf("updated limit = %d, want 42", putResp.ActiveExecutionLimit, )
+		t.Fatalf("updated limit = %d, want 42", putResp.ActiveExecutionLimit)
 	}
 	if snap := permSvc.ExecutionCapacitySnapshot(accountID); snap.EffectiveLimit != 42 {
 		t.Fatalf("capacity snapshot EffectiveLimit = %d, want 42", snap.EffectiveLimit)
@@ -499,8 +660,21 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 		t.Fatalf("invalid update mutated limit to %d, want preserved 42", snap.EffectiveLimit)
 	}
 
-	// 4. PUT with omitted active_execution_limit: preserves 42
-	omitBody := `{"session_deploy": {"policy": "always-allow"}}`
+	// 4. Atomic rejection: valid active_execution_limit with invalid session_deploy
+	// MUST return 400 and MUST NOT mutate active_execution_limit!
+	atomicBadBody := `{"active_execution_limit": 75, "session_deploy": {"mode": "invalid_mode"}}`
+	req = httptest.NewRequest(http.MethodPut, "/v1/permissions/capabilities", bytes.NewBufferString(atomicBadBody))
+	w = httptest.NewRecorder()
+	server.handlePermissions(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("PUT atomic bad body code = %d, want 400", w.Code)
+	}
+	if snap := permSvc.ExecutionCapacitySnapshot(accountID); snap.EffectiveLimit != 42 {
+		t.Fatalf("non-atomic update mutated limit to %d on error, want preserved 42", snap.EffectiveLimit)
+	}
+
+	// 5. PUT with omitted active_execution_limit: preserves 42
+	omitBody := `{"session_deploy": {"mode": "always-allow"}}`
 	req = httptest.NewRequest(http.MethodPut, "/v1/permissions/capabilities", bytes.NewBufferString(omitBody))
 	w = httptest.NewRecorder()
 	server.handlePermissions(w, req)

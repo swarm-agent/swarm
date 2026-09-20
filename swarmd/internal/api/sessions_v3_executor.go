@@ -94,6 +94,19 @@ type sessionV3ExecutorRunState struct {
 	job      sessionV3ExecutorJob
 }
 
+func isSessionArchived(metadata map[string]any) bool {
+	if metadata == nil {
+		return false
+	}
+	if v, ok := metadata["archived"].(bool); ok && v {
+		return true
+	}
+	if v, ok := metadata["state"].(string); ok && strings.EqualFold(strings.TrimSpace(v), "archived") {
+		return true
+	}
+	return false
+}
+
 func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64) pebblestore.V3SessionRunIntent {
 	return pebblestore.V3SessionRunIntent{
 		SessionID:       strings.TrimSpace(job.SessionID),
@@ -212,7 +225,11 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	if activeRunID := e.activeBySession[job.SessionID]; activeRunID != "" && activeRunID != job.RunID {
 		e.mu.Unlock()
-		return false
+		return true
+	}
+	if len(e.inFlightRuns) >= sessionV3ExecutorRecoveryLimit {
+		e.mu.Unlock()
+		return true
 	}
 	isAutomationRun := strings.HasPrefix(job.SessionID, "av2-execution-")
 	if isAutomationRun {
@@ -268,66 +285,81 @@ func (e *sessionV3Executor) refillPendingBacklog() {
 	if ctx.Err() != nil {
 		return
 	}
-	staleBefore := int64(0)
-	if e.runningStaleAfter > 0 {
-		staleBefore = time.Now().Add(-e.runningStaleAfter).UnixMilli()
-	}
-	intents, err := e.server.sessions.ListRecoverableSessionRunIntents(staleBefore, sessionV3ExecutorRecoveryLimit)
-	if err != nil {
+	e.mu.Lock()
+	inFlightCount := len(e.inFlightRuns)
+	e.mu.Unlock()
+	if inFlightCount >= sessionV3ExecutorRecoveryLimit {
 		return
 	}
-	for _, intent := range intents {
-		if ctx.Err() != nil {
-			return
-		}
-		if intent.Status != sessionruntime.RunIntentPendingExecutor {
-			continue
-		}
-		runKey := sessionV3ExecutorRunKey(intent.SessionID, intent.RunID)
-		e.mu.Lock()
-		alreadyInFlight := e.inFlightRuns[runKey]
-		activeRunID := e.activeBySession[intent.SessionID]
-		inFlightCount := len(e.inFlightRuns)
-		e.mu.Unlock()
-		if alreadyInFlight || (activeRunID != "" && activeRunID != intent.RunID) {
-			continue
-		}
-		if inFlightCount >= sessionV3ExecutorRecoveryLimit {
+
+	afterKey := ""
+	maxPages := 20
+	for page := 0; page < maxPages; page++ {
+		intents, nextKey, err := e.server.sessions.ListSessionRunIntentsByStatusPaged(sessionruntime.RunIntentPendingExecutor, afterKey, sessionV3ExecutorRecoveryLimit)
+		if err != nil || len(intents) == 0 {
 			break
 		}
-		job := sessionV3ExecutorJob{
-			Principal: identity.Principal{
-				Type:           identity.PrincipalTypeUser,
-				UserID:         intent.UserID,
-				AccountScopeID: intent.AccountScopeID,
-			},
-			SessionID:       intent.SessionID,
-			RunID:           intent.RunID,
-			SourceMessageID: intent.SourceMessageID,
-			EpochID:         intent.EpochID,
-			PlanID:          intent.PlanID,
-			CheckpointID:    intent.CheckpointID,
-			AttemptID:       intent.AttemptID,
-			RunSessionID:    intent.RunSessionID,
-			ParentSessionID: intent.ParentSessionID,
-			ResumeContext:   intent.ResumeContext,
-		}
-		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {
-			if session, ok, sErr := e.server.sessions.GetSession(intent.SessionID); sErr == nil && ok {
-				if job.Principal.UserID == "" {
-					job.Principal.UserID = session.UserID
-				}
-				if job.Principal.AccountScopeID == "" {
-					job.Principal.AccountScopeID = session.AccountScopeID
-				}
+		for _, intent := range intents {
+			if ctx.Err() != nil {
+				return
 			}
+			runKey := sessionV3ExecutorRunKey(intent.SessionID, intent.RunID)
+			e.mu.Lock()
+			alreadyInFlight := e.inFlightRuns[runKey]
+			activeRunID := e.activeBySession[intent.SessionID]
+			inFlightCount = len(e.inFlightRuns)
+			e.mu.Unlock()
+
+			if alreadyInFlight {
+				continue
+			}
+			if activeRunID != "" && activeRunID != intent.RunID {
+				continue
+			}
+			if inFlightCount >= sessionV3ExecutorRecoveryLimit {
+				return
+			}
+
+			session, ok, sErr := e.server.sessions.GetSession(intent.SessionID)
+			if sErr != nil || !ok || isSessionArchived(session.Metadata) {
+				reason := "session not found"
+				if ok && isSessionArchived(session.Metadata) {
+					reason = "session is archived"
+				}
+				job := sessionV3ExecutorJob{
+					SessionID: intent.SessionID,
+					RunID:     intent.RunID,
+				}
+				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+				continue
+			}
+
+			job := sessionV3ExecutorJob{
+				Principal: identity.Principal{
+					Type:           identity.PrincipalTypeUser,
+					UserID:         firstNonEmptyString(intent.UserID, session.UserID),
+					AccountScopeID: firstNonEmptyString(intent.AccountScopeID, session.AccountScopeID),
+				},
+				SessionID:       intent.SessionID,
+				RunID:           intent.RunID,
+				SourceMessageID: intent.SourceMessageID,
+				EpochID:         intent.EpochID,
+				PlanID:          intent.PlanID,
+				CheckpointID:    intent.CheckpointID,
+				AttemptID:       intent.AttemptID,
+				RunSessionID:    intent.RunSessionID,
+				ParentSessionID: intent.ParentSessionID,
+				ResumeContext:   intent.ResumeContext,
+			}
+			if !job.Principal.Valid() {
+				continue
+			}
+			e.EnqueueRun(job)
 		}
-		if !job.Principal.Valid() {
-			continue
-		}
-		if e.EnqueueRun(job) {
+		if nextKey == "" {
 			break
 		}
+		afterKey = nextKey
 	}
 }
 
@@ -644,64 +676,37 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 		return
 	default:
 	}
-	staleBefore := int64(0)
-	if e.runningStaleAfter > 0 {
-		staleBefore = time.Now().Add(-e.runningStaleAfter).UnixMilli()
-	}
-	intents, err := e.server.sessions.ListRecoverableSessionRunIntents(staleBefore, sessionV3ExecutorRecoveryLimit)
-	if err != nil {
-		log.Printf("warning: v3 session executor recovery scan failed: %v", err)
-		return
-	}
-	for _, intent := range intents {
-		if ctx.Err() != nil {
-			return
-		}
-		if strings.TrimSpace(intent.RunID) == "" || strings.TrimSpace(intent.SessionID) == "" {
-			continue
-		}
-		job := sessionV3ExecutorJob{
-			Principal: identity.Principal{
-				Type:           identity.PrincipalTypeUser,
-				UserID:         intent.UserID,
-				AccountScopeID: intent.AccountScopeID,
-			},
-			SessionID:       intent.SessionID,
-			RunID:           intent.RunID,
-			SourceMessageID: intent.SourceMessageID,
-			EpochID:         intent.EpochID,
-			PlanID:          intent.PlanID,
-			CheckpointID:    intent.CheckpointID,
-			AttemptID:       intent.AttemptID,
-			RunSessionID:    intent.RunSessionID,
-			ParentSessionID: intent.ParentSessionID,
-			ResumeContext:   intent.ResumeContext,
-		}
-		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {
-			if session, ok, err := e.server.sessions.GetSession(intent.SessionID); err != nil {
-				log.Printf("warning: v3 session executor recovery could not hydrate session %q for run %q: %v", intent.SessionID, intent.RunID, err)
-				continue
-			} else if ok {
-				if job.Principal.UserID == "" {
-					job.Principal.UserID = session.UserID
-				}
-				if job.Principal.AccountScopeID == "" {
-					job.Principal.AccountScopeID = session.AccountScopeID
+
+	runningIntents, err := e.server.sessions.ListSessionRunIntentsByStatus(sessionruntime.RunIntentRunning, sessionV3ExecutorRecoveryLimit)
+	if err == nil {
+		for _, intent := range runningIntents {
+			if ctx.Err() != nil {
+				return
+			}
+			job := sessionV3ExecutorJob{
+				Principal: identity.Principal{
+					Type:           identity.PrincipalTypeUser,
+					UserID:         intent.UserID,
+					AccountScopeID: intent.AccountScopeID,
+				},
+				SessionID: intent.SessionID,
+				RunID:     intent.RunID,
+			}
+			if job.Principal.UserID == "" || job.Principal.AccountScopeID == "" {
+				if s, ok, sErr := e.server.sessions.GetSession(intent.SessionID); sErr == nil && ok {
+					if job.Principal.UserID == "" {
+						job.Principal.UserID = s.UserID
+					}
+					if job.Principal.AccountScopeID == "" {
+						job.Principal.AccountScopeID = s.AccountScopeID
+					}
 				}
 			}
+			_ = e.failStaleRunningRunForRecovery(job)
 		}
-		if !job.Principal.Valid() {
-			log.Printf("warning: v3 session executor recovery skipped run %q for session %q: missing principal", intent.RunID, intent.SessionID)
-			continue
-		}
-		if intent.Status == sessionruntime.RunIntentRunning {
-			if err := e.failStaleRunningRunForRecovery(job); err != nil {
-				log.Printf("warning: v3 session executor recovery could not fail interrupted run %q for session %q: %v", job.RunID, job.SessionID, err)
-			}
-			continue
-		}
-		e.EnqueueRun(job)
 	}
+
+	e.refillPendingBacklog()
 }
 
 func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3ExecutorJob) error {
@@ -753,7 +758,12 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		return
 	}
 	sessionSnapshot, sessionFound, sessionErr := e.server.sessions.GetSession(job.SessionID)
-	if sessionErr != nil || !sessionFound || sessionSnapshot.Archived {
+	if sessionErr != nil || !sessionFound || isSessionArchived(sessionSnapshot.Metadata) {
+		reason := "session not found"
+		if sessionFound && isSessionArchived(sessionSnapshot.Metadata) {
+			reason = "session is archived"
+		}
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
 		return
 	}
 
@@ -802,7 +812,12 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor {
 		return
 	}
-	if sessionSnapshot, sessionFound, sessionErr = e.server.sessions.GetSession(job.SessionID); sessionErr != nil || !sessionFound || sessionSnapshot.Archived {
+	if sessionSnapshot, sessionFound, sessionErr = e.server.sessions.GetSession(job.SessionID); sessionErr != nil || !sessionFound || isSessionArchived(sessionSnapshot.Metadata) {
+		reason := "session not found"
+		if sessionFound && isSessionArchived(sessionSnapshot.Metadata) {
+			reason = "session is archived"
+		}
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
 		return
 	}
 
@@ -4497,7 +4512,11 @@ func (e *sessionV3Executor) composeSessionV3Instructions(scope tool.WorkspaceSco
 	}); ok && hydrator != nil {
 		return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.permissionBypassForAccount(scope.Principal.AccountScopeID), agentProfile, "")
 	}
-	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
+	var permSvc *permission.Service
+	if p, ok := e.server.perm.(*permission.Service); ok {
+		permSvc = p
+	}
+	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, permSvc, e.server.agents, e.server.discovery, e.server.events)
 	return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.permissionBypassForAccount(scope.Principal.AccountScopeID), agentProfile, "")
 }
 
