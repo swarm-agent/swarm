@@ -27,7 +27,6 @@ import (
 	"sync"
 	"time"
 
-	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
@@ -216,11 +215,25 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if job.SessionID == "" || job.RunID == "" {
 		return false
 	}
+	if e.server.sessions == nil {
+		return false
+	}
+	snapshot, found, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !found {
+		return false
+	}
+	if _, err := sessionV3ProviderToolPrincipal(job, snapshot); err != nil {
+		return false
+	}
+	intent, found, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
+	if err != nil || !found || intent.Status != sessionruntime.RunIntentPendingExecutor {
+		return false
+	}
 	ctx := e.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || e.server.isShuttingDown() {
 		return false
 	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
@@ -263,7 +276,11 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	e.runStates[runKey].job = job
 	e.mu.Unlock()
 
-	go e.run(ctx, job)
+	if !e.server.beginActiveRun() {
+		e.finish(job)
+		return false
+	}
+	go func() { defer e.server.endActiveRun(); e.run(ctx, job) }()
 	return true
 }
 
@@ -294,11 +311,19 @@ func (e *sessionV3Executor) startRefillPump(ctx context.Context) {
 	if e == nil || ctx == nil {
 		return
 	}
+	e.server.activeRunMu.Lock()
+	if e.server.shuttingDown.Load() {
+		e.server.activeRunMu.Unlock()
+		return
+	}
+	e.server.runWG.Add(1)
+	e.server.activeRunMu.Unlock()
 	e.mu.Lock()
 	e.refillPumpRunning = true
 	e.mu.Unlock()
 
 	go func() {
+		defer e.server.runWG.Done()
 		defer func() {
 			e.mu.Lock()
 			e.refillPumpRunning = false
@@ -369,7 +394,11 @@ func (e *sessionV3Executor) drainRefillPasses(ctx context.Context) {
 				return
 			}
 			intents, nextKey, err := e.server.sessions.ListSessionRunIntentsByStatusPaged(sessionruntime.RunIntentPendingExecutor, afterKey, sessionV3ExecutorRecoveryLimit)
-			if err != nil || len(intents) == 0 {
+			if err != nil {
+				log.Printf("warning: session capacity pending scan failed: %v", err)
+				return
+			}
+			if len(intents) == 0 {
 				lastNextKey = ""
 				break
 			}
@@ -397,7 +426,11 @@ func (e *sessionV3Executor) drainRefillPasses(ctx context.Context) {
 				}
 
 				session, ok, sErr := e.server.sessions.GetSession(intent.SessionID)
-				if sErr != nil || !ok || isSessionArchived(session.Metadata) {
+				if sErr != nil {
+					log.Printf("warning: session capacity lookup failed: %v", sErr)
+					return
+				}
+				if !ok || isSessionArchived(session.Metadata) {
 					reason := "session not found"
 					if ok && isSessionArchived(session.Metadata) {
 						reason = "session is archived"
@@ -772,7 +805,11 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 	afterKey := ""
 	for {
 		runningIntents, nextKey, err := e.server.sessions.ListSessionRunIntentsByStatusPaged(sessionruntime.RunIntentRunning, afterKey, sessionV3ExecutorRecoveryLimit)
-		if err != nil || len(runningIntents) == 0 {
+		if err != nil {
+			log.Printf("warning: session capacity recovery scan failed: %v", err)
+			return
+		}
+		if len(runningIntents) == 0 {
 			break
 		}
 		for _, intent := range runningIntents {
@@ -807,7 +844,9 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 					}
 				}
 			}
-			_ = e.failStaleRunningRunForRecovery(job)
+			if err := e.failStaleRunningRunForRecovery(job); err != nil {
+				log.Printf("warning: session capacity recovery reconciliation failed: %v", err)
+			}
 		}
 		if nextKey == "" {
 			break
@@ -827,8 +866,7 @@ func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3Executor
 	if result.RunIntent != nil && result.RunIntent.UpdatedAt > 0 {
 		interruptedAt = result.RunIntent.UpdatedAt
 	}
-	_ = e.reconcileCancelledPlanRun(job, "executor interrupted during daemon restart", interruptedAt)
-	return nil
+	return e.reconcileCancelledPlanRun(job, "executor interrupted during daemon restart", interruptedAt)
 }
 
 func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
@@ -847,10 +885,6 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	e.attachCancel(job, runCancel)
-	if !e.server.beginActiveRun() {
-		return
-	}
-	defer e.server.endActiveRun()
 	if e.startDelay > 0 {
 		select {
 		case <-runCtx.Done():
@@ -865,8 +899,13 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor {
 		return
 	}
+	job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
 	sessionSnapshot, sessionFound, sessionErr := e.server.sessions.GetSession(job.SessionID)
-	if sessionErr != nil || !sessionFound || isSessionArchived(sessionSnapshot.Metadata) {
+	if sessionErr != nil {
+		log.Printf("warning: session capacity lookup failed: %v", sessionErr)
+		return
+	}
+	if !sessionFound || isSessionArchived(sessionSnapshot.Metadata) {
 		reason := "session not found"
 		if sessionFound && isSessionArchived(sessionSnapshot.Metadata) {
 			reason = "session is archived"
@@ -905,25 +944,43 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		}
 	}
 
+	if e.server.perm == nil {
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "execution capacity service is unavailable", "session.run.failed")
+		return
+	}
 	var executionLease executioncapacity.Lease
-	if e.server != nil && e.server.perm != nil {
+	if e.server.perm != nil {
 		kind := executioncapacity.ExecutionKindOrdinary
 		if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
 			kind = executioncapacity.ExecutionKindDeployed
 		}
 		var admitErr error
-		executionLease, admitErr = e.server.perm.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
-			AccountScopeID: accountScopeID,
-			SessionID:      job.SessionID,
-			RunID:          job.RunID,
-			Kind:           kind,
-		})
+		for {
+			var changed <-chan struct{}
+			if manager := e.server.ExecutionCapacity(); manager != nil {
+				changed = manager.Changed()
+			}
+			executionLease, admitErr = e.server.perm.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
+				AccountScopeID: accountScopeID, SessionID: job.SessionID, RunID: job.RunID, Kind: kind,
+			})
+			if !errors.Is(admitErr, executioncapacity.ErrQueueFull) || changed == nil {
+				break
+			}
+			select {
+			case <-runCtx.Done():
+				return
+			case <-changed:
+			}
+		}
 		if admitErr != nil {
 			if runCtx.Err() != nil {
 				return
 			}
-			if errors.Is(admitErr, executioncapacity.ErrQueueFull) {
-				// Queue full: leave durable pending for retry, do not fail accepted work.
+			if errors.Is(admitErr, executioncapacity.ErrClosed) {
+				// A closed admission service is shutting down, not a failed task.
+				// Keep this bounded executor job parked until shutdown cancellation
+				// rather than repeatedly refilling the same durable pending intent.
+				<-runCtx.Done()
 				return
 			}
 			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, admitErr.Error(), "session.run.failed")

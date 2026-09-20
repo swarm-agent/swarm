@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -183,7 +184,19 @@ func (s *Service) requestWorkspaceScopePermission(
 		})
 	}
 
+	var gateLease executioncapacity.Lease
+	if l, ok := executioncapacity.RunLeaseFromContext(ctx, runID); ok && l.IsActive() {
+		if err := l.Park(); err != nil {
+			return tool.Result{}, "", false, err
+		}
+		gateLease = l
+	}
 	resolved, waitErr := s.permissions.WaitForResolution(ctx, record.SessionID, record.ID)
+	if gateLease != nil {
+		if err := gateLease.Reacquire(ctx); err != nil {
+			return tool.Result{}, "", false, err
+		}
+	}
 	if waitErr != nil {
 		return tool.Result{}, "", false, waitErr
 	}

@@ -207,6 +207,7 @@ export function PermissionsSettingsPage() {
   const [planAcceptancePolicy, setPlanAcceptancePolicy] = useState<PlanAcceptancePolicy>(DEFAULT_PLAN_ACCEPTANCE_POLICY)
   const [activeExecutionLimit, setActiveExecutionLimit] = useState<number>(DEFAULT_ACTIVE_EXECUTION_LIMIT)
   const [capabilityBusy, setCapabilityBusy] = useState(false)
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false)
   const [bypassBusy, setBypassBusy] = useState(false)
   const [bashProfileBusy, setBashProfileBusy] = useState(false)
   const [confirmBypassOpen, setConfirmBypassOpen] = useState(false)
@@ -218,6 +219,7 @@ export function PermissionsSettingsPage() {
 
   const load = async () => {
     setLoading(true)
+    setCapabilitiesLoaded(false)
     setError(null)
     try {
       const [result, capabilities] = await Promise.all([fetchPermissionPolicy(), fetchCapabilityPolicies()])
@@ -226,6 +228,7 @@ export function PermissionsSettingsPage() {
       setSessionDeployPolicy(capabilities.session_deploy)
       setPlanAcceptancePolicy(capabilities.plan_acceptance)
       setActiveExecutionLimit(capabilities.active_execution_limit)
+      setCapabilitiesLoaded(true)
       setBypassPermissionsState(result.bypassPermissions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load permission policy')
@@ -260,6 +263,7 @@ export function PermissionsSettingsPage() {
   }
 
   const handleSaveCapabilities = async () => {
+    if (!capabilitiesLoaded) return
     const limitError = validateActiveExecutionLimit(activeExecutionLimit)
     if (limitError) {
       setError(limitError)
@@ -517,7 +521,7 @@ export function PermissionsSettingsPage() {
         <section className="rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div><div className="text-sm font-semibold text-[var(--app-text)]">Execution capacity &amp; session capabilities</div><div className="mt-1 text-xs text-[var(--app-text-muted)]">Account-scoped execution limit and capability policies. One shared pool; default 100 ceiling not target; no per-agent deployment execution limit.</div></div>
-            <Button variant="outline" onClick={() => void handleSaveCapabilities()} disabled={loading || capabilityBusy}>{capabilityBusy ? 'Saving…' : 'Save'}</Button>
+            <Button variant="outline" onClick={() => void handleSaveCapabilities()} disabled={loading || capabilityBusy || !capabilitiesLoaded}>{capabilityBusy ? 'Saving…' : 'Save'}</Button>
           </div>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-4">

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1334,5 +1335,50 @@ func TestLeaseFromContextReleasedAndAccount(t *testing.T) {
 	}
 	if _, ok := LeaseFromContextForAccount(boundCtx, "acc-ctx-rel", "sess-parent", "run-1"); ok {
 		t.Fatalf("expected false for released lease from context with account")
+	}
+}
+
+// Purpose: Changed must remain closed after shutdown and owner release; callers
+// must not miss the terminal edge. Manager.Close/Changed own this contract.
+func TestChangedRemainsClosedAfterShutdown(t *testing.T) {
+	m := NewManager(ManagerConfig{DefaultLimit: 1})
+	l, err := m.Acquire(context.Background(), AcquireRequest{AccountScopeID: "a", SessionID: "s", RunID: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edge := m.Changed()
+	m.Close()
+	for _, ch := range []<-chan struct{}{edge, m.Changed()} {
+		select {
+		case <-ch:
+		default:
+			t.Fatal("shutdown edge is open")
+		}
+	}
+	if err := l.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-m.Changed():
+	default:
+		t.Fatal("release reopened closed manager")
+	}
+	if s := m.Snapshot("a"); !s.Unavailable || s.TotalActive != 0 {
+		t.Fatalf("closed snapshot %+v", s)
+	}
+}
+
+// Purpose: persisted invalid limits must never widen to defaults. Exercise the
+// manager resolver boundary with both non-positive and excessive stored values.
+func TestInvalidResolvedLimitFailsClosed(t *testing.T) {
+	for _, limit := range []int{-1, 0, MaxActiveExecutionLimit + 1} {
+		m := NewManager(ManagerConfig{LimitResolver: func(string) (int, error) { return limit, nil }})
+		if _, err := m.Acquire(context.Background(), AcquireRequest{AccountScopeID: "a", SessionID: "s", RunID: "r"}); err == nil {
+			t.Fatalf("accepted invalid limit %d", limit)
+		}
+		if s := m.Snapshot("a"); !s.Unavailable || s.TotalActive != 0 || s.Available != 0 {
+			t.Fatalf("invalid limit snapshot %+v", s)
+		}
+		m.Close()
 	}
 }

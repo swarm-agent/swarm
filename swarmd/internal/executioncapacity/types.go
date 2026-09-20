@@ -43,14 +43,14 @@ const (
 )
 
 var (
-	ErrQueueFull         = errors.New("execution capacity queue is full")
-	ErrLeaseReleased      = errors.New("execution capacity lease already released")
-	ErrLeaseAlreadyParked = errors.New("execution capacity lease already parked")
+	ErrQueueFull               = errors.New("execution capacity queue is full")
+	ErrLeaseReleased           = errors.New("execution capacity lease already released")
+	ErrLeaseAlreadyParked      = errors.New("execution capacity lease already parked")
 	ErrLeaseNotParked          = errors.New("execution capacity lease is not parked")
 	ErrLeaseAlreadyReacquiring = errors.New("execution capacity lease is already reacquiring")
 	ErrSessionRequired         = errors.New("session ID is required for execution capacity admission")
-	ErrRunRequired        = errors.New("run ID is required for execution capacity admission")
-	ErrClosed             = errors.New("execution capacity manager is closed")
+	ErrRunRequired             = errors.New("run ID is required for execution capacity admission")
+	ErrClosed                  = errors.New("execution capacity manager is closed")
 )
 
 // ValidateLimit ensures the requested active execution limit is within positive bounds.

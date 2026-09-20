@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -85,6 +86,28 @@ func (s *Service) RunManualCompaction(ctx context.Context, sessionID string, inp
 		principal.AccountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
 	}
 
+	if principal.AccountScopeID != sessionSnapshot.AccountScopeID || principal.UserID != sessionSnapshot.UserID {
+		return ManualCompactionResult{}, errors.New("compact principal does not own session")
+	}
+	if s.permissions != nil {
+		if _, borrowed := executioncapacity.ActiveSessionLeaseFromContext(ctx, principal.AccountScopeID, sessionID); !borrowed {
+			kind := executioncapacity.ExecutionKindOrdinary
+			if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
+				kind = executioncapacity.ExecutionKindDeployed
+			}
+			lease, err := s.permissions.AdmitExecution(ctx, executioncapacity.AcquireRequest{AccountScopeID: principal.AccountScopeID, SessionID: sessionID, RunID: runID, Kind: kind})
+			if err != nil {
+				return ManualCompactionResult{}, err
+			}
+			defer lease.Release()
+			ctx = executioncapacity.WithLease(ctx, lease)
+		}
+	}
+	if exceeded, _, _, err := s.sessions.CheckDailyLimit(principal.AccountScopeID); err != nil {
+		return ManualCompactionResult{}, err
+	} else if exceeded {
+		return ManualCompactionResult{}, errors.New("daily usage limit exceeded")
+	}
 	resolvedPreference, err := s.resolveMainSessionPreference(sessionID)
 	if err != nil {
 		return ManualCompactionResult{}, err

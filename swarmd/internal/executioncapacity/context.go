@@ -64,3 +64,29 @@ func WithoutLease(ctx context.Context) context.Context {
 	}
 	return context.WithValue(ctx, leaseContextKey{}, nil)
 }
+
+// ActiveSessionLeaseFromContext allows synchronous internal compaction to borrow
+// its caller's lease across a run-id change, never via a global session lookup.
+func ActiveSessionLeaseFromContext(ctx context.Context, accountScopeID, sessionID string) (Lease, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	l, ok := ctx.Value(leaseContextKey{}).(Lease)
+	if !ok || l == nil || l.AccountScopeID() != strings.TrimSpace(accountScopeID) || l.SessionID() != strings.TrimSpace(sessionID) || !l.IsActive() {
+		return nil, false
+	}
+	return l, true
+}
+
+// RunLeaseFromContext is for permission gates which may store the approval on
+// a parent session. The owning run id must still match the trusted context.
+func RunLeaseFromContext(ctx context.Context, runID string) (Lease, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	l, ok := ctx.Value(leaseContextKey{}).(Lease)
+	if !ok || l == nil || l.RunID() != strings.TrimSpace(runID) || l.IsReleased() {
+		return nil, false
+	}
+	return l, true
+}

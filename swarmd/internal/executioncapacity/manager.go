@@ -26,6 +26,7 @@ type Manager struct {
 	accounts map[string]*accountState
 	counter  atomic.Uint64
 	closed   bool
+	changed  chan struct{}
 }
 
 type accountState struct {
@@ -69,6 +70,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		maxQueueWaiters: maxWaiters,
 		limitResolver:   cfg.LimitResolver,
 		accounts:        make(map[string]*accountState),
+		changed:         make(chan struct{}),
 	}
 }
 
@@ -106,6 +108,11 @@ func (m *Manager) Acquire(ctx context.Context, req AcquireRequest) (Lease, error
 	}
 
 	acc := m.getAccountLocked(req.AccountScopeID)
+	// Bound parked owners as well as waiters. Reacquisition retains its reservation.
+	if len(acc.sessions)+len(acc.waiters) >= MaxActiveExecutionLimit+m.maxQueueWaiters {
+		m.mu.Unlock()
+		return nil, ErrQueueFull
+	}
 	limit, err := m.effectiveLimitLocked(req.AccountScopeID)
 	if err != nil {
 		m.mu.Unlock()
@@ -228,6 +235,9 @@ func (m *Manager) Snapshot(accountScopeID string) Snapshot {
 	key := strings.TrimSpace(accountScopeID)
 	acc := m.getAccountLocked(key)
 	limit, err := m.effectiveLimitLocked(key)
+	if m.closed {
+		err = ErrClosed
+	}
 	if err != nil {
 		return Snapshot{
 			AccountScopeID:       key,
@@ -319,6 +329,7 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closed = true
+	m.signalChangedLocked()
 	for _, acc := range m.accounts {
 		for _, w := range acc.waiters {
 			w.granted = false
@@ -405,14 +416,8 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 		return nil
 	}
 
-	// Must enqueue waiter
-	if len(acc.waiters) >= m.maxQueueWaiters {
-		l.mu.Lock()
-		l.reacquiring = false
-		l.mu.Unlock()
-		m.mu.Unlock()
-		return ErrQueueFull
-	}
+	// Parked owners already hold a bounded reservation; new arrivals must not
+	// consume their ability to reacquire and permanently strand a parent.
 
 	w := &waiter{
 		id:        m.nextWaiterIDLocked(),
@@ -443,17 +448,21 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 			// Return active slot back to pool and stay parked!
 			m.mu.Lock()
 			l.mu.Lock()
-			l.parked = true
+			if !l.released && !l.parked {
+				l.parked = true
+				acc.totalActive--
+				if l.kind == ExecutionKindDeployed {
+					acc.deployedActive--
+				}
+			}
 			l.reacquiring = false
 			l.mu.Unlock()
-
-			acc.totalActive--
-			if l.kind == ExecutionKindDeployed {
-				acc.deployedActive--
-			}
 			m.wakeEligibleWaitersLocked(acc)
 			m.mu.Unlock()
 			return ctx.Err()
+		}
+		if l.IsReleased() {
+			return ErrLeaseReleased
 		}
 		return nil
 
@@ -461,14 +470,15 @@ func (m *Manager) reacquireLease(ctx context.Context, l *lease) error {
 		m.mu.Lock()
 		if w.granted {
 			l.mu.Lock()
-			l.parked = true
+			if !l.released && !l.parked {
+				l.parked = true
+				acc.totalActive--
+				if l.kind == ExecutionKindDeployed {
+					acc.deployedActive--
+				}
+			}
 			l.reacquiring = false
 			l.mu.Unlock()
-
-			acc.totalActive--
-			if l.kind == ExecutionKindDeployed {
-				acc.deployedActive--
-			}
 			m.wakeEligibleWaitersLocked(acc)
 			m.mu.Unlock()
 			return ctx.Err()
@@ -522,12 +532,6 @@ func (m *Manager) releaseLease(l *lease) error {
 		if l.kind == ExecutionKindDeployed {
 			acc.deployedActive--
 		}
-		if acc.totalActive < 0 {
-			acc.totalActive = 0
-		}
-		if acc.deployedActive < 0 {
-			acc.deployedActive = 0
-		}
 	}
 
 	m.wakeEligibleWaitersLocked(acc)
@@ -535,6 +539,10 @@ func (m *Manager) releaseLease(l *lease) error {
 }
 
 func (m *Manager) wakeEligibleWaitersLocked(acc *accountState) {
+	m.signalChangedLocked()
+	if m.closed {
+		return
+	}
 	if len(acc.waiters) == 0 {
 		return
 	}
@@ -635,9 +643,10 @@ func (m *Manager) effectiveLimitLocked(accountScopeID string) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if lim > 0 {
-			return lim, nil
+		if err := ValidateLimit(lim); err != nil {
+			return 0, err
 		}
+		return lim, nil
 	}
 	return m.defaultLimit, nil
 }
@@ -657,4 +666,23 @@ func (m *Manager) newLeaseLocked(acc *accountState, req AcquireRequest) *lease {
 func (m *Manager) nextWaiterIDLocked() string {
 	seq := m.counter.Add(1)
 	return fmt.Sprintf("waiter_%d", seq)
+}
+
+// Changed returns an edge-triggered notification. Capture it before attempting
+// admission so a concurrent release cannot be missed. It carries no account data.
+func (m *Manager) Changed() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.changed
+}
+
+func (m *Manager) signalChangedLocked() {
+	select {
+	case <-m.changed:
+	default:
+		close(m.changed)
+	}
+	if !m.closed {
+		m.changed = make(chan struct{})
+	}
 }

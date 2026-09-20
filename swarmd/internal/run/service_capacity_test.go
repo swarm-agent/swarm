@@ -16,11 +16,11 @@ import (
 
 // TestServiceRunTurn_ParentCap1DeadlockPrevention
 // Purpose:
-// - Invariant: When account ActiveExecutionLimit is 1, a running parent parking its execution lease
-//   permits a child subagent to acquire the sole capacity slot, and the parent reacquires after child completion.
-// - Threat/regression: Parent holding execution slot 1 blocks child admission, causing parent/child deadlock.
-// - Production boundary: Service.executeTaskToolWithParsed, runWithParkedExecutionLease, executioncapacity.Manager.
-// - Narrowest test layer: run.Service task execution with ActiveExecutionLimit=1.
+//   - Invariant: When account ActiveExecutionLimit is 1, a running parent parking its execution lease
+//     permits a child subagent to acquire the sole capacity slot, and the parent reacquires after child completion.
+//   - Threat/regression: Parent holding execution slot 1 blocks child admission, causing parent/child deadlock.
+//   - Production boundary: Service.executeTaskToolWithParsed, runWithParkedExecutionLease, executioncapacity.Manager.
+//   - Narrowest test layer: run.Service task execution with ActiveExecutionLimit=1.
 func TestServiceRunTurn_ParentCap1DeadlockPrevention(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "parent-cap1.pebble"))
 	if err != nil {
@@ -49,6 +49,7 @@ func TestServiceRunTurn_ParentCap1DeadlockPrevention(t *testing.T) {
 
 	// Parent session
 	parent, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
 		SessionID:      "parent-session",
 		UserID:         "user-1",
 		AccountScopeID: accountID,
@@ -62,6 +63,7 @@ func TestServiceRunTurn_ParentCap1DeadlockPrevention(t *testing.T) {
 
 	// Child session
 	child, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
 		SessionID:      "child-session",
 		UserID:         "user-1",
 		AccountScopeID: accountID,
@@ -156,11 +158,11 @@ func TestServiceRunTurn_ParentCap1DeadlockPrevention(t *testing.T) {
 
 // TestServiceRunTurn_NestedTaskProgramSingleParkingOwner
 // Purpose:
-// - Invariant: Nested task calls inside the same session run do not attempt to double-park
-//   an already parked lease, preventing ErrLeaseAlreadyParked failures.
-// - Threat/regression: Inner scheduler or cohort task calls fail by double-parking parent's lease.
-// - Production boundary: runWithParkedExecutionLease, Service.executeTaskToolWithParsed.
-// - Narrowest test layer: nested runWithParkedExecutionLease invocation.
+//   - Invariant: Nested task calls inside the same session run do not attempt to double-park
+//     an already parked lease, preventing ErrLeaseAlreadyParked failures.
+//   - Threat/regression: Inner scheduler or cohort task calls fail by double-parking parent's lease.
+//   - Production boundary: runWithParkedExecutionLease, Service.executeTaskToolWithParsed.
+//   - Narrowest test layer: nested runWithParkedExecutionLease invocation.
 func TestServiceRunTurn_NestedTaskProgramSingleParkingOwner(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "nested-task-park.pebble"))
 	if err != nil {
@@ -181,7 +183,8 @@ func TestServiceRunTurn_NestedTaskProgramSingleParkingOwner(t *testing.T) {
 	}
 
 	sess, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
-		SessionID: "sess-nested-test", UserID: "user-1", AccountScopeID: accountID,
+		Preference: &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
+		SessionID:  "sess-nested-test", UserID: "user-1", AccountScopeID: accountID,
 		WorkspacePath: t.TempDir(), WorkspaceName: "nested", Mode: sessionruntime.ModeAuto,
 	})
 
@@ -231,13 +234,13 @@ func TestServiceRunTurn_NestedTaskProgramSingleParkingOwner(t *testing.T) {
 
 // TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting
 // Purpose:
-// - Invariant: Internal compaction on an active session runs without admitting a second capacity lease,
-//   preventing same-session deadlock and double counting. Standalone compaction without a lease
-//   in context admits a lease normally.
-// - Threat/regression: Compaction acquiring an execution slot deadlocks against the parent session's existing lease,
-//   or standalone compaction bypasses capacity limits.
-// - Production boundary: Service.runTurn compaction lease resolution, executioncapacity.LeaseFromContext.
-// - Narrowest test layer: runTurn lease acquisition logic for internal and standalone compaction.
+//   - Invariant: Internal compaction on an active session runs without admitting a second capacity lease,
+//     preventing same-session deadlock and double counting. Standalone compaction without a lease
+//     in context admits a lease normally.
+//   - Threat/regression: Compaction acquiring an execution slot deadlocks against the parent session's existing lease,
+//     or standalone compaction bypasses capacity limits.
+//   - Production boundary: Service.runTurn compaction lease resolution, executioncapacity.LeaseFromContext.
+//   - Narrowest test layer: runTurn lease acquisition logic for internal and standalone compaction.
 func TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "compact-nodeadlock.pebble"))
 	if err != nil {
@@ -259,6 +262,7 @@ func TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting(t *testing.T) {
 
 	// Parent session
 	sess, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
 		SessionID:      "sess-compact-test",
 		UserID:         "user-1",
 		AccountScopeID: accountID,
@@ -319,11 +323,11 @@ func TestServiceRunTurn_CompactionNoDeadlockOrDoubleCounting(t *testing.T) {
 
 // TestServiceRunTurn_PermissionWaitParksParent
 // Purpose:
-// - Invariant: Waiting for user approval on an AuthorizationPending tool call parks the execution lease,
-//   releasing capacity while blocked, and reacquires after resolution.
-// - Threat/regression: Permission wait occupies capacity slot indefinitely, blocking other concurrent sessions.
-// - Production boundary: Service.gateToolCalls, executioncapacity.Manager.Park/Reacquire.
-// - Narrowest test layer: gateToolCalls execution with pending permission.
+//   - Invariant: Waiting for user approval on an AuthorizationPending tool call parks the execution lease,
+//     releasing capacity while blocked, and reacquires after resolution.
+//   - Threat/regression: Permission wait occupies capacity slot indefinitely, blocking other concurrent sessions.
+//   - Production boundary: Service.gateToolCalls, executioncapacity.Manager.Park/Reacquire.
+//   - Narrowest test layer: gateToolCalls execution with pending permission.
 func TestServiceRunTurn_PermissionWaitParksParent(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "perm-wait-park.pebble"))
 	if err != nil {
@@ -346,6 +350,7 @@ func TestServiceRunTurn_PermissionWaitParksParent(t *testing.T) {
 	svc := NewService(sessionSvc, nil, nil, tool.NewRuntime(1), permSvc, nil, nil, events)
 
 	sess, _, _ := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
 		SessionID:      "sess-gate-test",
 		UserID:         "user-1",
 		AccountScopeID: accountID,
@@ -381,7 +386,7 @@ func TestServiceRunTurn_PermissionWaitParksParent(t *testing.T) {
 		Step:          1,
 		CallID:        "call-bash-1",
 		ToolName:      "bash",
-		ToolArguments: `{"command":"ls"}`,
+		ToolArguments: `{"command":"echo capacity", "category":"write", "critical":true, "explanation":["Test permission wait only."]}`,
 	})
 	if err != nil {
 		t.Fatalf("create pending: %v", err)
@@ -399,15 +404,15 @@ func TestServiceRunTurn_PermissionWaitParksParent(t *testing.T) {
 	}()
 
 	// Run gateToolCalls which will call WaitForResolution
-	calls := []tool.Call{{CallID: "call-bash-1", Name: "bash", Arguments: `{"command":"ls"}`}}
+	calls := []tool.Call{{CallID: "call-bash-1", Name: "bash", Arguments: `{"command":"echo capacity", "category":"write", "critical":true, "explanation":["Test permission wait only."]}`}}
 	principal := identity.Principal{UserID: "user-1", AccountScopeID: accountID, Type: identity.PrincipalTypeUser}
 	callCtx := identity.ContextWithPrincipal(leaseCtx, principal)
-	_, approved, _, _, _, gateErr := svc.gateToolCalls(callCtx, sess.ID, "run-gate", 1, sessionruntime.ModeAuto, calls, nil, nil)
+	results, approved, _, _, _, gateErr := svc.gateToolCalls(callCtx, sess.ID, "run-gate", 1, sessionruntime.ModeAuto, calls, nil, nil)
 	if gateErr != nil {
 		t.Fatalf("gateToolCalls error: %v", gateErr)
 	}
 	if len(approved) != 1 {
-		t.Fatalf("expected 1 approved call, got %d", len(approved))
+		t.Fatalf("expected 1 approved call, got %d: %+v", len(approved), results)
 	}
 
 	// After resolution and gate return, parent has reacquired slot 1

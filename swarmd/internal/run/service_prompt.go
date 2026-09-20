@@ -344,12 +344,15 @@ func subagentPolicyInstructions(subagents permission.SubagentPolicy) string {
 }
 
 func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
+	if snap.Unavailable {
+		return "Execution capacity facts: unavailable; do not infer available slots. Inspect manage-sessions capacity before promising admission."
+	}
 	lines := []string{
 		"Execution capacity facts (account-scoped, shared pool):",
-		fmt.Sprintf("- effective_overall_cap: %d (ceiling, not target; default 100; one shared pool across ordinary and deployed executions; no per-agent deployment execution limit)", snap.EffectiveLimit),
+		fmt.Sprintf("- effective_overall_cap: %d (ceiling, not target; default 100; one shared pool across ordinary, deployed and delegated executions; no per-agent deployment execution limit)", snap.EffectiveLimit),
 		fmt.Sprintf("- total_active: %d", snap.TotalActive),
 		fmt.Sprintf("- deployed_active: %d", snap.DeployedActive),
-		fmt.Sprintf("- pending: %d", snap.Pending),
+		fmt.Sprintf("- pending: %d (live admission waiters; additional durable overflow may be pending)", snap.Pending),
 		fmt.Sprintf("- available_slots: %d", snap.Available),
 		fmt.Sprintf("- deployment_batch_bound: %d (maximum proposals per manage-sessions deploy call)", snap.DeploymentBatchBound),
 		"- saved_session_quota: null (none configured; no external quota authority active)",
@@ -359,6 +362,7 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 	} else {
 		lines = append(lines, "Capacity state: slots available. Avoid promising launches that exceed available capacity.")
 	}
+	lines = append(lines, "Capacity is a point-in-time snapshot, not a slot reservation; backend admission remains authoritative. Permission approval policies and usage limits still apply independently.")
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 

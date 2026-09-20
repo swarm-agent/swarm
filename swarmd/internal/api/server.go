@@ -4476,11 +4476,6 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				"active_execution_limit": policy.ActiveExecutionLimit,
 			})
 		case http.MethodPost, http.MethodPut:
-			current, err := s.perm.CurrentPolicyForAccount(accountScopeID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
 			var req struct {
 				SessionDeploy        *permission.SessionDeployPolicy  `json:"session_deploy"`
 				PlanAcceptance       *permission.PlanAcceptancePolicy `json:"plan_acceptance"`

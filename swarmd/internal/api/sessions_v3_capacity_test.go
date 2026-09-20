@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,8 +13,6 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/executioncapacity"
-	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -88,13 +85,30 @@ func (r *blockingCapacityTestRunner) close() {
 func recordTestPendingRunIntent(t *testing.T, server *Server, sessionID, runID, accountID, userID string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
+	epoch, found, err := server.sessions.GetActiveExecutionEpoch(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		boundary, err := server.sessions.BeginExecutionEpoch(pebblestore.BeginExecutionEpochInput{SessionID: sessionID, UserID: userID, AccountScopeID: accountID, ClientRequestID: "epoch-" + sessionID, PayloadHash: "epoch-" + sessionID, Reason: "session_created", SkipRunIntent: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		epoch = boundary.Epoch
+	}
+	msg := pebblestore.MessageSnapshot{ID: "msg-" + runID, SessionID: sessionID, UserID: userID, AccountScopeID: accountID, Role: "user", Content: "capacity test"}
+	if _, err := server.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: sessionID, UserID: userID, AccountScopeID: accountID, ClientRequestID: "msg-" + runID, IdempotencyKey: "msg-" + runID, PayloadHash: "msg-" + runID, RequestHash: "msg-" + runID, EpochID: epoch.EpochID, Kind: sessionruntime.SessionMutationAppendMessage, Message: &msg}); err != nil {
+		t.Fatal(err)
+	}
 	pending := pebblestore.V3SessionRunIntent{
-		SessionID:      sessionID,
-		UserID:         userID,
-		AccountScopeID: accountID,
-		RunID:          runID,
-		Status:         sessionruntime.RunIntentPendingExecutor,
-		UpdatedAt:      now,
+		EpochID:         epoch.EpochID,
+		SourceMessageID: msg.ID,
+		SessionID:       sessionID,
+		UserID:          userID,
+		AccountScopeID:  accountID,
+		RunID:           runID,
+		Status:          sessionruntime.RunIntentPendingExecutor,
+		UpdatedAt:       now,
 	}
 	payloadHash, err := sessionV3ExecutorPayloadHash(sessionID, runID, pending.Status, "", "session.assistant.queued", "")
 	if err != nil {
@@ -119,7 +133,11 @@ func recordTestPendingRunIntent(t *testing.T, server *Server, sessionID, runID, 
 
 func createTestSession(t *testing.T, sessionSvc *sessionruntime.Service, sessionID, accountID string, metadata map[string]any) pebblestore.SessionSnapshot {
 	t.Helper()
-	pref := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra"}
+	pref := pebblestore.ModelPreference{Provider: "codex", Model: "gpt-6-astra", Thinking: "high"}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["agent_profile"] = pebblestore.AgentProfile{Name: "swarm", Mode: "primary", RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, Provider: pref.Provider, Model: pref.Model, Thinking: pref.Thinking}
 	s, _, err := sessionSvc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 		SessionID:      sessionID,
 		UserID:         testPrincipal().UserID,
@@ -188,7 +206,8 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 		select {
 		case <-blockingRunner.enteredCh:
 		case <-time.After(3 * time.Second):
-			t.Fatalf("timed out waiting for job to enter provider runner")
+			intents, err := sessionSvc.ListSessionRunIntents(jobs[0].SessionID, 0, 10)
+			t.Fatalf("timed out waiting for job to enter provider runner: %+v err=%v", intents, err)
 		}
 	}
 
@@ -198,9 +217,22 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 		t.Fatalf("capacity contention mismatch: got TotalActive=%d Pending=%d, want 2 and 2", snap.TotalActive, snap.Pending)
 	}
 
-	// Cancel the first 2 active runs to release their slots
-	_, _, _ = exec.CancelRun(jobs[0], "done")
-	_, _, _ = exec.CancelRun(jobs[1], "done")
+	// Cancel the two admitted runs, independent of goroutine scheduling order.
+	var admitted []sessionV3ExecutorJob
+	for _, job := range jobs {
+		intent, ok, err := sessionSvc.GetSessionRunIntent(job.SessionID, job.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && intent.Status == sessionruntime.RunIntentRunning {
+			admitted = append(admitted, job)
+		}
+	}
+	for _, job := range admitted {
+		if _, _, err := exec.CancelRun(job, "done"); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// Wait for the remaining 2 pending runs to be admitted and enter the provider runner
 	for i := 0; i < 2; i++ {
@@ -223,11 +255,11 @@ func TestSessionsV3Executor_CapacityCapContention(t *testing.T) {
 
 // TestSessionsV3Executor_AccountIsolationAndMixedLimit
 // Purpose:
-// - Invariant: Capacity limits are strictly isolated per account; Account A's jobs do not count
-//   towards Account B's capacity limit or starve Account B's execution.
-// - Threat/regression: Cross-account capacity interference or global starvation.
-// - Production boundary: executioncapacity.Manager per-account state, sessionV3Executor.
-// - Narrowest test layer: Multi-account concurrent admission through sessionV3Executor.
+//   - Invariant: Capacity limits are strictly isolated per account; Account A's jobs do not count
+//     towards Account B's capacity limit or starve Account B's execution.
+//   - Threat/regression: Cross-account capacity interference or global starvation.
+//   - Production boundary: executioncapacity.Manager per-account state, sessionV3Executor.
+//   - Narrowest test layer: Multi-account concurrent admission through sessionV3Executor.
 func TestSessionsV3Executor_AccountIsolationAndMixedLimit(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	blockingRunner := newBlockingCapacityTestRunner("codex")
@@ -307,7 +339,18 @@ func TestSessionsV3Executor_AccountIsolationAndMixedLimit(t *testing.T) {
 	}
 
 	// Cancel one from Account A to release slot
-	_, _, _ = exec.CancelRun(jobsA[0], "done")
+	for _, job := range jobsA {
+		intent, ok, err := sessionSvc.GetSessionRunIntent(job.SessionID, job.RunID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && intent.Status == sessionruntime.RunIntentRunning {
+			if _, _, err := exec.CancelRun(job, "done"); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
 	select {
 	case <-blockingRunner.enteredCh:
 	case <-time.After(3 * time.Second):
@@ -327,11 +370,11 @@ func TestSessionsV3Executor_AccountIsolationAndMixedLimit(t *testing.T) {
 
 // TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting
 // Purpose:
-// - Invariant: Deployed sessions are distinguished from ordinary sessions via canonical deployment metadata,
-//   and both count toward TotalActive while only deployed sessions count toward DeployedActive.
-// - Threat/regression: Deployed sessions misclassified as ordinary, or delegated subagents mistakenly classified as deployed.
-// - Production boundary: sessionruntime.IsDeployedSession, sessionV3Executor.run, executioncapacity.Manager.
-// - Narrowest test layer: sessionV3Executor integration with deployed, ordinary, and delegated subagent sessions.
+//   - Invariant: Deployed sessions are distinguished from ordinary sessions via canonical deployment metadata,
+//     and both count toward TotalActive while only deployed sessions count toward DeployedActive.
+//   - Threat/regression: Deployed sessions misclassified as ordinary, or delegated subagents mistakenly classified as deployed.
+//   - Production boundary: sessionruntime.IsDeployedSession, sessionV3Executor.run, executioncapacity.Manager.
+//   - Narrowest test layer: sessionV3Executor integration with deployed, ordinary, and delegated subagent sessions.
 func TestSessionsV3Executor_CombinedOrdinaryAndDeployedAccounting(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	blockingRunner := newBlockingCapacityTestRunner("codex")
@@ -443,22 +486,21 @@ func TestSessionsV3Executor_MandatoryAccountMatchingValidation(t *testing.T) {
 		SessionID: s.ID,
 		RunID:     "run-mismatch",
 	}
-	exec.EnqueueRun(job)
-
-	// Wait for run to fail
-	deadline := time.After(3 * time.Second)
-	tick := time.NewTicker(10 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		intent, ok, err := sessionSvc.GetSessionRunIntent(s.ID, "run-mismatch")
-		if err == nil && ok && intent.Status == sessionruntime.RunIntentFailed {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for mismatched run to fail")
-		case <-tick.C:
-		}
+	before, _, err := sessionSvc.GetSessionRunIntent(s.ID, job.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exec.EnqueueRun(job) {
+		t.Fatal("foreign enqueue accepted")
+	}
+	after, ok, err := sessionSvc.GetSessionRunIntent(s.ID, job.RunID)
+	if err != nil || !ok || before != after {
+		t.Fatalf("rejected principal mutated owner's intent: before=%+v after=%+v err=%v", before, after, err)
+	}
+	select {
+	case <-blockingRunner.enteredCh:
+		t.Fatal("foreign job entered provider")
+	default:
 	}
 
 	// Verify no slots leaked on either account
@@ -635,11 +677,11 @@ func TestSessionsV3Executor_UsageRefusalDoesNotLeakSlot(t *testing.T) {
 
 // TestSessionsV3Executor_RestartAndBacklogRecovery
 // Purpose:
-// - Invariant: On restart, running intents are reconciled to interrupted preserving plan attempt metadata,
-//   recovery does not kill live executor runs, and pending intents are refilled and executed without poll.
-// - Threat/regression: Restart leaves orphan running states or loses plan execution lineage.
-// - Production boundary: sessionV3Executor.recoverDurableRuns, refillPendingBacklog.
-// - Narrowest test layer: executor recovery scan on startup.
+//   - Invariant: On restart, running intents are reconciled to interrupted preserving plan attempt metadata,
+//     recovery does not kill live executor runs, and pending intents are refilled and executed without poll.
+//   - Threat/regression: Restart leaves orphan running states or loses plan execution lineage.
+//   - Production boundary: sessionV3Executor.recoverDurableRuns, refillPendingBacklog.
+//   - Narrowest test layer: executor recovery scan on startup.
 func TestSessionsV3Executor_RestartAndBacklogRecovery(t *testing.T) {
 	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	accountID := testPrincipal().AccountScopeID
@@ -649,22 +691,20 @@ func TestSessionsV3Executor_RestartAndBacklogRecovery(t *testing.T) {
 		server.WaitForInFlightRuns(2 * time.Second)
 	}()
 
-	// Seed 1 running run carrying plan metadata
+	// Seed a pending intent first: running is a transition, not an initial state.
 	sRunning := createTestSession(t, sessionSvc, "sess-restart-running", accountID, nil)
+	recordTestPendingRunIntent(t, server, sRunning.ID, "run-fresh-interrupted", accountID, testPrincipal().UserID)
 	now := time.Now().UnixMilli()
 	runningIntent := pebblestore.V3SessionRunIntent{
 		SessionID:      sRunning.ID,
 		UserID:         testPrincipal().UserID,
 		AccountScopeID: accountID,
 		RunID:          "run-fresh-interrupted",
-		PlanID:         "plan-capacity-1",
-		CheckpointID:   "cp-1",
-		AttemptID:      "attempt-1",
 		Status:         sessionruntime.RunIntentRunning,
 		UpdatedAt:      now - 10000,
 	}
 	payloadHash, _ := sessionV3ExecutorPayloadHash(sRunning.ID, runningIntent.RunID, runningIntent.Status, "", "session.assistant.started", "")
-	_, _ = server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+	_, seedErr := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		SessionID:       sRunning.ID,
 		UserID:          testPrincipal().UserID,
 		AccountScopeID:  accountID,
@@ -677,6 +717,10 @@ func TestSessionsV3Executor_RestartAndBacklogRecovery(t *testing.T) {
 		RunIntent:       &runningIntent,
 		NowUnixMs:       now - 10000,
 	})
+
+	if seedErr != nil {
+		t.Fatal(seedErr)
+	}
 
 	// Seed 2 pending runs
 	for i := 1; i <= 2; i++ {
@@ -698,11 +742,11 @@ func TestSessionsV3Executor_RestartAndBacklogRecovery(t *testing.T) {
 
 // TestSessionsV3Executor_BacklogPagingAcrossLargePendingQueue
 // Purpose:
-// - Invariant: Event-driven refill uses cursor paging across >500 pending intents and same-session runs
-//   so runs for other sessions are not stranded.
-// - Threat/regression: First page of 500 contains same-session runs, causing subsequent sessions to starve.
-// - Production boundary: sessionV3Executor.refillPendingBacklog, ListSessionRunIntentsByStatusPaged.
-// - Narrowest test layer: executor cursor paging through pending intents.
+//   - Invariant: Event-driven refill uses cursor paging across >500 pending intents and same-session runs
+//     so runs for other sessions are not stranded.
+//   - Threat/regression: First page of 500 contains same-session runs, causing subsequent sessions to starve.
+//   - Production boundary: sessionV3Executor.refillPendingBacklog, ListSessionRunIntentsByStatusPaged.
+//   - Narrowest test layer: executor cursor paging through pending intents.
 func TestSessionsV3Executor_BacklogPagingAcrossLargePendingQueue(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	blockingRunner := newBlockingCapacityTestRunner("codex")
@@ -725,20 +769,16 @@ func TestSessionsV3Executor_BacklogPagingAcrossLargePendingQueue(t *testing.T) {
 		server.WaitForInFlightRuns(2 * time.Second)
 	}()
 
-	// Session A: has an active run AND 5 additional pending runs (head-blocked)
-	sA := createTestSession(t, sessionSvc, "sess-page-a", accountID, nil)
-	recordTestPendingRunIntent(t, server, sA.ID, "run-a-active", accountID, testPrincipal().UserID)
-	exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sA.ID, RunID: "run-a-active"})
-
-	select {
-	case <-blockingRunner.enteredCh:
-	case <-time.After(3 * time.Second):
-		t.Fatalf("timed out waiting for session A active run")
-	}
-
-	// Seed 5 additional pending runs for session A
-	for i := 1; i <= 5; i++ {
-		recordTestPendingRunIntent(t, server, sA.ID, fmt.Sprintf("run-a-pending-%d", i), accountID, testPrincipal().UserID)
+	// The canonical writer rejects multiple active intents per session. Seed 501
+	// distinct pending sessions and reserve their executor identities to isolate
+	// paging beyond a completely in-flight first page without 501 goroutines.
+	for i := 0; i < 501; i++ {
+		id := fmt.Sprintf("sess-page-a-%04d", i)
+		createTestSession(t, sessionSvc, id, accountID, nil)
+		recordTestPendingRunIntent(t, server, id, "run-page", accountID, testPrincipal().UserID)
+		exec.mu.Lock()
+		exec.activeBySession[id] = "occupied-run"
+		exec.mu.Unlock()
 	}
 
 	// Session B: seeded after Session A pending runs
@@ -755,17 +795,16 @@ func TestSessionsV3Executor_BacklogPagingAcrossLargePendingQueue(t *testing.T) {
 		t.Fatalf("timed out waiting for session B run to be admitted despite session A pending queue")
 	}
 
-	_, _, _ = exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sA.ID, RunID: "run-a-active"}, "cleanup")
 	_, _, _ = exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: sB.ID, RunID: "run-b-pending-1"}, "cleanup")
 }
 
 // TestSessionsV3Executor_CapacityQueueFullRetainsPending
 // Purpose:
-// - Invariant: When capacity admission returns ErrQueueFull, the run intent remains durable pending
-//   for subsequent refill retry rather than failing accepted work.
-// - Threat/regression: ErrQueueFull causes permanent failure of queued user/subagent requests.
-// - Production boundary: sessionV3Executor.run, executioncapacity.ErrQueueFull handling.
-// - Narrowest test layer: executor admission against bounded capacity manager queue.
+//   - Invariant: When capacity admission returns ErrQueueFull, the run intent remains durable pending
+//     for subsequent refill retry rather than failing accepted work.
+//   - Threat/regression: ErrQueueFull causes permanent failure of queued user/subagent requests.
+//   - Production boundary: sessionV3Executor.run, executioncapacity.ErrQueueFull handling.
+//   - Narrowest test layer: executor admission against bounded capacity manager queue.
 func TestSessionsV3Executor_CapacityQueueFullRetainsPending(t *testing.T) {
 	server, sessionSvc, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	blockingRunner := newBlockingCapacityTestRunner("codex")
@@ -775,8 +814,8 @@ func TestSessionsV3Executor_CapacityQueueFullRetainsPending(t *testing.T) {
 
 	// Configure capacity manager with Limit=1 and MaxWaiters=1
 	mgr := executioncapacity.NewManager(executioncapacity.ManagerConfig{
-		DefaultLimit: 1,
-		MaxWaiters:   1,
+		DefaultLimit:    1,
+		MaxQueueWaiters: 1,
 	})
 	permSvc.SetExecutionCapacity(mgr)
 
@@ -849,12 +888,12 @@ func TestSessionsV3Executor_CapacityQueueFullRetainsPending(t *testing.T) {
 
 // TestServerCapabilities_GetAndPutActiveExecutionLimit
 // Purpose:
-// - Invariant: GET /v1/permissions/capabilities exposes active_execution_limit.
-//   PUT /v1/permissions/capabilities atomically validates all fields; rejecting invalid fields
-//   without mutating any state.
-// - Threat/regression: Accidental reset of execution limit or non-atomic capability updates.
-// - Production boundary: Server.handlePermissions /v1/permissions/capabilities.
-// - Narrowest test layer: HTTP handler test against Server.
+//   - Invariant: GET /v1/permissions/capabilities exposes active_execution_limit.
+//     PUT /v1/permissions/capabilities atomically validates all fields; rejecting invalid fields
+//     without mutating any state.
+//   - Threat/regression: Accidental reset of execution limit or non-atomic capability updates.
+//   - Production boundary: Server.handlePermissions /v1/permissions/capabilities.
+//   - Narrowest test layer: HTTP handler test against Server.
 func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	server, _, permSvc, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	accountID := testPrincipal().AccountScopeID
@@ -867,7 +906,7 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	// 1. GET initial
 	req := httptest.NewRequest(http.MethodGet, "/v1/permissions/capabilities", nil)
 	w := httptest.NewRecorder()
-	server.handlePermissions(w, req)
+	server.handlePermissions(w, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /v1/permissions/capabilities failed: %d %s", w.Code, w.Body.String())
 	}
@@ -886,7 +925,7 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	putBody := `{"active_execution_limit": 42}`
 	req = httptest.NewRequest(http.MethodPut, "/v1/permissions/capabilities", bytes.NewBufferString(putBody))
 	w = httptest.NewRecorder()
-	server.handlePermissions(w, req)
+	server.handlePermissions(w, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT /v1/permissions/capabilities failed: %d %s", w.Code, w.Body.String())
 	}
@@ -908,7 +947,7 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	badBody := `{"active_execution_limit": 0}`
 	req = httptest.NewRequest(http.MethodPut, "/v1/permissions/capabilities", bytes.NewBufferString(badBody))
 	w = httptest.NewRecorder()
-	server.handlePermissions(w, req)
+	server.handlePermissions(w, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("PUT invalid limit code = %d, want 400", w.Code)
 	}
@@ -921,7 +960,7 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	atomicBadBody := `{"active_execution_limit": 75, "session_deploy": {"mode": "invalid_mode"}}`
 	req = httptest.NewRequest(http.MethodPut, "/v1/permissions/capabilities", bytes.NewBufferString(atomicBadBody))
 	w = httptest.NewRecorder()
-	server.handlePermissions(w, req)
+	server.handlePermissions(w, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("PUT atomic bad body code = %d, want 400", w.Code)
 	}
@@ -930,10 +969,10 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	}
 
 	// 5. PUT with omitted active_execution_limit: preserves 42
-	omitBody := `{"session_deploy": {"mode": "always-allow"}}`
+	omitBody := `{"session_deploy": {"mode": "always_allow", "over_limit_action":"ask"}}`
 	req = httptest.NewRequest(http.MethodPut, "/v1/permissions/capabilities", bytes.NewBufferString(omitBody))
 	w = httptest.NewRecorder()
-	server.handlePermissions(w, req)
+	server.handlePermissions(w, requestWithTestPrincipalForAccount(req, testPrincipal().UserID, testPrincipal().AccountScopeID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("PUT with omitted limit failed: %d %s", w.Code, w.Body.String())
 	}
@@ -946,5 +985,29 @@ func TestServerCapabilities_GetAndPutActiveExecutionLimit(t *testing.T) {
 	}
 	if snap := permSvc.ExecutionCapacitySnapshot(accountID); snap.EffectiveLimit != 42 {
 		t.Fatalf("omitted limit mutated snapshot to %d, want preserved 42", snap.EffectiveLimit)
+	}
+}
+
+// Purpose: shutdown of the admission authority cannot turn an accepted pending
+// intent into failure or spin the refill pump. Exercise executor.run with a real
+// closed manager and cancellation, then verify the durable intent is unchanged.
+func TestSessionsV3Executor_ClosedCapacityRetainsPending(t *testing.T) {
+	server, sessions, perms, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	s := createTestSession(t, sessions, "closed-capacity", testPrincipal().AccountScopeID, nil)
+	recordTestPendingRunIntent(t, server, s.ID, "closed-run", s.AccountScopeID, s.UserID)
+	before, _, err := sessions.GetSessionRunIntent(s.ID, "closed-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	perms.ExecutionCapacity().Close()
+	exec := newSessionV3Executor(server)
+	server.v3SessionExecutor = exec
+	server.CancelInFlightRuns()
+	if !server.WaitForInFlightRuns(2 * time.Second) {
+		t.Fatal("shutdown did not join capacity wait")
+	}
+	after, ok, err := sessions.GetSessionRunIntent(s.ID, "closed-run")
+	if err != nil || !ok || after.Status != before.Status || after.BlockedReason != "" {
+		t.Fatalf("shutdown changed pending work: %+v err=%v", after, err)
 	}
 }

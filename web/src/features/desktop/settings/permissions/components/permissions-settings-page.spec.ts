@@ -149,10 +149,9 @@ test('active execution limit validation fails closed on non-integer or out-of-bo
 
 test('active execution limit normalization falls back to default 100', () => {
   assert.equal(normalizeActiveExecutionLimit(undefined), 100)
-  assert.equal(normalizeActiveExecutionLimit(null), 100)
-  assert.equal(normalizeActiveExecutionLimit(0), 100)
-  assert.equal(normalizeActiveExecutionLimit(-1), 100)
-  assert.equal(normalizeActiveExecutionLimit(50000), 100)
+  for (const invalid of [null, 0, -1, 50000]) {
+    assert.throws(() => normalizeActiveExecutionLimit(invalid), /Active execution limit/)
+  }
   assert.equal(normalizeActiveExecutionLimit(50), 50)
 })
 

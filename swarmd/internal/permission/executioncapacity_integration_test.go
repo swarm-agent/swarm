@@ -249,7 +249,7 @@ func TestUpdateExecutionCapabilityPoliciesForAccountAtomic(t *testing.T) {
 
 	// 1. Validation failure rejects all changes without partial mutation
 	invalidLimit := -5
-	deployPolicy := SessionDeployPolicy{RequireApproval: "always"}
+	deployPolicy := SessionDeployPolicy{Mode: CapabilityModeAlwaysAllow, OverLimitAction: SessionDeployOverLimitAsk}
 	_, err = svc.UpdateExecutionCapabilityPoliciesForAccount(accountID, &deployPolicy, nil, &invalidLimit)
 	if err == nil {
 		t.Fatalf("expected error for invalid limit in atomic update")
@@ -265,7 +265,7 @@ func TestUpdateExecutionCapabilityPoliciesForAccountAtomic(t *testing.T) {
 
 	// 2. Atomic update with all non-nil fields
 	validLimit := 55
-	planPolicy := PlanAcceptancePolicy{AutoAcceptFastPlan: true}
+	planPolicy := PlanAcceptancePolicy{Mode: CapabilityModeAlwaysAllow}
 	updated, err := svc.UpdateExecutionCapabilityPoliciesForAccount(accountID, &deployPolicy, &planPolicy, &validLimit)
 	if err != nil {
 		t.Fatalf("atomic update failed: %v", err)
@@ -273,10 +273,10 @@ func TestUpdateExecutionCapabilityPoliciesForAccountAtomic(t *testing.T) {
 	if updated.ActiveExecutionLimit != 55 {
 		t.Fatalf("limit = %d, want 55", updated.ActiveExecutionLimit)
 	}
-	if updated.SessionDeploy.RequireApproval != "always" {
-		t.Fatalf("deploy require approval = %s, want always", updated.SessionDeploy.RequireApproval)
+	if updated.SessionDeploy.Mode != CapabilityModeAlwaysAllow {
+		t.Fatalf("deploy require approval = %s, want always", updated.SessionDeploy.Mode)
 	}
-	if !updated.PlanAcceptance.AutoAcceptFastPlan {
+	if updated.PlanAcceptance.Mode != CapabilityModeAlwaysAllow {
 		t.Fatalf("plan acceptance auto accept fast plan = false, want true")
 	}
 
@@ -295,10 +295,10 @@ func TestUpdateExecutionCapabilityPoliciesForAccountAtomic(t *testing.T) {
 	if partialUpdated.ActiveExecutionLimit != 75 {
 		t.Fatalf("limit = %d, want 75", partialUpdated.ActiveExecutionLimit)
 	}
-	if partialUpdated.SessionDeploy.RequireApproval != "always" {
-		t.Fatalf("preserved deploy require approval = %s, want always", partialUpdated.SessionDeploy.RequireApproval)
+	if partialUpdated.SessionDeploy.Mode != CapabilityModeAlwaysAllow {
+		t.Fatalf("preserved deploy require approval = %s, want always", partialUpdated.SessionDeploy.Mode)
 	}
-	if !partialUpdated.PlanAcceptance.AutoAcceptFastPlan {
+	if partialUpdated.PlanAcceptance.Mode != CapabilityModeAlwaysAllow {
 		t.Fatalf("preserved plan acceptance auto accept fast plan = false, want true")
 	}
 	if snap := svc.ExecutionCapacitySnapshot(accountID); snap.EffectiveLimit != 75 {

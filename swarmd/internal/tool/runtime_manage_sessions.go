@@ -73,10 +73,10 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 			return "", fmt.Errorf("execution capacity service is unavailable: %s", errStr)
 		}
 		return marshalManageSessions(map[string]any{
-			"tool":    "manage_sessions",
-			"action":  "inspect",
-			"actions": []string{"list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "commit", "archive", "unarchive", "deploy", "create", "stop", "pause", "send_message", "compact"},
-			"categories": []string{"video", "needs_review", "blocked", "in_progress", "automation", "pinned", "active_chats", "archived"},
+			"tool":                "manage_sessions",
+			"action":              "inspect",
+			"actions":             []string{"list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "commit", "archive", "unarchive", "deploy", "create", "stop", "pause", "send_message", "compact"},
+			"categories":          []string{"video", "needs_review", "blocked", "in_progress", "automation", "pinned", "active_chats", "archived"},
 			"prompt_free_actions": []string{"inspect", "list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "create", "stop", "pause", "send_message", "compact"},
 			"limits": map[string]int{
 				"results":            manageSessionsMaxLimit,
@@ -96,6 +96,7 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 				"total_active":           snap.TotalActive,
 				"deployed_active":        snap.DeployedActive,
 				"pending":                snap.Pending,
+				"pending_scope":          "live admission waiters; durable overflow may also be pending",
 				"available_slots":        snap.Available,
 				"available":              snap.Available,
 				"deployment_batch_bound": snap.DeploymentBatchBound,

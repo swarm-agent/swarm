@@ -1941,7 +1941,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 	}
 	var gateLease executioncapacity.Lease
 	if hasPendingApprovals {
-		if l, ok := executioncapacity.LeaseFromContext(ctx, sessionID, runID); ok && l != nil && !l.IsParked() {
+		if l, ok := executioncapacity.RunLeaseFromContext(ctx, runID); ok && l != nil && !l.IsParked() {
 			gateLease = l
 			if parkErr := gateLease.Park(); parkErr != nil {
 				return nil, nil, nil, nil, nil, parkErr
@@ -4584,7 +4584,11 @@ func executeTaskLaunchesInParallel[T any](ctx context.Context, launchCount int, 
 
 func (s *Service) executeTaskTool(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler) (string, error) {
 	principal, _ := identity.PrincipalFromContext(ctx)
-	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal})
+	runID := ""
+	if lease, ok := executioncapacity.ActiveSessionLeaseFromContext(ctx, principal.AccountScopeID, sessionID); ok {
+		runID = lease.RunID()
+	}
+	return s.executeTaskToolWithParsed(ctx, sessionID, sessionMode, step, call, emit, taskExecutionRequest{Principal: principal, RunID: runID})
 }
 
 func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sessionMode string, step int, call tool.Call, emit StreamHandler, req taskExecutionRequest) (taskResult string, taskErr error) {

@@ -137,6 +137,7 @@ type Service struct {
 	runCounter                   atomic.Uint64
 	lifecycleMu                  sync.Mutex
 	activeRuns                   map[string]*activeSessionRun
+	pendingAdmissions            map[string]map[string]context.CancelFunc
 }
 
 func (s *Service) LongSessionSnapshot() map[string]any {
@@ -737,6 +738,9 @@ func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, provi
 	if tools != nil && sessions != nil {
 		tools.SetManageSessionService(sessions)
 	}
+	if tools != nil && permissions != nil {
+		tools.SetManageSessionCapacityProvider(permissions)
+	}
 	return &Service{
 		sessions:    sessions,
 		model:       modelSvc,
@@ -882,6 +886,7 @@ func (s *Service) ExecutionCapacitySnapshot(accountScopeID string) executioncapa
 	if s == nil || s.permissions == nil {
 		return executioncapacity.Snapshot{
 			AccountScopeID: strings.TrimSpace(accountScopeID),
+			Unavailable:    true, Error: "execution capacity service is unavailable",
 		}
 	}
 	return s.permissions.ExecutionCapacitySnapshot(accountScopeID)
@@ -1240,8 +1245,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	emit := func(StreamEvent) {}
 	sessionResolved := false
 	lifecycleClaimed := false
+	var ownedExecutionLease executioncapacity.Lease
 	runID := strings.TrimSpace(options.RunID)
 	defer func() {
+		defer func() {
+			if ownedExecutionLease != nil {
+				_ = ownedExecutionLease.Release()
+			}
+		}()
 		if !sessionResolved || !lifecycleClaimed {
 			return
 		}
@@ -1303,7 +1314,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, fmt.Errorf("session %q not found", sessionID)
 	}
 	sessionResolved = true
-	acctScope := firstNonEmptyString(options.Principal.AccountScopeID, sessionSnapshot.AccountScopeID)
+	acctScope := sessionSnapshot.AccountScopeID
+	if (options.Principal.AccountScopeID != "" && options.Principal.AccountScopeID != acctScope) || (options.Principal.UserID != "" && options.Principal.UserID != sessionSnapshot.UserID) {
+		return RunResult{}, errors.New("run principal does not own session")
+	}
 	if s.sessions != nil {
 		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
 			return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
@@ -1431,12 +1445,20 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	defer runCancel()
 	ctx = runCtx
 	runnerCtx = runCtx
-	s.attachLifecycleCancel(sessionID, runID, runCancel)
-	defer s.detachLifecycleCancel(sessionID, runID)
 
+	if err := s.registerPendingAdmission(sessionID, runID, runCancel); err != nil {
+		return RunResult{}, err
+	}
+	defer s.removePendingAdmission(sessionID, runID)
 	var executionLease executioncapacity.Lease
 	if s.permissions != nil && s.permissions.ExecutionCapacity() != nil {
-		existingLease, hasLease := executioncapacity.LeaseFromContext(ctx, sessionID, runID)
+		existingLease, hasLease := executioncapacity.LeaseFromContextForAccount(ctx, acctScope, sessionID, runID)
+		if manualCompact {
+			existingLease, hasLease = executioncapacity.ActiveSessionLeaseFromContext(ctx, acctScope, sessionID)
+		}
+		if hasLease && !existingLease.IsActive() {
+			return RunResult{}, errors.New("run cannot execute with a parked lease")
+		}
 		if !hasLease || existingLease == nil {
 			kind := executioncapacity.ExecutionKindOrdinary
 			if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
@@ -1452,19 +1474,20 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			if admitErr != nil {
 				return RunResult{}, admitErr
 			}
-			defer func() {
-				if executionLease != nil {
-					_ = executionLease.Release()
-				}
-			}()
+			ownedExecutionLease = executionLease
 			runCtx = executioncapacity.WithLease(runCtx, executionLease)
 			ctx = runCtx
 			runnerCtx = runCtx
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
 	if s.sessions != nil {
-		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
+		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err != nil {
+			return RunResult{}, err
+		} else if exceeded {
 			return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
 		}
 	}
@@ -1554,6 +1577,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, err
 	}
 	lifecycleClaimed = true
+	s.attachLifecycleCancel(sessionID, runID, runCancel)
+	s.removePendingAdmission(sessionID, runID)
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
 	emitLifecycleSnapshot(emit, startSnapshot)
 	if runningSnapshot, changed, err := s.transitionSessionLifecycle(sessionID, runID, lifecyclePhaseRunning); err == nil && changed {
 		emitLifecycleSnapshot(emit, runningSnapshot)

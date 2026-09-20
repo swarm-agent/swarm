@@ -38,10 +38,10 @@ export const DEFAULT_SESSION_DEPLOY_POLICY: SessionDeployPolicy = {
 export const DEFAULT_PLAN_ACCEPTANCE_POLICY: PlanAcceptancePolicy = { mode: 'ask' }
 
 export function normalizeActiveExecutionLimit(value: unknown): number {
-  if (typeof value === 'number' && Number.isInteger(value) && value >= MIN_ACTIVE_EXECUTION_LIMIT && value <= MAX_ACTIVE_EXECUTION_LIMIT) {
-    return value
-  }
-  return DEFAULT_ACTIVE_EXECUTION_LIMIT
+  if (value === undefined) return DEFAULT_ACTIVE_EXECUTION_LIMIT
+  const error = validateActiveExecutionLimit(value)
+  if (error) throw new Error(error)
+  return value as number
 }
 
 export function validateActiveExecutionLimit(value: unknown): string | null {

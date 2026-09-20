@@ -24,3 +24,29 @@ func runWithParkedExecutionLease(ctx context.Context, sessionID, runID string, f
 	}()
 	return fn()
 }
+
+// Pending admissions contain cancellation handles only; durable session state
+// remains the authority. They let stop cancel a child before it owns a slot.
+func (s *Service) registerPendingAdmission(sessionID, runID string, cancel context.CancelFunc) error {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.pendingAdmissions == nil {
+		s.pendingAdmissions = make(map[string]map[string]context.CancelFunc)
+	}
+	if s.pendingAdmissions[sessionID] == nil {
+		s.pendingAdmissions[sessionID] = make(map[string]context.CancelFunc)
+	}
+	if s.pendingAdmissions[sessionID][runID] != nil {
+		return ErrSessionAlreadyActive
+	}
+	s.pendingAdmissions[sessionID][runID] = cancel
+	return nil
+}
+func (s *Service) removePendingAdmission(sessionID, runID string) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	delete(s.pendingAdmissions[sessionID], runID)
+	if len(s.pendingAdmissions[sessionID]) == 0 {
+		delete(s.pendingAdmissions, sessionID)
+	}
+}
