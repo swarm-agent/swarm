@@ -39,14 +39,11 @@ function testCodexOpensUsageWithoutChangingModels(): void {
   assert((models?.action as DesktopSlashCommandAction | undefined)?.kind === 'open-model-picker', 'expected /models to keep opening model picker')
 }
 
-function testMediaCommandOpensQuickSettings(): void {
+function testMediaCommandOpensStudioMedia(): void {
   const media = getDesktopSlashCommands().find((command) => command.command === '/media')
   assert(Boolean(media), 'expected /media command to exist')
   assert(media?.state === 'ready', 'expected /media command to be ready')
-  assert(media?.action.kind === 'open-quick-settings', 'expected /media to open quick settings')
-  if (media?.action.kind === 'open-quick-settings') {
-    assert(media.action.tab === 'media', 'expected /media to target media quick settings')
-  }
+  assert(media?.action.kind === 'open-studio-media', 'expected /media to open studio media')
   const palette = buildDesktopSlashPaletteState('/media')
   assert(palette.exactMatch?.id === 'media', 'expected /media to resolve exactly')
   assert(palette.matches[0]?.id === 'media', 'expected /media to lead palette matches')
@@ -249,7 +246,7 @@ function main(): void {
   testPlanCommandIsReady()
   testSlashPaletteMatchesPlan()
   testCodexOpensUsageWithoutChangingModels()
-  testMediaCommandOpensQuickSettings()
+  testMediaCommandOpensStudioMedia()
   testAICommitCommandTriggersCanonicalWorkflow()
   testFastCommandIsRetired()
   testMCPCommandIsDeferredAndExaRequiresAPIKey()

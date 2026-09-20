@@ -14,6 +14,15 @@ test('Video Studio has editor and canonical video routes separate from Video Too
   assert.match(routerSource, /WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set\(\[[^\]]*'video'/)
 })
 
+test('Media routes replace /media and redirect into Studio with view=media', () => {
+  assert.match(routerSource, /path: '\/media'[\s\S]*?to: '\/studio'[\s\S]*?view: 'media'/)
+  assert.match(routerSource, /path: '\/\$workspaceSlug\/media'[\s\S]*?to: '\/\$workspaceSlug\/studio'[\s\S]*?view: 'media'/)
+  assert.match(routerSource, /ROOT_RESERVED_ROUTE_SEGMENTS = new Set\(\[[^\]]*'media'/)
+  assert.match(routerSource, /WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set\(\[[^\]]*'media'/)
+  assert.match(desktopSource, /case 'open-studio-media':/)
+  assert.match(desktopSource, /search: \{ view: 'media' \}/)
+})
+
 test('Video Studio session view preserves canonical V3 hydration without forcing video mode', () => {
   assert.match(desktopSource, /selectAndHydrateDesktopV3Session\(sessionId\)/)
   assert.match(desktopSource, /routeSessionHasVideoProject = routeSessionIsVideoStudio \|\| routeSessionVideoProjectQuery\.data === true/)

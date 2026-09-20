@@ -4026,6 +4026,24 @@ export function DesktopAppPage() {
         setQuickSettingsTab(action.tab)
         setMobileSidebarOpen(false)
         return
+      case 'open-studio-media': {
+        const topWorkspaceSlug = workspaces[0] ? workspaceRouteSlugBase(workspaces[0]) : ''
+        const targetWorkspaceSlug = routeWorkspaceSlug || topWorkspaceSlug
+        setMobileSidebarOpen(false)
+        if (targetWorkspaceSlug) {
+          void navigate({
+            to: '/$workspaceSlug/studio',
+            params: { workspaceSlug: targetWorkspaceSlug },
+            search: { view: 'media' },
+          })
+        } else {
+          void navigate({
+            to: '/studio',
+            search: { view: 'media' },
+          })
+        }
+        return
+      }
       case 'open-permissions':
         setQuickSettingsTab('permissions')
         setMobileSidebarOpen(false)

@@ -15,8 +15,8 @@ const VideoToolPage = withStartupScreen(lazy(() => import('../features/desktop/t
 const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/image-tool-page').then((module) => ({ default: module.ImageToolPage }))))
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const UsagePage = withStartupScreen(lazy(() => import('../features/desktop/usage/pages/usage-page').then((module) => ({ default: module.UsagePage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage'])
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
@@ -35,6 +35,17 @@ function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null 
     return null
   }
   return { sessionId: sessionId || undefined }
+}
+
+function validateStudioSearch(search: Record<string, unknown>): { view?: 'editor' | 'media'; type?: string; filter?: string } {
+  const view = search.view === 'media' || search.view === 'editor' ? search.view : undefined
+  const type = typeof search.type === 'string' ? search.type.trim() : undefined
+  const filter = typeof search.filter === 'string' ? search.filter.trim() : undefined
+  return {
+    ...(view ? { view } : {}),
+    ...(type ? { type } : {}),
+    ...(filter ? { filter } : {}),
+  }
 }
 
 function validateWorkspaceParams(params: Record<string, unknown>): { workspaceSlug: string } {
@@ -195,7 +206,16 @@ const toolsRoute = createRoute({
 const studioRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/studio',
+  validateSearch: validateStudioSearch,
   component: VideoToolPage,
+})
+
+const mediaRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/media',
+  beforeLoad: () => {
+    throw redirect({ to: '/studio', search: { view: 'media' }, replace: true })
+  },
 })
 
 const videoToolRoute = createRoute({
@@ -387,7 +407,22 @@ const workspaceStudioRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/studio',
   parseParams: validateWorkspaceParams,
+  validateSearch: validateStudioSearch,
   component: VideoToolPage,
+})
+
+const workspaceMediaRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/media',
+  parseParams: validateWorkspaceParams,
+  beforeLoad: ({ params }) => {
+    throw redirect({
+      to: '/$workspaceSlug/studio',
+      params: { workspaceSlug: params.workspaceSlug },
+      search: { view: 'media' },
+      replace: true,
+    })
+  },
 })
 
 const workspaceStudioSessionRoute = createRoute({
@@ -429,6 +464,7 @@ const routeTree = rootRoute.addChildren([
   integrationSessionRoute,
   toolsRoute,
   studioRoute,
+  mediaRoute,
   videoToolRoute,
   imageToolRoute,
   imageToolSessionRoute,
@@ -444,6 +480,7 @@ const routeTree = rootRoute.addChildren([
   workspaceToolsRoute,
   workspaceStudioRoute,
   workspaceStudioSessionRoute,
+  workspaceMediaRoute,
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,
