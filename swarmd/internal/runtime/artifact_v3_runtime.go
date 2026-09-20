@@ -750,9 +750,16 @@ func digestArtifactProject(input map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (a *artifactV3RuntimeAdapter) ReadArtifactV3PreviewEvidence(_ context.Context, accountScopeID, userID, sessionID, artifactID, revisionRef string) ([]byte, error) {
+func (a *artifactV3RuntimeAdapter) ReadArtifactV3PreviewEvidence(ctx context.Context, accountScopeID, userID, sessionID, artifactID, revisionRef string) ([]byte, error) {
 	if a == nil || a.sessions == nil || strings.TrimSpace(accountScopeID) == "" || strings.TrimSpace(userID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(artifactID) == "" || strings.TrimSpace(revisionRef) == "" {
 		return nil, pebblestore.ErrArtifactV3Unauthorized
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	} else {
+		ctx = context.Background()
 	}
 	repository, ok, err := a.sessions.GetArtifactV3Repository(accountScopeID, userID, artifactID)
 	if err != nil || !ok || repository.OwnerSessionID != sessionID {
@@ -768,6 +775,14 @@ func (a *artifactV3RuntimeAdapter) ReadArtifactV3PreviewEvidence(_ context.Conte
 			(revision.Preview.CommitOID == revision.Preview.InheritedFrom.CommitOID || revision.Preview.CommitOID == commit) &&
 			revision.Preview.InheritedFrom.TreeOID == revision.TreeOID)
 	if !validCommit || revision.Preview.Reference == "" || revision.Preview.DigestSHA256 == "" {
+		return nil, pebblestore.ErrArtifactV3Integrity
+	}
+	repo, err := pebblestore.OpenArtifactV3Repository(ctx, a.repositoryRoot, artifactID, pebblestore.ArtifactV3Owner{AccountScopeID: accountScopeID, UserID: userID, SessionID: sessionID}, a.limits)
+	if err != nil {
+		return nil, err
+	}
+	gitRevision, err := repo.ReadRevision(ctx, commit)
+	if err != nil || gitRevision.TreeOID != revision.TreeOID || gitRevision.ManifestBlobOID != revision.ManifestBlobOID {
 		return nil, pebblestore.ErrArtifactV3Integrity
 	}
 	body, err := os.ReadFile(filepath.Join(a.evidenceRoot, revision.Preview.Reference+".png"))
@@ -2099,7 +2114,7 @@ func (a *artifactV3RuntimeAdapter) LocateArtifactV3DirectDraft(ctx context.Conte
 	return tool.ArtifactV3DraftResumeRequest{TurnID: grant.TurnID, CandidateID: grant.CandidateID, SessionID: repository.OwnerSessionID, ArtifactID: artifactID, ExpectedSequence: public.Sequence, ExpectedProjectionSeq: repository.EventSeq, ExpectedHead: repository.HeadCommitOID}, nil
 }
 
-func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(_ context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
+func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(ctx context.Context, account, user, session, artifactID, commit string, seq uint64) (pebblestore.ArtifactV3SelectedSource, error) {
 	if a == nil || a.service == nil {
 		return pebblestore.ArtifactV3SelectedSource{}, pebblestore.ErrArtifactV3Invalid
 	}
@@ -2107,6 +2122,9 @@ func (a *artifactV3RuntimeAdapter) ResolveArtifactV3SelectedSource(_ context.Con
 		source, err := a.service.ResolveSelectedSource(pebblestore.ArtifactV3Owner{AccountScopeID: account, UserID: user, SessionID: session}, artifactID, commit, seq)
 		if err == nil {
 			return source, nil
+		}
+		if !errors.Is(err, pebblestore.ErrArtifactV3Unauthorized) {
+			return pebblestore.ArtifactV3SelectedSource{}, err
 		}
 	}
 	return a.service.ResolveRetainedSource(account, user, session, artifactID, commit, seq)

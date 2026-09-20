@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +10,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"swarm/packages/swarmd/internal/api"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/artifactv3video"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -23,24 +21,21 @@ import (
 	"swarm/packages/swarmd/internal/videoproject"
 )
 
-// Explicit disclosure: artifactV3RuntimeRenderer and artifactV3ConversionRenderer
-// are fake in-memory renderers producing deterministic byte slices ("fake-renderer-evidence");
-// real browser capture is not invoked in deterministic unit tests.
-
 type retainedReuseHarness struct {
-	root           string
-	store          *pebblestore.Store
-	events         *pebblestore.EventLog
-	sessionStore   *pebblestore.SessionStore
-	sessions       *sessionruntime.Service
-	repositoryRoot string
-	workspaceRoot  string
-	evidenceRoot   string
-	service        *pebblestore.ArtifactV3Service
-	adapter        *artifactV3RuntimeAdapter
-	videoBridge    *artifactV3VideoBridge
-	videoProjects  *videoproject.Service
-	toolRuntime    *tool.Runtime
+	root            string
+	store           *pebblestore.Store
+	events          *pebblestore.EventLog
+	sessionStore    *pebblestore.SessionStore
+	sessions        *sessionruntime.Service
+	repositoryRoot  string
+	workspaceRoot   string
+	evidenceRoot    string
+	service         *pebblestore.ArtifactV3Service
+	adapter         *artifactV3RuntimeAdapter
+	videoBridge     *artifactV3VideoBridge
+	videoProjects   *videoproject.Service
+	toolRuntime     *tool.Runtime
+	legacyAuthority *artifact.Authority
 }
 
 func setupRetainedReuseHarness(t *testing.T) *retainedReuseHarness {
@@ -117,20 +112,25 @@ func setupRetainedReuseHarness(t *testing.T) *retainedReuseHarness {
 	toolRuntime.SetArtifactV3NativeImporter(adapter)
 	toolRuntime.SetArtifactV3VideoConversionService(videoBridge)
 
+	// Legacy artifact authority
+	legacyAuthority := artifact.NewAuthority(artifact.NewRegistry(sessions, artifact.Limits{}), sessions)
+	toolRuntime.SetArtifactAuthority(legacyAuthority)
+
 	return &retainedReuseHarness{
-		root:           root,
-		store:          store,
-		events:         events,
-		sessionStore:   sessionStore,
-		sessions:       sessions,
-		repositoryRoot: repositoryRoot,
-		workspaceRoot:  workspaceRoot,
-		evidenceRoot:   evidenceRoot,
-		service:        service,
-		adapter:        adapter,
-		videoBridge:    videoBridge,
-		videoProjects:  videoProjects,
-		toolRuntime:    toolRuntime,
+		root:            root,
+		store:           store,
+		events:          events,
+		sessionStore:    sessionStore,
+		sessions:        sessions,
+		repositoryRoot:  repositoryRoot,
+		workspaceRoot:   workspaceRoot,
+		evidenceRoot:    evidenceRoot,
+		service:         service,
+		adapter:         adapter,
+		videoBridge:     videoBridge,
+		videoProjects:   videoProjects,
+		toolRuntime:     toolRuntime,
+		legacyAuthority: legacyAuthority,
 	}
 }
 
@@ -164,7 +164,6 @@ func (h *retainedReuseHarness) invokeTool(t *testing.T, sessionID, runID string,
 	t.Helper()
 	session, ok, err := h.sessions.Store().GetSession(sessionID)
 	if err != nil || !ok {
-		// Session might be archived/deleted; find owner from tombstone if needed
 		tombstone, tok, terr := h.sessions.Store().GetV3SessionTombstone(sessionID)
 		if terr != nil || !tok {
 			t.Fatalf("session %s not found: %v", sessionID, err)
@@ -203,22 +202,63 @@ func (h *retainedReuseHarness) invokeTool(t *testing.T, sessionID, runID string,
 }
 
 // createTestArtifact creates a fully published ready Artifact V3 in the given session.
-func (h *retainedReuseHarness) createTestArtifact(t *testing.T, sessionID, artifactID, title string) (string, string) {
+// Note: caller-chosen artifact_id is omitted per production create contract.
+func (h *retainedReuseHarness) createTestArtifact(t *testing.T, sessionID, title string) (string, string) {
 	t.Helper()
 	html := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>%s</title></head><body><main id="hero"><h1>%s</h1></main><section id="pricing">Pricing</section><footer id="footer">Footer</footer></body></html>`, title, title)
-	created, err := h.invokeTool(t, sessionID, "run-create-"+artifactID, map[string]any{
-		"action":      "create",
-		"artifact_id": artifactID,
-		"filename":    "index.html",
-		"content":     html,
+	runSuffix := strings.ReplaceAll(title, " ", "-")
+	created, err := h.invokeTool(t, sessionID, "run-create-"+runSuffix, map[string]any{
+		"action":   "create",
+		"filename": "index.html",
+		"content":  html,
 	})
 	if err != nil {
-		t.Fatalf("create artifact %s: %v", artifactID, err)
+		t.Fatalf("create artifact for %s: %v", title, err)
 	}
-	ref, ok := created["artifact_v3_reference"].(map[string]any)
+	ref, ok := created["reference"].(map[string]any)
 	if !ok {
-		ref = created["reference"].(map[string]any)
+		v3, ok := created["artifact_v3"].(map[string]any)
+		if ok {
+			ref, _ = v3["reference"].(map[string]any)
+		}
 	}
+	if ref == nil {
+		t.Fatalf("create artifact for %s missing reference: %#v", title, created)
+	}
+	artifactID := ref["artifact_id"].(string)
+	revRef := ref["revision_ref"].(string)
+	commitOID := strings.TrimPrefix(revRef, "revision-")
+	return artifactID, commitOID
+}
+
+// createTestMotionArtifact creates a published Artifact V3 with a valid animation manifest and temporal parts.
+func (h *retainedReuseHarness) createTestMotionArtifact(t *testing.T, sessionID, title string) (string, string) {
+	t.Helper()
+	html := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>%s</title><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":4000,"fps":30}</script><script>globalThis.__SWARM_ANIMATION_V1__={version:'swarm.animation/v1',ready:()=>({duration_ms:4000,fps:30}),seek:ms=>({time_ms:ms})};</script></head><body><main id="hero"><h1>%s</h1></main><section id="pricing">Pricing</section></body></html>`, title, title)
+	runSuffix := strings.ReplaceAll(title, " ", "-")
+	created, err := h.invokeTool(t, sessionID, "run-create-motion-"+runSuffix, map[string]any{
+		"action":            "create",
+		"filename":          "index.html",
+		"content":           html,
+		"animation_profile": map[string]any{"profile": "motion_ui"},
+		"parts": []map[string]any{
+			{"id": "hero", "label": "Hero", "kind": "temporal", "start_ms": 0, "end_ms": 4000},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create motion artifact for %s: %v", title, err)
+	}
+	ref, ok := created["reference"].(map[string]any)
+	if !ok {
+		v3, ok := created["artifact_v3"].(map[string]any)
+		if ok {
+			ref, _ = v3["reference"].(map[string]any)
+		}
+	}
+	if ref == nil {
+		t.Fatalf("create motion artifact for %s missing reference: %#v", title, created)
+	}
+	artifactID := ref["artifact_id"].(string)
 	revRef := ref["revision_ref"].(string)
 	commitOID := strings.TrimPrefix(revRef, "revision-")
 	return artifactID, commitOID
@@ -233,10 +273,10 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 	h := setupRetainedReuseHarness(t)
 
 	// 1. Create artifacts across sessions
-	artSource, commitSource := h.createTestArtifact(t, "session-source", "art-source", "Source Artifact")
-	artArchived, commitArchived := h.createTestArtifact(t, "session-archived", "art-archived", "Archived Artifact")
-	artDeleted, _ := h.createTestArtifact(t, "session-deleted", "art-deleted", "Deleted Artifact")
-	artForeignUser, _ := h.createTestArtifact(t, "session-foreign-user", "art-foreign-user", "Foreign User Artifact")
+	artSource, commitSource := h.createTestArtifact(t, "session-source", "Source Artifact")
+	artArchived, commitArchived := h.createTestArtifact(t, "session-archived", "Archived Artifact")
+	artDeleted, _ := h.createTestArtifact(t, "session-deleted", "Deleted Artifact")
+	artForeignUser, _ := h.createTestArtifact(t, "session-foreign-user", "Foreign User Artifact")
 
 	// Archive session-archived and delete session-deleted
 	if err := h.sessions.ArchiveSession("session-archived"); err != nil {
@@ -303,7 +343,6 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 	}
 
 	// 3. Test empty continuation pagination
-	// Request list_v3 with a non-matching query to verify empty page with cursor handling
 	queryResp, err := h.invokeTool(t, "session-dest", "run-list-query", map[string]any{
 		"action": "list_v3",
 		"query":  "non-matching-query-xyz",
@@ -317,7 +356,6 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 	}
 
 	// 4. Test source_v3 resolution
-	// Resolving cross-session source returns reference and copyable_next_calls with import
 	srcResp, err := h.invokeTool(t, "session-dest", "run-source-1", map[string]any{
 		"action": "source_v3",
 		"artifact_v3_reference": map[string]any{
@@ -396,10 +434,10 @@ func TestRetainedArtifactToolDiscovery(t *testing.T) {
 func TestRetainedArtifactToolExactRead(t *testing.T) {
 	h := setupRetainedReuseHarness(t)
 
-	artSource, commitSource := h.createTestArtifact(t, "session-source", "art-source-read", "Exact Read Test")
-	artArchived, commitArchived := h.createTestArtifact(t, "session-archived", "art-archived-read", "Archived Read Test")
-	artDeleted, commitDeleted := h.createTestArtifact(t, "session-deleted", "art-deleted-read", "Deleted Read Test")
-	artForeignUser, commitForeignUser := h.createTestArtifact(t, "session-foreign-user", "art-foreign-read", "Foreign Read Test")
+	artSource, commitSource := h.createTestArtifact(t, "session-source", "Exact Read Test")
+	artArchived, commitArchived := h.createTestArtifact(t, "session-archived", "Archived Read Test")
+	artDeleted, commitDeleted := h.createTestArtifact(t, "session-deleted", "Deleted Read Test")
+	artForeignUser, commitForeignUser := h.createTestArtifact(t, "session-foreign-user", "Foreign Read Test")
 
 	if err := h.sessions.ArchiveSession("session-archived"); err != nil {
 		t.Fatal(err)
@@ -489,9 +527,9 @@ func TestRetainedArtifactToolExactRead(t *testing.T) {
 }
 
 // Purpose: Verify the complete discover -> read -> independent import -> edit flow
-// where import derives runtime destination ownership, source remains unchanged,
-// inherited preview evidence is verified, subsequent begin_v3/author_v3/revise_v3 genuinely works,
-// and idempotency/conflicts are strictly handled.
+// where import derives runtime destination ownership without caller-chosen destination IDs,
+// source remains unchanged, inherited preview evidence is verified, subsequent begin_v3/author_v3
+// edits share the required run identity and revision intent, and idempotency/conflicts are strictly handled.
 // Regression: Prevents tool import failures, broken draft editing on imported heads,
 // or mutation leakage to source artifacts.
 // Authority: tool.Runtime ExecuteForWorkspaceScopeWithRuntime -> artifactV3RuntimeAdapter.ImportArtifactV3 -> ArtifactV3Service.Import.
@@ -499,13 +537,14 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 	h := setupRetainedReuseHarness(t)
 
 	// 1. Create source artifact in session-source
-	artSource, commitSource := h.createTestArtifact(t, "session-source", "art-source-import", "Source For Import")
+	artSource, commitSource := h.createTestArtifact(t, "session-source", "Source For Import")
 
 	// Capture source repository and events before import
 	sourceRepoBefore, _, _ := h.sessionStore.GetArtifactV3Repository("account-1", "user-1", artSource)
 	sourceEventsBefore, _ := h.sessionStore.ListV3SessionEvents("session-source", 0, 100)
 
 	// 2. Import into session-dest via manage_artifact action="import"
+	// Note: caller-chosen destination_artifact_id is NOT supplied; runtime derives destination ID and ownership.
 	importResp, err := h.invokeTool(t, "session-dest", "run-import-1", map[string]any{
 		"action": "import",
 		"artifact_v3_reference": map[string]any{
@@ -513,25 +552,25 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 			"artifact_id":  artSource,
 			"revision_ref": "revision-" + commitSource,
 		},
-		"destination_artifact_id": "art-imported",
-		"message":                 "Imported for test",
+		"message": "Imported for test",
 	})
 	if err != nil {
 		t.Fatalf("manage_artifact import failed: %v", err)
 	}
 
-	// Verify tool response structure
+	// Verify tool response structure and destination-owned reference
 	artV3Info, ok := importResp["artifact_v3"].(map[string]any)
 	if !ok {
 		t.Fatalf("import response missing artifact_v3: %#v", importResp)
 	}
-	if artV3Info["status"] != "ready" || artV3Info["session_id"] != "session-dest" || artV3Info["artifact_id"] != "art-imported" {
+	destArtifactID := artV3Info["artifact_id"].(string)
+	importedRevRef := artV3Info["revision_ref"].(string)
+	if artV3Info["status"] != "ready" || artV3Info["session_id"] != "session-dest" || destArtifactID == "" {
 		t.Fatalf("import response fields incorrect: %#v", artV3Info)
 	}
-	importedRevRef := artV3Info["revision_ref"].(string)
 
 	// 3. Verify destination repository in store has runtime-derived ownership and lineage
-	destRepo, found, err := h.sessionStore.GetArtifactV3Repository("account-1", "user-1", "art-imported")
+	destRepo, found, err := h.sessionStore.GetArtifactV3Repository("account-1", "user-1", destArtifactID)
 	if err != nil || !found {
 		t.Fatalf("imported repository not found in store: found=%v err=%v", found, err)
 	}
@@ -553,7 +592,7 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 	}
 
 	// 5. Verify inherited preview evidence on the imported artifact
-	evidenceBytes, err := h.adapter.ReadArtifactV3PreviewEvidence(context.Background(), "account-1", "user-1", "session-dest", "art-imported", importedRevRef)
+	evidenceBytes, err := h.adapter.ReadArtifactV3PreviewEvidence(context.Background(), "account-1", "user-1", "session-dest", destArtifactID, importedRevRef)
 	if err != nil {
 		t.Fatalf("ReadArtifactV3PreviewEvidence failed on imported artifact: %v", err)
 	}
@@ -562,7 +601,6 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 	}
 
 	// 6. Test Idempotent Retry: re-importing with same transactionID and fingerprint returns existing projection
-	// Re-invoking the import tool with same arguments
 	retryResp, err := h.invokeTool(t, "session-dest", "run-import-1", map[string]any{
 		"action": "import",
 		"artifact_v3_reference": map[string]any{
@@ -570,18 +608,16 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 			"artifact_id":  artSource,
 			"revision_ref": "revision-" + commitSource,
 		},
-		"destination_artifact_id": "art-imported",
-		"message":                 "Imported for test",
+		"message": "Imported for test",
 	})
 	if err != nil {
 		t.Fatalf("idempotent import retry failed: %v", err)
 	}
-	if retryResp["artifact_v3"].(map[string]any)["artifact_id"] != "art-imported" {
+	if retryResp["artifact_v3"].(map[string]any)["artifact_id"] != destArtifactID {
 		t.Fatalf("retry returned wrong artifact: %#v", retryResp)
 	}
 
-	// 7. Test Conflict Rejection:
-	// 7a. Reusing transaction ID with changed message -> ErrArtifactV3TxReuse
+	// 7. Test Conflict Rejection: reusing transaction ID with changed message -> transaction reuse error
 	if _, err := h.invokeTool(t, "session-dest", "run-import-1", map[string]any{
 		"action": "import",
 		"artifact_v3_reference": map[string]any{
@@ -589,34 +625,21 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 			"artifact_id":  artSource,
 			"revision_ref": "revision-" + commitSource,
 		},
-		"destination_artifact_id": "art-imported",
-		"message":                 "DIFFERENT message",
+		"message": "DIFFERENT message",
 	}); err == nil || !strings.Contains(err.Error(), "transaction") {
 		t.Fatalf("expected tx reuse error, got: %v", err)
 	}
 
-	// 7b. Importing to already existing destination artifact with new transaction ID -> ErrArtifactV3Conflict
-	if _, err := h.invokeTool(t, "session-dest", "run-import-new-tx", map[string]any{
-		"action": "import",
-		"artifact_v3_reference": map[string]any{
-			"session_id":   "session-source",
-			"artifact_id":  artSource,
-			"revision_ref": "revision-" + commitSource,
-		},
-		"destination_artifact_id": "art-imported",
-	}); err == nil {
-		t.Fatal("expected conflict importing to existing destination artifact")
-	}
-
-	// 8. Test Edit on Imported Head via begin_v3 and author_v3
-	// begin_v3 returns draft_handle
-	beginResp, err := h.invokeTool(t, "session-dest", "run-edit-begin", map[string]any{
+	// 8. Test Edit on Imported Head via begin_v3 and author_v3 sharing consistent run identity
+	editRunID := "run-edit-imported-turn"
+	beginResp, err := h.invokeTool(t, "session-dest", editRunID, map[string]any{
 		"action": "begin_v3",
 		"artifact_v3_reference": map[string]any{
 			"session_id":   "session-dest",
-			"artifact_id":  "art-imported",
+			"artifact_id":  destArtifactID,
 			"revision_ref": importedRevRef,
 		},
+		"revision_intent": pebblestore.ArtifactV3RevisionFocusedParts,
 		"target_part_ids": []string{"hero"},
 	})
 	if err != nil {
@@ -630,7 +653,7 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 	// Edit file using author_v3
 	oldHTML := `<h1>Source For Import</h1>`
 	newHTML := `<h1>Source For Import - Revised</h1>`
-	_, err = h.invokeTool(t, "session-dest", "run-edit-author", map[string]any{
+	_, err = h.invokeTool(t, "session-dest", editRunID, map[string]any{
 		"action":       "author_v3",
 		"draft_handle": draftHandle,
 		"operation": map[string]any{
@@ -645,7 +668,7 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 	}
 
 	// Build preview using author_v3
-	_, err = h.invokeTool(t, "session-dest", "run-edit-build", map[string]any{
+	_, err = h.invokeTool(t, "session-dest", editRunID, map[string]any{
 		"action":       "author_v3",
 		"draft_handle": draftHandle,
 		"operation": map[string]any{
@@ -656,8 +679,8 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 		t.Fatalf("author_v3 build_preview failed: %v", err)
 	}
 
-	// Finish turn using author_v3
-	finishResp, err := h.invokeTool(t, "session-dest", "run-edit-finish", map[string]any{
+	// Finish turn using author_v3 (produces awaiting_selection candidate)
+	finishResp, err := h.invokeTool(t, "session-dest", editRunID, map[string]any{
 		"action":       "author_v3",
 		"draft_handle": draftHandle,
 		"operation": map[string]any{
@@ -667,8 +690,22 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("author_v3 finish_turn failed: %v", err)
 	}
-	if finishResp["status"] != "ready" {
-		t.Fatalf("finished turn status = %v, want ready", finishResp["status"])
+	if finishResp["status"] != "awaiting_selection" {
+		t.Fatalf("finished turn status = %v, want awaiting_selection", finishResp["status"])
+	}
+
+	// Select the finished candidate as the new ready head
+	selectResp, err := h.invokeTool(t, "session-dest", "run-select-imported", map[string]any{
+		"action":       "select_v3",
+		"artifact_id":  destArtifactID,
+		"turn_id":      draftHandle["turn_id"],
+		"candidate_id": draftHandle["candidate_id"],
+	})
+	if err != nil {
+		t.Fatalf("select_v3 failed: %v", err)
+	}
+	if selectResp["status"] != "ready" && selectResp["artifact_v3"].(map[string]any)["status"] != "ready" {
+		t.Fatalf("selected head not ready: %#v", selectResp)
 	}
 
 	// 9. Verify source artifact in session-source remains completely unchanged after destination edit
@@ -683,15 +720,15 @@ func TestRetainedArtifactIndependentImportAndEdit(t *testing.T) {
 }
 
 // Purpose: Verify downstream Video Studio conversion (convert_artifact_v3) successfully
-// ingests an imported Artifact V3 head, creates a pending proposal with exact part metadata,
-// and preserves the non-bypass contract (requires user acceptance).
+// ingests an imported Artifact V3 head with valid motion manifest, creates a pending proposal
+// with exact part metadata, and preserves the non-bypass contract (requires user acceptance).
 // Regression: Prevents Video Studio conversion rejection when artifacts carry inherited provenance.
 // Authority: artifactV3VideoBridge.ConvertToPendingProposal -> artifactv3video.Service -> videoproject.Service.
 func TestRetainedArtifactDownstreamVideoStudioConversion(t *testing.T) {
 	h := setupRetainedReuseHarness(t)
 
-	// 1. Create source artifact and import into destination session
-	artSource, commitSource := h.createTestArtifact(t, "session-source", "art-for-video", "Video Source")
+	// 1. Create motion source artifact and import into destination session
+	artSource, commitSource := h.createTestMotionArtifact(t, "session-source", "Video Source")
 	importResp, err := h.invokeTool(t, "session-dest", "run-imp-vid", map[string]any{
 		"action": "import",
 		"artifact_v3_reference": map[string]any{
@@ -699,11 +736,11 @@ func TestRetainedArtifactDownstreamVideoStudioConversion(t *testing.T) {
 			"artifact_id":  artSource,
 			"revision_ref": "revision-" + commitSource,
 		},
-		"destination_artifact_id": "art-video-dest",
 	})
 	if err != nil {
 		t.Fatalf("import for video failed: %v", err)
 	}
+	destArtifactID := importResp["artifact_v3"].(map[string]any)["artifact_id"].(string)
 	importedRevRef := importResp["artifact_v3"].(map[string]any)["revision_ref"].(string)
 
 	// 2. Create Video Studio project in session-dest
@@ -730,7 +767,7 @@ func TestRetainedArtifactDownstreamVideoStudioConversion(t *testing.T) {
 		ProjectID:         videoProject.ID,
 		BaseRevisionID:    videoBase.ID,
 		ArtifactSessionID: "session-dest",
-		ArtifactID:        "art-video-dest",
+		ArtifactID:        destArtifactID,
 		RevisionRef:       importedRevRef,
 		Title:             "Imported V3 Motion",
 	}
@@ -756,8 +793,8 @@ func TestRetainedArtifactDownstreamVideoStudioConversion(t *testing.T) {
 	if part.ArtifactV3Source == nil || part.ArtifactV3Still == nil || part.ArtifactV3Visual == nil {
 		t.Fatalf("proposal part missing Artifact V3 references: %+v", part)
 	}
-	if part.ArtifactV3Source.ArtifactID != "art-video-dest" {
-		t.Fatalf("part source artifactID = %s, want art-video-dest", part.ArtifactV3Source.ArtifactID)
+	if part.ArtifactV3Source.ArtifactID != destArtifactID {
+		t.Fatalf("part source artifactID = %s, want %s", part.ArtifactV3Source.ArtifactID, destArtifactID)
 	}
 }
 
@@ -775,7 +812,7 @@ func TestRetainedArtifactToolLegacyDiscrimination(t *testing.T) {
 		"artifact_v3_reference": map[string]any{
 			"session_id":   "session-source",
 			"artifact_id":  "any-id",
-			"revision_ref": "revision-abc",
+			"revision_ref": "revision-" + strings.Repeat("a", 40),
 		},
 		"artifact_reference": map[string]any{
 			"session_id":    "session-source",
@@ -784,7 +821,7 @@ func TestRetainedArtifactToolLegacyDiscrimination(t *testing.T) {
 			"event_seq":     1,
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "cannot combine") {
+	if err == nil || !strings.Contains(err.Error(), "not both") {
 		t.Fatalf("expected rejection combining native and legacy references, got: %v", err)
 	}
 
@@ -792,7 +829,166 @@ func TestRetainedArtifactToolLegacyDiscrimination(t *testing.T) {
 	_, err = h.invokeTool(t, "session-dest", "run-discrim-neither", map[string]any{
 		"action": "import",
 	})
-	if err == nil || !strings.Contains(err.Error(), "requires either") {
+	if err == nil || !strings.Contains(err.Error(), "requires exactly one native or legacy reference") {
 		t.Fatalf("expected rejection without reference, got: %v", err)
+	}
+}
+
+// Purpose: Verify actual-dispatch legacy import flow through manage_artifact import tool
+// with a real artifact.Authority, ensuring destination receives the imported variant,
+// source remains unchanged, and copyable next call provides read guidance.
+// Regression: Prevents broken legacy import dispatch or source mutation in legacy layer.
+// Authority: tool.Runtime ExecuteForWorkspaceScopeWithRuntime -> artifact.Authority.Import.
+func TestRetainedArtifactLegacyImportActualDispatch(t *testing.T) {
+	h := setupRetainedReuseHarness(t)
+
+	sourcePrincipal := artifact.Principal{
+		SessionID:      "session-source",
+		AccountScopeID: "account-1",
+		UserID:         "user-1",
+	}
+	variant, err := h.legacyAuthority.Create(context.Background(), sourcePrincipal, artifact.CreateInput{
+		RequestID:      "req-legacy-source",
+		CollectionID:   "col-legacy",
+		CollectionName: "Legacy Collection",
+		VariantID:      "var-legacy-1",
+		Filename:       "notes.txt",
+		MediaType:      "text/plain",
+		Body:           []byte("retained legacy text note"),
+		AutoAccept:     true,
+	})
+	if err != nil {
+		t.Fatalf("create legacy variant: %v", err)
+	}
+
+	sourceEventsBefore, _ := h.sessionStore.ListV3SessionEvents("session-source", 0, 100)
+
+	importResp, err := h.invokeTool(t, "session-dest", "run-import-legacy", map[string]any{
+		"action": "import",
+		"artifact_reference": map[string]any{
+			"session_id":    variant.SessionID,
+			"collection_id": variant.CollectionID,
+			"variant_id":    variant.ID,
+			"event_seq":     variant.EventSeq,
+		},
+	})
+	if err != nil {
+		t.Fatalf("legacy import tool failed: %v", err)
+	}
+
+	importedArt, ok := importResp["artifact"].(map[string]any)
+	if !ok {
+		t.Fatalf("legacy import missing artifact map: %#v", importResp)
+	}
+	if importedArt["session_id"] != "session-dest" {
+		t.Fatalf("imported legacy variant session_id = %v, want session-dest", importedArt["session_id"])
+	}
+	ref, ok := importResp["artifact_reference"].(map[string]any)
+	if !ok || ref["session_id"] != "session-dest" {
+		t.Fatalf("imported legacy reference incorrect: %#v", importResp)
+	}
+	nextCalls, ok := importResp["copyable_next_calls"].([]any)
+	if !ok || len(nextCalls) == 0 || nextCalls[0].(map[string]any)["action"] != "read" {
+		t.Fatalf("expected copyable next call read, got: %#v", nextCalls)
+	}
+
+	sourceVariantAfter, ok, err := h.sessionStore.GetSessionArtifactVariant("session-source", variant.CollectionID, variant.ID)
+	if err != nil || !ok {
+		t.Fatalf("source legacy variant missing: %v", err)
+	}
+	if sourceVariantAfter.SessionID != "session-source" || sourceVariantAfter.CollectionID != variant.CollectionID || sourceVariantAfter.ID != variant.ID {
+		t.Fatalf("source legacy variant mutated: %+v", sourceVariantAfter)
+	}
+	sourceEventsAfter, _ := h.sessionStore.ListV3SessionEvents("session-source", 0, 100)
+	if len(sourceEventsBefore) != len(sourceEventsAfter) {
+		t.Fatalf("source session events mutated by legacy import: before=%d after=%d", len(sourceEventsBefore), len(sourceEventsAfter))
+	}
+}
+
+// Purpose: Verify inherited evidence reading, API GetRevision/OpenPreview,
+// source deletion independence, and cryptographic integrity detection upon corruption.
+// Regression: Prevents inherited evidence loss when source session is deleted, or accepting corrupted evidence.
+// Authority: artifactV3RuntimeAdapter (ReadArtifactV3PreviewEvidence, GetRevision, OpenPreview).
+func TestRetainedArtifactInheritedEvidenceAndIntegrity(t *testing.T) {
+	h := setupRetainedReuseHarness(t)
+	artSource, commitSource := h.createTestArtifact(t, "session-source", "Evidence Source")
+
+	importResp, err := h.invokeTool(t, "session-dest", "run-import-evidence", map[string]any{
+		"action": "import",
+		"artifact_v3_reference": map[string]any{
+			"session_id":   "session-source",
+			"artifact_id":  artSource,
+			"revision_ref": "revision-" + commitSource,
+		},
+	})
+	if err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	destArtifactID := importResp["artifact_v3"].(map[string]any)["artifact_id"].(string)
+	importedRevRef := importResp["artifact_v3"].(map[string]any)["revision_ref"].(string)
+
+	evidenceBytes, err := h.adapter.ReadArtifactV3PreviewEvidence(context.Background(), "account-1", "user-1", "session-dest", destArtifactID, importedRevRef)
+	if err != nil {
+		t.Fatalf("ReadArtifactV3PreviewEvidence failed: %v", err)
+	}
+	if string(evidenceBytes) != "fake-renderer-evidence" {
+		t.Fatalf("evidence bytes = %q, want fake-renderer-evidence", string(evidenceBytes))
+	}
+
+	destPrincipal := api.ArtifactV3Principal{AccountScopeID: "account-1", UserID: "user-1"}
+	rev, err := h.adapter.GetRevision(context.Background(), destPrincipal, "session-dest", destArtifactID, importedRevRef)
+	if err != nil {
+		t.Fatalf("GetRevision on imported artifact failed: %v", err)
+	}
+	if rev.Lineage == nil || rev.Lineage.SourceArtifactID != artSource {
+		t.Fatalf("revision lineage missing or incorrect: %+v", rev.Lineage)
+	}
+
+	preview, err := h.adapter.OpenPreview(context.Background(), destPrincipal, "session-dest", destArtifactID, importedRevRef, "", "")
+	if err != nil {
+		t.Fatalf("OpenPreview on imported artifact failed: %v", err)
+	}
+	if !strings.Contains(string(preview.Body), "Evidence Source") {
+		t.Fatalf("preview body missing expected content: %s", string(preview.Body))
+	}
+
+	// Source Deletion Independence: delete source session
+	if err := h.sessions.DeleteSession("session-source"); err != nil {
+		t.Fatalf("delete session-source: %v", err)
+	}
+
+	// Imported artifact in session-dest remains completely readable
+	evidenceAfterDelete, err := h.adapter.ReadArtifactV3PreviewEvidence(context.Background(), "account-1", "user-1", "session-dest", destArtifactID, importedRevRef)
+	if err != nil {
+		t.Fatalf("ReadArtifactV3PreviewEvidence failed after source deletion: %v", err)
+	}
+	if string(evidenceAfterDelete) != "fake-renderer-evidence" {
+		t.Fatalf("evidence bytes after delete = %q", string(evidenceAfterDelete))
+	}
+
+	revAfterDelete, err := h.adapter.GetRevision(context.Background(), destPrincipal, "session-dest", destArtifactID, importedRevRef)
+	if err != nil || revAfterDelete.CommitOID != rev.CommitOID {
+		t.Fatalf("GetRevision failed after source deletion: rev=%+v err=%v", revAfterDelete, err)
+	}
+
+	previewAfterDelete, err := h.adapter.OpenPreview(context.Background(), destPrincipal, "session-dest", destArtifactID, importedRevRef, "", "")
+	if err != nil || len(previewAfterDelete.Body) == 0 {
+		t.Fatalf("OpenPreview failed after source deletion: preview=%+v err=%v", previewAfterDelete, err)
+	}
+
+	// Evidence File Corruption: modify bytes in evidenceRoot
+	destRevCommit := strings.TrimPrefix(importedRevRef, "revision-")
+	destStoredRev, ok, err := h.sessionStore.GetArtifactV3Revision("account-1", "user-1", destArtifactID, destRevCommit)
+	if err != nil || !ok {
+		t.Fatalf("get stored revision: %v", err)
+	}
+	evidenceFile := filepath.Join(h.evidenceRoot, destStoredRev.Preview.Reference+".png")
+	if err := os.WriteFile(evidenceFile, []byte("corrupted-evidence-bytes"), 0o600); err != nil {
+		t.Fatalf("corrupt evidence file: %v", err)
+	}
+
+	// ReadArtifactV3PreviewEvidence must detect corruption and reject with ErrArtifactV3Integrity
+	if _, err := h.adapter.ReadArtifactV3PreviewEvidence(context.Background(), "account-1", "user-1", "session-dest", destArtifactID, importedRevRef); !errors.Is(err, pebblestore.ErrArtifactV3Integrity) {
+		t.Fatalf("expected ErrArtifactV3Integrity on corrupted evidence file, got: %v", err)
 	}
 }

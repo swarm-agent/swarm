@@ -69,6 +69,7 @@ export interface DesktopV3NativeArtifactSummary {
   pendingTurns?: DesktopV3NativeArtifactTurn[]
   updatedAt: number
   lineage?: DesktopV3NativeArtifactLineage | null
+  inheritedFrom?: DesktopV3NativeArtifactEvidenceSource | null
 }
 
 export interface DesktopV3NativeArtifactPart {
@@ -290,6 +291,7 @@ export function normalizeDesktopV3NativeArtifactSummary(value: unknown, fallback
     pendingTurns: pendingDesktopV3NativeArtifactTurns(Array.isArray(item.turns) ? item.turns.map(normalizeTurn).filter((turn): turn is DesktopV3NativeArtifactTurn => turn !== null) : []),
     updatedAt: numberValue(field(item, 'updated_at', 'updatedAt')),
     lineage: normalizeLineage(item.lineage),
+    inheritedFrom: normalizeEvidenceSource(field(item, 'inherited_from', 'inheritedFrom')),
   }
 }
 
@@ -421,7 +423,7 @@ export function normalizeDesktopV3NativeArtifactRevision(value: unknown): Deskto
       : strings(field(item, 'changed_parts', 'changedParts')),
     diagnostics: rawDiagnostics.map(normalizeDiagnostic).filter((diagnostic): diagnostic is DesktopV3NativeArtifactDiagnostic => diagnostic !== null),
     lineage: normalizeLineage(item.lineage),
-    inheritedFrom: normalizeEvidenceSource(field(validation, 'inherited_from', 'inheritedFrom') || field(build, 'inherited_from', 'inheritedFrom')),
+    inheritedFrom: normalizeEvidenceSource(field(item, 'inherited_from', 'inheritedFrom') || field(validation, 'inherited_from', 'inheritedFrom') || field(build, 'inherited_from', 'inheritedFrom')),
   }
 }
 
