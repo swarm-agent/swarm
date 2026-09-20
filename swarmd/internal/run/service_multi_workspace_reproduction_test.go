@@ -302,11 +302,11 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 			if err != nil || ctx.WorkspacePath != afterScope.PrimaryPath {
 				t.Fatalf("provider context rehydration: %+v %v", ctx, err)
 			}
-			worker, _, err := svc.resolveTaskTargetWorkspace(after, principal, taskLaunchSpec{RequestedSubagentType: "coder"})
+			worker, _, err := svc.resolveTaskTargetWorkspace(after, principal, &taskLaunchSpec{RequestedSubagentType: "coder"})
 			if err != nil || worker != afterScope.PrimaryPath {
 				t.Fatalf("default worker: %q %v", worker, err)
 			}
-			explicit, _, err := svc.resolveTaskTargetWorkspace(after, principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: targetPath})
+			explicit, _, err := svc.resolveTaskTargetWorkspace(after, principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: targetPath})
 			if err != nil || common(explicit) != targetCommon {
 				t.Fatalf("explicit worker: %q %v", explicit, err)
 			}
@@ -314,7 +314,7 @@ func TestMultiWorkspaceIdentityTransitions(t *testing.T) {
 				// Requirement: returning a worker to the prior source uses its retained
 				// owned lane, never the captured checkout. Target resolution is the
 				// narrowest authority; source/status assertions below prove no mutation.
-				retained, _, err := svc.resolveTaskTargetWorkspace(after, principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: parentPath})
+				retained, _, err := svc.resolveTaskTargetWorkspace(after, principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: parentPath})
 				if err != nil || retained != before.WorktreeRootPath {
 					t.Fatalf("retained worker lane: %q %v", retained, err)
 				}

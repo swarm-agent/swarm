@@ -790,7 +790,7 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 				return "", err
 			}
 		}
-		path, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: p.record.RepositoryLane})
+		path, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: p.record.RepositoryLane})
 		return path, err
 	}
 	lanePath := strings.TrimSpace(parent.WorktreeRootPath)
@@ -814,7 +814,7 @@ func (p *taskProgramScheduler) programWorkspacePath() (string, error) {
 		if !agentruntime.IsCoderAgentName(definition.AgentType) {
 			continue
 		}
-		candidate, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: firstNonEmptyString(definition.WorkspacePath, p.parsed.ProgramWorkspacePath)})
+		candidate, _, err := p.service.resolveTaskTargetWorkspace(parent, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: firstNonEmptyString(definition.WorkspacePath, p.parsed.ProgramWorkspacePath)})
 		if err != nil {
 			return "", err
 		}

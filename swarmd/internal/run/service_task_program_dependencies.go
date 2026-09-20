@@ -109,7 +109,7 @@ func (p *taskProgramScheduler) integratedCoderSourceEvidence(inline bool) (strin
 	if !sameTaskProgramPath(path, lane.WorkspacePath) {
 		return "", errors.New("integrated Coder source lane mismatch")
 	}
-	if _, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane}); err != nil {
+	if _, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane}); err != nil {
 		return "", err
 	}
 	state, err := p.service.worktrees.InspectTaskWorkspace(path)

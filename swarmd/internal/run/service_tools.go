@@ -1588,7 +1588,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	})
 	if err != nil {
 		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
-			_ = s.worktrees.RollbackAllocation(*launch.Allocation)
+			if rErr := s.worktrees.RollbackAllocation(*launch.Allocation); rErr != nil {
+				return taskLaunchPrepared{}, errors.Join(fmt.Errorf("task failed to create canonical v3 subagent session: %w", err), rErr)
+			}
 		}
 		return taskLaunchPrepared{}, fmt.Errorf("task failed to create canonical v3 subagent session: %w", err)
 	}
@@ -1601,15 +1603,9 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		ProgramID: launch.ProgramID, JobID: launch.ProgramJobID,
 	}, generationRecord, "delegated-child-create:"+strings.TrimSpace(launch.LogicalTaskID))
 	if lineageErr != nil {
-		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
-			_ = s.worktrees.RollbackAllocation(*launch.Allocation)
-		}
 		return taskLaunchPrepared{}, fmt.Errorf("establish delegated child generation authority: %w", lineageErr)
 	}
 	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
-		if isCoderTarget && childWorktreeRootPath != "" && launch.Allocation != nil {
-			_ = s.worktrees.RollbackAllocation(*launch.Allocation)
-		}
 		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
 	}
 
@@ -4640,7 +4636,7 @@ func (s *Service) rollbackPreparedAllocations(prepared []taskLaunchPrepared) {
 		return
 	}
 	for _, p := range prepared {
-		if p.Allocation != nil {
+		if p.ChildSession.ID == "" && p.Allocation != nil {
 			_ = s.worktrees.RollbackAllocation(*p.Allocation)
 		}
 	}
@@ -4762,7 +4758,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		return "", err
 	}
 	for i := range launchSpecs {
-		targetPath, _, targetErr := s.resolveTaskTargetWorkspace(parentSession, req.Principal, launchSpecs[i])
+		targetPath, _, targetErr := s.resolveTaskTargetWorkspace(parentSession, req.Principal, &launchSpecs[i])
 		if targetErr != nil {
 			return "", fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
@@ -4782,6 +4778,11 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	taskCallID := strings.TrimSpace(call.CallID)
 	if taskCallID == "" {
 		taskCallID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
+	}
+	if launchesRaw, ok := parentSession.Metadata["task_launches"].(map[string]any); ok {
+		if existing, exists := launchesRaw[taskCallID].(map[string]any); exists && existing != nil {
+			return "", fmt.Errorf("task call %q already exists in session metadata; duplicate task launch rejected", taskCallID)
+		}
 	}
 	var programRecord pebblestore.TaskProgramRecord
 	if parsed.Program != nil {
@@ -5436,54 +5437,88 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		for key, value := range cloneGenericMap(extra) {
 			entry[key] = value
 		}
-		launchMap[taskCallID] = entry
-		metadata["task_launches"] = launchMap
+
+		entryBytes, mErr := json.Marshal(entry)
+		if mErr != nil {
+			return mErr
+		}
+		sum := sha256.Sum256(entryBytes)
+		payloadHash := hex.EncodeToString(sum[:])
+		idempotencyKey := fmt.Sprintf("task-lineage:%s:%s:%s", parentSession.ID, taskCallID, status)
 
 		applyMutation := req.ApplySessionMutation
 		if applyMutation == nil && s.sessions != nil {
 			applyMutation = s.sessions.ApplySessionMutation
 		}
-		if applyMutation != nil {
+		if applyMutation == nil {
+			return errors.New("sessions service unavailable")
+		}
+
+		const maxAttempts = 5
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			projection, _, projErr := s.sessions.GetSessionProjection(parentSession.ID)
+			if projErr != nil {
+				return projErr
+			}
+			expectedSeq := projection.LastEventSeq
+
+			latestSession, ok, sessErr := s.sessions.GetSession(parentSession.ID)
+			if sessErr != nil {
+				return sessErr
+			}
+			if !ok {
+				return fmt.Errorf("session %q not found", parentSession.ID)
+			}
+
+			metadata := cloneGenericMap(latestSession.Metadata)
+			if metadata == nil {
+				metadata = map[string]any{}
+			}
+			launchMap, _ := metadata["task_launches"].(map[string]any)
+			launchMap = cloneGenericMap(launchMap)
+			if launchMap == nil {
+				launchMap = map[string]any{}
+			}
+			launchMap[taskCallID] = entry
+			metadata["task_launches"] = launchMap
+
 			nowMS := time.Now().UnixMilli()
-			reqKey := fmt.Sprintf("task-lineage:%s:%s", taskCallID, status)
-			updatedSession := parentSession
+			updatedSession := latestSession
 			updatedSession.Metadata = metadata
 			updatedSession.UpdatedAt = nowMS
 
 			mutationInput := sessionruntime.SessionMutationInput{
-				SessionID:       parentSession.ID,
-				UserID:          strings.TrimSpace(parentSession.UserID),
-				AccountScopeID:  strings.TrimSpace(parentSession.AccountScopeID),
-				ClientRequestID: reqKey,
-				IdempotencyKey:  reqKey,
-				PayloadHash:     reqKey,
-				RequestHash:     reqKey,
-				Kind:            sessionruntime.SessionMutationUpdateMetadata,
-				Session:         &updatedSession,
-				NowUnixMs:       nowMS,
+				SessionID:            parentSession.ID,
+				UserID:               strings.TrimSpace(latestSession.UserID),
+				AccountScopeID:       strings.TrimSpace(latestSession.AccountScopeID),
+				ClientRequestID:      idempotencyKey,
+				IdempotencyKey:       idempotencyKey,
+				PayloadHash:          payloadHash,
+				RequestHash:          payloadHash,
+				Kind:                 sessionruntime.SessionMutationUpdateMetadata,
+				Session:              &updatedSession,
+				ExpectedLastEventSeq: &expectedSeq,
+				NowUnixMs:            nowMS,
 			}
 			res, updateErr := applyMutation(mutationInput)
 			if updateErr != nil {
 				return updateErr
 			}
+			if res.Conflict != nil {
+				if attempt == maxAttempts-1 {
+					return fmt.Errorf("parent task launch lineage update conflict: %s", res.Conflict.Message)
+				}
+				continue
+			}
+			if res.Error != nil {
+				return errors.New(res.Error.Message)
+			}
 			if res.Session != nil {
 				parentSession = *res.Session
 			}
-			for _, event := range res.Events {
-				s.publishEventEnvelope(event)
-			}
 			return nil
 		}
-
-		updated, env, updateErr := s.sessions.UpdateMetadata(parentSession.ID, metadata)
-		if updateErr != nil {
-			return updateErr
-		}
-		parentSession = updated
-		if env != nil {
-			s.publishEventEnvelope(*env)
-		}
-		return nil
+		return errors.New("parent task launch lineage update exceeded retry attempts")
 	}
 	emitTaskProgress := func(phase, summary string, launch taskLaunchOutcome) {
 		phase = strings.TrimSpace(phase)
@@ -5494,12 +5529,21 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	spawned := make([]taskLaunchOutcome, 0, len(prepared))
 	for i := range prepared {
 		launch := buildTaskLaunchOutcome(prepared[i])
+		launch.Phase = "spawned"
 		spawned = append(spawned, launch)
-		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
 	}
 	if err := lineageUpdate("spawned", spawned, nil); err != nil {
 		s.rollbackPreparedAllocations(prepared)
+		blockedOutcomes := make([]taskLaunchOutcome, len(spawned))
+		for i, o := range spawned {
+			o.Phase = "blocked"
+			blockedOutcomes[i] = o
+		}
+		_ = lineageUpdate("blocked", blockedOutcomes, map[string]any{"error": err.Error()})
 		return "", fmt.Errorf("publish parent task launch lineage: %w", err)
+	}
+	for _, launch := range spawned {
+		emitTaskProgress("spawned", fmt.Sprintf("spawned launch %d %s subagent in %s", launch.LaunchIndex, launch.ResolvedSubagent, launch.ChildMode), launch)
 	}
 	if parsed.Program != nil {
 		nextAction := "await_running_jobs"

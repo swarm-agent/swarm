@@ -30,10 +30,10 @@ func (p *taskProgramScheduler) repositoryLane(requested string) (string, error) 
 		if requested != "" && !sameTaskProgramPath(requested, lane.SourcePath) && !sameTaskProgramPath(requested, lane.WorkspacePath) {
 			return "", errors.New("Task Program repository lane source mismatch")
 		}
-		path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane})
+		path, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: lane})
 		return path, err
 	}
-	target, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
+	target, _, err := p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: requested})
 	if err != nil {
 		return "", err
 	}

@@ -398,12 +398,22 @@ type taskLaunchResolvedToolSummary struct {
 
 func parseTaskCommittedSource(raw map[string]any, label string) (*tool.CommittedSourceRequest, error) {
 	val, ok := raw["committed_source"]
-	if !ok || val == nil {
+	if !ok {
 		return nil, nil
+	}
+	if val == nil {
+		return nil, fmt.Errorf("%s: committed_source cannot be null", label)
 	}
 	m, ok := val.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("%s: committed_source must be an object", label)
+	}
+	for k := range m {
+		switch k {
+		case "task_call_id", "child_session_id", "head_commit":
+		default:
+			return nil, fmt.Errorf("%s: committed_source contains unknown field %q", label, k)
+		}
 	}
 	req := tool.CommittedSourceRequest{
 		TaskCallID:     strings.TrimSpace(mapString(m, "task_call_id")),
@@ -531,6 +541,13 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		if err != nil {
 			return taskLaunchSpec{}, err
 		}
+		rawWorkspace := strings.TrimSpace(firstNonEmptyString(
+			mapString(raw, "workspace_path"),
+			mapString(raw, "target_workspace_path"),
+			mapString(raw, "workspace"),
+			mapString(raw, "worktree_path"),
+			mapString(raw, "worktree_root_path"),
+		))
 		launch := taskLaunchSpec{
 			RequestedSubagentType: strings.TrimSpace(firstNonEmptyString(
 				mapString(raw, "subagent_type"),
@@ -546,7 +563,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 				mapString(raw, "assignment_label"),
 				mapString(raw, "label"),
 			)),
-			TargetWorkspacePath:  strings.TrimSpace(mapString(raw, "workspace_path")),
+			TargetWorkspacePath:  rawWorkspace,
 			Deliverable:          strings.TrimSpace(mapString(raw, "deliverable")),
 			ConcurrencyReason:    strings.TrimSpace(mapString(raw, "concurrency_reason")),
 			RecoverySourceDigest: mapString(raw, "recovery_source_digest"),
@@ -575,7 +592,7 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 			if launch.RecoverySourceDigest != "" {
 				return taskLaunchSpec{}, fmt.Errorf("%s: cannot combine committed_source with recovery_source_digest", label)
 			}
-			if launch.TargetWorkspacePath != "" {
+			if rawWorkspace != "" {
 				return taskLaunchSpec{}, fmt.Errorf("%s: cannot combine committed_source with workspace_path; destination is bound to original committed child repository", label)
 			}
 		}
@@ -650,6 +667,9 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 	}
 
 	if mode == taskModeSwarm {
+		if _, exists := args["committed_source"]; exists {
+			return taskCallArguments{}, errors.New("task swarm mode does not support committed_source")
+		}
 		swarm, launches, err := parseTaskSwarmArguments(args, prompt, description)
 		if err != nil {
 			return taskCallArguments{}, err
@@ -695,6 +715,20 @@ func parseTaskCallArguments(arguments string) (taskCallArguments, error) {
 		}
 		if len(launches) == 0 {
 			return taskCallArguments{}, fmt.Errorf("task requires at least one launch")
+		}
+		topLevelWorkspace := strings.TrimSpace(firstNonEmptyString(
+			mapString(args, "workspace_path"),
+			mapString(args, "target_workspace_path"),
+			mapString(args, "workspace"),
+			mapString(args, "worktree_path"),
+			mapString(args, "worktree_root_path"),
+		))
+		if topLevelWorkspace != "" {
+			for i, l := range launches {
+				if l.CommittedSource != nil {
+					return taskCallArguments{}, fmt.Errorf("task launches[%d]: cannot combine committed_source with top-level workspace_path; destination is bound to original committed child repository", i)
+				}
+			}
 		}
 	}
 
@@ -986,6 +1020,8 @@ func parseTaskProgram(args map[string]any, prompt string) (*taskProgramSpec, []t
 		}
 		for key := range row {
 			switch key {
+			case "committed_source":
+				return nil, nil, fmt.Errorf("task program jobs[%d]: committed_source is not supported in Task Program job definitions", i)
 			case "recovery_source_digest", "id", "stage_id", "depends_on", "agent_type", "subagent_type", "agent", "purpose", "meta_prompt", "role", "title", "name", "label", "assignment_label", "description", "deliverable", "workspace_path", "owned_scope", "scope", "output_mode", "output_requirements", "animation_profile", "scene_contract", "acceptance_criteria", "dependency_evidence":
 			default:
 				return nil, nil, fmt.Errorf("task program jobs[%d] contains unsupported field %q", i, key)
@@ -3678,19 +3714,26 @@ func retainTaskResolvedWorkspace(launch *taskLaunchSpec, program *taskProgramSpe
 	}
 }
 
-func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch taskLaunchSpec) (string, string, error) {
+func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSnapshot, principal identity.Principal, launch *taskLaunchSpec) (string, string, error) {
+	if launch == nil {
+		return "", "", errors.New("task launch spec is required")
+	}
 	if launch.CommittedSourceBinding != nil {
 		binding := launch.CommittedSourceBinding
 		target := binding.DestinationPath
 		name := filepath.Base(binding.CanonicalSourcePath)
+		p, _ := principalForRunWorkspaceScope(parentSession, principal)
 		if s != nil && s.workspace != nil {
-			if resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, binding.CanonicalSourcePath); scopeErr == nil && strings.TrimSpace(resolved.WorkspaceName) != "" {
+			if resolved, scopeErr := s.workspace.ScopeForPathForPrincipal(p, binding.CanonicalSourcePath); scopeErr == nil && strings.TrimSpace(resolved.WorkspaceName) != "" {
 				name = strings.TrimSpace(resolved.WorkspaceName)
 			}
 		}
 		return target, name, nil
 	}
 	if launch.CommittedSource != nil && launch.CommittedSourceBinding == nil {
+		if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) {
+			return "", "", fmt.Errorf("committed_source is supported only for Coder launches")
+		}
 		if s == nil || s.tools == nil {
 			return "", "", errors.New("committed source authority unavailable")
 		}
@@ -3708,6 +3751,7 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 			return "", "", fmt.Errorf("resolve committed source target workspace: %w", bErr)
 		}
 		launch.CommittedSourceBinding = &binding
+		launch.TargetWorkspacePath = binding.DestinationPath
 		target := binding.DestinationPath
 		name := filepath.Base(binding.CanonicalSourcePath)
 		if s != nil && s.workspace != nil {
@@ -3719,10 +3763,10 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	}
 	if launch.ProgramRepositoryLane != nil {
 		lane := launch.ProgramRepositoryLane
-		sourceLaunch := launch
+		sourceLaunch := *launch
 		sourceLaunch.ProgramRepositoryLane = nil
 		sourceLaunch.TargetWorkspacePath = lane.SourcePath
-		_, _, err := s.resolveTaskTargetWorkspace(parentSession, principal, sourceLaunch)
+		_, _, err := s.resolveTaskTargetWorkspace(parentSession, principal, &sourceLaunch)
 		if err != nil {
 			return "", "", err
 		}
@@ -4272,7 +4316,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			launch.CommittedSourceBinding = &binding
 			launch.TargetWorkspacePath = binding.DestinationPath
 		}
-		targetWorkspacePath, targetWorkspaceName, targetErr := s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, launch)
+		targetWorkspacePath, targetWorkspaceName, targetErr := s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, &launch)
 		if targetErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
