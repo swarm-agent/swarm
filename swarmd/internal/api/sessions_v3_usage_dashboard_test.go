@@ -308,13 +308,14 @@ func TestCalculateTurnCostFormulas(t *testing.T) {
 		},
 	}
 
-	// Test Google Gemini prompt caching (75% discount on cached tokens)
+	// Test Google Gemini prompt caching (90% discount on cached tokens) and thinking tokens
 	recGoogle := pebblestore.SessionTurnUsageSnapshot{
 		Provider:        "google",
 		Model:           "gemini-3.8-flash",
 		InputTokens:     100000, // Total prompt tokens
 		CacheReadTokens: 20000,  // Cached tokens -> 80,000 uncached
 		OutputTokens:    5000,   // Output tokens
+		ThinkingTokens:  1000,   // Thinking tokens
 	}
 	cost, codexNominal := calculateTurnCost(recGoogle, pricing)
 	if codexNominal != 0 {
@@ -322,10 +323,10 @@ func TestCalculateTurnCostFormulas(t *testing.T) {
 	}
 	// Expected:
 	// Uncached input: 80,000 / 1M * 0.75 = 0.06
-	// Cached input: 20,000 / 1M * (0.75 * 0.25) = 0.00375
-	// Output: 5,000 / 1M * 3.75 = 0.01875
-	// Total: 0.0825
-	expectedGoogle := 0.0825
+	// Cached input: 20,000 / 1M * (0.75 * 0.10) = 0.0015
+	// Output: (5,000 + 1,000) / 1M * 3.75 = 0.0225
+	// Total: 0.084
+	expectedGoogle := 0.084
 	if cost < expectedGoogle-0.0001 || cost > expectedGoogle+0.0001 {
 		t.Errorf("Google cost = %f, want ~%f", cost, expectedGoogle)
 	}
@@ -607,6 +608,7 @@ func TestAnalyticsReadsPersistedAccountingReadOnly(t *testing.T) {
 		UserID:         testPrincipal().UserID,
 		WorkspacePath:  t.TempDir(),
 		WorkspaceName:  "test-ws",
+		Preference:     &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
 	})
 	if err != nil {
 		t.Fatalf("create session: %v", err)

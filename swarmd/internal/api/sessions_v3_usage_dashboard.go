@@ -613,10 +613,10 @@ func (s *Server) buildPricingMap() map[string]catalogPricingLookup {
 
 	// Baseline fallback pricing for key flagship models in case catalog is unavailable
 	baselinePricing := map[string]catalogPricingLookup{
-		"google:gemini-3.8-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
-		"google:gemini-3.7-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.1875, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
-		"google:gemini-3.6-flash":       {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
-		"google:gemini-3.5-flash-lite":  {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
+		"google:gemini-3.8-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.8 Flash"},
+		"google:gemini-3.7-flash":       {InputPrice: 0.75, OutputPrice: 3.75, CachedPrice: 0.075, HasCached: true, DisplayName: "Gemini 3.7 Flash"},
+		"google:gemini-3.6-flash":       {InputPrice: 1.50, OutputPrice: 7.50, CachedPrice: 0.15, HasCached: true, DisplayName: "Gemini 3.6 Flash"},
+		"google:gemini-3.5-flash-lite":  {InputPrice: 0.30, OutputPrice: 2.50, CachedPrice: 0.03, HasCached: true, DisplayName: "Gemini 3.5 Flash-Lite"},
 		"google:gemini-omni-1.1-flash":  {InputPrice: 1.50, OutputPrice: 9.00, CachedPrice: 0.375, HasCached: true, DisplayName: "Gemini Omni 1.1 Flash"},
 		"anthropic:claude-fable-5-1":    {InputPrice: 10.0, OutputPrice: 50.0, CachedPrice: 1.0, HasCached: true, DisplayName: "Claude Fable 5.1"},
 		"anthropic:claude-sonnet-5":     {InputPrice: 2.0, OutputPrice: 10.0, CachedPrice: 0.2, HasCached: true, DisplayName: "Claude Sonnet 5"},
@@ -762,7 +762,7 @@ func computeTokenPrice(rec pebblestore.SessionTurnUsageSnapshot, p catalogPricin
 		case "anthropic":
 			cachedRate = inputRate * 0.10 // 90% discount for prompt cache read
 		case "google":
-			cachedRate = inputRate * 0.25 // 75% discount for cached content
+			cachedRate = inputRate * 0.10 // 90% discount for cached content
 		case "openai", "openrouter":
 			cachedRate = inputRate * 0.50 // 50% discount for cached tokens
 		default:
@@ -792,7 +792,7 @@ func computeTokenPrice(rec pebblestore.SessionTurnUsageSnapshot, p catalogPricin
 
 	inputCost := (float64(uncachedInput) / 1_000_000.0) * inputRate
 	cachedCost := (float64(rec.CacheReadTokens) / 1_000_000.0) * cachedRate
-	outputCost := (float64(rec.OutputTokens) / 1_000_000.0) * outputRate
+	outputCost := (float64(rec.OutputTokens+rec.ThinkingTokens) / 1_000_000.0) * outputRate
 
 	return inputCost + cachedCost + outputCost
 }

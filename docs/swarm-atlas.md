@@ -2449,3 +2449,25 @@ Revision ledger: inspected auth route registration, Desktop/origin middleware, i
 ### Changelog self-test Git identity isolation
 
 Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test` and the fixture's real Git commands. The self-test previously wrote repository-local identity after only changing directories; inherited hook Git routing can still select the caller's repository. It now clears Git's advertised repository-local environment variables in the fixture subshell and supplies `Swarm <swarm@swarmagent.dev>` through subshell-only author/committer variables, without writing identity configuration. End-user commit helpers remain unchanged and continue to respect user Git identity. The audit inventory digest was refreshed; independent review and executed hook-environment regression proof remain outstanding. No tests run for this change.
+
+### 2026-09-20 — Account Usage Rollup Backfill Migration, Pricing Calculator, and Media Kind Isolation Fix
+
+- **Historical AccountUsageRollup Backfill Migration (`swarmd/internal/store/pebble/account_usage_rollup_migration.go`, `swarmd/internal/runtime/daemon.go`):**
+  - Resolved missing historical usage telemetry in Desktop Usage dashboard where unmigrated pre-Sep 19 turns resulted in `AccountUsageRollup` containing only 1 record ($0.25) instead of the full account history.
+  - Implemented `RunAccountUsageRollupBackfillMigration(store *Store)`: scans all historical `session_turn_usage/` and `session_media_usage/` records, computes official pricing and thinking tokens via `CalculateCostWithStatus` (with baseline fallback), and commits aggregated `AccountUsageRollup` records in bounded synced batches under key `account_usage_rollup/<accountScopeID>/<date>/<sessionID>/<provider>/<model>`.
+  - Persists idempotent versioned migration marker `meta/migrations/account_usage_rollup/v1`.
+  - Hooked migration into daemon startup in `daemon.go` following agent model settings migration.
+- **Google Gemini 3.8 Flash Baseline Cache Rate Correction (`swarmd/internal/store/pebble/usage_limit_store.go`, `swarmd/internal/api/sessions_v3_usage_dashboard.go`):**
+  - Corrected hardcoded baseline cache rate for `google:gemini-3.8-flash` (and related Google 3.x models) from $0.1875/M (75% discount) to Google's official $0.075/M (90% discount), eliminating cost inflation across cached input tokens.
+  - Updated Google cache discount in `computeTokenPrice` in `sessions_v3_usage_dashboard.go` to use 90% discount (`inputRate * 0.10`).
+- **Thinking Tokens Pricing Inclusion in Calculator (`swarmd/internal/api/sessions_v3_usage_dashboard.go`):**
+  - Updated `computeTokenPrice` in `sessions_v3_usage_dashboard.go` to include `rec.ThinkingTokens` alongside `rec.OutputTokens` when computing `outputCost`, aligning with `CalculateBaselineCost` and `CalculateCostWithStatus`.
+- **Media Kind Attribution Isolation (`swarmd/internal/store/pebble/session_usage_store.go`):**
+  - Added strict delta kind checks (`if imageDelta != 0`, `if videoDelta != 0`, `if audioDelta != 0`) in `updateAccountUsageRollupInBatch` before incrementing `ImageCostUSD`, `VideoCostUSD`, and `AudioCostUSD`, preventing media costs from corrupting all three categories simultaneously.
+- **Validation:**
+  - Added unit test `TestAccountUsageRollupBackfillMigration` in `swarmd/internal/store/pebble/account_usage_rollup_migration_test.go` verifying backfill of multiple sessions, dates, codex nominal tracking, media breakdown, and idempotent re-runs.
+  - Added unit test `TestAccountUsageRollupMediaKindIsolation` in `swarmd/internal/store/pebble/session_usage_store_test.go` verifying image, video, and audio cost separation.
+  - Updated `TestCalculateBaselineCost` in `swarmd/internal/store/pebble/usage_limit_store_test.go` to assert official $0.75 / $3.75 / $0.075 rates.
+  - Updated `TestCalculateTurnCostFormulas` and usage window tests in `swarmd/internal/api/sessions_v3_usage_dashboard_test.go` and `sessions_v3_usage_window_test.go`.
+  - Verified migration against copied database (10,565 turns, 1.87B tokens, 160 rollups, $221.08 total cost) and deleted temporary copy.
+

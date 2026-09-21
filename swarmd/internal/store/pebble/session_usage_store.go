@@ -169,11 +169,17 @@ func (s *SessionStore) updateAccountUsageRollupInBatch(batch *pebble.Batch, acco
 	rollup.MediaCalls += mediaCallsDelta
 	rollup.MediaCostUSD += mediaCostDelta
 	rollup.ImageCount += imageDelta
-	rollup.ImageCostUSD += mediaCostDelta // if image
+	if imageDelta != 0 {
+		rollup.ImageCostUSD += mediaCostDelta
+	}
 	rollup.VideoCount += videoDelta
-	rollup.VideoCostUSD += mediaCostDelta // if video
+	if videoDelta != 0 {
+		rollup.VideoCostUSD += mediaCostDelta
+	}
 	rollup.AudioCount += audioDelta
-	rollup.AudioCostUSD += mediaCostDelta // if audio
+	if audioDelta != 0 {
+		rollup.AudioCostUSD += mediaCostDelta
+	}
 	rollup.UnknownCount += unknownDelta
 	if ts > rollup.LastActiveAt {
 		rollup.LastActiveAt = ts

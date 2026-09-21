@@ -1106,3 +1106,104 @@ func TestConcurrentDifferentSessionsDailyAccumulator(t *testing.T) {
 		t.Fatalf("lost spend in concurrent race: expected %f, got %f", expectedCost, acc.TotalCostUSD)
 	}
 }
+
+func TestAccountUsageRollupMediaKindIsolation(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-media-isolation.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	store := NewSessionStore(db)
+	acctID := "acct-media-iso"
+	sessID := "sess-media-iso"
+	today := time.Now().UTC().Format("2006-01-02")
+
+	if err := store.CreateSession(SessionSnapshot{ID: sessID, AccountScopeID: acctID, Title: sessID}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// 1. Put image
+	if err := store.PutMediaUsage(SessionMediaUsageRecord{
+		ID:             "media-img-1",
+		SessionID:      sessID,
+		AccountScopeID: acctID,
+		MediaType:      "image/png",
+		Kind:           "image",
+		Provider:       "google",
+		Model:          "imagen-3.0",
+		CostUSD:        0.05,
+		CreatedAt:      time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("put image: %v", err)
+	}
+
+	// 2. Put video
+	if err := store.PutMediaUsage(SessionMediaUsageRecord{
+		ID:             "media-vid-1",
+		SessionID:      sessID,
+		AccountScopeID: acctID,
+		MediaType:      "video/mp4",
+		Kind:           "video",
+		Provider:       "google",
+		Model:          "veo-2.0",
+		CostUSD:        0.20,
+		CreatedAt:      time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("put video: %v", err)
+	}
+
+	// 3. Put audio
+	if err := store.PutMediaUsage(SessionMediaUsageRecord{
+		ID:             "media-aud-1",
+		SessionID:      sessID,
+		AccountScopeID: acctID,
+		MediaType:      "audio/mp3",
+		Kind:           "audio",
+		Provider:       "google",
+		Model:          "lyria-1.0",
+		CostUSD:        0.02,
+		CreatedAt:      time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("put audio: %v", err)
+	}
+
+	// Check image model rollup
+	rImg, found, err := store.GetAccountUsageRollup(acctID, today, sessID, "google", "imagen-3.0")
+	if err != nil || !found {
+		t.Fatalf("get image rollup: found=%v err=%v", found, err)
+	}
+	if rImg.ImageCount != 1 || rImg.ImageCostUSD != 0.05 {
+		t.Fatalf("image rollup expected ImageCount=1 ImageCostUSD=0.05, got count=%d cost=%f", rImg.ImageCount, rImg.ImageCostUSD)
+	}
+	if rImg.VideoCount != 0 || rImg.VideoCostUSD != 0.0 {
+		t.Fatalf("image rollup corrupted Video: count=%d cost=%f", rImg.VideoCount, rImg.VideoCostUSD)
+	}
+	if rImg.AudioCount != 0 || rImg.AudioCostUSD != 0.0 {
+		t.Fatalf("image rollup corrupted Audio: count=%d cost=%f", rImg.AudioCount, rImg.AudioCostUSD)
+	}
+
+	// Check video model rollup
+	rVid, found, err := store.GetAccountUsageRollup(acctID, today, sessID, "google", "veo-2.0")
+	if err != nil || !found {
+		t.Fatalf("get video rollup: found=%v err=%v", found, err)
+	}
+	if rVid.VideoCount != 1 || rVid.VideoCostUSD != 0.20 {
+		t.Fatalf("video rollup expected VideoCount=1 VideoCostUSD=0.20, got count=%d cost=%f", rVid.VideoCount, rVid.VideoCostUSD)
+	}
+	if rVid.ImageCount != 0 || rVid.ImageCostUSD != 0.0 {
+		t.Fatalf("video rollup corrupted Image: count=%d cost=%f", rVid.ImageCount, rVid.ImageCostUSD)
+	}
+
+	// Check audio model rollup
+	rAud, found, err := store.GetAccountUsageRollup(acctID, today, sessID, "google", "lyria-1.0")
+	if err != nil || !found {
+		t.Fatalf("get audio rollup: found=%v err=%v", found, err)
+	}
+	if rAud.AudioCount != 1 || rAud.AudioCostUSD != 0.02 {
+		t.Fatalf("audio rollup expected AudioCount=1 AudioCostUSD=0.02, got count=%d cost=%f", rAud.AudioCount, rAud.AudioCostUSD)
+	}
+	if rAud.ImageCount != 0 || rAud.ImageCostUSD != 0.0 {
+		t.Fatalf("audio rollup corrupted Image: count=%d cost=%f", rAud.ImageCount, rAud.ImageCostUSD)
+	}
+}

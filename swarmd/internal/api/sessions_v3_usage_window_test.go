@@ -29,6 +29,7 @@ func TestSessionsV3UsageDashboardPeriodAccounting(t *testing.T) {
 		_, _, err := svc.CreateSessionWithOptions(sessionruntime.CreateSessionOptions{
 			SessionID: id, Title: id, AccountScopeID: principal.AccountScopeID,
 			UserID: principal.UserID, WorkspacePath: t.TempDir(), WorkspaceName: "test",
+			Preference: &pebblestore.ModelPreference{Provider: "google", Model: "gemini-3.8-flash", Thinking: "low"},
 		})
 		if err != nil {
 			t.Fatal(err)

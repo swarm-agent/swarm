@@ -267,6 +267,11 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("migrate unified agent model settings: %w", err)
 	}
+	if _, err := pebblestore.RunAccountUsageRollupBackfillMigration(store); err != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("backfill account usage rollups: %w", err)
+	}
 	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
 		_ = store.Close()
