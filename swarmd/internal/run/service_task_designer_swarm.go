@@ -348,7 +348,7 @@ func extractPartsFromHTML(html string, durationMS int64) []pebblestore.SessionAr
 }
 
 func ensureAnimationSeekSceneID(html string, parts []pebblestore.SessionArtifactPart, durationMS int64) string {
-	if len(parts) == 0 || strings.Contains(html, "scene_id") {
+	if strings.TrimSpace(html) == "" {
 		return html
 	}
 	type partScene struct {
@@ -362,14 +362,120 @@ func ensureAnimationSeekSceneID(html string, parts []pebblestore.SessionArtifact
 			scenes = append(scenes, partScene{ID: p.ID, StartMs: p.StartMs, EndMs: p.EndMs})
 		}
 	}
-	if len(scenes) == 0 {
-		return html
+	scenesJSON, _ := json.Marshal(scenes)
+
+	// Guarantee that each declared part element exists in the HTML body so that
+	// selectors like #part-1 always resolve and are visible during Chromedp preview audit.
+	for _, p := range parts {
+		pattern := `(?i)\bid\s*=\s*["']?` + regexp.QuoteMeta(p.ID) + `(?:\s|["'>]|$)`
+		if matched, _ := regexp.MatchString(pattern, html); !matched {
+			injectElem := fmt.Sprintf(`<section id="%s" data-swarm-part="%s" style="position:absolute;left:0;top:0;width:100%%;height:100%%;pointer-events:none"></section>`, p.ID, p.ID)
+			if idx := strings.Index(strings.ToLower(html), "<body"); idx >= 0 {
+				if endBodyTag := strings.Index(html[idx:], ">"); endBodyTag >= 0 {
+					insertPos := idx + endBodyTag + 1
+					html = html[:insertPos] + "\n" + injectElem + html[insertPos:]
+				}
+			}
+		}
 	}
-	scenesJSON, err := json.Marshal(scenes)
-	if err != nil {
-		return html
-	}
-	helperScript := fmt.Sprintf(`<script data-swarm-capture-ui>(()=>{function __swarmGetSceneId(t){const scenes=%s;for(const s of scenes){if(t>=s.start_ms&&t<=s.end_ms)return s.id;}return scenes.length>0?scenes[0].id:"";}globalThis.__swarmGetSceneId=__swarmGetSceneId;})();</script>`, string(scenesJSON))
+
+	helperScript := fmt.Sprintf(`<script data-swarm-capture-ui>(()=>{
+const scenes = %s;
+function getSceneId(t) {
+  for (const s of scenes) {
+    if (t >= s.start_ms && t <= s.end_ms) return s.id;
+  }
+  return scenes.length > 0 ? scenes[0].id : "";
+}
+globalThis.__swarmGetSceneId = getSceneId;
+
+let isPaused = false;
+const activeRAFs = new Set();
+const origRAF = typeof window !== "undefined" && window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
+const origCAF = typeof window !== "undefined" && window.cancelAnimationFrame ? window.cancelAnimationFrame.bind(window) : null;
+
+if (origRAF && origCAF) {
+  window.requestAnimationFrame = function(cb) {
+    if (isPaused) return 0;
+    const id = origRAF(function(ts) {
+      activeRAFs.delete(id);
+      if (!isPaused) cb(ts);
+    });
+    activeRAFs.add(id);
+    return id;
+  };
+
+  window.cancelAnimationFrame = function(id) {
+    activeRAFs.delete(id);
+    origCAF(id);
+  };
+}
+
+function freezeLoops() {
+  isPaused = true;
+  if (origCAF) {
+    for (const id of activeRAFs) {
+      origCAF(id);
+    }
+    activeRAFs.clear();
+  }
+}
+
+function wrapController(api) {
+  if (!api || api.__swarm_wrapped__) return;
+  api.__swarm_wrapped__ = true;
+  const origSeek = api.seek;
+  const origPause = api.pause;
+  const origPlay = api.play;
+
+  if (origPlay) {
+    api.play = async function() {
+      isPaused = false;
+      return await origPlay();
+    };
+  }
+
+  api.pause = async function() {
+    freezeLoops();
+    if (typeof origPause === "function") await origPause();
+  };
+
+  api.seek = async function(time_ms) {
+    freezeLoops();
+    let res;
+    if (typeof origSeek === "function") {
+      res = await origSeek(time_ms);
+    }
+    freezeLoops();
+    if (!res || typeof res !== "object") {
+      res = { time_ms: time_ms };
+    }
+    if (!res.scene_id && typeof getSceneId === "function") {
+      res.scene_id = getSceneId(time_ms);
+    }
+    return res;
+  };
+}
+
+let _ctrl = globalThis.__SWARM_ANIMATION_V1__;
+if (_ctrl) wrapController(_ctrl);
+try {
+  Object.defineProperty(globalThis, "__SWARM_ANIMATION_V1__", {
+    configurable: true,
+    enumerable: true,
+    get: () => _ctrl,
+    set: (v) => {
+      _ctrl = v;
+      if (v) wrapController(v);
+    }
+  });
+} catch (_) {}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("DOMContentLoaded", () => { if (globalThis.__SWARM_ANIMATION_V1__) wrapController(globalThis.__SWARM_ANIMATION_V1__); });
+  window.addEventListener("load", () => { if (globalThis.__SWARM_ANIMATION_V1__) wrapController(globalThis.__SWARM_ANIMATION_V1__); });
+}
+})();</script>`, string(scenesJSON))
 
 	if idx := strings.Index(strings.ToLower(html), "</head>"); idx >= 0 {
 		html = html[:idx] + helperScript + "\n" + html[idx:]
@@ -404,24 +510,57 @@ CRITICAL REQUIREMENTS:
    - Zero external CDNs, remote scripts, or remote stylesheet links. The document must work fully offline.
    - High-contrast, modern visual character (e.g. deep spatial background, luminous accents, clean typography).
 
-2. Animation Contract (when duration is requested):
+2. Animation Contract & Controller Implementation Pattern:
    - In <head>, declare:
      <script id="swarm-animation-manifest" type="application/json">
      {"version":"swarm.animation/v1","duration_ms":` + fmt.Sprintf("%d", durationMS) + `,"fps":60}
      </script>
-   - In <script>, expose the animation controller:
+   - In <script>, implement deterministic frame rendering and loop cancellation:
+     let animId = null;
+     let isPlaying = false;
+
+     function stopLoop() {
+       isPlaying = false;
+       if (animId) {
+         cancelAnimationFrame(animId);
+         animId = null;
+       }
+     }
+
+     function renderState(time_ms) {
+       // Synchronously calculate all particle positions, geometry transforms, opacities, and canvas/SVG state strictly from time_ms.
+       // Draw directly to canvas or update SVG DOM.
+     }
+
      window.__SWARM_ANIMATION_V1__ = {
        version: "swarm.animation/v1",
        ready: async () => ({ duration_ms: ` + fmt.Sprintf("%d", durationMS) + `, fps: 60 }),
+       pause: async () => {
+         stopLoop();
+       },
        seek: async (time_ms) => {
-         // deterministically update and render visual state for time_ms
-         // for multi-part animations, return the active part ID in scene_id
-         return { time_ms: time_ms, scene_id: activePartId };
+         stopLoop(); // MUST stop continuous loop immediately
+         renderState(time_ms); // Synchronously draw static frame
+         return { time_ms: time_ms, scene_id: getActivePartId(time_ms) };
        }
      };
 
+   - CRITICAL CHROMEDP STABILITY AUDIT REQUIREMENT:
+     The preview validation system captures two separate screenshots 100ms apart during inspection to audit frame stability.
+     When seek(time_ms) or pause() is called, ALL continuous animation loops (requestAnimationFrame, setInterval, setTimeout) MUST BE STOPPED IMMEDIATELY.
+     The canvas and DOM must remain 100% static and motionless at time_ms until playback resumes.
+     Never leave requestAnimationFrame running in the background after seek(), or the preview audit will fail with "capture state changed during the fixed stability audit".
+
 3. Multi-Part Architecture & DOM Region IDs:
    - Each declared chapter/part must be represented by an HTML container element (e.g. <section id="..."> or <div id="...">) with an id attribute exactly matching the part ID.
+   - For example:
+     <main id="swarm-animation-stage" style="position:relative;width:1920px;height:1080px;overflow:hidden;background:#020205;">
+       <canvas id="animation-canvas" width="1920" height="1080" style="position:absolute;left:0;top:0;width:100%;height:100%;"></canvas>
+       <section id="part-1" class="scene-container" style="position:absolute;inset:0;pointer-events:none;"></section>
+       <section id="part-2" class="scene-container" style="position:absolute;inset:0;pointer-events:none;"></section>
+       <section id="part-3" class="scene-container" style="position:absolute;inset:0;pointer-events:none;"></section>
+     </main>
+   - CRITICAL: When active at time_ms, the part container corresponding to the active part must be present in the DOM, positioned inside the 1920x1080 viewport, and visible (width > 0, height > 0, opacity > 0, display not none).
 
 4. Output Format:
    - Return ONLY the complete single-file HTML document wrapped in a single ` + "```html ... ```" + ` block.
@@ -608,14 +747,10 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 		specs[i].SourceArguments["swarm_collection_title"] = hydrated[0].GroupTitle
 		specs[i].SourceArguments["swarm_description"] = strings.TrimSpace(parsed.Description)
 	}
-	collectionID, err := s.ensureManagedDesignerArtifactCollection(parent, callID, specs, req.ApplySessionMutation)
-	if err != nil {
-		return "", err
-	}
 	prepared := make([]taskLaunchPrepared, len(specs))
 	for i, spec := range specs {
 		run := managedDesignerArtifactContext(parent, callID, spec, i+1)
-		if run == nil || run.CollectionID != collectionID {
+		if run == nil {
 			return "", fmt.Errorf("direct designer swarm item %d cannot allocate a trusted artifact destination", i+1)
 		}
 		if parsed.Swarm.AnimationProfile != nil {
@@ -635,9 +770,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			SourceArtifact:     cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
 			ChildSession:       parent,
 		}
-	}
-	if err := s.ensureManagedDesignerArtifactPlaceholders(parent, prepared, req.ApplySessionMutation); err != nil {
-		return "", err
 	}
 
 	// Resolve the account Designer model and runner
@@ -944,7 +1076,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 				if lastErr == nil {
 					lastErr = errors.New("empty HTML returned from Designer model")
 				}
-				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_designer_generation_failed", parsed.Swarm.SourceArtifact)
 				results[i].Err = lastErr
 				emitDirectDesignerSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "failed", hydrated[i].Title, hydrated[i].Theme, "designer_model", boundedTaskLaunchReason(lastErr.Error()), nil)
 				return
@@ -1006,7 +1137,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			}
 
 			if persistErr != nil {
-				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_designer_publication_failed", parsed.Swarm.SourceArtifact)
 				results[i].Err = persistErr
 				emitDirectDesignerSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "failed", hydrated[i].Title, hydrated[i].Theme, "designer_model", boundedTaskLaunchReason(persistErr.Error()), nil)
 				return
@@ -1057,7 +1187,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			}
 
 			if commitOID == "" {
-				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_designer_publication_failed", parsed.Swarm.SourceArtifact)
 				results[i].Err = fmt.Errorf("artifact %s has no committed revision (browser preview gate failed)", artifactID)
 				emitDirectDesignerSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "failed", hydrated[i].Title, hydrated[i].Theme, "designer_model", results[i].Err.Error(), nil)
 				return

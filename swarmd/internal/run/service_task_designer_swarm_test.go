@@ -274,4 +274,10 @@ func TestEnsureAnimationSeekSceneID(t *testing.T) {
 	if !strings.Contains(patched, "scene_id:") {
 		t.Fatalf("expected patched HTML seek to include scene_id, got:\n%s", patched)
 	}
+	if !strings.Contains(patched, `<section id="part-1"`) || !strings.Contains(patched, `<section id="part-2"`) || !strings.Contains(patched, `<section id="part-3"`) {
+		t.Fatalf("expected patched HTML to inject missing part container sections, got:\n%s", patched)
+	}
+	if !strings.Contains(patched, "freezeLoops") || !strings.Contains(patched, "activeRAFs") {
+		t.Fatalf("expected patched HTML to include loop guardian, got:\n%s", patched)
+	}
 }
