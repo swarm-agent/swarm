@@ -202,8 +202,8 @@ All fixes must be validated in the isolated operator testbench environment (`~/w
 
 - [x] Phase 0: Architectural Audit & Verification of 8 Core Bugs + 4 Edge Cases
 - [x] Phase 1: Durable Documentation & Tracking Ledger (`docs/checkpoints/worker-v2-reliability-audit-and-remediation.md`)
-- [ ] Phase 2: Core Store & Scheduler Fixes (Retry backoff, archive conflict resolution, cascading delete)
-- [ ] Phase 3: Concurrency Caps, Daily Quota, and Delete Automation API
-- [ ] Phase 4: Desktop UI Visibility & Status Surfaces
-- [ ] Phase 5: Hermetic Unit Tests & Curated Critical Suites (`scripts/run-critical-tests.sh`)
-- [ ] Phase 6: Live Operator Testbench E2E Run (`~/work/run-testbench.sh`) & Zero-Phantom Verification
+- [x] Phase 2: Core Store & Scheduler Fixes (Retry backoff, archive conflict resolution, cascading delete)
+- [x] Phase 3: Concurrency Caps, Daily Quota, and Delete Automation API
+- [x] Phase 4: Desktop UI Visibility & Status Surfaces (`isDesktopV3NavigationHiddenSession` active options, `in_progress` sidebar grouping)
+- [x] Phase 5: Hermetic Unit Tests & Curated Critical Suites (`automation_v2_execution_test.go`, `automation_v2_scheduler_test.go`, `automations_v2_test.go`, `sessions_v3_executor_test.go`, `desktop-v3-session-visibility.spec.ts`)
+- [x] Phase 6: Live Operator Testbench E2E Run (`~/work/run-testbench.sh`, `/home/roy/work/test-reliability-proofs.mjs`) & Zero-Phantom Verification
