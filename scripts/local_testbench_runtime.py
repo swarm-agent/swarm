@@ -31,7 +31,7 @@ TOOLS = ('git', 'systemd-run', 'systemctl', 'systemd-nspawn', 'systemd-socket-ac
 PROXY_HELPER = '/usr/lib/systemd/systemd-socket-proxyd'
 # No source checkout, home, database, or host manager socket is mounted.
 # Build/install is deliberately in the guest; dependency caches must be in base.
-GUEST = r'''set -euo pipefail
+GUEST = r'''set -Eeuo pipefail
 phase() { current_phase=$1; printf '%s\n' "$1" > /exchange/phase; }
 # The exchange tmpfs bounds diagnostic storage to 1 MiB; the reader caps it at 8 KiB.
 trap 'printf "failed-%s\n" "$current_phase" > /exchange/phase' ERR
@@ -545,7 +545,7 @@ class NspawnRuntime:
                         phase = last
                 except OSError:
                     pass
-                if phase.startswith('failed-'):
+                if phase.startswith('failed-') or phase in {'go-build', 'web-build', 'daemon-start'}:
                     self.print_failure_diagnostic(record)
                 raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
