@@ -736,13 +736,15 @@ func TestDeploymentManager_ReleaseBehavior(t *testing.T) {
 			t.Errorf("expected Destroy to be called for ReleaseBehaviorRecreate")
 		}
 
-		// Deployment should be deleted from active store
-		_, found, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
+		// Deployment should be retained in store with terminated status after recreate release
+		dep, found, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
 		if err != nil {
 			t.Fatalf("GetDeployment failed: %v", err)
 		}
-		if found {
-			t.Errorf("expected deployment to be deleted from store after recreate release")
+		if !found {
+			t.Errorf("expected deployment record to be retained in store after recreate release")
+		} else if dep.Status != environments.DeploymentStatusTerminated {
+			t.Errorf("expected deployment status %q, got %q", environments.DeploymentStatusTerminated, dep.Status)
 		}
 
 		// Next EnsureDeployment should provision a fresh instance
@@ -814,13 +816,15 @@ func TestDeploymentManager_DestroyDeployment(t *testing.T) {
 		t.Errorf("expected lease to be deactivated after destroy")
 	}
 
-	// Deployment should be deleted from active store
-	_, foundDep, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
+	// Deployment should be retained in store with terminated status
+	dep, foundDep, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
-	if foundDep {
-		t.Errorf("expected deployment to be deleted from store")
+	if !foundDep {
+		t.Errorf("expected deployment to be retained in store after destroy")
+	} else if dep.Status != environments.DeploymentStatusTerminated {
+		t.Errorf("expected deployment status %q, got %q", environments.DeploymentStatusTerminated, dep.Status)
 	}
 }
 
