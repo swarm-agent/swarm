@@ -2104,7 +2104,7 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
 		result.Output = output
 		return true, result, err
-	case "manage_actions", "manage_connections", "manage_environments", "manage_deployments":
+	case "manage_actions", "manage_connections", "manage_environments":
 		return false, tool.Result{}, nil
 	case "manage_todos":
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
@@ -6801,8 +6801,6 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"manage-connections":  true,
 		"manage_environments": true,
 		"manage-environments": true,
-		"manage_deployments":  true,
-		"manage-deployments":  true,
 		"manage_workspace":    true,
 		"manage_memory":       true,
 		"manage-workspace":    true,
@@ -6900,8 +6898,6 @@ func canonicalToolName(name string) string {
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
 		return "manage_environments"
-	case "manage-deployments", "manage_deployments":
-		return "manage_deployments"
 	case "manage-video", "manage_video":
 		return "manage_video"
 	case "manage-todos", "manage_todos":
@@ -7023,15 +7019,12 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 		}
 		return "manage_connections", false
 	case "manage_environments":
-		if permission.ShouldApproveManageEnvironmentsMutation(arguments) {
-			return "environment_change", true
+		if id, sensitive := permission.ManageEnvironmentsPolicyIdentity(arguments); sensitive {
+			return id, true
 		}
 		return "manage_environments", false
 	case "manage_deployments":
-		if id, sensitive := permission.ManageDeploymentsPolicyIdentity(arguments); sensitive {
-			return id, true
-		}
-		return "manage_deployments", false
+		return "obsolete_manage_deployments", true
 	case "manage_skill":
 		if !permission.ShouldApproveManageSkillMutation(arguments) {
 			return "manage_skill", false

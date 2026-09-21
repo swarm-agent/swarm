@@ -191,8 +191,8 @@ func TestResolveDefaultTestbench_PreferredConnectionPrecedence(t *testing.T) {
 	if !strings.Contains(prompt, "environment preferred connection") {
 		t.Errorf("expected prompt to mention environment preferred connection, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "manage_deployments") || !strings.Contains(prompt, "ensure") {
-		t.Errorf("expected prompt to contain manage_deployments ensure guidance, got:\n%s", prompt)
+	if !strings.Contains(prompt, "manage_environments") || !strings.Contains(prompt, "ensure") {
+		t.Errorf("expected prompt to contain manage_environments ensure guidance, got:\n%s", prompt)
 	}
 }
 
@@ -569,8 +569,8 @@ func TestComposeRuntimeInstructions_IncludesEnvironmentBlock(t *testing.T) {
 	if !strings.Contains(instructions, "default_test_environment: env-go") {
 		t.Errorf("expected instructions to contain default_test_environment: env-go, got:\n%s", instructions)
 	}
-	if !strings.Contains(instructions, "manage_deployments action=\"ensure\"") {
-		t.Errorf("expected instructions to contain guidance for manage_deployments ensure, got:\n%s", instructions)
+	if !strings.Contains(instructions, "manage_environments action=\"ensure\"") {
+		t.Errorf("expected instructions to contain guidance for manage_environments ensure, got:\n%s", instructions)
 	}
 }
 
@@ -583,11 +583,14 @@ func TestMasterHarness_IncludesEnvironmentOrchestrationGuidance(t *testing.T) {
 	if !strings.Contains(prompt, "Reusable environments, testbenches, and deployments:") {
 		t.Errorf("expected master harness prompt to contain Reusable environments rule, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "manage_deployments action=\"ensure\"") {
-		t.Errorf("expected master harness prompt to direct testing to manage_deployments ensure, got:\n%s", prompt)
+	if !strings.Contains(prompt, "manage_environments action=\"ensure\"") {
+		t.Errorf("expected master harness prompt to direct testing to manage_environments ensure, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "manage_deployments (ensure test environment deployment & lease):") {
-		t.Errorf("expected harness tool usage examples to include manage_deployments example, got:\n%s", prompt)
+	if strings.Contains(prompt, "manage_deployments") {
+		t.Errorf("expected prompt not to contain obsolete manage_deployments, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "manage_environments (ensure test environment deployment & lease):") {
+		t.Errorf("expected harness tool usage examples to include manage_environments example, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "manage_environments (list available environments):") {
 		t.Errorf("expected harness tool usage examples to include manage_environments example, got:\n%s", prompt)

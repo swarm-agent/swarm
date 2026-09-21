@@ -32,14 +32,17 @@ func TestEnvironments_ReadOnlyActionsDefaultAllow(t *testing.T) {
 		{"manage_connections", `{"action": "list"}`},
 		{"manage_connections", `{"action": "get", "id": "conn-1"}`},
 		{"manage_connections", `{"action": "capabilities", "id": "conn-1"}`},
+		// manage_environments definition read actions
 		{"manage_environments", `{"action": "list"}`},
-		{"manage_environments", `{"action": "get", "id": "env-1"}`},
-		{"manage_environments", `{"action": "export", "id": "env-1"}`},
-		{"manage_deployments", `{"action": "list"}`},
-		{"manage_deployments", `{"action": "get", "id": "dep-1"}`},
-		{"manage_deployments", `{"action": "check", "id": "dep-1"}`},
-		{"manage_deployments", `{"action": "access", "id": "dep-1"}`},
-		{"manage_deployments", `{"action": "release", "lease_id": "lease-1"}`},
+		{"manage_environments", `{"action": "get", "environment_id": "env-1"}`},
+		{"manage_environments", `{"action": "export", "environment_id": "env-1"}`},
+		{"manage_environments", `{"action": "help"}`},
+		// manage_environments unified runtime read actions
+		{"manage_environments", `{"action": "list_deployments"}`},
+		{"manage_environments", `{"action": "get_deployment", "deployment_id": "dep-1"}`},
+		{"manage_environments", `{"action": "summary"}`},
+		{"manage_environments", `{"action": "history"}`},
+		{"manage_environments", `{"action": "get_operation", "operation_id": "op-1"}`},
 	}
 
 	for _, tt := range tests {
@@ -59,30 +62,48 @@ func TestEnvironments_SensitiveOperationsGatedByPermissions(t *testing.T) {
 		arguments        string
 		expectedIdentity string
 	}{
-		// manage_deployments sensitive operations
+		// manage_environments runtime sensitive operations
 		{
 			name:             "deployment destroy",
-			toolName:         "manage_deployments",
-			arguments:        `{"action": "destroy", "id": "dep-1", "reason": "cleanup"}`,
+			toolName:         "manage_environments",
+			arguments:        `{"action": "destroy", "deployment_id": "dep-1", "reason": "cleanup"}`,
 			expectedIdentity: "deployment_destroy",
 		},
 		{
 			name:             "deployment deploy",
-			toolName:         "manage_deployments",
+			toolName:         "manage_environments",
 			arguments:        `{"action": "deploy", "environment_id": "env-1"}`,
 			expectedIdentity: "deployment_deploy",
 		},
 		{
+			name:             "deployment ensure",
+			toolName:         "manage_environments",
+			arguments:        `{"action": "ensure", "environment_id": "env-1"}`,
+			expectedIdentity: "deployment_deploy",
+		},
+		{
 			name:             "deployment exec",
-			toolName:         "manage_deployments",
-			arguments:        `{"action": "exec", "id": "dep-1", "command": ["echo", "test"]}`,
+			toolName:         "manage_environments",
+			arguments:        `{"action": "exec", "deployment_id": "dep-1", "command": ["echo", "test"]}`,
 			expectedIdentity: "deployment_exec",
 		},
 		{
 			name:             "deployment stop",
-			toolName:         "manage_deployments",
-			arguments:        `{"action": "stop", "id": "dep-1"}`,
+			toolName:         "manage_environments",
+			arguments:        `{"action": "stop", "deployment_id": "dep-1"}`,
 			expectedIdentity: "deployment_stop",
+		},
+		{
+			name:             "deployment release",
+			toolName:         "manage_environments",
+			arguments:        `{"action": "release", "deployment_id": "dep-1"}`,
+			expectedIdentity: "environment_change",
+		},
+		{
+			name:             "operation cancel",
+			toolName:         "manage_environments",
+			arguments:        `{"action": "cancel_operation", "operation_id": "op-1"}`,
+			expectedIdentity: "environment_change",
 		},
 		// manage_connections mutations
 		{
@@ -109,7 +130,7 @@ func TestEnvironments_SensitiveOperationsGatedByPermissions(t *testing.T) {
 			arguments:        `{"action": "check", "id": "conn-1"}`,
 			expectedIdentity: "connection_change",
 		},
-		// manage_environments mutations
+		// manage_environments definition mutations
 		{
 			name:             "environment create",
 			toolName:         "manage_environments",
@@ -119,19 +140,19 @@ func TestEnvironments_SensitiveOperationsGatedByPermissions(t *testing.T) {
 		{
 			name:             "environment update",
 			toolName:         "manage_environments",
-			arguments:        `{"action": "update", "id": "env-1", "name": "Updated"}`,
+			arguments:        `{"action": "update", "environment_id": "env-1", "name": "Updated"}`,
 			expectedIdentity: "environment_change",
 		},
 		{
 			name:             "environment delete",
 			toolName:         "manage_environments",
-			arguments:        `{"action": "delete", "id": "env-1"}`,
+			arguments:        `{"action": "delete", "environment_id": "env-1"}`,
 			expectedIdentity: "environment_change",
 		},
 		{
 			name:             "environment set_default_test",
 			toolName:         "manage_environments",
-			arguments:        `{"action": "set_default_test", "id": "env-1"}`,
+			arguments:        `{"action": "set_default_test", "environment_id": "env-1"}`,
 			expectedIdentity: "environment_change",
 		},
 		{
@@ -164,5 +185,32 @@ func TestEnvironments_SensitiveOperationsGatedByPermissions(t *testing.T) {
 					tt.expectedIdentity, decisionWithBypass)
 			}
 		})
+	}
+}
+
+func TestEnvironments_ObsoleteManageDeploymentsFailsClosed(t *testing.T) {
+	obsoleteActions := []string{
+		`{"action": "list"}`,
+		`{"action": "get", "id": "dep-1"}`,
+		`{"action": "ensure", "environment_id": "env-1"}`,
+		`{"action": "exec", "id": "dep-1", "command": ["ls"]}`,
+		`{"action": "stop", "id": "dep-1"}`,
+		`{"action": "destroy", "id": "dep-1"}`,
+	}
+
+	for _, args := range obsoleteActions {
+		ctx := buildPolicyEvalContext("manage_deployments", args)
+		if ctx.ToolName != "obsolete_manage_deployments" {
+			t.Errorf("expected obsolete_manage_deployments context identity, got %q", ctx.ToolName)
+		}
+		decision := defaultPolicyDecision("auto", ctx.ToolName, args)
+		if decision != PolicyDecisionDeny {
+			t.Errorf("expected obsolete manage_deployments to fail closed with PolicyDecisionDeny, got %v", decision)
+		}
+		// Even with bypass, obsolete calls must fail closed
+		decisionBypass := defaultPolicyDecision("auto+bypass_permissions", ctx.ToolName, args)
+		if decisionBypass != PolicyDecisionDeny {
+			t.Errorf("expected obsolete manage_deployments to fail closed even with bypass, got %v", decisionBypass)
+		}
 	}
 }

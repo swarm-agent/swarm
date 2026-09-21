@@ -169,6 +169,7 @@ type Daemon struct {
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
+	deploymentMgr             *lifecycle.DeploymentManager
 	localTransportRuntimeName string
 	localTransportBaseURL     string
 	localTransportSocketPath  string
@@ -654,12 +655,16 @@ func New(cfg config.Config) (*Daemon, error) {
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
 	apiServer.ConfigureAutomationRealtime(store)
+	apiServer.ConfigureEnvironmentRealtime(store)
 	// Keep the legacy catalog read-only. Do not install V1 approval, dispatch,
 	// tool execution, or run-context authorities alongside plan-native V2.
 	apiServer.ConfigureAutomations(automationSvc, nil, nil, nil)
 
 	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
+	if err := deploymentMgr.Recover(bgCtx); err != nil {
+		log.Printf("warning: environment supervisor recovery: %v", err)
+	}
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)
@@ -782,6 +787,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
+		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
 	}
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -945,6 +951,12 @@ func (d *Daemon) cleanup() error {
 			_ = d.videoRenderService.WaitForIdle(waitCtx)
 			cancel()
 			d.videoRenderService = nil
+		}
+		if d.deploymentMgr != nil {
+			if err := d.deploymentMgr.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close deployment manager: %w", err))
+			}
+			d.deploymentMgr = nil
 		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()

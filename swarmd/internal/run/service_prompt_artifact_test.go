@@ -334,8 +334,7 @@ func TestMasterHarnessPromptGuidesSpecializedToolHelp(t *testing.T) {
 		"manage_video action=\"help\"",
 		"manage-theme action=\"inspect\"",
 		"manage-skill action=\"inspect\"",
-		"manage_environments action=\"list\"",
-		"manage_deployments action=\"ensure\"",
+		"manage_environments action=\"help\"",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("master prompt missing specialized tool help guidance %q", want)

@@ -374,6 +374,7 @@ type manageDeploymentLifecycleService interface {
 	ReleaseDeployment(ctx context.Context, req lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
 	DestroyDeployment(ctx context.Context, req lifecycle.DestroyDeploymentRequest) error
 	StopDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error
+	StartDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error
 	InspectDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*environments.Deployment, error)
 	ResolveAccess(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*provider.DeploymentAccess, error)
 	Exec(ctx context.Context, accountScopeID, workspaceID, deploymentID string, req provider.ExecRequest) (*provider.ExecResult, error)
@@ -381,6 +382,12 @@ type manageDeploymentLifecycleService interface {
 	ListDeployments(accountScopeID, workspaceID string, limit int) ([]environments.Deployment, error)
 	ListDeploymentsByEnvironment(accountScopeID, workspaceID, environmentID string, limit int) ([]environments.Deployment, error)
 	GetActiveLease(accountScopeID, workspaceID, deploymentID string) (environments.DeploymentLease, bool, error)
+	Submit(ctx context.Context, req lifecycle.SubmitOperationRequest) (*environments.EnvironmentOperation, error)
+	Get(ctx context.Context, accountScopeID, workspaceID, operationID string) (environments.EnvironmentOperation, bool, error)
+	History(ctx context.Context, q environments.OperationHistoryQuery) (environments.OperationHistoryPage, error)
+	Summary(ctx context.Context, accountScopeID, workspaceID string) (environments.EnvironmentSummary, error)
+	Cancel(ctx context.Context, req lifecycle.CancelOperationRequest) (*environments.EnvironmentOperation, error)
+	CancelOwner(ctx context.Context, req lifecycle.CancelOwnerRequest) (int, error)
 }
 
 type manageWorkspaceSettingsStore interface {
@@ -1398,7 +1405,6 @@ func (r *Runtime) Definitions() []Definition {
 		manageActionsDefinition(),
 		manageConnectionsDefinition(),
 		manageEnvironmentsDefinition(),
-		manageDeploymentsDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
@@ -1964,7 +1970,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-environments", "manage_environments":
 		return r.executeManageEnvironments(ctx, scope, args)
 	case "manage-deployments", "manage_deployments":
-		return r.executeManageDeployments(ctx, scope, args)
+		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
 	case "artifact-v2-author", "artifact_v2_author":
 		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
 	case "artifact-v3-author", "artifact_v3_author":
@@ -9132,8 +9138,6 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
 		return "manage_environments"
-	case "manage-deployments", "manage_deployments":
-		return "manage_deployments"
 	case "manage-artifact", "manage_artifact":
 		return "manage_artifact"
 	case "manage-todos", "manage_todos":
@@ -9727,8 +9731,6 @@ func canonicalStubToolName(raw string) string {
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
 		return "manage_environments"
-	case "manage-deployments", "manage_deployments":
-		return "manage_deployments"
 	case "manage-artifact", "manage_artifact":
 		return "manage_artifact"
 	case "manage-todos", "manage_todos":
@@ -9797,6 +9799,9 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 	if err != nil {
 		return "", "", "", err
 	}
+	if scope.WorktreeEnabled && strings.TrimSpace(scope.WorktreeRootPath) != "" {
+		workspacePath = filepath.Clean(scope.WorktreeRootPath)
+	}
 
 	if r != nil && r.workspace != nil {
 		wsScope, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, workspacePath)
@@ -9823,17 +9828,23 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 			return "", "", "", fmt.Errorf("%s requires an account-owned canonical workspace", toolName)
 		}
 		workspaceID = wsScope.WorkspaceID
-		workspacePath = wsScope.WorkspacePath
-		return accountScopeID, workspaceID, workspacePath, nil
+		if !scope.WorktreeEnabled || strings.TrimSpace(scope.WorktreeRootPath) == "" {
+			workspacePath = wsScope.WorkspacePath
+		}
+	} else {
+		if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
+			workspaceID = wsID
+		} else if len(scope.Roots) > 0 {
+			workspaceID = "ws-test"
+		} else {
+			return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+		}
 	}
 
-	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
-		workspaceID = wsID
-	} else if len(scope.Roots) > 0 {
-		workspaceID = "ws-test"
-	} else {
-		return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" && wsID != workspaceID {
+		return "", "", "", fmt.Errorf("%s workspace ID mismatch: specified %q, authorized is %q", toolName, wsID, workspaceID)
 	}
+
 	return accountScopeID, workspaceID, workspacePath, nil
 }
 
@@ -10254,8 +10265,6 @@ func toolPathID(name string) string {
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":
 		return "tool.manage-environments.v1"
-	case "manage-deployments", "manage_deployments":
-		return "tool.manage-deployments.v1"
 	case "manage-artifact", "manage_artifact":
 		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":

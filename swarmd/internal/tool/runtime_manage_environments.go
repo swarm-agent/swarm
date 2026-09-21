@@ -6,33 +6,47 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"swarm-refactor/swarmtui/pkg/environments"
+	"swarm/packages/swarmd/internal/environments/lifecycle"
 )
 
 func manageEnvironmentsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_environments",
-		Description: "Environment definition manager (list, get, create, update, delete, set_default_test, export, import). Call action='help' for schema.",
+		Description: "Unified environment manager for definitions, deployments, execution, supervised operations, summary, and daily history. Call action='help' for schema and usage guide.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type": "string",
-					"enum": []string{"list", "get", "create", "update", "delete", "set_default_test", "export", "import"},
+					"enum": []string{
+						"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
+						"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+						"summary", "history", "get_operation", "cancel_operation", "help",
+					},
+					"description": "Operation action to perform",
 				},
-				"workspace_path":          map[string]any{"type": "string"},
-				"id":                      map[string]any{"type": "string", "description": "Environment ID"},
-				"environment_id":          map[string]any{"type": "string", "description": "Alias for id"},
-				"name":                    map[string]any{"type": "string", "description": "Display name"},
+				"workspace_path": map[string]any{"type": "string", "description": "Workspace or isolated worktree root path"},
+				"workspace_id":   map[string]any{"type": "string", "description": "Canonical workspace ID"},
+				// Explicit entity identifiers (no ambiguous cross-object aliasing)
+				"environment_id": map[string]any{"type": "string", "description": "Environment definition ID"},
+				"deployment_id":  map[string]any{"type": "string", "description": "Deployment instance ID for runtime actions (exec, stop, start, destroy, release, get_deployment)"},
+				"operation_id":   map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
+				"id":             map[string]any{"type": "string", "description": "Environment ID alias for backward compatibility with definition get/update/delete/export"},
+				// Definition fields
+				"name":                    map[string]any{"type": "string", "description": "Environment display name"},
 				"description":             map[string]any{"type": "string"},
 				"mode":                    map[string]any{"type": "string", "enum": []string{"attached", "deployable"}},
 				"role":                    map[string]any{"type": "string", "enum": []string{"development", "testing", "build", "custom"}},
 				"preferred_connection_id": map[string]any{"type": "string"},
-				"image":                   map[string]any{"type": "string"},
+				"connection_id":           map[string]any{"type": "string", "description": "Connection override for deploy/ensure"},
+				"deployment_name":         map[string]any{"type": "string", "description": "Display name for deployment instance"},
+				"image":                   map[string]any{"type": "string", "description": "Container image name:tag"},
 				"container":               map[string]any{"type": "object"},
 				"provisioning":            map[string]any{"type": "object"},
 				"deployment_policy":       map[string]any{"type": "object"},
@@ -40,9 +54,33 @@ func manageEnvironmentsDefinition() Definition {
 				"resources":               map[string]any{"type": "object"},
 				"labels":                  map[string]any{"type": "object"},
 				"set_default_test":        map[string]any{"type": "boolean"},
-				"json":                    map[string]any{"type": "string"},
-				"environment":             map[string]any{"type": "object"},
-				"limit":                   map[string]any{"type": "integer"},
+				"json":                    map[string]any{"type": "string", "description": "JSON payload for import"},
+				"environment":             map[string]any{"type": "object", "description": "Environment object for import"},
+				// Runtime execution and supervised operation fields
+				"command":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Command and arguments for exec action"},
+				"working_dir":    map[string]any{"type": "string", "description": "Working directory inside container for exec"},
+				"env":            map[string]any{"type": "object", "description": "Environment variables for exec"},
+				"env_overrides":  map[string]any{"type": "object", "description": "Environment variable overrides for deploy/ensure"},
+				"timeout_ms":     map[string]any{"type": "integer", "description": "Timeout in milliseconds for command or operation"},
+				"deadline":       map[string]any{"type": "integer", "description": "Finite epoch millisecond deadline for operation"},
+				"idempotency_key": map[string]any{"type": "string", "description": "Client idempotency key for operation deduplication"},
+				"ttl_millis":     map[string]any{"type": "integer", "description": "Lease TTL in milliseconds for deploy/ensure (0 = default 1 hour)"},
+				"consumer_type":  map[string]any{"type": "string", "enum": []string{"session", "test_run", "worker", "custom"}},
+				"consumer_id":    map[string]any{"type": "string"},
+				"lease_id":       map[string]any{"type": "string", "description": "Lease ID for release action"},
+				"reason":         map[string]any{"type": "string", "description": "Reason for release, destroy, or cancel_operation"},
+				"max_output":     map[string]any{"type": "integer", "description": "Maximum stdout/stderr bytes for exec"},
+				// History query filters
+				"status":        map[string]any{"type": "string", "description": "Filter history by status (queued, running, succeeded, failed, cancelled, timed_out, cleanup_failed, unknown)"},
+				"action_filter": map[string]any{"type": "string", "description": "Filter history by action (ensure, deploy, exec, stop, release, destroy, cancel)"},
+				"actor":         map[string]any{"type": "string", "description": "Filter history by actor user ID"},
+				"session_id":    map[string]any{"type": "string", "description": "Filter history by session ID"},
+				"worker_id":     map[string]any{"type": "string", "description": "Filter history by worker ID"},
+				"timezone":      map[string]any{"type": "string", "description": "Explicit IANA timezone for daily history counts (defaults to UTC)"},
+				"start_date":    map[string]any{"type": "string", "description": "Start date YYYY-MM-DD inclusive for history"},
+				"end_date":      map[string]any{"type": "string", "description": "End date YYYY-MM-DD inclusive for history"},
+				"cursor":        map[string]any{"type": "string", "description": "Opaque cursor for history pagination"},
+				"limit":         map[string]any{"type": "integer", "description": "Max entries to return (default 50 for history, 100 for lists)"},
 			},
 			"required":             []string{"action"},
 			"additionalProperties": false,
@@ -75,6 +113,19 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 	}
 
 	switch actionName {
+	case "help":
+		response["instructions"] = "manage_environments unified reference:\n" +
+			"1. Definition actions: list, get, create, update, delete, set_default_test, export, import.\n" +
+			"2. Runtime instance inspection: list_deployments (reads deployments with active leases; no lazy reap), get_deployment (deployment_id required).\n" +
+			"3. Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
+			"   Mutations return an immediate bounded operation receipt with operation_id and status within 2 seconds. Do not busy-poll; inspect receipts and use realtime updates.\n" +
+			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id)."
+		response["available_actions"] = []string{
+			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
+			"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+			"summary", "history", "get_operation", "cancel_operation", "help",
+		}
+
 	case "list":
 		limit := asInt(args["limit"], 100)
 		envs, err := r.environmentsStore.List(accountScopeID, workspaceID, limit)
@@ -90,21 +141,21 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		}
 
 	case "get":
-		id := firstNonEmptyString(strings.TrimSpace(asString(args["id"])), strings.TrimSpace(asString(args["environment_id"])))
-		if id == "" {
-			return "", errors.New("id is required for get action")
+		envID := firstNonEmptyString(strings.TrimSpace(asString(args["environment_id"])), strings.TrimSpace(asString(args["id"])))
+		if envID == "" {
+			return "", errors.New("environment_id is required for get action")
 		}
-		env, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, id)
+		env, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, envID)
 		if err != nil {
-			return "", fmt.Errorf("get environment %q: %w", id, err)
+			return "", fmt.Errorf("get environment %q: %w", envID, err)
 		}
 		if !found {
-			return "", fmt.Errorf("environment %q not found", id)
+			return "", fmt.Errorf("environment %q not found", envID)
 		}
 		response["environment"] = env
 		if r.workspaceSettings != nil {
 			if ws, foundWS, _ := r.workspaceSettings.GetWorkspaceSettings(accountScopeID, workspaceID); foundWS {
-				response["is_default_test"] = ws.DefaultTestEnvironmentID == id
+				response["is_default_test"] = ws.DefaultTestEnvironmentID == envID
 			}
 		}
 
@@ -113,111 +164,103 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		if err != nil {
 			return "", err
 		}
-
 		if err := env.Validate(); err != nil {
 			return "", fmt.Errorf("invalid environment definition: %w", err)
 		}
-
 		saved, err := r.environmentsStore.Save(env)
 		if err != nil {
 			return "", fmt.Errorf("save environment: %w", err)
 		}
 		response["environment"] = saved
-
 		if asBool(args["set_default_test"]) && r.workspaceSettings != nil {
 			_, _ = r.workspaceSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &saved.ID, nil)
 			response["is_default_test"] = true
 		}
 
 	case "update":
-		id := firstNonEmptyString(strings.TrimSpace(asString(args["id"])), strings.TrimSpace(asString(args["environment_id"])))
-		if id == "" {
-			return "", errors.New("id is required for update action")
+		envID := firstNonEmptyString(strings.TrimSpace(asString(args["environment_id"])), strings.TrimSpace(asString(args["id"])))
+		if envID == "" {
+			return "", errors.New("environment_id is required for update action")
 		}
-		current, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, id)
+		current, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, envID)
 		if err != nil {
-			return "", fmt.Errorf("get environment %q: %w", id, err)
+			return "", fmt.Errorf("get environment %q: %w", envID, err)
 		}
 		if !found {
-			return "", fmt.Errorf("environment %q not found", id)
+			return "", fmt.Errorf("environment %q not found", envID)
 		}
-
 		updated, err := applyEnvironmentUpdates(current, args)
 		if err != nil {
 			return "", err
 		}
-
 		if err := updated.Validate(); err != nil {
 			return "", fmt.Errorf("invalid environment update: %w", err)
 		}
-
 		saved, err := r.environmentsStore.Save(updated)
 		if err != nil {
 			return "", fmt.Errorf("update environment: %w", err)
 		}
 		response["environment"] = saved
-
 		if asBool(args["set_default_test"]) && r.workspaceSettings != nil {
 			_, _ = r.workspaceSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &saved.ID, nil)
 			response["is_default_test"] = true
 		}
 
 	case "delete":
-		id := firstNonEmptyString(strings.TrimSpace(asString(args["id"])), strings.TrimSpace(asString(args["environment_id"])))
-		if id == "" {
-			return "", errors.New("id is required for delete action")
+		envID := firstNonEmptyString(strings.TrimSpace(asString(args["environment_id"])), strings.TrimSpace(asString(args["id"])))
+		if envID == "" {
+			return "", errors.New("environment_id is required for delete action")
 		}
-		deleted, err := r.environmentsStore.Delete(accountScopeID, workspaceID, id)
+		deleted, err := r.environmentsStore.Delete(accountScopeID, workspaceID, envID)
 		if err != nil {
-			return "", fmt.Errorf("delete environment %q: %w", id, err)
+			return "", fmt.Errorf("delete environment %q: %w", envID, err)
 		}
 		if !deleted {
-			return "", fmt.Errorf("environment %q not found", id)
+			return "", fmt.Errorf("environment %q not found", envID)
 		}
-		response["id"] = id
-
-		// Clear from workspace settings if it was the default test environment
+		response["id"] = envID
+		response["environment_id"] = envID
 		if r.workspaceSettings != nil {
-			if ws, found, _ := r.workspaceSettings.GetWorkspaceSettings(accountScopeID, workspaceID); found && ws.DefaultTestEnvironmentID == id {
+			if ws, found, _ := r.workspaceSettings.GetWorkspaceSettings(accountScopeID, workspaceID); found && ws.DefaultTestEnvironmentID == envID {
 				empty := ""
 				_, _ = r.workspaceSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &empty, nil)
 			}
 		}
 
 	case "set_default_test":
-		id := firstNonEmptyString(strings.TrimSpace(asString(args["id"])), strings.TrimSpace(asString(args["environment_id"])))
-		if id != "" && id != "none" {
-			_, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, id)
+		envID := firstNonEmptyString(strings.TrimSpace(asString(args["environment_id"])), strings.TrimSpace(asString(args["id"])))
+		if envID != "" && envID != "none" {
+			_, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, envID)
 			if err != nil {
-				return "", fmt.Errorf("check environment %q: %w", id, err)
+				return "", fmt.Errorf("check environment %q: %w", envID, err)
 			}
 			if !found {
-				return "", fmt.Errorf("environment %q not found", id)
+				return "", fmt.Errorf("environment %q not found", envID)
 			}
 		}
-		if id == "none" {
-			id = ""
+		if envID == "none" {
+			envID = ""
 		}
 		if r.workspaceSettings == nil {
 			return "", errors.New("workspace settings store is not configured")
 		}
-		_, err := r.workspaceSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &id, nil)
+		_, err := r.workspaceSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &envID, nil)
 		if err != nil {
 			return "", fmt.Errorf("set default test environment: %w", err)
 		}
-		response["default_test_environment_id"] = id
+		response["default_test_environment_id"] = envID
 
 	case "export":
-		id := firstNonEmptyString(strings.TrimSpace(asString(args["id"])), strings.TrimSpace(asString(args["environment_id"])))
-		if id == "" {
-			return "", errors.New("id is required for export action")
+		envID := firstNonEmptyString(strings.TrimSpace(asString(args["environment_id"])), strings.TrimSpace(asString(args["id"])))
+		if envID == "" {
+			return "", errors.New("environment_id is required for export action")
 		}
-		env, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, id)
+		env, found, err := r.environmentsStore.Get(accountScopeID, workspaceID, envID)
 		if err != nil {
-			return "", fmt.Errorf("get environment %q: %w", id, err)
+			return "", fmt.Errorf("get environment %q: %w", envID, err)
 		}
 		if !found {
-			return "", fmt.Errorf("environment %q not found", id)
+			return "", fmt.Errorf("environment %q not found", envID)
 		}
 		exportedJSON, err := json.MarshalIndent(env, "", "  ")
 		if err != nil {
@@ -243,8 +286,6 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		} else {
 			return "", errors.New("import requires either 'json' string or 'environment' object")
 		}
-
-		// Enforce workspace isolation on imported environment
 		importedEnv.AccountScopeID = accountScopeID
 		importedEnv.WorkspaceID = workspaceID
 		if strings.TrimSpace(importedEnv.ID) == "" {
@@ -253,16 +294,268 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		if strings.TrimSpace(importedEnv.Name) == "" {
 			return "", errors.New("imported environment must have a name")
 		}
-
 		if err := importedEnv.Validate(); err != nil {
 			return "", fmt.Errorf("imported environment validation failed: %w", err)
 		}
-
 		saved, err := r.environmentsStore.Save(importedEnv)
 		if err != nil {
 			return "", fmt.Errorf("save imported environment: %w", err)
 		}
 		response["environment"] = saved
+
+	// Runtime deployment inspection
+	case "list_deployments":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+		limit := asInt(args["limit"], 100)
+		envID := strings.TrimSpace(asString(args["environment_id"]))
+		var deps []environments.Deployment
+		if envID != "" {
+			deps, err = r.deploymentManager.ListDeploymentsByEnvironment(accountScopeID, workspaceID, envID, limit)
+		} else {
+			deps, err = r.deploymentManager.ListDeployments(accountScopeID, workspaceID, limit)
+		}
+		if err != nil {
+			return "", fmt.Errorf("list deployments: %w", err)
+		}
+
+		type depListItem struct {
+			environments.Deployment
+			ActiveLease *environments.DeploymentLease `json:"active_lease,omitempty"`
+		}
+		items := make([]depListItem, 0, len(deps))
+		for _, dep := range deps {
+			item := depListItem{Deployment: dep}
+			if lease, hasLease, _ := r.deploymentManager.GetActiveLease(accountScopeID, workspaceID, dep.ID); hasLease && lease.Active {
+				item.ActiveLease = &lease
+			}
+			items = append(items, item)
+		}
+		response["deployments"] = items
+		response["count"] = len(items)
+
+	case "get_deployment":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+		depID := strings.TrimSpace(asString(args["deployment_id"]))
+		if depID == "" {
+			return "", errors.New("deployment_id is required for get_deployment action")
+		}
+		dep, found, err := r.deploymentManager.GetDeployment(accountScopeID, workspaceID, depID)
+		if err != nil {
+			return "", fmt.Errorf("get deployment %q: %w", depID, err)
+		}
+		if !found {
+			return "", fmt.Errorf("deployment %q not found", depID)
+		}
+		response["deployment"] = dep
+		if lease, hasLease, _ := r.deploymentManager.GetActiveLease(accountScopeID, workspaceID, depID); hasLease {
+			response["active_lease"] = lease
+			response["lease"] = lease
+		}
+		if dep.IsUsable() {
+			if access, _ := r.deploymentManager.ResolveAccess(ctx, accountScopeID, workspaceID, depID); access != nil {
+				response["access"] = access
+			}
+		}
+
+	case "summary":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+		summary, err := r.deploymentManager.Summary(ctx, accountScopeID, workspaceID)
+		if err != nil {
+			return "", fmt.Errorf("get environment summary: %w", err)
+		}
+		response["summary"] = summary
+
+	case "history":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+		q := environments.OperationHistoryQuery{
+			AccountScopeID: accountScopeID,
+			WorkspaceID:    workspaceID,
+			EnvironmentID:  strings.TrimSpace(asString(args["environment_id"])),
+			DeploymentID:   strings.TrimSpace(asString(args["deployment_id"])),
+			Actor:          strings.TrimSpace(asString(args["actor"])),
+			SessionID:      strings.TrimSpace(asString(args["session_id"])),
+			WorkerID:       strings.TrimSpace(asString(args["worker_id"])),
+			Status:         environments.OperationStatus(strings.TrimSpace(asString(args["status"]))),
+			Action:         firstNonEmptyString(strings.TrimSpace(asString(args["action_filter"])), strings.TrimSpace(asString(args["filter_action"]))),
+			Timezone:       strings.TrimSpace(asString(args["timezone"])),
+			StartDate:      strings.TrimSpace(asString(args["start_date"])),
+			EndDate:        strings.TrimSpace(asString(args["end_date"])),
+			Cursor:         strings.TrimSpace(asString(args["cursor"])),
+			Limit:          asInt(args["limit"], 50),
+		}
+		page, err := r.deploymentManager.History(ctx, q)
+		if err != nil {
+			return "", fmt.Errorf("query operation history: %w", err)
+		}
+		response["history"] = page
+		response["operations"] = page.Operations
+		response["daily_totals"] = page.DailyTotals
+		response["summary"] = page.Summary
+		response["next_cursor"] = page.NextCursor
+		response["has_more"] = page.HasMore
+
+	case "get_operation":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+		opID := strings.TrimSpace(asString(args["operation_id"]))
+		if opID == "" {
+			return "", errors.New("operation_id is required for get_operation action")
+		}
+		op, found, err := r.deploymentManager.Get(ctx, accountScopeID, workspaceID, opID)
+		if err != nil {
+			return "", fmt.Errorf("get operation %q: %w", opID, err)
+		}
+		if !found {
+			return "", fmt.Errorf("operation %q not found", opID)
+		}
+		response["operation"] = op
+		response["operation_id"] = op.OperationID
+		response["status"] = op.Status
+
+	case "cancel_operation":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+		opID := strings.TrimSpace(asString(args["operation_id"]))
+		if opID == "" {
+			return "", errors.New("operation_id is required for cancel_operation action")
+		}
+		reason := strings.TrimSpace(asString(args["reason"]))
+		if reason == "" {
+			reason = "cancelled via manage_environments"
+		}
+		op, err := r.deploymentManager.Cancel(ctx, lifecycle.CancelOperationRequest{
+			AccountScopeID: accountScopeID,
+			WorkspaceID:    workspaceID,
+			OperationID:    opID,
+			Reason:         reason,
+		})
+		if err != nil {
+			return "", fmt.Errorf("cancel operation %q: %w", opID, err)
+		}
+		response["operation"] = op
+		response["operation_id"] = op.OperationID
+		response["status"] = op.Status
+
+	// Supervised runtime mutations (all wired to supervised admission via Submit)
+	case "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
+		if r.deploymentManager == nil {
+			return "", errors.New("manage_environments deployment manager is not configured")
+		}
+
+		// Trusted attribution: caller cannot forge consumer_id or request session identity
+		callerActor := strings.TrimSpace(scope.Principal.UserID)
+		if callerActor == "" {
+			callerActor = "session-agent"
+		}
+		callerSessionID := strings.TrimSpace(scope.SessionID)
+
+		subReq := lifecycle.SubmitOperationRequest{
+			AccountScopeID: accountScopeID,
+			WorkspaceID:    workspaceID,
+			Action:         actionName,
+			IdempotencyKey: strings.TrimSpace(asString(args["idempotency_key"])),
+			Deadline:       int64(asInt(args["deadline"], 0)),
+			Attribution: environments.OperationAttribution{
+				Actor:     callerActor,
+				SessionID: callerSessionID,
+			},
+		}
+		if tMs := asInt(args["timeout_ms"], 0); tMs > 0 {
+			subReq.Timeout = time.Duration(tMs) * time.Millisecond
+		}
+
+		switch actionName {
+		case "ensure":
+			envID := strings.TrimSpace(asString(args["environment_id"]))
+			if envID == "" && r.workspaceSettings != nil {
+				if ws, found, _ := r.workspaceSettings.GetWorkspaceSettings(accountScopeID, workspaceID); found {
+					envID = strings.TrimSpace(ws.DefaultTestEnvironmentID)
+				}
+			}
+			if envID == "" {
+				return "", errors.New("environment_id is required for ensure (no workspace default test environment configured)")
+			}
+			subReq.EnvironmentID = envID
+			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
+			subReq.DeploymentName = strings.TrimSpace(asString(args["deployment_name"]))
+			subReq.WorkspacePath = workspacePath
+			subReq.EnvOverrides = asStringMap(args["env_overrides"])
+			subReq.TTLMillis = int64(asInt(args["ttl_millis"], 0))
+			subReq.ConsumerType = environments.ConsumerTypeSession
+			subReq.ConsumerID = callerSessionID
+
+		case "deploy":
+			envID := strings.TrimSpace(asString(args["environment_id"]))
+			if envID == "" {
+				return "", errors.New("environment_id is required for deploy action")
+			}
+			subReq.EnvironmentID = envID
+			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
+			subReq.DeploymentName = strings.TrimSpace(asString(args["deployment_name"]))
+			subReq.WorkspacePath = workspacePath
+			subReq.EnvOverrides = asStringMap(args["env_overrides"])
+			subReq.TTLMillis = int64(asInt(args["ttl_millis"], 0))
+			subReq.ConsumerType = environments.ConsumerTypeSession
+			subReq.ConsumerID = callerSessionID
+
+		case "exec":
+			depID := strings.TrimSpace(asString(args["deployment_id"]))
+			if depID == "" {
+				return "", errors.New("deployment_id is required for exec action")
+			}
+			cmd, err := parseCommandList(args["command"])
+			if err != nil {
+				return "", err
+			}
+			if len(cmd) == 0 {
+				return "", errors.New("command is required for exec action")
+			}
+			subReq.DeploymentID = depID
+			subReq.Command = cmd
+			subReq.WorkingDir = strings.TrimSpace(asString(args["working_dir"]))
+			subReq.Env = asStringMap(args["env"])
+			subReq.MaxOutput = asInt(args["max_output"], 0)
+			subReq.LeaseID = strings.TrimSpace(asString(args["lease_id"]))
+
+		case "start", "stop", "destroy":
+			depID := strings.TrimSpace(asString(args["deployment_id"]))
+			if depID == "" {
+				return "", fmt.Errorf("deployment_id is required for %s action", actionName)
+			}
+			subReq.DeploymentID = depID
+			subReq.Reason = strings.TrimSpace(asString(args["reason"]))
+
+		case "release":
+			depID := strings.TrimSpace(asString(args["deployment_id"]))
+			leaseID := strings.TrimSpace(asString(args["lease_id"]))
+			if depID == "" && leaseID == "" {
+				return "", errors.New("deployment_id or lease_id is required for release action")
+			}
+			subReq.DeploymentID = depID
+			subReq.LeaseID = leaseID
+			subReq.Reason = strings.TrimSpace(asString(args["reason"]))
+		}
+
+		op, err := r.deploymentManager.Submit(ctx, subReq)
+		if err != nil {
+			return "", fmt.Errorf("%s failed: %w", actionName, err)
+		}
+		response["operation"] = op
+		response["operation_id"] = op.OperationID
+		response["status"] = op.Status
+		if op.DeploymentID != "" {
+			response["deployment_id"] = op.DeploymentID
+		}
 
 	default:
 		return "", fmt.Errorf("unsupported manage_environments action %q", actionName)
@@ -276,7 +569,6 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 }
 
 func parseEnvironmentInput(args map[string]any, accountScopeID, workspaceID string) (environments.Environment, error) {
-	// If full environment object was passed
 	if envObj, ok := args["environment"].(map[string]any); ok && envObj != nil {
 		rawBytes, err := json.Marshal(envObj)
 		if err != nil {
@@ -299,7 +591,10 @@ func parseEnvironmentInput(args map[string]any, accountScopeID, workspaceID stri
 		return environments.Environment{}, errors.New("name is required for environment creation")
 	}
 
-	id := strings.TrimSpace(asString(args["id"]))
+	id := strings.TrimSpace(asString(args["environment_id"]))
+	if id == "" {
+		id = strings.TrimSpace(asString(args["id"]))
+	}
 	if id == "" {
 		id = "env_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	}
@@ -314,7 +609,6 @@ func parseEnvironmentInput(args map[string]any, accountScopeID, workspaceID stri
 		role = environments.EnvironmentRoleTesting
 	}
 
-	// Container definition
 	var container environments.ContainerDefinition
 	if cRaw, ok := args["container"].(map[string]any); ok && cRaw != nil {
 		rawBytes, _ := json.Marshal(cRaw)
@@ -334,21 +628,18 @@ func parseEnvironmentInput(args map[string]any, accountScopeID, workspaceID stri
 		return environments.Environment{}, errors.New("container image is required (specify 'image' or 'container.image')")
 	}
 
-	// Provisioning definition (source strategy)
 	var prov environments.WorkspaceProvisioning
 	if pRaw, ok := args["provisioning"].(map[string]any); ok && pRaw != nil {
 		rawBytes, _ := json.Marshal(pRaw)
 		_ = json.Unmarshal(rawBytes, &prov)
 	}
 	if prov.Strategy.Kind == "" {
-		// Default to local mount if unspecified
 		prov.Strategy.Kind = environments.SourceStrategyKindLocalMount
 		prov.Strategy.LocalMount = &environments.LocalMountConfig{
 			ContainerPath: "/app",
 		}
 	}
 
-	// Deployment policy
 	var policy environments.DeploymentPolicy
 	if polRaw, ok := args["deployment_policy"].(map[string]any); ok && polRaw != nil {
 		rawBytes, _ := json.Marshal(polRaw)

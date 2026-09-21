@@ -358,7 +358,6 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_memory":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
 			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
-			"manage_deployments":  {Enabled: pebblestore.BoolPtr(true)},
 		},
 	}
 }
@@ -441,7 +440,7 @@ func WorkspaceOnboardingAgentToolContract() *pebblestore.AgentToolContract {
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_workers": {Enabled: pebblestore.BoolPtr(false)}, "manage_automation": {Enabled: pebblestore.BoolPtr(false)}, "manage_actions": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(false)}, "manage_video": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
-		"manage_connections": {Enabled: pebblestore.BoolPtr(false)}, "manage_environments": {Enabled: pebblestore.BoolPtr(false)}, "manage_deployments": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_connections": {Enabled: pebblestore.BoolPtr(false)}, "manage_environments": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 

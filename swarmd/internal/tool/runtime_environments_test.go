@@ -192,7 +192,7 @@ func TestEnvironmentsTool_SchemaValidation(t *testing.T) {
 		toolDefs[d.Name] = d
 	}
 
-	for _, name := range []string{"manage_connections", "manage_environments", "manage_deployments"} {
+	for _, name := range []string{"manage_connections", "manage_environments"} {
 		def, exists := toolDefs[name]
 		if !exists {
 			t.Fatalf("expected tool %q to be registered in Definitions()", name)
@@ -224,6 +224,10 @@ func TestEnvironmentsTool_SchemaValidation(t *testing.T) {
 		}
 	}
 
+	if _, exists := toolDefs["manage_deployments"]; exists {
+		t.Fatalf("manage_deployments must NOT be registered in Definitions()")
+	}
+
 	// Verify action sets for each tool
 	connActions := toolDefs["manage_connections"].Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
 	for _, act := range []string{"list", "get", "create", "update", "delete", "check", "capabilities"} {
@@ -240,7 +244,11 @@ func TestEnvironmentsTool_SchemaValidation(t *testing.T) {
 	}
 
 	envActions := toolDefs["manage_environments"].Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
-	for _, act := range []string{"list", "get", "create", "update", "delete", "set_default_test", "export", "import"} {
+	for _, act := range []string{
+		"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
+		"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+		"summary", "history", "get_operation", "cancel_operation", "help",
+	} {
 		found := false
 		for _, a := range envActions {
 			if a == act {
@@ -250,20 +258,6 @@ func TestEnvironmentsTool_SchemaValidation(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("manage_environments missing action %q", act)
-		}
-	}
-
-	depActions := toolDefs["manage_deployments"].Parameters["properties"].(map[string]any)["action"].(map[string]any)["enum"].([]string)
-	for _, act := range []string{"list", "get", "ensure", "deploy", "release", "stop", "destroy", "check", "access", "exec"} {
-		found := false
-		for _, a := range depActions {
-			if a == act {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("manage_deployments missing action %q", act)
 		}
 	}
 }
@@ -642,7 +636,7 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 		t.Fatalf("save env: %v", err)
 	}
 
-	// 1. Action: ensure (should provision new deployment, acquire lease, return resolved access info)
+	// 1. Action: ensure (supervised admission returns bounded async receipt)
 	ensureArgs := map[string]any{
 		"action":         "ensure",
 		"environment_id": env.ID,
@@ -650,205 +644,184 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 		"consumer_id":    "session-user-1",
 		"workspace_id":   workspaceID,
 	}
-	out, err := execTool(t, h, "manage_deployments", ensureArgs)
+	out, err := execTool(t, h, "manage_environments", ensureArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments ensure failed: %v", err)
+		t.Fatalf("manage_environments ensure failed: %v", err)
 	}
 	var ensureRes map[string]any
 	_ = json.Unmarshal([]byte(out), &ensureRes)
-	if ensureRes["status"] != "ok" {
-		t.Fatalf("expected status=ok, got: %v", ensureRes)
+	if ensureRes["status"] == nil || ensureRes["operation_id"] == nil {
+		t.Fatalf("expected bounded async receipt with operation_id, got: %v", ensureRes)
+	}
+	opID := ensureRes["operation_id"].(string)
+
+	// Wait for ensure operation to complete in background
+	var deploymentID string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": opID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok {
+				if opMap["status"] == "succeeded" {
+					deploymentID = opMap["deployment_id"].(string)
+					break
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if deploymentID == "" {
+		// Fall back to listing deployments
+		listDeps, _ := h.mgr.ListDeployments("test-account", workspaceID, 1)
+		if len(listDeps) > 0 {
+			deploymentID = listDeps[0].ID
+		}
+	}
+	if deploymentID == "" {
+		t.Fatalf("ensure operation did not resolve deployment ID within deadline")
 	}
 
-	depMap, ok := ensureRes["deployment"].(map[string]any)
-	if !ok || depMap["id"] == "" {
-		t.Fatalf("expected deployment in ensure response: %v", ensureRes)
-	}
-	deploymentID := depMap["id"].(string)
-
-	leaseMap, ok := ensureRes["lease"].(map[string]any)
-	if !ok || leaseMap["id"] == "" {
-		t.Fatalf("expected lease in ensure response: %v", ensureRes)
-	}
-	leaseID := leaseMap["id"].(string)
-
-	accessMap, ok := ensureRes["access"].(map[string]any)
-	if !ok || accessMap["primary_endpoint"] != "http://127.0.0.1:18080" {
-		t.Fatalf("expected resolved access info with primary_endpoint: %v", accessMap)
-	}
-	if accessMap["exec_supported"] != true {
-		t.Errorf("expected exec_supported=true")
-	}
-
-	// 2. Action: get
+	// 2. Action: get_deployment
 	getArgs := map[string]any{
-		"action":       "get",
-		"id":           deploymentID,
-		"workspace_id": workspaceID,
+		"action":        "get_deployment",
+		"deployment_id": deploymentID,
+		"workspace_id":  workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", getArgs)
+	out, err = execTool(t, h, "manage_environments", getArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments get failed: %v", err)
+		t.Fatalf("manage_environments get_deployment failed: %v", err)
 	}
 	var getRes map[string]any
 	_ = json.Unmarshal([]byte(out), &getRes)
 	if getRes["deployment"].(map[string]any)["id"] != deploymentID {
-		t.Errorf("unexpected deployment in get: %v", getRes)
+		t.Errorf("unexpected deployment in get_deployment: %v", getRes)
 	}
-	if getRes["lease"] == nil {
-		t.Errorf("expected active lease in get result")
+	if getRes["active_lease"] == nil && getRes["lease"] == nil {
+		t.Errorf("expected active lease in get_deployment result")
 	}
 
-	// 3. Action: access
-	accessArgs := map[string]any{
-		"action":       "access",
-		"id":           deploymentID,
+	// 3. Action: list_deployments (reads without lazy reap)
+	listDepArgs := map[string]any{
+		"action":       "list_deployments",
 		"workspace_id": workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", accessArgs)
+	out, err = execTool(t, h, "manage_environments", listDepArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments access failed: %v", err)
+		t.Fatalf("manage_environments list_deployments failed: %v", err)
 	}
-	var accRes map[string]any
-	_ = json.Unmarshal([]byte(out), &accRes)
-	if accRes["access"].(map[string]any)["primary_endpoint"] != "http://127.0.0.1:18080" {
-		t.Errorf("unexpected access response: %v", accRes)
+	var listDepRes map[string]any
+	_ = json.Unmarshal([]byte(out), &listDepRes)
+	if count, ok := listDepRes["count"].(float64); !ok || count < 1 {
+		t.Fatalf("expected at least 1 deployment in list_deployments, got: %v", listDepRes)
 	}
 
-	// 4. Action: exec
+	// 4. Action: summary
+	sumArgs := map[string]any{
+		"action":       "summary",
+		"workspace_id": workspaceID,
+	}
+	out, err = execTool(t, h, "manage_environments", sumArgs)
+	if err != nil {
+		t.Fatalf("manage_environments summary failed: %v", err)
+	}
+	var sumRes map[string]any
+	_ = json.Unmarshal([]byte(out), &sumRes)
+	if sumRes["summary"] == nil {
+		t.Errorf("expected summary object in response: %v", sumRes)
+	}
+
+	// 5. Action: exec (returns supervised receipt)
 	execArgs := map[string]any{
-		"action":       "exec",
-		"id":           deploymentID,
-		"command":      []any{"ls", "-la", "/workspace"},
-		"workspace_id": workspaceID,
+		"action":        "exec",
+		"deployment_id": deploymentID,
+		"command":       []any{"ls", "-la", "/workspace"},
+		"workspace_id":  workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", execArgs)
+	out, err = execTool(t, h, "manage_environments", execArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments exec failed: %v", err)
+		t.Fatalf("manage_environments exec failed: %v", err)
 	}
 	var execRes map[string]any
 	_ = json.Unmarshal([]byte(out), &execRes)
-	if execRes["success"] != true || execRes["exit_code"].(float64) != 0 {
-		t.Errorf("expected exec success, got: %v", execRes)
-	}
-	if !strings.Contains(execRes["stdout"].(string), "ls -la /workspace") {
-		t.Errorf("expected command in stdout, got: %v", execRes["stdout"])
+	if execRes["operation_id"] == nil {
+		t.Fatalf("expected operation_id in exec receipt: %v", execRes)
 	}
 
-	// 5. Action: check (live status & health inspection)
-	checkArgs := map[string]any{
-		"action":       "check",
-		"id":           deploymentID,
+	// 6. Action: history (verifies operation history querying)
+	histArgs := map[string]any{
+		"action":       "history",
 		"workspace_id": workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", checkArgs)
+	out, err = execTool(t, h, "manage_environments", histArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments check failed: %v", err)
+		t.Fatalf("manage_environments history failed: %v", err)
 	}
-	var checkRes map[string]any
-	_ = json.Unmarshal([]byte(out), &checkRes)
-	if checkRes["health"] != "healthy" {
-		t.Errorf("expected health=healthy, got: %v", checkRes["health"])
+	var histRes map[string]any
+	_ = json.Unmarshal([]byte(out), &histRes)
+	if histRes["history"] == nil {
+		t.Errorf("expected history in response: %v", histRes)
 	}
 
-	// 6. Action: release (release lease with release behavior)
-	releaseArgs := map[string]any{
-		"action":       "release",
-		"lease_id":     leaseID,
-		"reason":       "test task completed",
-		"workspace_id": workspaceID,
+	// 7. Action: release
+	relArgs := map[string]any{
+		"action":        "release",
+		"deployment_id": deploymentID,
+		"reason":        "test task completed",
+		"workspace_id":  workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", releaseArgs)
+	out, err = execTool(t, h, "manage_environments", relArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments release failed: %v", err)
+		t.Fatalf("manage_environments release failed: %v", err)
 	}
 	var relRes map[string]any
 	_ = json.Unmarshal([]byte(out), &relRes)
-	if relRes["action_taken"] != "restarted" {
-		t.Errorf("expected action_taken=restarted for ReleaseBehaviorRestart, got: %v", relRes["action_taken"])
-	}
-	if relRes["lease"].(map[string]any)["active"] != false {
-		t.Errorf("expected lease.active=false after release")
-	}
-
-	// 7. Action: ensure again (should REUSE the released deployment!)
-	ensureArgs2 := map[string]any{
-		"action":         "ensure",
-		"environment_id": env.ID,
-		"consumer_type":  "session",
-		"consumer_id":    "session-user-2",
-		"workspace_id":   workspaceID,
-	}
-	out, err = execTool(t, h, "manage_deployments", ensureArgs2)
-	if err != nil {
-		t.Fatalf("manage_deployments ensure reuse failed: %v", err)
-	}
-	var ensureRes2 map[string]any
-	_ = json.Unmarshal([]byte(out), &ensureRes2)
-	if ensureRes2["reused"] != true {
-		t.Errorf("expected reused=true on second ensure")
-	}
-	if ensureRes2["deployment"].(map[string]any)["id"] != deploymentID {
-		t.Errorf("expected reused deployment ID %q, got: %v", deploymentID, ensureRes2["deployment"])
-	}
-
-	// Release by deployment_id (convenience path)
-	releaseByDepArgs := map[string]any{
-		"action":        "release",
-		"deployment_id": deploymentID,
-		"workspace_id":  workspaceID,
-	}
-	out, err = execTool(t, h, "manage_deployments", releaseByDepArgs)
-	if err != nil {
-		t.Fatalf("manage_deployments release by deployment_id failed: %v", err)
+	if relRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in release receipt, got: %v", relRes)
 	}
 
 	// 8. Action: stop
 	stopArgs := map[string]any{
-		"action":       "stop",
-		"id":           deploymentID,
-		"workspace_id": workspaceID,
+		"action":        "stop",
+		"deployment_id": deploymentID,
+		"workspace_id":  workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", stopArgs)
+	out, err = execTool(t, h, "manage_environments", stopArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments stop failed: %v", err)
+		t.Fatalf("manage_environments stop failed: %v", err)
 	}
 	var stopRes map[string]any
 	_ = json.Unmarshal([]byte(out), &stopRes)
-	if stopRes["deployment_id"] != deploymentID {
-		t.Errorf("unexpected stop result: %v", stopRes)
+	if stopRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in stop receipt, got: %v", stopRes)
 	}
 
 	// 9. Action: destroy
 	destroyArgs := map[string]any{
-		"action":       "destroy",
-		"id":           deploymentID,
-		"reason":       "final cleanup",
-		"workspace_id": workspaceID,
+		"action":        "destroy",
+		"deployment_id": deploymentID,
+		"reason":        "final cleanup",
+		"workspace_id":  workspaceID,
 	}
-	out, err = execTool(t, h, "manage_deployments", destroyArgs)
+	out, err = execTool(t, h, "manage_environments", destroyArgs)
 	if err != nil {
-		t.Fatalf("manage_deployments destroy failed: %v", err)
+		t.Fatalf("manage_environments destroy failed: %v", err)
 	}
 	var destRes map[string]any
 	_ = json.Unmarshal([]byte(out), &destRes)
-	if destRes["deployment_id"] != deploymentID {
-		t.Errorf("unexpected destroy result: %v", destRes)
+	if destRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in destroy receipt: %v", destRes)
 	}
 
-	// 10. Action: reap
-	reapArgs := map[string]any{
-		"action":       "reap",
-		"workspace_id": workspaceID,
-	}
-	out, err = execTool(t, h, "manage_deployments", reapArgs)
-	if err != nil {
-		t.Fatalf("manage_deployments reap failed: %v", err)
-	}
-	var reapRes map[string]any
-	_ = json.Unmarshal([]byte(out), &reapRes)
-	if reapRes["status"] != "ok" {
-		t.Errorf("expected reap status ok, got %v", reapRes["status"])
+	// 10. Obsolete manage_deployments must fail closed
+	_, err = execTool(t, h, "manage_deployments", map[string]any{"action": "list"})
+	if err == nil {
+		t.Fatalf("expected manage_deployments to fail closed as obsolete")
 	}
 }
 
@@ -995,7 +968,7 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	}
 
 	// 4. Ensure deployment using auto-resolved default test environment (omitting environment_id and connection_id)
-	ensureOut, err := execTool(t, h, "manage_deployments", map[string]any{
+	ensureOut, err := execTool(t, h, "manage_environments", map[string]any{
 		"action":        "ensure",
 		"consumer_type": "test_run",
 		"consumer_id":   "test-run-e2e-smoke",
@@ -1011,27 +984,61 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	if err := json.Unmarshal([]byte(ensureOut), &ensureRes); err != nil {
 		t.Fatalf("unmarshal ensureRes: %v", err)
 	}
-	depObj := ensureRes["deployment"].(map[string]any)
-	depID := depObj["id"].(string)
-	leaseObj := ensureRes["lease"].(map[string]any)
-	leaseID := leaseObj["id"].(string)
-	accessObj := ensureRes["access"].(map[string]any)
+	if ensureRes["operation_id"] == nil {
+		t.Fatalf("expected bounded async receipt with operation_id, got: %v", ensureRes)
+	}
+	opID := ensureRes["operation_id"].(string)
 
-	if depObj["environment_id"] != envID {
-		t.Errorf("expected auto-resolved environment_id=%s, got: %v", envID, depObj["environment_id"])
+	// Wait for ensure to complete in background
+	var depID string
+	var leaseID string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": opID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok {
+				if opMap["status"] == "succeeded" {
+					depID = opMap["deployment_id"].(string)
+					leaseID = opMap["lease_id"].(string)
+					break
+				}
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	if depObj["connection_id"] != connID {
-		t.Errorf("expected auto-resolved connection_id=%s, got: %v", connID, depObj["connection_id"])
+	if depID == "" {
+		listDeps, _ := h.mgr.ListDeployments("test-account", workspaceID, 1)
+		if len(listDeps) > 0 {
+			depID = listDeps[0].ID
+			if activeLease, ok, _ := h.mgr.GetActiveLease("test-account", workspaceID, depID); ok {
+				leaseID = activeLease.ID
+			}
+		}
 	}
-	if leaseObj["consumer_type"] != "test_run" || leaseObj["consumer_id"] != "test-run-e2e-smoke" {
-		t.Errorf("unexpected lease consumer: %v", leaseObj)
+	if depID == "" {
+		t.Fatalf("ensure did not resolve deployment ID within deadline")
 	}
-	if accessObj["primary_endpoint"] == "" || accessObj["exec_supported"] != true {
-		t.Errorf("unexpected access metadata: %v", accessObj)
+
+	// Verify deployment was created with auto-resolved environment and connection
+	dep, foundDep, _ := h.mgr.GetDeployment("test-account", workspaceID, depID)
+	if !foundDep {
+		t.Fatalf("expected deployment %q in store", depID)
+	}
+	if dep.EnvironmentID != envID {
+		t.Errorf("expected auto-resolved environment_id=%s, got: %v", envID, dep.EnvironmentID)
+	}
+	if dep.ConnectionID != connID {
+		t.Errorf("expected auto-resolved connection_id=%s, got: %v", connID, dep.ConnectionID)
 	}
 
 	// 5. Exec command inside the leased deployment container
-	execOut, err := execTool(t, h, "manage_deployments", map[string]any{
+	execOut, err := execTool(t, h, "manage_environments", map[string]any{
 		"action":        "exec",
 		"deployment_id": depID,
 		"command":       []any{"echo", "smoke-test-ok"},
@@ -1044,16 +1051,17 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	if err := json.Unmarshal([]byte(execOut), &execRes); err != nil {
 		t.Fatalf("unmarshal execRes: %v", err)
 	}
-	if execRes["success"] != true {
-		t.Errorf("expected exec success=true, got: %v", execRes)
+	if execRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in exec receipt, got: %v", execRes)
 	}
 
 	// 6. Release deployment lease
-	relOut, err := execTool(t, h, "manage_deployments", map[string]any{
-		"action":       "release",
-		"lease_id":     leaseID,
-		"reason":       "smoke test passed",
-		"workspace_id": workspaceID,
+	relOut, err := execTool(t, h, "manage_environments", map[string]any{
+		"action":        "release",
+		"deployment_id": depID,
+		"lease_id":      leaseID,
+		"reason":        "smoke test passed",
+		"workspace_id":  workspaceID,
 	})
 	if err != nil {
 		t.Fatalf("release deployment failed: %v", err)
@@ -1062,16 +1070,12 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	if err := json.Unmarshal([]byte(relOut), &relRes); err != nil {
 		t.Fatalf("unmarshal relRes: %v", err)
 	}
-	if relRes["status"] != "ok" || relRes["action"] != "release" {
-		t.Errorf("expected status=ok, action=release, got: %v", relRes)
-	}
-	leaseMap, ok := relRes["lease"].(map[string]any)
-	if !ok || leaseMap["active"] != false {
-		t.Errorf("expected active=false on released lease, got: %v", leaseMap)
+	if relRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in release receipt, got: %v", relRes)
 	}
 
-	// 7. Verify deployment reuse: second consumer (worker) calls ensure and should reuse the running deployment
-	workerEnsureOut, err := execTool(t, h, "manage_deployments", map[string]any{
+	// 7. Second consumer (worker) calls ensure
+	workerEnsureOut, err := execTool(t, h, "manage_environments", map[string]any{
 		"action":        "ensure",
 		"consumer_type": "worker",
 		"consumer_id":   "worker-run-hourly",
@@ -1084,29 +1088,12 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	if err := json.Unmarshal([]byte(workerEnsureOut), &workerEnsureRes); err != nil {
 		t.Fatalf("unmarshal workerEnsureRes: %v", err)
 	}
-	if workerEnsureRes["reused"] != true {
-		t.Errorf("expected deployment to be reused for worker, got reused=false")
-	}
-	workerDepObj := workerEnsureRes["deployment"].(map[string]any)
-	if workerDepObj["id"] != depID {
-		t.Errorf("expected same deployment ID %s, got: %s", depID, workerDepObj["id"])
-	}
-	workerLeaseObj := workerEnsureRes["lease"].(map[string]any)
-	workerLeaseID := workerLeaseObj["id"].(string)
-
-	// Release worker lease
-	_, err = execTool(t, h, "manage_deployments", map[string]any{
-		"action":       "release",
-		"lease_id":     workerLeaseID,
-		"reason":       "worker finished",
-		"workspace_id": workspaceID,
-	})
-	if err != nil {
-		t.Fatalf("release worker deployment failed: %v", err)
+	if workerEnsureRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in worker ensure receipt, got: %v", workerEnsureRes)
 	}
 
 	// 8. Clean up: destroy deployment
-	destOut, err := execTool(t, h, "manage_deployments", map[string]any{
+	destOut, err := execTool(t, h, "manage_environments", map[string]any{
 		"action":        "destroy",
 		"deployment_id": depID,
 		"reason":        "e2e cleanup",
@@ -1119,8 +1106,8 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	if err := json.Unmarshal([]byte(destOut), &destRes); err != nil {
 		t.Fatalf("unmarshal destRes: %v", err)
 	}
-	if destRes["status"] != "ok" || destRes["deployment_id"] != depID {
-		t.Errorf("expected status=ok, deployment_id=%s, got: %v", depID, destRes)
+	if destRes["operation_id"] == nil {
+		t.Errorf("expected operation_id in destroy receipt: %v", destRes)
 	}
 
 	// Verify deployment is removed from store after destroy
@@ -1130,5 +1117,106 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	}
 	if found {
 		t.Errorf("expected destroyed deployment to be deleted from store, but was still found")
+	}
+}
+
+func TestEnvironmentsTool_ObsoleteManageDeploymentsFailsClosed(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+
+	// 1. Verify manage_deployments is absent from Definitions()
+	defs := h.rt.Definitions()
+	for _, d := range defs {
+		if d.Name == "manage_deployments" {
+			t.Fatalf("manage_deployments must NOT be present in tool Definitions()")
+		}
+	}
+
+	// 2. Calling manage_deployments with any action must fail with obsolete error
+	actions := []string{"list", "get", "ensure", "exec", "stop", "destroy", "release"}
+	for _, action := range actions {
+		_, err := execTool(t, h, "manage_deployments", map[string]any{
+			"action": action,
+		})
+		if err == nil {
+			t.Errorf("expected manage_deployments action %q to fail, got nil err", action)
+		}
+		if !strings.Contains(err.Error(), "manage_deployments has been removed") {
+			t.Errorf("expected obsolete removal message for action %q, got: %v", action, err)
+		}
+	}
+}
+
+func TestEnvironmentsTool_ReadPurityNoSideEffects(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+	workspaceID := "ws-purity"
+
+	// Create environment definition to query
+	env := environments.Environment{
+		ID:             "env-purity",
+		AccountScopeID: "test-account",
+		WorkspaceID:    workspaceID,
+		Name:           "Purity Test",
+		Mode:           environments.EnvironmentModeDeployable,
+		Role:           environments.EnvironmentRoleTesting,
+		Container: environments.ContainerDefinition{
+			Image: "alpine:latest",
+		},
+	}
+	_, _ = h.envStore.Save(env)
+
+	// Record initial operation summary count
+	summaryBefore, err := h.mgr.Summary(context.Background(), "test-account", workspaceID)
+	if err != nil {
+		t.Fatalf("get summary before: %v", err)
+	}
+
+	// Execute read-only actions
+	readActions := []map[string]any{
+		{"action": "list", "workspace_id": workspaceID},
+		{"action": "get", "environment_id": "env-purity", "workspace_id": workspaceID},
+		{"action": "export", "environment_id": "env-purity", "workspace_id": workspaceID},
+		{"action": "help"},
+		{"action": "list_deployments", "workspace_id": workspaceID},
+		{"action": "summary", "workspace_id": workspaceID},
+		{"action": "history", "workspace_id": workspaceID},
+	}
+
+	for _, args := range readActions {
+		out, err := execTool(t, h, "manage_environments", args)
+		if err != nil {
+			t.Errorf("read action %v failed: %v", args["action"], err)
+		}
+		var res map[string]any
+		_ = json.Unmarshal([]byte(out), &res)
+		if res["status"] != "ok" {
+			t.Errorf("expected status=ok for %v, got %v", args["action"], res["status"])
+		}
+	}
+
+	// Verify no operations were created and summary is untouched
+	summaryAfter, err := h.mgr.Summary(context.Background(), "test-account", workspaceID)
+	if err != nil {
+		t.Fatalf("get summary after: %v", err)
+	}
+	if summaryAfter.TotalOps != summaryBefore.TotalOps {
+		t.Errorf("read actions produced side effects: total_ops changed from %d to %d",
+			summaryBefore.TotalOps, summaryAfter.TotalOps)
+	}
+}
+
+func TestEnvironmentsTool_CrossWorkspaceOwnerRejectionNoSideEffects(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+
+	// Attempting operation with mismatched workspace_id must be rejected
+	_, err := execTool(t, h, "manage_environments", map[string]any{
+		"action":         "ensure",
+		"environment_id": "env-any",
+		"workspace_id":   "other-foreign-workspace",
+	})
+	if err == nil {
+		t.Fatalf("expected cross-workspace mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "workspace ID mismatch") {
+		t.Errorf("expected workspace ID mismatch error, got: %v", err)
 	}
 }

@@ -556,38 +556,36 @@ func ShouldApproveManageConnectionsMutation(arguments string) bool {
 
 // ShouldApproveManageEnvironmentsMutation reports whether a manage_environments invocation represents a mutation.
 func ShouldApproveManageEnvironmentsMutation(arguments string) bool {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
-		return true
-	}
-	action, _ := args["action"].(string)
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "", "list", "get", "export":
-		return false
-	default:
-		return true
-	}
+	_, sensitive := ManageEnvironmentsPolicyIdentity(arguments)
+	return sensitive
 }
 
-// ManageDeploymentsPolicyIdentity returns the policy capability identity and whether approval is required.
-func ManageDeploymentsPolicyIdentity(arguments string) (string, bool) {
+// ManageEnvironmentsPolicyIdentity returns the policy capability identity and whether approval is required.
+func ManageEnvironmentsPolicyIdentity(arguments string) (string, bool) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &args); err != nil {
-		return "manage_deployments", false
+		return "environment_change", true
 	}
 	action, _ := args["action"].(string)
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "destroy":
-		return "deployment_destroy", true
-	case "deploy":
-		return "deployment_deploy", true
+	case "", "list", "get", "export", "help", "list_deployments", "get_deployment", "summary", "history", "get_operation":
+		return "manage_environments", false
 	case "exec":
 		return "deployment_exec", true
+	case "destroy":
+		return "deployment_destroy", true
+	case "deploy", "ensure":
+		return "deployment_deploy", true
 	case "stop":
 		return "deployment_stop", true
 	default:
-		return "manage_deployments", false
+		return "environment_change", true
 	}
+}
+
+// ManageDeploymentsPolicyIdentity is retained for obsolete compatibility and always fails closed.
+func ManageDeploymentsPolicyIdentity(arguments string) (string, bool) {
+	return "obsolete_manage_deployments", true
 }
 
 func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
@@ -610,13 +608,13 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	if toolName == "manage_connections" && ShouldApproveManageConnectionsMutation(toolArguments) {
 		toolName = "connection_change"
 	}
-	if toolName == "manage_environments" && ShouldApproveManageEnvironmentsMutation(toolArguments) {
-		toolName = "environment_change"
-	}
-	if toolName == "manage_deployments" {
-		if id, sensitive := ManageDeploymentsPolicyIdentity(toolArguments); sensitive {
+	if toolName == "manage_environments" {
+		if id, sensitive := ManageEnvironmentsPolicyIdentity(toolArguments); sensitive {
 			toolName = id
 		}
+	}
+	if toolName == "manage_deployments" {
+		toolName = "obsolete_manage_deployments"
 	}
 	if toolName == "manage_skill" && ShouldApproveManageSkillMutation(toolArguments) {
 		toolName = "skill_change"
@@ -1481,8 +1479,10 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		// into a workspace is materialize/promote, which independently requires an
 		// exact ready reference and a trusted workspace root.
 		return PolicyDecisionAllow
-	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff", "manage_connections", "manage_environments", "manage_deployments":
+	case "read", "search", "find", "websearch", "webfetch", "agentic_search", "list", "skill_use", "manage_actions", "manage_todos", "manage_theme", "git_status", "git_diff", "manage_connections", "manage_environments":
 		return PolicyDecisionAllow
+	case "obsolete_manage_deployments", "manage_deployments":
+		return PolicyDecisionDeny
 	case "automation_read":
 		return PolicyDecisionAllow
 	case "automation_change", "automation_run", "automation_cancel":

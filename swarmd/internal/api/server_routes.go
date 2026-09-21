@@ -153,6 +153,7 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/manage-worktree", s.handleManageWorktree)
 	mux.HandleFunc("/v1/connections", s.handleConnections)
 	mux.HandleFunc("/v1/environments", s.handleEnvironments)
+	mux.HandleFunc("/v1/environments/", s.handleEnvironments)
 	mux.HandleFunc("/v1/deployments", s.handleDeployments)
 }
 

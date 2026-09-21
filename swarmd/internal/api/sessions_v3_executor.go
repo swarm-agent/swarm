@@ -319,6 +319,30 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	if cancel != nil {
 		cancel()
 	}
+	if e.server != nil && e.server.deployments != nil {
+		wsID := ""
+		if e.server.sessions != nil {
+			if sess, foundSess, _ := e.server.sessions.GetSession(job.SessionID); foundSess {
+				for _, g := range sess.WorkspaceGrants {
+					if g.Kind == pebblestore.WorkspaceGrantPrimary && g.WorkspaceID != "" {
+						wsID = g.WorkspaceID
+						break
+					}
+				}
+				if wsID == "" && len(sess.WorkspaceGrants) > 0 {
+					wsID = sess.WorkspaceGrants[0].WorkspaceID
+				}
+			}
+		}
+		if wsID != "" {
+			_, _ = e.server.deployments.CancelOwner(context.Background(), lifecycle.CancelOwnerRequest{
+				AccountScopeID: job.Principal.AccountScopeID,
+				WorkspaceID:    wsID,
+				SessionID:      job.SessionID,
+				Reason:         reason,
+			})
+		}
+	}
 	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, tracked, err

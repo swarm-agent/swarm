@@ -224,6 +224,117 @@ func (m *testMockDeploymentManager) GetActiveLease(accountScopeID, workspaceID, 
 	return environments.DeploymentLease{}, false, nil
 }
 
+func (m *testMockDeploymentManager) Submit(ctx context.Context, req lifecycle.SubmitOperationRequest) (*environments.EnvironmentOperation, error) {
+	opID := "op-" + req.Action + "-1"
+	depID := req.DeploymentID
+	if req.Action == "ensure" || req.Action == "deploy" {
+		depID = "dep-1"
+		dep := environments.Deployment{
+			ID:             depID,
+			AccountScopeID: req.AccountScopeID,
+			WorkspaceID:    req.WorkspaceID,
+			EnvironmentID:  req.EnvironmentID,
+			ConnectionID:   req.ConnectionID,
+			Name:           req.DeploymentName,
+			Status:         environments.DeploymentStatusRunning,
+			Health:         environments.HealthStatusHealthy,
+		}
+		lease := environments.DeploymentLease{
+			ID:             "lease-1",
+			AccountScopeID: req.AccountScopeID,
+			WorkspaceID:    req.WorkspaceID,
+			DeploymentID:   depID,
+			EnvironmentID:  req.EnvironmentID,
+			ConsumerType:   req.ConsumerType,
+			ConsumerID:     req.ConsumerID,
+			Active:         true,
+		}
+		m.deps[depID] = dep
+		m.leases[depID] = lease
+	} else if req.Action == "stop" {
+		if d, ok := m.deps[depID]; ok {
+			d.Status = environments.DeploymentStatusStopped
+			m.deps[depID] = d
+		}
+	} else if req.Action == "start" {
+		if d, ok := m.deps[depID]; ok {
+			d.Status = environments.DeploymentStatusRunning
+			m.deps[depID] = d
+		}
+	} else if req.Action == "release" {
+		if l, ok := m.leases[depID]; ok {
+			l.Active = false
+			m.leases[depID] = l
+		}
+	} else if req.Action == "destroy" {
+		delete(m.deps, depID)
+		delete(m.leases, depID)
+	}
+
+	op := &environments.EnvironmentOperation{
+		OperationID:    opID,
+		AccountScopeID: req.AccountScopeID,
+		WorkspaceID:    req.WorkspaceID,
+		Action:         req.Action,
+		EnvironmentID:  req.EnvironmentID,
+		DeploymentID:   depID,
+		LeaseID:        req.LeaseID,
+		Attribution:    req.Attribution,
+		Status:         environments.OperationStatusRunning,
+		CreatedAt:      time.Now().UnixMilli(),
+		Deadline:       time.Now().UnixMilli() + 300000,
+	}
+	return op, nil
+}
+
+func (m *testMockDeploymentManager) Get(ctx context.Context, accountScopeID, workspaceID, operationID string) (environments.EnvironmentOperation, bool, error) {
+	return environments.EnvironmentOperation{
+		OperationID:    operationID,
+		AccountScopeID: accountScopeID,
+		WorkspaceID:    workspaceID,
+		Status:         environments.OperationStatusRunning,
+	}, true, nil
+}
+
+func (m *testMockDeploymentManager) History(ctx context.Context, q environments.OperationHistoryQuery) (environments.OperationHistoryPage, error) {
+	return environments.OperationHistoryPage{
+		Operations: []environments.EnvironmentOperation{
+			{OperationID: "op-1", AccountScopeID: q.AccountScopeID, WorkspaceID: q.WorkspaceID, Action: "exec", Status: environments.OperationStatusSucceeded},
+		},
+		DailyTotals: []environments.DailyOperationCounts{
+			{Date: "2026-09-21", TotalOps: 1, Succeeded: 1},
+		},
+		Summary: environments.EnvironmentSummary{
+			AccountScopeID: q.AccountScopeID,
+			WorkspaceID:    q.WorkspaceID,
+			TotalOps:       1,
+			SucceededOps:   1,
+		},
+	}, nil
+}
+
+func (m *testMockDeploymentManager) Summary(ctx context.Context, accountScopeID, workspaceID string) (environments.EnvironmentSummary, error) {
+	return environments.EnvironmentSummary{
+		AccountScopeID:    accountScopeID,
+		WorkspaceID:       workspaceID,
+		ActiveDeployments: len(m.deps),
+		TotalOps:          1,
+	}, nil
+}
+
+func (m *testMockDeploymentManager) Cancel(ctx context.Context, req lifecycle.CancelOperationRequest) (*environments.EnvironmentOperation, error) {
+	return &environments.EnvironmentOperation{
+		OperationID:    req.OperationID,
+		AccountScopeID: req.AccountScopeID,
+		WorkspaceID:    req.WorkspaceID,
+		Status:         environments.OperationStatusCancelled,
+	}, nil
+}
+
+func (m *testMockDeploymentManager) CancelOwner(ctx context.Context, req lifecycle.CancelOwnerRequest) (int, error) {
+	return 1, nil
+}
+
 type testMockWorkspaceSettingsStore struct {
 	settings environments.WorkspaceSettings
 }
@@ -573,4 +684,102 @@ func TestDeploymentsAPI(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 on destroy, got %d: %s", w.Code, w.Body.String())
 	}
+}
+
+func TestEnvironmentsAPI_SupervisedOperationsAndObservability(t *testing.T) {
+	srv, _, _, _, _ := setupTestServer()
+
+	// 1. Summary endpoint via /v1/environments/summary
+	sumReq := authedRequest(http.MethodGet, "/v1/environments/summary?workspace_id=ws-1", nil)
+	w := httptest.NewRecorder()
+	srv.handleEnvironments(w, sumReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on summary, got %d: %s", w.Code, w.Body.String())
+	}
+	var sumResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &sumResp)
+	if sumResp["summary"] == nil {
+		t.Fatalf("expected summary in response: %v", sumResp)
+	}
+
+	// 2. History endpoint via /v1/environments/history
+	histReq := authedRequest(http.MethodGet, "/v1/environments/history?workspace_id=ws-1&timezone=America/New_York", nil)
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, histReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on history, got %d: %s", w.Code, w.Body.String())
+	}
+	var histResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &histResp)
+	if histResp["operations"] == nil || histResp["daily_totals"] == nil {
+		t.Fatalf("expected operations and daily_totals in history response: %v", histResp)
+	}
+
+	// 3. Supervised ensure via POST /v1/environments returns bounded async receipt
+	ensureReq := authedRequest(http.MethodPost, "/v1/environments", map[string]any{
+		"action":          "ensure",
+		"workspace_id":    "ws-1",
+		"environment_id":  "env-test-1",
+		"consumer_type":   "session",
+		"consumer_id":     "sess-123",
+		"deployment_name": "Async Ensured",
+	})
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, ensureReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on supervised ensure, got %d: %s", w.Code, w.Body.String())
+	}
+	var ensureResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &ensureResp)
+	if ensureResp["operation_id"] == nil || ensureResp["status"] == nil {
+		t.Fatalf("expected bounded async receipt with operation_id and status: %v", ensureResp)
+	}
+
+	// 4. Operation get via GET /v1/environments/operations
+	opReq := authedRequest(http.MethodGet, "/v1/environments/operations?workspace_id=ws-1&operation_id=op-ensure-1", nil)
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, opReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on get operation, got %d: %s", w.Code, w.Body.String())
+	}
+	var opResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &opResp)
+	if opResp["operation"] == nil {
+		t.Fatalf("expected operation in response: %v", opResp)
+	}
+
+	// 5. Operation cancel via POST /v1/environments/cancel
+	cancelReq := authedRequest(http.MethodPost, "/v1/environments/cancel", map[string]any{
+		"workspace_id": "ws-1",
+		"operation_id": "op-ensure-1",
+		"reason":       "user stopped test",
+	})
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, cancelReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on cancel operation, got %d: %s", w.Code, w.Body.String())
+	}
+	var cancelResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &cancelResp)
+	if cancelResp["status"] != "cancelled" {
+		t.Fatalf("expected status=cancelled, got %v", cancelResp["status"])
+	}
+}
+
+func TestEnvironmentsAPI_ScopeValidation(t *testing.T) {
+	srv, _, _, _, _ := setupTestServer()
+
+	// Missing both workspace_id and workspace_path must fail
+	req := authedRequest(http.MethodGet, "/v1/environments", nil)
+	w := httptest.NewRecorder()
+	srv.handleEnvironments(w, req)
+	if w.Code == http.StatusOK {
+		t.Fatalf("expected failure when both workspace_id and workspace_path are absent, got %d", w.Code)
+	}
+}
+
+func TestEnvironmentsAPI_RealtimeOutboxConfig(t *testing.T) {
+	srv, _, _, _, _ := setupTestServer()
+	// Must not panic when called with nil store or configured
+	srv.ConfigureEnvironmentRealtime(nil)
 }
