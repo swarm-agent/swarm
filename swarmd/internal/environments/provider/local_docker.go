@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -568,245 +567,41 @@ func (p *LocalDockerProvider) accessFromRuntime(rt environments.RuntimeMetadata)
 	}
 }
 
+type localDockerTransport struct {
+	runner CommandRunner
+	conn   *environments.Connection
+}
+
+func (t *localDockerTransport) RunExec(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, execArgs ...string) error {
+	args := append(dockerHostArgs(t.conn), "exec")
+	args = append(args, execArgs...)
+	return t.runner.RunWithIO(ctx, stdin, stdout, stderr, "docker", args...)
+}
+
+func (t *localDockerTransport) RunExecCombined(ctx context.Context, execArgs ...string) ([]byte, error) {
+	args := append(dockerHostArgs(t.conn), "exec")
+	args = append(args, execArgs...)
+	return t.runner.RunCombined(ctx, "docker", args...)
+}
+
 // Exec executes a command inside the running deployment container under supervised process control.
 func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
-	if deployment == nil {
-		return nil, errors.New("deployment cannot be nil")
-	}
-	if len(req.Command) == 0 {
-		return nil, errors.New("exec command cannot be empty")
-	}
-	target := resolveContainerTarget(deployment)
-	if target == "" {
-		return nil, errors.New("cannot exec command without container target or ID")
-	}
-
-	opID := req.OperationID
-	if opID == "" {
-		opID = generateOperationID()
-	} else {
-		if err := ValidateOperationID(opID); err != nil {
-			return nil, err
-		}
-	}
-
-	// Probe container supervisor prerequisites (fail closed)
-	probeCtx, probeCancel := context.WithTimeout(ctx, ProbeTimeout)
-	probeErr := p.probeSupervisor(probeCtx, conn, target)
-	probeCancel()
-	if probeErr != nil {
-		return nil, fmt.Errorf("%w: %v", ErrSupervisorUnavailable, probeErr)
-	}
-
-	timeout := req.Timeout
-	if timeout <= 0 {
-		timeout = DefaultOperationTimeout
-	} else if timeout > MaxOperationTimeout {
-		timeout = MaxOperationTimeout
-	}
-
-	execCtx, execCancel := context.WithTimeout(ctx, timeout)
-	defer execCancel()
-
-	args := append(dockerHostArgs(conn), "exec")
-	if req.Stdin != nil {
-		args = append(args, "-i")
-	}
-	if req.WorkingDir != "" {
-		args = append(args, "-w", req.WorkingDir)
-	}
-
-	// Environment variable keys sorted for determinism
-	envKeys := make([]string, 0, len(req.Env))
-	for k := range req.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	for _, k := range envKeys {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, req.Env[k]))
-	}
-
-	args = append(args, target)
-	args = append(args, "sh", "-c", supervisorScript, "swarm-supervisor", opID)
-	args = append(args, req.Command...)
-
-	maxOutput := req.MaxOutput
-	if maxOutput <= 0 {
-		maxOutput = DefaultMaxOutputBytes
-	}
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	boundedStdout := &boundedBuffer{buf: &stdoutBuf, max: maxOutput}
-	boundedStderr := &boundedBuffer{buf: &stderrBuf, max: maxOutput}
-
-	var lastObserved time.Time
-	var outWriter io.Writer = boundedStdout
-	var errWriter io.Writer = boundedStderr
-
-	if req.OnProgress != nil {
-		outWriter = &progressWriter{
-			writer:      boundedStdout,
-			stream:      "stdout",
-			opID:        opID,
-			onProgress:  req.OnProgress,
-			lastObsTime: &lastObserved,
-		}
-		errWriter = &progressWriter{
-			writer:      boundedStderr,
-			stream:      "stderr",
-			opID:        opID,
-			onProgress:  req.OnProgress,
-			lastObsTime: &lastObserved,
-		}
-	}
-
-	err := p.runner.RunWithIO(execCtx, req.Stdin, outWriter, errWriter, "docker", args...)
-
-	if lastObserved.IsZero() {
-		lastObserved = time.Now().UTC()
-	}
-
-	// On timeout or cancellation, execute bounded container cleanup
-	if execCtx.Err() != nil {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), CleanupTimeout)
-		defer cleanupCancel()
-
-		cancelRes, cleanupErr := p.cleanupOperation(cleanupCtx, conn, target, opID, 2*time.Second)
-		if cleanupErr != nil {
-			return nil, fmt.Errorf("%w for operation %s (%v): %v", ErrOperationCleanupFailed, opID, execCtx.Err(), cleanupErr)
-		}
-		if !cancelRes.Terminated {
-			return nil, fmt.Errorf("%w for operation %s: %s", ErrOperationNotConfirmed, opID, cancelRes.ErrorMessage)
-		}
-		return nil, fmt.Errorf("%w: operation %s timed out or cancelled (%v)", ErrOperationTimedOut, opID, execCtx.Err())
-	}
-
-	exitCode := 0
+	target, err := validateExecParams(deployment, req)
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			redacted := redactArgs(args)
-			return nil, fmt.Errorf("docker exec failed: %w (command: %s)", err, strings.Join(redacted, " "))
-		}
+		return nil, err
 	}
-
-	return &ExecResult{
-		ExitCode:       exitCode,
-		Stdout:         stdoutBuf.String(),
-		Stderr:         stderrBuf.String(),
-		OperationID:    opID,
-		Truncated:      boundedStdout.truncated || boundedStderr.truncated,
-		LastObservedAt: lastObserved,
-	}, nil
+	transport := &localDockerTransport{runner: p.runner, conn: conn}
+	return executeSupervised(ctx, transport, target, req)
 }
 
 // CancelExec cancels a running or orphaned execution operation inside the target container.
 func (p *LocalDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
-	if deployment == nil {
-		return nil, errors.New("deployment cannot be nil")
-	}
-	if err := ValidateOperationID(req.OperationID); err != nil {
+	target, err := validateCancelParams(deployment, req)
+	if err != nil {
 		return nil, err
 	}
-	target := resolveContainerTarget(deployment)
-	if target == "" {
-		return nil, errors.New("cannot cancel exec without container target or ID")
-	}
-
-	cancelCtx := ctx
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		cancelCtx, cancel = context.WithTimeout(ctx, CleanupTimeout)
-		defer cancel()
-	}
-
-	grace := req.GracePeriod
-	if grace <= 0 {
-		grace = 2 * time.Second
-	} else if grace > 10*time.Second {
-		grace = 10 * time.Second
-	}
-
-	return p.cleanupOperation(cancelCtx, conn, target, req.OperationID, grace)
-}
-
-func (p *LocalDockerProvider) probeSupervisor(ctx context.Context, conn *environments.Connection, target string) error {
-	args := append(dockerHostArgs(conn), "exec", target, "sh", "-c", probeScript)
-	out, err := p.runner.RunCombined(ctx, "docker", args...)
-	if err != nil {
-		return fmt.Errorf("probe failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func (p *LocalDockerProvider) cleanupOperation(ctx context.Context, conn *environments.Connection, target, opID string, grace time.Duration) (*CancelExecResult, error) {
-	graceSec := int(grace.Seconds())
-	if graceSec <= 0 {
-		graceSec = 1
-	}
-
-	args := append(dockerHostArgs(conn), "exec", target, "sh", "-c", cleanupScript, "swarm-cleanup", opID, strconv.Itoa(graceSec))
-	out, err := p.runner.RunCombined(ctx, "docker", args...)
-	outStr := string(out)
-	now := time.Now().UTC()
-
-	if strings.Contains(outStr, "SWARM_CLEANUP:TERMINATED") {
-		return &CancelExecResult{
-			OperationID: opID,
-			Terminated:  true,
-			ObservedAt:  now,
-			SignalSent:  "SIGTERM/SIGKILL",
-		}, nil
-	}
-	if strings.Contains(outStr, "SWARM_CLEANUP:NOT_RUNNING") || strings.Contains(outStr, "SWARM_CLEANUP:ALREADY_TERMINATED") {
-		return &CancelExecResult{
-			OperationID: opID,
-			Terminated:  true,
-			ObservedAt:  now,
-		}, nil
-	}
-	if strings.Contains(outStr, "SWARM_CLEANUP:PID_REUSE_DETECTED") {
-		return &CancelExecResult{
-			OperationID:  opID,
-			Terminated:   true,
-			ObservedAt:   now,
-			ErrorMessage: "original process exited and PID was reused",
-		}, nil
-	}
-	if strings.Contains(outStr, "SWARM_CLEANUP:CLEANUP_FAILED") {
-		return &CancelExecResult{
-			OperationID:  opID,
-			Terminated:   false,
-			ObservedAt:   now,
-			ErrorMessage: "process still running after SIGKILL",
-		}, fmt.Errorf("%w: process still running after SIGKILL", ErrOperationCleanupFailed)
-	}
-
-	if err != nil && isContainerNotRunningError(outStr, err) {
-		return &CancelExecResult{
-			OperationID: opID,
-			Terminated:  true,
-			ObservedAt:  now,
-		}, nil
-	}
-
-	if err != nil {
-		return &CancelExecResult{
-			OperationID:  opID,
-			Terminated:   false,
-			ObservedAt:   now,
-			ErrorMessage: fmt.Sprintf("cleanup command failed: %v (output: %s)", err, strings.TrimSpace(outStr)),
-		}, fmt.Errorf("%w: %v (output: %s)", ErrOperationCleanupFailed, err, strings.TrimSpace(outStr))
-	}
-
-	return &CancelExecResult{
-		OperationID:  opID,
-		Terminated:   false,
-		ObservedAt:   now,
-		ErrorMessage: fmt.Sprintf("unrecognized cleanup output: %s", strings.TrimSpace(outStr)),
-	}, fmt.Errorf("%w: unrecognized cleanup output: %s", ErrOperationCleanupFailed, strings.TrimSpace(outStr))
+	transport := &localDockerTransport{runner: p.runner, conn: conn}
+	return cancelSupervised(ctx, transport, target, req)
 }
 
 // Internal helpers
@@ -826,38 +621,6 @@ func dockerHostArgs(conn *environments.Connection) []string {
 		return []string{"-H", socket}
 	}
 	return nil
-}
-
-func sanitizeDockerName(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	return b.String()
-}
-
-func containerName(envID, depID string) string {
-	return fmt.Sprintf("swarm-%s-%s", sanitizeDockerName(envID), sanitizeDockerName(depID))
-}
-
-func resolveContainerTarget(deployment *environments.Deployment) string {
-	if deployment == nil {
-		return ""
-	}
-	if deployment.Runtime.ContainerID != "" {
-		return deployment.Runtime.ContainerID
-	}
-	if deployment.Runtime.ProviderResourceID != "" {
-		return deployment.Runtime.ProviderResourceID
-	}
-	if deployment.EnvironmentID != "" && deployment.ID != "" {
-		return containerName(deployment.EnvironmentID, deployment.ID)
-	}
-	return deployment.ID
 }
 
 func resolveEnvValue(val string, overrides map[string]string) string {

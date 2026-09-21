@@ -1398,14 +1398,68 @@ func TestSSHDockerProvider_Exec_TimeoutAndCleanup(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on timed out/cancelled exec over SSH")
 	}
-	if !errors.Is(err, ErrOperationTimedOut) {
-		t.Fatalf("expected ErrOperationTimedOut, got: %v", err)
+	if !errors.Is(err, ErrOperationCancelled) {
+		t.Fatalf("expected ErrOperationCancelled, got: %v", err)
 	}
 	if !cleanupCalled {
 		t.Fatal("expected remote cleanup command to be invoked over SSH on cancel/timeout")
 	}
 	if cleanupOpID != "op-ssh-timeout" {
 		t.Fatalf("expected cleanup for op-ssh-timeout, got: %q", cleanupOpID)
+	}
+}
+
+func TestSSHDockerProvider_Exec_DeadlineExceeded(t *testing.T) {
+	runner := newMockSSHRunner()
+	var cleanupCalled bool
+	var cleanupOpID string
+
+	runner.handlers["exec"] = func(subcmd string, args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "swarm-cleanup") {
+			cleanupCalled = true
+			for i, a := range args {
+				if a == "swarm-cleanup" && i+1 < len(args) {
+					cleanupOpID = args[i+1]
+				}
+			}
+			return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+		}
+		return []byte("exec ok\n"), nil
+	}
+
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, subcmd string, args []string) error {
+		time.Sleep(30 * time.Millisecond)
+		return context.DeadlineExceeded
+	}
+
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-ssh-deadline",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-ssh-deadline",
+		},
+	}
+	req := ExecRequest{
+		OperationID: "op-ssh-deadline",
+		Command:     []string{"sleep", "60"},
+		Timeout:     10 * time.Millisecond,
+	}
+
+	_, err := p.Exec(context.Background(), conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error on timed out exec over SSH")
+	}
+	if !errors.Is(err, ErrOperationTimedOut) {
+		t.Fatalf("expected ErrOperationTimedOut, got: %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected remote cleanup command to be invoked on timeout")
+	}
+	if cleanupOpID != "op-ssh-deadline" {
+		t.Fatalf("expected cleanup for op-ssh-deadline, got: %q", cleanupOpID)
 	}
 }
 
