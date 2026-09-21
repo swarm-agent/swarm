@@ -261,12 +261,8 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if err != nil {
 		return nil, err
 	}
-	if grant.Initial && len(inspection.Files) != 0 {
-		gate := ArtifactV3AuthorGate{}
-		if inspection.LatestGate != nil {
-			gate = *inspection.LatestGate
-		}
-		return directArtifactV3Retained(grant, gate), nil
+	if grant.Initial && len(inspection.Files) != 0 && inspection.LatestGate != nil && inspection.LatestGate.ProjectDigest == projectDigest {
+		return directArtifactV3Retained(grant, *inspection.LatestGate), nil
 	}
 	writeProject := func(path string, content []byte) error {
 		current, readErr := r.artifactV3Author.Read(ctx, author, grant, path, 0, 0)
