@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -200,6 +201,197 @@ func validateGeneratedDesignerHTML(html string, isAnimation bool, requiredParts 
 	return nil
 }
 
+func extractDurationFromPrompt(prompt string) int64 {
+	reMS := regexp.MustCompile(`(?i)(?:duration|length)[^\d]*(\d+)\s*ms`)
+	if m := reMS.FindStringSubmatch(prompt); len(m) > 1 {
+		if val, err := strconv.ParseInt(m[1], 10, 64); err == nil && val > 0 {
+			return val
+		}
+	}
+	reManifest := regexp.MustCompile(`(?i)duration_ms["':\s]+(\d+)`)
+	if m := reManifest.FindStringSubmatch(prompt); len(m) > 1 {
+		if val, err := strconv.ParseInt(m[1], 10, 64); err == nil && val > 0 {
+			return val
+		}
+	}
+	reSec := regexp.MustCompile(`(?i)(\d+)\s*(?:second|sec)s?`)
+	if m := reSec.FindStringSubmatch(prompt); len(m) > 1 {
+		if val, err := strconv.ParseInt(m[1], 10, 64); err == nil && val > 0 {
+			return val * 1000
+		}
+	}
+	return 0
+}
+
+func extractPartsFromPrompt(prompt string, durationMS int64) []pebblestore.SessionArtifactPart {
+	if strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	// 1. Explicit timings: e.g. Part 1 (0 - 3000ms) or Scene 1 (0 - 3000ms)
+	reTimed := regexp.MustCompile(`(?i)(?:^|\n|\b)(?:[0-9]+\.\s*)?(?:part|scene)\s*([0-9]+|[a-zA-Z0-9_-]+)[^\n\(]*?\(\s*([0-9]+)\s*[-–]\s*([0-9]+)\s*ms\s*\)`)
+	matchesTimed := reTimed.FindAllStringSubmatch(prompt, -1)
+	if len(matchesTimed) >= 2 {
+		var parts []pebblestore.SessionArtifactPart
+		for _, m := range matchesTimed {
+			numStr := m[1]
+			s, _ := strconv.ParseInt(m[2], 10, 64)
+			e, _ := strconv.ParseInt(m[3], 10, 64)
+			id := fmt.Sprintf("part-%s", numStr)
+			if !regexp.MustCompile(`^[0-9]+$`).MatchString(numStr) {
+				id = strings.ToLower(numStr)
+			}
+			parts = append(parts, pebblestore.SessionArtifactPart{
+				ID:       id,
+				Label:    fmt.Sprintf("Part %s", numStr),
+				Kind:     "temporal",
+				StartMs:  s,
+				EndMs:    e,
+				Selector: "#" + id,
+			})
+		}
+		return parts
+	}
+
+	// 2. Named parts: e.g. Part 1: boot, Part 2: vortex, Part 3: online or Scene 1: Intro
+	reNamed := regexp.MustCompile(`(?i)(?:part|scene)\s*([0-9]+)\s*[:=]\s*([a-zA-Z0-9_-]+)`)
+	matchesNamed := reNamed.FindAllStringSubmatch(prompt, -1)
+	if len(matchesNamed) >= 2 {
+		step := durationMS / int64(len(matchesNamed))
+		var parts []pebblestore.SessionArtifactPart
+		for i, m := range matchesNamed {
+			id := strings.ToLower(m[2])
+			start := int64(i) * step
+			end := int64(i+1) * step
+			if i == len(matchesNamed)-1 {
+				end = durationMS
+			}
+			parts = append(parts, pebblestore.SessionArtifactPart{
+				ID:       id,
+				Label:    fmt.Sprintf("Part %s - %s", m[1], m[2]),
+				Kind:     "temporal",
+				StartMs:  start,
+				EndMs:    end,
+				Selector: "#" + id,
+			})
+		}
+		return parts
+	}
+
+	// 3. General count: e.g. "3-part", "3 part", "3 parts"
+	reCount := regexp.MustCompile(`(?i)(\d+)\s*[- ]\s*parts?`)
+	if match := reCount.FindStringSubmatch(prompt); len(match) > 1 {
+		if n, err := strconv.Atoi(match[1]); err == nil && n >= 2 && n <= 16 {
+			step := durationMS / int64(n)
+			var parts []pebblestore.SessionArtifactPart
+			for i := 0; i < n; i++ {
+				start := int64(i) * step
+				end := int64(i+1) * step
+				if i == n-1 {
+					end = durationMS
+				}
+				id := fmt.Sprintf("part-%d", i+1)
+				parts = append(parts, pebblestore.SessionArtifactPart{
+					ID:       id,
+					Label:    fmt.Sprintf("Part %d", i+1),
+					Kind:     "temporal",
+					StartMs:  start,
+					EndMs:    end,
+					Selector: "#" + id,
+				})
+			}
+			return parts
+		}
+	}
+
+	return nil
+}
+
+func extractPartsFromHTML(html string, durationMS int64) []pebblestore.SessionArtifactPart {
+	if strings.TrimSpace(html) == "" {
+		return nil
+	}
+	re := regexp.MustCompile(`(?i)\bid=["']((?:part|scene)[-_]?[0-9]+)["']`)
+	matches := re.FindAllStringSubmatch(html, -1)
+	if len(matches) < 2 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var ids []string
+	for _, m := range matches {
+		id := strings.ToLower(m[1])
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) < 2 {
+		return nil
+	}
+	step := durationMS / int64(len(ids))
+	var parts []pebblestore.SessionArtifactPart
+	for i, id := range ids {
+		start := int64(i) * step
+		end := int64(i+1) * step
+		if i == len(ids)-1 {
+			end = durationMS
+		}
+		parts = append(parts, pebblestore.SessionArtifactPart{
+			ID:       id,
+			Label:    fmt.Sprintf("Part %d", i+1),
+			Kind:     "temporal",
+			StartMs:  start,
+			EndMs:    end,
+			Selector: "#" + id,
+		})
+	}
+	return parts
+}
+
+func ensureAnimationSeekSceneID(html string, parts []pebblestore.SessionArtifactPart, durationMS int64) string {
+	if len(parts) == 0 || strings.Contains(html, "scene_id") {
+		return html
+	}
+	type partScene struct {
+		ID      string `json:"id"`
+		StartMs int64  `json:"start_ms"`
+		EndMs   int64  `json:"end_ms"`
+	}
+	var scenes []partScene
+	for _, p := range parts {
+		if p.EndMs > p.StartMs {
+			scenes = append(scenes, partScene{ID: p.ID, StartMs: p.StartMs, EndMs: p.EndMs})
+		}
+	}
+	if len(scenes) == 0 {
+		return html
+	}
+	scenesJSON, err := json.Marshal(scenes)
+	if err != nil {
+		return html
+	}
+	helperScript := fmt.Sprintf(`<script data-swarm-capture-ui>(()=>{function __swarmGetSceneId(t){const scenes=%s;for(const s of scenes){if(t>=s.start_ms&&t<=s.end_ms)return s.id;}return scenes.length>0?scenes[0].id:"";}globalThis.__swarmGetSceneId=__swarmGetSceneId;})();</script>`, string(scenesJSON))
+
+	if idx := strings.Index(strings.ToLower(html), "</head>"); idx >= 0 {
+		html = html[:idx] + helperScript + "\n" + html[idx:]
+	} else if idx := strings.Index(strings.ToLower(html), "<body"); idx >= 0 {
+		html = html[:idx] + helperScript + "\n" + html[idx:]
+	} else {
+		html = helperScript + "\n" + html
+	}
+
+	reReturn := regexp.MustCompile(`(?i)return\s*\{\s*time_ms\s*:\s*([^,}]+)`)
+	html = reReturn.ReplaceAllStringFunc(html, func(m string) string {
+		sub := reReturn.FindStringSubmatch(m)
+		if len(sub) > 1 {
+			val := strings.TrimSpace(sub[1])
+			return fmt.Sprintf("return { scene_id: globalThis.__swarmGetSceneId(%s), time_ms: %s", val, val)
+		}
+		return m
+	})
+
+	return html
+}
+
 func composeDirectDesignerSwarmPrompt(parentPrompt, baseTheme string, controls *taskSwarmIterationControls, delta taskSwarmHydratedDelta, isIteration bool, baseHTML string, targetPartID string, parts []pebblestore.SessionArtifactPart, profile *pebblestore.SessionArtifactAnimationProfile, durationMS int64) (string, string) {
 	var sys strings.Builder
 	sys.WriteString(`You are Designer, Swarm's compiled UI, animation, and multi-part HTML component engine.
@@ -223,7 +415,8 @@ CRITICAL REQUIREMENTS:
        ready: async () => ({ duration_ms: ` + fmt.Sprintf("%d", durationMS) + `, fps: 60 }),
        seek: async (time_ms) => {
          // deterministically update and render visual state for time_ms
-         return { time_ms: time_ms };
+         // for multi-part animations, return the active part ID in scene_id
+         return { time_ms: time_ms, scene_id: activePartId };
        }
      };
 
@@ -578,6 +771,12 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 	durationMS := int64(6000)
 	if parsed.Swarm.AnimationProfile != nil {
 		durationMS = 9000
+		if parsedDuration := extractDurationFromPrompt(parsed.Prompt); parsedDuration > 0 {
+			durationMS = parsedDuration
+		}
+		if len(initialParts) == 0 && !isIteration {
+			initialParts = extractPartsFromPrompt(parsed.Prompt, durationMS)
+		}
 		if len(initialParts) > 0 {
 			var maxEnd int64
 			for _, p := range initialParts {
@@ -756,10 +955,16 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			var persistErr error
 
 			if isIteration {
+				generatedHTML = ensureAnimationSeekSceneID(generatedHTML, baseParts, durationMS)
 				rawResult, persistErr = s.tools.ReviseManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), iterationRefMap, []string{targetPartID}, generatedHTML, run)
 			} else {
+				effectiveParts := initialParts
+				if len(effectiveParts) == 0 && parsed.Swarm.AnimationProfile != nil {
+					effectiveParts = extractPartsFromHTML(generatedHTML, durationMS)
+				}
+				generatedHTML = ensureAnimationSeekSceneID(generatedHTML, effectiveParts, durationMS)
 				var partsList []map[string]any
-				for _, ip := range initialParts {
+				for _, ip := range effectiveParts {
 					partMap := map[string]any{
 						"id":       ip.ID,
 						"label":    ip.Label,
@@ -777,9 +982,21 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			if persistErr == nil {
 				var checkObj map[string]any
 				if jsonErr := json.Unmarshal([]byte(rawResult), &checkObj); jsonErr == nil {
+					artV3, _ := checkObj["artifact_v3"].(map[string]any)
 					st := asString(checkObj["status"])
+					if artV3 != nil {
+						if v3Status := asString(artV3["status"]); v3Status != "" {
+							st = v3Status
+						}
+					}
 					if st == "fixing" || st == "failed" || st == "error" {
-						msg := asString(checkObj["message"])
+						msg := ""
+						if artV3 != nil {
+							msg = asString(artV3["message"])
+						}
+						if msg == "" {
+							msg = asString(checkObj["message"])
+						}
 						if msg == "" {
 							msg = "artifact creation failed browser preview gate"
 						}
@@ -837,6 +1054,13 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 				if repoProj, found, _ := s.sessions.Store().GetArtifactV3Repository(authAccID, authUserID, artifactID); found {
 					commitOID = repoProj.HeadCommitOID
 				}
+			}
+
+			if commitOID == "" {
+				s.markManagedDesignerArtifactFailed(parent, &run, parent.ID, "direct_designer_publication_failed", parsed.Swarm.SourceArtifact)
+				results[i].Err = fmt.Errorf("artifact %s has no committed revision (browser preview gate failed)", artifactID)
+				emitDirectDesignerSwarmDelta(emit, step, callID, parsed.Action, description, len(prepared), i+1, "failed", hydrated[i].Title, hydrated[i].Theme, "designer_model", results[i].Err.Error(), nil)
+				return
 			}
 
 			var sessionParts []pebblestore.SessionArtifactPart

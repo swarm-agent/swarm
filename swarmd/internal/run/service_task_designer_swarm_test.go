@@ -55,7 +55,7 @@ func TestDirectDesignerSwarmHTMLValidation(t *testing.T) {
 	}
 
 	// 6. Missing required part ID must fail
-	missingPart := `<!doctype html><html><head><script id="swarm-animation-manifest" type="application/json">{}</script><script>window.__SWARM_ANIMATION_V1__ = { ready: async()=>({}), seek: async()=>({}) };</script></head><body><div id="part-1"></div></body></html>`
+	missingPart := `<!doctype html><html><head><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":9000,"fps":60}</script><script>window.__SWARM_ANIMATION_V1__ = { version: "swarm.animation/v1", ready: async()=>({}), seek: async()=>({}) };</script></head><body><div id="part-1"></div></body></html>`
 	if err := validateGeneratedDesignerHTML(missingPart, true, []string{"part-1", "part-2"}); err == nil || !strings.Contains(err.Error(), "part-2") {
 		t.Fatalf("expected missing part-2 error, got: %v", err)
 	}
@@ -192,9 +192,86 @@ func TestDirectDesignerSwarmRepairFlow(t *testing.T) {
 	}
 
 	// Model fixes it on repair turn
-	fixedOutput := "```html\n<!doctype html><html><head>\n  <script id=\"swarm-animation-manifest\" type=\"application/json\">{\"version\":\"swarm.animation/v1\",\"duration_ms\":6000,\"fps\":60}</script>\n  <script>\n    window.__SWARM_ANIMATION_V1__ = {\n      ready: async () => ({ duration_ms: 6000, fps: 60 }),\n      seek: async (ms) => ({ time_ms: ms })\n    };\n  </script>\n</head><body><section id=\"part-1\"></section><section id=\"part-2\"></section></body></html>\n```"
+	fixedOutput := "```html\n<!doctype html><html><head>\n  <script id=\"swarm-animation-manifest\" type=\"application/json\">{\"version\":\"swarm.animation/v1\",\"duration_ms\":6000,\"fps\":60}</script>\n  <script>\n    window.__SWARM_ANIMATION_V1__ = {\n      version: \"swarm.animation/v1\",\n      ready: async () => ({ duration_ms: 6000, fps: 60 }),\n      seek: async (ms) => ({ time_ms: ms })\n    };\n  </script>\n</head><body><section id=\"part-1\"></section><section id=\"part-2\"></section></body></html>\n```"
 	fixedErr := validateGeneratedDesignerHTML(extractHTMLFromModelOutput(fixedOutput), true, []string{"part-1", "part-2"})
 	if fixedErr != nil {
 		t.Fatalf("expected repaired output to pass validation, got: %v", fixedErr)
+	}
+}
+
+func TestExtractPartsFromPrompt(t *testing.T) {
+	prompt1 := `Create a high-fidelity, self-contained 3-part HTML animation of the Swarm mark.
+1. Part 1 (0 - 3000ms) Emergence: Awakening
+2. Part 2 (3000 - 6000ms) Metamorphosis: Fluid flow
+3. Part 3 (6000 - 9000ms) Convergence: Lock into mark`
+	parts1 := extractPartsFromPrompt(prompt1, 9000)
+	if len(parts1) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts1))
+	}
+	if parts1[0].ID != "part-1" || parts1[0].StartMs != 0 || parts1[0].EndMs != 3000 {
+		t.Fatalf("unexpected part 1: %+v", parts1[0])
+	}
+	if parts1[2].ID != "part-3" || parts1[2].StartMs != 6000 || parts1[2].EndMs != 9000 {
+		t.Fatalf("unexpected part 3: %+v", parts1[2])
+	}
+
+	prompt2 := "Create a 3-part HTML animation (Part 1: boot, Part 2: vortex, Part 3: online) with duration 9000ms"
+	parts2 := extractPartsFromPrompt(prompt2, 9000)
+	if len(parts2) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts2))
+	}
+	if parts2[0].ID != "boot" || parts2[1].ID != "vortex" || parts2[2].ID != "online" {
+		t.Fatalf("unexpected named parts: %+v", parts2)
+	}
+
+	prompt3 := "ok make a 3 swarm designers of a 3 part swarm mark animation"
+	parts3 := extractPartsFromPrompt(prompt3, 9000)
+	if len(parts3) != 3 {
+		t.Fatalf("expected 3 parts, got %d", len(parts3))
+	}
+	if parts3[0].ID != "part-1" || parts3[1].ID != "part-2" || parts3[2].ID != "part-3" {
+		t.Fatalf("unexpected general count parts: %+v", parts3)
+	}
+}
+
+func TestExtractPartsFromHTML(t *testing.T) {
+	html := `<!doctype html><html><body>
+		<section id="part-1"></section>
+		<section id="part-2"></section>
+		<section id="part-3"></section>
+	</body></html>`
+	parts := extractPartsFromHTML(html, 9000)
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 parts from HTML, got %d", len(parts))
+	}
+	if parts[0].ID != "part-1" || parts[0].StartMs != 0 || parts[0].EndMs != 3000 {
+		t.Fatalf("unexpected part 1 from HTML: %+v", parts[0])
+	}
+	if parts[2].ID != "part-3" || parts[2].StartMs != 6000 || parts[2].EndMs != 9000 {
+		t.Fatalf("unexpected part 3 from HTML: %+v", parts[2])
+	}
+}
+
+func TestEnsureAnimationSeekSceneID(t *testing.T) {
+	html := `<!doctype html><html><head><script>
+		window.__SWARM_ANIMATION_V1__ = {
+			version: "swarm.animation/v1",
+			ready: async () => ({ duration_ms: 9000, fps: 60 }),
+			seek: async (time_ms) => {
+				return { time_ms: time_ms };
+			}
+		};
+	</script></head><body></body></html>`
+	parts := []pebblestore.SessionArtifactPart{
+		{ID: "part-1", StartMs: 0, EndMs: 3000},
+		{ID: "part-2", StartMs: 3000, EndMs: 6000},
+		{ID: "part-3", StartMs: 6000, EndMs: 9000},
+	}
+	patched := ensureAnimationSeekSceneID(html, parts, 9000)
+	if !strings.Contains(patched, "__swarmGetSceneId") {
+		t.Fatalf("expected patched HTML to contain __swarmGetSceneId, got:\n%s", patched)
+	}
+	if !strings.Contains(patched, "scene_id:") {
+		t.Fatalf("expected patched HTML seek to include scene_id, got:\n%s", patched)
 	}
 }

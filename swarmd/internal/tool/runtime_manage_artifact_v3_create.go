@@ -166,10 +166,39 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, footer, or div")
 	}
 	if profile != nil && len(requestedParts) == 0 {
-		// One whole-animation sample; all other meaningful regions remain global
-		// requirements. Do not turn capture controls into output metadata.
-		midpoint := durationMS / 2
-		manifestParts[0].CaptureTimeMS = &midpoint
+		// If manifestParts contains sequential scenes (e.g. part-1, part-2, scene-1, etc.),
+		// auto-slot them as temporal scenes so inactive scenes are not treated as static
+		// required selectors that fail the browser preview gate.
+		var seqScenes []*pebblestore.ArtifactV3Part
+		for i := range manifestParts {
+			id := strings.ToLower(manifestParts[i].ID)
+			if strings.HasPrefix(id, "part-") || strings.HasPrefix(id, "part_") || strings.HasPrefix(id, "scene-") || strings.HasPrefix(id, "scene_") {
+				seqScenes = append(seqScenes, &manifestParts[i])
+			}
+		}
+		if len(seqScenes) >= 2 {
+			step := durationMS / int64(len(seqScenes))
+			for i, sp := range seqScenes {
+				start := int64(i) * step
+				end := int64(i+1) * step
+				if i == len(seqScenes)-1 {
+					end = durationMS
+				}
+				mid := start + (end-start)/2
+				sp.CaptureTimeMS = &mid
+				sp.Temporal = &pebblestore.ArtifactV3TemporalScene{SceneID: sp.ID, StartMS: start, EndMS: end}
+			}
+			filtered := make([]pebblestore.ArtifactV3Part, 0, len(seqScenes))
+			for _, sp := range seqScenes {
+				filtered = append(filtered, *sp)
+			}
+			manifestParts = filtered
+		} else {
+			// One whole-animation sample; all other meaningful regions remain global
+			// requirements. Do not turn capture controls into output metadata.
+			midpoint := durationMS / 2
+			manifestParts[0].CaptureTimeMS = &midpoint
+		}
 	}
 	if raw, ok := args["native_parts"]; ok {
 		if len(requestedParts) != 0 {
