@@ -212,6 +212,21 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 		e.mu.Unlock()
 		return false
 	}
+	isAutomationRun := strings.HasPrefix(job.SessionID, "av2-execution-")
+	if isAutomationRun {
+		activeAutomationCount := 0
+		for _, state := range e.runStates {
+			if state != nil && !state.canceled {
+				if strings.HasPrefix(state.job.SessionID, "av2-execution-") {
+					activeAutomationCount++
+				}
+			}
+		}
+		if activeAutomationCount >= 5 {
+			e.mu.Unlock()
+			return false
+		}
+	}
 	e.inFlightRuns[runKey] = true
 	e.activeBySession[job.SessionID] = job.RunID
 	if e.runStates == nil {
@@ -377,6 +392,35 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	return sessionruntime.SessionMutationResult{}, false, fmt.Errorf("v3 run %q is not active", job.RunID)
 }
 
+func (e *sessionV3Executor) CancelRunsForSession(sessionID, reason string) int {
+	if e == nil {
+		return 0
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0
+	}
+	e.mu.Lock()
+	var toCancel []sessionV3ExecutorJob
+	for _, state := range e.runStates {
+		if state != nil && !state.canceled {
+			if strings.TrimSpace(state.job.SessionID) == sessionID {
+				toCancel = append(toCancel, state.job)
+			}
+		}
+	}
+	e.mu.Unlock()
+
+	canceledCount := 0
+	for _, job := range toCancel {
+		_, canceled, _ := e.CancelRun(job, reason)
+		if canceled {
+			canceledCount++
+		}
+	}
+	return canceledCount
+}
+
 func (e *sessionV3Executor) CancelRunsForAccount(accountScopeID, reason string) int {
 	if e == nil {
 		return 0
@@ -395,8 +439,8 @@ func (e *sessionV3Executor) CancelRunsForAccount(accountScopeID, reason string) 
 
 	canceledCount := 0
 	for _, job := range toCancel {
-		_, canceled, err := e.CancelRun(job, reason)
-		if err == nil && canceled {
+		_, canceled, _ := e.CancelRun(job, reason)
+		if canceled {
 			canceledCount++
 		}
 	}

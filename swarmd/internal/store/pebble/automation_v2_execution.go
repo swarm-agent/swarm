@@ -165,6 +165,28 @@ func (s *SessionStore) ScanAutomationV2Accepted(after string) ([]AutomationV2Rec
 	return rows, "", it.Error()
 }
 
+// ListAutomationV2ChildSessionIDs returns all execution child session IDs for an authoring session.
+func (s *SessionStore) ListAutomationV2ChildSessionIDs(account, session string) ([]string, error) {
+	prefix := automationV2OccurrencePrefix(account, session)
+	it, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil {
+		return nil, err
+	}
+	defer it.Close()
+	var childIDs []string
+	seen := make(map[string]bool)
+	for valid := it.First(); valid; valid = it.Next() {
+		var o AutomationV2Occurrence
+		if err := json.Unmarshal(it.Value(), &o); err == nil && o.SessionID != "" && o.SessionID != session {
+			if !seen[o.SessionID] {
+				seen[o.SessionID] = true
+				childIDs = append(childIDs, o.SessionID)
+			}
+		}
+	}
+	return childIDs, it.Error()
+}
+
 func (s *SessionStore) ListAutomationV2Occurrences(account, user, workspace, session, after string, pending bool, limit int) ([]AutomationV2Occurrence, string, error) {
 	if _, _, _, err := s.automationV2OwnerStatus(account, user, workspace, session); err != nil {
 		return nil, "", err
@@ -470,6 +492,8 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 		}
 		if m.occurrence.AttemptCount > 0 {
 			o.AttemptCount = m.occurrence.AttemptCount
+		} else if m.occurrence.State == "running" || m.occurrence.State == "succeeded" {
+			o.AttemptCount = 0
 		}
 		if m.occurrence.NextRetryAt > 0 {
 			o.NextRetryAt = m.occurrence.NextRetryAt

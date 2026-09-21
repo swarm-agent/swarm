@@ -278,6 +278,102 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 	}
 }
 
+// Purpose: ControlAutomationV2 action "delete_automation" removes the accepted record
+// and disables future executions.
+func TestAutomationV2ControlDelete(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
+	h := s.apiMux()
+	call := func(method, path, body, user string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: user, AccountScopeID: "account"}
+		r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, p))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+
+	doc := store.SessionPlanDocument{
+		Title: "Delete Plan",
+		Info:  store.SessionPlanInfo{Goal: "Delete Plan"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{ID: "one", Title: "One", Status: "pending", Order: 1, Objective: "Return", AcceptanceCriteria: []string{"Done"}}},
+	}
+	propReq := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: &doc}
+	w := call(http.MethodPost, "/proposal", encode(propReq), "owner")
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: %d %s", w.Code, w.Body.String())
+	}
+	var propResp struct{ Proposal store.AutomationV2Proposal }
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+	acceptReq := automationV2Request{Action: "accept_automation", WorkspaceID: workspaceID, SessionID: "conversation", Review: propResp.Proposal.AutomationV2Review}
+	w = call(http.MethodPost, "/accept", encode(acceptReq), "owner")
+	if w.Code != 200 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+	var acceptResp struct{ Record store.AutomationV2Record }
+	if err := json.Unmarshal(w.Body.Bytes(), &acceptResp); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now delete automation via /control
+	delReq := map[string]any{
+		"action":       "delete_automation",
+		"workspace_id": workspaceID,
+		"session_id":   "conversation",
+		"generation":   acceptResp.Record.Generation,
+	}
+	w = call(http.MethodPost, "/control", encode(delReq), "owner")
+	if w.Code != 200 {
+		t.Fatalf("delete_automation failed: %d %s", w.Code, w.Body.String())
+	}
+	// Verify record is gone
+	_, found, err := ss.GetAutomationV2Record("account", "owner", workspaceID, "conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("expected automation record to be removed after delete_automation")
+	}
+}
+
 // Purpose: DeclineAutomationV2 must delete the pending proposal, resolve the
 // pending permission to denied, reject subsequent acceptance, and emit a
 // realtime outbox event.

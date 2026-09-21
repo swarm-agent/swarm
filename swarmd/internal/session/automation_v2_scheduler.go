@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -81,12 +82,19 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 			failures = append(failures, err)
 			continue
 		}
-		if int64(o.Record.Generation) <= current.CancelThrough {
+		if current.Archived || int64(o.Record.Generation) <= current.CancelThrough {
 			err = s.host.Cancel(ctx, o)
 			if err == nil {
-				err = db.ObserveAutomationV2(o, "cancelled", "explicit cancel_all acknowledged by execution host", now)
+				detail := "explicit cancel_all acknowledged by execution host"
+				if current.Archived {
+					detail = "parent session archived; execution cancelled"
+				}
+				err = db.ObserveAutomationV2(o, "cancelled", detail, now)
 			}
 			failures = append(failures, err)
+			continue
+		}
+		if o.NextRetryAt > now {
 			continue
 		}
 		state, detail, err := s.host.Outcome(o)
@@ -95,12 +103,23 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 		}
 		if state == "admitted" {
 			if startErr := s.host.Start(ctx, o); startErr != nil {
-				state, detail = "unavailable", "execution preparation or wake failed; retry retained"
-				if errors.Is(startErr, ErrAutomationV2PreparationFailed) {
-					state, detail = "failed", "unpublished allocation collision; lane preserved, no execution"
+				o.AttemptCount++
+				if o.AttemptCount >= 5 || errors.Is(startErr, ErrAutomationV2PreparationFailed) {
+					state, detail = "failed", "maximum execution start attempts exceeded; lane halted"
+					if errors.Is(startErr, ErrAutomationV2PreparationFailed) {
+						detail = "unpublished allocation collision; lane preserved, no execution"
+					}
+					o.NextRetryAt = 0
+				} else {
+					state = "unavailable"
+					backoffMs := int64(30000) * (1 << (o.AttemptCount - 1))
+					o.NextRetryAt = now + backoffMs
+					detail = fmt.Sprintf("execution start failed (attempt %d/5): %v; retry in %ds", o.AttemptCount, startErr, backoffMs/1000)
 				}
 				failures = append(failures, startErr)
 			} else {
+				o.AttemptCount = 0
+				o.NextRetryAt = 0
 				state, detail, err = s.host.Outcome(o)
 				failures = append(failures, err)
 			}
@@ -111,8 +130,10 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 			failures = append(failures, readErr)
 			continue
 		}
+		latest.AttemptCount = o.AttemptCount
+		latest.NextRetryAt = o.NextRetryAt
 		o = latest
-		if state != "" && (state != o.State || detail != o.Detail) {
+		if state != "" && (state != o.State || detail != o.Detail || o.NextRetryAt != latest.NextRetryAt || o.AttemptCount != latest.AttemptCount) {
 			failures = append(failures, db.ObserveAutomationV2(o, state, detail, now))
 		}
 	}
