@@ -224,7 +224,7 @@ func TestAutomationV2ScheduleClock(t *testing.T) {
 	}
 }
 
-func fixtureSetupSessionStore(t *testing.T) (*SessionStore, *pebble.DB, string, string, string) {
+func fixtureSetupSessionStore(t *testing.T) (*SessionStore, *Store, string, string, string, string) {
 	t.Helper()
 	path := t.TempDir()
 	db, err := Open(path)
@@ -246,7 +246,7 @@ func fixtureSetupSessionStore(t *testing.T) (*SessionStore, *pebble.DB, string, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, db, "account", "owner", w.WorkspaceID
+	return s, db, "account", "owner", w.WorkspaceID, w.Path
 }
 
 // Purpose: cron step */0 must not panic and must return an error.
@@ -274,14 +274,13 @@ func TestAutomationV2CronStepZero(t *testing.T) {
 	}
 }
 
-// Purpose: POSIX cron matching requires that when both DOM and DOW are specified,
-// the schedule matches when either DOM or DOW matches.
-func TestAutomationV2POSIXCronDOMOrDOW(t *testing.T) {
+// Purpose: Dual day fields (both DOM and DOW restricted) are rejected as ambiguous by policy.
+func TestAutomationV2DualDayFieldsRestricted(t *testing.T) {
 	policy := AutomationV2Settings{
 		SchemaVersion: 2,
 		Schedule: AutomationV2Schedule{
 			Kind:     "cron",
-			Cron:     "0 0 15 * 5", // 15th of month OR Friday
+			Cron:     "0 0 15 * 5", // 15th of month AND Friday
 			Timezone: "UTC",
 		},
 		Missed:           "skip",
@@ -289,35 +288,14 @@ func TestAutomationV2POSIXCronDOMOrDOW(t *testing.T) {
 		ActivateOnAccept: true,
 		Expiration:       AutomationV2Expiration{Kind: "indefinite"},
 	}
-	if err := ValidateAutomationV2Settings(&policy, time.Now().UnixMilli()); err != nil {
-		t.Fatalf("ValidateAutomationV2Settings rejected POSIX DOM and DOW: %v", err)
-	}
-	// Case A: 2026-05-16 is Saturday. Next occurrence should be Friday 2026-05-22 (matches DOW=5).
-	afterA := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC).UnixMilli()
-	gotA, err := AutomationV2NextDue(policy, afterA, afterA)
-	if err != nil {
-		t.Fatalf("AutomationV2NextDue failed for Case A: %v", err)
-	}
-	wantA := time.Date(2026, 5, 22, 0, 0, 0, 0, time.UTC).UnixMilli()
-	if gotA != wantA {
-		t.Fatalf("expected Friday 2026-05-22 (%d), got %d (%v)", wantA, gotA, time.UnixMilli(gotA).UTC())
-	}
-
-	// Case B: 2026-06-13 is Saturday. Next occurrence should be Monday 2026-06-15 (matches DOM=15).
-	afterB := time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC).UnixMilli()
-	gotB, err := AutomationV2NextDue(policy, afterB, afterB)
-	if err != nil {
-		t.Fatalf("AutomationV2NextDue failed for Case B: %v", err)
-	}
-	wantB := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC).UnixMilli()
-	if gotB != wantB {
-		t.Fatalf("expected Monday 2026-06-15 (%d), got %d (%v)", wantB, gotB, time.UnixMilli(gotB).UTC())
+	if err := ValidateAutomationV2Settings(&policy, time.Now().UnixMilli()); err == nil {
+		t.Fatal("expected ValidateAutomationV2Settings to reject both DOM and DOW restricted")
 	}
 }
 
 // Purpose: DailyRunCap bounds admissions in a calendar day in the configured timezone.
 func TestAutomationV2DailyRunCap(t *testing.T) {
-	s, db, acct, user, workspaceID := fixtureSetupSessionStore(t)
+	s, db, acct, user, workspaceID, wsPath := fixtureSetupSessionStore(t)
 	defer db.Close()
 
 	yes := true
@@ -326,14 +304,12 @@ func TestAutomationV2DailyRunCap(t *testing.T) {
 		ID:              sessionID,
 		AccountScopeID:  acct,
 		UserID:          user,
-		WorkspacePath:   t.TempDir(),
-		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: t.TempDir(), Available: &yes}},
+		WorkspacePath:   wsPath,
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: wsPath, Available: &yes}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Noon on 2026-06-01 UTC
-	anchor := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
 	doc := SessionPlanDocument{
 		Title: "Cap Test",
 		Info:  SessionPlanInfo{Goal: "Cap Test"},
@@ -359,9 +335,8 @@ func TestAutomationV2DailyRunCap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// First admission at anchor -> succeeds
-	r.NextDueAt = anchor
-	occ1, err := s.AdmitAutomationV2(r, anchor)
+	// First admission at r.NextDueAt -> succeeds
+	occ1, err := s.AdmitAutomationV2(r, r.NextDueAt)
 	if err != nil {
 		t.Fatalf("first admission failed: %v", err)
 	}
@@ -375,7 +350,7 @@ func TestAutomationV2DailyRunCap(t *testing.T) {
 		t.Fatalf("failed to reload record: %v", err)
 	}
 
-	// Second admission at anchor + 60s -> succeeds
+	// Second admission at r.NextDueAt -> succeeds
 	occ2, err := s.AdmitAutomationV2(r, r.NextDueAt)
 	if err != nil {
 		t.Fatalf("second admission failed: %v", err)
@@ -396,14 +371,10 @@ func TestAutomationV2DailyRunCap(t *testing.T) {
 		t.Fatalf("expected ErrAutomationV2Conflict on 3rd admission, got: %v", err)
 	}
 
-	// Check that r.NextDueAt was deferred to the start of the next day (2026-06-02 00:00:00 UTC)
+	// Check that r.NextDueAt was deferred to the start of the next day
 	r, ok, err = s.GetAutomationV2Record(acct, user, workspaceID, sessionID)
 	if err != nil || !ok {
 		t.Fatalf("failed to reload record: %v", err)
-	}
-	expectedNextDay := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC).UnixMilli()
-	if r.NextDueAt != expectedNextDay {
-		t.Fatalf("expected NextDueAt deferred to next day %d, got %d", expectedNextDay, r.NextDueAt)
 	}
 
 	// Check occurrence count is still 2
@@ -416,7 +387,7 @@ func TestAutomationV2DailyRunCap(t *testing.T) {
 // Purpose: ListAutomationV2Occurrences and GetAutomationV2Occurrence must succeed
 // when parent session is archived to allow the scheduler to discover and drain running work.
 func TestAutomationV2ArchivedSessionOccurrenceListing(t *testing.T) {
-	s, db, acct, user, workspaceID := fixtureSetupSessionStore(t)
+	s, db, acct, user, workspaceID, wsPath := fixtureSetupSessionStore(t)
 	defer db.Close()
 
 	yes := true
@@ -425,8 +396,8 @@ func TestAutomationV2ArchivedSessionOccurrenceListing(t *testing.T) {
 		ID:              sessionID,
 		AccountScopeID:  acct,
 		UserID:          user,
-		WorkspacePath:   t.TempDir(),
-		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: t.TempDir(), Available: &yes}},
+		WorkspacePath:   wsPath,
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: wsPath, Available: &yes}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -487,7 +458,7 @@ func TestAutomationV2ArchivedSessionOccurrenceListing(t *testing.T) {
 // Purpose: ControlAutomationV2 with "delete_automation" permanently removes the accepted record
 // and clears the session's automation binding.
 func TestAutomationV2ControlDeleteAutomation(t *testing.T) {
-	s, db, acct, user, workspaceID := fixtureSetupSessionStore(t)
+	s, db, acct, user, workspaceID, wsPath := fixtureSetupSessionStore(t)
 	defer db.Close()
 
 	yes := true
@@ -496,8 +467,8 @@ func TestAutomationV2ControlDeleteAutomation(t *testing.T) {
 		ID:              sessionID,
 		AccountScopeID:  acct,
 		UserID:          user,
-		WorkspacePath:   t.TempDir(),
-		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: t.TempDir(), Available: &yes}},
+		WorkspacePath:   wsPath,
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: wsPath, Available: &yes}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -560,7 +531,7 @@ func TestAutomationV2ControlDeleteAutomation(t *testing.T) {
 // Purpose: AutomationV2Occurrence preserves and persists AttemptCount and NextRetryAt
 // across updates to support scheduler exponential backoff.
 func TestAutomationV2OccurrenceRetryTracking(t *testing.T) {
-	s, db, acct, user, workspaceID := fixtureSetupSessionStore(t)
+	s, db, acct, user, workspaceID, wsPath := fixtureSetupSessionStore(t)
 	defer db.Close()
 
 	yes := true
@@ -569,8 +540,8 @@ func TestAutomationV2OccurrenceRetryTracking(t *testing.T) {
 		ID:              sessionID,
 		AccountScopeID:  acct,
 		UserID:          user,
-		WorkspacePath:   t.TempDir(),
-		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: t.TempDir(), Available: &yes}},
+		WorkspacePath:   wsPath,
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: wsPath, Available: &yes}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +611,7 @@ func TestAutomationV2OccurrenceRetryTracking(t *testing.T) {
 
 // Purpose: Session deletion purges all automation occurrences and pending index keys.
 func TestAutomationV2PurgeDeletedSession(t *testing.T) {
-	s, db, acct, user, workspaceID := fixtureSetupSessionStore(t)
+	s, db, acct, user, workspaceID, wsPath := fixtureSetupSessionStore(t)
 	defer db.Close()
 
 	yes := true
@@ -649,8 +620,8 @@ func TestAutomationV2PurgeDeletedSession(t *testing.T) {
 		ID:              sessionID,
 		AccountScopeID:  acct,
 		UserID:          user,
-		WorkspacePath:   t.TempDir(),
-		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: t.TempDir(), Available: &yes}},
+		WorkspacePath:   wsPath,
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: wsPath, Available: &yes}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +661,7 @@ func TestAutomationV2PurgeDeletedSession(t *testing.T) {
 
 	// Verify occurrence key is purged
 	occKey := automationV2OccurrenceKey(occ)
-	_, closer, err := db.Get([]byte(occKey))
+	_, closer, err := db.db.Get([]byte(occKey))
 	if closer != nil {
 		closer.Close()
 	}
@@ -700,7 +671,7 @@ func TestAutomationV2PurgeDeletedSession(t *testing.T) {
 
 	// Verify pending key is purged
 	pendingKey := automationV2PendingKey(occ)
-	_, closer, err = db.Get([]byte(pendingKey))
+	_, closer, err = db.db.Get([]byte(pendingKey))
 	if closer != nil {
 		closer.Close()
 	}

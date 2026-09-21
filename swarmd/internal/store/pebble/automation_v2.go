@@ -130,6 +130,9 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 				return errors.New("cron field outside bounds")
 			}
 		}
+		if fields[2] != "*" && fields[4] != "*" {
+			return errors.New("both cron day fields cannot be restricted")
+		}
 	default:
 		return errors.New("explicit schedule kind required")
 	}
