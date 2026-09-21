@@ -391,6 +391,7 @@ if (document.activeElement && document.activeElement.blur) document.activeElemen
 const selection=getSelection(); if(selection) selection.removeAllRanges();
 const temporal=%t;
 for (const animation of document.getAnimations()) { if (temporal) animation.pause(); else animation.cancel(); }
+if (!temporal) { try { window.requestAnimationFrame = () => 0; const maxTimer = setTimeout(() => {}, 0); for (let t = 0; t <= maxTimer; t++) { clearTimeout(t); clearInterval(t); } } catch (_) {} }
 const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color);
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const width=%d,height=%d;

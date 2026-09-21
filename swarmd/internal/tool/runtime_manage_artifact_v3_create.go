@@ -280,7 +280,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			diagnostic += "; sequential scenes need explicit parts kind=temporal with start_ms/end_ms and the same stable HTML id, plus __SWARM_ANIMATION_V1__ {version:'swarm.animation/v1', ready:async()=>{}, seek:async ms=>({time_ms:ms})}; seek must pause and render the requested playhead deterministically"
 		}
 		result := directArtifactV3Retained(grant, gate)
-		result["message"] = diagnostic + "; source retained: use author_v3 with draft_handle to repair"
+		result["message"] = diagnostic + "; source retained: make a corrected manage_artifact create call with complete HTML to repair"
 		return result, nil
 	}
 	finished, err := r.artifactV3Author.Finish(ctx, author, grant)
