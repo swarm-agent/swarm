@@ -1067,6 +1067,11 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 			return err
 		}
 	}
+	if session.WorktreeRootPath != "" {
+		if err := batch.Delete([]byte(worktreeOwnershipKey(session.WorktreeRootPath)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
 	return nil
 }
 
