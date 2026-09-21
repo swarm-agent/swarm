@@ -1,0 +1,34 @@
+{
+  "name": "@swarm/sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for Swarm local AI coding workspace",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test ./src/__tests__/**/*.spec.ts"
+  },
+  "keywords": [
+    "swarm",
+    "sdk",
+    "ai",
+    "agents",
+    "automation",
+    "workers"
+  ],
+  "author": "Swarm Team",
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,70 @@
+import { SwarmAuthNamespace } from './auth.js';
+import { SwarmAutomationsNamespace } from './automations.js';
+import { SwarmSessionsNamespace } from './sessions.js';
+import { SwarmSystemNamespace } from './system.js';
+import { SwarmTransport } from './transport.js';
+import type { ResolvedSwarmClientConfig, SwarmClientConfig } from './types.js';
+import { SwarmWorkspacesNamespace } from './workspaces.js';
+
+declare const process: any;
+
+export class SwarmClient {
+  readonly config: ResolvedSwarmClientConfig;
+  readonly transport: SwarmTransport;
+  readonly auth: SwarmAuthNamespace;
+  readonly automations: SwarmAutomationsNamespace;
+  /** Convenient alias for automations namespace */
+  readonly workers: SwarmAutomationsNamespace;
+  readonly workspaces: SwarmWorkspacesNamespace;
+  readonly sessions: SwarmSessionsNamespace;
+  readonly system: SwarmSystemNamespace;
+
+  constructor(config: SwarmClientConfig = {}) {
+    const env: Record<string, string | undefined> =
+      typeof process !== 'undefined' && process?.env ? process.env : {};
+
+    const baseUrl =
+      config.baseUrl ||
+      env.SWARM_API_URL ||
+      env.SWARM_DESKTOP_URL ||
+      'http://127.0.0.1:18080';
+
+    const socketPath = config.socketPath || env.SWARM_SOCKET_PATH;
+    const token = config.token || env.SWARM_AUTH_TOKEN || env.SWARM_DEPLOY_TOKEN;
+
+    const resolved: ResolvedSwarmClientConfig = {
+      baseUrl: baseUrl.replace(/\/+$/, ''),
+      token,
+      socketPath,
+      defaultHeaders: config.defaultHeaders ?? {},
+      timeoutMs: config.timeoutMs ?? 30_000,
+    };
+
+    this.transport = new SwarmTransport(resolved);
+    this.config = this.transport.getConfig();
+
+    this.auth = new SwarmAuthNamespace(this.transport, (token: string) => {
+      this.config.token = token;
+    });
+    this.automations = new SwarmAutomationsNamespace(this.transport);
+    this.workers = this.automations;
+    this.workspaces = new SwarmWorkspacesNamespace(this.transport);
+    this.sessions = new SwarmSessionsNamespace(this.transport);
+    this.system = new SwarmSystemNamespace(this.transport);
+  }
+
+  /**
+   * Updates the bearer authentication token for all subsequent client requests.
+   */
+  setToken(token: string): void {
+    this.transport.setConfig({ token });
+    this.config.token = token;
+  }
+}
+
+/**
+ * Factory function to create a new SwarmClient instance.
+ */
+export function createSwarmClient(config?: SwarmClientConfig): SwarmClient {
+  return new SwarmClient(config);
+}
