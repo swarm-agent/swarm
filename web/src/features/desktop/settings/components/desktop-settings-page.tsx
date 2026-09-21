@@ -29,7 +29,7 @@ const settingsTabs: Array<{ id: SettingsTabID; label: string; icon: LucideIcon }
   { id: 'tailscale', label: 'Tailscale', icon: Network },
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'themes', label: 'Themes', icon: Palette },
-  { id: 'shortcuts', label: 'Shortcuts', icon: Keyboard },
+  { id: 'shortcuts', label: 'Quick Actions & Shortcuts', icon: Keyboard },
   { id: 'vault', label: 'Vault', icon: Shield },
   { id: 'worktrees', label: 'Worktrees', icon: GitBranch },
 ]

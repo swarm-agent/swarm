@@ -12,6 +12,8 @@ test('account settings is the first/default settings tab', () => {
   assert.equal(normalizeSettingsTabID('notifications'), 'notifications')
   assert.equal(normalizeSettingsTabID('media'), 'media')
   assert.equal(normalizeSettingsTabID('images'), 'media')
+  assert.equal(normalizeSettingsTabID('quick-actions'), 'shortcuts')
+  assert.equal(normalizeSettingsTabID('quick_actions'), 'shortcuts')
   assert.equal(normalizeSettingsTabID('models'), 'actions')
   assert.equal(normalizeSettingsTabID('actions'), 'actions')
   assert.equal(SETTINGS_TABS.includes('models' as never), false)
