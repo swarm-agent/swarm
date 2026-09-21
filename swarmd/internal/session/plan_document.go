@@ -123,7 +123,11 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		add("automation", err.Error())
 	}
 	if strings.TrimSpace(doc.Title) == "" {
-		add("title", "plan title is required")
+		if strings.TrimSpace(doc.Info.Goal) != "" {
+			doc.Title = strings.TrimSpace(doc.Info.Goal)
+		} else {
+			add("title", "plan title is required")
+		}
 	}
 	if strings.TrimSpace(doc.Info.Goal) == "" {
 		add("info.goal", "plan goal is required")
@@ -169,6 +173,10 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		if checkpoint.Order != i+1 {
 			add(prefix+".order", fmt.Sprintf("checkpoint order must be %d", i+1))
 		}
+		if strings.TrimSpace(string(checkpoint.Status)) == "" {
+			checkpoint.Status = PlanCheckpointStatusPending
+			doc.Checkpoints[i].Status = PlanCheckpointStatusPending
+		}
 		if !isValidPlanCheckpointStatus(checkpoint.Status) {
 			add(prefix+".status", fmt.Sprintf("checkpoint status %q is not supported", checkpoint.Status))
 		}
@@ -190,6 +198,10 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 	}
 
 	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
+	if activeID == "" && firstPendingID != "" {
+		doc.ActiveCheckpointID = firstPendingID
+		activeID = firstPendingID
+	}
 	if firstPendingID == "" {
 		add("active_checkpoint_id", "a pending checkpoint is required for execution")
 	} else if activeID != "" {
