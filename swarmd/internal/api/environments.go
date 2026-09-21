@@ -759,7 +759,6 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 				DeploymentID:   strings.TrimSpace(req.DeploymentID),
 				Actor:          strings.TrimSpace(req.ConsumerID),
 				SessionID:      strings.TrimSpace(req.SessionID),
-				Reason:         strings.TrimSpace(req.Reason),
 			}
 			page, hErr := s.deployments.History(r.Context(), q)
 			if hErr != nil {

@@ -15,6 +15,7 @@ import (
 	"strings"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	compactruntime "swarm/packages/swarmd/internal/compact"
+	"swarm/packages/swarmd/internal/environments/lifecycle"
 	modelruntime "swarm/packages/swarmd/internal/model"
 
 	"swarm/packages/swarmd/internal/privacy"
