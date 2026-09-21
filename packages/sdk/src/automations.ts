@@ -5,6 +5,10 @@ import type {
   AutomationV2Record,
   AutomationV2TriggerParams,
   AutomationV2TriggerResult,
+  AutomationV2WebhookRecord,
+  CreateWebhookParams,
+  WebhookTestParams,
+  WebhookTestResult,
 } from './types.js';
 
 export class SwarmAutomationsNamespace {
@@ -144,5 +148,64 @@ export class SwarmAutomationsNamespace {
       },
     });
     return res.data?.ok === true;
+  }
+
+  /**
+   * Lists all configured push alert webhooks for the account.
+   */
+  async listWebhooks(): Promise<AutomationV2WebhookRecord[]> {
+    const res = await this.transport.request<{ ok: boolean; webhooks: AutomationV2WebhookRecord[] }>(
+      '/v3/automations/v2/webhooks',
+      { method: 'GET' }
+    );
+    return res.data?.webhooks ?? [];
+  }
+
+  /**
+   * Creates or updates a push alert webhook destination.
+   */
+  async createWebhook(params: CreateWebhookParams): Promise<AutomationV2WebhookRecord> {
+    const res = await this.transport.request<{ ok: boolean; webhook: AutomationV2WebhookRecord }>(
+      '/v3/automations/v2/webhooks',
+      {
+        method: 'POST',
+        body: {
+          id: params.id,
+          workspace_id: params.workspace_id,
+          worker_id: params.worker_id,
+          url: params.url,
+          secret: params.secret,
+          format: params.format ?? 'generic',
+          events: params.events ?? ['*'],
+          enabled: params.enabled ?? true,
+        },
+      }
+    );
+    return res.data.webhook;
+  }
+
+  /**
+   * Deletes a push alert webhook destination by ID.
+   */
+  async deleteWebhook(id: string): Promise<boolean> {
+    const res = await this.transport.request<{ ok: boolean }>(
+      `/v3/automations/v2/webhooks/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    );
+    return res.data?.ok === true;
+  }
+
+  /**
+   * Sends a synchronous test notification ping to a webhook destination.
+   */
+  async testWebhook(params: WebhookTestParams): Promise<WebhookTestResult> {
+    const res = await this.transport.request<WebhookTestResult>(
+      '/v3/automations/v2/webhooks/test',
+      {
+        method: 'POST',
+        body: params,
+      }
+    );
+    return res.data;
   }
 }

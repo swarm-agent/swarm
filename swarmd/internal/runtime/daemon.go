@@ -74,6 +74,7 @@ import (
 	"swarm/packages/swarmd/internal/videosource"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webhook"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -134,6 +135,7 @@ type Daemon struct {
 	automationMu              sync.Mutex
 	automationClosed          bool
 	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
+	webhookDispatcher         *webhook.Dispatcher
 	automationLoop            *automationLoop
 	automationExecution       *automation.ExecutionService
 	automationApproval        *automation.PolicyApproval
@@ -854,8 +856,12 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = d.cleanup()
 		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
 	}
+	webhookDispatcher := webhook.NewDispatcher(nil)
+	d.webhookDispatcher = webhookDispatcher
 	d.automationV2Scheduler = sessionruntime.NewAutomationV2Scheduler(sessionSvc, automationV2Host)
+	d.automationV2Scheduler.SetWebhookDispatcher(webhookDispatcher)
 	apiServer.SetAutomationV2Scheduler(d.automationV2Scheduler)
+	apiServer.SetWebhookDispatcher(webhookDispatcher)
 	d.longSessionDiagnostics = diagnostics
 	if diagnostics != nil {
 		codexClient.SetLongSessionDiagnostics(diagnostics)
@@ -962,6 +968,10 @@ func (d *Daemon) cleanup() error {
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()
 			d.aiTaskDispatcher = nil
+		}
+		if d.webhookDispatcher != nil {
+			d.webhookDispatcher.Close()
+			d.webhookDispatcher = nil
 		}
 		if d.toolRuntime != nil {
 			if err := d.toolRuntime.Close(); err != nil {

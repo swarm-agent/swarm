@@ -58,6 +58,7 @@ import (
 	"swarm/packages/swarmd/internal/videorender"
 	"swarm/packages/swarmd/internal/videotranscription"
 	"swarm/packages/swarmd/internal/voice"
+	"swarm/packages/swarmd/internal/webhook"
 	"swarm/packages/swarmd/internal/webpush"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
@@ -141,6 +142,7 @@ type Server struct {
 	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
 	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler
+	webhookDispatcher           *webhook.Dispatcher
 	dataDir                     string
 	startupConfigPath           string
 	startedAt                   time.Time
@@ -369,6 +371,12 @@ func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
 func (s *Server) SetAutomationV2Scheduler(scheduler *sessionruntime.AutomationV2Scheduler) {
 	if s != nil {
 		s.automationV2Scheduler = scheduler
+	}
+}
+
+func (s *Server) SetWebhookDispatcher(dispatcher *webhook.Dispatcher) {
+	if s != nil {
+		s.webhookDispatcher = dispatcher
 	}
 }
 

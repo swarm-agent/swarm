@@ -3,10 +3,14 @@ package session
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/webhook"
 )
 
 type fixtureV2Host struct {
@@ -433,5 +437,131 @@ func TestAutomationV2SchedulerArchivedSessionCancellation(t *testing.T) {
 	}
 	if rows[0].State != "cancelled" {
 		t.Fatalf("expected occurrence state 'cancelled', got '%s'", rows[0].State)
+	}
+}
+
+func TestAutomationV2SchedulerWebhookDispatch(t *testing.T) {
+	var mu sync.Mutex
+	receivedEvents := make([]string, 0)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		receivedEvents = append(receivedEvents, r.Header.Get("X-Swarm-Event"))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := store.NewSessionStore(db)
+	yes := true
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: w.Path, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Register global webhook in store
+	if err := ss.PutAutomationV2Webhook("account", &store.AutomationV2GlobalWebhook{
+		ID:      "whk_test",
+		URL:     server.URL,
+		Secret:  "whk-secret",
+		Format:  "generic",
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(ss, nil)
+	doc := store.SessionPlanDocument{
+		Title: "Webhook Test Worker",
+		Info:  store.SessionPlanInfo{Goal: "Verify webhooks"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Missed:           "skip",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{ID: "one", Title: "One", Status: "pending", Order: 1, Objective: "Return fixture", AcceptanceCriteria: []string{"Fixture returned"}}},
+	}
+	proposal, err := svc.ProposeAutomationV2("account", "owner", w.WorkspaceID, "author", &doc, store.AutomationV2Review{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.AcceptAutomationV2("account", "owner", w.WorkspaceID, "author", proposal.AutomationV2Review)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := &fixtureV2Host{state: "running"}
+	scheduler := NewAutomationV2Scheduler(svc, host)
+	dispatcher := webhook.NewDispatcher(nil)
+	defer dispatcher.Close()
+	scheduler.SetWebhookDispatcher(dispatcher)
+
+	// Tick 1: occurrence admitted and started
+	if err = scheduler.Tick(context.Background(), r, r.NextDueAt); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for async dispatch of EventOccurrenceStarted
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		count := len(receivedEvents)
+		mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	if len(receivedEvents) < 1 || receivedEvents[0] != webhook.EventOccurrenceStarted {
+		t.Fatalf("expected started event, got %v", receivedEvents)
+	}
+	mu.Unlock()
+
+	// Now simulate completion: host.state = "succeeded"
+	host.state = "succeeded"
+	if err = scheduler.Tick(context.Background(), r, r.NextDueAt+1000); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for async dispatch of EventOccurrenceSucceeded
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		count := len(receivedEvents)
+		mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(receivedEvents) < 2 || receivedEvents[1] != webhook.EventOccurrenceSucceeded {
+		t.Fatalf("expected succeeded event, got %v", receivedEvents)
 	}
 }

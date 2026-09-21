@@ -97,6 +97,14 @@ export interface AutomationV2Settings {
   missed?: 'skip' | 'coalesce';
   overlap?: 'serialize' | 'independent';
   daily_run_cap?: number;
+  webhooks?: Array<{
+    id?: string;
+    url: string;
+    secret?: string;
+    format?: 'generic' | 'slack' | 'discord' | 'telegram';
+    events?: string[];
+    enabled?: boolean;
+  }>;
 }
 
 export interface AutomationV2Record {
@@ -169,6 +177,53 @@ export interface AutomationV2ListParams {
   archived_mode?: 'exclude' | 'include' | 'only';
   cursor?: string;
   limit?: number;
+}
+
+export interface AutomationV2WebhookRecord {
+  id: string;
+  account_id?: string;
+  workspace_id?: string;
+  worker_id?: string;
+  url: string;
+  secret?: string;
+  format?: 'generic' | 'slack' | 'discord' | 'telegram';
+  events?: string[];
+  enabled: boolean;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface CreateWebhookParams {
+  id?: string;
+  workspace_id?: string;
+  worker_id?: string;
+  url: string;
+  secret?: string;
+  format?: 'generic' | 'slack' | 'discord' | 'telegram';
+  events?: string[];
+  enabled?: boolean;
+}
+
+export interface WebhookTestParams {
+  id?: string;
+  url?: string;
+  secret?: string;
+  format?: 'generic' | 'slack' | 'discord' | 'telegram';
+  events?: string[];
+  worker_id?: string;
+  worker_title?: string;
+}
+
+export interface WebhookTestResult {
+  ok: boolean;
+  error?: string;
+  result?: {
+    status_code: number;
+    status: string;
+    duration_ms: number;
+    body?: string;
+    signature?: string;
+  };
 }
 
 export interface SessionRecord {

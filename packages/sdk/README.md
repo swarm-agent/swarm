@@ -107,6 +107,33 @@ for (const ws of workspaces) {
 }
 ```
 
+### 6. Programmable Push Alert Webhooks
+
+Register push alert webhook destinations to receive HMAC-signed real-time notifications on worker lifecycle events (`started`, `succeeded`, `failed`, `retry_exhausted`):
+
+```typescript
+// Register a signed webhook destination
+const webhook = await client.automations.createWebhook({
+  url: 'https://api.mycompany.com/webhooks/swarm',
+  secret: 'whk_hmac_secret_key',
+  format: 'generic', // 'generic' | 'slack' | 'discord' | 'telegram'
+  events: ['failed', 'retry_exhausted'], // or ['*'] for all events
+});
+
+// Test the webhook with an immediate ping
+const testResult = await client.automations.testWebhook({
+  id: webhook.id,
+  worker_title: 'Database Backup',
+});
+console.log(`Ping delivered: HTTP ${testResult.result?.status_code} in ${testResult.result?.duration_ms}ms`);
+
+// List configured webhooks
+const webhooks = await client.automations.listWebhooks();
+
+// Delete a webhook
+await client.automations.deleteWebhook(webhook.id);
+```
+
 ## Error Handling
 
 All failed API responses throw typed `SwarmApiError` instances:

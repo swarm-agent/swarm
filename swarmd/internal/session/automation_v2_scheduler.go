@@ -7,6 +7,7 @@ import (
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/webhook"
 )
 
 var ErrAutomationV2PreparationFailed = errors.New("automation v2 preparation cannot be safely replayed")
@@ -21,14 +22,19 @@ type AutomationV2ExecutionHost interface {
 // definition, sequentially. Cursors are accelerators; due slots, immutable
 // snapshots, pending indexes and run intents are the restart authorities.
 type AutomationV2Scheduler struct {
-	sessions *Service
-	host     AutomationV2ExecutionHost
-	cursor   string
-	pending  map[string]string
+	sessions          *Service
+	host              AutomationV2ExecutionHost
+	cursor            string
+	pending           map[string]string
+	webhookDispatcher *webhook.Dispatcher
 }
 
 func NewAutomationV2Scheduler(s *Service, host AutomationV2ExecutionHost) *AutomationV2Scheduler {
 	return &AutomationV2Scheduler{sessions: s, host: host, pending: map[string]string{}}
+}
+
+func (s *AutomationV2Scheduler) SetWebhookDispatcher(d *webhook.Dispatcher) {
+	s.webhookDispatcher = d
 }
 func (s *AutomationV2Scheduler) Sweep(ctx context.Context, now time.Time) error {
 	if s.sessions == nil || s.sessions.store == nil || s.host == nil {
@@ -110,11 +116,13 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 						detail = "unpublished allocation collision; lane preserved, no execution"
 					}
 					o.NextRetryAt = 0
+					s.dispatchWebhook(webhook.EventOccurrenceRetryExhausted, r, o, state, detail)
 				} else {
 					state = "unavailable"
 					backoffMs := int64(30000) * (1 << (o.AttemptCount - 1))
 					o.NextRetryAt = now + backoffMs
 					detail = fmt.Sprintf("execution start failed (attempt %d/5): %v; retry in %ds", o.AttemptCount, startErr, backoffMs/1000)
+					s.dispatchWebhook(webhook.EventOccurrenceFailed, r, o, state, detail)
 				}
 				failures = append(failures, startErr)
 			} else {
@@ -122,6 +130,7 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 				o.NextRetryAt = 0
 				state, detail, err = s.host.Outcome(o)
 				failures = append(failures, err)
+				s.dispatchWebhook(webhook.EventOccurrenceStarted, r, o, "running", "execution started")
 			}
 		}
 		// Preparation may have journaled a newer receipt before session creation.
@@ -134,6 +143,17 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 		latest.NextRetryAt = o.NextRetryAt
 		o = latest
 		if state != "" && (state != o.State || detail != o.Detail || o.NextRetryAt != latest.NextRetryAt || o.AttemptCount != latest.AttemptCount) {
+			if state == "running" && o.State != "running" {
+				s.dispatchWebhook(webhook.EventOccurrenceStarted, r, o, state, detail)
+			} else if state == "succeeded" && o.State != "succeeded" {
+				s.dispatchWebhook(webhook.EventOccurrenceSucceeded, r, o, state, detail)
+			} else if state == "failed" && o.State != "failed" {
+				if o.AttemptCount >= 5 {
+					s.dispatchWebhook(webhook.EventOccurrenceRetryExhausted, r, o, state, detail)
+				} else {
+					s.dispatchWebhook(webhook.EventOccurrenceFailed, r, o, state, detail)
+				}
+			}
 			failures = append(failures, db.ObserveAutomationV2(o, state, detail, now))
 		}
 	}
@@ -229,4 +249,86 @@ func (s *Service) TriggerAutomationV2(account, user, workspace, id string, trigg
 		id = r.SessionID
 	}
 	return s.store.TriggerAutomationV2(account, user, workspace, id, triggerContext, time.Now().UnixMilli())
+}
+
+func (s *AutomationV2Scheduler) resolveDestinations(r store.AutomationV2Record) []webhook.Destination {
+	destMap := make(map[string]webhook.Destination)
+	settings := r.Document.WorkerV2
+	if settings == nil {
+		settings = r.Document.AutomationV2
+	}
+	if settings != nil {
+		for _, wh := range settings.Webhooks {
+			if wh.Enabled && wh.URL != "" {
+				destMap[wh.URL] = webhook.Destination{
+					ID:      wh.ID,
+					URL:     wh.URL,
+					Secret:  wh.Secret,
+					Format:  wh.Format,
+					Events:  wh.Events,
+					Enabled: wh.Enabled,
+				}
+			}
+		}
+	}
+	if s.sessions != nil && s.sessions.Store() != nil {
+		globals, err := s.sessions.Store().ListAutomationV2Webhooks(r.AccountID)
+		if err == nil {
+			for _, gw := range globals {
+				if !gw.Enabled || gw.URL == "" {
+					continue
+				}
+				if gw.WorkspaceID != "" && gw.WorkspaceID != r.WorkspaceID {
+					continue
+				}
+				if gw.WorkerID != "" && gw.WorkerID != r.AutomationID {
+					continue
+				}
+				destMap[gw.URL] = webhook.Destination{
+					ID:      gw.ID,
+					URL:     gw.URL,
+					Secret:  gw.Secret,
+					Format:  gw.Format,
+					Events:  gw.Events,
+					Enabled: gw.Enabled,
+				}
+			}
+		}
+	}
+	out := make([]webhook.Destination, 0, len(destMap))
+	for _, d := range destMap {
+		out = append(out, d)
+	}
+	return out
+}
+
+func (s *AutomationV2Scheduler) dispatchWebhook(eventType string, r store.AutomationV2Record, o store.AutomationV2Occurrence, state, detail string) {
+	if s == nil || s.webhookDispatcher == nil {
+		return
+	}
+	dests := s.resolveDestinations(r)
+	if len(dests) == 0 {
+		return
+	}
+	workerTitle := ""
+	if r.Document.Title != "" {
+		workerTitle = r.Document.Title
+	} else if r.Document.Info.Goal != "" {
+		workerTitle = r.Document.Info.Goal
+	}
+	event := webhook.WebhookEvent{
+		Type:           eventType,
+		Timestamp:      time.Now().UnixMilli(),
+		AccountID:      r.AccountID,
+		WorkspaceID:    r.WorkspaceID,
+		WorkerID:       r.AutomationID,
+		WorkerTitle:    workerTitle,
+		SessionID:      r.SessionID,
+		OccurrenceID:   o.ID,
+		State:          state,
+		Detail:         detail,
+		AttemptCount:   o.AttemptCount,
+		TriggerContext: o.TriggerContext,
+	}
+	s.webhookDispatcher.DispatchAsync(event, dests)
 }

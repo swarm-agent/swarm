@@ -23,6 +23,16 @@ type AutomationV2Settings struct {
 	ActivateOnAccept bool                   `json:"activate_on_accept"`
 	Expiration       AutomationV2Expiration `json:"expiration"`
 	DailyRunCap      int                    `json:"daily_run_cap,omitempty"`
+	Webhooks         []AutomationV2Webhook  `json:"webhooks,omitempty"`
+}
+
+type AutomationV2Webhook struct {
+	ID      string   `json:"id"`
+	URL     string   `json:"url"`
+	Secret  string   `json:"secret,omitempty"`
+	Format  string   `json:"format,omitempty"` // "generic" | "slack" | "discord" | "telegram"
+	Events  []string `json:"events,omitempty"` // ["*"] or ["started", "succeeded", "failed", "retry_exhausted"]
+	Enabled bool     `json:"enabled"`
 }
 type AutomationV2Schedule struct {
 	Kind            string `json:"kind"`
@@ -80,6 +90,18 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 	}
 	if a.DailyRunCap < 0 {
 		return errors.New("daily_run_cap must not be negative")
+	}
+	for _, wh := range a.Webhooks {
+		cleanURL := strings.TrimSpace(wh.URL)
+		if cleanURL == "" {
+			return errors.New("webhook url is required")
+		}
+		if !strings.HasPrefix(cleanURL, "http://") && !strings.HasPrefix(cleanURL, "https://") {
+			return errors.New("webhook url must begin with http:// or https://")
+		}
+		if wh.Format != "" && wh.Format != "generic" && wh.Format != "slack" && wh.Format != "discord" && wh.Format != "telegram" {
+			return errors.New("unsupported webhook format")
+		}
 	}
 	if a.Expiration.Kind != "indefinite" && a.Expiration.Kind != "at" {
 		return errors.New("explicit expiration kind required")

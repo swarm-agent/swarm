@@ -7,10 +7,12 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/automation"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/webhook"
 )
 
 const AutomationsV2Path = "/v3/automations/v2"
@@ -288,4 +290,168 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+type automationV2WebhookTestRequest struct {
+	ID          string   `json:"id,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Secret      string   `json:"secret,omitempty"`
+	Format      string   `json:"format,omitempty"`
+	Events      []string `json:"events,omitempty"`
+	WorkerID    string   `json:"worker_id,omitempty"`
+	WorkerTitle string   `json:"worker_title,omitempty"`
+}
+
+func (s *Server) handleAutomationsV2Webhooks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	p, ok := PrincipalFromRequest(r)
+	if !ok || !p.Valid() {
+		writeError(w, http.StatusUnauthorized, errors.New("trusted user required"))
+		return
+	}
+	if p.Type != "user" {
+		writeError(w, http.StatusForbidden, errors.New("explicit user required"))
+		return
+	}
+	if s.sessions == nil || s.sessions.Store() == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("session service unavailable"))
+		return
+	}
+
+	db := s.sessions.Store()
+	path := strings.TrimPrefix(r.URL.Path, AutomationsV2Path+"/webhooks")
+	path = strings.TrimPrefix(path, "/")
+
+	// GET /v3/automations/v2/webhooks
+	if r.Method == http.MethodGet && path == "" {
+		if !s.requireScope(w, r, "automations:read") {
+			return
+		}
+		webhooks, err := db.ListAutomationV2Webhooks(p.AccountScopeID)
+		if err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if webhooks == nil {
+			webhooks = []store.AutomationV2GlobalWebhook{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "webhooks": webhooks})
+		return
+	}
+
+	// POST /v3/automations/v2/webhooks/test or POST /v3/automations/v2/webhooks/{id}/test
+	if r.Method == http.MethodPost && (path == "test" || strings.HasSuffix(path, "/test")) {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		if s.webhookDispatcher == nil {
+			writeError(w, http.StatusServiceUnavailable, errors.New("webhook dispatcher unavailable"))
+			return
+		}
+		var req automationV2WebhookTestRequest
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 100*1024)).Decode(&req)
+
+		targetID := strings.TrimSuffix(path, "/test")
+		if targetID != "" && targetID != "test" && req.ID == "" {
+			req.ID = targetID
+		}
+
+		dest := webhook.Destination{
+			ID:      req.ID,
+			URL:     req.URL,
+			Secret:  req.Secret,
+			Format:  req.Format,
+			Events:  req.Events,
+			Enabled: true,
+		}
+		if req.ID != "" && dest.URL == "" {
+			wh, found, err := db.GetAutomationV2Webhook(p.AccountScopeID, req.ID)
+			if err != nil || !found {
+				writeError(w, http.StatusNotFound, errors.New("webhook destination not found"))
+				return
+			}
+			dest = webhook.Destination{
+				ID:      wh.ID,
+				URL:     wh.URL,
+				Secret:  wh.Secret,
+				Format:  wh.Format,
+				Events:  wh.Events,
+				Enabled: wh.Enabled,
+			}
+		}
+		if dest.URL == "" {
+			writeError(w, http.StatusBadRequest, errors.New("webhook url or valid webhook id required"))
+			return
+		}
+
+		workerTitle := req.WorkerTitle
+		if workerTitle == "" {
+			workerTitle = "Test Ping Worker"
+		}
+		workerID := req.WorkerID
+		if workerID == "" {
+			workerID = "test-worker"
+		}
+
+		event := webhook.WebhookEvent{
+			Type:        webhook.EventTestPing,
+			EventID:     "whk_test_" + strconv.FormatInt(time.Now().UnixNano(), 36),
+			Timestamp:   time.Now().UnixMilli(),
+			AccountID:   p.AccountScopeID,
+			WorkerID:    workerID,
+			WorkerTitle: workerTitle,
+			State:       "succeeded",
+			Detail:      "This is a test notification from Swarm daemon.",
+		}
+
+		result, err := s.webhookDispatcher.DeliverSync(r.Context(), event, dest)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":     false,
+				"error":  err.Error(),
+				"result": result,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":     true,
+			"result": result,
+		})
+		return
+	}
+
+	// POST /v3/automations/v2/webhooks (Create or Update)
+	if r.Method == http.MethodPost && path == "" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		var whk store.AutomationV2GlobalWebhook
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 100*1024))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&whk); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if err := db.PutAutomationV2Webhook(p.AccountScopeID, &whk); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "webhook": whk})
+		return
+	}
+
+	// DELETE /v3/automations/v2/webhooks/{id}
+	if r.Method == http.MethodDelete && path != "" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		if err := db.DeleteAutomationV2Webhook(p.AccountScopeID, path); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	writeError(w, http.StatusNotFound, errors.New("not found"))
 }

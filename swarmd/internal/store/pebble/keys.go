@@ -14,6 +14,7 @@ const (
 	KeyAuthAttachDefault                           = "auth/attach/default"
 	KeyAuthScopedTokenPrefix                       = "auth/scoped_token/"
 	KeyAuthScopedTokenHashPrefix                   = "auth/scoped_token_by_hash/"
+	KeyAutomationV2WebhookAccountPrefix            = "automation_v2/webhook_by_account/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -773,6 +774,18 @@ func KeyAuthScopedTokenPrefixForAccount(accountScopeID string) string {
 
 func KeyAuthScopedTokenByHash(tokenHash string) string {
 	return fmt.Sprintf("%s%s", KeyAuthScopedTokenHashPrefix, keyPart(tokenHash))
+}
+
+func KeyAutomationV2Webhook(accountScopeID, webhookID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAutomationV2WebhookAccountPrefix, keyPart(accountScopeID), keyPart(webhookID))
+}
+
+func AutomationV2WebhookPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyAutomationV2WebhookAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyAutomationV2WebhookAccountPrefix, accountPart)
 }
 
 func AuthCredentialPrefix() string {

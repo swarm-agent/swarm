@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -14,6 +16,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/webhook"
 )
 
 // Purpose: registered V2 routes must bind human review to the exact durable
@@ -656,5 +659,138 @@ func TestAutomationV2TriggerEndpoint(t *testing.T) {
 	}
 	if prog.Occurrences[0].ID != resp.Occurrence.ID {
 		t.Fatalf("expected occurrence ID match, got %s vs %s", prog.Occurrences[0].ID, resp.Occurrence.ID)
+	}
+}
+
+func TestAutomationV2WebhooksAPI(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	dispatcher := webhook.NewDispatcher(nil)
+	defer dispatcher.Close()
+
+	ss := store.NewSessionStore(db)
+	s := &Server{
+		sessions:          sessionruntime.NewService(ss, nil),
+		webhookDispatcher: dispatcher,
+	}
+	h := s.apiMux()
+
+	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		if scopes != nil {
+			ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, &store.ScopedTokenRecord{Scopes: scopes})
+		}
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. GET /webhooks without automations:read scope -> 403
+	w := call(http.MethodGet, "/webhooks", "", []string{"sessions:read"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing automations:read scope, got %d", w.Code)
+	}
+
+	// 2. GET /webhooks with automations:read -> 200 empty
+	w = call(http.MethodGet, "/webhooks", "", []string{"automations:read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp struct {
+		OK       bool                              `json:"ok"`
+		Webhooks []store.AutomationV2GlobalWebhook `json:"webhooks"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil || !listResp.OK || len(listResp.Webhooks) != 0 {
+		t.Fatalf("unexpected list response: %s", w.Body.String())
+	}
+
+	// 3. Mock HTTP webhook receiver
+	var receivedHeaders http.Header
+	var receivedBody []byte
+	testServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		receivedHeaders = req.Header.Clone()
+		receivedBody, _ = io.ReadAll(req.Body)
+		rw.WriteHeader(http.StatusOK)
+		_, _ = rw.Write([]byte(`{"received": true}`))
+	}))
+	defer testServer.Close()
+
+	// 4. POST /webhooks without automations:write -> 403
+	createBody := fmt.Sprintf(`{"url":%q,"secret":"my-secret-key","format":"generic","events":["started","succeeded"],"enabled":true}`, testServer.URL)
+	w = call(http.MethodPost, "/webhooks", createBody, []string{"automations:read"})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for missing automations:write scope, got %d", w.Code)
+	}
+
+	// 5. POST /webhooks with automations:write -> 200
+	w = call(http.MethodPost, "/webhooks", createBody, []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+	var createResp struct {
+		OK      bool                            `json:"ok"`
+		Webhook store.AutomationV2GlobalWebhook `json:"webhook"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &createResp); err != nil || !createResp.OK || createResp.Webhook.ID == "" {
+		t.Fatalf("unexpected create response: %s", w.Body.String())
+	}
+	webhookID := createResp.Webhook.ID
+
+	// 6. POST /webhooks/test to trigger test ping
+	testBody := fmt.Sprintf(`{"id":%q}`, webhookID)
+	w = call(http.MethodPost, "/webhooks/test", testBody, []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for test ping, got %d: %s", w.Code, w.Body.String())
+	}
+	var testResp struct {
+		OK     bool                   `json:"ok"`
+		Result webhook.DeliveryResult `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &testResp); err != nil || !testResp.OK {
+		t.Fatalf("unexpected test response: %s", w.Body.String())
+	}
+	if testResp.Result.StatusCode != http.StatusOK {
+		t.Fatalf("expected test delivery 200, got %d", testResp.Result.StatusCode)
+	}
+
+	// Verify headers and signature on receiver
+	if len(receivedBody) == 0 {
+		t.Fatal("expected non-empty received body on webhook receiver")
+	}
+	if receivedHeaders.Get("X-Swarm-Event") != webhook.EventTestPing {
+		t.Fatalf("expected X-Swarm-Event %s, got %s", webhook.EventTestPing, receivedHeaders.Get("X-Swarm-Event"))
+	}
+	if receivedHeaders.Get("X-Swarm-Signature") == "" {
+		t.Fatal("expected non-empty X-Swarm-Signature header")
+	}
+
+	// 7. DELETE /webhooks/{id}
+	w = call(http.MethodDelete, "/webhooks/"+webhookID, "", []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for delete, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 8. Verify GET /webhooks is empty again
+	w = call(http.MethodGet, "/webhooks", "", []string{"automations:read"})
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil || len(listResp.Webhooks) != 0 {
+		t.Fatalf("expected 0 webhooks after delete, got %d", len(listResp.Webhooks))
 	}
 }

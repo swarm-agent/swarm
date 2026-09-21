@@ -166,3 +166,120 @@ test('SwarmAutomationsNamespace: list, get, getProgress, delete and pause/resume
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('SwarmAutomationsNamespace: listWebhooks, createWebhook, deleteWebhook, and testWebhook', async () => {
+  let createdPayload: any = null;
+  let testPingPayload: any = null;
+  let deletedId = '';
+
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/v3/automations/v2/webhooks') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          webhooks: [
+            {
+              id: 'whk_existing_1',
+              url: 'https://example.com/alerts',
+              format: 'generic',
+              events: ['started', 'succeeded'],
+              enabled: true,
+            },
+          ],
+        })
+      );
+    } else if (req.method === 'POST' && req.url === '/v3/automations/v2/webhooks') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        createdPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            webhook: {
+              id: 'whk_created_99',
+              url: createdPayload.url,
+              secret: createdPayload.secret,
+              format: createdPayload.format,
+              events: createdPayload.events,
+              enabled: createdPayload.enabled,
+            },
+          })
+        );
+      });
+    } else if (req.method === 'POST' && req.url === '/v3/automations/v2/webhooks/test') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        testPingPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            result: {
+              status_code: 200,
+              status: '200 OK',
+              duration_ms: 12,
+              signature: 'sha256=abcdef123456',
+            },
+          })
+        );
+      });
+    } else if (req.method === 'DELETE' && req.url?.startsWith('/v3/automations/v2/webhooks/')) {
+      deletedId = req.url.replace('/v3/automations/v2/webhooks/', '');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+
+  try {
+    const transport = new SwarmTransport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      token: 'swk_admin_token',
+      defaultHeaders: {},
+      timeoutMs: 5000,
+    });
+    const automations = new SwarmAutomationsNamespace(transport);
+
+    // 1. List
+    const webhooks = await automations.listWebhooks();
+    assert.equal(webhooks.length, 1);
+    assert.equal(webhooks[0].id, 'whk_existing_1');
+
+    // 2. Create
+    const created = await automations.createWebhook({
+      url: 'https://hooks.slack.com/services/test',
+      format: 'slack',
+      events: ['failed', 'retry_exhausted'],
+      secret: 'slack-secret',
+    });
+    assert.equal(created.id, 'whk_created_99');
+    assert.equal(created.format, 'slack');
+    assert.equal(createdPayload.url, 'https://hooks.slack.com/services/test');
+    assert.deepEqual(createdPayload.events, ['failed', 'retry_exhausted']);
+
+    // 3. Test ping
+    const testResult = await automations.testWebhook({
+      id: 'whk_created_99',
+      worker_id: 'auto_backup',
+    });
+    assert.equal(testResult.ok, true);
+    assert.equal(testResult.result?.status_code, 200);
+    assert.equal(testPingPayload.id, 'whk_created_99');
+
+    // 4. Delete
+    const deleted = await automations.deleteWebhook('whk_created_99');
+    assert.equal(deleted, true);
+    assert.equal(deletedId, 'whk_created_99');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
