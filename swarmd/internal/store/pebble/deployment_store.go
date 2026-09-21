@@ -17,17 +17,27 @@ import (
 // while strictly verifying that NO secrets, credentials, or private keys are stored.
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type DeploymentStore struct {
-	store  *Store
-	leases *LeaseStore
-	mu     sync.Mutex
+	store      *Store
+	leases     *LeaseStore
+	operations *EnvironmentOperationStore
+	mu         sync.Mutex
 }
 
 // NewDeploymentStore creates a new DeploymentStore backed by the given Pebble Store.
 func NewDeploymentStore(store *Store) *DeploymentStore {
 	return &DeploymentStore{
-		store:  store,
-		leases: NewLeaseStore(store),
+		store:      store,
+		leases:     NewLeaseStore(store),
+		operations: NewEnvironmentOperationStore(store),
 	}
+}
+
+// Operations returns the underlying EnvironmentOperationStore.
+func (s *DeploymentStore) Operations() *EnvironmentOperationStore {
+	if s == nil {
+		return nil
+	}
+	return s.operations
 }
 
 // Leases returns the underlying LeaseStore.
@@ -191,6 +201,9 @@ func (s *DeploymentStore) Save(dep environments.Deployment) (environments.Deploy
 	if err := s.store.PutJSON(key, dep); err != nil {
 		return environments.Deployment{}, fmt.Errorf("put deployment: %w", err)
 	}
+	if s.operations != nil {
+		_ = s.operations.UpdateDeploymentCount(dep.AccountScopeID, dep.WorkspaceID)
+	}
 
 	return dep, nil
 }
@@ -246,6 +259,9 @@ func (s *DeploymentStore) UpdateStatus(accountScopeID, workspaceID, deploymentID
 	key := KeyDeploymentForAccount(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
 	if err := s.store.PutJSON(key, dep); err != nil {
 		return environments.Deployment{}, fmt.Errorf("put deployment: %w", err)
+	}
+	if s.operations != nil {
+		_ = s.operations.UpdateDeploymentCount(dep.AccountScopeID, dep.WorkspaceID)
 	}
 
 	return dep, nil
@@ -319,6 +335,9 @@ func (s *DeploymentStore) Delete(accountScopeID, workspaceID, deploymentID strin
 	key := KeyDeploymentForAccount(accountScopeID, workspaceID, deploymentID)
 	if err := s.store.Delete(key); err != nil {
 		return false, fmt.Errorf("delete deployment: %w", err)
+	}
+	if s.operations != nil {
+		_ = s.operations.UpdateDeploymentCount(accountScopeID, workspaceID)
 	}
 
 	return true, nil

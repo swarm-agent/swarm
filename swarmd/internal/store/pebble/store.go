@@ -21,9 +21,12 @@ type Store struct {
 	swarmProfilesMu       sync.Mutex
 	agentModelSettingsMu  sync.Mutex
 	tailscaleAllowlistMu  sync.Mutex
-	automationsMu         sync.Mutex
-	automationPublisherMu sync.RWMutex
-	automationPublisher   func(V3RealtimeOutboxRecord)
+	automationsMu          sync.Mutex
+	automationPublisherMu  sync.RWMutex
+	automationPublisher    func(V3RealtimeOutboxRecord)
+	environmentsMu         sync.Mutex
+	environmentPublisherMu sync.RWMutex
+	environmentPublisher   func(V3RealtimeOutboxRecord)
 }
 
 func Open(path string) (*Store, error) {
