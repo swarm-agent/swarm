@@ -61,12 +61,7 @@ func (f *directArtifactV3RepoFake) ReadArtifactV3DirectRevision(_ context.Contex
 	if len(f.submits) == 0 {
 		return nil, nil, errors.New("missing direct Artifact V3 revision")
 	}
-	last := f.submits[len(f.submits)-1]
-	var manifest pebblestore.ArtifactV3Manifest
-	if err := json.Unmarshal(last.Project[pebblestore.ArtifactV3ManifestFilename], &manifest); err == nil && len(manifest.Parts) > 0 {
-		return artifactV3Clone(last.Project), manifest.Parts, nil
-	}
-	return artifactV3Clone(last.Project), []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}, {ID: "pricing", Label: "Pricing", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#pricing"}}, {ID: "footer", Label: "Footer", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#footer"}}}, nil
+	return artifactV3Clone(f.submits[len(f.submits)-1].Project), []pebblestore.ArtifactV3Part{{ID: "hero", Label: "Hero", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#hero"}}, {ID: "pricing", Label: "Pricing", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#pricing"}}, {ID: "footer", Label: "Footer", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#footer"}}}, nil
 }
 
 func (f *directArtifactV3RepoFake) SelectArtifactV3DirectHead(_ context.Context, _, _, _, _, turnID, candidateID string) (ArtifactV3Revision, error) {
@@ -416,56 +411,5 @@ func TestManageArtifactCreateV3CaptureUI(t *testing.T) {
 				t.Fatal("whole-animation midpoint lost")
 			}
 		})
-	}
-}
-
-func TestManageArtifactCreateTemporalAnimationSharedStage(t *testing.T) {
-	repository := &directArtifactV3RepoFake{}
-	runtime := NewRuntime(1)
-	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
-	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
-	ctx, cancel := context.WithTimeout(WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"}), 10*time.Second)
-	defer cancel()
-
-	manifest := `<script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":60}</script>`
-	body := `<!doctype html><html><body><main id="stage"><canvas id="canvas"></canvas></main>` + manifest + `</body></html>`
-	args := map[string]any{
-		"action":            "create",
-		"media_type":        "text/html",
-		"content":           body,
-		"animation_profile": map[string]any{"profile": "motion_ui"},
-		"draft_handle":      map[string]any{"session_id": "session-1", "artifact_id": "art-1", "turn_id": "turn-1"},
-		"parts": []map[string]any{
-			{"id": "part-1", "label": "Boot Phase", "kind": "temporal", "start_ms": 0, "end_ms": 2000},
-			{"id": "part-2", "label": "Vortex Phase", "kind": "temporal", "start_ms": 2000, "end_ms": 4000},
-			{"id": "part-3", "label": "Online Phase", "kind": "temporal", "start_ms": 4000, "end_ms": 6000},
-		},
-	}
-	encoded, _ := json.Marshal(args)
-	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-shared", Name: "manage_artifact", Arguments: string(encoded)})
-	if err != nil {
-		t.Fatalf("expected create with shared stage to succeed, got: %v", err)
-	}
-	if len(repository.submits) != 1 {
-		t.Fatalf("expected 1 submit, got %d", len(repository.submits))
-	}
-	var createdManifest pebblestore.ArtifactV3Manifest
-	if err := json.Unmarshal(repository.submits[0].Project[pebblestore.ArtifactV3ManifestFilename], &createdManifest); err != nil {
-		t.Fatal(err)
-	}
-	if len(createdManifest.Parts) != 3 {
-		t.Fatalf("expected 3 parts in manifest, got %d", len(createdManifest.Parts))
-	}
-	for i, part := range createdManifest.Parts {
-		expectedID := fmt.Sprintf("part-%d", i+1)
-		if part.ID != expectedID {
-			t.Fatalf("part %d: expected id %s, got %s", i, expectedID, part.ID)
-		}
-		if part.Locator.Value != "#stage" {
-			t.Fatalf("part %d: expected locator #stage, got %s", i, part.Locator.Value)
-		}
-		if part.Temporal == nil || part.Temporal.StartMS != int64(i*2000) || part.Temporal.EndMS != int64((i+1)*2000) {
-			t.Fatalf("part %d: unexpected temporal timing: %+v", i, part.Temporal)
-		}
 	}
 }

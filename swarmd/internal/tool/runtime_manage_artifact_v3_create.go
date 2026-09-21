@@ -34,7 +34,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "title", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts", "draft_handle":
+		case "action", "title", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
@@ -94,57 +94,14 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if len(requestedParts) != 0 {
 		derivedByID := make(map[string]pebblestore.SessionArtifactPart, len(parts))
 		for _, part := range parts {
-			derivedByID[strings.ToLower(strings.TrimSpace(part.ID))] = part
+			derivedByID[strings.TrimSpace(part.ID)] = part
 		}
 		captureOnly := artifactHTMLCaptureOnlyRegions([]byte(body))
 		for _, requested := range requestedParts {
-			reqID := strings.ToLower(strings.TrimSpace(requested.ID))
-			if captureOnly[reqID] {
+			if captureOnly[strings.TrimSpace(requested.ID)] {
 				return nil, fmt.Errorf("manage_artifact create requested Part %q is a capture-only HTML region", requested.ID)
 			}
-			derived, ok := derivedByID[reqID]
-			if !ok {
-				// If requested.ID is not an explicit DOM element ID, check if this is a temporal part or animation.
-				// Story chapters and animation parts can share the stage/canvas container selector without inventing visible panels.
-				if (requested.Kind == "temporal" || profile != nil) && len(parts) > 0 {
-					targetSelector := strings.TrimSpace(requested.Selector)
-					if targetSelector != "" && strings.HasPrefix(targetSelector, "#") {
-						selID := strings.ToLower(strings.TrimPrefix(targetSelector, "#"))
-						if targetPart, found := derivedByID[selID]; found {
-							derived = targetPart
-							derived.ID = requested.ID
-							derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
-							ok = true
-						}
-					}
-					if !ok {
-						// Look for a stage, main, canvas, or first available selector part in the document.
-						for _, preferred := range []string{"stage", "viewport", "canvas", "app", "main", "scene"} {
-							if targetPart, found := derivedByID[preferred]; found {
-								derived = targetPart
-								derived.ID = requested.ID
-								derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), requested.ID)
-								ok = true
-								break
-							}
-						}
-					}
-					if !ok {
-						for _, p := range parts {
-							if p.Kind == "selector" && strings.TrimSpace(p.Selector) != "" {
-								derived = p
-								derived.ID = requested.ID
-								derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), requested.ID)
-								ok = true
-								break
-							}
-						}
-					}
-					if ok {
-						derivedByID[reqID] = derived
-					}
-				}
-			}
+			derived, ok := derivedByID[strings.TrimSpace(requested.ID)]
 			if !ok || derived.Kind != "selector" {
 				return nil, fmt.Errorf("manage_artifact create requested Part %q does not resolve to a stable HTML region id", requested.ID)
 			}
@@ -163,7 +120,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		parts = parts[:0]
 		temporalIdx := 0
 		for _, requested := range requestedParts {
-			derived := derivedByID[strings.ToLower(strings.TrimSpace(requested.ID))]
+			derived := derivedByID[strings.TrimSpace(requested.ID)]
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 			if requested.Kind == "temporal" {
 				if allZero && numTemporal > 0 && durationMS > 0 {

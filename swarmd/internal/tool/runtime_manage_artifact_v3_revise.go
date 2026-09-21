@@ -98,7 +98,7 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 	}
 	for key := range args {
 		switch key {
-		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index", "alternatives", "revision_intent", "native_parts", "draft_handle":
+		case "action", "artifact_v3_reference", "content", "target_part_ids", "turn_key", "candidate_index", "alternatives", "revision_intent", "native_parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact revise_v3 contains unsupported field %q", key)
 		}
@@ -231,34 +231,17 @@ func (r *Runtime) reviseDirectArtifactV3(ctx context.Context, scope WorkspaceSco
 	}
 	derived := make(map[string]pebblestore.SessionArtifactPart, len(parts))
 	for _, part := range parts {
-		derived[strings.ToLower(strings.TrimSpace(part.ID))] = part
+		derived[strings.TrimSpace(part.ID)] = part
 	}
 	for _, id := range basePartIDs {
-		normID := strings.ToLower(strings.TrimSpace(id))
-		part, found := derived[normID]
+		part, found := derived[id]
 		basePart := baseByID[id]
 		if beginOnly || intent == pebblestore.ArtifactV3RevisionWholeProject || basePart.Locator.Kind != "selector" || basePart.Locator.Path != manifest.Entrypoint {
 			manifestParts = append(manifestParts, basePart)
 			continue
 		}
 		if !found || strings.TrimSpace(part.Selector) == "" {
-			// If basePart was anchored to a container selector (e.g. #stage or #canvas), verify that the selector still exists in the revised HTML.
-			selectorID := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(basePart.Locator.Value), "#"))
-			selectorPreserved := false
-			if selectorID != "" {
-				for _, d := range parts {
-					if strings.ToLower(strings.TrimSpace(d.ID)) == selectorID {
-						selectorPreserved = true
-						break
-					}
-				}
-				if !selectorPreserved {
-					selectorPreserved = HasHTMLIDAttribute([]byte(body), selectorID)
-				}
-			}
-			if !selectorPreserved {
-				return nil, fmt.Errorf("manage_artifact revise_v3 must preserve stable Part %q in the complete corrected HTML", id)
-			}
+			return nil, fmt.Errorf("manage_artifact revise_v3 must preserve stable Part %q in the complete corrected HTML", id)
 		}
 		manifestParts = append(manifestParts, basePart)
 	}
