@@ -57,10 +57,12 @@ CGO_ENABLED=1 build_step go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
 cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
 cd /candidate/source/web
 phase web-install
-cmp pnpm-lock.yaml /cache-manifests/web/pnpm-lock.yaml
-cmp package.json /cache-manifests/web/package.json
-cmp pnpm-workspace.yaml /cache-manifests/web/pnpm-workspace.yaml
-cp -a /cache-manifests/web/node_modules ./node_modules
+build_step cmp pnpm-lock.yaml /cache-manifests/web/pnpm-lock.yaml
+build_step cmp package.json /cache-manifests/web/package.json
+# Only this exact install-interactivity flag is irrelevant to cached dependency bytes.
+# Dependency overrides, allowBuilds and all security settings must still match.
+build_step node -e 'const fs = require("node:fs"); const normalize = p => fs.readFileSync(p,"utf8").split("\n").filter(l => l !== "confirmModulesPurge: false").join("\n"); if (normalize("pnpm-workspace.yaml") !== normalize("/cache-manifests/web/pnpm-workspace.yaml")) { console.error("offline pnpm workspace settings mismatch"); process.exit(1); }'
+build_step cp -a /cache-manifests/web/node_modules ./node_modules
 phase web-build
 export RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=3072
 build_step pnpm run build
