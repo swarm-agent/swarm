@@ -1,3 +1,4 @@
+import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
 import { reduceAutomationPages } from './desktop-automation-state'
 import type {
@@ -63,6 +64,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     version: 1,
     automationPages: {},
     automationV2Pages: {},
+    environmentsByWorkspace: {},
     syncScopesById: {},
     realtime: {
       status: 'closed',
@@ -115,6 +117,16 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
 
 export function desktopV3CacheReducer(state: DesktopV3CacheState, action: DesktopV3CacheAction): DesktopV3CacheState {
   switch (action.type) {
+    case 'environments.beginLoad':
+    case 'environments.loadSuccess':
+    case 'environments.loadError':
+    case 'environments.invalidate':
+    case 'environments.setHistoryFilter':
+    case 'environments.realtimeStatusChanged':
+    case 'environments.recordReceipt':
+    case 'environments.operationUpdated':
+    case 'environments.evict':
+      return { ...state, environmentsByWorkspace: reduceDesktopEnvironmentsState(state.environmentsByWorkspace, action) }
     case 'automationV2.begin':
     case 'automationV2.finish':
     case 'automationV2.invalidate':

@@ -999,6 +999,7 @@ export interface DesktopInitialHydrateState {
 export interface DesktopV3CacheState {
   automationPages: import('./desktop-automation-state').AutomationPages
   automationV2Pages: import('./desktop-automation-v2-state').AutomationV2Pages
+  environmentsByWorkspace?: Record<string, import('./desktop-environments-state').DesktopEnvironmentWorkspaceState>
   version: 1
   syncScopesById: Record<string, SyncScopeCache>
   realtime: RealtimeCache
@@ -1054,6 +1055,7 @@ export interface CacheEvent {
 export type DesktopV3CacheAction =
   | import('./desktop-automation-state').AutomationCacheAction
   | import('./desktop-automation-v2-state').AutomationV2CacheAction
+  | import('./desktop-environments-state').DesktopEnvironmentsAction
   | { type: 'desktopV3Cache.applyHydrationPlan'; reusedSessionIds: string[]; hydrateSessionIds: string[] }
   | { type: 'desktopV3Cache.markHydrateInFlight'; sessionIds: string[]; inFlight: boolean }
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
