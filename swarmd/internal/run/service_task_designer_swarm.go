@@ -452,10 +452,30 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 	}
 
 	// Check if this is a targeted part revision of an existing Artifact V3 document
+	if parsed.Swarm.ArtifactV3Source == nil && parsed.Swarm.SourceArtifact != nil {
+		artID := strings.TrimSpace(parsed.Swarm.SourceArtifact.VariantID)
+		if strings.HasPrefix(artID, "artifact-") {
+			if repoProj, found, _ := s.sessions.Store().GetArtifactV3Repository(parent.AccountScopeID, parent.UserID, artID); found {
+				targetIDs := []string{}
+				if parsed.Swarm.SectionTarget != nil {
+					targetIDs = []string{parsed.Swarm.SectionTarget.ID}
+				}
+				parsed.Swarm.ArtifactV3Source = &taskArtifactV3Source{
+					SessionID:      parsed.Swarm.SourceArtifact.SessionID,
+					ArtifactID:     artID,
+					CommitOID:      repoProj.HeadCommitOID,
+					TargetPartIDs:  targetIDs,
+					RevisionIntent: "focused_parts",
+				}
+			}
+		}
+	}
+
 	isIteration := parsed.Swarm.ArtifactV3Source != nil
 	baseHTML := ""
 	targetPartID := ""
 	var baseParts []pebblestore.SessionArtifactPart
+	var iterationRefMap map[string]any
 	scope := tool.WorkspaceScope{
 		PrimaryPath: parent.WorkspacePath,
 		Roots:       append([]string(nil), parent.TemporaryWorkspaceRoots...),
@@ -474,15 +494,22 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 
 	if isIteration {
 		src := parsed.Swarm.ArtifactV3Source
-		refMap := map[string]any{
+		commitOID := strings.TrimSpace(src.CommitOID)
+		cleanCommit := strings.TrimPrefix(commitOID, "revision-")
+		if commitOID == "" || strings.EqualFold(commitOID, "HEAD") || len(cleanCommit) != 40 {
+			if repoProj, found, _ := s.sessions.Store().GetArtifactV3Repository(parent.AccountScopeID, parent.UserID, src.ArtifactID); found && repoProj.HeadCommitOID != "" {
+				commitOID = repoProj.HeadCommitOID
+			}
+		}
+		if !strings.HasPrefix(commitOID, "revision-") {
+			commitOID = "revision-" + commitOID
+		}
+		iterationRefMap = map[string]any{
 			"session_id":   src.SessionID,
 			"artifact_id":  src.ArtifactID,
-			"revision_ref": src.CommitOID,
+			"revision_ref": commitOID,
 		}
-		if !strings.HasPrefix(asString(refMap["revision_ref"]), "revision-") {
-			refMap["revision_ref"] = "revision-" + asString(refMap["revision_ref"])
-		}
-		readHTML, readParts, readErr := s.tools.ReadManagedArtifactV3HTML(ctx, scope, refMap)
+		readHTML, readParts, readErr := s.tools.ReadManagedArtifactV3HTML(ctx, scope, iterationRefMap)
 		if readErr != nil {
 			return "", fmt.Errorf("read base Artifact V3 for targeted revision: %w", readErr)
 		}
@@ -718,15 +745,7 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			var persistErr error
 
 			if isIteration {
-				refMap := map[string]any{
-					"session_id":   parsed.Swarm.ArtifactV3Source.SessionID,
-					"artifact_id":  parsed.Swarm.ArtifactV3Source.ArtifactID,
-					"revision_ref": parsed.Swarm.ArtifactV3Source.CommitOID,
-				}
-				if !strings.HasPrefix(asString(refMap["revision_ref"]), "revision-") {
-					refMap["revision_ref"] = "revision-" + asString(refMap["revision_ref"])
-				}
-				rawResult, persistErr = s.tools.ReviseManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), refMap, []string{targetPartID}, generatedHTML, run)
+				rawResult, persistErr = s.tools.ReviseManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), iterationRefMap, []string{targetPartID}, generatedHTML, run)
 			} else {
 				var partsList []map[string]any
 				for _, ip := range initialParts {
@@ -767,6 +786,19 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			if commitOID == "" && artifactV3Map != nil {
 				commitOID = asString(artifactV3Map["commit_oid"])
 			}
+			if commitOID == "" || strings.HasPrefix(commitOID, "revision-") {
+				commitOID = strings.TrimPrefix(commitOID, "revision-")
+			}
+			if commitOID == "" {
+				if revRef := asString(artifactRefMap["revision_ref"]); revRef != "" {
+					commitOID = strings.TrimPrefix(revRef, "revision-")
+				}
+			}
+			if commitOID == "" && artifactID != "" {
+				if repoProj, found, _ := s.sessions.Store().GetArtifactV3Repository(parent.AccountScopeID, parent.UserID, artifactID); found {
+					commitOID = repoProj.HeadCommitOID
+				}
+			}
 
 			var sessionParts []pebblestore.SessionArtifactPart
 			if artifactV3Map != nil {
@@ -791,11 +823,32 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 					}
 				}
 			}
+			if len(sessionParts) == 0 && artifactID != "" {
+				revRef := "revision-" + commitOID
+				if _, repoParts, readErr := s.tools.ReadManagedArtifactV3HTML(ctx, scope, map[string]any{"session_id": parent.ID, "artifact_id": artifactID, "revision_ref": revRef}); readErr == nil && len(repoParts) > 0 {
+					for _, p := range repoParts {
+						sp := pebblestore.SessionArtifactPart{
+							ID:       p.ID,
+							Label:    p.Label,
+							Selector: p.Locator.Value,
+						}
+						if p.Temporal != nil {
+							sp.Kind = "temporal"
+							sp.StartMs = p.Temporal.StartMS
+							sp.EndMs = p.Temporal.EndMS
+						} else {
+							sp.Kind = p.Locator.Kind
+						}
+						sessionParts = append(sessionParts, sp)
+					}
+				}
+			}
 
 			ref := &taskArtifactReference{
 				SessionID:        parent.ID,
 				ArtifactID:       artifactID,
 				CommitOID:        commitOID,
+				RevisionRef:      "revision-" + commitOID,
 				Status:           "ready",
 				Parts:            sessionParts,
 				AnimationProfile: cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile),

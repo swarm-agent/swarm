@@ -413,3 +413,22 @@ func TestManageArtifactCreateV3CaptureUI(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectDesignerSwarmCreateManagedHTMLArtifactV3(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	rt := NewRuntime(1)
+	rt.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	run := ArtifactRunContext{SessionID: "session-1", RunID: "run-1"}
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui"}
+	html := `<!doctype html><html><head><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":60}</script></head><body><section id="part-1"></section><section id="part-2"></section></body></html>`
+	parts := []map[string]any{
+		{"id": "part-1", "label": "Part 1", "kind": "temporal", "start_ms": 0, "end_ms": 3000, "selector": "#part-1"},
+		{"id": "part-2", "label": "Part 2", "kind": "temporal", "start_ms": 3000, "end_ms": 6000, "selector": "#part-2"},
+	}
+	out, err := rt.CreateManagedHTMLArtifactV3(context.Background(), scope, "call-1", "Test Animation", html, parts, profile, run)
+	if err != nil {
+		t.Fatalf("CreateManagedHTMLArtifactV3 failed: %v", err)
+	}
+	t.Logf("CreateManagedHTMLArtifactV3 result: %s", out)
+}

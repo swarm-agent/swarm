@@ -726,6 +726,7 @@ type taskArtifactReference struct {
 	VariantID          string                                         `json:"variant_id,omitempty"`
 	ArtifactID         string                                         `json:"artifact_id,omitempty"`
 	CommitOID          string                                         `json:"commit_oid,omitempty"`
+	RevisionRef        string                                         `json:"revision_ref,omitempty"`
 	ProjectionSeq      uint64                                         `json:"projection_seq,omitempty"`
 	TurnID             string                                         `json:"turn_id,omitempty"`
 	CandidateID        string                                         `json:"candidate_id,omitempty"`

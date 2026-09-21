@@ -3557,8 +3557,19 @@ func parseArtifactParts(raw any) ([]pebblestore.SessionArtifactPart, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	items, ok := raw.([]any)
-	if !ok || len(items) > pebblestore.SessionArtifactMaxParts {
+	var items []any
+	switch v := raw.(type) {
+	case []any:
+		items = v
+	case []map[string]any:
+		items = make([]any, len(v))
+		for i, m := range v {
+			items[i] = m
+		}
+	default:
+		return nil, errors.New("parts must be a bounded array")
+	}
+	if len(items) > pebblestore.SessionArtifactMaxParts {
 		return nil, errors.New("parts must be a bounded array")
 	}
 	parts := make([]pebblestore.SessionArtifactPart, 0, len(items))
