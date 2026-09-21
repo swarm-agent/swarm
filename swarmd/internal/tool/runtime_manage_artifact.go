@@ -3545,7 +3545,7 @@ func validManagedArtifactStableID(value string) bool {
 		return false
 	}
 	for index, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || (index > 0 && (character == '_' || character == '-' || character == '.')) {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || (index > 0 && (character == '_' || character == '-' || character == '.')) {
 			continue
 		}
 		return false
