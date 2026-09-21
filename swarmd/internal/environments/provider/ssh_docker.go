@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 )
