@@ -14,7 +14,7 @@ var (
 	artifactHTMLIterationManifest = regexp.MustCompile(`(?is)<script\s+([^>]*)>(.*?)</script\s*>`)
 	artifactHTMLIterationID       = regexp.MustCompile(`(?i)(?:^|\s)id\s*=\s*["']swarm-iteration-manifest["'](?:\s|$)`)
 	artifactHTMLManifestType      = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
-	artifactHTMLRegion            = regexp.MustCompile(`(?is)<(header|main|section|article|nav|aside|footer|div)\b((?:[^>"']|"[^"]*"|'[^']*')*)>`)
+	artifactHTMLRegion            = regexp.MustCompile(`(?is)<(header|main|section|article|nav|aside|footer|div|canvas|svg|g|figure|details|fieldset|table|ul|ol|p|span)\b((?:[^>"']|"[^"]*"|'[^']*')*)>`)
 	artifactHTMLAttributes        = regexp.MustCompile(`([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?`)
 )
 
@@ -44,7 +44,7 @@ func deriveArtifactHTMLParts(body []byte, mediaType string) []pebblestore.Sessio
 	seen := make(map[string]struct{})
 	captureOnly := artifactHTMLCaptureOnlyRegions(body)
 	appendPart := func(part pebblestore.SessionArtifactPart) {
-		part.ID, part.Label = strings.TrimSpace(part.ID), strings.TrimSpace(part.Label)
+		part.ID, part.Label = strings.ToLower(strings.TrimSpace(part.ID)), strings.TrimSpace(part.Label)
 		if len(parts) >= pebblestore.SessionArtifactMaxParts || !validManagedArtifactStableID(part.ID) || part.Label == "" || len(part.Label) > 256 {
 			return
 		}
@@ -96,7 +96,7 @@ func deriveArtifactHTMLParts(body []byte, mediaType string) []pebblestore.Sessio
 
 	for _, region := range artifactHTMLRegion.FindAllSubmatch(body, -1) {
 		attributes := region[2]
-		id := artifactHTMLAttribute(attributes, "id")
+		id := strings.ToLower(artifactHTMLAttribute(attributes, "id"))
 		if !validManagedArtifactStableID(id) {
 			continue
 		}
@@ -139,7 +139,7 @@ func artifactHTMLAttribute(attributes []byte, name string) string {
 			return ""
 		}
 		value = strings.TrimSpace(value)
-		if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') {
+		if len(value) >= 2 && ((value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"')) {
 			value = value[1 : len(value)-1]
 		}
 		return strings.TrimSpace(value)
@@ -159,4 +159,24 @@ func artifactHTMLPartLabel(id string) string {
 		}
 	}
 	return strings.Join(words, " ")
+}
+
+// HasHTMLIDAttribute checks whether the HTML body contains an element with the given id,
+// checking double-quoted, single-quoted, and unquoted variations.
+func HasHTMLIDAttribute(body []byte, id string) bool {
+	if len(body) == 0 || strings.TrimSpace(id) == "" {
+		return false
+	}
+	idTrim := strings.TrimSpace(id)
+	lowerBody := bytes.ToLower(body)
+	lowerID := strings.ToLower(idTrim)
+	if bytes.Contains(lowerBody, []byte(`id="`+lowerID+`"`)) ||
+		bytes.Contains(lowerBody, []byte(`id='`+lowerID+`'`)) ||
+		bytes.Contains(lowerBody, []byte(`id=`+lowerID+` `)) ||
+		bytes.Contains(lowerBody, []byte(`id=`+lowerID+`>`)) {
+		return true
+	}
+	pattern := `(?i)\bid\s*=\s*["']?` + regexp.QuoteMeta(idTrim) + `(?:\s|["'>]|$)`
+	matched, _ := regexp.Match(pattern, body)
+	return matched
 }

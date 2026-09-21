@@ -131,3 +131,29 @@ func TestArtifactV3MarkerBuildRejection(t *testing.T) {
 		}
 	}
 }
+
+func TestArtifactV3UnresolvedTargetsQuoting(t *testing.T) {
+	manifest := pebblestore.ArtifactV3Manifest{
+		SchemaVersion: pebblestore.ArtifactV3ManifestVersion,
+		Entrypoint:    "index.html",
+		Parts: []pebblestore.ArtifactV3Part{
+			{ID: "part-1", Label: "Part 1", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#part-1"}},
+			{ID: "part-2", Label: "Part 2", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#part-2"}},
+			{ID: "part-3", Label: "Part 3", Locator: pebblestore.ArtifactV3Locator{Kind: "selector", Path: "index.html", Value: "#part-3"}},
+		},
+	}
+	// Test double quotes, single quotes, and unquoted in body
+	files := map[string][]byte{
+		"index.html": []byte(`<html><body><main id="part-1"><canvas id='part-2'></canvas><div id=part-3></div></main></body></html>`),
+	}
+	diagnostics := unresolvedArtifactV3Targets(manifest, []string{"part-1", "part-2", "part-3"}, files)
+	if len(diagnostics) != 0 {
+		t.Fatalf("expected 0 diagnostics for properly quoted IDs, got: %+v", diagnostics)
+	}
+
+	// Missing target must be flagged
+	missingDiag := unresolvedArtifactV3Targets(manifest, []string{"part-4"}, files)
+	if len(missingDiag) != 1 || missingDiag[0].Code != "target_missing" {
+		t.Fatalf("expected target_missing diagnostic, got: %+v", missingDiag)
+	}
+}

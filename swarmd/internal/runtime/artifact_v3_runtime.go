@@ -724,8 +724,10 @@ func unresolvedArtifactV3Targets(manifest pebblestore.ArtifactV3Manifest, target
 		}
 		if part.Locator.Kind == "selector" && strings.HasPrefix(part.Locator.Value, "#") {
 			body := files[part.Locator.Path]
-			needle := `id="` + strings.TrimPrefix(part.Locator.Value, "#") + `"`
-			if !bytesContainsFold(body, needle) {
+			targetID := strings.TrimPrefix(part.Locator.Value, "#")
+			doubleQuoted := `id="` + targetID + `"`
+			singleQuoted := `id='` + targetID + `'`
+			if !bytesContainsFold(body, doubleQuoted) && !bytesContainsFold(body, singleQuoted) && !bytesContainsFold(body, `id=`+targetID) {
 				out = append(out, tool.ArtifactV3Diagnostic{Stage: "locator", Code: "selector_unresolved", Message: "the requested Part selector is unresolved", Path: part.Locator.Path})
 			}
 		}
