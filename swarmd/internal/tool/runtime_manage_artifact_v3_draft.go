@@ -39,12 +39,12 @@ func directArtifactV3Retained(g ArtifactV3AuthorGrant, gate ArtifactV3AuthorGate
 	}
 	return map[string]any{
 		"status":       "fixing",
-		"artifact_id":   g.ArtifactID,
-		"turn_id":       g.TurnID,
-		"candidate_id":  g.CandidateID,
-		"draft_handle":  directArtifactV3Handle(g),
-		"gate":          gate,
-		"message":       diagnostic + "; source retained: make a corrected manage_artifact create call with complete HTML to repair",
+		"artifact_id":  g.ArtifactID,
+		"turn_id":      g.TurnID,
+		"candidate_id": g.CandidateID,
+		"draft_handle": directArtifactV3Handle(g),
+		"gate":         gate,
+		"message":      diagnostic + "; source retained: make a corrected manage_artifact create call with complete HTML to repair",
 	}
 }
 

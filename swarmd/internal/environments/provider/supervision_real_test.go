@@ -454,10 +454,10 @@ func TestRealSupervisor_InvalidMetadataSafety(t *testing.T) {
 	baseDir := filepath.Join(t.TempDir(), "swarm-ops")
 
 	testCases := []struct {
-		name       string
-		opID       string
-		pid        string
-		pgid       string
+		name        string
+		opID        string
+		pid         string
+		pgid        string
 		expectedErr string
 	}{
 		{"invalid op id with traversal", "../traversal", "100", "100", "SWARM_CLEANUP:INVALID_OP_ID"},

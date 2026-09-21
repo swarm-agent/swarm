@@ -109,7 +109,7 @@ func TestEnvironmentOperation_Validation(t *testing.T) {
 		rawWithSecret := map[string]any{
 			"operation_id":     "op_sec_1",
 			"account_scope_id": "acc_test",
-			"workspace_id":    "ws_test",
+			"workspace_id":     "ws_test",
 			"action":           "exec",
 			"status":           "running",
 			"created_at":       now,

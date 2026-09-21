@@ -223,7 +223,9 @@ func NewDeploymentManager(
 	opts ...DeploymentManagerOption,
 ) *DeploymentManager {
 	var opStore OperationStore
-	if dsOps, ok := deployments.(interface{ Operations() *pebblestore.EnvironmentOperationStore }); ok && dsOps != nil {
+	if dsOps, ok := deployments.(interface {
+		Operations() *pebblestore.EnvironmentOperationStore
+	}); ok && dsOps != nil {
 		opStore = dsOps.Operations()
 	}
 

@@ -15,14 +15,14 @@ import (
 )
 
 type Store struct {
-	db                    *pebble.DB
-	path                  string
-	closed                atomic.Bool
-	sessionMutations      *sessionMutationCoordinator
-	modelProfilesMu       sync.Mutex
-	swarmProfilesMu       sync.Mutex
-	agentModelSettingsMu  sync.Mutex
-	tailscaleAllowlistMu  sync.Mutex
+	db                     *pebble.DB
+	path                   string
+	closed                 atomic.Bool
+	sessionMutations       *sessionMutationCoordinator
+	modelProfilesMu        sync.Mutex
+	swarmProfilesMu        sync.Mutex
+	agentModelSettingsMu   sync.Mutex
+	tailscaleAllowlistMu   sync.Mutex
 	automationsMu          sync.Mutex
 	automationPublisherMu  sync.RWMutex
 	automationPublisher    func(V3RealtimeOutboxRecord)

@@ -664,6 +664,8 @@ run and remains pending executed validation.
 
 ## 14. Revision ledger and update template
 
+- 2026-09-21 — Code formatting sync: applied gofmt across `pkg/environments/operation_test.go`, `swarmd/internal/environments/lifecycle/manager.go`, `swarmd/internal/environments/provider/supervision_real_test.go`, `swarmd/internal/store/pebble/deployment_store.go`, `swarmd/internal/store/pebble/environment_operation_store.go`, `swarmd/internal/store/pebble/store.go`, `swarmd/internal/tool/runtime_manage_artifact_v3_draft.go`, and `swarmd/internal/tool/runtime_manage_environments.go` to satisfy precommit and pre-push hooks; verified zero unformatted Go files across repository and atlas synchronization passes.
+
 - 2026-09-21 — Restored Automation V2 / workers functionality across backend and frontend: reverted commit 140167a55 to re-enable the Automation V2 scheduler loop in `runtime/automation_v2.go` and `runtime/daemon.go`, re-enabled `/v3/automations` and `/v3/automations/v2` endpoints in `server_routes.go`, restored `manage_automation` and `manage_workers` in `system_agent_registry.go`, restored Workers navigation in Desktop frontend, and moved Quick Actions from the sidebar navigation into Settings.
 
 - 2026-09-20 — Removed phantom push triggers from release workflows: removed redundant `push: branches: [dev]` triggers from `critical-tests.yml`, `dependency-vulnerability-scan.yml`, and `install-distro-smoke.yml` to prevent duplicate unneeded 40-minute relay runs on branch push while preserving exact `pull_request` qualification and schedule/dispatch triggers.

@@ -267,7 +267,7 @@ func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOp
 
 	metaPayload, _ := json.Marshal(map[string]any{
 		"account_scope_id": op.AccountScopeID,
-		"workspace_id":    op.WorkspaceID,
+		"workspace_id":     op.WorkspaceID,
 		"summary_revision": summary.Revision,
 	})
 	mutation.eventPayload = metaPayload
@@ -422,7 +422,7 @@ func (s *EnvironmentOperationStore) TransitionOperation(input OperationTransitio
 
 	metaPayload, _ := json.Marshal(map[string]any{
 		"account_scope_id": op.AccountScopeID,
-		"workspace_id":    op.WorkspaceID,
+		"workspace_id":     op.WorkspaceID,
 		"summary_revision": summary.Revision,
 	})
 	mutation.eventPayload = metaPayload
@@ -699,7 +699,7 @@ func (s *EnvironmentOperationStore) UpdateDeploymentCount(accountScopeID, worksp
 
 	metaPayload, _ := json.Marshal(map[string]any{
 		"account_scope_id": accountScopeID,
-		"workspace_id":    workspaceID,
+		"workspace_id":     workspaceID,
 		"summary_revision": summary.Revision,
 	})
 	mutation.eventPayload = metaPayload

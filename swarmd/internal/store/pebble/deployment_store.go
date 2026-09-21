@@ -420,7 +420,7 @@ func (s *DeploymentStore) persistDeploymentAtomic(dep environments.Deployment, i
 
 	metaPayload, _ := json.Marshal(map[string]any{
 		"account_scope_id": dep.AccountScopeID,
-		"workspace_id":    dep.WorkspaceID,
+		"workspace_id":     dep.WorkspaceID,
 		"summary_revision": summary.Revision,
 	})
 	mutation.eventPayload = metaPayload
