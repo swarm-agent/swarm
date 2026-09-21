@@ -11,11 +11,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 )
 
 var _ DeploymentProvider = (*SSHDockerProvider)(nil)
+var _ OperationCanceler = (*SSHDockerProvider)(nil)
 
 // SSHDockerProvider manages environment deployments on a remote Docker daemon via SSH.
 // Strictly adheres to security architecture: NO private keys, passwords, or secrets are stored
@@ -101,8 +103,6 @@ func (p *SSHDockerProvider) Capabilities(ctx context.Context, conn *environments
 }
 
 // Deploy provisions and starts a Docker container on the remote SSH host.
-// Validates and respects remote_existing_path workspace provisioning, strictly rejecting
-// invalid assumptions about local/remote filesystem sharing.
 func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
 	if req.Connection == nil {
 		return nil, errors.New("connection cannot be nil")
@@ -126,15 +126,22 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		return nil, fmt.Errorf("invalid deployment record: %w", err)
 	}
 
+	deployCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		deployCtx, cancel = context.WithTimeout(ctx, DefaultOperationTimeout)
+		defer cancel()
+	}
+
 	cName := containerName(req.Environment.ID, req.Deployment.ID)
 
 	// Check if a container with this name already exists on the remote host
-	inspectOut, inspectErr := p.runSSH(ctx, req.Connection, "docker", "inspect", cName)
+	inspectOut, inspectErr := p.runSSH(deployCtx, req.Connection, "docker", "inspect", cName)
 	if inspectErr == nil {
 		ins, parseErr := parseDockerInspect(inspectOut)
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable on remote host
-			insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+			insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 				ID:            req.Deployment.ID,
 				EnvironmentID: req.Environment.ID,
 				Runtime: environments.RuntimeMetadata{
@@ -152,7 +159,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		}
 		// Existing container is stopped, dead, or not reusable - remove it before recreation
 		rmArgs := []string{"docker", "rm", "-f", "-v", cName}
-		_, _ = p.runSSH(ctx, req.Connection, rmArgs...)
+		_, _ = p.runSSH(deployCtx, req.Connection, rmArgs...)
 	}
 
 	// Build `docker run -d` arguments for the remote host
@@ -253,11 +260,9 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		remoteWorkspacePath = rep.ContainerPath
 
 	case environments.SourceStrategyKindLocalMount:
-		// Invariant: Reject local_mount on remote SSH host to prevent false assumptions about shared filesystems
 		return nil, errors.New("local_mount workspace provisioning strategy cannot be used with remote SSH host: local filesystem is not shared with remote host; use remote_existing_path or sync instead")
 
 	case environments.SourceStrategyKindRegistryImage:
-		// Image-only provisioning, no volume mounts required
 		remoteWorkspacePath = workingDir
 
 	case environments.SourceStrategyKindSync:
@@ -317,7 +322,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	}
 
 	// Run container on remote host over SSH
-	runOut, runErr := p.runSSH(ctx, req.Connection, runArgs...)
+	runOut, runErr := p.runSSH(deployCtx, req.Connection, runArgs...)
 	if runErr != nil {
 		return nil, fmt.Errorf("failed to deploy remote docker container %s on %s: %w (output: %s)", cName, sshHostName(req.Connection), runErr, strings.TrimSpace(string(runOut)))
 	}
@@ -328,18 +333,18 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	if len(req.Environment.Container.SetupCommands) > 0 {
 		for i, cmdStr := range req.Environment.Container.SetupCommands {
 			execArgs := []string{"docker", "exec", cName, "sh", "-c", cmdStr}
-			setupOut, setupErr := p.runSSHCombined(ctx, req.Connection, execArgs...)
+			setupOut, setupErr := p.runSSHCombined(deployCtx, req.Connection, execArgs...)
 			if setupErr != nil {
 				// Destroy failed container on remote host
 				rmArgs := []string{"docker", "rm", "-f", "-v", cName}
-				_, _ = p.runSSH(ctx, req.Connection, rmArgs...)
-				return nil, fmt.Errorf("setup command [%d] %q failed on remote container %s: %w (output: %s)", i, cmdStr, cName, setupErr, strings.TrimSpace(string(setupOut)))
+				_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+				return nil, fmt.Errorf("setup command [%d] %q failed on remote container %s: %w (output: %s)", i, cmdStr, cName, setupErr, sanitizeOutput(string(setupOut)))
 			}
 		}
 	}
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
-	insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 		ID:            req.Deployment.ID,
 		EnvironmentID: req.Environment.ID,
 		Runtime: environments.RuntimeMetadata{
@@ -371,7 +376,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 			if mappedHostPort > 0 {
 				host := req.Connection.SSH.Host
 				probeURL := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(mappedHostPort)), req.Environment.HealthCheck.HTTPPath)
-				statusCode, probeErr := p.httpGet(ctx, probeURL)
+				statusCode, probeErr := p.httpGet(deployCtx, probeURL)
 				if probeErr == nil && statusCode >= 200 && statusCode < 400 {
 					healthStatus = environments.HealthStatusHealthy
 				} else {
@@ -607,7 +612,7 @@ func (p *SSHDockerProvider) accessFromRuntime(rt environments.RuntimeMetadata, c
 	}
 }
 
-// Exec executes a command inside the running remote container over SSH.
+// Exec executes a command inside the running remote container over SSH with supervisor process group management.
 func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
@@ -620,12 +625,32 @@ func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connect
 		return nil, errors.New("cannot exec command without container target or ID")
 	}
 
-	execCtx := ctx
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
+	opID := req.OperationID
+	if opID == "" {
+		opID = generateOperationID()
+	} else {
+		if err := ValidateOperationID(opID); err != nil {
+			return nil, err
+		}
 	}
+
+	// Probe container supervisor prerequisites (fail closed)
+	probeCtx, probeCancel := context.WithTimeout(ctx, ProbeTimeout)
+	probeErr := p.probeSupervisor(probeCtx, conn, target)
+	probeCancel()
+	if probeErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSupervisorUnavailable, probeErr)
+	}
+
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = DefaultOperationTimeout
+	} else if timeout > MaxOperationTimeout {
+		timeout = MaxOperationTimeout
+	}
+
+	execCtx, execCancel := context.WithTimeout(ctx, timeout)
+	defer execCancel()
 
 	dockerExecArgs := []string{"docker", "exec"}
 	if req.Stdin != nil {
@@ -646,10 +671,59 @@ func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connect
 	}
 
 	dockerExecArgs = append(dockerExecArgs, target)
+	dockerExecArgs = append(dockerExecArgs, "sh", "-c", supervisorScript, "swarm-supervisor", opID)
 	dockerExecArgs = append(dockerExecArgs, req.Command...)
 
+	maxOutput := req.MaxOutput
+	if maxOutput <= 0 {
+		maxOutput = DefaultMaxOutputBytes
+	}
+
 	var stdoutBuf, stderrBuf bytes.Buffer
-	err := p.runSSHWithIO(execCtx, conn, req.Stdin, &stdoutBuf, &stderrBuf, dockerExecArgs...)
+	boundedStdout := &boundedBuffer{buf: &stdoutBuf, max: maxOutput}
+	boundedStderr := &boundedBuffer{buf: &stderrBuf, max: maxOutput}
+
+	var lastObserved time.Time
+	var outWriter io.Writer = boundedStdout
+	var errWriter io.Writer = boundedStderr
+
+	if req.OnProgress != nil {
+		outWriter = &progressWriter{
+			writer:      boundedStdout,
+			stream:      "stdout",
+			opID:        opID,
+			onProgress:  req.OnProgress,
+			lastObsTime: &lastObserved,
+		}
+		errWriter = &progressWriter{
+			writer:      boundedStderr,
+			stream:      "stderr",
+			opID:        opID,
+			onProgress:  req.OnProgress,
+			lastObsTime: &lastObserved,
+		}
+	}
+
+	err := p.runSSHWithIO(execCtx, conn, req.Stdin, outWriter, errWriter, dockerExecArgs...)
+
+	if lastObserved.IsZero() {
+		lastObserved = time.Now().UTC()
+	}
+
+	// On timeout or cancellation, execute bounded remote container cleanup
+	if execCtx.Err() != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), CleanupTimeout)
+		defer cleanupCancel()
+
+		cancelRes, cleanupErr := p.cleanupOperation(cleanupCtx, conn, target, opID, 2*time.Second)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%w for operation %s (%v): %v", ErrOperationCleanupFailed, opID, execCtx.Err(), cleanupErr)
+		}
+		if !cancelRes.Terminated {
+			return nil, fmt.Errorf("%w for operation %s: %s", ErrOperationNotConfirmed, opID, cancelRes.ErrorMessage)
+		}
+		return nil, fmt.Errorf("%w: operation %s timed out or cancelled (%v)", ErrOperationTimedOut, opID, execCtx.Err())
+	}
 
 	exitCode := 0
 	if err != nil {
@@ -657,15 +731,126 @@ func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connect
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
-			return nil, fmt.Errorf("ssh docker exec failed: %w", err)
+			redacted := redactArgs(dockerExecArgs)
+			return nil, fmt.Errorf("ssh docker exec failed: %w (command: %s)", err, strings.Join(redacted, " "))
 		}
 	}
 
 	return &ExecResult{
-		ExitCode: exitCode,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
+		ExitCode:       exitCode,
+		Stdout:         stdoutBuf.String(),
+		Stderr:         stderrBuf.String(),
+		OperationID:    opID,
+		Truncated:      boundedStdout.truncated || boundedStderr.truncated,
+		LastObservedAt: lastObserved,
 	}, nil
+}
+
+// CancelExec cancels a running or orphaned execution operation inside the remote target container.
+func (p *SSHDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
+	if deployment == nil {
+		return nil, errors.New("deployment cannot be nil")
+	}
+	if err := ValidateOperationID(req.OperationID); err != nil {
+		return nil, err
+	}
+	target := resolveContainerTarget(deployment)
+	if target == "" {
+		return nil, errors.New("cannot cancel exec without container target or ID")
+	}
+
+	cancelCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		cancelCtx, cancel = context.WithTimeout(ctx, CleanupTimeout)
+		defer cancel()
+	}
+
+	grace := req.GracePeriod
+	if grace <= 0 {
+		grace = 2 * time.Second
+	} else if grace > 10*time.Second {
+		grace = 10 * time.Second
+	}
+
+	return p.cleanupOperation(cancelCtx, conn, target, req.OperationID, grace)
+}
+
+func (p *SSHDockerProvider) probeSupervisor(ctx context.Context, conn *environments.Connection, target string) error {
+	args := []string{"docker", "exec", target, "sh", "-c", probeScript}
+	out, err := p.runSSHCombined(ctx, conn, args...)
+	if err != nil {
+		return fmt.Errorf("probe failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (p *SSHDockerProvider) cleanupOperation(ctx context.Context, conn *environments.Connection, target, opID string, grace time.Duration) (*CancelExecResult, error) {
+	graceSec := int(grace.Seconds())
+	if graceSec <= 0 {
+		graceSec = 1
+	}
+
+	args := []string{"docker", "exec", target, "sh", "-c", cleanupScript, "swarm-cleanup", opID, strconv.Itoa(graceSec)}
+	out, err := p.runSSHCombined(ctx, conn, args...)
+	outStr := string(out)
+	now := time.Now().UTC()
+
+	if strings.Contains(outStr, "SWARM_CLEANUP:TERMINATED") {
+		return &CancelExecResult{
+			OperationID: opID,
+			Terminated:  true,
+			ObservedAt:  now,
+			SignalSent:  "SIGTERM/SIGKILL",
+		}, nil
+	}
+	if strings.Contains(outStr, "SWARM_CLEANUP:NOT_RUNNING") || strings.Contains(outStr, "SWARM_CLEANUP:ALREADY_TERMINATED") {
+		return &CancelExecResult{
+			OperationID: opID,
+			Terminated:  true,
+			ObservedAt:  now,
+		}, nil
+	}
+	if strings.Contains(outStr, "SWARM_CLEANUP:PID_REUSE_DETECTED") {
+		return &CancelExecResult{
+			OperationID:  opID,
+			Terminated:   true,
+			ObservedAt:   now,
+			ErrorMessage: "original process exited and PID was reused",
+		}, nil
+	}
+	if strings.Contains(outStr, "SWARM_CLEANUP:CLEANUP_FAILED") {
+		return &CancelExecResult{
+			OperationID:  opID,
+			Terminated:   false,
+			ObservedAt:   now,
+			ErrorMessage: "process still running after SIGKILL",
+		}, fmt.Errorf("%w: process still running after SIGKILL", ErrOperationCleanupFailed)
+	}
+
+	if err != nil && isContainerNotRunningError(outStr, err) {
+		return &CancelExecResult{
+			OperationID: opID,
+			Terminated:  true,
+			ObservedAt:  now,
+		}, nil
+	}
+
+	if err != nil {
+		return &CancelExecResult{
+			OperationID:  opID,
+			Terminated:   false,
+			ObservedAt:   now,
+			ErrorMessage: fmt.Sprintf("cleanup command failed: %v (output: %s)", err, strings.TrimSpace(outStr)),
+		}, fmt.Errorf("%w: %v (output: %s)", ErrOperationCleanupFailed, err, strings.TrimSpace(outStr))
+	}
+
+	return &CancelExecResult{
+		OperationID:  opID,
+		Terminated:   false,
+		ObservedAt:   now,
+		ErrorMessage: fmt.Sprintf("unrecognized cleanup output: %s", strings.TrimSpace(outStr)),
+	}, fmt.Errorf("%w: unrecognized cleanup output: %s", ErrOperationCleanupFailed, strings.TrimSpace(outStr))
 }
 
 // Internal SSH command construction helpers

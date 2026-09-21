@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -17,6 +18,9 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/environments"
 )
+
+var _ DeploymentProvider = (*LocalDockerProvider)(nil)
+var _ OperationCanceler = (*LocalDockerProvider)(nil)
 
 // LocalDockerProvider manages environment deployments on a local Docker daemon.
 type LocalDockerProvider struct {
@@ -102,16 +106,23 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		return nil, fmt.Errorf("invalid deployment record: %w", err)
 	}
 
+	deployCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		deployCtx, cancel = context.WithTimeout(ctx, DefaultOperationTimeout)
+		defer cancel()
+	}
+
 	cName := containerName(req.Environment.ID, req.Deployment.ID)
 
 	// Check if a container with this name already exists
 	inspectArgs := append(dockerHostArgs(req.Connection), "inspect", cName)
-	existingOut, inspectErr := p.runner.Run(ctx, "docker", inspectArgs...)
+	existingOut, inspectErr := p.runner.Run(deployCtx, "docker", inspectArgs...)
 	if inspectErr == nil {
 		ins, parseErr := parseDockerInspect(existingOut)
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable
-			insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+			insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 				ID:            req.Deployment.ID,
 				EnvironmentID: req.Environment.ID,
 				Runtime: environments.RuntimeMetadata{
@@ -129,7 +140,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		}
 		// Existing container is stopped, dead, or not reusable - remove it before recreation
 		rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-		_, _ = p.runner.Run(ctx, "docker", rmArgs...)
+		_, _ = p.runner.Run(deployCtx, "docker", rmArgs...)
 	}
 
 	// Build `docker run -d` arguments
@@ -265,7 +276,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	}
 
 	// Run container
-	runOut, runErr := p.runner.Run(ctx, "docker", runArgs...)
+	runOut, runErr := p.runner.Run(deployCtx, "docker", runArgs...)
 	if runErr != nil {
 		return nil, fmt.Errorf("failed to deploy docker container %s: %w (output: %s)", cName, runErr, strings.TrimSpace(string(runOut)))
 	}
@@ -276,18 +287,18 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	if len(req.Environment.Container.SetupCommands) > 0 {
 		for i, cmdStr := range req.Environment.Container.SetupCommands {
 			execArgs := append(dockerHostArgs(req.Connection), "exec", cName, "sh", "-c", cmdStr)
-			setupOut, setupErr := p.runner.RunCombined(ctx, "docker", execArgs...)
+			setupOut, setupErr := p.runner.RunCombined(deployCtx, "docker", execArgs...)
 			if setupErr != nil {
 				// Destroy failed container
 				rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-				_, _ = p.runner.Run(ctx, "docker", rmArgs...)
-				return nil, fmt.Errorf("setup command [%d] %q failed: %w (output: %s)", i, cmdStr, setupErr, strings.TrimSpace(string(setupOut)))
+				_, _ = p.runner.Run(context.Background(), "docker", rmArgs...)
+				return nil, fmt.Errorf("setup command [%d] %q failed: %w (output: %s)", i, cmdStr, setupErr, sanitizeOutput(string(setupOut)))
 			}
 		}
 	}
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
-	insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 		ID:            req.Deployment.ID,
 		EnvironmentID: req.Environment.ID,
 		Runtime: environments.RuntimeMetadata{
@@ -318,7 +329,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 			}
 			if mappedHostPort > 0 {
 				probeURL := fmt.Sprintf("http://127.0.0.1:%d%s", mappedHostPort, req.Environment.HealthCheck.HTTPPath)
-				statusCode, probeErr := p.httpGet(ctx, probeURL)
+				statusCode, probeErr := p.httpGet(deployCtx, probeURL)
 				if probeErr == nil && statusCode >= 200 && statusCode < 400 {
 					healthStatus = environments.HealthStatusHealthy
 				} else {
@@ -513,7 +524,6 @@ func (p *LocalDockerProvider) ResolveAccess(ctx context.Context, conn *environme
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
-
 	target := resolveContainerTarget(deployment)
 	if target == "" {
 		return nil, errors.New("cannot resolve access without container target or ID")
@@ -558,7 +568,7 @@ func (p *LocalDockerProvider) accessFromRuntime(rt environments.RuntimeMetadata)
 	}
 }
 
-// Exec executes a command inside the running deployment container.
+// Exec executes a command inside the running deployment container under supervised process control.
 func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
@@ -566,18 +576,37 @@ func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Conne
 	if len(req.Command) == 0 {
 		return nil, errors.New("exec command cannot be empty")
 	}
-
 	target := resolveContainerTarget(deployment)
 	if target == "" {
 		return nil, errors.New("cannot exec command without container target or ID")
 	}
 
-	execCtx := ctx
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
+	opID := req.OperationID
+	if opID == "" {
+		opID = generateOperationID()
+	} else {
+		if err := ValidateOperationID(opID); err != nil {
+			return nil, err
+		}
 	}
+
+	// Probe container supervisor prerequisites (fail closed)
+	probeCtx, probeCancel := context.WithTimeout(ctx, ProbeTimeout)
+	probeErr := p.probeSupervisor(probeCtx, conn, target)
+	probeCancel()
+	if probeErr != nil {
+		return nil, fmt.Errorf("%w: %v", ErrSupervisorUnavailable, probeErr)
+	}
+
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = DefaultOperationTimeout
+	} else if timeout > MaxOperationTimeout {
+		timeout = MaxOperationTimeout
+	}
+
+	execCtx, execCancel := context.WithTimeout(ctx, timeout)
+	defer execCancel()
 
 	args := append(dockerHostArgs(conn), "exec")
 	if req.Stdin != nil {
@@ -598,10 +627,59 @@ func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Conne
 	}
 
 	args = append(args, target)
+	args = append(args, "sh", "-c", supervisorScript, "swarm-supervisor", opID)
 	args = append(args, req.Command...)
 
+	maxOutput := req.MaxOutput
+	if maxOutput <= 0 {
+		maxOutput = DefaultMaxOutputBytes
+	}
+
 	var stdoutBuf, stderrBuf bytes.Buffer
-	err := p.runner.RunWithIO(execCtx, req.Stdin, &stdoutBuf, &stderrBuf, "docker", args...)
+	boundedStdout := &boundedBuffer{buf: &stdoutBuf, max: maxOutput}
+	boundedStderr := &boundedBuffer{buf: &stderrBuf, max: maxOutput}
+
+	var lastObserved time.Time
+	var outWriter io.Writer = boundedStdout
+	var errWriter io.Writer = boundedStderr
+
+	if req.OnProgress != nil {
+		outWriter = &progressWriter{
+			writer:      boundedStdout,
+			stream:      "stdout",
+			opID:        opID,
+			onProgress:  req.OnProgress,
+			lastObsTime: &lastObserved,
+		}
+		errWriter = &progressWriter{
+			writer:      boundedStderr,
+			stream:      "stderr",
+			opID:        opID,
+			onProgress:  req.OnProgress,
+			lastObsTime: &lastObserved,
+		}
+	}
+
+	err := p.runner.RunWithIO(execCtx, req.Stdin, outWriter, errWriter, "docker", args...)
+
+	if lastObserved.IsZero() {
+		lastObserved = time.Now().UTC()
+	}
+
+	// On timeout or cancellation, execute bounded container cleanup
+	if execCtx.Err() != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), CleanupTimeout)
+		defer cleanupCancel()
+
+		cancelRes, cleanupErr := p.cleanupOperation(cleanupCtx, conn, target, opID, 2*time.Second)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%w for operation %s (%v): %v", ErrOperationCleanupFailed, opID, execCtx.Err(), cleanupErr)
+		}
+		if !cancelRes.Terminated {
+			return nil, fmt.Errorf("%w for operation %s: %s", ErrOperationNotConfirmed, opID, cancelRes.ErrorMessage)
+		}
+		return nil, fmt.Errorf("%w: operation %s timed out or cancelled (%v)", ErrOperationTimedOut, opID, execCtx.Err())
+	}
 
 	exitCode := 0
 	if err != nil {
@@ -609,15 +687,126 @@ func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Conne
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
-			return nil, fmt.Errorf("docker exec failed: %w", err)
+			redacted := redactArgs(args)
+			return nil, fmt.Errorf("docker exec failed: %w (command: %s)", err, strings.Join(redacted, " "))
 		}
 	}
 
 	return &ExecResult{
-		ExitCode: exitCode,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
+		ExitCode:       exitCode,
+		Stdout:         stdoutBuf.String(),
+		Stderr:         stderrBuf.String(),
+		OperationID:    opID,
+		Truncated:      boundedStdout.truncated || boundedStderr.truncated,
+		LastObservedAt: lastObserved,
 	}, nil
+}
+
+// CancelExec cancels a running or orphaned execution operation inside the target container.
+func (p *LocalDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
+	if deployment == nil {
+		return nil, errors.New("deployment cannot be nil")
+	}
+	if err := ValidateOperationID(req.OperationID); err != nil {
+		return nil, err
+	}
+	target := resolveContainerTarget(deployment)
+	if target == "" {
+		return nil, errors.New("cannot cancel exec without container target or ID")
+	}
+
+	cancelCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		cancelCtx, cancel = context.WithTimeout(ctx, CleanupTimeout)
+		defer cancel()
+	}
+
+	grace := req.GracePeriod
+	if grace <= 0 {
+		grace = 2 * time.Second
+	} else if grace > 10*time.Second {
+		grace = 10 * time.Second
+	}
+
+	return p.cleanupOperation(cancelCtx, conn, target, req.OperationID, grace)
+}
+
+func (p *LocalDockerProvider) probeSupervisor(ctx context.Context, conn *environments.Connection, target string) error {
+	args := append(dockerHostArgs(conn), "exec", target, "sh", "-c", probeScript)
+	out, err := p.runner.RunCombined(ctx, "docker", args...)
+	if err != nil {
+		return fmt.Errorf("probe failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (p *LocalDockerProvider) cleanupOperation(ctx context.Context, conn *environments.Connection, target, opID string, grace time.Duration) (*CancelExecResult, error) {
+	graceSec := int(grace.Seconds())
+	if graceSec <= 0 {
+		graceSec = 1
+	}
+
+	args := append(dockerHostArgs(conn), "exec", target, "sh", "-c", cleanupScript, "swarm-cleanup", opID, strconv.Itoa(graceSec))
+	out, err := p.runner.RunCombined(ctx, "docker", args...)
+	outStr := string(out)
+	now := time.Now().UTC()
+
+	if strings.Contains(outStr, "SWARM_CLEANUP:TERMINATED") {
+		return &CancelExecResult{
+			OperationID: opID,
+			Terminated:  true,
+			ObservedAt:  now,
+			SignalSent:  "SIGTERM/SIGKILL",
+		}, nil
+	}
+	if strings.Contains(outStr, "SWARM_CLEANUP:NOT_RUNNING") || strings.Contains(outStr, "SWARM_CLEANUP:ALREADY_TERMINATED") {
+		return &CancelExecResult{
+			OperationID: opID,
+			Terminated:  true,
+			ObservedAt:  now,
+		}, nil
+	}
+	if strings.Contains(outStr, "SWARM_CLEANUP:PID_REUSE_DETECTED") {
+		return &CancelExecResult{
+			OperationID:  opID,
+			Terminated:   true,
+			ObservedAt:   now,
+			ErrorMessage: "original process exited and PID was reused",
+		}, nil
+	}
+	if strings.Contains(outStr, "SWARM_CLEANUP:CLEANUP_FAILED") {
+		return &CancelExecResult{
+			OperationID:  opID,
+			Terminated:   false,
+			ObservedAt:   now,
+			ErrorMessage: "process still running after SIGKILL",
+		}, fmt.Errorf("%w: process still running after SIGKILL", ErrOperationCleanupFailed)
+	}
+
+	if err != nil && isContainerNotRunningError(outStr, err) {
+		return &CancelExecResult{
+			OperationID: opID,
+			Terminated:  true,
+			ObservedAt:  now,
+		}, nil
+	}
+
+	if err != nil {
+		return &CancelExecResult{
+			OperationID:  opID,
+			Terminated:   false,
+			ObservedAt:   now,
+			ErrorMessage: fmt.Sprintf("cleanup command failed: %v (output: %s)", err, strings.TrimSpace(outStr)),
+		}, fmt.Errorf("%w: %v (output: %s)", ErrOperationCleanupFailed, err, strings.TrimSpace(outStr))
+	}
+
+	return &CancelExecResult{
+		OperationID:  opID,
+		Terminated:   false,
+		ObservedAt:   now,
+		ErrorMessage: fmt.Sprintf("unrecognized cleanup output: %s", strings.TrimSpace(outStr)),
+	}, fmt.Errorf("%w: unrecognized cleanup output: %s", ErrOperationCleanupFailed, strings.TrimSpace(outStr))
 }
 
 // Internal helpers

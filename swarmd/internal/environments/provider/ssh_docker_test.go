@@ -118,6 +118,10 @@ func newMockSSHRunner() *mockSSHRunner {
 		return []byte(target + "\n"), nil
 	}
 	m.handlers["exec"] = func(subcmd string, args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "swarm-cleanup") {
+			return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+		}
 		return []byte("exec ok\n"), nil
 	}
 
@@ -904,7 +908,18 @@ func TestSSHDockerProvider_Exec(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("expected calls recorded")
 	}
-	joined := strings.Join(calls[0].Args, " ")
+	var execCall *mockCall
+	for i := range calls {
+		joined := strings.Join(calls[i].Args, " ")
+		if strings.Contains(joined, "swarm-supervisor") {
+			execCall = &calls[i]
+			break
+		}
+	}
+	if execCall == nil {
+		t.Fatal("expected supervised exec call recorded")
+	}
+	joined := strings.Join(execCall.Args, " ")
 	if !strings.Contains(joined, "docker") || !strings.Contains(joined, "exec") {
 		t.Fatalf("expected docker exec in ssh args, got: %s", joined)
 	}
@@ -988,7 +1003,18 @@ func TestSSHDockerProvider_Exec_Stdin(t *testing.T) {
 
 	// Verify -i flag was passed to docker exec
 	calls := runner.Calls()
-	joined := strings.Join(calls[0].Args, " ")
+	var execCall *mockCall
+	for i := range calls {
+		joined := strings.Join(calls[i].Args, " ")
+		if strings.Contains(joined, "swarm-supervisor") {
+			execCall = &calls[i]
+			break
+		}
+	}
+	if execCall == nil {
+		t.Fatal("expected supervised exec call recorded")
+	}
+	joined := strings.Join(execCall.Args, " ")
 	if !strings.Contains(joined, "-i") {
 		t.Fatalf("expected -i flag for stdin streaming, got: %s", joined)
 	}
@@ -1324,5 +1350,253 @@ func TestSSHDockerProvider_BuildSSHCommand_Options(t *testing.T) {
 	}
 	if !strings.Contains(joined, "-o BatchMode=yes") {
 		t.Fatalf("expected BatchMode=yes in args, got: %s", joined)
+	}
+}
+
+func TestSSHDockerProvider_Exec_TimeoutAndCleanup(t *testing.T) {
+	runner := newMockSSHRunner()
+	var cleanupCalled bool
+	var cleanupOpID string
+
+	runner.handlers["exec"] = func(subcmd string, args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "swarm-cleanup") {
+			cleanupCalled = true
+			for i, a := range args {
+				if a == "swarm-cleanup" && i+1 < len(args) {
+					cleanupOpID = args[i+1]
+				}
+			}
+			return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+		}
+		return []byte("exec ok\n"), nil
+	}
+
+	execCtx, cancelExec := context.WithCancel(context.Background())
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, subcmd string, args []string) error {
+		cancelExec()
+		return execCtx.Err()
+	}
+
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-ssh-timeout",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-ssh-timeout",
+		},
+	}
+
+	req := ExecRequest{
+		OperationID: "op-ssh-timeout",
+		Command:     []string{"sleep", "60"},
+		Timeout:     5 * time.Second,
+	}
+
+	_, err := p.Exec(execCtx, conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error on timed out/cancelled exec over SSH")
+	}
+	if !errors.Is(err, ErrOperationTimedOut) {
+		t.Fatalf("expected ErrOperationTimedOut, got: %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected remote cleanup command to be invoked over SSH on cancel/timeout")
+	}
+	if cleanupOpID != "op-ssh-timeout" {
+		t.Fatalf("expected cleanup for op-ssh-timeout, got: %q", cleanupOpID)
+	}
+}
+
+func TestSSHDockerProvider_Exec_ProbePrerequisitesFailed(t *testing.T) {
+	runner := newMockSSHRunner()
+	runner.handlers["exec"] = func(subcmd string, args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, probeScript) {
+			return []byte("mkdir: /run/swarm/operations: Permission denied\n"), errors.New("exit status 1")
+		}
+		return []byte("exec ok\n"), nil
+	}
+
+	var ioCalled bool
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, subcmd string, args []string) error {
+		ioCalled = true
+		return nil
+	}
+
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-ssh-probe-fail",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-ssh-probe-fail",
+		},
+	}
+
+	_, err := p.Exec(context.Background(), conn, dep, ExecRequest{
+		Command: []string{"echo", "hi"},
+	})
+	if err == nil {
+		t.Fatal("expected error when remote supervisor primitives unavailable")
+	}
+	if !errors.Is(err, ErrSupervisorUnavailable) {
+		t.Fatalf("expected ErrSupervisorUnavailable, got: %v", err)
+	}
+	if ioCalled {
+		t.Fatal("remote execution must not proceed when supervisor probe fails (fail closed)")
+	}
+}
+
+func TestSSHDockerProvider_Exec_SafeArgQuoting(t *testing.T) {
+	runner := newMockSSHRunner()
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-quote",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-quote",
+		},
+	}
+
+	req := ExecRequest{
+		Command: []string{"sh", "-c", "echo 'hello world'; cat \"filename with spaces.txt\""},
+	}
+
+	res, err := p.Exec(context.Background(), conn, dep, req)
+	if err != nil {
+		t.Fatalf("Exec failed: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", res.ExitCode)
+	}
+
+	calls := runner.Calls()
+	var execCall *mockCall
+	for i := range calls {
+		joined := strings.Join(calls[i].Args, " ")
+		if strings.Contains(joined, "swarm-supervisor") {
+			execCall = &calls[i]
+			break
+		}
+	}
+	if execCall == nil {
+		t.Fatal("expected supervised exec call recorded")
+	}
+
+	// Verify that the command string with quotes and spaces was properly escaped for remote SSH execution
+	joined := strings.Join(execCall.Args, " ")
+	if !strings.Contains(joined, "echo") || !strings.Contains(joined, "filename with spaces.txt") {
+		t.Fatalf("expected complex command in ssh args, got: %s", joined)
+	}
+}
+
+func TestSSHDockerProvider_CancelExec_Success(t *testing.T) {
+	runner := newMockSSHRunner()
+	var cleanupArgs []string
+	runner.handlers["exec"] = func(subcmd string, args []string) ([]byte, error) {
+		cleanupArgs = args
+		return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+	}
+
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-ssh-cancel",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-ssh-cancel",
+		},
+	}
+
+	req := CancelExecRequest{
+		OperationID: "op-ssh-cancel-99",
+		GracePeriod: 4 * time.Second,
+	}
+
+	res, err := p.CancelExec(context.Background(), conn, dep, req)
+	if err != nil {
+		t.Fatalf("CancelExec failed: %v", err)
+	}
+	if !res.Terminated {
+		t.Fatal("expected Terminated true")
+	}
+	if res.OperationID != "op-ssh-cancel-99" {
+		t.Fatalf("expected OperationID op-ssh-cancel-99, got: %s", res.OperationID)
+	}
+	if res.SignalSent != "SIGTERM/SIGKILL" {
+		t.Fatalf("expected SignalSent SIGTERM/SIGKILL, got: %s", res.SignalSent)
+	}
+	joined := strings.Join(cleanupArgs, " ")
+	if !strings.Contains(joined, "swarm-cleanup") || !strings.Contains(joined, "op-ssh-cancel-99") {
+		t.Fatalf("unexpected remote cleanup invocation args: %s", joined)
+	}
+}
+
+func TestSSHDockerProvider_CancelExec_CleanupFailure(t *testing.T) {
+	runner := newMockSSHRunner()
+	runner.handlers["exec"] = func(subcmd string, args []string) ([]byte, error) {
+		return []byte("SWARM_CLEANUP:CLEANUP_FAILED\n"), errors.New("exit status 1")
+	}
+
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-ssh-fail",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-ssh-fail",
+		},
+	}
+
+	res, err := p.CancelExec(context.Background(), conn, dep, CancelExecRequest{
+		OperationID: "op-ssh-fail",
+	})
+	if err == nil {
+		t.Fatal("expected error on remote cleanup failure")
+	}
+	if !errors.Is(err, ErrOperationCleanupFailed) {
+		t.Fatalf("expected ErrOperationCleanupFailed, got: %v", err)
+	}
+	if res.Terminated {
+		t.Fatal("expected Terminated false when remote cleanup failed")
+	}
+}
+
+func TestSSHDockerProvider_Exec_RedactedEnvInError(t *testing.T) {
+	runner := newMockSSHRunner()
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, subcmd string, args []string) error {
+		return errors.New("ssh connection dropped")
+	}
+
+	p := NewSSHDockerProvider(runner)
+	conn := testSSHConnection()
+	dep := &environments.Deployment{
+		ID:            "dep-ssh-secret",
+		EnvironmentID: "env-1",
+		Runtime: environments.RuntimeMetadata{
+			ProviderResourceID: "swarm-env-1-dep-ssh-secret",
+		},
+	}
+
+	secretToken := "secret-ssh-token-xyz987"
+	req := ExecRequest{
+		Command: []string{"run-task"},
+		Env: map[string]string{
+			"SSH_SECRET": secretToken,
+		},
+	}
+
+	_, err := p.Exec(context.Background(), conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error on remote exec failure")
+	}
+	if strings.Contains(err.Error(), secretToken) {
+		t.Fatalf("secret value leaked in error message: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "SSH_SECRET=[REDACTED]") {
+		t.Fatalf("expected redacted key in error message, got: %s", err.Error())
 	}
 }
