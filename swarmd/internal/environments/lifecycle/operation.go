@@ -872,6 +872,8 @@ func (m *DeploymentManager) transitionFinalWithRetry(
 			ExpectedRevision: cur.Revision,
 			TargetStatus:     targetStatus,
 			Result:           result,
+			DeploymentID:     op.DeploymentID,
+			LeaseID:          op.LeaseID,
 			ObservedAt:       observedAt,
 		})
 		if transErr == nil {

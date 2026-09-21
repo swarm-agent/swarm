@@ -31,6 +31,8 @@ type OperationTransitionInput struct {
 	TargetStatus     environments.OperationStatus
 	Activity         *environments.OperationActivity
 	Result           *environments.OperationResult
+	DeploymentID     string
+	LeaseID          string
 	ObservedAt       int64
 }
 
@@ -355,6 +357,12 @@ func (s *EnvironmentOperationStore) TransitionOperation(input OperationTransitio
 	}
 	if input.Result != nil {
 		op.Result = *input.Result
+	}
+	if input.DeploymentID != "" {
+		op.DeploymentID = input.DeploymentID
+	}
+	if input.LeaseID != "" {
+		op.LeaseID = input.LeaseID
 	}
 
 	if err := op.Validate(); err != nil {
