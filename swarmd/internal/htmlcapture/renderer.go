@@ -214,6 +214,9 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		// chromedp otherwise injects --no-sandbox when the daemon runs as root.
 		// Capture must fail closed if the reviewed Chromium sandbox is unavailable.
 		chromedp.Flag("no-sandbox", false),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("js-flags", "--max-old-space-size=128"),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-component-update", true),
 		chromedp.Flag("disable-default-apps", true),
@@ -457,6 +460,9 @@ func screenshot(ctx context.Context, viewportWidth, viewportHeight int) ([]byte,
 }
 
 func equalPixels(left, right []byte, viewportWidth, viewportHeight int) (bool, error) {
+	if bytes.Equal(left, right) {
+		return true, nil
+	}
 	decode := func(data []byte) (*image.RGBA, error) {
 		reader := bytes.NewReader(data)
 		img, err := png.Decode(reader)
