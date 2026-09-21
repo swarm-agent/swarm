@@ -140,6 +140,7 @@ type Server struct {
 	imageGen                    *imagegen.Service
 	videoTranscription          *videotranscription.Service
 	integrations                *integrationruntime.Service
+	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler
 	dataDir                     string
 	startupConfigPath           string
 	startedAt                   time.Time
@@ -362,6 +363,12 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 func (s *Server) SetLongSessionDiagnostics(recorder *longsessiondiag.Recorder) {
 	if s != nil {
 		s.longSessionDiagnostics = recorder
+	}
+}
+
+func (s *Server) SetAutomationV2Scheduler(scheduler *sessionruntime.AutomationV2Scheduler) {
+	if s != nil {
+		s.automationV2Scheduler = scheduler
 	}
 }
 
@@ -4123,8 +4130,31 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 
 		if isLocalTransportRequest(r) {
-			if s.identitySessions != nil {
-				if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
+			token := extractAttachToken(r)
+			if token != "" && token != "local" && token != "zero-conf" {
+				if s.identitySessions != nil {
+					if actor, err := s.identitySessions.Validate(token); err == nil {
+						next.ServeHTTP(w, requestWithActorContext(r, actor))
+						return
+					}
+				}
+				if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+					writeError(w, http.StatusUnauthorized, scopedErr)
+					return
+				} else if scopedRec != nil {
+					actor, err := s.resolveActorForScopedToken(scopedRec)
+					if err != nil {
+						writeError(w, http.StatusUnauthorized, err)
+						return
+					}
+					reqWithAuth := requestWithActorContext(r, actor)
+					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+					next.ServeHTTP(w, reqWithAuth)
+					return
+				}
+			}
+			if r.URL.Path != "/v1/update/apply" && s.identitySessions != nil {
+				if actor, err := s.identitySessions.ActorForCurrentSelection(); err == nil && isCompleteProductActor(actor) {
 					next.ServeHTTP(w, requestWithActorContext(r, actor))
 					return
 				}
@@ -4139,7 +4169,27 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 		if ok {
+			if s.identitySessions != nil {
+				if actor, err := s.identitySessions.ActorForCurrentSelection(); err == nil && isCompleteProductActor(actor) {
+					r = requestWithActorContext(r, actor)
+				}
+			}
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+			writeError(w, http.StatusUnauthorized, scopedErr)
+			return
+		} else if scopedRec != nil {
+			actor, err := s.resolveActorForScopedToken(scopedRec)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, err)
+				return
+			}
+			reqWithAuth := requestWithActorContext(r, actor)
+			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+			next.ServeHTTP(w, reqWithAuth)
 			return
 		}
 

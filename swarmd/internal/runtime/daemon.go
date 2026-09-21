@@ -855,6 +855,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("start long-session diagnostics: %w", err)
 	}
 	d.automationV2Scheduler = sessionruntime.NewAutomationV2Scheduler(sessionSvc, automationV2Host)
+	apiServer.SetAutomationV2Scheduler(d.automationV2Scheduler)
 	d.longSessionDiagnostics = diagnostics
 	if diagnostics != nil {
 		codexClient.SetLongSessionDiagnostics(diagnostics)

@@ -121,7 +121,9 @@ export function validateAutomationV2(settings: AutomationV2Settings, now = Date.
     }) || (fields[2] !== '*' && fields[4] !== '*') || schedule.interval_seconds) throw new Error('Use five cron fields: numbers, * or */n only; do not restrict both day fields.')
     if (!schedule.timezone || schedule.timezone === 'Local') throw new Error('An explicit IANA timezone is required.')
     try { new Intl.DateTimeFormat('en', { timeZone: schedule.timezone }).format(now) } catch { throw new Error('Enter a valid IANA timezone.') }
-  } else throw new Error('Choose an elapsed timer or wall-clock schedule.')
+  } else if (schedule.kind === 'trigger') {
+    if (schedule.cron || schedule.interval_seconds) throw new Error('Trigger schedule must not declare cron or interval.')
+  } else throw new Error('Choose an elapsed timer, wall-clock schedule, or on-demand trigger.')
 }
 export async function readAutomationV2(input: AutomationV2Read): Promise<AutomationV2Response> {
   const query = new URLSearchParams({ workspace_id: input.workspace_id })

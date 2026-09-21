@@ -63,7 +63,7 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 	// Admission always compares the current accepted revision and generation in
 	// the same V3 mutation that advances due time and writes the pending receipt.
 	var failures []error
-	if r.Enabled && !r.Cancelled && !r.Archived && r.NextDueAt <= now && !(r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt) {
+	if r.Enabled && !r.Cancelled && !r.Archived && r.NextDueAt > 0 && r.NextDueAt <= now && !(r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt) {
 		_, err := db.AdmitAutomationV2(r, now)
 		if err != nil && !errors.Is(err, store.ErrAutomationV2Conflict) {
 			failures = append(failures, err)
@@ -222,4 +222,11 @@ func (s *Service) ControlAutomationV2(account, user, workspace, id string, gener
 		id = r.SessionID
 	}
 	return s.store.ControlAutomationV2(account, user, workspace, id, generation, action, time.Now().UnixMilli())
+}
+
+func (s *Service) TriggerAutomationV2(account, user, workspace, id string, triggerContext map[string]any) (store.AutomationV2Occurrence, error) {
+	if r, found, err := s.store.GetAutomationV2Record(account, user, workspace, id); err == nil && found && r.SessionID != "" {
+		id = r.SessionID
+	}
+	return s.store.TriggerAutomationV2(account, user, workspace, id, triggerContext, time.Now().UnixMilli())
 }

@@ -209,6 +209,20 @@ func (s *SessionService) ensureLocalProductAuthSubject(actor ActorContext) (Acto
 	return actor, nil
 }
 
+func (s *SessionService) ActorForCurrentSelection() (ActorContext, error) {
+	if err := s.configured(); err != nil {
+		return ActorContext{}, err
+	}
+	return s.actorForCurrentSelection()
+}
+
+func (s *SessionService) ActorForUserID(userID string) (ActorContext, error) {
+	if err := s.configured(); err != nil {
+		return ActorContext{}, err
+	}
+	return s.actorForUserID(userID)
+}
+
 func (s *SessionService) actorForCurrentSelection() (ActorContext, error) {
 	selection, ok, err := s.identityStore.GetCurrentSelection()
 	if err != nil {

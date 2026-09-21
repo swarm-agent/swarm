@@ -272,9 +272,9 @@ func TestAutomationV2SchedulerStartRetryBackoff(t *testing.T) {
 		Info:  store.SessionPlanInfo{Goal: "Retry Backoff"},
 		AutomationV2: &store.AutomationV2Settings{
 			SchemaVersion:    2,
-			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 3600},
 			Missed:           "skip",
-			Overlap:          "independent",
+			Overlap:          "serialize",
 			ActivateOnAccept: true,
 			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
 		},

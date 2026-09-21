@@ -522,3 +522,139 @@ func TestAutomationV2RegisteredReviewDecline(t *testing.T) {
 		t.Fatal("accept succeeded on declined proposal")
 	}
 }
+
+func TestAutomationV2TriggerEndpoint(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
+	h := s.apiMux()
+	call := func(method, path, body, user string, isAgent bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		pType := "user"
+		if isAgent {
+			pType = "agent"
+		}
+		p := identity.Principal{Type: pType, UserID: user, AccountScopeID: "account"}
+		r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, p))
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, _ := json.Marshal(v)
+		return string(b)
+	}
+
+	doc := store.SessionPlanDocument{
+		Title: "Trigger Test Plan",
+		Info:  store.SessionPlanInfo{Goal: "Trigger Test Plan"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Job", Status: "pending", Order: 1, Tasks: []string{"Task 1"}, AcceptanceCriteria: []string{"Done"}},
+		},
+	}
+	propReq := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: &doc}
+	w := call(http.MethodPost, "/proposal", encode(propReq), "owner", false)
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: %d %s", w.Code, w.Body.String())
+	}
+	var propResp struct{ Proposal store.AutomationV2Proposal }
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+	acceptReq := automationV2Request{Action: "accept_automation", WorkspaceID: workspaceID, SessionID: "conversation", Review: propResp.Proposal.AutomationV2Review}
+	w = call(http.MethodPost, "/accept", encode(acceptReq), "owner", false)
+	if w.Code != 200 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+	var acceptResp struct{ Record store.AutomationV2Record }
+	if err := json.Unmarshal(w.Body.Bytes(), &acceptResp); err != nil {
+		t.Fatal(err)
+	}
+	acceptedRecord := acceptResp.Record
+
+	// Trigger endpoint call
+	triggerReq := automationV2TriggerRequest{
+		WorkspaceID:  workspaceID,
+		AutomationID: acceptedRecord.AutomationID,
+		Context: map[string]any{
+			"trigger_reason": "ci_failure",
+			"error_log":      "exit status 1",
+		},
+	}
+
+	// 1. Unauthorized caller fails
+	w = call(http.MethodPost, "/trigger", encode(triggerReq), "intruder", false)
+	if w.Code < 400 {
+		t.Fatalf("expected error for unauthorized caller, got %d", w.Code)
+	}
+
+	// 2. Authorized caller succeeds
+	w = call(http.MethodPost, "/trigger", encode(triggerReq), "owner", false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for trigger, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		OK         bool                         `json:"ok"`
+		Occurrence store.AutomationV2Occurrence `json:"occurrence"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if !resp.OK {
+		t.Fatal("expected ok=true in trigger response")
+	}
+	if resp.Occurrence.State != "admitted" {
+		t.Fatalf("expected occurrence state 'admitted', got %q", resp.Occurrence.State)
+	}
+	if resp.Occurrence.TriggerContext == nil || resp.Occurrence.TriggerContext["trigger_reason"] != "ci_failure" {
+		t.Fatalf("expected trigger context preserved, got %+v", resp.Occurrence.TriggerContext)
+	}
+
+	// Verify occurrence can be read in progress API
+	w = call(http.MethodGet, "/progress?workspace_id="+workspaceID+"&automation_id="+acceptedRecord.AutomationID+"&timezone=UTC", "", "owner", false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for progress, got %d: %s", w.Code, w.Body.String())
+	}
+	var prog sessionruntime.AutomationV2Progress
+	if err := json.Unmarshal(w.Body.Bytes(), &prog); err != nil {
+		t.Fatalf("unmarshal progress failed: %v", err)
+	}
+	if len(prog.Occurrences) != 1 {
+		t.Fatalf("expected 1 occurrence in progress, got %d", len(prog.Occurrences))
+	}
+	if prog.Occurrences[0].ID != resp.Occurrence.ID {
+		t.Fatalf("expected occurrence ID match, got %s vs %s", prog.Occurrences[0].ID, resp.Occurrence.ID)
+	}
+}

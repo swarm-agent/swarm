@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -35,13 +36,15 @@ type AutomationV2Occurrence struct {
 	Report       string                         `json:"report,omitempty"`
 	AttemptCount int                            `json:"attempt_count,omitempty"`
 	NextRetryAt  int64                          `json:"next_retry_at,omitempty"`
+	TriggerContext map[string]any               `json:"trigger_context,omitempty"`
 }
 
 type automationV2ExecutionMutation struct {
-	action     string
-	expected   AutomationV2Record
-	occurrence AutomationV2Occurrence
-	now        int64
+	action         string
+	expected       AutomationV2Record
+	occurrence     AutomationV2Occurrence
+	now            int64
+	triggerContext map[string]any
 }
 
 // AutomationV2NextDue is strictly after `after`; interval anchors are acceptance
@@ -51,6 +54,9 @@ type automationV2ExecutionMutation struct {
 func AutomationV2NextDue(policy AutomationV2Settings, anchor, after int64) (int64, error) {
 	if err := ValidateAutomationV2Settings(&policy, 0); err != nil {
 		return 0, err
+	}
+	if policy.Schedule.Kind == "trigger" {
+		return 0, nil
 	}
 	if after < anchor {
 		after = anchor
@@ -249,6 +255,21 @@ func (s *SessionStore) AdmitAutomationV2(r AutomationV2Record, now int64) (Autom
 	return m.occurrence, err
 }
 
+func (s *SessionStore) TriggerAutomationV2(account, user, workspace, targetID string, triggerContext map[string]any, now int64) (AutomationV2Occurrence, error) {
+	s.store.sessionMutations.automationV2Mu.Lock()
+	defer s.store.sessionMutations.automationV2Mu.Unlock()
+	r, ok, err := s.GetAutomationV2Record(account, user, workspace, targetID)
+	if err != nil {
+		return AutomationV2Occurrence{}, err
+	}
+	if !ok {
+		return AutomationV2Occurrence{}, ErrAutomationV2Conflict
+	}
+	m := &automationV2ExecutionMutation{action: "triggered", expected: r, now: now, triggerContext: triggerContext}
+	err = s.automationV2ExecutionApply(m)
+	return m.occurrence, err
+}
+
 // Control actions never authorize new instructions. Resume uses the existing
 // accepted revision/expiry; cancel_future leaves admitted work alone, cancel_all
 // durably fences every already-admitted generation before host cancellation.
@@ -415,6 +436,84 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 				return ErrAutomationV2Conflict
 			}
 			m.occurrence = AutomationV2Occurrence{ID: id, Record: admittedSnapshot, DueAt: due, AdmittedAt: now, SessionID: "av2-execution-" + id, RunID: "av2-run:" + id, State: "admitted", Version: 1, ObservedAt: now}
+		}
+	case "triggered":
+		if !r.Enabled || r.Cancelled || r.Archived || (r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt) {
+			return ErrAutomationV2Conflict
+		}
+		if r.Document.AutomationV2 == nil && r.Document.WorkerV2 != nil {
+			r.Document.AutomationV2 = r.Document.WorkerV2
+		}
+		if r.Document.AutomationV2 == nil {
+			return ErrAutomationV2Conflict
+		}
+		if r.Document.AutomationV2.Overlap == "serialize" {
+			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 1)
+			if err != nil {
+				return err
+			}
+			if len(rows) > 0 {
+				return ErrAutomationV2Conflict
+			}
+		}
+		if r.Document.AutomationV2.DailyRunCap > 0 {
+			loc := time.UTC
+			if r.Document.AutomationV2.Schedule.Timezone != "" {
+				if l, err := time.LoadLocation(r.Document.AutomationV2.Schedule.Timezone); err == nil {
+					loc = l
+				}
+			}
+			nowTime := time.UnixMilli(now).In(loc)
+			startOfDay := time.Date(nowTime.Year(), nowTime.Month(), nowTime.Day(), 0, 0, 0, 0, loc)
+			startOfDayMs := startOfDay.UnixMilli()
+			startOfNextDay := startOfDay.AddDate(0, 0, 1)
+			startOfNextDayMs := startOfNextDay.UnixMilli()
+
+			prefix := automationV2OccurrencePrefix(r.AccountID, r.SessionID)
+			it, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+			if err != nil {
+				return err
+			}
+			admittedCount := 0
+			for valid := it.First(); valid; valid = it.Next() {
+				var o AutomationV2Occurrence
+				if err := json.Unmarshal(it.Value(), &o); err == nil {
+					if o.Record.AutomationID == r.AutomationID && o.AdmittedAt >= startOfDayMs && o.AdmittedAt < startOfNextDayMs {
+						admittedCount++
+					}
+				}
+			}
+			if err := it.Error(); err != nil {
+				_ = it.Close()
+				return err
+			}
+			_ = it.Close()
+
+			if admittedCount >= r.Document.AutomationV2.DailyRunCap {
+				return errors.New("daily run cap reached for automation")
+			}
+		}
+		admittedSnapshot := r
+		id := fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:trigger", r.AutomationID, r.Revision, now))))
+		var prior AutomationV2Occurrence
+		if found, err := s.store.GetJSON(automationV2OccurrencePrefix(r.AccountID, r.SessionID)+id, &prior); err != nil {
+			return err
+		} else if found {
+			var b [4]byte
+			_, _ = rand.Read(b[:])
+			id = fmt.Sprintf("%x", sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%d:%x:trigger", r.AutomationID, r.Revision, now, b))))
+		}
+		m.occurrence = AutomationV2Occurrence{
+			ID:             id,
+			Record:         admittedSnapshot,
+			DueAt:          now,
+			AdmittedAt:     now,
+			SessionID:      "av2-execution-" + id,
+			RunID:          "av2-run:" + id,
+			State:          "admitted",
+			Version:        1,
+			ObservedAt:     now,
+			TriggerContext: m.triggerContext,
 		}
 	case "pause", "resume", "cancel_future", "cancel_all", "delete_automation":
 		if r.Cancelled && m.action != "cancel_all" && m.action != "delete_automation" {

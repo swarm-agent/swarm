@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -21,6 +22,14 @@ type automationV2Request struct {
 	SessionID   string                     `json:"session_id"`
 	Review      store.AutomationV2Review   `json:"review"`
 	Document    *store.SessionPlanDocument `json:"document,omitempty"`
+}
+
+type automationV2TriggerRequest struct {
+	WorkspaceID  string         `json:"workspace_id"`
+	SessionID    string         `json:"session_id,omitempty"`
+	AutomationID string         `json:"automation_id,omitempty"`
+	WorkerID     string         `json:"worker_id,omitempty"`
+	Context      map[string]any `json:"context,omitempty"`
 }
 
 func automationV2Error(w http.ResponseWriter, err error) {
@@ -56,6 +65,9 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet && (r.URL.Path == AutomationsV2Path || r.URL.Path == AutomationsV2Path+"/review" || r.URL.Path == AutomationsV2Path+"/progress") {
+		if !s.requireScope(w, r, "automations:read") {
+			return
+		}
 		q := r.URL.Query()
 		for key, values := range q {
 			if len(values) != 1 || (key != "workspace_id" && key != "session_id" && key != "automation_id" && key != "worker_id" && key != "limit" && key != "cursor" && key != "timezone" && key != "archived_mode") {
@@ -148,8 +160,56 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" {
+	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" && r.URL.Path != AutomationsV2Path+"/trigger" {
 		http.NotFound(w, r)
+		return
+	}
+	if r.URL.Path != AutomationsV2Path+"/trigger" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+	}
+	if r.URL.Path == AutomationsV2Path+"/trigger" {
+		if !s.requireScope(w, r, "automations:trigger") {
+			return
+		}
+		var req automationV2TriggerRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 300*1024))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&req); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if err := d.Decode(new(any)); err != io.EOF {
+			automationV2Error(w, errors.New("trailing payload"))
+			return
+		}
+		if req.WorkspaceID == "" || len(req.WorkspaceID) > 256 {
+			automationV2Error(w, errors.New("workspace required"))
+			return
+		}
+		targetID := req.SessionID
+		if targetID == "" {
+			targetID = req.WorkerID
+		}
+		if targetID == "" {
+			targetID = req.AutomationID
+		}
+		if targetID == "" || len(targetID) > 256 {
+			automationV2Error(w, errors.New("target worker or session required"))
+			return
+		}
+		occurrence, err := s.sessions.TriggerAutomationV2(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID, req.Context)
+		if err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if s.automationV2Scheduler != nil {
+			go func() {
+				_ = s.automationV2Scheduler.Tick(context.Background(), occurrence.Record, time.Now().UnixMilli())
+			}()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "occurrence": occurrence})
 		return
 	}
 	var req automationV2Request

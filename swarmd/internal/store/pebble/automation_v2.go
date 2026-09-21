@@ -133,6 +133,10 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 		if fields[2] != "*" && fields[4] != "*" {
 			return errors.New("both cron day fields cannot be restricted")
 		}
+	case "trigger":
+		if s.IntervalSeconds != 0 || s.Cron != "" {
+			return errors.New("trigger schedule must not declare interval_seconds or cron")
+		}
 	default:
 		return errors.New("explicit schedule kind required")
 	}

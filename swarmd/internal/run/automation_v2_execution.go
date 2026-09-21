@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"time"
@@ -99,7 +100,11 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	metadata["swarm_v3_mandatory_worktree"] = true
 	metadata["swarm_v3_worktree_owner_session_id"] = o.SessionID
 	metadata["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
+	metadata["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
 	metadata["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
+	if len(o.TriggerContext) > 0 {
+		metadata["trigger_context"] = o.TriggerContext
+	}
 	snapshot := store.SessionSnapshot{ID: o.SessionID, UserID: r.UserID, AccountScopeID: r.AccountID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: r.Document.Title, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: metadata, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: o.AdmittedAt, UpdatedAt: o.AdmittedAt}
 	if err = h.repository.JournalAutomationV2Preparation(o, snapshot); err != nil {
 		return snapshot, err
@@ -160,6 +165,14 @@ func (h *AutomationV2ExecutionHost) Start(ctx context.Context, o store.Automatio
 			// The recurring option remains in the immutable occurrence receipt; this is
 			// a single authorized execution copy, not another recurring definition.
 			doc.AutomationV2 = nil
+			if len(o.TriggerContext) > 0 {
+				ctxBytes, _ := json.MarshalIndent(o.TriggerContext, "", "  ")
+				triggerContextBlock := fmt.Sprintf("\n\n[Trigger Event Context]\n%s\n", string(ctxBytes))
+				doc.Info.Goal += triggerContextBlock
+				for i := range doc.Checkpoints {
+					doc.Checkpoints[i].Notes += triggerContextBlock
+				}
+			}
 			result, err := h.runs.sessions.CommitV3PlanAcceptance(sessions.PlanAcceptanceCommitInput{Session: snapshot, PlanID: o.ID, Title: doc.Title, Document: &doc, ApplySessionMutation: h.apply})
 			if err != nil {
 				return err
@@ -196,7 +209,7 @@ func (h *AutomationV2ExecutionHost) startCheckpoint(snapshot store.SessionSnapsh
 			attempt = cp.AttemptID
 		}
 		request := "av2-start:" + o.ID
-		_, err = h.apply(sessions.SessionMutationInput{SessionID: o.SessionID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, EventType: "session.run_intent.recorded", RunIntent: &store.V3SessionRunIntent{RunID: o.RunID, Status: sessions.RunIntentPendingExecutor, PlanID: o.ID, CheckpointID: cp.ID, AttemptID: attempt, RunSessionID: o.SessionID, ParentSessionID: o.SessionID}, NowUnixMs: time.Now().UnixMilli()})
+		_, err = h.apply(sessions.SessionMutationInput{SessionID: o.SessionID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, EventType: "session.run_intent.recorded", RunIntent: &store.V3SessionRunIntent{SessionID: o.SessionID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, RunID: o.RunID, Status: sessions.RunIntentPendingExecutor, PlanID: o.ID, CheckpointID: cp.ID, AttemptID: attempt, RunSessionID: o.SessionID, ParentSessionID: o.SessionID}, NowUnixMs: time.Now().UnixMilli()})
 		if err != nil {
 			return err
 		}

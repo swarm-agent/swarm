@@ -12,6 +12,8 @@ var workspaceMapMutationMu sync.Mutex
 const (
 	KeyAuthCodexDefault                            = "auth/codex/default" // legacy single-record key; retained for migration.
 	KeyAuthAttachDefault                           = "auth/attach/default"
+	KeyAuthScopedTokenPrefix                       = "auth/scoped_token/"
+	KeyAuthScopedTokenHashPrefix                   = "auth/scoped_token_by_hash/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -759,6 +761,18 @@ func KeyAuthVaultMetaForAccount(accountScopeID string) string {
 
 func KeyAuthCredentialForAccount(accountScopeID, providerID, credentialID string) string {
 	return fmt.Sprintf("%s%s/%s/%s", KeyAuthCredentialPrefix, keyPart(accountScopeID), keyPart(providerID), keyPart(credentialID))
+}
+
+func KeyAuthScopedToken(accountScopeID, tokenID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyAuthScopedTokenPrefix, keyPart(accountScopeID), keyPart(tokenID))
+}
+
+func KeyAuthScopedTokenPrefixForAccount(accountScopeID string) string {
+	return fmt.Sprintf("%s%s/", KeyAuthScopedTokenPrefix, keyPart(accountScopeID))
+}
+
+func KeyAuthScopedTokenByHash(tokenHash string) string {
+	return fmt.Sprintf("%s%s", KeyAuthScopedTokenHashPrefix, keyPart(tokenHash))
 }
 
 func AuthCredentialPrefix() string {

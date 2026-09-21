@@ -235,14 +235,23 @@ func (s *Server) handleSessionsV3Primary(w http.ResponseWriter, r *http.Request)
 	}
 
 	if r.URL.Path == "/v3/sessions:archive" {
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
 		s.handleSessionsV3PrimaryArchiveBatch(w, r, principal)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
+		if !s.requireScope(w, r, "sessions:read") {
+			return
+		}
 		s.handleSessionsV3PrimaryList(w, r, principal)
 	case http.MethodPost:
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
 		s.handleSessionsV3PrimaryCreate(w, r, principal)
 	default:
 		methodNotAllowed(w)
@@ -263,6 +272,15 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sessions v3 path"))
 		return
+	}
+	if r.Method == http.MethodGet {
+		if !s.requireScope(w, r, "sessions:read") {
+			return
+		}
+	} else {
+		if !s.requireScope(w, r, "sessions:write") {
+			return
+		}
 	}
 	switch subpath {
 	case "":

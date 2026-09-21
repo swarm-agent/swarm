@@ -1,10 +1,14 @@
 package security
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -121,6 +125,114 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 		return
 	}
 	_, _ = s.events.Append("system:security", "security.attach.denied", "attach", payload, "", "")
+}
+
+func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration) (string, pebblestore.ScopedTokenRecord, error) {
+	if s == nil || s.authStore == nil {
+		return "", pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
+	}
+	rawSecret, err := pebblestore.GenerateToken(32)
+	if err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, fmt.Errorf("generate scoped token: %w", err)
+	}
+	token := "swk_" + rawSecret
+	hashBytes := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hashBytes[:])
+
+	tokenIDBytes, err := pebblestore.GenerateToken(8)
+	if err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, fmt.Errorf("generate token id: %w", err)
+	}
+	tokenID := "tok_" + tokenIDBytes
+
+	tokenHint := token[:8] + "..." + token[len(token)-4:]
+
+	now := time.Now().UnixMilli()
+	var expiresAt int64
+	if expiresIn != 0 {
+		expiresAt = now + expiresIn.Milliseconds()
+	}
+
+	cleanScopes := make([]string, 0, len(scopes))
+	for _, sc := range scopes {
+		sc = strings.TrimSpace(sc)
+		if sc != "" {
+			cleanScopes = append(cleanScopes, sc)
+		}
+	}
+	if len(cleanScopes) == 0 {
+		cleanScopes = []string{"*"}
+	}
+
+	record := pebblestore.ScopedTokenRecord{
+		ID:             tokenID,
+		Name:           strings.TrimSpace(name),
+		TokenHash:      tokenHash,
+		TokenHint:      tokenHint,
+		Scopes:         cleanScopes,
+		AccountScopeID: accountScopeID,
+		UserID:         userID,
+		CreatedAt:      now,
+		ExpiresAt:      expiresAt,
+		Revoked:        false,
+	}
+
+	if err := s.authStore.PutScopedToken(record); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
+	}
+
+	return token, record, nil
+}
+
+func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedTokenRecord, error) {
+	if s == nil || s.authStore == nil {
+		return nil, nil
+	}
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" {
+		return nil, nil
+	}
+	hashBytes := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(hashBytes[:])
+
+	record, ok, err := s.authStore.GetScopedTokenByHash(tokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	if record.Revoked {
+		return nil, errors.New("token has been revoked")
+	}
+	if record.ExpiresAt > 0 && time.Now().UnixMilli() >= record.ExpiresAt {
+		return nil, errors.New("token has expired")
+	}
+
+	_ = s.authStore.UpdateScopedTokenLastUsed(record.AccountScopeID, record.ID, time.Now().UnixMilli())
+
+	return &record, nil
+}
+
+func (s *Service) ListScopedTokens(accountScopeID string) ([]pebblestore.ScopedTokenRecord, error) {
+	if s == nil || s.authStore == nil {
+		return nil, errors.New("auth store not configured")
+	}
+	return s.authStore.ListScopedTokens(accountScopeID)
+}
+
+func (s *Service) RevokeScopedToken(accountScopeID, tokenID string) (pebblestore.ScopedTokenRecord, error) {
+	if s == nil || s.authStore == nil {
+		return pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
+	}
+	return s.authStore.RevokeScopedToken(accountScopeID, tokenID)
+}
+
+func (s *Service) DeleteScopedToken(accountScopeID, tokenID string) error {
+	if s == nil || s.authStore == nil {
+		return errors.New("auth store not configured")
+	}
+	return s.authStore.DeleteScopedToken(accountScopeID, tokenID)
 }
 
 func statusFromRecord(record pebblestore.AttachAuthRecord) AttachStatus {

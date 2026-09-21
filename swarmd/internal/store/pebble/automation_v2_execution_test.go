@@ -679,3 +679,81 @@ func TestAutomationV2PurgeDeletedSession(t *testing.T) {
 		t.Fatalf("expected pebble.ErrNotFound for purged pending key, got: %v", err)
 	}
 }
+
+func TestAutomationV2Trigger(t *testing.T) {
+	s, db, acct, user, workspaceID, wsPath := fixtureSetupSessionStore(t)
+	defer db.Close()
+
+	sessionID := "sess-trigger-test"
+	yes := true
+	if err := s.CreateSession(SessionSnapshot{
+		ID:              sessionID,
+		AccountScopeID:  acct,
+		UserID:          user,
+		WorkspacePath:   wsPath,
+		WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: wsPath, Available: &yes}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := SessionPlanDocument{
+		Title: "Trigger Test",
+		Info:  SessionPlanInfo{Goal: "Trigger Test Worker"},
+		Checkpoints: []SessionPlanCheckpoint{
+			{ID: "cp-1", Title: "Work", Objective: "Work", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Done"}},
+		},
+		AutomationV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "coalesce",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+	}
+
+	p, err := s.ProposeAutomationV2(acct, user, workspaceID, sessionID, doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("propose trigger worker failed: %v", err)
+	}
+	r, err := s.AcceptAutomationV2(acct, user, workspaceID, sessionID, p.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("accept trigger worker failed: %v", err)
+	}
+
+	// Invariant: NextDueAt must be 0 for trigger schedule (not admitted on clock sweeps)
+	if r.NextDueAt != 0 {
+		t.Fatalf("expected NextDueAt 0 for trigger worker, got %d", r.NextDueAt)
+	}
+
+	// Trigger on demand with context
+	triggerCtx := map[string]any{
+		"event":  "ci_failure",
+		"branch": "feature/test",
+		"error":  "assertion failed at line 42",
+	}
+	now := time.Now().UnixMilli()
+	occ, err := s.TriggerAutomationV2(acct, user, workspaceID, r.AutomationID, triggerCtx, now)
+	if err != nil {
+		t.Fatalf("trigger automation failed: %v", err)
+	}
+
+	if occ.State != "admitted" {
+		t.Fatalf("expected admitted state, got %q", occ.State)
+	}
+	if occ.TriggerContext == nil || occ.TriggerContext["event"] != "ci_failure" {
+		t.Fatalf("expected trigger_context preserved, got %+v", occ.TriggerContext)
+	}
+
+	// Verify occurrence is stored and can be listed
+	occurrences, _, err := s.ListAutomationV2Occurrences(acct, user, workspaceID, sessionID, "", false, 10)
+	if err != nil {
+		t.Fatalf("list occurrences failed: %v", err)
+	}
+	if len(occurrences) != 1 {
+		t.Fatalf("expected 1 occurrence, got %d", len(occurrences))
+	}
+	if occurrences[0].ID != occ.ID {
+		t.Fatalf("expected occurrence ID %s, got %s", occ.ID, occurrences[0].ID)
+	}
+}
