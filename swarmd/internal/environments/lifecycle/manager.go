@@ -1177,7 +1177,10 @@ func (m *DeploymentManager) InspectDeployment(ctx context.Context, accountScopeI
 
 	res, err := prov.Inspect(probeCtx, &conn, &dep)
 	if err != nil {
-		updated, _ := m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusUnknown, environments.HealthStatusUnhealthy, err.Error())
+		updated, storeErr := m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, dep.Status, environments.HealthStatusUnhealthy, "provider observation unavailable")
+		if storeErr != nil {
+			return &dep, errors.Join(fmt.Errorf("inspect container on provider: %w", err), storeErr)
+		}
 		return &updated, fmt.Errorf("inspect container on provider: %w", err)
 	}
 

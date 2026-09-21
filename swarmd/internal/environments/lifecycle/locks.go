@@ -1,9 +1,6 @@
 package lifecycle
 
-import (
-	"context"
-	"sync"
-)
+import "context"
 
 // contextMutex provides mutual exclusion that supports cancellation-aware
 // acquisition via context.Context to prevent deadlocks and unbounded waiting.
