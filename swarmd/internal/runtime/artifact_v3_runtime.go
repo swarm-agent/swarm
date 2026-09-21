@@ -1741,7 +1741,17 @@ func (a *artifactV3RuntimeAdapter) LoadAuthorDraft(ctx context.Context, p tool.A
 	unbound := g
 	unbound.ProducerSessionID, unbound.ProducerRunID = "", ""
 	raw, err := json.Marshal(unbound)
-	if err != nil || string(raw) != string(d.Grant) {
+	if err != nil {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	var storedGrant tool.ArtifactV3AuthorGrant
+	if err := json.Unmarshal(d.Grant, &storedGrant); err == nil {
+		storedGrant.ExpiresAt = unbound.ExpiresAt
+		storedRaw, _ := json.Marshal(storedGrant)
+		if string(raw) != string(storedRaw) {
+			return zero, tool.ErrArtifactV3AuthorUnauthorized
+		}
+	} else if string(raw) != string(d.Grant) {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
 	state := zero
