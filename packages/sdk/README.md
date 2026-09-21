@@ -134,6 +134,38 @@ const webhooks = await client.automations.listWebhooks();
 await client.automations.deleteWebhook(webhook.id);
 ```
 
+### 7. Deliverables Hub & Agent Mailbox
+
+Submit completed work (social media drafts, reports, test alerts) from background workers to the local Swarm Agent Mailbox for human review, editing, and one-click publication actions:
+
+```typescript
+// Submit finished worker output to the Mailbox
+const deliverable = await client.deliverables.submit({
+  title: 'Weekly Community Launch Thread',
+  kind: 'social_post',
+  worker_id: 'social_media_bot',
+  payload: {
+    posts: [
+      { text: '1/3 Announcing our new distributed agent architecture...' },
+      { text: '2/3 Run workers in the cloud, review in your local mailbox.' },
+      { text: '3/3 Try it today with @swarm/sdk.' }
+    ]
+  },
+  action_contract: {
+    action: 'publish_x_post',
+    target_secret_ref: 'gcp:x-api-key'
+  }
+});
+
+// List unreviewed deliverables in the inbox
+const pending = await client.deliverables.list({ status: 'pending_review' });
+console.log(`Pending inbox items: ${pending.length}`);
+
+// Approve deliverable and trigger publication action
+const result = await client.deliverables.approve(deliverable.id);
+console.log('Published:', result.action_result);
+```
+
 ## Error Handling
 
 All failed API responses throw typed `SwarmApiError` instances:

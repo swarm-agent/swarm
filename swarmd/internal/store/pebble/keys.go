@@ -15,6 +15,9 @@ const (
 	KeyAuthScopedTokenPrefix                       = "auth/scoped_token/"
 	KeyAuthScopedTokenHashPrefix                   = "auth/scoped_token_by_hash/"
 	KeyAutomationV2WebhookAccountPrefix            = "automation_v2/webhook_by_account/"
+	KeyDeliverableAccountPrefix                    = "deliverable/by_account/"
+	KeyDeliverableStatusPrefix                     = "deliverable/index_status/"
+	KeyDeliverableWorkerPrefix                     = "deliverable/index_worker/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -786,6 +789,44 @@ func AutomationV2WebhookPrefix(accountScopeID string) string {
 		return KeyAutomationV2WebhookAccountPrefix
 	}
 	return fmt.Sprintf("%s%s/", KeyAutomationV2WebhookAccountPrefix, accountPart)
+}
+
+func KeyDeliverable(accountScopeID, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyDeliverableAccountPrefix, keyPart(accountScopeID), keyPart(deliverableID))
+}
+
+func DeliverablePrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyDeliverableAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyDeliverableAccountPrefix, accountPart)
+}
+
+func KeyDeliverableStatusIndex(accountScopeID, status, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeliverableStatusPrefix, keyPart(accountScopeID), keyPart(status), keyPart(deliverableID))
+}
+
+func DeliverableStatusIndexPrefix(accountScopeID, status string) string {
+	accountPart := keyPart(accountScopeID)
+	statusPart := keyPart(status)
+	if statusPart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeliverableStatusPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeliverableStatusPrefix, accountPart, statusPart)
+}
+
+func KeyDeliverableWorkerIndex(accountScopeID, workerID, deliverableID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyDeliverableWorkerPrefix, keyPart(accountScopeID), keyPart(workerID), keyPart(deliverableID))
+}
+
+func DeliverableWorkerIndexPrefix(accountScopeID, workerID string) string {
+	accountPart := keyPart(accountScopeID)
+	workerPart := keyPart(workerID)
+	if workerPart == "" {
+		return fmt.Sprintf("%s%s/", KeyDeliverableWorkerPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyDeliverableWorkerPrefix, accountPart, workerPart)
 }
 
 func AuthCredentialPrefix() string {

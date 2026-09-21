@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  Bot,
   Calendar,
   CheckCircle2,
   ChevronDown,
@@ -14,6 +15,7 @@ import {
   ExternalLink,
   FileText,
   GitBranch,
+  Inbox,
   LoaderCircle,
   MessageSquare,
   Pause,
@@ -47,6 +49,7 @@ import { loadAutomationConversations } from '../../state/desktop-automation-conv
 import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
+import { DeliverablesInbox } from './deliverables-inbox'
 import { scheduleLabel, scheduleFrequency, formatScheduleDateTime, getOccurrenceDayKey } from './automation-v2-schedule'
 
 export interface AutomationStarterTemplate {
@@ -836,6 +839,7 @@ export function AutomationV2Workspace({
   const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [suggestionsCollapsed, setSuggestionsCollapsed] = useState(false)
+  const [workspaceMode, setWorkspaceMode] = useState<'workers' | 'inbox'>('workers')
 
   const isArchivedTab = statusFilter === 'archived'
   const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: !isArchivedTab ? cursor : undefined }), [workspaceId, cursor, isArchivedTab])
@@ -1166,6 +1170,34 @@ export function AutomationV2Workspace({
           <RefreshCcw size={16} className="text-[var(--app-primary)]" />
           <h1 className="font-semibold">Workers</h1>
           <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span>
+
+          <div className="ml-3 flex items-center rounded-xl bg-[var(--app-surface-hover)] p-0.5 text-xs">
+            <button
+              onClick={() => setWorkspaceMode('workers')}
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1 font-medium transition-colors',
+                workspaceMode === 'workers'
+                  ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-2xs font-semibold'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              )}
+            >
+              <Bot size={13} />
+              <span>Schedules & Fleet</span>
+            </button>
+            <button
+              data-testid="tab-mailbox"
+              onClick={() => setWorkspaceMode('inbox')}
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1 font-medium transition-colors',
+                workspaceMode === 'inbox'
+                  ? 'bg-[var(--app-primary)] text-white shadow-2xs font-semibold'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              )}
+            >
+              <Inbox size={13} />
+              <span>Agent Mailbox</span>
+            </button>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -1185,8 +1217,19 @@ export function AutomationV2Workspace({
         </div>
       </header>
 
-      {/* Main Body + Sidecar Layout */}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden">
+      {/* Main Body or Mailbox Layout */}
+      {workspaceMode === 'inbox' ? (
+        <div className="flex-1 overflow-y-auto p-5 sm:p-8">
+          <DeliverablesInbox
+            workspaceId={workspaceId}
+            workspacePath={workspacePath}
+            workspaceSlug={workspaceSlug}
+            onOpenSession={onOpenSession}
+          />
+        </div>
+      ) : (
+        /* Main Body + Sidecar Layout */
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden">
         <main className="min-w-0 flex-1 space-y-6 p-5 sm:p-8 overflow-y-auto">
           {selected ? (
             selectedRecord ? (
@@ -1887,6 +1930,7 @@ export function AutomationV2Workspace({
           />
         </aside>
       </div>
+      )}
 
       {/* Delete Automation Confirmation Modal */}
       {deleteConfirmRecord && (

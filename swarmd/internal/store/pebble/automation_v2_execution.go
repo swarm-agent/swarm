@@ -714,5 +714,42 @@ func (s *SessionStore) PersistAutomationV2ClosingState(o AutomationV2Occurrence,
 		}
 		o.Detail = detail
 	}
+
+	if (closingState == "deliverable_ready" || closingState == "attention_alert" || len(deliverables) > 0) && o.Record.AccountID != "" {
+		kind := "report"
+		title := o.Record.Document.Title
+		if title == "" {
+			title = "Worker Deliverable"
+		}
+		if closingState == "attention_alert" {
+			kind = "alert"
+			title = "Alert: " + title
+		} else if len(deliverables) > 0 {
+			kind = "deliverable_ready"
+		}
+		delivID := "deliv_occ_" + o.ID
+		deliv := &DeliverableRecord{
+			ID:           delivID,
+			AccountID:    o.Record.AccountID,
+			WorkspaceID:  o.Record.WorkspaceID,
+			WorkerID:     o.Record.AutomationID,
+			OccurrenceID: o.ID,
+			SessionID:    o.SessionID,
+			Title:        title,
+			Kind:         kind,
+			Status:       "pending_review",
+			Summary:      summary,
+			MediaRefs:    deliverables,
+			Payload: map[string]any{
+				"closing_state": closingState,
+				"report":        report,
+				"result":        result,
+				"detail":        detail,
+			},
+			CreatedAt: now,
+		}
+		_ = s.PutDeliverable(o.Record.AccountID, deliv)
+	}
+
 	return s.automationV2ExecutionApply(&automationV2ExecutionMutation{action: "closing", expected: o.Record, occurrence: o, now: now})
 }

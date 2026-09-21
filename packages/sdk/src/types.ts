@@ -179,6 +179,67 @@ export interface AutomationV2ListParams {
   limit?: number;
 }
 
+export interface DeliverableActionContract {
+  action: string;
+  target_url?: string;
+  target_secret_ref?: string;
+  parameters?: Record<string, unknown>;
+}
+
+export interface DeliverableRecord {
+  id: string;
+  account_id: string;
+  workspace_id?: string;
+  workspace_path?: string;
+  worker_id?: string;
+  occurrence_id?: string;
+  session_id?: string;
+  title: string;
+  kind: 'social_post' | 'alert' | 'report' | 'pr_patch' | 'media_bundle' | 'custom' | string;
+  status: 'pending_review' | 'approved' | 'rejected' | 'published' | 'dismissed' | string;
+  summary?: string;
+  payload?: Record<string, unknown>;
+  media_refs?: Array<{
+    label?: string;
+    path?: string;
+    media_type?: string;
+    filename?: string;
+    artifact_id?: string;
+    revision_ref?: string;
+    [key: string]: unknown;
+  }>;
+  action_contract?: DeliverableActionContract;
+  action_result?: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  reviewed_at?: number;
+  reviewed_by?: string;
+}
+
+export interface CreateDeliverableParams {
+  id?: string;
+  workspace_id?: string;
+  workspace_path?: string;
+  worker_id?: string;
+  occurrence_id?: string;
+  session_id?: string;
+  title: string;
+  kind?: string;
+  status?: string;
+  summary?: string;
+  payload?: Record<string, unknown>;
+  media_refs?: DeliverableRecord['media_refs'];
+  action_contract?: DeliverableActionContract;
+}
+
+export interface DeliverableFilter {
+  status?: string;
+  worker_id?: string;
+  kind?: string;
+  workspace_id?: string;
+  limit?: number;
+}
+
 export interface AutomationV2WebhookRecord {
   id: string;
   account_id?: string;

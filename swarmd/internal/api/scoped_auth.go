@@ -41,6 +41,23 @@ func (s *Server) requireScope(w http.ResponseWriter, r *http.Request, requiredSc
 	return true
 }
 
+func (s *Server) requireScopeAny(w http.ResponseWriter, r *http.Request, requiredScopes ...string) bool {
+	if scopedRec, ok := ScopedTokenFromRequest(r); ok {
+		hasAny := false
+		for _, scope := range requiredScopes {
+			if scopedRec.HasScope(scope) {
+				hasAny = true
+				break
+			}
+		}
+		if !hasAny {
+			writeError(w, http.StatusForbidden, fmt.Errorf("token lacks any required scope from %v", requiredScopes))
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) resolveActorForScopedToken(rec *pebblestore.ScopedTokenRecord) (identity.ActorContext, error) {
 	if s == nil || s.identitySessions == nil {
 		return identity.ActorContext{}, identity.ErrSessionServiceNotConfigured
