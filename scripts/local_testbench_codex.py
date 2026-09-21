@@ -65,10 +65,10 @@ def broker_socket(path):
 
 def guest():
     text = runtime.GUEST
-    anchor = 'CGO_ENABLED=1 go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd'
+    anchor = 'CGO_ENABLED=1 build_step go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd'
     if text.count(anchor) != 1:
         raise PoolError('guest build anchor changed')
-    text = text.replace(anchor, 'python3 /candidate/source/scripts/testbench-codex-overlay.py --source /candidate/source --output /out\nCGO_ENABLED=1 go build -overlay /out/codex-overlay.json -p 2 -trimpath -o /out/swarmd ./cmd/swarmd')
+    text = text.replace(anchor, 'python3 /candidate/source/scripts/testbench-codex-overlay.py --source /candidate/source --output /out\nCGO_ENABLED=1 build_step go build -overlay /out/codex-overlay.json -p 2 -trimpath -o /out/swarmd ./cmd/swarmd')
     # No startup/provider output reaches host exchange or daemon logs.
     text = text.replace('2>/exchange/startup-error', '>/dev/null 2>&1')
     return text

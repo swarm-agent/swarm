@@ -584,6 +584,12 @@ class NspawnRuntime:
                                    self.name(r), str(Path(self.pool.config.root) / (self.name(r) + '.exchange'))])
                 name = self.name(r)
                 root = self.pool.config.root
+                docker_binds = []
+                if os.path.exists('/usr/bin/docker') and os.path.exists('/var/run/docker.sock'):
+                    docker_binds = [
+                        '--bind-ro=/usr/bin/docker:/usr/local/bin/docker',
+                        '--bind=/var/run/docker.sock:/var/run/docker.sock',
+                    ]
                 argv = self.start_args(r, self.units(r)[0]) + [
                     'systemd-nspawn', '--quiet', '--settings=no', '--register=no', '--keep-unit',
                     '--machine=' + name, '--image=' + root + '/' + name + '.raw',
@@ -591,7 +597,7 @@ class NspawnRuntime:
                     '--link-journal=no', '--as-pid2', '--console=pipe',
                     '--bind-ro=' + root + '/' + name + '.bundle:/input/source.bundle:idmap',
                     '--setenv=CANDIDATE_HEAD=' + head,
-                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap',
+                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap'] + docker_binds + [
                     '/bin/bash', '-c', GUEST]
                 self.commands.run(argv)
                 self.wait_ready(r, lane)
