@@ -224,7 +224,14 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		return tool.ArtifactV3AuthorGrant{}, err
 	}
 	if previous, found := existing.Drafts[grantID]; found {
-		if string(previous.Grant) != string(raw) {
+		var prevGrant tool.ArtifactV3AuthorGrant
+		if err := json.Unmarshal(previous.Grant, &prevGrant); err == nil {
+			prevGrant.ExpiresAt = grant.ExpiresAt
+			prevRaw, _ := json.Marshal(prevGrant)
+			if string(prevRaw) != string(raw) {
+				return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorConflict
+			}
+		} else if string(previous.Grant) != string(raw) {
 			return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorConflict
 		}
 	} else {
