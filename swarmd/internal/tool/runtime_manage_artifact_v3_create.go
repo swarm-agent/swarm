@@ -107,11 +107,31 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			}
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 		}
+		numTemporal := 0
+		allZero := true
+		for _, req := range requestedParts {
+			if req.Kind == "temporal" {
+				numTemporal++
+				if req.StartMs != 0 || req.EndMs != 0 {
+					allZero = false
+				}
+			}
+		}
 		parts = parts[:0]
+		temporalIdx := 0
 		for _, requested := range requestedParts {
 			derived := derivedByID[strings.TrimSpace(requested.ID)]
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 			if requested.Kind == "temporal" {
+				if allZero && numTemporal > 0 && durationMS > 0 {
+					step := durationMS / int64(numTemporal)
+					requested.StartMs = int64(temporalIdx) * step
+					requested.EndMs = int64(temporalIdx+1) * step
+					if temporalIdx == numTemporal-1 {
+						requested.EndMs = durationMS
+					}
+					temporalIdx++
+				}
 				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > durationMS {
 					return nil, errors.New("native temporal Parts require motion_ui or spatial_3d and 0 <= start_ms < end_ms <= canonical animation duration within the 36000-frame budget")
 				}
@@ -254,7 +274,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			if current.Content == string(content) {
 				return nil
 			}
-			return r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false)
+			_ = r.artifactV3Author.Delete(ctx, author, grant, path)
 		}
 		return r.artifactV3Author.Create(ctx, author, grant, path, content)
 	}
