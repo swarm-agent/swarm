@@ -148,6 +148,27 @@ func TestManageArtifactCreateUsesDirectArtifactV3HTMLPath(t *testing.T) {
 	}
 }
 
+// Requirement: createDirectArtifactV3HTML must accept optional title parameter
+// matching the manage_artifact public schema without returning an unsupported field error.
+func TestManageArtifactCreateV3AcceptsTitleField(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+	arguments := `{"action":"create","title":"System CPU Load","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero</main></body></html>"}`
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "title-test", Name: "manage_artifact", Arguments: arguments})
+	if err != nil {
+		t.Fatalf("expected title parameter to be accepted, got: %v", err)
+	}
+	if len(repository.turns) != 1 {
+		t.Fatalf("expected 1 turn prepared, got: %d", len(repository.turns))
+	}
+	if repository.turns[0].Prompt != "System CPU Load" {
+		t.Fatalf("expected turn prompt to match title, got: %q", repository.turns[0].Prompt)
+	}
+}
+
 // Requirement: createDirectArtifactV3HTML must reject invalid media and unresolved
 // region references before allocating an author turn or publishing any revision.
 // This tool-layer test keeps those negative boundaries independent of Part count.

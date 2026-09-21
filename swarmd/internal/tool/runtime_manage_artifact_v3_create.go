@@ -34,7 +34,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts":
+		case "action", "title", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
@@ -188,7 +188,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		result["message"] = "This exact ready Artifact V3 revision was already published in the current run; do not recreate it."
 		return result, nil
 	}
-	prompt := strings.TrimSpace(firstNonEmptyString(asString(args["collection_description"]), asString(args["collection_name"]), filename))
+	prompt := strings.TrimSpace(firstNonEmptyString(asString(args["title"]), asString(args["collection_description"]), asString(args["collection_name"]), filename))
 	prepare := ArtifactV3PrepareTurnRequest{
 		AccountScopeID:   principal.AccountScopeID,
 		UserID:           principal.UserID,
