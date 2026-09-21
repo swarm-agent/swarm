@@ -777,6 +777,11 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 
 			artifactRefMap, _ := respObj["reference"].(map[string]any)
 			artifactV3Map, _ := respObj["artifact_v3"].(map[string]any)
+			if artifactRefMap == nil && artifactV3Map != nil {
+				if innerRef, ok := artifactV3Map["reference"].(map[string]any); ok {
+					artifactRefMap = innerRef
+				}
+			}
 
 			artifactID := asString(artifactRefMap["artifact_id"])
 			if artifactID == "" && artifactV3Map != nil {
@@ -786,16 +791,26 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			if commitOID == "" && artifactV3Map != nil {
 				commitOID = asString(artifactV3Map["commit_oid"])
 			}
+			if commitOID == "" && artifactV3Map != nil {
+				if innerRef, ok := artifactV3Map["reference"].(map[string]any); ok {
+					commitOID = asString(innerRef["commit_oid"])
+					if commitOID == "" {
+						commitOID = strings.TrimPrefix(asString(innerRef["revision_ref"]), "revision-")
+					}
+				}
+			}
 			if commitOID == "" || strings.HasPrefix(commitOID, "revision-") {
 				commitOID = strings.TrimPrefix(commitOID, "revision-")
 			}
-			if commitOID == "" {
+			if commitOID == "" && artifactRefMap != nil {
 				if revRef := asString(artifactRefMap["revision_ref"]); revRef != "" {
 					commitOID = strings.TrimPrefix(revRef, "revision-")
 				}
 			}
 			if commitOID == "" && artifactID != "" {
-				if repoProj, found, _ := s.sessions.Store().GetArtifactV3Repository(parent.AccountScopeID, parent.UserID, artifactID); found {
+				authAccID := strings.TrimSpace(firstNonEmptyString(scope.Principal.AccountScopeID, parent.AccountScopeID))
+				authUserID := strings.TrimSpace(firstNonEmptyString(scope.Principal.UserID, parent.UserID))
+				if repoProj, found, _ := s.sessions.Store().GetArtifactV3Repository(authAccID, authUserID, artifactID); found {
 					commitOID = repoProj.HeadCommitOID
 				}
 			}
