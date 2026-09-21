@@ -1727,7 +1727,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				}
 				continue
 			}
-			if manifest.Action != taskProgramActionStatus && manifest.Action != "help" && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect {
+			if manifest.Action != taskProgramActionStatus && manifest.Action != "help" && manifest.ExecutionFormat != taskExecutionFormatImageDirect && manifest.ExecutionFormat != taskExecutionFormatVideoDirect && manifest.ExecutionFormat != taskExecutionFormatDesignerDirect {
 				// Program status and direct image generation do not allocate delegated
 				// child sessions, so neither consumes a subagent-wave reservation.
 				callID := strings.TrimSpace(toolCalls[i].CallID)
@@ -4632,6 +4632,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	}
 	if parsed.Swarm != nil && parsed.Swarm.AgentType == "video" {
 		return s.executeDirectVideoSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.OutputMode != taskOutputModeWorkspace {
+		return s.executeDirectDesignerSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {

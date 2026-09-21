@@ -4400,16 +4400,26 @@ function applyTaskStreamPatch(
   const pathId = stringValue(parsed.path_id)
   const directImageStream = pathId === 'tool.task.image_swarm.stream.v1'
   const directVideoStream = pathId === 'tool.task.video_swarm.stream.v1'
-  const directMediaStream = directImageStream || directVideoStream
+  const directDesignerStream = pathId === 'tool.task.designer_swarm.stream.v1'
+  const directMediaStream = directImageStream || directVideoStream || directDesignerStream
   if (pathId !== 'tool.task.stream.v2' && !directMediaStream) return false
-  const launchPatch = recordValue(directMediaStream ? (directVideoStream ? parsed.video : parsed.image) : parsed.launch)
+  const launchPatch = recordValue(
+    directMediaStream
+      ? (directDesignerStream ? parsed.designer : (directVideoStream ? parsed.video : parsed.image))
+      : parsed.launch
+  )
   const hasProgramMetadata = !directMediaStream && Boolean(
     stringValue(parsed.program_id)
     || recordValue(parsed.program)
     || recordValue(parsed.program_status),
   )
   if (!launchPatch && !hasProgramMetadata) return false
-  const launchKey = stringValue(directMediaStream ? (directVideoStream ? parsed.video_key : parsed.image_key) : parsed.launch_key)
+  const launchKey = stringValue(
+    directMediaStream
+      ? (directDesignerStream ? parsed.designer_key : (directVideoStream ? parsed.video_key : parsed.image_key))
+      : parsed.launch_key
+  )
+    || stringValue(launchPatch?.designer_key)
     || stringValue(launchPatch?.video_key)
     || stringValue(launchPatch?.image_key)
     || stringValue(launchPatch?.launch_key)
@@ -4417,7 +4427,7 @@ function applyTaskStreamPatch(
     || stringValue(launchPatch?.child_session_id)
     || (numberValue(parsed.launch_index) > 0 ? `launch:${numberValue(parsed.launch_index)}` : '')
     || (numberValue(launchPatch?.launch_index) > 0 ? `launch:${numberValue(launchPatch?.launch_index)}` : '')
-    || (numberValue(launchPatch?.index) > 0 ? `${directVideoStream ? 'video' : 'image'}:${numberValue(launchPatch?.index)}` : '')
+    || (numberValue(launchPatch?.index) > 0 ? `${directDesignerStream ? 'designer' : (directVideoStream ? 'video' : 'image')}:${numberValue(launchPatch?.index)}` : '')
   if (!launchKey && launchPatch) return false
 
   const stream = tool.taskStream ?? {

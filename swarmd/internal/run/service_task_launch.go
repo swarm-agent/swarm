@@ -27,20 +27,21 @@ import (
 )
 
 const (
-	taskLaunchPermissionPathID     = "permission.task_launch.v1"
-	taskModeRegular                = "regular"
-	taskModeSwarm                  = "swarm"
-	taskExecutionFormatSubagents   = "subagent_wave"
-	taskExecutionFormatImageDirect = "direct_image_swarm"
-	taskExecutionFormatVideoDirect = "direct_video_swarm"
-	taskSwarmStrategyExplore       = "explore"
-	taskSwarmStrategyAssembly      = "assembly"
-	taskOutputModeManaged          = "managed"
-	taskOutputModeWorkspace        = "workspace"
-	taskAssemblySwarmLaunchEnabled = false
-	taskSwarmMaxAgents             = 256
-	taskProgramActionStart         = "start"
-	taskProgramActionStatus        = "status"
+	taskLaunchPermissionPathID        = "permission.task_launch.v1"
+	taskModeRegular                   = "regular"
+	taskModeSwarm                     = "swarm"
+	taskExecutionFormatSubagents      = "subagent_wave"
+	taskExecutionFormatImageDirect    = "direct_image_swarm"
+	taskExecutionFormatVideoDirect    = "direct_video_swarm"
+	taskExecutionFormatDesignerDirect = "direct_designer_swarm"
+	taskSwarmStrategyExplore          = "explore"
+	taskSwarmStrategyAssembly         = "assembly"
+	taskOutputModeManaged             = "managed"
+	taskOutputModeWorkspace           = "workspace"
+	taskAssemblySwarmLaunchEnabled    = false
+	taskSwarmMaxAgents                = 256
+	taskProgramActionStart            = "start"
+	taskProgramActionStatus           = "status"
 )
 
 var taskProgramIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -217,6 +218,18 @@ type taskVideoManifestRow struct {
 	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
 }
 
+type taskDesignerManifestRow struct {
+	Index              int                                            `json:"index"`
+	Theme              string                                         `json:"theme,omitempty"`
+	StreamKey          string                                         `json:"stream_key"`
+	OutputRequirements *pebblestore.SessionArtifactOutputRequirements `json:"output_requirements,omitempty"`
+	AnimationProfile   *pebblestore.SessionArtifactAnimationProfile   `json:"animation_profile,omitempty"`
+	SourceArtifact     *pebblestore.SessionArtifactSelectionReference `json:"source_artifact,omitempty"`
+	ArtifactV3Source   *taskArtifactV3Source                          `json:"artifact_v3_source,omitempty"`
+	SectionTarget      *taskSwarmSectionTarget                        `json:"section_target,omitempty"`
+	SectionTargets     []*taskSwarmSectionTarget                      `json:"section_targets,omitempty"`
+}
+
 type taskLaunchManifest struct {
 	PathID              string                         `json:"path_id"`
 	Goal                string                         `json:"goal"`
@@ -240,6 +253,8 @@ type taskLaunchManifest struct {
 	Launches            []taskLaunchManifestRow        `json:"launches,omitempty"`
 	Images              []taskImageManifestRow         `json:"images,omitempty"`
 	Videos              []taskVideoManifestRow         `json:"videos,omitempty"`
+	Designers           []taskDesignerManifestRow      `json:"designers,omitempty"`
+	DesignerCount       int                            `json:"designer_count,omitempty"`
 	ExecutionFormat     string                         `json:"execution_format,omitempty"`
 	TaskMode            string                         `json:"task_mode,omitempty"`
 	Program             *taskProgramSpec               `json:"program,omitempty"`
@@ -4034,6 +4049,54 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		digest, digestErr := taskLaunchManifestDigest(manifest)
 		if digestErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("hash direct video swarm manifest: %w", digestErr)
+		}
+		manifest.ManifestHash = digest
+		approvedManifest := manifest
+		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
+		return manifest, nil
+	}
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.OutputMode != taskOutputModeWorkspace {
+		designers := make([]taskDesignerManifestRow, len(parsed.Launches))
+		for i, launch := range parsed.Launches {
+			theme := ""
+			if i < len(parsed.Swarm.Themes) {
+				theme = strings.TrimSpace(parsed.Swarm.Themes[i])
+			}
+			designers[i] = taskDesignerManifestRow{
+				Index:              i + 1,
+				Theme:              theme,
+				StreamKey:          strings.TrimSpace(launch.StreamKey),
+				OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements),
+				AnimationProfile:   cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile),
+				SourceArtifact:     cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
+				ArtifactV3Source:   cloneTaskArtifactV3Source(parsed.Swarm.ArtifactV3Source),
+				SectionTarget:      cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget),
+				SectionTargets:     cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
+			}
+		}
+		manifest := taskLaunchManifest{
+			PathID:          taskLaunchPermissionPathID,
+			Goal:            parsed.Description,
+			DesignerCount:   len(designers),
+			Description:     parsed.Description,
+			Prompt:          parsed.Prompt,
+			Action:          parsed.Action,
+			ParentMode:      sessionruntime.NormalizeMode(sessionMode),
+			TaskMode:        parsed.Mode,
+			SwarmAgentType:  "designer",
+			SwarmStrategy:   parsed.Swarm.Strategy,
+			Designers:       designers,
+			ExecutionFormat: taskExecutionFormatDesignerDirect,
+			SourceArguments: parsed.SourceArguments,
+		}
+		if parent, found := s.lookupTaskLaunchParentSession(sessionID, manifest.ParentMode); found {
+			manifest.Parent = parent
+			manifest.TargetWorkspacePath = strings.TrimSpace(firstNonEmptyString(parent.WorktreeRootPath, parent.WorkspacePath))
+			manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
+		}
+		digest, digestErr := taskLaunchManifestDigest(manifest)
+		if digestErr != nil {
+			return taskLaunchManifest{}, fmt.Errorf("hash direct designer swarm manifest: %w", digestErr)
 		}
 		manifest.ManifestHash = digest
 		approvedManifest := manifest

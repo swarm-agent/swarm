@@ -729,6 +729,9 @@ function summarizeToolOutput(
       } else if (executionFormat === "direct_video_swarm" && (jsonNum(effective, "video_count") > 0 || launchCount > 0)) {
         const count = jsonNum(effective, "video_count") || launchCount;
         parts.push(`(${count} direct videos)`);
+      } else if (executionFormat === "direct_designer_swarm" && (jsonNum(effective, "designer_count") > 0 || launchCount > 0)) {
+        const count = jsonNum(effective, "designer_count") || launchCount;
+        parts.push(`(${count} direct designs)`);
       } else if (launchCount > 1) {
         parts.push(`(${launchCount} launches)`);
       }
@@ -1250,14 +1253,15 @@ function buildTaskToolRows(
   taskStream?: StructuredToolMessageInput["taskStream"],
 ): StructuredToolMessage["taskRows"] {
   const executionFormat = firstNonEmpty(jsonStr(payload, "execution_format"), taskStream?.executionFormat ?? "");
-  if (executionFormat === "direct_image_swarm" || executionFormat === "direct_video_swarm") {
+  if (executionFormat === "direct_image_swarm" || executionFormat === "direct_video_swarm" || executionFormat === "direct_designer_swarm") {
+    const isDesigner = executionFormat === "direct_designer_swarm";
     const isVideo = executionFormat === "direct_video_swarm";
-    const itemKey = isVideo ? "videos" : "images";
-    const subagent = isVideo ? "video" : "image";
-    const defaultTool = isVideo ? "Video generation" : "Image creation";
-    const defaultDisplay = isVideo ? "Routing → Video generation" : "Routing → Image creation";
-    const defaultStages = isVideo ? ["Routing", "Video generation"] : ["Routing", "Image creation"];
-    const defaultPrefix = isVideo ? "Video" : "Image";
+    const itemKey = isDesigner ? "artifacts" : (isVideo ? "videos" : "images");
+    const subagent = isDesigner ? "designer" : (isVideo ? "video" : "image");
+    const defaultTool = isDesigner ? "Design generation" : (isVideo ? "Video generation" : "Image creation");
+    const defaultDisplay = isDesigner ? "Routing → Design generation" : (isVideo ? "Routing → Video generation" : "Routing → Image creation");
+    const defaultStages = isDesigner ? ["Routing", "Design generation"] : (isVideo ? ["Routing", "Video generation"] : ["Routing", "Image creation"]);
+    const defaultPrefix = isDesigner ? "Design" : (isVideo ? "Video" : "Image");
     const terminalStatus = jsonStr(payload, "status").trim().toLowerCase();
     const terminalItems = jsonObjectSlice(payload, itemKey);
     const terminalPayload = terminalItems.length > 0 && ["done", "ok", "success", "completed", "complete", "error", "failed", "cancelled", "canceled"].includes(terminalStatus);

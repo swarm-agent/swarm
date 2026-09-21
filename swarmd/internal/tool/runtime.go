@@ -727,6 +727,68 @@ func (r *Runtime) GenerateManagedVideoArtifact(ctx context.Context, scope Worksp
 	return r.executeManageArtifact(ctx, scope, callID, args)
 }
 
+// CreateManagedHTMLArtifactV3 creates a managed HTML or animation Artifact V3 document directly.
+func (r *Runtime) CreateManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID, title, content string, parts []map[string]any, profile *pebblestore.SessionArtifactAnimationProfile, run ArtifactRunContext) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{
+		"action":     "create",
+		"title":      strings.TrimSpace(title),
+		"media_type": "text/html",
+		"content":    content,
+	}
+	if len(parts) > 0 {
+		args["parts"] = parts
+	}
+	if profile != nil {
+		args["animation_profile"] = map[string]any{"profile": profile.ProfileID}
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+// ReviseManagedHTMLArtifactV3 performs a targeted revision on an existing Artifact V3 document.
+func (r *Runtime) ReviseManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID string, artifactRef map[string]any, targetPartIDs []string, content string, run ArtifactRunContext) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{
+		"action":                "revise_v3",
+		"artifact_v3_reference": artifactRef,
+		"target_part_ids":       targetPartIDs,
+		"content":               content,
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+// ReadManagedArtifactV3HTML reads the exact HTML content and parts of a native Artifact V3 document.
+func (r *Runtime) ReadManagedArtifactV3HTML(ctx context.Context, scope WorkspaceScope, artifactRef map[string]any) (string, []pebblestore.ArtifactV3Part, error) {
+	if r == nil {
+		return "", nil, errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	args := map[string]any{
+		"action":                "read_v3",
+		"artifact_v3_reference": artifactRef,
+	}
+	raw, err := r.executeManageArtifact(ctx, scope, "direct-read-base", args)
+	if err != nil {
+		return "", nil, err
+	}
+	var resp struct {
+		Content string                       `json:"content"`
+		Parts   []pebblestore.ArtifactV3Part `json:"parts"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return "", nil, fmt.Errorf("decode read_v3 response: %w", err)
+	}
+	return resp.Content, resp.Parts, nil
+}
+
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
 	if r != nil {
 		r.artifactV2Video = service
