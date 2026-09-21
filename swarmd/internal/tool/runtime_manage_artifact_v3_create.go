@@ -143,7 +143,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		})
 	}
 	if len(manifestParts) == 0 {
-		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, or footer")
+		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, footer, or div")
 	}
 	if profile != nil && len(requestedParts) == 0 {
 		// One whole-animation sample; all other meaningful regions remain global

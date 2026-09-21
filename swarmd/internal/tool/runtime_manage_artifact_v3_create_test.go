@@ -169,6 +169,23 @@ func TestManageArtifactCreateV3AcceptsTitleField(t *testing.T) {
 	}
 }
 
+// Requirement: createDirectArtifactV3HTML must accept div with an id as a stable region part.
+func TestManageArtifactCreateV3AcceptsDivWithID(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+	arguments := `{"action":"create","title":"Div Gauge","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><div id=\"dashboard\">Dashboard</div></body></html>"}`
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "div-test", Name: "manage_artifact", Arguments: arguments})
+	if err != nil {
+		t.Fatalf("expected div with id to be accepted, got: %v", err)
+	}
+	if len(repository.turns) != 1 {
+		t.Fatalf("expected 1 turn prepared, got: %d", len(repository.turns))
+	}
+}
+
 // Requirement: createDirectArtifactV3HTML must reject invalid media and unresolved
 // region references before allocating an author turn or publishing any revision.
 // This tool-layer test keeps those negative boundaries independent of Part count.
