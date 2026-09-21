@@ -39,16 +39,20 @@ export function isDesktopV3VideoStudioRecord(record: SessionCacheRecord | undefi
   return record?.kind === 'full' && isDesktopV3VideoStudioSession(record.session)
 }
 
-export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | undefined): boolean {
+export function isDesktopV3NavigationHiddenSession(
+  session: SessionSnapshot | undefined,
+  options?: { active?: boolean },
+): boolean {
   if (!session) return false
-  if (isAutomationExecutionSession(session)) return true
+  if (isAutomationExecutionSession(session)) {
+    return !options?.active
+  }
   const metadata = session.metadata
   // An accepted automation author session should be visible under the Workers sidebar group.
   if (session.automation_v2 && metadata?.swarm_v3_session_purpose === 'automation_management') {
     return false
   }
   return isAutomationManagementSession(session)
-    || isAutomationExecutionSession(session)
     || session.navigation_hidden === true
     || session.system_session === true
     || session.system_sidechat === true
@@ -63,6 +67,9 @@ export function isDesktopV3NavigationHiddenSession(session: SessionSnapshot | un
     || Boolean(metadataString(metadata, 'automation_review_id'))
 }
 
-export function isDesktopV3NavigationHiddenRecord(record: SessionCacheRecord | undefined): boolean {
-  return record?.kind === 'full' && isDesktopV3NavigationHiddenSession(record.session)
+export function isDesktopV3NavigationHiddenRecord(
+  record: SessionCacheRecord | undefined,
+  options?: { active?: boolean },
+): boolean {
+  return record?.kind === 'full' && isDesktopV3NavigationHiddenSession(record.session, options)
 }

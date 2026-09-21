@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { createEmptyDesktopV3CacheState, applyHydrateSnapshot, applyReconnectSnapshot, applySnapshot, applyWorksetSessionDiscovered, applyWorksetSessionUpdated } from './desktop-v3-cache-reducer'
+import type { V3SessionRunIntent } from './desktop-v3-cache-types'
 import { selectDesktopSidebarRows, selectDesktopVideoStudioRows } from './desktop-v3-cache-selectors'
 import { hydrateSnapshotFixture, reconnectFixture, sessionA, sessionB, snapshotFixture } from './desktop-v3-cache.backend-fixtures'
 import { isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
@@ -212,4 +213,97 @@ test('bootstrap, hydrate, and realtime exclude automation occurrence execution s
   })
   assert.equal(state.sessionOrderByScope.sidebar.includes(automationExecutionSession.id), false)
   assert.deepEqual(selectDesktopSidebarRows(state).map((row) => row.sessionId), [sessionA.id])
+})
+
+// Purpose: active automation execution sessions must remain visible in Desktop navigation
+// and prominently classified under the 'in_progress' sidebar group while actively running,
+// and excluded once inactive or completed.
+test('active automation execution sessions are visible in navigation and classified as in_progress', () => {
+  // a) Verify isDesktopV3NavigationHiddenSession returns false when active is true, true when false/omitted
+  assert.equal(isDesktopV3NavigationHiddenSession(automationExecutionSession, { active: true }), false)
+  assert.equal(isDesktopV3NavigationHiddenSession(automationExecutionSession, { active: false }), true)
+  assert.equal(isDesktopV3NavigationHiddenSession(automationExecutionSession), true)
+  assert.equal(isDesktopV3NavigationHiddenSession(sessionA, { active: true }), false)
+  assert.equal(isDesktopV3NavigationHiddenSession(hiddenSession, { active: true }), true)
+
+  // b) Verify that an automation execution session with an active run intent appears in selectDesktopSidebarRows under sidebarGroup 'in_progress'
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'sidebar' }
+  const activeExecutionRunIntent: V3SessionRunIntent = {
+    session_id: automationExecutionSession.id,
+    run_id: 'run-exec-1',
+    status: 'running',
+    created_at: 100,
+    updated_at: 100,
+    event_seq: 1,
+  }
+  const snapshot = snapshotFixture({
+    scope_id: 'sidebar',
+    sessions_by_id: {
+      [sessionA.id]: sessionA,
+      [automationExecutionSession.id]: automationExecutionSession,
+    },
+    projections_by_session: {},
+    messages_by_session: {},
+    run_intents_by_session: {
+      [automationExecutionSession.id]: [activeExecutionRunIntent],
+    },
+    session_order: [automationExecutionSession.id, sessionA.id],
+  })
+  applySnapshot(state, { source: 'bootstrap', scopeId: snapshot.scope_id, snapshot })
+
+  const rows = selectDesktopSidebarRows(state, 'sidebar')
+  const executionRow = rows.find((r) => r.sessionId === automationExecutionSession.id)
+  assert.ok(executionRow, 'active automation execution session must appear in sidebar')
+  assert.equal(executionRow.sidebarGroup, 'in_progress')
+
+  // c) Verify that once the run intent is inactive/completed, it is excluded from sidebar rows
+  applyWorksetSessionUpdated(state, {
+    kind: 'workset.session.updated',
+    workset_id: 'sidebar',
+    session_id: automationExecutionSession.id,
+    session: automationExecutionSession,
+    current_run_state: {
+      active: false,
+      run_id: 'run-exec-1',
+      session_id: automationExecutionSession.id,
+      status: 'completed',
+      created_at: 100,
+      completed_at: 200,
+      updated_at: 200,
+    },
+    endpoint_cursor: 'cursor-completed',
+  })
+
+  const updatedRows = selectDesktopSidebarRows(state, 'sidebar')
+  assert.equal(updatedRows.find((r) => r.sessionId === automationExecutionSession.id), undefined)
+  assert.equal(state.sessionOrderByScope.sidebar.includes(automationExecutionSession.id), false)
+})
+
+test('realtime discovered retains active automation execution sessions in navigation and sidebar', () => {
+  const state = createEmptyDesktopV3CacheState()
+  state.desktopSidebarBootstrap = { status: 'ready', scopeId: 'sidebar' }
+  state.sessionOrderByScope.sidebar = [sessionA.id]
+
+  applyWorksetSessionDiscovered(state, {
+    kind: 'workset.session.discovered',
+    workset_id: 'sidebar',
+    session_id: automationExecutionSession.id,
+    session: automationExecutionSession,
+    current_run_state: {
+      active: true,
+      run_id: 'run-discovered-1',
+      session_id: automationExecutionSession.id,
+      status: 'running',
+      created_at: 100,
+      updated_at: 100,
+    },
+    endpoint_cursor: 'cursor-discovered-exec',
+  })
+
+  assert.equal(state.sessionOrderByScope.sidebar.includes(automationExecutionSession.id), true)
+  const rows = selectDesktopSidebarRows(state, 'sidebar')
+  const execRow = rows.find((r) => r.sessionId === automationExecutionSession.id)
+  assert.ok(execRow, 'discovered running execution session must be present')
+  assert.equal(execRow.sidebarGroup, 'in_progress')
 })

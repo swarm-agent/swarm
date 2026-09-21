@@ -4,6 +4,7 @@ import { selectAutomationV2Identity } from './desktop-automation-v2-state'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
+import { isAutomationExecutionSession } from './desktop-automation-purpose'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioRecord, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
 export type DesktopV3SidebarRowType = 'plan_session' | 'single_chat'
@@ -290,8 +291,10 @@ function buildDesktopV3SidebarRows(
   for (const sessionId of selectSessionOrder(state, resolvedScopeId)) {
     if (state.tombstonesBySession[sessionId]) continue
     const record = state.sessionsById[sessionId]
-    if (!record || isDesktopV3NavigationHiddenRecord(record) || !includeRecord(record)) continue
+    const hasActiveRun = hasActiveRunIntent(state.currentRunIntentBySession[sessionId])
+    if (!record || isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun }) || !includeRecord(record)) continue
     const planState = buildDesktopSidebarPlanState(state, sessionId)
+    const isRunningExecution = record.kind === 'full' && isAutomationExecutionSession(record.session) && hasActiveRun
     rows.push({
       sessionId,
       record: cloneSessionCacheRecord(record),
@@ -303,13 +306,15 @@ function buildDesktopV3SidebarRows(
       pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
       ...planState,
       rowType: planState.planExecution ? 'plan_session' : 'single_chat',
-      sidebarGroup: selectAutomationV2Identity(state, sessionId) ? 'automation' : desktopSidebarGroupForRow({
-        hasActivePlan: planState.hasActivePlan,
-        planExecution: planState.planExecution,
-        hasActiveRun: hasActiveRunIntent(state.currentRunIntentBySession[sessionId]),
-        pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
-        tombstoned: Boolean(state.tombstonesBySession[sessionId]),
-      }),
+      sidebarGroup: isRunningExecution
+        ? 'in_progress'
+        : (selectAutomationV2Identity(state, sessionId) ? 'automation' : desktopSidebarGroupForRow({
+            hasActivePlan: planState.hasActivePlan,
+            planExecution: planState.planExecution,
+            hasActiveRun,
+            pendingPermissionCount: state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0,
+            tombstoned: Boolean(state.tombstonesBySession[sessionId]),
+          })),
       branchLabel: desktopSidebarBranchLabel(record),
     })
   }
