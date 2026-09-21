@@ -181,6 +181,9 @@ func validateGeneratedDesignerHTML(html string, isAnimation bool, requiredParts 
 		if !strings.Contains(trimmed, "__SWARM_ANIMATION_V1__") {
 			return errors.New("missing window.__SWARM_ANIMATION_V1__ animation bridge")
 		}
+		if !strings.Contains(trimmed, `"swarm.animation/v1"`) && !strings.Contains(trimmed, `'swarm.animation/v1'`) {
+			return errors.New("__SWARM_ANIMATION_V1__ must declare version: \"swarm.animation/v1\"")
+		}
 		if !strings.Contains(trimmed, "ready") || !strings.Contains(trimmed, "seek") {
 			return errors.New("__SWARM_ANIMATION_V1__ must implement both ready() and seek(time_ms)")
 		}
@@ -216,6 +219,7 @@ CRITICAL REQUIREMENTS:
      </script>
    - In <script>, expose the animation controller:
      window.__SWARM_ANIMATION_V1__ = {
+       version: "swarm.animation/v1",
        ready: async () => ({ duration_ms: ` + fmt.Sprintf("%d", durationMS) + `, fps: 60 }),
        seek: async (time_ms) => {
          // deterministically update and render visual state for time_ms
@@ -373,6 +377,13 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 	} else {
 		parent = snapshot
 	}
+	if parent.AccountScopeID == "" {
+		parent.AccountScopeID = strings.TrimSpace(req.Principal.AccountScopeID)
+	}
+	if parent.UserID == "" {
+		parent.UserID = strings.TrimSpace(req.Principal.UserID)
+	}
+
 	callID := strings.TrimSpace(call.CallID)
 	if callID == "" {
 		callID = fmt.Sprintf("task_%d", time.Now().UnixMilli())
@@ -762,6 +773,19 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 					partsList = append(partsList, partMap)
 				}
 				rawResult, persistErr = s.tools.CreateManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), hydrated[i].Title, generatedHTML, partsList, parsed.Swarm.AnimationProfile, run)
+			}
+			if persistErr == nil {
+				var checkObj map[string]any
+				if jsonErr := json.Unmarshal([]byte(rawResult), &checkObj); jsonErr == nil {
+					st := asString(checkObj["status"])
+					if st == "fixing" || st == "failed" || st == "error" {
+						msg := asString(checkObj["message"])
+						if msg == "" {
+							msg = "artifact creation failed browser preview gate"
+						}
+						persistErr = errors.New(msg)
+					}
+				}
 			}
 
 			if persistErr != nil {
