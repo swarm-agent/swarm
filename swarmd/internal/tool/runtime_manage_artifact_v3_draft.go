@@ -33,7 +33,19 @@ func directArtifactV3Handle(g ArtifactV3AuthorGrant) ArtifactV3DraftHandle {
 }
 
 func directArtifactV3Retained(g ArtifactV3AuthorGrant, gate ArtifactV3AuthorGate) map[string]any {
-	return map[string]any{"status": "fixing", "artifact_id": g.ArtifactID, "turn_id": g.TurnID, "candidate_id": g.CandidateID, "draft_handle": directArtifactV3Handle(g), "gate": gate, "message": "Source retained. Use author_v3 with this exact draft_handle: read_file, edit_file, build_preview, then finish_turn. Do not create another artifact or claim this draft is ready."}
+	diagnostic := "the complete Artifact V3 project failed its build or browser preview gate"
+	if len(gate.Diagnostics) != 0 && strings.TrimSpace(gate.Diagnostics[0].Message) != "" {
+		diagnostic = strings.TrimSpace(gate.Diagnostics[0].Message)
+	}
+	return map[string]any{
+		"status":       "fixing",
+		"artifact_id":   g.ArtifactID,
+		"turn_id":       g.TurnID,
+		"candidate_id":  g.CandidateID,
+		"draft_handle":  directArtifactV3Handle(g),
+		"gate":          gate,
+		"message":       diagnostic + "; source retained: make a corrected manage_artifact create call with complete HTML to repair",
+	}
 }
 
 func (r *Runtime) authorDirectArtifactV3Draft(ctx context.Context, scope WorkspaceScope, principal artifact.Principal, callID string, args map[string]any) (map[string]any, error) {
