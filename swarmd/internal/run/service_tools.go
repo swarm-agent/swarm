@@ -299,7 +299,7 @@ func managedDesignerArtifactContext(parent pebblestore.SessionSnapshot, taskCall
 		sourceCopy := *spec.SourceArtifact
 		run.SourceArtifact = &sourceCopy
 	}
-	if sectionTarget != nil || len(sectionTargets) != 0 {
+	if spec.ArtifactV3Source == nil && (sectionTarget != nil || len(sectionTargets) != 0) {
 		if len(sectionTargets) != 0 {
 			run.SelectedReviewTargets = make([]pebblestore.SessionArtifactPart, 0, len(sectionTargets))
 			for _, target := range sectionTargets {

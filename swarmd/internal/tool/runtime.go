@@ -771,6 +771,7 @@ func (r *Runtime) ReadManagedArtifactV3HTML(ctx context.Context, scope Workspace
 		return "", nil, errors.New("manage_artifact runtime is not configured")
 	}
 	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: scope.SessionID, RunID: "direct-read-" + scope.SessionID})
 	args := map[string]any{
 		"action":                "read_v3",
 		"artifact_v3_reference": artifactRef,

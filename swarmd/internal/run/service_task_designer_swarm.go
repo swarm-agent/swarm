@@ -13,6 +13,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
+	"swarm/packages/swarmd/internal/artifact"
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -385,8 +386,16 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 		emitDirectDesignerSwarmDelta(emit, step, callID, parsed.Action, parsed.Description, len(hydrated), i+1, "hydrated", hydrated[i].Title, hydrated[i].Theme, "router", "Design prompt hydrated", nil)
 	}
 
+	if parsed.Swarm.AnimationProfile != nil {
+		if resolved, err := artifact.ResolveAnimationProfile(&artifact.AnimationProfileInput{Profile: parsed.Swarm.AnimationProfile.ProfileID}); err == nil {
+			parsed.Swarm.AnimationProfile = resolved
+		}
+	}
 	specs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	for i := range specs {
+		if parsed.Swarm.AnimationProfile != nil {
+			specs[i].AnimationProfile = cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile)
+		}
 		specs[i].AssignmentLabel = hydrated[i].Title
 		if specs[i].SourceArguments == nil {
 			specs[i].SourceArguments = map[string]any{}
@@ -404,6 +413,9 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 		run := managedDesignerArtifactContext(parent, callID, spec, i+1)
 		if run == nil || run.CollectionID != collectionID {
 			return "", fmt.Errorf("direct designer swarm item %d cannot allocate a trusted artifact destination", i+1)
+		}
+		if parsed.Swarm.AnimationProfile != nil {
+			run.AnimationProfile = cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile)
 		}
 		run.ChildSessionID = parent.ID
 		prepared[i] = taskLaunchPrepared{
