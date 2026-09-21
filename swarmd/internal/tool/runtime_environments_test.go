@@ -247,7 +247,7 @@ func TestEnvironmentsTool_SchemaValidation(t *testing.T) {
 	for _, act := range []string{
 		"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 		"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
-		"summary", "history", "get_operation", "cancel_operation", "help",
+		"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
 	} {
 		found := false
 		for _, a := range envActions {
@@ -1218,5 +1218,70 @@ func TestEnvironmentsTool_CrossWorkspaceOwnerRejectionNoSideEffects(t *testing.T
 	}
 	if !strings.Contains(err.Error(), "workspace ID mismatch") {
 		t.Errorf("expected workspace ID mismatch error, got: %v", err)
+	}
+}
+
+func TestEnvironmentsTool_CancelActionAliasAndStableIdempotency(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+	workspaceID := "ws-test-123"
+
+	// Create environment
+	createRes, err := execTool(t, h, "manage_environments", map[string]any{
+		"action":       "create",
+		"workspace_id": workspaceID,
+		"name":         "Cancel Test Env",
+		"container": map[string]any{
+			"image": "alpine:latest",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create failed: %v", err)
+	}
+	var created map[string]any
+	_ = json.Unmarshal([]byte(createRes), &created)
+	envID := created["environment"].(map[string]any)["id"].(string)
+
+	// Launch with stable callID idempotency
+	runCtx := WithArtifactRunContext(context.Background(), ArtifactRunContext{
+		SessionID:      "sess-attributed-1",
+		RunID:          "run-attributed-1",
+		ChildSessionID: "child-worker-1",
+	})
+	callRaw, _ := json.Marshal(map[string]any{
+		"action":         "ensure",
+		"workspace_id":   workspaceID,
+		"environment_id": envID,
+	})
+	out, err := h.rt.ExecuteForWorkspaceScopeWithRuntime(runCtx, h.scope, Call{
+		CallID:    "call-stable-123",
+		Name:      "manage_environments",
+		Arguments: string(callRaw),
+	})
+	if err != nil {
+		t.Fatalf("ensure with runCtx failed: %v", err)
+	}
+	var ensureRes map[string]any
+	_ = json.Unmarshal([]byte(out), &ensureRes)
+	opID := ensureRes["operation_id"].(string)
+
+	// Cancel using action: "cancel" alias (not just cancel_operation)
+	cancelRaw, _ := json.Marshal(map[string]any{
+		"action":       "cancel",
+		"workspace_id": workspaceID,
+		"operation_id": opID,
+		"reason":       "user requested stop",
+	})
+	cancelOut, err := h.rt.ExecuteForWorkspaceScopeWithRuntime(runCtx, h.scope, Call{
+		CallID:    "call-cancel-123",
+		Name:      "manage_environments",
+		Arguments: string(cancelRaw),
+	})
+	if err != nil {
+		t.Fatalf("cancel action alias failed: %v", err)
+	}
+	var cancelRes map[string]any
+	_ = json.Unmarshal([]byte(cancelOut), &cancelRes)
+	if cancelRes["status"] != "cancelling" && cancelRes["status"] != "cancelled" {
+		t.Errorf("expected cancelling/cancelled status, got: %v", cancelRes["status"])
 	}
 }

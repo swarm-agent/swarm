@@ -1968,7 +1968,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-connections", "manage_connections":
 		return r.executeManageConnections(ctx, scope, args)
 	case "manage-environments", "manage_environments":
-		return r.executeManageEnvironments(ctx, scope, args)
+		return r.executeManageEnvironments(ctx, scope, call.CallID, args)
 	case "manage-deployments", "manage_deployments":
 		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
 	case "artifact-v2-author", "artifact_v2_author":

@@ -783,3 +783,87 @@ func TestEnvironmentsAPI_RealtimeOutboxConfig(t *testing.T) {
 	// Must not panic when called with nil store or configured
 	srv.ConfigureEnvironmentRealtime(nil)
 }
+
+func TestEnvironmentsAPI_RoutingAndRealtimeAdmission(t *testing.T) {
+	srv, _, _, _, _ := setupTestServer()
+
+	// 1. GET /v1/environments/deployments routes to list deployments
+	depReq := authedRequest(http.MethodGet, "/v1/environments/deployments?workspace_id=ws-1", nil)
+	w := httptest.NewRecorder()
+	srv.handleEnvironments(w, depReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /v1/environments/deployments, got %d: %s", w.Code, w.Body.String())
+	}
+	var depResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &depResp)
+	if depResp["deployments"] == nil {
+		t.Fatalf("expected deployments in response: %v", depResp)
+	}
+
+	// 2. GET /v1/environments?action=list_deployments routes to list deployments
+	depActionReq := authedRequest(http.MethodGet, "/v1/environments?workspace_id=ws-1&action=list_deployments", nil)
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, depActionReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on action=list_deployments, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. GET /v1/environments/operations without operation_id returns operations list
+	opsReq := authedRequest(http.MethodGet, "/v1/environments/operations?workspace_id=ws-1", nil)
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, opsReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on /v1/environments/operations, got %d: %s", w.Code, w.Body.String())
+	}
+	var opsResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &opsResp)
+	if opsResp["operations"] == nil {
+		t.Fatalf("expected operations in response: %v", opsResp)
+	}
+
+	// 4. POST /v1/environments with action: "cancel" routes to cancel
+	cancelReq := authedRequest(http.MethodPost, "/v1/environments", map[string]any{
+		"action":       "cancel",
+		"workspace_id": "ws-1",
+		"operation_id": "op-ensure-1",
+		"reason":       "user stopped test",
+	})
+	w = httptest.NewRecorder()
+	srv.handleEnvironments(w, cancelReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on action=cancel, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 5. Realtime admission for environment.updated
+	p := identity.Principal{AccountScopeID: "acc-1", UserID: "user-1"}
+	record := sessionruntime.RealtimeOutboxRecord{
+		AccountScopeID: "acc-1",
+		UserID:         "desktop",
+		Event: pebblestore.V3SessionEvent{
+			Seq:       1,
+			EventType: pebblestore.EnvironmentChangedEventType,
+		},
+	}
+	if !v3RealtimeRecordVisibleToPrincipal(p, record) {
+		t.Fatal("own account environment event denied")
+	}
+	for _, foreignAccount := range []string{"foreign", ""} {
+		record.AccountScopeID = foreignAccount
+		if v3RealtimeRecordVisibleToPrincipal(p, record) {
+			t.Fatal("foreign/unscoped environment event admitted")
+		}
+	}
+	frame := V3RealtimeMessage{
+		Protocol:        V3RealtimeProtocol,
+		ProtocolVersion: V3RealtimeProtocolVersion,
+		Kind:            V3RealtimeKindEnvironmentChanged,
+		EndpointCursor:  "opaque",
+	}
+	if err := ValidateV3RealtimeOutboundServerMessage(frame); err != nil {
+		t.Fatalf("outbound environment frame validation failed: %v", err)
+	}
+	frame.EndpointCursor = ""
+	if err := ValidateV3RealtimeOutboundServerMessage(frame); err == nil {
+		t.Fatal("missing cursor accepted on environment frame")
+	}
+}

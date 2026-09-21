@@ -279,6 +279,30 @@ export async function fetchDeployments(
   }
 }
 
+export async function fetchCurrentOperations(
+  workspaceId: string,
+  signal?: AbortSignal,
+  workspacePath = '',
+): Promise<EnvironmentOperation[]> {
+  const search = new URLSearchParams()
+  if (workspaceId.trim()) search.set('workspace_id', workspaceId.trim())
+  if (workspacePath.trim()) search.set('workspace_path', workspacePath.trim())
+  search.set('action', 'operations')
+
+  try {
+    const response = await requestJson<{ ok: boolean; operations?: EnvironmentOperation[] }>(
+      `/v1/environments?${search.toString()}`,
+      { signal },
+    )
+    if (response && Array.isArray(response.operations)) {
+      return response.operations
+    }
+  } catch {
+    // fallback if endpoint is unavailable
+  }
+  return []
+}
+
 export async function fetchEnvironmentSummary(
   workspaceId: string,
   signal?: AbortSignal,
@@ -402,6 +426,32 @@ export async function ensureDeployment(
   },
   workspacePath = '',
 ): Promise<{ deployment: Deployment; lease: DeploymentLease; reused: boolean }> {
+  try {
+    const response = await requestJson<DeploymentMutationResponse>('/v1/environments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'ensure',
+        workspace_id: workspaceId,
+        workspace_path: workspacePath,
+        environment_id: params.environmentId,
+        connection_id: params.connectionId,
+        consumer_type: params.consumerType || 'session',
+        consumer_id: params.consumerId,
+        deployment_name: params.deploymentName,
+      }),
+    })
+    if (response.deployment && response.lease) {
+      return {
+        deployment: response.deployment,
+        lease: response.lease,
+        reused: Boolean(response.reused),
+      }
+    }
+  } catch {
+    // fallback to /v1/deployments
+  }
+
   const response = await requestJson<DeploymentMutationResponse>('/v1/deployments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -450,56 +500,13 @@ export async function stopDeployment(
   deploymentId: string,
   workspacePath = '',
 ): Promise<Deployment & { operation?: EnvironmentOperation; operation_id?: string; status?: OperationStatus }> {
-  try {
-    const response = await requestJson<{
-      ok: boolean
-      deployment?: Deployment
-      operation?: EnvironmentOperation
-      operation_id?: string
-      status?: OperationStatus
-    }>('/v1/environments', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'stop',
-        workspace_id: workspaceId,
-        workspace_path: workspacePath,
-        deployment_id: deploymentId,
-      }),
-    })
-
-    if (response.deployment) {
-      return {
-        ...response.deployment,
-        operation: response.operation,
-        operation_id: response.operation_id || response.operation?.operation_id,
-        status: response.status || response.deployment.status,
-      }
-    }
-
-    if (response.operation || response.operation_id) {
-      return {
-        id: deploymentId,
-        account_scope_id: '',
-        workspace_id: workspaceId,
-        environment_id: '',
-        connection_id: '',
-        name: `Deployment ${deploymentId.slice(0, 8)}`,
-        status: (response.status === 'cancelling' ? 'stopping' : response.status) as any || 'stopping',
-        health: 'unknown',
-        runtime: {},
-        lifecycle: { created_at: Date.now() },
-        created_at: Date.now(),
-        updated_at: Date.now(),
-        operation: response.operation,
-        operation_id: response.operation_id || response.operation?.operation_id,
-      }
-    }
-  } catch {
-    // fallback below
-  }
-
-  const fallback = await requestJson<DeploymentMutationResponse>('/v1/deployments', {
+  const response = await requestJson<{
+    ok: boolean
+    deployment?: Deployment
+    operation?: EnvironmentOperation
+    operation_id?: string
+    status?: OperationStatus
+  }>('/v1/environments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -509,8 +516,41 @@ export async function stopDeployment(
       deployment_id: deploymentId,
     }),
   })
-  if (!fallback.deployment) throw new Error('Stop deployment returned no deployment')
-  return fallback.deployment
+
+  const opId = response.operation_id || response.operation?.operation_id
+  if (!opId) {
+    throw new Error(`Stop deployment returned no operation ID for deployment ${deploymentId}`)
+  }
+  const status = response.status || response.operation?.status
+  if (!status) {
+    throw new Error(`Stop deployment returned no operation status for deployment ${deploymentId}`)
+  }
+
+  if (response.deployment) {
+    return {
+      ...response.deployment,
+      operation: response.operation,
+      operation_id: opId,
+      status,
+    }
+  }
+
+  return {
+    id: deploymentId,
+    account_scope_id: '',
+    workspace_id: workspaceId,
+    environment_id: '',
+    connection_id: '',
+    name: `Deployment ${deploymentId.slice(0, 8)}`,
+    status: (status === 'cancelling' ? 'stopping' : status) as any || 'stopping',
+    health: 'unknown',
+    runtime: {},
+    lifecycle: { created_at: Date.now() },
+    created_at: Date.now(),
+    updated_at: Date.now(),
+    operation: response.operation,
+    operation_id: opId,
+  }
 }
 
 export async function releaseDeployment(

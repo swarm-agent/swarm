@@ -27,7 +27,7 @@ func manageEnvironmentsDefinition() Definition {
 					"enum": []string{
 						"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 						"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
-						"summary", "history", "get_operation", "cancel_operation", "help",
+						"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
 					},
 					"description": "Operation action to perform",
 				},
@@ -88,7 +88,7 @@ func manageEnvironmentsDefinition() Definition {
 	}
 }
 
-func (r *Runtime) executeManageEnvironments(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+func (r *Runtime) executeManageEnvironments(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
 	if r == nil || r.environmentsStore == nil {
 		return "", errors.New("manage_environments environment store is not configured")
 	}
@@ -123,7 +123,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["available_actions"] = []string{
 			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 			"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
-			"summary", "history", "get_operation", "cancel_operation", "help",
+			"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
 		}
 
 	case "list":
@@ -421,13 +421,13 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["operation_id"] = op.OperationID
 		response["status"] = op.Status
 
-	case "cancel_operation":
+	case "cancel", "cancel_operation":
 		if r.deploymentManager == nil {
 			return "", errors.New("manage_environments deployment manager is not configured")
 		}
-		opID := strings.TrimSpace(asString(args["operation_id"]))
+		opID := firstNonEmptyString(strings.TrimSpace(asString(args["operation_id"])), strings.TrimSpace(asString(args["id"])))
 		if opID == "" {
-			return "", errors.New("operation_id is required for cancel_operation action")
+			return "", errors.New("operation_id is required for cancel action")
 		}
 		reason := strings.TrimSpace(asString(args["reason"]))
 		if reason == "" {
@@ -458,16 +458,32 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			callerActor = "session-agent"
 		}
 		callerSessionID := strings.TrimSpace(scope.SessionID)
+		var callerRunID string
+		var callerWorkerID string
+		if runCtx, ok := ctx.Value(artifactRunContextKey{}).(ArtifactRunContext); ok {
+			callerRunID = strings.TrimSpace(runCtx.RunID)
+			callerWorkerID = strings.TrimSpace(runCtx.ChildSessionID)
+			if callerWorkerID == "" {
+				callerWorkerID = strings.TrimSpace(runCtx.ProgramJobID)
+			}
+		}
+
+		idempotencyKey := strings.TrimSpace(asString(args["idempotency_key"]))
+		if idempotencyKey == "" && strings.TrimSpace(callID) != "" {
+			idempotencyKey = "tool:" + strings.TrimSpace(callID)
+		}
 
 		subReq := lifecycle.SubmitOperationRequest{
 			AccountScopeID: accountScopeID,
 			WorkspaceID:    workspaceID,
 			Action:         actionName,
-			IdempotencyKey: strings.TrimSpace(asString(args["idempotency_key"])),
+			IdempotencyKey: idempotencyKey,
 			Deadline:       int64(asInt(args["deadline"], 0)),
 			Attribution: environments.OperationAttribution{
 				Actor:     callerActor,
 				SessionID: callerSessionID,
+				RunID:     callerRunID,
+				WorkerID:  callerWorkerID,
 			},
 		}
 		if tMs := asInt(args["timeout_ms"], 0); tMs > 0 {

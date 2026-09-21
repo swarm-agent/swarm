@@ -422,12 +422,15 @@ export function EnvironmentsPage() {
             environments={environments}
             connections={connections}
             settings={settings}
+            summary={summary}
+            deployments={deployments}
             loading={environmentsQuery.isLoading}
             onRefresh={invalidateAll}
             onSaveEnvironment={handleSaveEnvironment}
             onDeleteEnvironment={handleDeleteEnvironment}
             onSetDefaultTestEnvironment={handleSetDefaultTestEnvironment}
             onDeployEnvironment={handleDeployEnvironment}
+            onSwitchToDeployments={() => handleTabChange('deployments')}
           />
         )}
 

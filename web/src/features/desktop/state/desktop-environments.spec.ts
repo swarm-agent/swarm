@@ -432,3 +432,248 @@ test('Requirement-First: operation cancellation preserves durable receipt and la
     'Late response must NOT resurrect a cancelled operation back to running',
   )
 })
+
+// =============================================================================
+// Requirement 7: True terminal snapshot unpins cancelling receipt
+// Threat: Cancel receipt permanently pins operation status to cancelling even after
+//         server confirms terminal cancelled or succeeded snapshot.
+// Authority: reduceDesktopEnvironmentsState loadSuccess
+// =============================================================================
+test('Requirement-First: true terminal snapshot unpins cancelling receipt', () => {
+  let state: DesktopEnvironmentsState = {
+    'ws-1': {
+      ...createInitialWorkspaceState('ws-1'),
+      summaryRevision: 2,
+      lastReceipt: {
+        operationId: 'op-terminal-1',
+        action: 'cancel',
+        status: 'cancelling',
+        timestamp: 5000,
+      },
+      operations: [{
+        operation_id: 'op-terminal-1',
+        account_scope_id: 'acc-1',
+        workspace_id: 'ws-1',
+        action: 'exec',
+        status: 'cancelling',
+        revision: 2,
+        created_at: 1000,
+        observed_at: 4000,
+      }],
+    },
+  }
+
+  // True terminal snapshot arrives from server indicating 'cancelled' status
+  const terminalOp: EnvironmentOperation = {
+    operation_id: 'op-terminal-1',
+    account_scope_id: 'acc-1',
+    workspace_id: 'ws-1',
+    action: 'exec',
+    status: 'cancelled',
+    revision: 3,
+    created_at: 1000,
+    observed_at: 6000,
+  }
+
+  state = reduceDesktopEnvironmentsState(state, {
+    type: 'environments.loadSuccess',
+    workspaceId: 'ws-1',
+    requestId: 'req-term',
+    summary: {
+      accountScopeID: 'acc-1',
+      workspaceID: 'ws-1',
+      revision: 3,
+      updated_at: 6000,
+      active_deployments: 0,
+      running_exec_ops: 0,
+      queued_ops: 0,
+      running_ops: 0,
+      cancelling_ops: 0,
+      failed_ops: 0,
+      cleanup_failed_ops: 0,
+      unknown_ops: 0,
+      succeeded_ops: 0,
+      cancelled_ops: 1,
+      timed_out_ops: 0,
+      total_ops: 1,
+    },
+    deployments: [],
+    activeLeases: {},
+    currentOperations: [],
+    historyPage: {
+      operations: [terminalOp],
+      daily_totals: [],
+      summary: {} as any,
+      has_more: false,
+    },
+  })
+
+  // Status must be terminal 'cancelled', NOT pinned to 'cancelling'
+  const finalOp = state['ws-1'].operations.find((o) => o.operation_id === 'op-terminal-1')
+  assert.equal(finalOp?.status, 'cancelled', 'terminal snapshot must not be pinned to cancelling')
+  assert.equal(state['ws-1'].lastReceipt, undefined, 'lastReceipt must be cleared when terminal status is reached')
+})
+
+// =============================================================================
+// Requirement 8: Active operations preserved independent of history pagination/filter
+// Threat: User filters history or pages back; active commands under deployments disappear.
+// Authority: reduceDesktopEnvironmentsState loadSuccess & currentOperations merge
+// =============================================================================
+test('Requirement-First: active operations remain visible even when history page is older or filtered', () => {
+  const activeOp: EnvironmentOperation = {
+    operation_id: 'op-active-now',
+    account_scope_id: 'acc-1',
+    workspace_id: 'ws-1',
+    deployment_id: 'dep-1',
+    action: 'exec',
+    status: 'running',
+    revision: 5,
+    created_at: 9000,
+    observed_at: 9500,
+  }
+
+  const oldHistoricalOp: EnvironmentOperation = {
+    operation_id: 'op-ancient-1',
+    account_scope_id: 'acc-1',
+    workspace_id: 'ws-1',
+    deployment_id: 'dep-1',
+    action: 'exec',
+    status: 'succeeded',
+    revision: 1,
+    created_at: 1000,
+    observed_at: 1500,
+  }
+
+  let state: DesktopEnvironmentsState = {
+    'ws-1': createInitialWorkspaceState('ws-1'),
+  }
+
+  state = reduceDesktopEnvironmentsState(state, {
+    type: 'environments.loadSuccess',
+    workspaceId: 'ws-1',
+    requestId: 'req-filtered',
+    summary: {
+      accountScopeID: 'acc-1',
+      workspaceID: 'ws-1',
+      revision: 5,
+      updated_at: 9500,
+      active_deployments: 1,
+      running_exec_ops: 1,
+      queued_ops: 0,
+      running_ops: 1,
+      cancelling_ops: 0,
+      failed_ops: 0,
+      cleanup_failed_ops: 0,
+      unknown_ops: 0,
+      succeeded_ops: 10,
+      cancelled_ops: 0,
+      timed_out_ops: 0,
+      total_ops: 11,
+    },
+    deployments: [{
+      id: 'dep-1',
+      account_scope_id: 'acc-1',
+      workspace_id: 'ws-1',
+      environment_id: 'env-1',
+      connection_id: 'conn-1',
+      name: 'Test Dep',
+      status: 'running',
+      health: 'healthy',
+      runtime: {},
+      lifecycle: { created_at: 1000 },
+      created_at: 1000,
+      updated_at: 1000,
+    }],
+    activeLeases: {},
+    currentOperations: [activeOp],
+    historyPage: {
+      operations: [oldHistoricalOp], // only contains ancient operation due to page/date filter
+      daily_totals: [],
+      summary: {} as any,
+      has_more: true,
+      next_cursor: 'page-3',
+    },
+  })
+
+  // Both current active op and old historical op must be in operations
+  const foundActive = state['ws-1'].operations.find((o) => o.operation_id === 'op-active-now')
+  const foundOld = state['ws-1'].operations.find((o) => o.operation_id === 'op-ancient-1')
+  assert.ok(foundActive, 'active command must remain present even when history page contains older rows')
+  assert.equal(foundActive?.status, 'running')
+  assert.ok(foundOld, 'historical row must also be present')
+})
+
+// =============================================================================
+// Requirement 9: Real timezone day boundary with DST transitions
+// Threat: Date rollover uses fixed 86400 seconds, missing or double-triggering on DST change days.
+// Authority: msUntilNextMidnight
+// =============================================================================
+test('Requirement-First: msUntilNextMidnight accounts for DST spring forward (23h) and fall back (25h)', () => {
+  // Spring forward: 2026-03-08 in America/New_York (23 hours day)
+  const springForwardNoon = new Date('2026-03-08T17:00:00Z') // 12:00 EST
+  const msSpring = msUntilNextMidnight('America/New_York', springForwardNoon)
+  // Noon EST to midnight EDT is 11 hours (11 * 3600 * 1000 = 39,600,000 ms) + buffer
+  assert.ok(msSpring > 39000000 && msSpring < 41000000, `Spring forward noon to midnight should be ~11 hours, got ${msSpring}`)
+
+  // Fall back: 2026-11-01 in America/New_York (25 hours day)
+  const fallBackNoon = new Date('2026-11-01T16:00:00Z') // 12:00 EDT
+  const msFall = msUntilNextMidnight('America/New_York', fallBackNoon)
+  // Noon EDT to midnight EST is 13 hours (13 * 3600 * 1000 = 46,800,000 ms) + buffer
+  assert.ok(msFall > 46000000 && msFall < 48000000, `Fall back noon to midnight should be ~13 hours, got ${msFall}`)
+})
+
+// =============================================================================
+// Requirement 10: Stop deployment rejects missing operation receipt with explicit error
+// Threat: Missing operation receipt falls back to fake stop-${id} and running status.
+// Authority: DesktopEnvironmentsRuntime.stopDeployment
+// =============================================================================
+test('Requirement-First: stopDeployment throws error instead of fake receipt fallback when op ID is missing', async () => {
+  const runtime = new DesktopEnvironmentsRuntime({
+    getState: () => ({
+      'ws-1': createInitialWorkspaceState('ws-1'),
+    }),
+    dispatch: () => {},
+    stopDeployment: async () => {
+      // Backend returned incomplete response with no operation_id
+      return {} as any
+    },
+    retainRealtime: () => ({ ready: Promise.resolve(), release: () => {} }),
+  })
+
+  await assert.rejects(
+    async () => {
+      await runtime.stopDeployment('ws-1', 'dep-missing-op')
+    },
+    /Stop deployment returned no operation ID/,
+    'must throw clear error instead of synthesizing fake receipt',
+  )
+})
+
+// =============================================================================
+// Requirement 11: Replay complete frame triggers invalidation
+// Threat: Realtime reconnect replay completes but UI remains stale without invalidating.
+// Authority: DesktopEnvironmentsRuntime.acceptFrame
+// =============================================================================
+test('Requirement-First: replay.complete frame invalidates demanded workspaces', () => {
+  let invalidatedCount = 0
+  const runtime = new DesktopEnvironmentsRuntime({
+    getState: () => ({
+      'ws-1': createInitialWorkspaceState('ws-1'),
+    }),
+    dispatch: (action) => {
+      if (action.type === 'environments.invalidate') {
+        invalidatedCount++
+      }
+    },
+    fetchDeployments: async () => ({ deployments: [], activeLeases: {} }),
+    fetchOperationHistory: async () => ({ operations: [], daily_totals: [], summary: {} as any, has_more: false }),
+    retainRealtime: () => ({ ready: Promise.resolve(), release: () => {} }),
+  })
+
+  runtime.acquire('ws-1')
+  assert.equal(invalidatedCount, 0)
+
+  // Stream delivers replay.complete
+  runtime.acceptFrame({ kind: 'replay.complete' })
+  assert.equal(invalidatedCount, 1, 'replay.complete must trigger invalidation')
+})

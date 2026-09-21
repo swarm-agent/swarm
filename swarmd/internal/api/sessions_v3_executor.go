@@ -320,25 +320,22 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		cancel()
 	}
 	if e.server != nil && e.server.deployments != nil {
-		wsID := ""
+		wsIDs := make(map[string]bool)
 		if e.server.sessions != nil {
 			if sess, foundSess, _ := e.server.sessions.GetSession(job.SessionID); foundSess {
 				for _, g := range sess.WorkspaceGrants {
-					if g.Kind == pebblestore.WorkspaceGrantPrimary && g.WorkspaceID != "" {
-						wsID = g.WorkspaceID
-						break
+					if strings.TrimSpace(g.WorkspaceID) != "" {
+						wsIDs[strings.TrimSpace(g.WorkspaceID)] = true
 					}
-				}
-				if wsID == "" && len(sess.WorkspaceGrants) > 0 {
-					wsID = sess.WorkspaceGrants[0].WorkspaceID
 				}
 			}
 		}
-		if wsID != "" {
+		for wsID := range wsIDs {
 			_, _ = e.server.deployments.CancelOwner(context.Background(), lifecycle.CancelOwnerRequest{
 				AccountScopeID: job.Principal.AccountScopeID,
 				WorkspaceID:    wsID,
 				SessionID:      job.SessionID,
+				RunID:          job.RunID,
 				Reason:         reason,
 			})
 		}
@@ -891,6 +888,10 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 	if current, ok, currentErr := e.server.sessions.GetV3SessionRunIntent(job.SessionID, job.RunID); currentErr != nil {
 		return sessionruntime.SessionMutationResult{}, currentErr
 	} else if ok {
+		// Stop guard: if the current intent is already terminal (cancelled), reject late completion/result updates
+		if current.Status == sessionruntime.RunIntentCancelled && status != sessionruntime.RunIntentCancelled {
+			return sessionruntime.SessionMutationResult{}, errors.New("cannot update status: run has already been cancelled")
+		}
 		if intent.SourceMessageID == "" {
 			intent.SourceMessageID = current.SourceMessageID
 		}

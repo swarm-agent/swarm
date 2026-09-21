@@ -13,7 +13,7 @@ import {
 import { Badge } from '../../../../components/ui/badge'
 import { Button } from '../../../../components/ui/button'
 import { Card } from '../../../../components/ui/card'
-import type { Connection, Environment, WorkspaceSettings } from '../types/environments'
+import type { Connection, Deployment, Environment, EnvironmentSummary, WorkspaceSettings } from '../types/environments'
 import { EnvironmentSetupDialog } from './environment-setup-dialog'
 
 interface EnvironmentsViewProps {
@@ -22,12 +22,15 @@ interface EnvironmentsViewProps {
   environments: Environment[]
   connections: Connection[]
   settings: WorkspaceSettings
+  summary?: EnvironmentSummary
+  deployments?: Deployment[]
   loading?: boolean
   onRefresh: () => void
   onSaveEnvironment: (data: any) => Promise<void>
   onDeleteEnvironment: (id: string) => Promise<void>
   onSetDefaultTestEnvironment: (id: string) => Promise<void>
   onDeployEnvironment: (envId: string) => Promise<void>
+  onSwitchToDeployments?: () => void
 }
 
 export function EnvironmentsView({
@@ -36,12 +39,15 @@ export function EnvironmentsView({
   environments,
   connections,
   settings,
+  summary,
+  deployments,
   loading = false,
   onRefresh,
   onSaveEnvironment,
   onDeleteEnvironment,
   onSetDefaultTestEnvironment,
   onDeployEnvironment,
+  onSwitchToDeployments,
 }: EnvironmentsViewProps) {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingEnv, setEditingEnv] = useState<Environment | null>(null)
@@ -97,6 +103,34 @@ export function EnvironmentsView({
 
   return (
     <div className="space-y-6" data-testid="environments-view">
+      {/* Primary Overview: Deployed Instances & Current Operations Totals */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs" data-testid="primary-environments-totals">
+        <Card className="p-3 bg-[var(--app-surface)] border border-[var(--app-border)]">
+          <div className="text-[var(--app-text-muted)] font-medium">Active Deployments</div>
+          <div className="text-xl font-bold text-[var(--app-text)] mt-1" data-testid="primary-active-deployments-count">
+            {summary?.active_deployments ?? deployments?.filter((d) => d.status === 'running' || d.status === 'ready').length ?? 0}
+          </div>
+        </Card>
+        <Card className="p-3 bg-[var(--app-surface)] border border-[var(--app-border)]">
+          <div className="text-[var(--app-text-muted)] font-medium">Executing Commands</div>
+          <div className="text-xl font-bold text-[var(--app-text)] mt-1" data-testid="primary-executing-commands-count">
+            {summary?.running_exec_ops ?? 0}
+          </div>
+        </Card>
+        <Card className="p-3 bg-[var(--app-surface)] border border-[var(--app-border)]">
+          <div className="text-[var(--app-text-muted)] font-medium">Running Operations</div>
+          <div className="text-xl font-bold text-[var(--app-text)] mt-1" data-testid="primary-running-ops-count">
+            {(summary?.running_ops ?? 0) + (summary?.queued_ops ?? 0) + (summary?.cancelling_ops ?? 0)}
+          </div>
+        </Card>
+        <Card className="p-3 bg-[var(--app-surface)] border border-[var(--app-border)]">
+          <div className="text-[var(--app-text-muted)] font-medium">Daily Completed</div>
+          <div className="text-xl font-bold text-[var(--app-text)] mt-1" data-testid="primary-completed-ops-count">
+            {summary?.succeeded_ops ?? 0}
+          </div>
+        </Card>
+      </div>
+
       {/* Section Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>

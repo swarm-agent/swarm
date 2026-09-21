@@ -529,30 +529,51 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if subpath == "operations" || actionQuery == "get_operation" {
+		if subpath == "operations" || actionQuery == "get_operation" || actionQuery == "operations" || actionQuery == "list_operations" {
 			if s.deployments == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
 				return
 			}
 			opID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("operation_id")), strings.TrimSpace(r.URL.Query().Get("id")))
-			if opID == "" {
-				writeError(w, http.StatusBadRequest, errors.New("operation_id is required"))
+			if opID != "" {
+				op, found, getErr := s.deployments.Get(r.Context(), accountScopeID, workspaceID, opID)
+				if getErr != nil {
+					writeError(w, http.StatusInternalServerError, getErr)
+					return
+				}
+				if !found {
+					writeError(w, http.StatusNotFound, fmt.Errorf("operation %q not found", opID))
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": op, "operation_id": op.OperationID, "status": op.Status})
 				return
 			}
-			op, found, getErr := s.deployments.Get(r.Context(), accountScopeID, workspaceID, opID)
-			if getErr != nil {
-				writeError(w, http.StatusInternalServerError, getErr)
+			limit := 50
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				if parsed, pErr := strconv.Atoi(rawLimit); pErr == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
+			page, hErr := s.deployments.History(r.Context(), environments.OperationHistoryQuery{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				EnvironmentID:  strings.TrimSpace(r.URL.Query().Get("environment_id")),
+				DeploymentID:   strings.TrimSpace(r.URL.Query().Get("deployment_id")),
+				Limit:          limit,
+			})
+			if hErr != nil {
+				writeError(w, http.StatusInternalServerError, hErr)
 				return
 			}
-			if !found {
-				writeError(w, http.StatusNotFound, fmt.Errorf("operation %q not found", opID))
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": op, "operation_id": op.OperationID, "status": op.Status})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":         true,
+				"operations": page.Operations,
+				"count":      len(page.Operations),
+			})
 			return
 		}
 
-		if actionQuery == "list_deployments" {
+		if subpath == "deployments" || actionQuery == "list_deployments" || actionQuery == "deployments" {
 			if s.deployments == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
 				return
@@ -593,12 +614,16 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if actionQuery == "get_deployment" {
+		if actionQuery == "get_deployment" || subpath == "deployment" || strings.HasPrefix(subpath, "deployments/") {
 			if s.deployments == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
 				return
 			}
-			depID := strings.TrimSpace(r.URL.Query().Get("deployment_id"))
+			depID := firstNonEmptyString(
+				strings.TrimSpace(r.URL.Query().Get("deployment_id")),
+				strings.TrimSpace(r.URL.Query().Get("id")),
+				strings.TrimPrefix(subpath, "deployments/"),
+			)
 			if depID == "" {
 				writeError(w, http.StatusBadRequest, errors.New("deployment_id is required"))
 				return

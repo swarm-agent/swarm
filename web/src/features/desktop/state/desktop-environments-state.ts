@@ -42,6 +42,7 @@ export type DesktopEnvironmentsAction =
       summary: EnvironmentSummary
       deployments: Deployment[]
       activeLeases: Record<string, DeploymentLease>
+      currentOperations?: EnvironmentOperation[]
       historyPage: OperationHistoryPage
     }
   | { type: 'environments.loadError'; workspaceId: string; requestId: string; error: string }
@@ -58,6 +59,16 @@ export type DesktopEnvironmentsAction =
     }
   | { type: 'environments.operationUpdated'; workspaceId: string; operation: EnvironmentOperation }
   | { type: 'environments.evict'; workspaceId: string }
+
+export function isTerminalOperationStatus(status?: string): boolean {
+  return (
+    status === 'succeeded' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'cleanup_failed' ||
+    status === 'timed_out'
+  )
+}
 
 export function defaultHistoryFilter(): HistoryFilter {
   let tz = 'UTC'
@@ -112,21 +123,53 @@ export function reduceDesktopEnvironmentsState(
     }
 
     case 'environments.loadSuccess': {
-      const existing = state[action.workspaceId] ?? createInitialWorkspaceState(action.workspaceId)
+      let existing = state[action.workspaceId] ?? createInitialWorkspaceState(action.workspaceId)
       const incomingRev = action.summary.revision ?? 0
       // Monotonic revision check: if incoming revision is older than existing revision, ignore summary regression
       const shouldUpdateSummary = incomingRev >= existing.summaryRevision || existing.summary === undefined
-      const targetSummary = shouldUpdateSummary ? action.summary : existing.summary
+      let targetSummary = shouldUpdateSummary ? action.summary : existing.summary
       const targetRevision = Math.max(existing.summaryRevision, incomingRev)
 
-      // Merge operations: keep operations from history page, and update with receipt if pending
-      const operations = [...action.historyPage.operations]
+      // Monotonically reconcile count floors so cumulative totals never regress backwards
+      if (shouldUpdateSummary && existing.summary && targetSummary) {
+        targetSummary = {
+          ...targetSummary,
+          total_ops: Math.max(existing.summary.total_ops ?? 0, targetSummary.total_ops ?? 0),
+          succeeded_ops: Math.max(existing.summary.succeeded_ops ?? 0, targetSummary.succeeded_ops ?? 0),
+          failed_ops: Math.max(existing.summary.failed_ops ?? 0, targetSummary.failed_ops ?? 0),
+          cancelled_ops: Math.max(existing.summary.cancelled_ops ?? 0, targetSummary.cancelled_ops ?? 0),
+          timed_out_ops: Math.max(existing.summary.timed_out_ops ?? 0, targetSummary.timed_out_ops ?? 0),
+          cleanup_failed_ops: Math.max(existing.summary.cleanup_failed_ops ?? 0, targetSummary.cleanup_failed_ops ?? 0),
+        }
+      }
+
+      // Merge operations: active current operations ALWAYS take precedence and are never dropped
+      // by pagination or date filters. Merge dedicated current operations with history page operations.
+      const currentOps = action.currentOperations ?? []
+      const opMap = new Map<string, EnvironmentOperation>()
+      for (const op of currentOps) {
+        opMap.set(op.operation_id, { ...op })
+      }
+      for (const op of action.historyPage.operations) {
+        if (!opMap.has(op.operation_id)) {
+          opMap.set(op.operation_id, { ...op })
+        }
+      }
+      const operations = Array.from(opMap.values())
+
       if (existing.lastReceipt) {
         const matchingOp = operations.find((o) => o.operation_id === existing.lastReceipt?.operationId)
-        if (matchingOp && matchingOp.status !== existing.lastReceipt.status) {
-          // preserve receipt status if receipt is newer than operation last observed
-          if (existing.lastReceipt.timestamp >= (matchingOp.observed_at || 0)) {
-            matchingOp.status = existing.lastReceipt.status
+        if (matchingOp) {
+          if (isTerminalOperationStatus(matchingOp.status)) {
+            // True terminal snapshot arrived; receipt must not permanently pin cancelling
+            if (existing.lastReceipt.operationId === matchingOp.operation_id) {
+              existing = { ...existing, lastReceipt: undefined }
+            }
+          } else if (matchingOp.status !== existing.lastReceipt.status) {
+            // preserve receipt status if receipt is newer than operation last observed
+            if (existing.lastReceipt.timestamp >= (matchingOp.observed_at || 0)) {
+              matchingOp.status = existing.lastReceipt.status
+            }
           }
         }
       }

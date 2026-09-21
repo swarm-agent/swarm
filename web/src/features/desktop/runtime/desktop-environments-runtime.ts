@@ -1,7 +1,9 @@
 import { useEffect, useMemo } from 'react'
 import {
   cancelEnvironmentOperation,
+  fetchCurrentOperations,
   fetchDeployments,
+  fetchEnvironmentSummary,
   fetchOperationHistory,
   stopDeployment,
 } from '../environments/services/environments-api'
@@ -25,7 +27,19 @@ import {
   getDesktopV3CacheSnapshot,
   useDesktopV3CacheSelector,
 } from '../state/desktop-v3-cache-store'
-import { retainDesktopV3RealtimeController, type DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
+import type { DesktopV3RealtimeLease } from '../realtime/v3-realtime-controller'
+
+let defaultRealtimeRetainer: ((input?: { ownerKey?: string }) => DesktopV3RealtimeLease) | undefined
+
+export function setDesktopEnvironmentsRealtimeRetainer(
+  retainer: (input?: { ownerKey?: string }) => DesktopV3RealtimeLease,
+): void {
+  defaultRealtimeRetainer = retainer
+}
+
+export function getDesktopEnvironments(): DesktopEnvironmentsRuntime {
+  return desktopEnvironments
+}
 
 export interface DesktopEnvironmentsRuntimeDeps {
   fetchDeployments: (
@@ -34,6 +48,16 @@ export interface DesktopEnvironmentsRuntimeDeps {
     environmentId?: string,
     workspacePath?: string,
   ) => Promise<{ deployments: Deployment[]; activeLeases: Record<string, DeploymentLease> }>
+  fetchCurrentOperations: (
+    workspaceId: string,
+    signal?: AbortSignal,
+    workspacePath?: string,
+  ) => Promise<EnvironmentOperation[]>
+  fetchEnvironmentSummary: (
+    workspaceId: string,
+    signal?: AbortSignal,
+    workspacePath?: string,
+  ) => Promise<EnvironmentSummary>
   fetchOperationHistory: (
     workspaceId: string,
     query?: Partial<HistoryFilter>,
@@ -68,18 +92,52 @@ export function msUntilNextMidnight(timezone: string, now: Date = new Date()): n
       hour12: false,
     })
     const parts = formatter.formatToParts(now)
+    let year = now.getUTCFullYear()
+    let month = now.getUTCMonth() + 1
+    let day = now.getUTCDate()
     let hour = 0
     let minute = 0
     let second = 0
     for (const part of parts) {
+      if (part.type === 'year') year = parseInt(part.value, 10)
+      if (part.type === 'month') month = parseInt(part.value, 10)
+      if (part.type === 'day') day = parseInt(part.value, 10)
       if (part.type === 'hour') hour = parseInt(part.value, 10) % 24
       if (part.type === 'minute') minute = parseInt(part.value, 10)
       if (part.type === 'second') second = parseInt(part.value, 10)
     }
-    const secondsPassed = hour * 3600 + minute * 60 + second
-    const secondsUntilMidnight = 86400 - secondsPassed
-    const msUntilMidnight = secondsUntilMidnight * 1000 - now.getMilliseconds()
-    return Math.max(1000, Math.min(86400000, msUntilMidnight + 1000))
+
+    const tomorrowUTC = new Date(Date.UTC(year, month - 1, day + 1))
+    const targetYear = tomorrowUTC.getUTCFullYear()
+    const targetMonth = tomorrowUTC.getUTCMonth() + 1
+    const targetDay = tomorrowUTC.getUTCDate()
+
+    let guessTime = now.getTime() + (24 - hour) * 3600000 - minute * 60000 - second * 1000 - now.getMilliseconds()
+
+    for (let i = 0; i < 3; i++) {
+      const gParts = formatter.formatToParts(new Date(guessTime))
+      let gYear = 0, gMonth = 0, gDay = 0, gHour = 0, gMinute = 0, gSecond = 0
+      for (const p of gParts) {
+        if (p.type === 'year') gYear = parseInt(p.value, 10)
+        if (p.type === 'month') gMonth = parseInt(p.value, 10)
+        if (p.type === 'day') gDay = parseInt(p.value, 10)
+        if (p.type === 'hour') gHour = parseInt(p.value, 10) % 24
+        if (p.type === 'minute') gMinute = parseInt(p.value, 10)
+        if (p.type === 'second') gSecond = parseInt(p.value, 10)
+      }
+
+      if (gYear === targetYear && gMonth === targetMonth && gDay === targetDay && gHour === 0 && gMinute === 0 && gSecond === 0) {
+        break
+      }
+
+      const gDateUTC = new Date(Date.UTC(gYear, gMonth - 1, gDay))
+      const dayDiff = Math.round((tomorrowUTC.getTime() - gDateUTC.getTime()) / 86400000)
+      const secondsError = dayDiff * 86400 - (gHour * 3600 + gMinute * 60 + gSecond)
+      guessTime += secondsError * 1000
+    }
+
+    const msUntilMidnight = guessTime - now.getTime()
+    return Math.max(1000, Math.min(90000000, msUntilMidnight + 1000))
   } catch {
     const utcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
     return Math.max(1000, utcMidnight.getTime() - now.getTime() + 500)
@@ -98,12 +156,17 @@ export class DesktopEnvironmentsRuntime {
   constructor(deps?: Partial<DesktopEnvironmentsRuntimeDeps>) {
     this.deps = {
       fetchDeployments: deps?.fetchDeployments ?? fetchDeployments,
+      fetchCurrentOperations: deps?.fetchCurrentOperations ?? fetchCurrentOperations,
+      fetchEnvironmentSummary: deps?.fetchEnvironmentSummary ?? fetchEnvironmentSummary,
       fetchOperationHistory: deps?.fetchOperationHistory ?? fetchOperationHistory,
       cancelOperation: deps?.cancelOperation ?? cancelEnvironmentOperation,
       stopDeployment: deps?.stopDeployment ?? stopDeployment,
       dispatch: deps?.dispatch ?? ((action) => dispatchDesktopV3Cache(action)),
       getState: deps?.getState ?? (() => getDesktopV3CacheSnapshot().environmentsByWorkspace ?? {}),
-      retainRealtime: deps?.retainRealtime ?? retainDesktopV3RealtimeController,
+      retainRealtime: deps?.retainRealtime ?? ((input) => {
+        if (defaultRealtimeRetainer) return defaultRealtimeRetainer(input)
+        return { release: () => {} }
+      }),
     }
   }
 
@@ -174,7 +237,7 @@ export class DesktopEnvironmentsRuntime {
   }
 
   acceptFrame(frame: { kind: string; [key: string]: unknown }): void {
-    if (frame.kind === 'cursor.error' || frame.kind === 'rehydrate.required') {
+    if (frame.kind === 'cursor.error' || frame.kind === 'rehydrate.required' || frame.kind === 'replay.complete') {
       this.invalidate()
       return
     }
@@ -260,18 +323,23 @@ export class DesktopEnvironmentsRuntime {
 
     const promise: Promise<void> = Promise.all([
       this.deps.fetchDeployments(normalized, abortController.signal),
+      this.deps.fetchEnvironmentSummary(normalized, abortController.signal).catch(() => undefined),
+      this.deps.fetchCurrentOperations(normalized, abortController.signal).catch(() => []),
       this.deps.fetchOperationHistory(normalized, filter, abortController.signal),
     ])
-      .then(([deploymentsResult, historyPage]) => {
+      .then(([deploymentsResult, summaryResult, currentOps, historyPage]) => {
         if (abortController.signal.aborted) return
+
+        const authoritativeSummary = summaryResult ?? historyPage.summary
 
         this.deps.dispatch({
           type: 'environments.loadSuccess',
           workspaceId: normalized,
           requestId,
-          summary: historyPage.summary,
+          summary: authoritativeSummary,
           deployments: deploymentsResult.deployments,
           activeLeases: deploymentsResult.activeLeases,
+          currentOperations: currentOps,
           historyPage,
         })
 
@@ -306,8 +374,14 @@ export class DesktopEnvironmentsRuntime {
     workspacePath = '',
   ): Promise<{ operation?: EnvironmentOperation; operation_id?: string; status?: OperationStatus; deployment?: Deployment }> {
     const result = await this.deps.stopDeployment(workspaceId, deploymentId, workspacePath)
-    const opId = result.operation_id || result.operation?.operation_id || `stop-${deploymentId}`
-    const status = result.status || result.operation?.status || 'running'
+    const opId = result.operation_id || result.operation?.operation_id
+    if (!opId) {
+      throw new Error(`Stop deployment returned no operation ID for deployment ${deploymentId}`)
+    }
+    const status = result.status || result.operation?.status
+    if (!status) {
+      throw new Error(`Stop deployment returned no operation status for deployment ${deploymentId}`)
+    }
 
     this.deps.dispatch({
       type: 'environments.recordReceipt',
