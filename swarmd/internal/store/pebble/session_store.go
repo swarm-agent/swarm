@@ -1052,6 +1052,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		SessionArtifactCollectionPrefix(session.AccountScopeID, session.ID), SessionArtifactCollectionStatusSessionPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantLineageSessionPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactPartDefinitionSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactPartRevisionSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactCompositionSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactGitTransactionSessionPrefix(session.AccountScopeID, session.ID),
+		automationV2OccurrencePrefix(session.AccountScopeID, session.ID), automationV2Key("pending", session.AccountScopeID, session.ID) + "/", automationV2Key("history", session.AccountScopeID, session.ID) + "/",
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err

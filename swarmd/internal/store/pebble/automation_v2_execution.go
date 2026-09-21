@@ -33,6 +33,8 @@ type AutomationV2Occurrence struct {
 	Artifacts    []SessionPlanArtifactReference `json:"artifacts,omitempty"`
 	Result       string                         `json:"result,omitempty"`
 	Report       string                         `json:"report,omitempty"`
+	AttemptCount int                            `json:"attempt_count,omitempty"`
+	NextRetryAt  int64                          `json:"next_retry_at,omitempty"`
 }
 
 type automationV2ExecutionMutation struct {
@@ -68,7 +70,10 @@ func AutomationV2NextDue(policy AutomationV2Settings, anchor, after int64) (int6
 			return true
 		}
 		if strings.HasPrefix(f, "*/") {
-			n, _ := strconv.Atoi(f[2:])
+			n, err := strconv.Atoi(f[2:])
+			if err != nil || n <= 0 {
+				return false
+			}
 			base := 0
 			if i == 2 || i == 3 {
 				base = 1
@@ -78,11 +83,19 @@ func AutomationV2NextDue(policy AutomationV2Settings, anchor, after int64) (int6
 		n, _ := strconv.Atoi(f)
 		return value == n
 	}
+	domRestricted := fields[2] != "*"
+	dowRestricted := fields[4] != "*"
 	t := time.UnixMilli(after).UTC().Truncate(time.Minute).Add(time.Minute)
 	end := t.AddDate(8, 0, 0)
 	for t.Before(end) {
 		local := t.In(loc)
-		if match(3, int(local.Month())) && match(2, local.Day()) && match(4, int(local.Weekday())) && match(1, local.Hour()) && match(0, local.Minute()) {
+		dayMatch := false
+		if domRestricted && dowRestricted {
+			dayMatch = match(2, local.Day()) || match(4, int(local.Weekday()))
+		} else {
+			dayMatch = match(2, local.Day()) && match(4, int(local.Weekday()))
+		}
+		if match(3, int(local.Month())) && dayMatch && match(1, local.Hour()) && match(0, local.Minute()) {
 			return t.UnixMilli(), nil
 		}
 		t = t.Add(time.Minute)
@@ -104,7 +117,7 @@ func AutomationV2Terminal(state string) bool {
 }
 
 func (s *SessionStore) GetAutomationV2Occurrence(account, user, workspace, session, id string) (AutomationV2Occurrence, bool, error) {
-	if _, err := s.automationV2Owner(account, user, workspace, session); err != nil {
+	if _, _, _, err := s.automationV2OwnerStatus(account, user, workspace, session); err != nil {
 		return AutomationV2Occurrence{}, false, err
 	}
 	var o AutomationV2Occurrence
@@ -153,7 +166,7 @@ func (s *SessionStore) ScanAutomationV2Accepted(after string) ([]AutomationV2Rec
 }
 
 func (s *SessionStore) ListAutomationV2Occurrences(account, user, workspace, session, after string, pending bool, limit int) ([]AutomationV2Occurrence, string, error) {
-	if _, err := s.automationV2Owner(account, user, workspace, session); err != nil {
+	if _, _, _, err := s.automationV2OwnerStatus(account, user, workspace, session); err != nil {
 		return nil, "", err
 	}
 	if limit < 1 || limit > 25 {
@@ -228,12 +241,19 @@ func (s *SessionStore) ControlAutomationV2(account, user, workspace, session str
 		return r, ErrAutomationV2Conflict
 	}
 	switch action {
-	case "pause", "resume", "cancel_future", "cancel_all":
+	case "pause", "resume", "cancel_future", "cancel_all", "delete_automation":
 	default:
 		return r, ErrAutomationV2Conflict
 	}
 	if err := s.automationV2ExecutionApply(&automationV2ExecutionMutation{action: action, expected: r, now: now}); err != nil {
 		return r, err
+	}
+	if action == "delete_automation" {
+		r.Cancelled = true
+		r.CancelThrough = int64(r.Generation)
+		r.Enabled = false
+		r.Generation++
+		return r, nil
 	}
 	r, _, err = s.GetAutomationV2Record(account, user, workspace, session)
 	return r, err
@@ -288,12 +308,63 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 		if !r.Enabled || r.Cancelled || r.NextDueAt <= 0 || r.NextDueAt > now || (r.Authorization.Kind == "at" && (now >= r.Authorization.ExpiresAt || r.NextDueAt >= r.Authorization.ExpiresAt)) {
 			return ErrAutomationV2Conflict
 		}
+		if r.Document.AutomationV2 == nil && r.Document.WorkerV2 != nil {
+			r.Document.AutomationV2 = r.Document.WorkerV2
+		}
+		if r.Document.AutomationV2 == nil {
+			return ErrAutomationV2Conflict
+		}
 		if r.Document.AutomationV2.Overlap == "serialize" {
 			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 1)
 			if err != nil {
 				return err
 			}
 			if len(rows) > 0 {
+				return ErrAutomationV2Conflict
+			}
+		}
+		if r.Document.AutomationV2.DailyRunCap > 0 {
+			loc := time.UTC
+			if r.Document.AutomationV2.Schedule.Timezone != "" {
+				if l, err := time.LoadLocation(r.Document.AutomationV2.Schedule.Timezone); err == nil {
+					loc = l
+				}
+			}
+			nowTime := time.UnixMilli(now).In(loc)
+			startOfDay := time.Date(nowTime.Year(), nowTime.Month(), nowTime.Day(), 0, 0, 0, 0, loc)
+			startOfDayMs := startOfDay.UnixMilli()
+			startOfNextDay := startOfDay.AddDate(0, 0, 1)
+			startOfNextDayMs := startOfNextDay.UnixMilli()
+
+			prefix := automationV2OccurrencePrefix(r.AccountID, r.SessionID)
+			it, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+			if err != nil {
+				return err
+			}
+			admittedCount := 0
+			for valid := it.First(); valid; valid = it.Next() {
+				var o AutomationV2Occurrence
+				if err := json.Unmarshal(it.Value(), &o); err == nil {
+					if o.Record.AutomationID == r.AutomationID && o.AdmittedAt >= startOfDayMs && o.AdmittedAt < startOfNextDayMs {
+						admittedCount++
+					}
+				}
+			}
+			if err := it.Error(); err != nil {
+				_ = it.Close()
+				return err
+			}
+			_ = it.Close()
+
+			if admittedCount >= r.Document.AutomationV2.DailyRunCap {
+				r.NextDueAt = startOfNextDayMs
+				b, err := json.Marshal(r)
+				if err != nil {
+					return err
+				}
+				if err := s.store.db.Set([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), b, pebble.Sync); err != nil {
+					return err
+				}
 				return ErrAutomationV2Conflict
 			}
 		}
@@ -323,8 +394,8 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			}
 			m.occurrence = AutomationV2Occurrence{ID: id, Record: admittedSnapshot, DueAt: due, AdmittedAt: now, SessionID: "av2-execution-" + id, RunID: "av2-run:" + id, State: "admitted", Version: 1, ObservedAt: now}
 		}
-	case "pause", "resume", "cancel_future", "cancel_all":
-		if r.Cancelled && m.action != "cancel_all" {
+	case "pause", "resume", "cancel_future", "cancel_all", "delete_automation":
+		if r.Cancelled && m.action != "cancel_all" && m.action != "delete_automation" {
 			return ErrAutomationV2Conflict
 		}
 		if m.action == "resume" {
@@ -339,11 +410,17 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 		} else {
 			r.Enabled = false
 		}
-		if m.action == "cancel_future" || m.action == "cancel_all" {
+		if m.action == "cancel_future" || m.action == "cancel_all" || m.action == "delete_automation" {
 			r.Cancelled = true
 		}
-		if m.action == "cancel_all" {
+		if m.action == "cancel_all" || m.action == "delete_automation" {
 			r.CancelThrough = int64(r.Generation)
+		}
+		if m.action == "delete_automation" {
+			if current, ok, err := s.GetSession(in.SessionID); err == nil && ok && current.AutomationV2 != nil {
+				current.AutomationV2 = nil
+				in.Session = &current
+			}
 		}
 		r.Generation++
 	case "prepared":
@@ -391,6 +468,14 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 		if m.occurrence.Report != "" {
 			o.Report = m.occurrence.Report
 		}
+		if m.occurrence.AttemptCount > 0 {
+			o.AttemptCount = m.occurrence.AttemptCount
+		}
+		if m.occurrence.NextRetryAt > 0 {
+			o.NextRetryAt = m.occurrence.NextRetryAt
+		} else if m.occurrence.NextRetryAt < 0 || m.occurrence.State == "running" || AutomationV2Terminal(m.occurrence.State) {
+			o.NextRetryAt = 0
+		}
 		o.Version++
 		m.occurrence = o
 	case "closing":
@@ -423,6 +508,14 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 		if m.occurrence.Detail != "" {
 			o.Detail = m.occurrence.Detail
 		}
+		if m.occurrence.AttemptCount > 0 {
+			o.AttemptCount = m.occurrence.AttemptCount
+		}
+		if m.occurrence.NextRetryAt > 0 {
+			o.NextRetryAt = m.occurrence.NextRetryAt
+		} else if m.occurrence.NextRetryAt < 0 || AutomationV2Terminal(m.occurrence.State) {
+			o.NextRetryAt = 0
+		}
 		o.Version++
 		o.ObservedAt = now
 		m.occurrence = o
@@ -438,12 +531,18 @@ func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V
 	m := in.automationV2.execution
 	r := in.automationV2.record
 	if m.action != "observed" && m.action != "prepared" && m.action != "closing" {
-		b, err := json.Marshal(r)
-		if err != nil {
-			return err
-		}
-		if err = batch.Set([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), b, nil); err != nil {
-			return err
+		if m.action == "delete_automation" {
+			if err := batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), nil); err != nil {
+				return err
+			}
+		} else {
+			b, err := json.Marshal(r)
+			if err != nil {
+				return err
+			}
+			if err = batch.Set([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), b, nil); err != nil {
+				return err
+			}
 		}
 	}
 	if m.occurrence.ID != "" {

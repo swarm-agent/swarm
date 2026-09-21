@@ -22,6 +22,7 @@ type AutomationV2Settings struct {
 	Overlap          string                 `json:"overlap"`
 	ActivateOnAccept bool                   `json:"activate_on_accept"`
 	Expiration       AutomationV2Expiration `json:"expiration"`
+	DailyRunCap      int                    `json:"daily_run_cap,omitempty"`
 }
 type AutomationV2Schedule struct {
 	Kind            string `json:"kind"`
@@ -77,6 +78,9 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 	if a.SchemaVersion != 2 || !a.ActivateOnAccept || (a.Missed != "skip" && a.Missed != "coalesce") || (a.Overlap != "serialize" && a.Overlap != "independent") {
 		return errors.New("invalid automation v2 policy")
 	}
+	if a.DailyRunCap < 0 {
+		return errors.New("daily_run_cap must not be negative")
+	}
 	if a.Expiration.Kind != "indefinite" && a.Expiration.Kind != "at" {
 		return errors.New("explicit expiration kind required")
 	}
@@ -125,9 +129,6 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 			if err != nil || n < lo || n > hi {
 				return errors.New("cron field outside bounds")
 			}
-		}
-		if fields[2] != "*" && fields[4] != "*" {
-			return errors.New("both cron day fields cannot be restricted")
 		}
 	default:
 		return errors.New("explicit schedule kind required")
