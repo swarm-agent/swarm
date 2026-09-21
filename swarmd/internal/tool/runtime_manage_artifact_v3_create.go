@@ -249,17 +249,14 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		return directArtifactV3Retained(grant, gate), nil
 	}
 	writeProject := func(path string, content []byte) error {
-		if grant.Initial {
-			return r.artifactV3Author.Create(ctx, author, grant, path, content)
-		}
 		current, readErr := r.artifactV3Author.Read(ctx, author, grant, path, 0, 0)
-		if readErr != nil {
-			return readErr
+		if readErr == nil {
+			if current.Content == string(content) {
+				return nil
+			}
+			return r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false)
 		}
-		if current.Content == string(content) {
-			return nil
-		}
-		return r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false)
+		return r.artifactV3Author.Create(ctx, author, grant, path, content)
 	}
 	if err := writeProject(pebblestore.ArtifactV3ManifestFilename, manifest); err != nil {
 		return fail("manifest_write_failed", err)

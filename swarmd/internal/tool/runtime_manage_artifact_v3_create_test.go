@@ -186,6 +186,28 @@ func TestManageArtifactCreateV3AcceptsDivWithID(t *testing.T) {
 	}
 }
 
+// Requirement: createDirectArtifactV3HTML must allow repairing an existing draft
+// with a subsequent create call without failing with compare-and-swap conflict.
+func TestManageArtifactCreateV3AllowsRepairWithoutConflict(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+
+	arguments1 := `{"action":"create","title":"Initial","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero 1</main></body></html>"}`
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-1", Name: "manage_artifact", Arguments: arguments1})
+	if err != nil {
+		t.Fatalf("first create call failed: %v", err)
+	}
+
+	arguments2 := `{"action":"create","title":"Repaired","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero 2</main></body></html>"}`
+	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-2", Name: "manage_artifact", Arguments: arguments2})
+	if err != nil {
+		t.Fatalf("second create call (repair) failed: %v", err)
+	}
+}
+
 // Requirement: createDirectArtifactV3HTML must reject invalid media and unresolved
 // region references before allocating an author turn or publishing any revision.
 // This tool-layer test keeps those negative boundaries independent of Part count.
