@@ -1421,7 +1421,7 @@ func (s *SessionStore) ListSessionsForAccountWorkspaceBindings(accountScopeID, s
 	const iterateAll = int(^uint(0) >> 1)
 	err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
 		sessionID := strings.TrimSpace(string(value))
-		if sessionID == "" {
+		if sessionID == "" || strings.HasPrefix(sessionID, "__") {
 			return nil
 		}
 		session, ok, err := s.GetSession(sessionID)
@@ -1491,7 +1491,7 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 		if err := json.Unmarshal(value, &session); err != nil {
 			return err
 		}
-		if strings.TrimSpace(session.ID) == "" {
+		if strings.TrimSpace(session.ID) == "" || strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
@@ -1621,7 +1621,7 @@ func (s *SessionStore) listSessions(limit int, include func(SessionSnapshot) boo
 		if err := json.Unmarshal(value, &session); err != nil {
 			return err
 		}
-		if strings.TrimSpace(session.ID) == "" {
+		if strings.TrimSpace(session.ID) == "" || strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
@@ -1647,7 +1647,7 @@ func (s *SessionStore) listSessionsForAccount(accountScopeID string, limit int, 
 	const iterateAll = int(^uint(0) >> 1)
 	err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
 		sessionID := strings.TrimSpace(string(value))
-		if sessionID == "" {
+		if sessionID == "" || strings.HasPrefix(sessionID, "__") {
 			return nil
 		}
 		session, ok, err := s.GetSession(sessionID)

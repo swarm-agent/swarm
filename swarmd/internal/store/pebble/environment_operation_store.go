@@ -101,10 +101,18 @@ func (s *EnvironmentOperationStore) GetActiveOperationForDeployment(accountScope
 
 // AdmitOperation atomically admits a new operation, enforcing idempotency, per-deployment concurrency guards,
 // unresolved cleanup/unknown guards, capacity limits, and outbox integration.
-func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOperation) (environments.EnvironmentOperation, error) {
+// Returns the admitted operation, a bool indicating whether the operation was newly created (true) or replayed via idempotency (false), and any error.
+func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOperation) (environments.EnvironmentOperation, bool, error) {
 	if s == nil || s.store == nil {
-		return environments.EnvironmentOperation{}, errors.New("environment operation store is not configured")
+		return environments.EnvironmentOperation{}, false, errors.New("environment operation store is not configured")
 	}
+	var mutationToPublish *environmentRealtimeMutation
+	defer func() {
+		if mutationToPublish != nil {
+			s.store.publishEnvironmentRealtime(mutationToPublish)
+		}
+	}()
+
 	s.store.environmentsMu.Lock()
 	defer s.store.environmentsMu.Unlock()
 
@@ -116,6 +124,7 @@ func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOp
 	op.DeploymentID = strings.TrimSpace(op.DeploymentID)
 	op.LeaseID = strings.TrimSpace(op.LeaseID)
 	op.IdempotencyKey = strings.TrimSpace(op.IdempotencyKey)
+	op.RequestHash = strings.TrimSpace(op.RequestHash)
 	op.OperationID = strings.TrimSpace(op.OperationID)
 
 	if op.CreatedAt <= 0 {
@@ -140,51 +149,59 @@ func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOp
 	}
 
 	if err := op.Validate(); err != nil {
-		return environments.EnvironmentOperation{}, fmt.Errorf("validate operation: %w", err)
+		return environments.EnvironmentOperation{}, false, fmt.Errorf("validate operation: %w", err)
 	}
 
-	// 1. Idempotency Key check
+	// 1. Idempotency Key check: binds immutable request hash including command, env digest, attribution, etc.
 	if op.IdempotencyKey != "" {
 		idempKey := KeyEnvironmentOpIdempotencyForAccount(op.AccountScopeID, op.WorkspaceID, op.IdempotencyKey)
 		if existingIDBytes, ok, err := s.store.GetBytes(idempKey); err != nil {
-			return environments.EnvironmentOperation{}, fmt.Errorf("check idempotency key: %w", err)
+			return environments.EnvironmentOperation{}, false, fmt.Errorf("check idempotency key: %w", err)
 		} else if ok {
 			existingID := string(existingIDBytes)
 			existing, found, err := s.Get(op.AccountScopeID, op.WorkspaceID, existingID)
 			if err != nil {
-				return environments.EnvironmentOperation{}, fmt.Errorf("read idempotent operation: %w", err)
+				return environments.EnvironmentOperation{}, false, fmt.Errorf("read idempotent operation: %w", err)
 			}
 			if found {
-				if existing.Action == op.Action && existing.DeploymentID == op.DeploymentID && existing.EnvironmentID == op.EnvironmentID {
-					return existing, nil
+				match := existing.Action == op.Action && existing.DeploymentID == op.DeploymentID && existing.EnvironmentID == op.EnvironmentID
+				if existing.RequestHash != "" && op.RequestHash != "" && existing.RequestHash != op.RequestHash {
+					match = false
 				}
-				return environments.EnvironmentOperation{}, fmt.Errorf("%w: idempotency key %q reused with different action (%s vs %s) or target", environments.ErrIdempotencyConflict, op.IdempotencyKey, op.Action, existing.Action)
+				if match {
+					return existing, false, nil
+				}
+				return environments.EnvironmentOperation{}, false, fmt.Errorf("%w: idempotency key %q reused with different action (%s vs %s), target, or request parameters", environments.ErrIdempotencyConflict, op.IdempotencyKey, op.Action, existing.Action)
 			}
 		}
 	}
 
 	// 2. OperationID check
 	if existing, found, err := s.Get(op.AccountScopeID, op.WorkspaceID, op.OperationID); err != nil {
-		return environments.EnvironmentOperation{}, err
+		return environments.EnvironmentOperation{}, false, err
 	} else if found {
-		if (op.IdempotencyKey != "" && existing.IdempotencyKey == op.IdempotencyKey) || (existing.Action == op.Action && existing.DeploymentID == op.DeploymentID && existing.EnvironmentID == op.EnvironmentID) {
-			return existing, nil
+		match := (op.IdempotencyKey != "" && existing.IdempotencyKey == op.IdempotencyKey) || (existing.Action == op.Action && existing.DeploymentID == op.DeploymentID && existing.EnvironmentID == op.EnvironmentID)
+		if existing.RequestHash != "" && op.RequestHash != "" && existing.RequestHash != op.RequestHash {
+			match = false
 		}
-		return environments.EnvironmentOperation{}, fmt.Errorf("%w: operation ID %q already exists", environments.ErrOperationConflict, op.OperationID)
+		if match {
+			return existing, false, nil
+		}
+		return environments.EnvironmentOperation{}, false, fmt.Errorf("%w: operation ID %q already exists", environments.ErrOperationConflict, op.OperationID)
 	}
 
 	// 3. Deployment conflicting execution and unresolved cleanup/unknown guards
 	if op.DeploymentID != "" {
 		activeOp, hasActive, err := s.GetActiveOperationForDeployment(op.AccountScopeID, op.WorkspaceID, op.DeploymentID)
 		if err != nil {
-			return environments.EnvironmentOperation{}, err
+			return environments.EnvironmentOperation{}, false, err
 		}
 		if hasActive {
 			if activeOp.IsActive() {
-				return environments.EnvironmentOperation{}, fmt.Errorf("%w: deployment %q has active operation %q in state %q", environments.ErrDeploymentOperationConflict, op.DeploymentID, activeOp.OperationID, activeOp.Status)
+				return environments.EnvironmentOperation{}, false, fmt.Errorf("%w: deployment %q has active operation %q in state %q", environments.ErrDeploymentOperationConflict, op.DeploymentID, activeOp.OperationID, activeOp.Status)
 			}
 			if activeOp.IsUnresolved() {
-				return environments.EnvironmentOperation{}, fmt.Errorf("%w: deployment %q has unresolved operation %q in state %q; resolution required before reuse", environments.ErrDeploymentOperationBlocked, op.DeploymentID, activeOp.OperationID, activeOp.Status)
+				return environments.EnvironmentOperation{}, false, fmt.Errorf("%w: deployment %q has unresolved operation %q in state %q; resolution required before reuse", environments.ErrDeploymentOperationBlocked, op.DeploymentID, activeOp.OperationID, activeOp.Status)
 			}
 		}
 	}
@@ -192,16 +209,16 @@ func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOp
 	// 4. Capacity check: reject over-capacity explicitly
 	summary, err := s.getSummaryLocked(op.AccountScopeID, op.WorkspaceID)
 	if err != nil {
-		return environments.EnvironmentOperation{}, err
+		return environments.EnvironmentOperation{}, false, err
 	}
 	if summary.RunningOps+summary.QueuedOps >= maxWorkspaceActiveOps {
-		return environments.EnvironmentOperation{}, fmt.Errorf("%w: active operations limit (%d) reached for workspace", environments.ErrCapacityExceeded, maxWorkspaceActiveOps)
+		return environments.EnvironmentOperation{}, false, fmt.Errorf("%w: active operations limit (%d) reached for workspace", environments.ErrCapacityExceeded, maxWorkspaceActiveOps)
 	}
 
 	// 5. Prepare atomic batch mutation
 	opRaw, err := json.Marshal(op)
 	if err != nil {
-		return environments.EnvironmentOperation{}, fmt.Errorf("marshal operation: %w", err)
+		return environments.EnvironmentOperation{}, false, fmt.Errorf("marshal operation: %w", err)
 	}
 
 	mutation := &environmentRealtimeMutation{
@@ -242,7 +259,7 @@ func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOp
 
 	summaryRaw, err := json.Marshal(summary)
 	if err != nil {
-		return environments.EnvironmentOperation{}, fmt.Errorf("marshal summary: %w", err)
+		return environments.EnvironmentOperation{}, false, fmt.Errorf("marshal summary: %w", err)
 	}
 	summaryKey := KeyEnvironmentSummaryForAccount(op.AccountScopeID, op.WorkspaceID)
 	mutation.putBytes(summaryKey, summaryRaw)
@@ -255,11 +272,11 @@ func (s *EnvironmentOperationStore) AdmitOperation(op environments.EnvironmentOp
 	mutation.eventPayload = metaPayload
 
 	if err := s.store.commitEnvironmentRealtime(mutation); err != nil {
-		return environments.EnvironmentOperation{}, fmt.Errorf("commit admit operation: %w", err)
+		return environments.EnvironmentOperation{}, false, fmt.Errorf("commit admit operation: %w", err)
 	}
 
-	defer s.store.publishEnvironmentRealtime(mutation)
-	return op, nil
+	mutationToPublish = mutation
+	return op, true, nil
 }
 
 // TransitionOperation atomically executes a revision-guarded CAS transition on an operation.
@@ -268,6 +285,13 @@ func (s *EnvironmentOperationStore) TransitionOperation(input OperationTransitio
 	if s == nil || s.store == nil {
 		return environments.EnvironmentOperation{}, errors.New("environment operation store is not configured")
 	}
+	var mutationToPublish *environmentRealtimeMutation
+	defer func() {
+		if mutationToPublish != nil {
+			s.store.publishEnvironmentRealtime(mutationToPublish)
+		}
+	}()
+
 	s.store.environmentsMu.Lock()
 	defer s.store.environmentsMu.Unlock()
 
@@ -397,7 +421,7 @@ func (s *EnvironmentOperationStore) TransitionOperation(input OperationTransitio
 		return environments.EnvironmentOperation{}, fmt.Errorf("commit transition: %w", err)
 	}
 
-	defer s.store.publishEnvironmentRealtime(mutation)
+	mutationToPublish = mutation
 	return op, nil
 }
 
@@ -607,6 +631,13 @@ func (s *EnvironmentOperationStore) UpdateDeploymentCount(accountScopeID, worksp
 	if s == nil || s.store == nil {
 		return nil
 	}
+	var mutationToPublish *environmentRealtimeMutation
+	defer func() {
+		if mutationToPublish != nil {
+			s.store.publishEnvironmentRealtime(mutationToPublish)
+		}
+	}()
+
 	s.store.environmentsMu.Lock()
 	defer s.store.environmentsMu.Unlock()
 
@@ -665,7 +696,7 @@ func (s *EnvironmentOperationStore) UpdateDeploymentCount(accountScopeID, worksp
 		return err
 	}
 
-	defer s.store.publishEnvironmentRealtime(mutation)
+	mutationToPublish = mutation
 	return nil
 }
 
@@ -742,9 +773,20 @@ func (s *EnvironmentOperationStore) QueryHistory(q environments.OperationHistory
 		return environments.OperationHistoryPage{}, errors.New("start_date cannot be after end_date")
 	}
 
-	summary, err := s.GetSummary(q.AccountScopeID, q.WorkspaceID)
-	if err != nil {
-		return environments.OperationHistoryPage{}, fmt.Errorf("get summary: %w", err)
+	snap := s.store.db.NewSnapshot()
+	defer snap.Close()
+
+	summaryKey := KeyEnvironmentSummaryForAccount(q.AccountScopeID, q.WorkspaceID)
+	var summary environments.EnvironmentSummary
+	if summaryBytes, closer, sErr := snap.Get([]byte(summaryKey)); sErr == nil {
+		_ = json.Unmarshal(summaryBytes, &summary)
+		_ = closer.Close()
+	} else {
+		sSummary, err := s.GetSummary(q.AccountScopeID, q.WorkspaceID)
+		if err != nil {
+			return environments.OperationHistoryPage{}, fmt.Errorf("get summary: %w", err)
+		}
+		summary = sSummary
 	}
 
 	var cursorObj *environmentOpHistoryCursor
@@ -779,7 +821,7 @@ func (s *EnvironmentOperationStore) QueryHistory(q environments.OperationHistory
 	lowerBound := []byte(fmt.Sprintf("%s%018d/", historyPrefix, revStart))
 	upperBound := []byte(fmt.Sprintf("%s%018d/\xff", historyPrefix, revEnd))
 
-	iter, err := s.store.db.NewIter(&pebble.IterOptions{
+	iter, err := snap.NewIter(&pebble.IterOptions{
 		LowerBound: lowerBound,
 		UpperBound: upperBound,
 	})
@@ -916,4 +958,37 @@ func (s *EnvironmentOperationStore) QueryHistory(q environments.OperationHistory
 	}
 
 	return page, nil
+}
+
+// ListNonTerminalOperations provides internal recovery enumeration of non-terminal operations across workspaces.
+// Strictly internal to daemon recovery; not exposed to public/cross-scope APIs.
+func (s *EnvironmentOperationStore) ListNonTerminalOperations(limit int) ([]environments.EnvironmentOperation, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("environment operation store is not configured")
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	s.store.environmentsMu.Lock()
+	defer s.store.environmentsMu.Unlock()
+
+	out := make([]environments.EnvironmentOperation, 0)
+	prefix := KeyEnvironmentOperationAccountPrefix
+	err := s.store.IteratePrefix(prefix, 50000, func(_ string, value []byte) error {
+		var op environments.EnvironmentOperation
+		if err := json.Unmarshal(value, &op); err != nil {
+			return nil
+		}
+		if !op.IsTerminal() {
+			out = append(out, op)
+			if len(out) >= limit {
+				return errors.New("limit_reached")
+			}
+		}
+		return nil
+	})
+	if err != nil && err.Error() != "limit_reached" {
+		return nil, err
+	}
+	return out, nil
 }

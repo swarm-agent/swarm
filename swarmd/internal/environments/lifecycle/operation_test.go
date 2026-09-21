@@ -299,7 +299,14 @@ func TestSupervisedOperation_DuplicateAdmission(t *testing.T) {
 	}
 
 	execBlock := make(chan struct{})
+	execStarted := make(chan struct{}, 1)
+	var execRunCount int32
 	h.supervisedProv.execFn = func(ctx context.Context, conn *environments.Connection, dep *environments.Deployment, req provider.ExecRequest) (*provider.ExecResult, error) {
+		atomic.AddInt32(&execRunCount, 1)
+		select {
+		case execStarted <- struct{}{}:
+		default:
+		}
 		<-execBlock
 		return &provider.ExecResult{ExitCode: 0}, nil
 	}
@@ -321,7 +328,15 @@ func TestSupervisedOperation_DuplicateAdmission(t *testing.T) {
 		t.Fatalf("Submit op1 failed: %v", err)
 	}
 
-	// Submit 2: duplicate idempotency key with identical parameters returns op1
+	// Verify that op1 ACTUALLY launched supervisor and reached provider (did not mistakenly treat first admission as duplicate)
+	select {
+	case <-execStarted:
+		// execution launched successfully
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("CRITICAL: op1 with idempotency key never launched provider execution (first admission masked as duplicate)")
+	}
+
+	// Submit 2: duplicate idempotency key with identical parameters returns op1 without second launch
 	op2, err := h.manager.Submit(ctx, SubmitOperationRequest{
 		AccountScopeID: accountScope,
 		WorkspaceID:    workspaceID,
@@ -340,8 +355,28 @@ func TestSupervisedOperation_DuplicateAdmission(t *testing.T) {
 	if op2.OperationID != op1.OperationID {
 		t.Errorf("expected idempotent reuse of %q, got %q", op1.OperationID, op2.OperationID)
 	}
+	if atomic.LoadInt32(&execRunCount) != 1 {
+		t.Errorf("expected exactly 1 provider execution across duplicate idempotent submits, got %d", execRunCount)
+	}
 
-	// Submit 3: duplicate idempotency key with different action fails
+	// Submit 3: duplicate idempotency key with different command (payload hash conflict) fails
+	_, err = h.manager.Submit(ctx, SubmitOperationRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		Action:         environments.OperationActionExec,
+		DeploymentID:   res.Deployment.ID,
+		LeaseID:        res.Lease.ID,
+		IdempotencyKey: "idem-dup-key",
+		Command:        []string{"different-task"},
+		Attribution: environments.OperationAttribution{
+			SessionID: "sess-dup",
+		},
+	})
+	if !errors.Is(err, environments.ErrIdempotencyConflict) {
+		t.Errorf("expected ErrIdempotencyConflict for altered command payload, got %v", err)
+	}
+
+	// Submit 3b: duplicate idempotency key with different action fails
 	_, err = h.manager.Submit(ctx, SubmitOperationRequest{
 		AccountScopeID: accountScope,
 		WorkspaceID:    workspaceID,
@@ -353,7 +388,7 @@ func TestSupervisedOperation_DuplicateAdmission(t *testing.T) {
 		},
 	})
 	if !errors.Is(err, environments.ErrIdempotencyConflict) {
-		t.Errorf("expected ErrIdempotencyConflict, got %v", err)
+		t.Errorf("expected ErrIdempotencyConflict for altered action, got %v", err)
 	}
 
 	// Submit 4: new operation without idempotency key while op1 is still running on same deployment fails
@@ -691,7 +726,7 @@ func TestSupervisedOperation_RestartReconciliation(t *testing.T) {
 			SessionID: "sess-rec",
 		},
 	}
-	_, err = h.opStore.AdmitOperation(queuedOp)
+	_, _, err = h.opStore.AdmitOperation(queuedOp)
 	if err != nil {
 		t.Fatalf("Admit queued op: %v", err)
 	}
@@ -763,5 +798,276 @@ func TestSupervisedOperation_StoreFailures(t *testing.T) {
 	})
 	if err == nil {
 		t.Errorf("expected error when store is closed, got nil")
+	}
+}
+
+// 10. Test: restart from reopened store -> nonterminal operations reconciled, summary updated, no commands replayed.
+func TestSupervisedOperation_RestartFromReopenedStore(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reopen_test.pebble")
+	store, err := pebblestore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open initial store: %v", err)
+	}
+
+	cs := pebblestore.NewConnectionStore(store)
+	es := pebblestore.NewEnvironmentStore(store)
+	ds := pebblestore.NewDeploymentStore(store)
+	ws := pebblestore.NewWorkspaceStore(store)
+	ops := ds.Operations()
+
+	prov := newMockSupervisedProvider(environments.ConnectionKindLocalDocker)
+	reg := provider.NewRegistry()
+	reg.Register(prov)
+
+	mgr := NewDeploymentManager(cs, es, ds, ws, reg, WithOperationStore(ops))
+
+	ctx := context.Background()
+	accountScope := "acc-reopen"
+	workspaceID := "ws-reopen"
+
+	conn := createTestConnection(t, cs, accountScope, workspaceID, "conn-reopen", "Docker")
+	env := createTestEnvironment(t, es, accountScope, workspaceID, "env-reopen", conn.ID, true, 2, environments.ReleaseBehaviorNone)
+
+	res, err := mgr.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "sess-reopen",
+	})
+	if err != nil {
+		t.Fatalf("EnsureDeployment failed: %v", err)
+	}
+
+	// Admit a running operation directly in store before shutdown
+	now := time.Now().UnixMilli()
+	opRunning := environments.EnvironmentOperation{
+		OperationID:    "op-crashed-running",
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		Action:         environments.OperationActionExec,
+		DeploymentID:   res.Deployment.ID,
+		Status:         environments.OperationStatusQueued,
+		CreatedAt:      now,
+		Deadline:       now + 60000,
+		Attribution: environments.OperationAttribution{
+			SessionID: "sess-reopen",
+		},
+	}
+	admittedRunning, _, err := ops.AdmitOperation(opRunning)
+	if err != nil {
+		t.Fatalf("admit opRunning: %v", err)
+	}
+	_, err = ops.TransitionOperation(pebblestore.OperationTransitionInput{
+		AccountScopeID:   accountScope,
+		WorkspaceID:      workspaceID,
+		OperationID:      admittedRunning.OperationID,
+		ExpectedRevision: admittedRunning.Revision,
+		TargetStatus:     environments.OperationStatusRunning,
+		ObservedAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("transition opRunning to running: %v", err)
+	}
+
+	// Close manager and store
+	_ = mgr.Close()
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Reopen store from disk
+	reopenedStore, err := pebblestore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = reopenedStore.Close() }()
+
+	reopenedCS := pebblestore.NewConnectionStore(reopenedStore)
+	reopenedES := pebblestore.NewEnvironmentStore(reopenedStore)
+	reopenedDS := pebblestore.NewDeploymentStore(reopenedStore)
+	reopenedWS := pebblestore.NewWorkspaceStore(reopenedStore)
+	reopenedOps := reopenedDS.Operations()
+
+	reopenedProv := newMockSupervisedProvider(environments.ConnectionKindLocalDocker)
+	reopenedReg := provider.NewRegistry()
+	reopenedReg.Register(reopenedProv)
+
+	reopenedMgr := NewDeploymentManager(reopenedCS, reopenedES, reopenedDS, reopenedWS, reopenedReg, WithOperationStore(reopenedOps))
+	defer func() { _ = reopenedMgr.Close() }()
+
+	execCallsBefore := atomic.LoadInt32(&reopenedProv.execCalls)
+
+	// Execute Recover on reopened manager
+	if err := reopenedMgr.Recover(ctx); err != nil {
+		t.Fatalf("Recover on reopened store failed: %v", err)
+	}
+
+	// Verify no commands replayed
+	if atomic.LoadInt32(&reopenedProv.execCalls) != execCallsBefore {
+		t.Errorf("expected 0 commands replayed upon recover from reopened store")
+	}
+
+	// Verify operation reconciled to cancelled
+	recOp, found, err := reopenedMgr.Get(ctx, accountScope, workspaceID, admittedRunning.OperationID)
+	if err != nil || !found {
+		t.Fatalf("Get reconciled op from reopened store: %v", err)
+	}
+	if recOp.Status != environments.OperationStatusCancelled {
+		t.Errorf("expected cancelled status after recover, got %q", recOp.Status)
+	}
+
+	// Verify summary recalculation updated active counts correctly
+	sum, err := reopenedMgr.Summary(ctx, accountScope, workspaceID)
+	if err != nil {
+		t.Fatalf("Summary failed: %v", err)
+	}
+	if sum.RunningOps != 0 {
+		t.Errorf("expected 0 running ops after recovery, got %d", sum.RunningOps)
+	}
+	if sum.CancelledOps < 1 {
+		t.Errorf("expected at least 1 cancelled op in summary, got %d", sum.CancelledOps)
+	}
+}
+
+// 11. Test: deploy failure maintains atomic state and preserves resource reference.
+func TestSupervisedOperation_DeployFailureNoResourceLoss(t *testing.T) {
+	h := setupSupervisedHarness(t)
+	ctx := context.Background()
+	accountScope := "acc-deploy-fail"
+	workspaceID := "ws-deploy-fail"
+
+	conn := createTestConnection(t, h.connections, accountScope, workspaceID, "conn-dfail", "Docker")
+	env := createTestEnvironment(t, h.environments, accountScope, workspaceID, "env-dfail", conn.ID, true, 2, environments.ReleaseBehaviorNone)
+
+	// Simulate provider failure during deploy
+	h.supervisedProv.deployErr = errors.New("docker daemon out of disk space")
+
+	op, err := h.manager.Submit(ctx, SubmitOperationRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		Action:         environments.OperationActionDeploy,
+		EnvironmentID:  env.ID,
+		Attribution: environments.OperationAttribution{
+			SessionID: "sess-dfail",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Submit deploy operation failed: %v", err)
+	}
+
+	// Wait for execution to finish
+	time.Sleep(100 * time.Millisecond)
+
+	finalOp, found, err := h.manager.Get(ctx, accountScope, workspaceID, op.OperationID)
+	if err != nil || !found {
+		t.Fatalf("operation lost: %v", err)
+	}
+	if finalOp.Status != environments.OperationStatusFailed {
+		t.Errorf("expected failed status, got %q", finalOp.Status)
+	}
+	// DeploymentID must be preserved on the operation record
+	if finalOp.DeploymentID == "" {
+		t.Errorf("expected deployment_id to be preserved on failed deploy operation")
+	}
+
+	// Deployment record must be retained in store with failed/unhealthy status
+	dep, foundDep, err := h.manager.GetDeployment(accountScope, workspaceID, finalOp.DeploymentID)
+	if err != nil || !foundDep {
+		t.Fatalf("deployment record lost from store on deploy failure: %v", err)
+	}
+	if dep.Status != environments.DeploymentStatusFailed {
+		t.Errorf("expected deployment status failed, got %q", dep.Status)
+	}
+	if dep.Health != environments.HealthStatusUnhealthy {
+		t.Errorf("expected deployment health unhealthy, got %q", dep.Health)
+	}
+}
+
+// 12. Test: inspect on unreachable provider sets health unhealthy/unknown, never fake healthy.
+func TestSupervisedOperation_InspectUnreachableProvider(t *testing.T) {
+	h := setupSupervisedHarness(t)
+	ctx := context.Background()
+	accountScope := "acc-inspect"
+	workspaceID := "ws-inspect"
+
+	conn := createTestConnection(t, h.connections, accountScope, workspaceID, "conn-inspect", "Docker")
+	env := createTestEnvironment(t, h.environments, accountScope, workspaceID, "env-inspect", conn.ID, true, 2, environments.ReleaseBehaviorNone)
+
+	res, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "sess-inspect",
+	})
+	if err != nil {
+		t.Fatalf("EnsureDeployment failed: %v", err)
+	}
+
+	// Provider inspect returns error (simulating container crashed or docker daemon unreachable)
+	h.supervisedProv.inspectErr = errors.New("cannot connect to docker daemon: connection refused")
+
+	inspected, err := h.manager.InspectDeployment(ctx, accountScope, workspaceID, res.Deployment.ID)
+	if err == nil {
+		t.Fatalf("expected error from InspectDeployment on unreachable provider, got nil")
+	}
+	if inspected == nil {
+		t.Fatalf("expected inspected deployment record returned, got nil")
+	}
+	if inspected.Health == environments.HealthStatusHealthy {
+		t.Errorf("CRITICAL: unreachable provider must not report healthy! got health=%q", inspected.Health)
+	}
+	if inspected.Health != environments.HealthStatusUnhealthy && inspected.Health != environments.HealthStatusUnknown {
+		t.Errorf("expected unhealthy or unknown, got %q", inspected.Health)
+	}
+}
+
+// 13. Test: automatic lease release on reuse of expired deployment.
+func TestSupervisedOperation_ExpiredLeaseReleasedBeforeReuse(t *testing.T) {
+	h := setupSupervisedHarness(t)
+	ctx := context.Background()
+	accountScope := "acc-exp-reuse"
+	workspaceID := "ws-exp-reuse"
+
+	conn := createTestConnection(t, h.connections, accountScope, workspaceID, "conn-exp", "Docker")
+	env := createTestEnvironment(t, h.environments, accountScope, workspaceID, "env-exp", conn.ID, true, 1, environments.ReleaseBehaviorNone)
+
+	// Ensure deployment with short 10ms lease
+	res1, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "sess-first",
+		TTLMillis:      10,
+	})
+	if err != nil {
+		t.Fatalf("EnsureDeployment 1 failed: %v", err)
+	}
+
+	// Wait for lease to expire
+	time.Sleep(25 * time.Millisecond)
+
+	// Ensure deployment with second consumer: must automatically release expired lease and acquire fresh lease for sess-second
+	res2, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "sess-second",
+		TTLMillis:      60000,
+	})
+	if err != nil {
+		t.Fatalf("EnsureDeployment 2 failed: %v", err)
+	}
+	if res2.Deployment.ID != res1.Deployment.ID {
+		t.Errorf("expected reuse of deployment %q, got %q", res1.Deployment.ID, res2.Deployment.ID)
+	}
+	if res2.Lease.ConsumerID != "sess-second" {
+		t.Errorf("expected new lease for sess-second, got consumer_id=%q", res2.Lease.ConsumerID)
+	}
+	if res2.Lease.ID == res1.Lease.ID {
+		t.Errorf("expected fresh lease ID, got same ID %q", res2.Lease.ID)
 	}
 }

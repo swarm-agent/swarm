@@ -27,7 +27,7 @@ func TestEnvironmentOperationStore_Ownership(t *testing.T) {
 		Deadline:       now + 300000,
 	}
 
-	admitted, err := ops.AdmitOperation(op)
+	admitted, _, err := ops.AdmitOperation(op)
 	if err != nil {
 		t.Fatalf("admit operation: %v", err)
 	}
@@ -83,15 +83,18 @@ func TestEnvironmentOperationStore_IdempotentAndConflictingAdmission(t *testing.
 		Deadline:       now + 300000,
 	}
 
-	admitted1, err := ops.AdmitOperation(op1)
+	admitted1, _, err := ops.AdmitOperation(op1)
 	if err != nil {
 		t.Fatalf("admit op1: %v", err)
 	}
 
 	// Idempotent retry with exact same parameters
-	retry1, err := ops.AdmitOperation(op1)
+	retry1, created1, err := ops.AdmitOperation(op1)
 	if err != nil {
 		t.Fatalf("idempotent retry failed: %v", err)
+	}
+	if created1 {
+		t.Fatalf("expected created1=false on idempotent retry")
 	}
 	if retry1.OperationID != admitted1.OperationID || retry1.Revision != admitted1.Revision {
 		t.Fatalf("idempotent retry returned different operation: %+v vs %+v", retry1, admitted1)
@@ -101,7 +104,7 @@ func TestEnvironmentOperationStore_IdempotentAndConflictingAdmission(t *testing.
 	conflictOp := op1
 	conflictOp.OperationID = "op-idemp-diff"
 	conflictOp.Action = environments.OperationActionDeploy
-	_, err = ops.AdmitOperation(conflictOp)
+	_, _, err = ops.AdmitOperation(conflictOp)
 	if !errors.Is(err, environments.ErrIdempotencyConflict) {
 		t.Fatalf("expected ErrIdempotencyConflict, got: %v", err)
 	}
@@ -116,7 +119,7 @@ func TestEnvironmentOperationStore_IdempotentAndConflictingAdmission(t *testing.
 		CreatedAt:      now,
 		Deadline:       now + 300000,
 	}
-	_, err = ops.AdmitOperation(op2)
+	_, _, err = ops.AdmitOperation(op2)
 	if !errors.Is(err, environments.ErrDeploymentOperationConflict) {
 		t.Fatalf("expected ErrDeploymentOperationConflict for active deployment, got: %v", err)
 	}
@@ -146,7 +149,7 @@ func TestEnvironmentOperationStore_IdempotentAndConflictingAdmission(t *testing.
 	}
 
 	// 4. Admitting new operation while deployment is in unresolved cleanup_failed state must be BLOCKED
-	_, err = ops.AdmitOperation(op2)
+	_, _, err = ops.AdmitOperation(op2)
 	if !errors.Is(err, environments.ErrDeploymentOperationBlocked) {
 		t.Fatalf("expected ErrDeploymentOperationBlocked for cleanup_failed deployment, got: %v", err)
 	}
@@ -165,7 +168,7 @@ func TestEnvironmentOperationStore_IdempotentAndConflictingAdmission(t *testing.
 	}
 
 	// Now op2 can be admitted successfully!
-	admitted2, err := ops.AdmitOperation(op2)
+	admitted2, _, err := ops.AdmitOperation(op2)
 	if err != nil {
 		t.Fatalf("expected admission of op2 after deployment unblocked, got: %v", err)
 	}
@@ -191,7 +194,7 @@ func TestEnvironmentOperationStore_CASLateSuccessRejection(t *testing.T) {
 		Deadline:       now + 300000,
 	}
 
-	admitted, err := ops.AdmitOperation(op)
+	admitted, _, err := ops.AdmitOperation(op)
 	if err != nil {
 		t.Fatalf("admit op: %v", err)
 	}
@@ -320,7 +323,7 @@ func TestEnvironmentOperationStore_DurableReloadAndHistoryRetention(t *testing.T
 			CreatedAt:      now,
 			Deadline:       now + 300000,
 		}
-		admitted1, err := ops.AdmitOperation(op1)
+		admitted1, _, err := ops.AdmitOperation(op1)
 		if err != nil {
 			t.Fatalf("admit op1: %v", err)
 		}
@@ -345,7 +348,7 @@ func TestEnvironmentOperationStore_DurableReloadAndHistoryRetention(t *testing.T
 			CreatedAt:      now + 1000,
 			Deadline:       now + 300000,
 		}
-		admitted2, err := ops.AdmitOperation(op2)
+		admitted2, _, err := ops.AdmitOperation(op2)
 		if err != nil {
 			t.Fatalf("admit op2: %v", err)
 		}
@@ -456,7 +459,7 @@ func TestEnvironmentOperationStore_CursorAndTimezoneDailyTotalsBeyondOnePage(t *
 			CreatedAt:      d.millis,
 			Deadline:       d.millis + 300000,
 		}
-		admitted, err := ops.AdmitOperation(op)
+		admitted, _, err := ops.AdmitOperation(op)
 		if err != nil {
 			t.Fatalf("admit %s: %v", d.id, err)
 		}

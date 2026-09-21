@@ -93,6 +93,7 @@ type EnsureDeploymentRequest struct {
 	ConsumerType     environments.ConsumerType `json:"consumer_type"`           // session, test_run, worker, custom
 	ConsumerID       string                    `json:"consumer_id"`
 	ConsumerMetadata map[string]string         `json:"consumer_metadata,omitempty"`
+	DeploymentID     string                    `json:"deployment_id,omitempty"` // Durable pre-assigned deployment ID
 	DeploymentName   string                    `json:"deployment_name,omitempty"`
 	WorkspacePath    string                    `json:"workspace_path,omitempty"` // Host workspace path for local_mount
 	EnvOverrides     map[string]string         `json:"env_overrides,omitempty"`
@@ -164,6 +165,7 @@ type DeployDeploymentRequest struct {
 	WorkspaceID      string                    `json:"workspace_id"`
 	EnvironmentID    string                    `json:"environment_id"`
 	ConnectionID     string                    `json:"connection_id,omitempty"` // Tier 1 explicit connection override
+	DeploymentID     string                    `json:"deployment_id,omitempty"` // Durable pre-assigned deployment ID
 	DeploymentName   string                    `json:"deployment_name,omitempty"`
 	WorkspacePath    string                    `json:"workspace_path,omitempty"` // Host workspace path for local_mount
 	EnvOverrides     map[string]string         `json:"env_overrides,omitempty"`
@@ -422,7 +424,10 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 			if m.operations != nil {
 				activeOp, hasOp, _ := m.operations.GetActiveOperationForDeployment(req.AccountScopeID, req.WorkspaceID, dep.ID)
 				if hasOp && (activeOp.IsActive() || activeOp.IsUnresolved()) {
-					continue
+					callingOpID := operationIDFromContext(ctx)
+					if callingOpID == "" || activeOp.OperationID != callingOpID {
+						continue
+					}
 				}
 			}
 
@@ -433,6 +438,14 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 			}
 			if hasActive && activeLease.Active && !activeLease.IsExpired(now) {
 				continue
+			}
+			if hasActive && activeLease.Active && activeLease.IsExpired(now) {
+				_, _ = m.ReleaseDeployment(ctx, ReleaseDeploymentRequest{
+					AccountScopeID: req.AccountScopeID,
+					WorkspaceID:    req.WorkspaceID,
+					LeaseID:        activeLease.ID,
+					Reason:         "expired_before_reuse",
+				})
 			}
 
 			// Per-deployment lock during reuse
@@ -507,7 +520,10 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	// 7. Provision a new deployment
-	depID := "dep_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	depID := strings.TrimSpace(req.DeploymentID)
+	if depID == "" {
+		depID = "dep_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
 	depName := strings.TrimSpace(req.DeploymentName)
 	if depName == "" {
 		depName = fmt.Sprintf("%s-%s", env.Name, depID[4:12])
@@ -676,7 +692,10 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 	}
 
 	now := time.Now().UnixMilli()
-	depID := "dep_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	depID := strings.TrimSpace(req.DeploymentID)
+	if depID == "" {
+		depID = "dep_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	}
 	depName := strings.TrimSpace(req.DeploymentName)
 	if depName == "" {
 		depName = fmt.Sprintf("%s-%s", env.Name, depID[4:12])
@@ -1158,7 +1177,7 @@ func (m *DeploymentManager) InspectDeployment(ctx context.Context, accountScopeI
 
 	res, err := prov.Inspect(probeCtx, &conn, &dep)
 	if err != nil {
-		updated, _ := m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusUnknown, environments.HealthStatusUnknown, err.Error())
+		updated, _ := m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusUnknown, environments.HealthStatusUnhealthy, err.Error())
 		return &updated, fmt.Errorf("inspect container on provider: %w", err)
 	}
 

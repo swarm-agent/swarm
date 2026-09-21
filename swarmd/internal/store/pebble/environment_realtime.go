@@ -51,21 +51,26 @@ func (m *environmentRealtimeMutation) delete(key string) {
 	m.deletes = append(m.deletes, key)
 }
 
-func isAllowedEnvironmentKey(accountScopeID string, key string) bool {
+func isAllowedEnvironmentKey(accountScopeID string, workspaceID string, key string) bool {
 	accountPart := keyPart(accountScopeID)
-	if accountPart == "" {
+	workspacePart := keyPart(workspaceID)
+	if accountPart == "" || workspacePart == "" {
 		return false
 	}
+	summaryExact := KeyEnvironmentSummaryForAccount(accountScopeID, workspaceID)
+	if key == summaryExact {
+		return true
+	}
 	prefixes := []string{
-		KeyEnvironmentAccountPrefix + accountPart + "/",
-		KeyDeploymentAccountPrefix + accountPart + "/",
-		KeyDeploymentLeaseAccountPrefix + accountPart + "/",
-		KeyDeploymentActiveLeasePrefix + accountPart + "/",
-		KeyEnvironmentOperationAccountPrefix + accountPart + "/",
-		KeyEnvironmentActiveOpAccountPrefix + accountPart + "/",
-		KeyEnvironmentOpIdempotencyPrefix + accountPart + "/",
-		KeyEnvironmentSummaryAccountPrefix + accountPart + "/",
-		KeyEnvironmentOpHistoryAccountPrefix + accountPart + "/",
+		KeyEnvironmentAccountPrefix + accountPart + "/" + workspacePart + "/",
+		KeyDeploymentAccountPrefix + accountPart + "/" + workspacePart + "/",
+		KeyDeploymentLeaseAccountPrefix + accountPart + "/" + workspacePart + "/",
+		KeyDeploymentActiveLeasePrefix + accountPart + "/" + workspacePart + "/",
+		KeyEnvironmentOperationAccountPrefix + accountPart + "/" + workspacePart + "/",
+		KeyEnvironmentActiveOpAccountPrefix + accountPart + "/" + workspacePart + "/",
+		KeyEnvironmentOpIdempotencyPrefix + accountPart + "/" + workspacePart + "/",
+		KeyEnvironmentSummaryAccountPrefix + accountPart + "/" + workspacePart + "/",
+		KeyEnvironmentOpHistoryAccountPrefix + accountPart + "/" + workspacePart + "/",
 	}
 	for _, p := range prefixes {
 		if strings.HasPrefix(key, p) {
@@ -76,7 +81,7 @@ func isAllowedEnvironmentKey(accountScopeID string, key string) bool {
 }
 
 func setEnvironmentRealtimeMutationInBatch(batch *pebble.Batch, account string, m *environmentRealtimeMutation) error {
-	if m == nil || m.accountScopeID == "" || m.accountScopeID != account {
+	if m == nil || m.accountScopeID == "" || m.accountScopeID != account || strings.TrimSpace(m.workspaceID) == "" {
 		return ErrEnvironmentInvalid
 	}
 	keys := make([]string, 0, len(m.writes))
@@ -86,7 +91,7 @@ func setEnvironmentRealtimeMutationInBatch(batch *pebble.Batch, account string, 
 	sort.Strings(keys)
 	for _, key := range keys {
 		data := m.writes[key]
-		if !isAllowedEnvironmentKey(account, key) {
+		if !isAllowedEnvironmentKey(account, m.workspaceID, key) {
 			return ErrEnvironmentInvalid
 		}
 		if err := batch.Set([]byte(key), data, nil); err != nil {
@@ -94,7 +99,7 @@ func setEnvironmentRealtimeMutationInBatch(batch *pebble.Batch, account string, 
 		}
 	}
 	for _, key := range m.deletes {
-		if !isAllowedEnvironmentKey(account, key) {
+		if !isAllowedEnvironmentKey(account, m.workspaceID, key) {
 			return ErrEnvironmentInvalid
 		}
 		if err := batch.Delete([]byte(key), nil); err != nil {

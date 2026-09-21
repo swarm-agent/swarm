@@ -197,12 +197,8 @@ func (s *DeploymentStore) Save(dep environments.Deployment) (environments.Deploy
 	}
 	dep.UpdatedAt = now
 
-	key := KeyDeploymentForAccount(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
-	if err := s.store.PutJSON(key, dep); err != nil {
-		return environments.Deployment{}, fmt.Errorf("put deployment: %w", err)
-	}
-	if s.operations != nil {
-		_ = s.operations.UpdateDeploymentCount(dep.AccountScopeID, dep.WorkspaceID)
+	if err := s.persistDeploymentAtomic(dep, false); err != nil {
+		return environments.Deployment{}, fmt.Errorf("persist deployment atomic: %w", err)
 	}
 
 	return dep, nil
@@ -256,12 +252,8 @@ func (s *DeploymentStore) UpdateStatus(accountScopeID, workspaceID, deploymentID
 		return environments.Deployment{}, fmt.Errorf("validate deployment: %w", err)
 	}
 
-	key := KeyDeploymentForAccount(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
-	if err := s.store.PutJSON(key, dep); err != nil {
-		return environments.Deployment{}, fmt.Errorf("put deployment: %w", err)
-	}
-	if s.operations != nil {
-		_ = s.operations.UpdateDeploymentCount(dep.AccountScopeID, dep.WorkspaceID)
+	if err := s.persistDeploymentAtomic(dep, false); err != nil {
+		return environments.Deployment{}, fmt.Errorf("persist deployment atomic: %w", err)
 	}
 
 	return dep, nil
@@ -301,9 +293,8 @@ func (s *DeploymentStore) UpdateRuntime(accountScopeID, workspaceID, deploymentI
 		return environments.Deployment{}, fmt.Errorf("validate deployment: %w", err)
 	}
 
-	key := KeyDeploymentForAccount(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
-	if err := s.store.PutJSON(key, dep); err != nil {
-		return environments.Deployment{}, fmt.Errorf("put deployment: %w", err)
+	if err := s.persistDeploymentAtomic(dep, false); err != nil {
+		return environments.Deployment{}, fmt.Errorf("persist deployment runtime atomic: %w", err)
 	}
 
 	return dep, nil
@@ -324,7 +315,7 @@ func (s *DeploymentStore) Delete(accountScopeID, workspaceID, deploymentID strin
 		return false, errors.New("account scope id, workspace id, and deployment id are required")
 	}
 
-	_, found, err := s.Get(accountScopeID, workspaceID, deploymentID)
+	dep, found, err := s.Get(accountScopeID, workspaceID, deploymentID)
 	if err != nil {
 		return false, err
 	}
@@ -332,13 +323,111 @@ func (s *DeploymentStore) Delete(accountScopeID, workspaceID, deploymentID strin
 		return false, nil
 	}
 
-	key := KeyDeploymentForAccount(accountScopeID, workspaceID, deploymentID)
-	if err := s.store.Delete(key); err != nil {
-		return false, fmt.Errorf("delete deployment: %w", err)
-	}
-	if s.operations != nil {
-		_ = s.operations.UpdateDeploymentCount(accountScopeID, workspaceID)
+	if err := s.persistDeploymentAtomic(dep, true); err != nil {
+		return false, fmt.Errorf("delete deployment atomic: %w", err)
 	}
 
 	return true, nil
+}
+
+// persistDeploymentAtomic updates a deployment and recalculates summary active deployment counts
+// within a single atomic Pebble batch using the private environment participant.
+func (s *DeploymentStore) persistDeploymentAtomic(dep environments.Deployment, isDelete bool) error {
+	var mutationToPublish *environmentRealtimeMutation
+	defer func() {
+		if mutationToPublish != nil {
+			s.store.publishEnvironmentRealtime(mutationToPublish)
+		}
+	}()
+
+	s.store.environmentsMu.Lock()
+	defer s.store.environmentsMu.Unlock()
+
+	key := KeyDeploymentForAccount(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
+	mutation := &environmentRealtimeMutation{
+		accountScopeID: dep.AccountScopeID,
+		workspaceID:    dep.WorkspaceID,
+		writes:         make(map[string][]byte),
+	}
+
+	if isDelete {
+		mutation.delete(key)
+	} else {
+		raw, err := json.Marshal(dep)
+		if err != nil {
+			return fmt.Errorf("marshal deployment: %w", err)
+		}
+		mutation.putBytes(key, raw)
+	}
+
+	// Update summary active deployments count atomically
+	var summary environments.EnvironmentSummary
+	if s.operations != nil {
+		sSummary, err := s.operations.getSummaryLocked(dep.AccountScopeID, dep.WorkspaceID)
+		if err == nil {
+			summary = sSummary
+		} else {
+			summary = environments.EnvironmentSummary{
+				AccountScopeID: dep.AccountScopeID,
+				WorkspaceID:    dep.WorkspaceID,
+				Revision:       1,
+				UpdatedAt:      time.Now().UnixMilli(),
+			}
+		}
+	} else {
+		summary = environments.EnvironmentSummary{
+			AccountScopeID: dep.AccountScopeID,
+			WorkspaceID:    dep.WorkspaceID,
+			Revision:       1,
+			UpdatedAt:      time.Now().UnixMilli(),
+		}
+	}
+
+	activeCount := 0
+	depPrefix := DeploymentPrefixForAccount(dep.AccountScopeID, dep.WorkspaceID)
+	_ = s.store.IteratePrefix(depPrefix, 10000, func(k string, value []byte) error {
+		if k == key {
+			if !isDelete && dep.IsActive() {
+				activeCount++
+			}
+			return nil
+		}
+		var d environments.Deployment
+		if err := json.Unmarshal(value, &d); err == nil {
+			if d.AccountScopeID == dep.AccountScopeID && d.WorkspaceID == dep.WorkspaceID && d.IsActive() {
+				activeCount++
+			}
+		}
+		return nil
+	})
+	if !isDelete {
+		var existing environments.Deployment
+		if ok, _ := s.store.GetJSON(key, &existing); !ok && dep.IsActive() {
+			activeCount++
+		}
+	}
+
+	summary.ActiveDeployments = activeCount
+	summary.Revision++
+	summary.UpdatedAt = time.Now().UnixMilli()
+
+	summaryRaw, err := json.Marshal(summary)
+	if err != nil {
+		return fmt.Errorf("marshal summary: %w", err)
+	}
+	summaryKey := KeyEnvironmentSummaryForAccount(dep.AccountScopeID, dep.WorkspaceID)
+	mutation.putBytes(summaryKey, summaryRaw)
+
+	metaPayload, _ := json.Marshal(map[string]any{
+		"account_scope_id": dep.AccountScopeID,
+		"workspace_id":    dep.WorkspaceID,
+		"summary_revision": summary.Revision,
+	})
+	mutation.eventPayload = metaPayload
+
+	if err := s.store.commitEnvironmentRealtime(mutation); err != nil {
+		return err
+	}
+	mutationToPublish = mutation
+	return nil
 }

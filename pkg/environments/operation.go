@@ -1,9 +1,12 @@
 package environments
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -100,6 +103,7 @@ type EnvironmentOperation struct {
 	Status         OperationStatus      `json:"status"`
 	Revision       uint64               `json:"revision"`
 	IdempotencyKey string               `json:"idempotency_key,omitempty"`
+	RequestHash    string               `json:"request_hash,omitempty"`
 
 	CreatedAt   int64 `json:"created_at"`
 	StartedAt   int64 `json:"started_at,omitempty"`
@@ -216,6 +220,10 @@ func (op *EnvironmentOperation) Validate() error {
 	op.IdempotencyKey = strings.TrimSpace(op.IdempotencyKey)
 	if op.IdempotencyKey != "" && (len(op.IdempotencyKey) > maxIDBytes || !utf8.ValidString(op.IdempotencyKey)) {
 		return fmt.Errorf("idempotency_key exceeds %d bytes or is invalid UTF-8", maxIDBytes)
+	}
+	op.RequestHash = strings.TrimSpace(op.RequestHash)
+	if op.RequestHash != "" && (len(op.RequestHash) > 128 || !utf8.ValidString(op.RequestHash)) {
+		return fmt.Errorf("request_hash exceeds 128 bytes or is invalid UTF-8")
 	}
 
 	switch op.Status {
@@ -377,6 +385,92 @@ type OperationHistoryQuery struct {
 
 	Cursor string `json:"cursor,omitempty"` // Opaque cursor bound to query/account/workspace
 	Limit  int    `json:"limit,omitempty"`  // Default 50, max 100
+}
+
+// OperationRequestHashInput specifies parameters for computing an immutable request hash.
+// Secrets in env are never retained raw; values are hashed individually.
+type OperationRequestHashInput struct {
+	Action            string               `json:"action"`
+	EnvironmentID     string               `json:"environment_id,omitempty"`
+	DeploymentID      string               `json:"deployment_id,omitempty"`
+	LeaseID           string               `json:"lease_id,omitempty"`
+	TargetOperationID string               `json:"target_operation_id,omitempty"`
+	Attribution       OperationAttribution `json:"attribution"`
+	ConnectionID      string               `json:"connection_id,omitempty"`
+	DeploymentName    string               `json:"deployment_name,omitempty"`
+	WorkspacePath     string               `json:"workspace_path,omitempty"`
+	ConsumerType      ConsumerType         `json:"consumer_type,omitempty"`
+	ConsumerID        string               `json:"consumer_id,omitempty"`
+	ConsumerMetadata  map[string]string    `json:"consumer_metadata,omitempty"`
+	TTLMillis         int64                `json:"ttl_millis,omitempty"`
+	Command           []string             `json:"command,omitempty"`
+	WorkingDir        string               `json:"working_dir,omitempty"`
+	Env               map[string]string    `json:"env,omitempty"`
+	MaxOutput         int                  `json:"max_output,omitempty"`
+	Reason            string               `json:"reason,omitempty"`
+}
+
+// ComputeOperationRequestHash calculates an immutable SHA-256 digest of the full operation request parameters.
+// Strictly hashes env values without exposing raw secret payloads.
+func ComputeOperationRequestHash(in OperationRequestHashInput) string {
+	h := sha256.New()
+	writePart := func(s string) {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	writePart(strings.TrimSpace(in.Action))
+	writePart(strings.TrimSpace(in.EnvironmentID))
+	writePart(strings.TrimSpace(in.DeploymentID))
+	writePart(strings.TrimSpace(in.LeaseID))
+	writePart(strings.TrimSpace(in.TargetOperationID))
+	writePart(strings.TrimSpace(in.Attribution.Actor))
+	writePart(strings.TrimSpace(in.Attribution.SessionID))
+	writePart(strings.TrimSpace(in.Attribution.RunID))
+	writePart(strings.TrimSpace(in.Attribution.WorkerID))
+	writePart(strings.TrimSpace(in.ConnectionID))
+	writePart(strings.TrimSpace(in.DeploymentName))
+	writePart(strings.TrimSpace(in.WorkspacePath))
+	writePart(string(in.ConsumerType))
+	writePart(strings.TrimSpace(in.ConsumerID))
+	writePart(fmt.Sprintf("%d", in.TTLMillis))
+	writePart(strings.TrimSpace(in.WorkingDir))
+	writePart(fmt.Sprintf("%d", in.MaxOutput))
+	writePart(strings.TrimSpace(in.Reason))
+
+	// Consumer metadata in deterministic sorted order
+	if len(in.ConsumerMetadata) > 0 {
+		keys := make([]string, 0, len(in.ConsumerMetadata))
+		for k := range in.ConsumerMetadata {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			writePart(k)
+			writePart(in.ConsumerMetadata[k])
+		}
+	}
+
+	// Command arguments
+	for _, arg := range in.Command {
+		writePart(arg)
+	}
+
+	// Env: hash keys and individual SHA-256 of values so raw secrets are never bound
+	if len(in.Env) > 0 {
+		keys := make([]string, 0, len(in.Env))
+		for k := range in.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			writePart(k)
+			vHash := sha256.Sum256([]byte(in.Env[k]))
+			writePart(hex.EncodeToString(vHash[:]))
+		}
+	}
+
+	sum := h.Sum(nil)
+	return hex.EncodeToString(sum)
 }
 
 // OperationHistoryPage returns a paginated slice of operations together with full daily totals and summary.

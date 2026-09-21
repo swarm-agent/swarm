@@ -329,7 +329,7 @@ func (s *SessionStore) resolveV3RealtimeOutboxValue(value []byte) (V3RealtimeOut
 func estimatedSetBytes(key string, value []byte) uint64 { return uint64(len(key) + len(value)) }
 
 func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64) *V3RealtimeOutboxMembership {
-	if strings.TrimSpace(session.ID) == "" {
+	if strings.TrimSpace(session.ID) == "" || strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
 		return nil
 	}
 	return &V3RealtimeOutboxMembership{
@@ -1144,17 +1144,21 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
-		return V3SessionMutationResult{}, err
-	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
-		return V3SessionMutationResult{}, err
+	if !strings.HasPrefix(strings.TrimSpace(input.SessionID), "__") {
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
-		return V3SessionMutationResult{}, err
+	if !strings.HasPrefix(strings.TrimSpace(input.SessionID), "__") {
+		if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if sessionProvided || messageProvided {
 		if err := s.setSessionInBatch(batch, session); err != nil {
@@ -3251,6 +3255,17 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 			if binding.AuthorityAssetID != strings.TrimSpace(reference.AssetID) || binding.DigestSHA256 != strings.ToLower(strings.TrimSpace(reference.DigestSHA256)) {
 				return fmt.Errorf("media staging binding %d does not match message authority", index)
 			}
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(input.SessionID), "__") {
+		if input.Message != nil {
+			return errors.New("synthetic session does not accept messages")
+		}
+		if input.Session != nil {
+			return errors.New("synthetic session does not accept session snapshot writes")
+		}
+		if input.PlanSave != nil {
+			return errors.New("synthetic session does not accept plan writes")
 		}
 	}
 	if err := validateCanonicalSessionID(input.SessionID); err != nil {

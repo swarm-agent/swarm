@@ -32,6 +32,7 @@ type mockProvider struct {
 	stopErr    error
 	destroyErr error
 	execErr    error
+	inspectErr error
 
 	deployFunc func(ctx context.Context, req provider.DeployRequest) (*provider.DeployResult, error)
 }
@@ -80,6 +81,9 @@ func (m *mockProvider) Deploy(ctx context.Context, req provider.DeployRequest) (
 }
 
 func (m *mockProvider) Inspect(ctx context.Context, conn *environments.Connection, dep *environments.Deployment) (*provider.InspectResult, error) {
+	if m.inspectErr != nil {
+		return nil, m.inspectErr
+	}
 	return &provider.InspectResult{
 		Status:  dep.Status,
 		Health:  dep.Health,
