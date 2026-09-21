@@ -56,7 +56,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	mediaType := canonicalArtifactMediaType(asString(args["media_type"]))
 	filename := strings.TrimSpace(asString(args["filename"]))
-	if mediaType == "" && (narrationPlan || strings.HasSuffix(strings.ToLower(filename), ".html")) {
+	contentStr, _ := args["content"].(string)
+	trimmedContent := strings.TrimSpace(strings.ToLower(contentStr))
+	if mediaType == "" && (narrationPlan || strings.HasSuffix(strings.ToLower(filename), ".html") || strings.HasPrefix(trimmedContent, "<!doctype html") || strings.HasPrefix(trimmedContent, "<html") || strings.Contains(trimmedContent, "<html")) {
 		mediaType = "text/html"
 	}
 	if mediaType != "text/html" {
