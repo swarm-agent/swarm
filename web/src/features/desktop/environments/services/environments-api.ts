@@ -499,14 +499,8 @@ export async function stopDeployment(
   workspaceId: string,
   deploymentId: string,
   workspacePath = '',
-): Promise<Deployment & { operation?: EnvironmentOperation; operation_id?: string; status?: OperationStatus }> {
-  const response = await requestJson<{
-    ok: boolean
-    deployment?: Deployment
-    operation?: EnvironmentOperation
-    operation_id?: string
-    status?: OperationStatus
-  }>('/v1/environments', {
+): Promise<StopDeploymentResponse> {
+  const response = await requestJson<StopDeploymentResponse>('/v1/environments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -526,31 +520,7 @@ export async function stopDeployment(
     throw new Error(`Stop deployment returned no operation status for deployment ${deploymentId}`)
   }
 
-  if (response.deployment) {
-    return {
-      ...response.deployment,
-      operation: response.operation,
-      operation_id: opId,
-      status,
-    }
-  }
-
-  return {
-    id: deploymentId,
-    account_scope_id: '',
-    workspace_id: workspaceId,
-    environment_id: '',
-    connection_id: '',
-    name: `Deployment ${deploymentId.slice(0, 8)}`,
-    status: (status === 'cancelling' ? 'stopping' : status) as any || 'stopping',
-    health: 'unknown',
-    runtime: {},
-    lifecycle: { created_at: Date.now() },
-    created_at: Date.now(),
-    updated_at: Date.now(),
-    operation: response.operation,
-    operation_id: opId,
-  }
+  return { ...response, operation_id: opId, status }
 }
 
 export async function releaseDeployment(

@@ -2,7 +2,6 @@ import { ensureDesktopSession } from '../../../app/api'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { desktopAutomations } from '../runtime/desktop-automations'
 import {
-  desktopEnvironments,
   getDesktopEnvironments,
   setDesktopEnvironmentsRealtimeRetainer,
 } from '../runtime/desktop-environments-runtime'
@@ -138,7 +137,12 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
           getDesktopEnvironments().invalidate()
         }
         const mappedStatus = mapTransportStatus(status)
-        getDesktopEnvironments().onRealtimeStatus(mappedStatus)
+        getDesktopEnvironments().onRealtimeStatus(
+          mappedStatus === 'open' ? 'connected' :
+          mappedStatus === 'closed' ? 'disconnected' :
+          mappedStatus === 'reconnecting' ? 'connecting' :
+          mappedStatus === 'auth_denied' ? 'error' : mappedStatus,
+        )
         this.dispatch({
           type: 'realtime.statusChanged',
           status: mappedStatus,

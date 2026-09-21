@@ -165,7 +165,7 @@ export class DesktopEnvironmentsRuntime {
       getState: deps?.getState ?? (() => getDesktopV3CacheSnapshot().environmentsByWorkspace ?? {}),
       retainRealtime: deps?.retainRealtime ?? ((input) => {
         if (defaultRealtimeRetainer) return defaultRealtimeRetainer(input)
-        return { release: () => {} }
+        throw new Error('Environments realtime transport is not configured')
       }),
     }
   }

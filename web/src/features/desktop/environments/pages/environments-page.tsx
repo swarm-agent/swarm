@@ -26,7 +26,6 @@ import {
   setDefaultConnection,
   setDefaultTestEnvironment,
   startDeployment,
-  stopDeployment,
 } from '../services/environments-api'
 import { ConnectionsView } from '../components/connections-view'
 import { DeploymentsView } from '../components/deployments-view'

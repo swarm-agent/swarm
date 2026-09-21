@@ -103,6 +103,9 @@ export function EnvironmentsView({
 
   return (
     <div className="space-y-6" data-testid="environments-view">
+      {onSwitchToDeployments && (
+        <Button variant="ghost" size="sm" onClick={onSwitchToDeployments}>View deployments and daily history</Button>
+      )}
       {/* Primary Overview: Deployed Instances & Current Operations Totals */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs" data-testid="primary-environments-totals">
         <Card className="p-3 bg-[var(--app-surface)] border border-[var(--app-border)]">
