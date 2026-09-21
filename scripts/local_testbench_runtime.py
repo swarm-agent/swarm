@@ -33,7 +33,9 @@ PROXY_HELPER = '/usr/lib/systemd/systemd-socket-proxyd'
 # Build/install is deliberately in the guest; dependency caches must be in base.
 GUEST = r'''set -euo pipefail
 phase() { current_phase=$1; printf '%s\n' "$1" > /exchange/phase; }
+# The exchange tmpfs bounds diagnostic storage to 1 MiB; the reader caps it at 8 KiB.
 trap 'printf "failed-%s\n" "$current_phase" > /exchange/phase' ERR
+build_step() { "$@" > /exchange/startup-error 2>&1; }
 phase source
 export TMPDIR=/var/tmp
 export HOME=/root
@@ -51,7 +53,7 @@ git -c core.hooksPath=/dev/null checkout --detach "$CANDIDATE_HEAD"
 test "$(git rev-parse HEAD)" = "$CANDIDATE_HEAD"
 cd /candidate/source/swarmd
 phase go-build
-CGO_ENABLED=1 go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
+CGO_ENABLED=1 build_step go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
 cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
 cd /candidate/source/web
 phase web-install
@@ -61,7 +63,7 @@ cmp pnpm-workspace.yaml /cache-manifests/web/pnpm-workspace.yaml
 cp -a /cache-manifests/web/node_modules ./node_modules
 phase web-build
 export RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=3072
-pnpm run build
+build_step pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
 phase daemon-start
 socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
@@ -500,6 +502,17 @@ class NspawnRuntime:
             'systemd-socket-activate', '--listen=127.0.0.1:' + str(self.ports(record)[index]),
             PROXY_HELPER, '--connections-max=64', address]
 
+    def print_failure_diagnostic(self, record):
+        error_path = Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'startup-error'
+        try:
+            fd = os.open(error_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    diagnostic = stream.read(8192).decode('utf-8', errors='replace')
+                    print('isolated unauthenticated candidate diagnostic: ' + diagnostic, file=sys.stderr)
+        except OSError:
+            pass
+
     def wait_ready(self, record, lane):
         deadline = time.monotonic() + self.settings.deadline
         next_touch = 0
@@ -520,6 +533,7 @@ class NspawnRuntime:
                     pass
                 print('local testbench: phase=' + phase, file=sys.stderr, flush=True)
                 if phase == 'failed' or phase.startswith('failed-'):
+                    self.print_failure_diagnostic(record)
                     raise PoolError('guest build failed at ' + phase)
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
@@ -531,16 +545,8 @@ class NspawnRuntime:
                         phase = last
                 except OSError:
                     pass
-                if phase == 'failed-daemon-start':
-                    error_path = Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'startup-error'
-                    try:
-                        fd = os.open(error_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                        with os.fdopen(fd, 'rb') as stream:
-                            if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                                diagnostic = stream.read(4096).decode('utf-8', errors='replace')
-                                print('isolated unauthenticated startup diagnostic: ' + diagnostic, file=sys.stderr)
-                    except OSError:
-                        pass
+                if phase.startswith('failed-'):
+                    self.print_failure_diagnostic(record)
                 raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
             for endpoint in ('api', 'desktop'):
