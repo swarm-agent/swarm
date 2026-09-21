@@ -420,6 +420,27 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 				continue
 			}
 
+			// Verify container is actually active in provider before selecting for reuse
+			if prov != nil {
+				insRes, insErr := prov.Inspect(ctx, conn, &dep)
+				if insErr == nil && insRes != nil {
+					if insRes.Status == environments.DeploymentStatusStopped {
+						if startErr := prov.Start(ctx, conn, &dep); startErr != nil {
+							_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, dep.ID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "failed to start container during reuse: "+startErr.Error())
+							continue
+						}
+						reIns, reErr := prov.Inspect(ctx, conn, &dep)
+						if reErr != nil || reIns == nil || reIns.Status == environments.DeploymentStatusStopped || reIns.Status == environments.DeploymentStatusFailed || reIns.Status == environments.DeploymentStatusTerminated {
+							_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, dep.ID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "container not running after start during reuse")
+							continue
+						}
+					} else if insRes.Status == environments.DeploymentStatusFailed || insRes.Status == environments.DeploymentStatusTerminated {
+						_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, dep.ID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "container in failed state")
+						continue
+					}
+				}
+			}
+
 			// Check if deployment has an unresolved or active operation
 			if m.operations != nil {
 				activeOp, hasOp, _ := m.operations.GetActiveOperationForDeployment(req.AccountScopeID, req.WorkspaceID, dep.ID)
@@ -558,6 +579,11 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	if err != nil {
 		_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, depID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, err.Error())
 		return nil, fmt.Errorf("deploy environment on host: %w", err)
+	}
+	if deployRes.Status == environments.DeploymentStatusStopped || deployRes.Status == environments.DeploymentStatusFailed || deployRes.Status == environments.DeploymentStatusTerminated {
+		_ = prov.Destroy(ctx, conn, &savedDep)
+		_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, depID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, fmt.Sprintf("deployed container is not running (status: %s)", deployRes.Status))
+		return nil, fmt.Errorf("deploy environment on host: container is not running (status: %s)", deployRes.Status)
 	}
 
 	savedDep.Runtime = deployRes.Runtime
@@ -731,6 +757,11 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 		_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, depID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, err.Error())
 		return nil, fmt.Errorf("deploy environment on host: %w", err)
 	}
+	if deployRes.Status == environments.DeploymentStatusStopped || deployRes.Status == environments.DeploymentStatusFailed || deployRes.Status == environments.DeploymentStatusTerminated {
+		_ = prov.Destroy(ctx, conn, &savedDep)
+		_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, depID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, fmt.Sprintf("deployed container is not running (status: %s)", deployRes.Status))
+		return nil, fmt.Errorf("deploy environment on host: container is not running (status: %s)", deployRes.Status)
+	}
 
 	savedDep.Runtime = deployRes.Runtime
 	savedDep.Health = deployRes.Health
@@ -888,6 +919,11 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 			if err := prov.Start(ctx, &conn, &dep); err != nil {
 				_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, dep.ID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "restart start failed: "+err.Error())
 				return nil, fmt.Errorf("start container during restart: %w", err)
+			}
+			insRes, insErr := prov.Inspect(ctx, &conn, &dep)
+			if insErr == nil && insRes != nil && (insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed || insRes.Status == environments.DeploymentStatusTerminated) {
+				_, _ = m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, dep.ID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, fmt.Sprintf("container not running after restart (status: %s)", insRes.Status))
+				return nil, fmt.Errorf("container not running after restart: status %s", insRes.Status)
 			}
 		}
 		updatedDep, err := m.deployments.UpdateStatus(req.AccountScopeID, req.WorkspaceID, dep.ID, environments.DeploymentStatusReady, environments.HealthStatusHealthy, "")
@@ -1108,6 +1144,11 @@ func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID,
 					_, _ = m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "start failed: "+err.Error())
 					return fmt.Errorf("start deployment container %q: %w", deploymentID, err)
 				}
+				insRes, insErr := prov.Inspect(ctx, &conn, &dep)
+				if insErr == nil && insRes != nil && (insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed || insRes.Status == environments.DeploymentStatusTerminated) {
+					_, _ = m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, fmt.Sprintf("container not running after start (status: %s)", insRes.Status))
+					return fmt.Errorf("container not running after start: status %s", insRes.Status)
+				}
 			}
 		}
 	}
@@ -1188,7 +1229,13 @@ func (m *DeploymentManager) InspectDeployment(ctx context.Context, accountScopeI
 	if health == "" {
 		health = environments.HealthStatusUnknown
 	}
-	updatedDep, err := m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, res.Status, health, res.ErrorMessage)
+	newStatus := res.Status
+	if newStatus == environments.DeploymentStatusRunning || newStatus == environments.DeploymentStatusReady {
+		if activeLease, hasLease, _ := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID); hasLease && activeLease.Active && !activeLease.IsExpired(time.Now().UnixMilli()) {
+			newStatus = environments.DeploymentStatusBusy
+		}
+	}
+	updatedDep, err := m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, newStatus, health, res.ErrorMessage)
 	if err != nil {
 		return &dep, fmt.Errorf("update inspected status: %w", err)
 	}

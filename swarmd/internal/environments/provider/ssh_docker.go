@@ -160,8 +160,8 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		_, _ = p.runSSH(deployCtx, req.Connection, rmArgs...)
 	}
 
-	// Build `docker run -d` arguments for the remote host
-	runArgs := []string{"docker", "run", "-d", "--name", cName}
+	// Build `docker run -d` arguments with -i to keep STDIN open so interactive shell entrypoints do not exit
+	runArgs := []string{"docker", "run", "-d", "-i", "--name", cName}
 
 	// Scoping and metadata labels
 	runArgs = append(runArgs,
@@ -352,6 +352,11 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect newly deployed remote container: %w", err)
+	}
+	if insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed {
+		rmArgs := []string{"docker", "rm", "-f", "-v", cName}
+		_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+		return nil, fmt.Errorf("deployed container %s is not running (status: %s)", cName, insRes.Status)
 	}
 
 	runtimeMeta := insRes.Runtime

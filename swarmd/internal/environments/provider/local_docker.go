@@ -142,8 +142,8 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		_, _ = p.runner.Run(deployCtx, "docker", rmArgs...)
 	}
 
-	// Build `docker run -d` arguments
-	runArgs := append(dockerHostArgs(req.Connection), "run", "-d", "--name", cName)
+	// Build `docker run -d` arguments with -i to keep STDIN open so interactive shell entrypoints do not exit
+	runArgs := append(dockerHostArgs(req.Connection), "run", "-d", "-i", "--name", cName)
 
 	// Scoping and metadata labels
 	runArgs = append(runArgs,
@@ -307,6 +307,11 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect newly deployed container: %w", err)
+	}
+	if insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed {
+		rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
+		_, _ = p.runner.Run(context.Background(), "docker", rmArgs...)
+		return nil, fmt.Errorf("deployed container %s is not running (status: %s)", cName, insRes.Status)
 	}
 
 	runtimeMeta := insRes.Runtime

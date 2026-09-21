@@ -1242,6 +1242,85 @@ func TestLocalDockerProvider_Deploy_ValidationErrors(t *testing.T) {
 	}
 }
 
+func TestLocalDockerProvider_Deploy_RejectsStoppedContainer(t *testing.T) {
+	runner := newMockRunner()
+	p := NewLocalDockerProvider(runner)
+	absHostPath, _ := filepath.Abs("/workspace")
+
+	// Override "run" handler so container is created in stopped state
+	runner.handlers["run"] = func(args []string) ([]byte, error) {
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		name := "test-stopped-container"
+		for i, a := range args {
+			if a == "--name" && i+1 < len(args) {
+				name = args[i+1]
+				break
+			}
+		}
+		runner.portSeq++
+		cid := fmt.Sprintf("%012x", runner.portSeq)
+		cState := &mockContainerState{
+			ID:         cid,
+			Name:       name,
+			Running:    false,
+			HostPort:   "18080",
+			Health:     "none",
+			ExitCode:   0,
+			WorkingDir: "/workspace",
+		}
+		runner.containers[name] = cState
+		runner.containers[cid] = cState
+		return []byte(cid + "\n"), nil
+	}
+
+	conn := &environments.Connection{
+		ID:             "conn-1",
+		AccountScopeID: "acct-1",
+		WorkspaceID:    "ws-1",
+		Name:           "Local Docker",
+		Kind:           environments.ConnectionKindLocalDocker,
+	}
+	env := &environments.Environment{
+		ID:             "env-1",
+		AccountScopeID: "acct-1",
+		WorkspaceID:    "ws-1",
+		Name:           "Test Env",
+		Mode:           environments.EnvironmentModeDeployable,
+		Role:           environments.EnvironmentRoleTesting,
+		Container: environments.ContainerDefinition{
+			Image: "alpine:latest",
+		},
+		Provisioning: environments.WorkspaceProvisioning{
+			Strategy: environments.SourceStrategy{
+				Kind: environments.SourceStrategyKindLocalMount,
+				LocalMount: &environments.LocalMountConfig{
+					HostPath:      absHostPath,
+					ContainerPath: "/workspace",
+				},
+			},
+		},
+	}
+	dep := &environments.Deployment{
+		ID:             "dep-stopped",
+		Name:           "Test Deployment",
+		ConnectionID:   "conn-1",
+		AccountScopeID: "acct-1",
+		WorkspaceID:    "ws-1",
+		EnvironmentID:  "env-1",
+		Status:         environments.DeploymentStatusProvisioning,
+	}
+
+	ctx := context.Background()
+	_, err := p.Deploy(ctx, DeployRequest{Connection: conn, Environment: env, Deployment: dep})
+	if err == nil {
+		t.Fatal("expected Deploy to fail when newly deployed container is stopped")
+	}
+	if !strings.Contains(err.Error(), "is not running") {
+		t.Fatalf("expected error mentioning container is not running, got: %v", err)
+	}
+}
+
 func TestLocalDockerProvider_StartStopDestroy_Errors(t *testing.T) {
 	runner := newMockRunner()
 	p := NewLocalDockerProvider(runner)
