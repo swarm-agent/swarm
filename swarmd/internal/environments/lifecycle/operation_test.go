@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -142,7 +141,7 @@ func TestSupervisedOperation_ProviderHangsIgnoringCancellation(t *testing.T) {
 		close(execStarted)
 		<-ctx.Done()
 		// Provider hangs even after context is cancelled
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(80 * time.Millisecond)
 		return nil, ctx.Err()
 	}
 

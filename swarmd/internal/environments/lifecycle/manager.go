@@ -440,12 +440,7 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 				continue
 			}
 			if hasActive && activeLease.Active && activeLease.IsExpired(now) {
-				_, _ = m.ReleaseDeployment(ctx, ReleaseDeploymentRequest{
-					AccountScopeID: req.AccountScopeID,
-					WorkspaceID:    req.WorkspaceID,
-					LeaseID:        activeLease.ID,
-					Reason:         "expired_before_reuse",
-				})
+				_, _ = m.deployments.ReleaseLease(req.AccountScopeID, req.WorkspaceID, activeLease.ID, "expired_before_reuse")
 			}
 
 			// Per-deployment lock during reuse

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
@@ -835,8 +836,8 @@ func TestEnvironmentsAPI_RoutingAndRealtimeAdmission(t *testing.T) {
 	}
 
 	// 5. Realtime admission for environment.updated
-	p := identity.Principal{AccountScopeID: "acc-1", UserID: "user-1"}
-	record := sessionruntime.RealtimeOutboxRecord{
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acc-1", UserID: "user-1"}
+	record := pebblestore.V3RealtimeOutboxRecord{
 		AccountScopeID: "acc-1",
 		UserID:         "desktop",
 		Event: pebblestore.V3SessionEvent{

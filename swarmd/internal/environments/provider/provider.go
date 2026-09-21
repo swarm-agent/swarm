@@ -92,11 +92,14 @@ RAW_STAT=""
 
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     if [ -f "/proc/$PID/stat" ]; then
-        RAW_STAT=$(cat "/proc/$PID/stat" 2>/dev/null || true)
+        RAW_STAT=""
+        read -r RAW_STAT < "/proc/$PID/stat" 2>/dev/null || true
         if [ -n "$RAW_STAT" ]; then
-            POST_COMM=$(echo "$RAW_STAT" | sed 's/.*) //')
-            CUR_PGRP=$(echo "$POST_COMM" | cut -d' ' -f3)
-            CUR_START=$(echo "$POST_COMM" | cut -d' ' -f20)
+            POST_COMM="${RAW_STAT##*) }"
+            set -- $POST_COMM
+            CUR_PGRP="$3"
+            shift 19 2>/dev/null || true
+            CUR_START="$1"
             if [ -n "$CUR_PGRP" ] && [ "$CUR_PGRP" -gt 1 ] 2>/dev/null && [ "$CUR_PGRP" = "$PID" ]; then
                 PGID="$CUR_PGRP"
                 STARTTIME="$CUR_START"
@@ -112,6 +115,16 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 done
 
 if [ $VERIFIED -ne 1 ]; then
+    if [ ! -d "/proc/$PID" ]; then
+        echo "$PID" > "$OP_DIR/pid" 2>/dev/null || true
+        echo "$PID" > "$OP_DIR/pgid" 2>/dev/null || true
+        wait $PID
+        EXIT_CODE=$?
+        echo "$EXIT_CODE" > "$OP_DIR/exitcode" 2>/dev/null || true
+        echo "exited" > "$OP_DIR/status" 2>/dev/null || true
+        echo "1" > "$OP_DIR/tombstone" 2>/dev/null || true
+        exit $EXIT_CODE
+    fi
     kill -9 $PID 2>/dev/null || true
     echo "cannot guarantee process grouping" > "$OP_DIR/error"
     echo "failed" > "$OP_DIR/status"
@@ -247,9 +260,13 @@ fi
 
 PID_REUSED=0
 if [ -d "/proc/$PID" ] && [ -n "$REC_START" ]; then
-    CUR_STAT=$(cat "/proc/$PID/stat" 2>/dev/null || true)
+    CUR_STAT=""
+    read -r CUR_STAT < "/proc/$PID/stat" 2>/dev/null || true
     if [ -n "$CUR_STAT" ]; then
-        CUR_START=$(echo "$CUR_STAT" | sed 's/.*) //' | cut -d' ' -f20)
+        POST_COMM="${CUR_STAT##*) }"
+        set -- $POST_COMM
+        shift 19 2>/dev/null || true
+        CUR_START="$1"
         if [ -n "$CUR_START" ] && [ "$CUR_START" != "$REC_START" ]; then
             PID_REUSED=1
         fi
@@ -272,16 +289,18 @@ find_active_pids() {
         [ "$p_pid" -gt 1 ] || continue
         [ "$p_pid" != "$$" ] || continue
         
-        p_stat=$(cat "$p/stat" 2>/dev/null || true)
+        p_stat=""
+        read -r p_stat < "$p/stat" 2>/dev/null || true
         [ -n "$p_stat" ] || continue
         
-        post_comm=$(echo "$p_stat" | sed 's/.*) //')
-        p_state=$(echo "$post_comm" | cut -d' ' -f1)
+        post_comm="${p_stat##*) }"
+        set -- $post_comm
+        p_state="$1"
         [ "$p_state" != "Z" ] || continue
-        
-        p_ppid=$(echo "$post_comm" | cut -d' ' -f2)
-        p_pgrp=$(echo "$post_comm" | cut -d' ' -f3)
-        p_start=$(echo "$post_comm" | cut -d' ' -f20)
+        p_ppid="$2"
+        p_pgrp="$3"
+        shift 19 2>/dev/null || true
+        p_start="$1"
         
         matched=0
         if [ "$p_pid" = "$PID" ]; then

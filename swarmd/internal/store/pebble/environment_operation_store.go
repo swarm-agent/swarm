@@ -87,7 +87,6 @@ func (s *EnvironmentOperationStore) GetActiveOperationForDeployment(accountScope
 	if err != nil || !ok {
 		return environments.EnvironmentOperation{}, false, err
 	}
-
 	opID := string(opIDBytes)
 	op, found, err := s.Get(accountScopeID, workspaceID, opID)
 	if err != nil || !found {
@@ -346,6 +345,9 @@ func (s *EnvironmentOperationStore) TransitionOperation(input OperationTransitio
 	if targetStatus.IsTerminal() || targetStatus == environments.OperationStatusCleanupFailed {
 		if op.CompletedAt <= 0 {
 			op.CompletedAt = now
+			if op.CompletedAt < op.CreatedAt {
+				op.CompletedAt = op.CreatedAt
+			}
 		}
 	}
 	if input.Activity != nil {
@@ -433,12 +435,14 @@ func isValidStatusTransition(from, to environments.OperationStatus) bool {
 	case environments.OperationStatusQueued:
 		return to == environments.OperationStatusRunning ||
 			to == environments.OperationStatusCancelling ||
+			to == environments.OperationStatusSucceeded ||
 			to == environments.OperationStatusFailed ||
 			to == environments.OperationStatusCancelled ||
 			to == environments.OperationStatusTimedOut ||
 			to == environments.OperationStatusUnknown
 	case environments.OperationStatusRunning:
 		return to == environments.OperationStatusCancelling ||
+			to == environments.OperationStatusCancelled ||
 			to == environments.OperationStatusSucceeded ||
 			to == environments.OperationStatusFailed ||
 			to == environments.OperationStatusTimedOut ||

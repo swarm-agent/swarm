@@ -319,7 +319,7 @@ func TestRealSupervisor_LeaderExitRetainingDescendants(t *testing.T) {
 
 	// Verify no background descendants in that PGID remain
 	time.Sleep(100 * time.Millisecond)
-	entries, err = os.ReadDir("/proc")
+	entries, err := os.ReadDir("/proc")
 	if err == nil {
 		for _, entry := range entries {
 			if !entry.IsDir() {

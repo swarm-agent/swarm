@@ -330,6 +330,16 @@ func (m *DeploymentManager) validateAdmission(
 			return nil, nil, nil, fmt.Errorf("deployment %q: %w", req.DeploymentID, ErrDeploymentNotFound)
 		}
 		dep = &d
+		if ops := m.Operations(); ops != nil {
+			if activeOp, hasActive, _ := ops.GetActiveOperationForDeployment(req.AccountScopeID, req.WorkspaceID, dep.ID); hasActive {
+				if req.IdempotencyKey == "" || req.IdempotencyKey != activeOp.IdempotencyKey {
+					if activeOp.IsUnresolved() {
+						return nil, nil, nil, fmt.Errorf("%w: deployment %q has unresolved operation %q in state %q", environments.ErrDeploymentOperationBlocked, dep.ID, activeOp.OperationID, activeOp.Status)
+					}
+					return nil, nil, nil, fmt.Errorf("%w: deployment %q has active operation %q in state %q", environments.ErrDeploymentOperationConflict, dep.ID, activeOp.OperationID, activeOp.Status)
+				}
+			}
+		}
 		if !dep.IsUsable() {
 			return nil, nil, nil, fmt.Errorf("deployment %q is in status %q (health: %q): %w", dep.ID, dep.Status, dep.Health, ErrDeploymentUnusable)
 		}
@@ -453,6 +463,9 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 	// Stop/destroy while exec is active: cancel active exec first rather than permanently rejecting
 	if (req.Action == environments.OperationActionStop || req.Action == "destroy" || req.Action == environments.OperationActionRelease) && dep != nil {
 		activeOp, hasActive, _ := m.operations.GetActiveOperationForDeployment(req.AccountScopeID, req.WorkspaceID, dep.ID)
+		if hasActive && req.IdempotencyKey != "" && activeOp.IdempotencyKey == req.IdempotencyKey && activeOp.Action != req.Action {
+			return nil, fmt.Errorf("%w: idempotency key %q reused with different action (%s vs %s)", environments.ErrIdempotencyConflict, req.IdempotencyKey, req.Action, activeOp.Action)
+		}
 		if hasActive && activeOp.Action == environments.OperationActionExec && activeOp.IsActive() {
 			_, _ = m.Cancel(admissionCtx, CancelOperationRequest{
 				AccountScopeID: req.AccountScopeID,
@@ -1333,25 +1346,34 @@ func (m *DeploymentManager) Cancel(ctx context.Context, req CancelOperationReque
 	}
 
 	// Promptly acknowledge with durable CAS transition to cancelling
-	cancellingOp, err := m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
-		AccountScopeID:   req.AccountScopeID,
-		WorkspaceID:      req.WorkspaceID,
-		OperationID:      req.OperationID,
-		ExpectedRevision: op.Revision,
-		TargetStatus:     environments.OperationStatusCancelling,
-		Activity: &environments.OperationActivity{
-			Description:    "Cancellation requested: " + reason,
-			Phase:          "cancelling",
-			LastObservedAt: now,
-		},
-		ObservedAt: now,
-	})
-	if err != nil {
+	var cancellingOp environments.EnvironmentOperation
+	for attempt := 0; attempt < 3; attempt++ {
+		cancellingOp, err = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
+			AccountScopeID:   req.AccountScopeID,
+			WorkspaceID:      req.WorkspaceID,
+			OperationID:      req.OperationID,
+			ExpectedRevision: op.Revision,
+			TargetStatus:     environments.OperationStatusCancelling,
+			Activity: &environments.OperationActivity{
+				Description:    "Cancellation requested: " + reason,
+				Phase:          "cancelling",
+				LastObservedAt: now,
+			},
+			ObservedAt: now,
+		})
+		if err == nil {
+			break
+		}
 		if cur, foundCur, gErr := m.operations.Get(req.AccountScopeID, req.WorkspaceID, req.OperationID); gErr == nil && foundCur {
 			if cur.Status == environments.OperationStatusCancelling || cur.IsTerminal() {
 				return &cur, nil
 			}
+			op = cur
+		} else {
+			break
 		}
+	}
+	if err != nil {
 		return nil, fmt.Errorf("transition to cancelling: %w", err)
 	}
 

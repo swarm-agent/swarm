@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -16,6 +17,7 @@ import (
 type Store struct {
 	db                    *pebble.DB
 	path                  string
+	closed                atomic.Bool
 	sessionMutations      *sessionMutationCoordinator
 	modelProfilesMu       sync.Mutex
 	swarmProfilesMu       sync.Mutex
@@ -80,6 +82,7 @@ func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	s.closed.Store(true)
 	return s.db.Close()
 }
 
@@ -90,11 +93,27 @@ func (s *Store) Path() string {
 	return strings.TrimSpace(s.path)
 }
 
-func (s *Store) PutBytes(key string, value []byte) error {
+func (s *Store) PutBytes(key string, value []byte) (err error) {
+	if s == nil || s.db == nil || s.closed.Load() {
+		return errors.New("pebble store is closed")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("pebble set panic: %v", r)
+		}
+	}()
 	return s.db.Set([]byte(key), value, pebble.Sync)
 }
 
-func (s *Store) GetBytes(key string) ([]byte, bool, error) {
+func (s *Store) GetBytes(key string) (res []byte, ok bool, err error) {
+	if s == nil || s.db == nil || s.closed.Load() {
+		return nil, false, errors.New("pebble store is closed")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("pebble get panic: %v", r)
+		}
+	}()
 	value, closer, err := s.db.Get([]byte(key))
 	if errors.Is(err, pebble.ErrNotFound) {
 		return nil, false, nil
@@ -103,12 +122,19 @@ func (s *Store) GetBytes(key string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	defer closer.Close()
-
 	copyValue := append([]byte(nil), value...)
 	return copyValue, true, nil
 }
 
-func (s *Store) Delete(key string) error {
+func (s *Store) Delete(key string) (err error) {
+	if s == nil || s.db == nil || s.closed.Load() {
+		return errors.New("pebble store is closed")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("pebble delete panic: %v", r)
+		}
+	}()
 	return s.db.Delete([]byte(key), pebble.Sync)
 }
 
@@ -141,7 +167,15 @@ func (s *Store) NewBatch() *pebble.Batch {
 	return s.db.NewBatch()
 }
 
-func (s *Store) IteratePrefix(prefix string, limit int, visit func(key string, value []byte) error) error {
+func (s *Store) IteratePrefix(prefix string, limit int, visit func(key string, value []byte) error) (err error) {
+	if s == nil || s.db == nil || s.closed.Load() {
+		return errors.New("pebble store is closed")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("pebble iterate panic: %v", r)
+		}
+	}()
 	return iteratePrefixFromReader(s.db, prefix, limit, visit)
 }
 
@@ -189,7 +223,12 @@ func iteratePrefixFromReader(reader pebble.Reader, prefix string, limit int, vis
 	})
 }
 
-func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func(key string, value []byte) (bool, error)) error {
+func scanRangeFromReader(reader pebble.Reader, opts scanRangeOptions, visit func(key string, value []byte) (bool, error)) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("pebble scan panic: %v", r)
+		}
+	}()
 	if err := contextError(opts.Context); err != nil {
 		return err
 	}

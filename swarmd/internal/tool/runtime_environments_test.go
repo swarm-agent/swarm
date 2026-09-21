@@ -3,16 +3,20 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
 // mockTestProvider implements provider.DeploymentProvider for tool execution unit testing.
@@ -102,6 +106,15 @@ func (m *mockTestProvider) Exec(_ context.Context, _ *environments.Connection, _
 	}, nil
 }
 
+func (m *mockTestProvider) CancelExec(_ context.Context, _ *environments.Connection, _ *environments.Deployment, req provider.CancelExecRequest) (*provider.CancelExecResult, error) {
+	return &provider.CancelExecResult{
+		OperationID: req.OperationID,
+		Terminated:  true,
+		ObservedAt:  time.Now(),
+		SignalSent:  "SIGTERM",
+	}, nil
+}
+
 type toolTestHarness struct {
 	rt          *Runtime
 	store       *pebblestore.Store
@@ -138,6 +151,7 @@ func setupEnvironmentsToolHarness(t *testing.T) *toolTestHarness {
 	providerReg.Register(mockSSH)
 
 	mgr := lifecycle.NewDeploymentManager(connStore, envStore, depStore, wsStore, providerReg)
+	t.Cleanup(func() { _ = mgr.Close() })
 
 	rt := NewRuntime(2)
 	rt.SetEnvironmentServices(connStore, envStore, mgr, wsStore, providerReg)
@@ -169,14 +183,38 @@ func setupEnvironmentsToolHarness(t *testing.T) *toolTestHarness {
 	}
 }
 
+var toolCallSeq atomic.Int64
+
+type mockEnvWorkspaceService struct {
+	workspaceID   string
+	workspacePath string
+}
+
+func (s *mockEnvWorkspaceService) CurrentBindingForPrincipal(identity.Principal) (workspaceruntime.Resolution, bool, error) {
+	return workspaceruntime.Resolution{}, false, nil
+}
+
+func (s *mockEnvWorkspaceService) ScopeForPathForPrincipal(_ identity.Principal, path string) (workspaceruntime.Scope, error) {
+	return workspaceruntime.Scope{
+		Matched:       true,
+		WorkspaceID:   s.workspaceID,
+		WorkspacePath: s.workspacePath,
+	}, nil
+}
+
+func (s *mockEnvWorkspaceService) ListKnownForPrincipal(identity.Principal, int) ([]workspaceruntime.Entry, error) {
+	return nil, nil
+}
+
 func execTool(t *testing.T, h *toolTestHarness, name string, args map[string]any) (string, error) {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
+	seq := toolCallSeq.Add(1)
 	return h.rt.ExecuteForWorkspaceScopeWithRuntime(context.Background(), h.scope, Call{
-		CallID:    "call-" + name,
+		CallID:    fmt.Sprintf("call-%s-%d", name, seq),
 		Name:      name,
 		Arguments: string(raw),
 	})
@@ -669,7 +707,9 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
 			if opMap, ok := getOpRes["operation"].(map[string]any); ok {
 				if opMap["status"] == "succeeded" {
-					deploymentID = opMap["deployment_id"].(string)
+					if id, ok := opMap["deployment_id"].(string); ok {
+						deploymentID = id
+					}
 					break
 				}
 			}
@@ -749,8 +789,25 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 	}
 	var execRes map[string]any
 	_ = json.Unmarshal([]byte(out), &execRes)
-	if execRes["operation_id"] == nil {
+	execOpID, _ := execRes["operation_id"].(string)
+	if execOpID == "" {
 		t.Fatalf("expected operation_id in exec receipt: %v", execRes)
+	}
+	execDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(execDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": execOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// 6. Action: history (verifies operation history querying)
@@ -781,8 +838,25 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 	}
 	var relRes map[string]any
 	_ = json.Unmarshal([]byte(out), &relRes)
-	if relRes["operation_id"] == nil {
+	relOpID, _ := relRes["operation_id"].(string)
+	if relOpID == "" {
 		t.Errorf("expected operation_id in release receipt, got: %v", relRes)
+	}
+	relDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(relDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": relOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// 8. Action: stop
@@ -797,8 +871,25 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 	}
 	var stopRes map[string]any
 	_ = json.Unmarshal([]byte(out), &stopRes)
-	if stopRes["operation_id"] == nil {
+	stopOpID, _ := stopRes["operation_id"].(string)
+	if stopOpID == "" {
 		t.Errorf("expected operation_id in stop receipt, got: %v", stopRes)
+	}
+	stopDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(stopDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": stopOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// 9. Action: destroy
@@ -814,8 +905,25 @@ func TestEnvironmentsTool_ManageDeploymentsLifecycle(t *testing.T) {
 	}
 	var destRes map[string]any
 	_ = json.Unmarshal([]byte(out), &destRes)
-	if destRes["operation_id"] == nil {
+	destOpID, _ := destRes["operation_id"].(string)
+	if destOpID == "" {
 		t.Errorf("expected operation_id in destroy receipt: %v", destRes)
+	}
+	destDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(destDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": destOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// 10. Obsolete manage_deployments must fail closed
@@ -1004,8 +1112,12 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
 			if opMap, ok := getOpRes["operation"].(map[string]any); ok {
 				if opMap["status"] == "succeeded" {
-					depID = opMap["deployment_id"].(string)
-					leaseID = opMap["lease_id"].(string)
+					if id, ok := opMap["deployment_id"].(string); ok {
+						depID = id
+					}
+					if lid, ok := opMap["lease_id"].(string); ok {
+						leaseID = lid
+					}
 					break
 				}
 			}
@@ -1073,6 +1185,23 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	if relRes["operation_id"] == nil {
 		t.Errorf("expected operation_id in release receipt, got: %v", relRes)
 	}
+	relOpID, _ := relRes["operation_id"].(string)
+	relDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(relDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": relOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 
 	// 7. Second consumer (worker) calls ensure
 	workerEnsureOut, err := execTool(t, h, "manage_environments", map[string]any{
@@ -1090,6 +1219,23 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 	}
 	if workerEnsureRes["operation_id"] == nil {
 		t.Errorf("expected operation_id in worker ensure receipt, got: %v", workerEnsureRes)
+	}
+	workerEnsureOpID, _ := workerEnsureRes["operation_id"].(string)
+	weDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(weDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": workerEnsureOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	// 8. Clean up: destroy deployment
@@ -1110,13 +1256,33 @@ func TestEnvironments_EndToEndLifecycleSmoke(t *testing.T) {
 		t.Errorf("expected operation_id in destroy receipt: %v", destRes)
 	}
 
-	// Verify deployment is removed from store after destroy
-	_, found, err := h.depStore.Get(h.scope.Principal.AccountScopeID, workspaceID, depID)
+	destOpID, _ := destRes["operation_id"].(string)
+	destDeadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(destDeadline) {
+		getOpOut, getErr := execTool(t, h, "manage_environments", map[string]any{
+			"action":       "get_operation",
+			"operation_id": destOpID,
+			"workspace_id": workspaceID,
+		})
+		if getErr == nil {
+			var getOpRes map[string]any
+			_ = json.Unmarshal([]byte(getOpOut), &getOpRes)
+			if opMap, ok := getOpRes["operation"].(map[string]any); ok && opMap["status"] == "succeeded" {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Verify deployment is marked terminated in store after destroy
+	dep, found, err := h.depStore.Get(h.scope.Principal.AccountScopeID, workspaceID, depID)
 	if err != nil {
 		t.Fatalf("error checking deployment in store: %v", err)
 	}
-	if found {
-		t.Errorf("expected destroyed deployment to be deleted from store, but was still found")
+	if !found {
+		t.Errorf("expected destroyed deployment to be retained in store")
+	} else if dep.Status != environments.DeploymentStatusTerminated {
+		t.Errorf("expected deployment status to be terminated after destroy, got: %s", dep.Status)
 	}
 }
 
@@ -1161,8 +1327,18 @@ func TestEnvironmentsTool_ReadPurityNoSideEffects(t *testing.T) {
 		Container: environments.ContainerDefinition{
 			Image: "alpine:latest",
 		},
+		Provisioning: environments.WorkspaceProvisioning{
+			Strategy: environments.SourceStrategy{
+				Kind: environments.SourceStrategyKindRegistryImage,
+				RegistryImage: &environments.RegistryImageConfig{
+					Image: "alpine:latest",
+				},
+			},
+		},
 	}
-	_, _ = h.envStore.Save(env)
+	if _, err := h.envStore.Save(env); err != nil {
+		t.Fatalf("save env: %v", err)
+	}
 
 	// Record initial operation summary count
 	summaryBefore, err := h.mgr.Summary(context.Background(), "test-account", workspaceID)
@@ -1206,6 +1382,7 @@ func TestEnvironmentsTool_ReadPurityNoSideEffects(t *testing.T) {
 
 func TestEnvironmentsTool_CrossWorkspaceOwnerRejectionNoSideEffects(t *testing.T) {
 	h := setupEnvironmentsToolHarness(t)
+	h.rt.SetManageWorktreeServices(nil, &mockEnvWorkspaceService{workspaceID: "ws-authorized", workspacePath: h.scope.PrimaryPath}, nil)
 
 	// Attempting operation with mismatched workspace_id must be rejected
 	_, err := execTool(t, h, "manage_environments", map[string]any{
@@ -1226,10 +1403,25 @@ func TestEnvironmentsTool_CancelActionAliasAndStableIdempotency(t *testing.T) {
 	workspaceID := "ws-test-123"
 
 	// Create environment
+	conn := environments.Connection{
+		ID:             "conn-cancel-test",
+		AccountScopeID: "test-account",
+		WorkspaceID:    workspaceID,
+		Name:           "Local Docker",
+		Kind:           environments.ConnectionKindLocalDocker,
+		Capabilities: environments.ConnectionCapabilities{
+			SupportsDocker: true,
+		},
+	}
+	if _, err := h.connStore.Save(conn); err != nil {
+		t.Fatalf("save conn: %v", err)
+	}
+
 	createRes, err := execTool(t, h, "manage_environments", map[string]any{
-		"action":       "create",
-		"workspace_id": workspaceID,
-		"name":         "Cancel Test Env",
+		"action":                  "create",
+		"workspace_id":            workspaceID,
+		"name":                    "Cancel Test Env",
+		"preferred_connection_id": "conn-cancel-test",
 		"container": map[string]any{
 			"image": "alpine:latest",
 		},
