@@ -252,6 +252,41 @@ func RuntimeContextInstructions(currentProvider, currentModel, previousProvider,
 	return b.String()
 }
 
+// SplitStaticInstructionsAndDynamicContext separates static system instructions
+// (harness prompts, workspace rules, tools contracts, static policies) from dynamic
+// per-turn runtime envelopes (durable run state JSON, timestamps in request-runtime-context).
+// This enables provider adapters to keep the systemInstruction / system prompt 100%
+// byte-identical across conversation turns, unlocking KV-cache prompt reuse and discounts.
+func SplitStaticInstructionsAndDynamicContext(instructions string) (string, string) {
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return "", ""
+	}
+
+	markers := []string{
+		"Durable run state (authoritative;",
+		"[request-runtime-context]",
+	}
+
+	splitIdx := -1
+	for _, marker := range markers {
+		idx := strings.Index(instructions, marker)
+		if idx >= 0 {
+			if splitIdx == -1 || idx < splitIdx {
+				splitIdx = idx
+			}
+		}
+	}
+
+	if splitIdx == -1 {
+		return instructions, ""
+	}
+
+	staticPart := strings.TrimSpace(instructions[:splitIdx])
+	dynamicPart := strings.TrimSpace(instructions[splitIdx:])
+	return staticPart, dynamicPart
+}
+
 func ShortProviderLineageKey(parts ...string) string {
 	cleaned := make([]string, 0, len(parts))
 	for _, part := range parts {

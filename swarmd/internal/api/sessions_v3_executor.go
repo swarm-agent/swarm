@@ -4156,25 +4156,6 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
-	if stateCompiler, ok := e.server.runner.(interface {
-		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
-	}); ok && stateCompiler != nil {
-		checkpointContext := (*runruntime.RunPlanCheckpointContext)(nil)
-		if strings.TrimSpace(job.PlanID) != "" || strings.TrimSpace(job.CheckpointID) != "" {
-			checkpointContext = &runruntime.RunPlanCheckpointContext{
-				PlanID:          strings.TrimSpace(job.PlanID),
-				CheckpointID:    strings.TrimSpace(job.CheckpointID),
-				AttemptID:       strings.TrimSpace(job.AttemptID),
-				ParentSessionID: strings.TrimSpace(job.ParentSessionID),
-				SourceMessageID: strings.TrimSpace(job.SourceMessageID),
-			}
-		}
-		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
-		if stateErr != nil {
-			return sessionV3ResolvedRuntime{}, stateErr
-		}
-		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
-	}
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
@@ -4200,6 +4181,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	toolChoice := "none"
 	if len(tools) > 0 {
 		toolChoice = "auto"
+	}
+	if stateCompiler, ok := e.server.runner.(interface {
+		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
+	}); ok && stateCompiler != nil {
+		checkpointContext := (*runruntime.RunPlanCheckpointContext)(nil)
+		if strings.TrimSpace(job.PlanID) != "" || strings.TrimSpace(job.CheckpointID) != "" {
+			checkpointContext = &runruntime.RunPlanCheckpointContext{
+				PlanID:          strings.TrimSpace(job.PlanID),
+				CheckpointID:    strings.TrimSpace(job.CheckpointID),
+				AttemptID:       strings.TrimSpace(job.AttemptID),
+				ParentSessionID: strings.TrimSpace(job.ParentSessionID),
+				SourceMessageID: strings.TrimSpace(job.SourceMessageID),
+			}
+		}
+		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
+		if stateErr != nil {
+			return sessionV3ResolvedRuntime{}, stateErr
+		}
+		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
 	}
 	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
