@@ -97,7 +97,7 @@ const (
 	searchDefinitionAfterContext        = 5
 	compactSearchHitRunes               = 140
 	compactSearchContextRunes           = 120
-	maxGrepLineChars                    = 500
+	maxGrepLineChars                    = 300
 	maxSafetyScanChars                  = 16 * 1024
 	maxSkillContentBytes                = 16 * 1024
 	maxSkillListPreview                 = 24
@@ -2578,7 +2578,10 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	payloadStyle := strings.ToLower(strings.TrimSpace(asString(args["_search_payload_style"])))
 	contentMode := normalizeSearchContentMode(args["content_mode"])
 	beforeContext := uint32FromArgs(args, "before_context", 0)
-	afterContext := uint32FromArgs(args, "after_context", searchDefinitionAfterContext)
+	afterContext := uint32(0)
+	if _, ok := args["after_context"]; ok || payloadStyle == "legacy" {
+		afterContext = uint32FromArgs(args, "after_context", searchDefinitionAfterContext)
+	}
 	fileOffset := uint32FromArgs(args, "file_offset", 0)
 	maxMatchesPerFile := uint32FromArgs(args, "max_matches_per_file", 0)
 	maxResults := clampInt(asInt(args["max_results"], defaultSearchResults), 1, maxSearchResults)
@@ -3936,6 +3939,19 @@ func buildCompactSearchContentResults(rows []searchContentRow, multiQuery bool) 
 			}
 			groups[key] = group
 			order = append(order, key)
+		}
+		items := group["items"].([]map[string]any)
+		duplicateLine := false
+		for _, existing := range items {
+			if existingLine, ok := existing["line"].(int); ok && existingLine == row.Line {
+				if !multiQuery || existing["query"] == row.Query {
+					duplicateLine = true
+					break
+				}
+			}
+		}
+		if duplicateLine {
+			continue
 		}
 		item := map[string]any{
 			"line": row.Line,
