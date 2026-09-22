@@ -1725,4 +1725,3 @@ func TestBuildGoogleRequestPrefixFreezingAcrossTurns(t *testing.T) {
 			built2.Contents[0].Parts[0].Text, built1.Contents[0].Parts[0].Text)
 	}
 }
-

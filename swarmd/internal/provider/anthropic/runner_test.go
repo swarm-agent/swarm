@@ -712,4 +712,3 @@ func TestBuildAnthropicRequestPrefixFreezingAcrossTurns(t *testing.T) {
 		t.Fatalf("Messages missing updated checkpoint state for turn 2: %s", msg2JSON)
 	}
 }
-
