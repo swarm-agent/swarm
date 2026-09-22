@@ -166,7 +166,7 @@ func extractHTMLFromModelOutput(raw string) string {
 	return trimmed
 }
 
-func validateGeneratedDesignerHTML(html string, isAnimation bool, requiredParts []string) error {
+func validateGeneratedDesignerHTML(html string, isAnimation bool) error {
 	trimmed := strings.TrimSpace(html)
 	if trimmed == "" {
 		return errors.New("model returned empty output")
@@ -189,14 +189,15 @@ func validateGeneratedDesignerHTML(html string, isAnimation bool, requiredParts 
 			return errors.New("__SWARM_ANIMATION_V1__ must implement both ready() and seek(time_ms)")
 		}
 	}
-	for _, partID := range requiredParts {
-		if strings.TrimSpace(partID) == "" {
-			continue
+	hasID := false
+	for _, tag := range []string{"<main", "<div", "<section", "<article"} {
+		if strings.Contains(lower, tag) && strings.Contains(lower, "id=") {
+			hasID = true
+			break
 		}
-		pattern := `(?i)\bid\s*=\s*["']?` + regexp.QuoteMeta(strings.TrimSpace(partID)) + `(?:\s|["'>]|$)`
-		if matched, _ := regexp.MatchString(pattern, trimmed); !matched {
-			return fmt.Errorf("missing required HTML element with id=%q for part %q", partID, partID)
-		}
+	}
+	if !hasID {
+		return errors.New("missing stage container element with an id attribute (e.g. <main id=\"swarm-animation-stage\">)")
 	}
 	return nil
 }
@@ -223,291 +224,9 @@ func extractDurationFromPrompt(prompt string) int64 {
 	return 0
 }
 
-func extractPartsFromPrompt(prompt string, durationMS int64) []pebblestore.SessionArtifactPart {
-	if strings.TrimSpace(prompt) == "" {
-		return nil
-	}
-	// 1. Explicit timings: e.g. Part 1 (0 - 3000ms) or Scene 1 (0 - 3000ms)
-	reTimed := regexp.MustCompile(`(?i)(?:^|\n|\b)(?:[0-9]+\.\s*)?(?:part|scene)\s*([0-9]+|[a-zA-Z0-9_-]+)[^\n\(]*?\(\s*([0-9]+)\s*[-–]\s*([0-9]+)\s*ms\s*\)`)
-	matchesTimed := reTimed.FindAllStringSubmatch(prompt, -1)
-	if len(matchesTimed) >= 2 {
-		var parts []pebblestore.SessionArtifactPart
-		for _, m := range matchesTimed {
-			numStr := m[1]
-			s, _ := strconv.ParseInt(m[2], 10, 64)
-			e, _ := strconv.ParseInt(m[3], 10, 64)
-			id := fmt.Sprintf("part-%s", numStr)
-			if !regexp.MustCompile(`^[0-9]+$`).MatchString(numStr) {
-				id = strings.ToLower(numStr)
-			}
-			parts = append(parts, pebblestore.SessionArtifactPart{
-				ID:       id,
-				Label:    fmt.Sprintf("Part %s", numStr),
-				Kind:     "temporal",
-				StartMs:  s,
-				EndMs:    e,
-				Selector: "#" + id,
-			})
-		}
-		return parts
-	}
-
-	// 2. Named parts: e.g. Part 1: boot, Part 2: vortex, Part 3: online or Scene 1: Intro
-	reNamed := regexp.MustCompile(`(?i)(?:part|scene)\s*([0-9]+)\s*[:=]\s*([a-zA-Z0-9_-]+)`)
-	matchesNamed := reNamed.FindAllStringSubmatch(prompt, -1)
-	if len(matchesNamed) >= 2 {
-		step := durationMS / int64(len(matchesNamed))
-		var parts []pebblestore.SessionArtifactPart
-		for i, m := range matchesNamed {
-			id := strings.ToLower(m[2])
-			start := int64(i) * step
-			end := int64(i+1) * step
-			if i == len(matchesNamed)-1 {
-				end = durationMS
-			}
-			parts = append(parts, pebblestore.SessionArtifactPart{
-				ID:       id,
-				Label:    fmt.Sprintf("Part %s - %s", m[1], m[2]),
-				Kind:     "temporal",
-				StartMs:  start,
-				EndMs:    end,
-				Selector: "#" + id,
-			})
-		}
-		return parts
-	}
-
-	// 3. General count: e.g. "3-part", "3 part", "3 parts"
-	reCount := regexp.MustCompile(`(?i)(\d+)\s*[- ]\s*parts?`)
-	if match := reCount.FindStringSubmatch(prompt); len(match) > 1 {
-		if n, err := strconv.Atoi(match[1]); err == nil && n >= 2 && n <= 16 {
-			step := durationMS / int64(n)
-			var parts []pebblestore.SessionArtifactPart
-			for i := 0; i < n; i++ {
-				start := int64(i) * step
-				end := int64(i+1) * step
-				if i == n-1 {
-					end = durationMS
-				}
-				id := fmt.Sprintf("part-%d", i+1)
-				parts = append(parts, pebblestore.SessionArtifactPart{
-					ID:       id,
-					Label:    fmt.Sprintf("Part %d", i+1),
-					Kind:     "temporal",
-					StartMs:  start,
-					EndMs:    end,
-					Selector: "#" + id,
-				})
-			}
-			return parts
-		}
-	}
-
-	return nil
-}
-
-func extractPartsFromHTML(html string, durationMS int64) []pebblestore.SessionArtifactPart {
-	if strings.TrimSpace(html) == "" {
-		return nil
-	}
-	re := regexp.MustCompile(`(?i)\bid=["']((?:part|scene)[-_]?[0-9]+)["']`)
-	matches := re.FindAllStringSubmatch(html, -1)
-	if len(matches) < 2 {
-		return nil
-	}
-	seen := make(map[string]bool)
-	var ids []string
-	for _, m := range matches {
-		id := strings.ToLower(m[1])
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	if len(ids) < 2 {
-		return nil
-	}
-	step := durationMS / int64(len(ids))
-	var parts []pebblestore.SessionArtifactPart
-	for i, id := range ids {
-		start := int64(i) * step
-		end := int64(i+1) * step
-		if i == len(ids)-1 {
-			end = durationMS
-		}
-		parts = append(parts, pebblestore.SessionArtifactPart{
-			ID:       id,
-			Label:    fmt.Sprintf("Part %d", i+1),
-			Kind:     "temporal",
-			StartMs:  start,
-			EndMs:    end,
-			Selector: "#" + id,
-		})
-	}
-	return parts
-}
-
-func ensureAnimationSeekSceneID(html string, parts []pebblestore.SessionArtifactPart, durationMS int64) string {
-	if strings.TrimSpace(html) == "" {
-		return html
-	}
-	type partScene struct {
-		ID      string `json:"id"`
-		StartMs int64  `json:"start_ms"`
-		EndMs   int64  `json:"end_ms"`
-	}
-	var scenes []partScene
-	for _, p := range parts {
-		if p.EndMs > p.StartMs {
-			scenes = append(scenes, partScene{ID: p.ID, StartMs: p.StartMs, EndMs: p.EndMs})
-		}
-	}
-	scenesJSON, _ := json.Marshal(scenes)
-
-	// Guarantee that each declared part element exists in the HTML body so that
-	// selectors like #part-1 always resolve and are visible during Chromedp preview audit.
-	for _, p := range parts {
-		pattern := `(?i)\bid\s*=\s*["']?` + regexp.QuoteMeta(p.ID) + `(?:\s|["'>]|$)`
-		if matched, _ := regexp.MatchString(pattern, html); !matched {
-			injectElem := fmt.Sprintf(`<section id="%s" data-swarm-part="%s" style="position:absolute;left:0;top:0;width:100%%;height:100%%;pointer-events:none"></section>`, p.ID, p.ID)
-			if idx := strings.Index(strings.ToLower(html), "<body"); idx >= 0 {
-				if endBodyTag := strings.Index(html[idx:], ">"); endBodyTag >= 0 {
-					insertPos := idx + endBodyTag + 1
-					html = html[:insertPos] + "\n" + injectElem + html[insertPos:]
-				}
-			}
-		}
-	}
-
-	helperScript := fmt.Sprintf(`<script data-swarm-capture-ui>(()=>{
-const scenes = %s;
-function getSceneId(t) {
-  for (const s of scenes) {
-    if (t >= s.start_ms && t <= s.end_ms) return s.id;
-  }
-  return scenes.length > 0 ? scenes[0].id : "";
-}
-globalThis.__swarmGetSceneId = getSceneId;
-
-let isPaused = false;
-const activeRAFs = new Set();
-const origRAF = typeof window !== "undefined" && window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
-const origCAF = typeof window !== "undefined" && window.cancelAnimationFrame ? window.cancelAnimationFrame.bind(window) : null;
-
-if (origRAF && origCAF) {
-  window.requestAnimationFrame = function(cb) {
-    if (isPaused) return 0;
-    const id = origRAF(function(ts) {
-      activeRAFs.delete(id);
-      if (!isPaused) cb(ts);
-    });
-    activeRAFs.add(id);
-    return id;
-  };
-
-  window.cancelAnimationFrame = function(id) {
-    activeRAFs.delete(id);
-    origCAF(id);
-  };
-}
-
-function freezeLoops() {
-  isPaused = true;
-  if (origCAF) {
-    for (const id of activeRAFs) {
-      origCAF(id);
-    }
-    activeRAFs.clear();
-  }
-}
-
-function wrapController(api) {
-  if (!api || api.__swarm_wrapped__) return;
-  api.__swarm_wrapped__ = true;
-  const origSeek = api.seek;
-  const origPause = api.pause;
-  const origPlay = api.play;
-
-  if (origPlay) {
-    api.play = async function() {
-      isPaused = false;
-      return await origPlay();
-    };
-  } else {
-    api.play = async function() {
-      isPaused = false;
-    };
-  }
-
-  api.pause = async function() {
-    freezeLoops();
-    if (typeof origPause === "function") await origPause();
-  };
-
-  api.seek = async function(time_ms) {
-    freezeLoops();
-    let res;
-    if (typeof origSeek === "function") {
-      res = await origSeek(time_ms);
-    }
-    freezeLoops();
-    isPaused = false;
-    if (!res || typeof res !== "object") {
-      res = { time_ms: time_ms };
-    } else if (typeof res.time_ms !== "number") {
-      res.time_ms = time_ms;
-    }
-    if (!res.scene_id && typeof getSceneId === "function") {
-      res.scene_id = getSceneId(time_ms);
-    }
-    return res;
-  };
-}
-
-let _ctrl = globalThis.__SWARM_ANIMATION_V1__;
-if (_ctrl) wrapController(_ctrl);
-try {
-  Object.defineProperty(globalThis, "__SWARM_ANIMATION_V1__", {
-    configurable: true,
-    enumerable: true,
-    get: () => _ctrl,
-    set: (v) => {
-      _ctrl = v;
-      if (v) wrapController(v);
-    }
-  });
-} catch (_) {}
-
-if (typeof window !== "undefined") {
-  window.addEventListener("DOMContentLoaded", () => { if (globalThis.__SWARM_ANIMATION_V1__) wrapController(globalThis.__SWARM_ANIMATION_V1__); });
-  window.addEventListener("load", () => { if (globalThis.__SWARM_ANIMATION_V1__) wrapController(globalThis.__SWARM_ANIMATION_V1__); });
-}
-})();</script>`, string(scenesJSON))
-
-	if idx := strings.Index(strings.ToLower(html), "</head>"); idx >= 0 {
-		html = html[:idx] + helperScript + "\n" + html[idx:]
-	} else if idx := strings.Index(strings.ToLower(html), "<body"); idx >= 0 {
-		html = html[:idx] + helperScript + "\n" + html[idx:]
-	} else {
-		html = helperScript + "\n" + html
-	}
-
-	reReturn := regexp.MustCompile(`(?i)return\s*\{\s*time_ms\s*:\s*([^,}]+)`)
-	html = reReturn.ReplaceAllStringFunc(html, func(m string) string {
-		sub := reReturn.FindStringSubmatch(m)
-		if len(sub) > 1 {
-			val := strings.TrimSpace(sub[1])
-			return fmt.Sprintf("return { scene_id: globalThis.__swarmGetSceneId(%s), time_ms: %s", val, val)
-		}
-		return m
-	})
-
-	return html
-}
-
-func composeDirectDesignerSwarmPrompt(parentPrompt, baseTheme string, controls *taskSwarmIterationControls, delta taskSwarmHydratedDelta, isIteration bool, baseHTML string, targetPartID string, parts []pebblestore.SessionArtifactPart, profile *pebblestore.SessionArtifactAnimationProfile, durationMS int64) (string, string) {
+func composeDirectDesignerSwarmPrompt(parentPrompt, baseTheme string, controls *taskSwarmIterationControls, delta taskSwarmHydratedDelta, isIteration bool, baseHTML string, profile *pebblestore.SessionArtifactAnimationProfile, durationMS int64) (string, string) {
 	var sys strings.Builder
-	sys.WriteString(`You are Designer, Swarm's compiled UI, animation, and multi-part HTML component engine.
+	sys.WriteString(`You are Designer, Swarm's compiled UI and animation generation engine.
 Your assignment is to generate a complete, production-ready, standalone single-file HTML5 document.
 
 CRITICAL REQUIREMENTS:
@@ -515,9 +234,9 @@ CRITICAL REQUIREMENTS:
    - Must be a complete HTML document starting with <!DOCTYPE html> and closing with </html>.
    - All styling in <style>, all scripts in <script>.
    - Zero external CDNs, remote scripts, or remote stylesheet links. The document must work fully offline.
-   - High-contrast, modern visual character (e.g. deep spatial background, luminous accents, clean typography).
+   - Stage element: include a main container element with an id attribute (e.g. <main id="swarm-animation-stage"> or <div id="stage">) filling the 1920x1080 viewport with a dark background (#020205).
 
-2. Animation Contract & Controller Implementation Pattern:
+2. Animation Contract & Controller Implementation:
    - In <head>, declare:
      <script id="swarm-animation-manifest" type="application/json">
      {"version":"swarm.animation/v1","duration_ms":` + fmt.Sprintf("%d", durationMS) + `,"fps":60}
@@ -535,8 +254,7 @@ CRITICAL REQUIREMENTS:
      }
 
      function renderState(time_ms) {
-       // Synchronously calculate all particle positions, geometry transforms, opacities, and canvas/SVG state strictly from time_ms.
-       // Draw directly to canvas or update SVG DOM.
+       // Synchronously draw canvas, SVG, or DOM visual state strictly from time_ms.
      }
 
      window.__SWARM_ANIMATION_V1__ = {
@@ -548,36 +266,23 @@ CRITICAL REQUIREMENTS:
        seek: async (time_ms) => {
          stopLoop(); // MUST stop continuous loop immediately
          renderState(time_ms); // Synchronously draw static frame
-         return { time_ms: time_ms, scene_id: getActivePartId(time_ms) };
+         return { time_ms: time_ms };
        }
      };
 
-   - CRITICAL CHROMEDP STABILITY AUDIT REQUIREMENT:
-     The preview validation system captures two separate screenshots 100ms apart during inspection to audit frame stability.
-     When seek(time_ms) or pause() is called, ALL continuous animation loops (requestAnimationFrame, setInterval, setTimeout) MUST BE STOPPED IMMEDIATELY.
+   - STABILITY REQUIREMENT:
+     When seek(time_ms) or pause() is called, stop all continuous animation loops immediately.
      The canvas and DOM must remain 100% static and motionless at time_ms until playback resumes.
-     Never leave requestAnimationFrame running in the background after seek(), or the preview audit will fail with "capture state changed during the fixed stability audit".
 
-3. Multi-Part Architecture & DOM Region IDs:
-   - Each declared chapter/part must be represented by an HTML container element (e.g. <section id="..."> or <div id="...">) with an id attribute exactly matching the part ID.
-   - For example:
-     <main id="swarm-animation-stage" style="position:relative;width:1920px;height:1080px;overflow:hidden;background:#020205;">
-       <canvas id="animation-canvas" width="1920" height="1080" style="position:absolute;left:0;top:0;width:100%;height:100%;"></canvas>
-       <section id="part-1" class="scene-container" style="position:absolute;inset:0;pointer-events:none;"></section>
-       <section id="part-2" class="scene-container" style="position:absolute;inset:0;pointer-events:none;"></section>
-       <section id="part-3" class="scene-container" style="position:absolute;inset:0;pointer-events:none;"></section>
-     </main>
-   - CRITICAL: When active at time_ms, the part container corresponding to the active part must be present in the DOM, positioned inside the 1920x1080 viewport, and visible (width > 0, height > 0, opacity > 0, display not none).
-
-4. Output Format:
+3. Output Format:
    - Return ONLY the complete single-file HTML document wrapped in a single ` + "```html ... ```" + ` block.
    - Do NOT include any conversational preamble or commentary outside the code block.`)
 
 	var user strings.Builder
 	if isIteration {
-		user.WriteString("TARGETED SINGLE-PART REVISION:\n")
-		user.WriteString(fmt.Sprintf("Target Part to modify: %s\n\n", targetPartID))
-		user.WriteString("Revision Instructions:\n")
+		user.WriteString("ANIMATION REVISION:\n")
+		user.WriteString("You are updating and refining an existing HTML animation.\n\n")
+		user.WriteString("User Revision Instructions:\n")
 		user.WriteString(strings.TrimSpace(parentPrompt))
 		if baseTheme != "" {
 			user.WriteString("\nSpecialized Theme: " + baseTheme)
@@ -585,14 +290,13 @@ CRITICAL REQUIREMENTS:
 		if delta.Role != "" {
 			user.WriteString("\nCreative Direction: " + delta.Role)
 		}
-		user.WriteString("\n\nCRITICAL CONSTRAINTS:\n")
-		user.WriteString(fmt.Sprintf("1. Modify ONLY the visual layout, styles, canvas rendering, or logic corresponding to the target part %q.\n", targetPartID))
-		user.WriteString("2. You MUST preserve all non-target parts, their DOM IDs, their structure, and their rendering logic exactly as they are.\n")
-		user.WriteString("3. You MUST preserve the #swarm-animation-manifest and window.__SWARM_ANIMATION_V1__ controller.\n")
-		user.WriteString("4. Output the complete updated standalone HTML in a ```html ... ``` block.\n\n")
-		user.WriteString("Existing Complete HTML Document:\n```html\n")
+		user.WriteString("\n\nExisting HTML Document:\n```html\n")
 		user.WriteString(baseHTML)
-		user.WriteString("\n```\n")
+		user.WriteString("\n```\n\n")
+		user.WriteString("Instructions:\n")
+		user.WriteString("1. Apply the user's requested changes directly to the existing HTML animation.\n")
+		user.WriteString("2. Preserve the #swarm-animation-manifest and window.__SWARM_ANIMATION_V1__ controller contract.\n")
+		user.WriteString("3. Return ONLY the complete updated standalone HTML in a ```html ... ``` block.\n")
 	} else {
 		user.WriteString("Authoritative Design Brief:\n")
 		user.WriteString(strings.TrimSpace(parentPrompt))
@@ -607,17 +311,6 @@ CRITICAL REQUIREMENTS:
 			writeTaskSwarmControlList(&user, "preserve", controls.Preserve)
 			writeTaskSwarmControlList(&user, "change only", controls.Change)
 			writeTaskSwarmControlList(&user, "exclude", controls.Exclude)
-		}
-		if len(parts) > 0 {
-			user.WriteString("\n\nRequired Multi-Part Timeline:\n")
-			for _, p := range parts {
-				timing := ""
-				if p.EndMs > p.StartMs {
-					timing = fmt.Sprintf(" (%dms - %dms)", p.StartMs, p.EndMs)
-				}
-				user.WriteString(fmt.Sprintf("- Part ID %q: %s%s\n", p.ID, p.Label, timing))
-			}
-			user.WriteString("Ensure each Part ID has a matching element in HTML, e.g. <section id=\"...\">.\n")
 		}
 	}
 	return sys.String(), user.String()
@@ -816,8 +509,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 
 	isIteration := parsed.Swarm.ArtifactV3Source != nil
 	baseHTML := ""
-	targetPartID := ""
-	var baseParts []pebblestore.SessionArtifactPart
 	var iterationRefMap map[string]any
 	scope := tool.WorkspaceScope{
 		PrimaryPath: parent.WorkspacePath,
@@ -852,59 +543,11 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			"artifact_id":  src.ArtifactID,
 			"revision_ref": commitOID,
 		}
-		readHTML, readParts, readErr := s.tools.ReadManagedArtifactV3HTML(ctx, scope, iterationRefMap)
+		readHTML, _, readErr := s.tools.ReadManagedArtifactV3HTML(ctx, scope, iterationRefMap)
 		if readErr != nil {
-			return "", fmt.Errorf("read base Artifact V3 for targeted revision: %w", readErr)
+			return "", fmt.Errorf("read base Artifact V3 for revision: %w", readErr)
 		}
 		baseHTML = readHTML
-		baseParts = make([]pebblestore.SessionArtifactPart, len(readParts))
-		for idx, p := range readParts {
-			baseParts[idx] = pebblestore.SessionArtifactPart{
-				ID:       p.ID,
-				Label:    p.Label,
-				Selector: p.Locator.Value,
-			}
-			if p.Temporal != nil {
-				baseParts[idx].Kind = "temporal"
-				baseParts[idx].StartMs = p.Temporal.StartMS
-				baseParts[idx].EndMs = p.Temporal.EndMS
-			}
-		}
-		if len(src.TargetPartIDs) > 0 {
-			targetPartID = src.TargetPartIDs[0]
-		} else if parsed.Swarm.SectionTarget != nil {
-			targetPartID = parsed.Swarm.SectionTarget.ID
-		}
-		if targetPartID == "" && len(baseParts) > 0 {
-			targetPartID = baseParts[0].ID
-		}
-	}
-
-	// Prepare parts list for initial creation
-	var initialParts []pebblestore.SessionArtifactPart
-	if !isIteration {
-		if len(parsed.Swarm.SectionTargets) > 0 {
-			for _, st := range parsed.Swarm.SectionTargets {
-				initialParts = append(initialParts, pebblestore.SessionArtifactPart{
-					ID:       st.ID,
-					Label:    st.Label,
-					Kind:     st.Kind,
-					StartMs:  st.StartMs,
-					EndMs:    st.EndMs,
-					Selector: "#" + st.ID,
-				})
-			}
-		} else if parsed.Swarm.SectionTarget != nil {
-			st := parsed.Swarm.SectionTarget
-			initialParts = append(initialParts, pebblestore.SessionArtifactPart{
-				ID:       st.ID,
-				Label:    st.Label,
-				Kind:     st.Kind,
-				StartMs:  st.StartMs,
-				EndMs:    st.EndMs,
-				Selector: "#" + st.ID,
-			})
-		}
 	}
 
 	durationMS := int64(6000)
@@ -912,32 +555,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 		durationMS = 9000
 		if parsedDuration := extractDurationFromPrompt(parsed.Prompt); parsedDuration > 0 {
 			durationMS = parsedDuration
-		}
-		if len(initialParts) == 0 && !isIteration {
-			initialParts = extractPartsFromPrompt(parsed.Prompt, durationMS)
-		}
-		if len(initialParts) > 0 {
-			var maxEnd int64
-			for _, p := range initialParts {
-				if p.EndMs > maxEnd {
-					maxEnd = p.EndMs
-				}
-			}
-			if maxEnd > 0 {
-				durationMS = maxEnd
-			}
-		}
-	}
-
-	// Gather required parts for pre-flight checking
-	var requiredPartIDs []string
-	if isIteration {
-		for _, bp := range baseParts {
-			requiredPartIDs = append(requiredPartIDs, bp.ID)
-		}
-	} else {
-		for _, ip := range initialParts {
-			requiredPartIDs = append(requiredPartIDs, ip.ID)
 		}
 	}
 
@@ -975,8 +592,6 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 				taskSwarmHydratedDelta{Index: i + 1, Title: hydrated[i].Title, Theme: hydrated[i].Theme},
 				isIteration,
 				baseHTML,
-				targetPartID,
-				initialParts,
 				parsed.Swarm.AnimationProfile,
 				durationMS,
 			)
@@ -1052,7 +667,7 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 
 				rawOutput := outBuf.String()
 				extracted := extractHTMLFromModelOutput(rawOutput)
-				valErr := validateGeneratedDesignerHTML(extracted, isAnimation, requiredPartIDs)
+				valErr := validateGeneratedDesignerHTML(extracted, isAnimation)
 				if valErr == nil {
 					generatedHTML = extracted
 					lastErr = nil
@@ -1093,29 +708,9 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			var persistErr error
 
 			if isIteration {
-				generatedHTML = ensureAnimationSeekSceneID(generatedHTML, baseParts, durationMS)
-				rawResult, persistErr = s.tools.ReviseManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), iterationRefMap, []string{targetPartID}, generatedHTML, run)
+				rawResult, persistErr = s.tools.ReviseManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), iterationRefMap, nil, generatedHTML, run)
 			} else {
-				effectiveParts := initialParts
-				if len(effectiveParts) == 0 && parsed.Swarm.AnimationProfile != nil {
-					effectiveParts = extractPartsFromHTML(generatedHTML, durationMS)
-				}
-				generatedHTML = ensureAnimationSeekSceneID(generatedHTML, effectiveParts, durationMS)
-				var partsList []map[string]any
-				for _, ip := range effectiveParts {
-					partMap := map[string]any{
-						"id":       ip.ID,
-						"label":    ip.Label,
-						"selector": ip.Selector,
-					}
-					if ip.Kind == "temporal" {
-						partMap["kind"] = "temporal"
-						partMap["start_ms"] = ip.StartMs
-						partMap["end_ms"] = ip.EndMs
-					}
-					partsList = append(partsList, partMap)
-				}
-				rawResult, persistErr = s.tools.CreateManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), hydrated[i].Title, generatedHTML, partsList, parsed.Swarm.AnimationProfile, run)
+				rawResult, persistErr = s.tools.CreateManagedHTMLArtifactV3(ctx, scope, fmt.Sprintf("%s:designer:%d", callID, i+1), hydrated[i].Title, generatedHTML, nil, parsed.Swarm.AnimationProfile, run)
 			}
 			if persistErr == nil {
 				var checkObj map[string]any
