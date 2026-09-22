@@ -19,3 +19,18 @@ test('workspace home exposes a flat global catalog without linked-folder control
   assert.match(source, /postDesktopV3BackgroundRouterSessionStart/)
   assert.match(source, /launched\.session_id/)
 })
+
+test('workspace creation facilitates Git init and file commit review menu', () => {
+  assert.match(source, /prepareBaselineForDraft/)
+  assert.match(source, /onPrepareBaseline=\{prepareBaselineForDraft\}/)
+  assert.match(source, /useRepositoryRootForDraft/)
+  assert.match(source, /onUseRepositoryRoot=/)
+  assert.match(source, /onConfirmCommittedOnly=/)
+  assert.match(editorSource, /Commit files to initial Git commit/)
+  assert.match(editorSource, /Initialize Git repository and choose files to commit/)
+  assert.match(editorSource, /Choose files to commit/)
+  assert.match(editorSource, /Select all/)
+  assert.match(editorSource, /Deselect all/)
+  assert.match(editorSource, /I understand omitted files will not enter managed worktrees/)
+  assert.match(editorSource, /handleCommitBaseline/)
+})

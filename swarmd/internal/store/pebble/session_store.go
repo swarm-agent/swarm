@@ -1052,6 +1052,7 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		SessionArtifactCollectionPrefix(session.AccountScopeID, session.ID), SessionArtifactCollectionStatusSessionPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactVariantSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantStatusSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantDigestSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactVariantLineageSessionPrefix(session.AccountScopeID, session.ID),
 		SessionArtifactPartDefinitionSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactPartRevisionSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactCompositionSessionPrefix(session.AccountScopeID, session.ID), SessionArtifactGitTransactionSessionPrefix(session.AccountScopeID, session.ID),
+		automationV2OccurrencePrefix(session.AccountScopeID, session.ID), automationV2Key("pending", session.AccountScopeID, session.ID) + "/", automationV2Key("history", session.AccountScopeID, session.ID) + "/",
 	} {
 		if err := deletePrefixInBatch(batch, prefix); err != nil {
 			return err
@@ -1063,6 +1064,11 @@ func (s *SessionStore) purgeSessionContentInBatch(batch *pebble.Batch, session S
 		automationV2Key("accepted", session.AccountScopeID, session.ID), automationV2Key("proposal", session.AccountScopeID, session.ID),
 	} {
 		if err := batch.Delete([]byte(key), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+			return err
+		}
+	}
+	if session.WorktreeRootPath != "" {
+		if err := batch.Delete([]byte(worktreeOwnershipKey(session.WorktreeRootPath)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
 	}
@@ -1421,7 +1427,7 @@ func (s *SessionStore) ListSessionsForAccountWorkspaceBindings(accountScopeID, s
 	const iterateAll = int(^uint(0) >> 1)
 	err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
 		sessionID := strings.TrimSpace(string(value))
-		if sessionID == "" {
+		if sessionID == "" || strings.HasPrefix(sessionID, "__") {
 			return nil
 		}
 		session, ok, err := s.GetSession(sessionID)
@@ -1491,7 +1497,7 @@ func (s *SessionStore) ListTopSessionsByWorkspace(workspacePaths []string, perWo
 		if err := json.Unmarshal(value, &session); err != nil {
 			return err
 		}
-		if strings.TrimSpace(session.ID) == "" {
+		if strings.TrimSpace(session.ID) == "" || strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
@@ -1621,7 +1627,7 @@ func (s *SessionStore) listSessions(limit int, include func(SessionSnapshot) boo
 		if err := json.Unmarshal(value, &session); err != nil {
 			return err
 		}
-		if strings.TrimSpace(session.ID) == "" {
+		if strings.TrimSpace(session.ID) == "" || strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
 			return nil
 		}
 		session = normalizeSessionOwnership(session)
@@ -1647,7 +1653,7 @@ func (s *SessionStore) listSessionsForAccount(accountScopeID string, limit int, 
 	const iterateAll = int(^uint(0) >> 1)
 	err := s.store.IteratePrefix(SessionByAccountPrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
 		sessionID := strings.TrimSpace(string(value))
-		if sessionID == "" {
+		if sessionID == "" || strings.HasPrefix(sessionID, "__") {
 			return nil
 		}
 		session, ok, err := s.GetSession(sessionID)

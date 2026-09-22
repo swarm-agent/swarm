@@ -78,17 +78,17 @@ func TestUsageLimitStore(t *testing.T) {
 }
 
 func TestCalculateBaselineCost(t *testing.T) {
-	// Gemini 3.8 Flash: $0.15 input / $0.60 output per million
+	// Gemini 3.8 Flash: $0.75 input / $3.75 output per million
 	cost := CalculateBaselineCost("google", "gemini-3.8-flash", 1_000_000, 1_000_000, 0, 0)
-	if cost < 0.74 || cost > 0.76 {
-		t.Errorf("expected Gemini 3.8 Flash cost ~0.75, got %f", cost)
+	if cost < 4.49 || cost > 4.51 {
+		t.Errorf("expected Gemini 3.8 Flash cost ~4.50, got %f", cost)
 	}
 
-	// Gemini 3.8 Flash with cached input ($0.0375 cached rate)
+	// Gemini 3.8 Flash with cached input (90% discount: $0.075 cached rate)
 	costWithCache := CalculateBaselineCost("google", "gemini-3.8-flash", 1_000_000, 0, 500_000, 0)
-	// 500k regular = 0.5 * 0.15 = 0.075; 500k cached = 0.5 * 0.0375 = 0.01875 -> 0.09375
-	if costWithCache < 0.09 || costWithCache > 0.10 {
-		t.Errorf("expected cached cost ~0.09375, got %f", costWithCache)
+	// 500k regular = 0.5 * 0.75 = 0.375; 500k cached = 0.5 * 0.075 = 0.0375 -> 0.4125
+	if costWithCache < 0.41 || costWithCache > 0.42 {
+		t.Errorf("expected cached cost ~0.4125, got %f", costWithCache)
 	}
 }
 

@@ -1,12 +1,21 @@
 import { requestJson } from '../../../../app/api'
 import type {
+  CancelOperationParams,
+  CancelOperationResponse,
   Connection,
   ConnectionCheckResult,
   ConnectionKind,
   ConsumerType,
+  DailyOperationCounts,
   Deployment,
   DeploymentLease,
   Environment,
+  EnvironmentOperation,
+  EnvironmentSummary,
+  OperationHistoryPage,
+  OperationHistoryQuery,
+  OperationStatus,
+  StopDeploymentResponse,
   WorkspaceSettings,
 } from '../types/environments'
 
@@ -248,10 +257,161 @@ export async function fetchDeployments(
   if (workspaceId.trim()) search.set('workspace_id', workspaceId.trim())
   if (workspacePath.trim()) search.set('workspace_path', workspacePath.trim())
   if (environmentId.trim()) search.set('environment_id', environmentId.trim())
-  const response = await requestJson<DeploymentsListResponse>(`/v1/deployments?${search.toString()}`, { signal })
+  search.set('action', 'list_deployments')
+
+  try {
+    const response = await requestJson<DeploymentsListResponse>(`/v1/environments?${search.toString()}`, { signal })
+    if (response && Array.isArray(response.deployments)) {
+      return {
+        deployments: response.deployments,
+        activeLeases: response.active_leases ?? {},
+      }
+    }
+  } catch {
+    // fallback to /v1/deployments
+  }
+
+  search.delete('action')
+  const fallback = await requestJson<DeploymentsListResponse>(`/v1/deployments?${search.toString()}`, { signal })
   return {
-    deployments: Array.isArray(response.deployments) ? response.deployments : [],
-    activeLeases: response.active_leases ?? {},
+    deployments: Array.isArray(fallback.deployments) ? fallback.deployments : [],
+    activeLeases: fallback.active_leases ?? {},
+  }
+}
+
+export async function fetchCurrentOperations(
+  workspaceId: string,
+  signal?: AbortSignal,
+  workspacePath = '',
+): Promise<EnvironmentOperation[]> {
+  const search = new URLSearchParams()
+  if (workspaceId.trim()) search.set('workspace_id', workspaceId.trim())
+  if (workspacePath.trim()) search.set('workspace_path', workspacePath.trim())
+  search.set('action', 'operations')
+
+  try {
+    const response = await requestJson<{ ok: boolean; operations?: EnvironmentOperation[] }>(
+      `/v1/environments?${search.toString()}`,
+      { signal },
+    )
+    if (response && Array.isArray(response.operations)) {
+      return response.operations
+    }
+  } catch {
+    // fallback if endpoint is unavailable
+  }
+  return []
+}
+
+export async function fetchEnvironmentSummary(
+  workspaceId: string,
+  signal?: AbortSignal,
+  workspacePath = '',
+): Promise<EnvironmentSummary> {
+  const search = new URLSearchParams()
+  if (workspaceId.trim()) search.set('workspace_id', workspaceId.trim())
+  if (workspacePath.trim()) search.set('workspace_path', workspacePath.trim())
+  search.set('action', 'summary')
+  const response = await requestJson<{ ok: boolean; summary?: EnvironmentSummary }>(
+    `/v1/environments?${search.toString()}`,
+    { signal },
+  )
+  if (!response.summary) throw new Error('Environment summary returned no data')
+  return response.summary
+}
+
+export async function fetchOperationHistory(
+  workspaceId: string,
+  query: Partial<OperationHistoryQuery> = {},
+  signal?: AbortSignal,
+  workspacePath = '',
+): Promise<OperationHistoryPage> {
+  const search = new URLSearchParams()
+  if (workspaceId.trim()) search.set('workspace_id', workspaceId.trim())
+  if (workspacePath.trim()) search.set('workspace_path', workspacePath.trim())
+  search.set('action', 'history')
+  if (query.environment_id?.trim()) search.set('environment_id', query.environment_id.trim())
+  if (query.deployment_id?.trim()) search.set('deployment_id', query.deployment_id.trim())
+  if (query.actor?.trim()) search.set('actor', query.actor.trim())
+  if (query.session_id?.trim()) search.set('session_id', query.session_id.trim())
+  if (query.worker_id?.trim()) search.set('worker_id', query.worker_id.trim())
+  if (query.status?.trim()) search.set('status', query.status.trim())
+  if (query.action?.trim()) search.set('action_filter', query.action.trim())
+  if (query.timezone?.trim()) search.set('timezone', query.timezone.trim())
+  if (query.start_date?.trim()) search.set('start_date', query.start_date.trim())
+  if (query.end_date?.trim()) search.set('end_date', query.end_date.trim())
+  if (query.cursor?.trim()) search.set('cursor', query.cursor.trim())
+  if (query.limit && query.limit > 0) search.set('limit', String(query.limit))
+
+  const response = await requestJson<{
+    ok: boolean
+    history?: OperationHistoryPage
+    operations?: EnvironmentOperation[]
+    daily_totals?: DailyOperationCounts[]
+    summary?: EnvironmentSummary
+    next_cursor?: string
+    has_more?: boolean
+  }>(`/v1/environments?${search.toString()}`, { signal })
+
+  return {
+    operations: Array.isArray(response.operations)
+      ? response.operations
+      : (response.history?.operations ?? []),
+    daily_totals: Array.isArray(response.daily_totals)
+      ? response.daily_totals
+      : (response.history?.daily_totals ?? []),
+    summary: response.summary ?? response.history?.summary ?? {
+      account_scope_id: '',
+      workspace_id: workspaceId,
+      revision: 0,
+      updated_at: 0,
+      active_deployments: 0,
+      running_exec_ops: 0,
+      queued_ops: 0,
+      running_ops: 0,
+      cancelling_ops: 0,
+      failed_ops: 0,
+      cleanup_failed_ops: 0,
+      unknown_ops: 0,
+      succeeded_ops: 0,
+      cancelled_ops: 0,
+      timed_out_ops: 0,
+      total_ops: 0,
+    },
+    next_cursor: response.next_cursor ?? response.history?.next_cursor,
+    has_more: Boolean(response.has_more ?? response.history?.has_more),
+  }
+}
+
+export async function cancelEnvironmentOperation(
+  workspaceId: string,
+  params: CancelOperationParams,
+  workspacePath = '',
+): Promise<CancelOperationResponse> {
+  const response = await requestJson<{
+    ok: boolean
+    operation: EnvironmentOperation
+    operation_id: string
+    status: OperationStatus
+  }>('/v1/environments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'cancel',
+      workspace_id: workspaceId,
+      workspace_path: workspacePath,
+      operation_id: params.operationId,
+      reason: params.reason || 'cancelled via UI',
+    }),
+  })
+  if (!response.operation && !response.operation_id) {
+    throw new Error('Cancel operation returned incomplete data')
+  }
+  return {
+    ok: Boolean(response.ok),
+    operation: response.operation,
+    operation_id: response.operation_id || response.operation?.operation_id || params.operationId,
+    status: response.status || response.operation?.status || 'cancelling',
   }
 }
 
@@ -266,6 +426,32 @@ export async function ensureDeployment(
   },
   workspacePath = '',
 ): Promise<{ deployment: Deployment; lease: DeploymentLease; reused: boolean }> {
+  try {
+    const response = await requestJson<DeploymentMutationResponse>('/v1/environments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'ensure',
+        workspace_id: workspaceId,
+        workspace_path: workspacePath,
+        environment_id: params.environmentId,
+        connection_id: params.connectionId,
+        consumer_type: params.consumerType || 'session',
+        consumer_id: params.consumerId,
+        deployment_name: params.deploymentName,
+      }),
+    })
+    if (response.deployment && response.lease) {
+      return {
+        deployment: response.deployment,
+        lease: response.lease,
+        reused: Boolean(response.reused),
+      }
+    }
+  } catch {
+    // fallback to /v1/deployments
+  }
+
   const response = await requestJson<DeploymentMutationResponse>('/v1/deployments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -313,8 +499,8 @@ export async function stopDeployment(
   workspaceId: string,
   deploymentId: string,
   workspacePath = '',
-): Promise<Deployment> {
-  const response = await requestJson<DeploymentMutationResponse>('/v1/deployments', {
+): Promise<StopDeploymentResponse> {
+  const response = await requestJson<StopDeploymentResponse>('/v1/environments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -324,8 +510,17 @@ export async function stopDeployment(
       deployment_id: deploymentId,
     }),
   })
-  if (!response.deployment) throw new Error('Stop deployment returned no deployment')
-  return response.deployment
+
+  const opId = response.operation_id || response.operation?.operation_id
+  if (!opId) {
+    throw new Error(`Stop deployment returned no operation ID for deployment ${deploymentId}`)
+  }
+  const status = response.status || response.operation?.status
+  if (!status) {
+    throw new Error(`Stop deployment returned no operation status for deployment ${deploymentId}`)
+  }
+
+  return { ...response, operation_id: opId, status }
 }
 
 export async function releaseDeployment(

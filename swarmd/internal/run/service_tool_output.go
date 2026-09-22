@@ -375,6 +375,77 @@ func formatProviderManagedToolCompletedOutput(call tool.Call, result tool.Result
 	return formatToolCompletedOutput(call, result)
 }
 
+func compactStoredToolMessageContent(raw string) (string, bool) {
+	record, ok := decodeToolHistoryRecord(raw)
+	if !ok || record.Tool == "" || record.CallID == "" {
+		return "", false
+	}
+	if len(record.Output) <= 512 {
+		return "", false
+	}
+	replacement := record.CompletedOutput
+	if strings.TrimSpace(replacement) == "" || len(replacement) >= len(record.Output) {
+		replacement = summarizeToolOutput(record.Tool, record.Output, 300, 2)
+	}
+	if replacement == "" {
+		return "", false
+	}
+	record.Output = replacement
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return "", false
+	}
+	return string(encoded), true
+}
+
+func compactOlderToolMessagesForProviderContext(messages []pebblestore.MessageSnapshot, retainRecentCount int) []pebblestore.MessageSnapshot {
+	if len(messages) <= retainRecentCount {
+		return messages
+	}
+	cutoff := len(messages) - retainRecentCount
+	out := make([]pebblestore.MessageSnapshot, len(messages))
+	copy(out, messages)
+	for i := 0; i < cutoff; i++ {
+		if !strings.EqualFold(strings.TrimSpace(out[i].Role), "tool") {
+			continue
+		}
+		if compacted, ok := compactStoredToolMessageContent(out[i].Content); ok {
+			out[i].Content = compacted
+		}
+	}
+	return out
+}
+
+func formatToolSearchIndexContent(call tool.Call, result tool.Result) string {
+	if compact, ok := compactWebToolCompletionOutput(call, result); ok {
+		return compact
+	}
+	name := canonicalToolName(firstNonEmptyString(result.Name, call.Name))
+	raw := strings.TrimSpace(result.Output)
+	if raw == "" {
+		if errorText := strings.TrimSpace(result.Error); errorText != "" {
+			return name + ": error: " + truncateRunes(errorText, 120)
+		}
+		return name
+	}
+	if payload := decodeToolPayload(raw); payload != nil {
+		if summary := mapString(payload, "summary"); summary != "" {
+			return summary
+		}
+		if name == "read" {
+			if summary := summarizeReadToolPayload(payload); summary != "" {
+				return summary
+			}
+		}
+	}
+	if name == "read" {
+		if summary := summarizeReadToolOutput(raw); summary != "" {
+			return summary
+		}
+	}
+	return summarizeToolOutput(name, raw, 240, 2)
+}
+
 func formatToolCompletedOutput(call tool.Call, result tool.Result) string {
 	name := strings.TrimSpace(result.Name)
 	if name == "" {

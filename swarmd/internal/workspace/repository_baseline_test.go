@@ -263,7 +263,147 @@ func TestRepositoryBaselinePublicationFailureResumes(t *testing.T) {
 	}
 }
 
-// Requirement: effective-UID ACL-aware access, not terminal/root assumptions,
+// Requirement: ReviewRepositoryForPrincipal and PrepareRepositoryBaselineForPrincipal
+// must allow subdirectories without their own .git to be initialized as independent
+// Git repositories without modifying the outer repository.
+func TestRepositoryReviewAllowsSubdirectoryInitializationAsIndependentRepo(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	root := t.TempDir()
+	if _, err := runRepositoryGit(root, "init", "--initial-branch=main", "--template="); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "root.txt"), []byte("root file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRepositoryGit(root, "add", "root.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRepositoryGit(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "root commit"); err != nil {
+		t.Fatal(err)
+	}
+	rootHead, _ := runRepositoryGit(root, "rev-parse", "HEAD")
+
+	sub := filepath.Join(root, "subfolder")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "sub.txt"), []byte("sub file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	review, err := svc.ReviewRepositoryForPrincipal(testPrincipal(), sub)
+	if err != nil {
+		t.Fatalf("expected review to succeed for subdirectory, got error: %v", err)
+	}
+	if len(review.Files) != 1 || review.Files[0].Path != "sub.txt" {
+		t.Fatalf("expected review.Files = [sub.txt], got: %#v", review.Files)
+	}
+
+	req := RepositoryBaselineRequest{
+		Path:                 sub,
+		ExpectedResolvedPath: sub,
+		ReviewDigest:         review.Digest,
+		SelectedPaths:        []string{"sub.txt"},
+		ConfirmBaseline:      true,
+		ConfirmOmissions:     true,
+	}
+	state, err := svc.PrepareRepositoryBaselineForPrincipal(testPrincipal(), req)
+	if err != nil {
+		t.Fatalf("expected baseline to succeed, got error: %v", err)
+	}
+	if state.State != RepositoryStateReady {
+		t.Fatalf("expected state ready, got: %s", state.State)
+	}
+
+	// Verify sub has its own .git and HEAD commit
+	subHead, err := runRepositoryGit(sub, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || subHead == "" {
+		t.Fatalf("expected sub HEAD commit, got %q: %v", subHead, err)
+	}
+	if subHead == rootHead {
+		t.Fatalf("expected sub HEAD commit to differ from root HEAD commit")
+	}
+
+	// Verify outer root HEAD was not changed
+	currentRootHead, _ := runRepositoryGit(root, "rev-parse", "HEAD")
+	if currentRootHead != rootHead {
+		t.Fatalf("outer root HEAD changed from %q to %q", rootHead, currentRootHead)
+	}
+}
+
+// Requirement: ReviewRepositoryForPrincipal must skip node_modules and directories/files
+// matching .gitignore so that large dependency folders do not exceed bounded review limits.
+func TestRepositoryReviewSkipsNodeModulesAndGitignoredDirectories(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	dir := t.TempDir()
+
+	// Source files
+	if err := os.WriteFile(filepath.Join(dir, "index.ts"), []byte("console.log('hi')"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Gitignore
+	gitignoreContent := "node_modules/\n*.log\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.log"), []byte("log data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Node modules directory with many files
+	nmDir := filepath.Join(dir, "node_modules", "some-pkg")
+	if err := os.MkdirAll(nmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nmDir, "large.js"), []byte("const x = 1;"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	review, err := svc.ReviewRepositoryForPrincipal(testPrincipal(), dir)
+	if err != nil {
+		t.Fatalf("expected review to succeed, got: %v", err)
+	}
+
+	fileMap := make(map[string]RepositoryReviewFile)
+	for _, f := range review.Files {
+		fileMap[f.Path] = f
+	}
+
+	if _, found := fileMap["index.ts"]; !found || !fileMap["index.ts"].Selectable {
+		t.Fatal("expected index.ts to be found and selectable")
+	}
+	if _, found := fileMap["package.json"]; !found || !fileMap["package.json"].Selectable {
+		t.Fatal("expected package.json to be found and selectable")
+	}
+	if _, found := fileMap[".gitignore"]; !found || !fileMap[".gitignore"].Selectable {
+		t.Fatal("expected .gitignore to be found and selectable")
+	}
+
+	// node_modules should be completely skipped
+	for path := range fileMap {
+		if strings.HasPrefix(path, "node_modules") {
+			t.Fatalf("expected node_modules to be skipped, but found %q", path)
+		}
+	}
+
+	// app.log is ignored by .gitignore, so it must be marked non-selectable
+	if f, found := fileMap["app.log"]; found && f.Selectable {
+		t.Fatal("expected app.log to be unselectable because it matches .gitignore")
+	}
+}
+
 // governs setup. An inaccessible parent must reject before directory mutation.
 func TestRepositoryRuntimeAccessRejectsUnwritableParent(t *testing.T) {
 	if os.Geteuid() == 0 {

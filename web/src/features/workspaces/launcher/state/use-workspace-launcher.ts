@@ -3,6 +3,7 @@ import { isCancelledError, useQueryClient } from '@tanstack/react-query'
 import { applyWorkspaceTheme, setWorkspaceThemeCatalog, workspaceThemeDefaultId } from '../services/workspace-theme'
 import { normalizeGlobalThemeSettings, type UISettingsWire } from '../../../desktop/settings/swarm/types/swarm-settings'
 import { moveWorkspace } from '../mutations/move-workspace'
+import { WorkspaceRepositoryPrerequisiteError } from '../services/workspace-repository'
 import { saveWorkspace as saveWorkspaceAPI } from '../mutations/save-workspace'
 import { setupWorkspaceRepository as setupWorkspaceRepositoryAPI } from '../mutations/setup-workspace-repository'
 import { createWorkspaceFolder as createWorkspaceFolderAPI } from '../mutations/create-workspace-folder'
@@ -494,7 +495,9 @@ export function useWorkspaceLauncher(options: UseWorkspaceLauncherOptions = {}):
       await browsePath(resolution.resolvedPath)
       return resolution
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Failed to save workspace')
+      if (!(err instanceof WorkspaceRepositoryPrerequisiteError)) {
+        setActionError(err instanceof Error ? err.message : 'Failed to save workspace')
+      }
       throw err
     } finally {
       setSavingPath(null)

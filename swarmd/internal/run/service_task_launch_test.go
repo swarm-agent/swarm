@@ -650,7 +650,7 @@ func TestResolveTaskTargetWorkspaceAcceptsAuthorizedSharedRoot(t *testing.T) {
 	sharedRoot := t.TempDir()
 	parent := pebblestore.SessionSnapshot{ID: "parent", UserID: "user", AccountScopeID: "account", WorkspacePath: parentRoot, WorkspaceName: "parent", TemporaryWorkspaceRoots: []string{sharedRoot}}
 	svc := &Service{}
-	target, name, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: sharedRoot})
+	target, name, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: sharedRoot})
 	if err != nil {
 		t.Fatalf("resolve authorized shared workspace: %v", err)
 	}
@@ -658,7 +658,7 @@ func TestResolveTaskTargetWorkspaceAcceptsAuthorizedSharedRoot(t *testing.T) {
 		t.Fatalf("target = %q/%q, want %q/%q", target, name, sharedRoot, filepath.Base(sharedRoot))
 	}
 	outside := t.TempDir()
-	if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: outside}); err == nil || !strings.Contains(err.Error(), "outside the parent session's authorized shared workspace roots") {
+	if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: outside}); err == nil || !strings.Contains(err.Error(), "outside the parent session's authorized shared workspace roots") {
 		t.Fatalf("unauthorized workspace error = %v", err)
 	}
 }

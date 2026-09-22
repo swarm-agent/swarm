@@ -233,3 +233,144 @@ export interface ConnectionCheckResult {
   diagnostics?: string
   capabilities?: ConnectionCapabilities
 }
+
+export type OperationStatus =
+  | 'queued'
+  | 'running'
+  | 'cancelling'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'timed_out'
+  | 'cleanup_failed'
+  | 'unknown'
+
+export interface OperationAttribution {
+  actor?: string
+  session_id?: string
+  run_id?: string
+  worker_id?: string
+}
+
+export interface OperationActivity {
+  description?: string
+  phase?: string
+  progress_pct?: number
+  last_observed_at?: number
+  heartbeat_seq?: number
+}
+
+export interface OperationResult {
+  exit_code?: number
+  error_message?: string
+  failure_kind?: string
+  summary?: string
+}
+
+export interface EnvironmentOperation {
+  operation_id: string
+  account_scope_id: string
+  workspace_id: string
+  action: string
+  environment_id?: string
+  deployment_id?: string
+  lease_id?: string
+  attribution?: OperationAttribution
+  status: OperationStatus
+  revision: number
+  idempotency_key?: string
+  created_at: number
+  started_at?: number
+  observed_at?: number
+  completed_at?: number
+  deadline?: number
+  activity?: OperationActivity
+  result?: OperationResult
+}
+
+export interface EnvironmentSummary {
+  account_scope_id: string
+  workspace_id: string
+  revision: number
+  updated_at: number
+  active_deployments: number
+  running_exec_ops: number
+  queued_ops: number
+  running_ops: number
+  cancelling_ops: number
+  failed_ops: number
+  cleanup_failed_ops: number
+  unknown_ops: number
+  succeeded_ops: number
+  cancelled_ops: number
+  timed_out_ops: number
+  total_ops: number
+}
+
+export interface DailyOperationCounts {
+  date: string
+  total_ops: number
+  succeeded: number
+  failed: number
+  cancelled: number
+  timed_out: number
+  cleanup_failed: number
+  unknown: number
+  running: number
+  exec_ops: number
+  deploy_ops: number
+}
+
+export interface OperationHistoryQuery {
+  workspace_id: string
+  environment_id?: string
+  deployment_id?: string
+  actor?: string
+  session_id?: string
+  worker_id?: string
+  status?: OperationStatus
+  action?: string
+  timezone?: string
+  start_date?: string
+  end_date?: string
+  cursor?: string
+  limit?: number
+}
+
+export interface OperationHistoryPage {
+  operations: EnvironmentOperation[]
+  next_cursor?: string
+  has_more: boolean
+  daily_totals: DailyOperationCounts[]
+  summary: EnvironmentSummary
+}
+
+export interface HistoryFilter {
+  startDate?: string
+  endDate?: string
+  timezone: string
+  status?: OperationStatus
+  action?: string
+  cursor?: string
+  limit?: number
+}
+
+export interface CancelOperationParams {
+  operationId: string
+  reason?: string
+}
+
+export interface CancelOperationResponse {
+  ok: boolean
+  operation: EnvironmentOperation
+  operation_id: string
+  status: OperationStatus
+}
+
+export interface StopDeploymentResponse {
+  ok: boolean
+  deployment?: Deployment
+  operation?: EnvironmentOperation
+  operation_id?: string
+  status?: OperationStatus
+}

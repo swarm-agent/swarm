@@ -34,7 +34,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	for key := range args {
 		switch key {
-		case "action", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts":
+		case "action", "title", "collection_name", "collection_description", "filename", "media_type", "content", "presentation", "parts", "narration_plan", "animation_profile", "scene_contract", "native_parts":
 		default:
 			return nil, fmt.Errorf("manage_artifact create for Artifact V3 HTML contains unsupported field %q", key)
 		}
@@ -56,7 +56,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	}
 	mediaType := canonicalArtifactMediaType(asString(args["media_type"]))
 	filename := strings.TrimSpace(asString(args["filename"]))
-	if mediaType == "" && (narrationPlan || strings.HasSuffix(strings.ToLower(filename), ".html")) {
+	contentStr, _ := args["content"].(string)
+	trimmedContent := strings.TrimSpace(strings.ToLower(contentStr))
+	if mediaType == "" && (narrationPlan || strings.HasSuffix(strings.ToLower(filename), ".html") || strings.HasPrefix(trimmedContent, "<!doctype html") || strings.HasPrefix(trimmedContent, "<html") || strings.Contains(trimmedContent, "<html")) {
 		mediaType = "text/html"
 	}
 	if mediaType != "text/html" {
@@ -105,11 +107,31 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			}
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 		}
+		numTemporal := 0
+		allZero := true
+		for _, req := range requestedParts {
+			if req.Kind == "temporal" {
+				numTemporal++
+				if req.StartMs != 0 || req.EndMs != 0 {
+					allZero = false
+				}
+			}
+		}
 		parts = parts[:0]
+		temporalIdx := 0
 		for _, requested := range requestedParts {
 			derived := derivedByID[strings.TrimSpace(requested.ID)]
 			derived.Label = firstNonEmptyString(strings.TrimSpace(requested.Label), derived.Label)
 			if requested.Kind == "temporal" {
+				if allZero && numTemporal > 0 && durationMS > 0 {
+					step := durationMS / int64(numTemporal)
+					requested.StartMs = int64(temporalIdx) * step
+					requested.EndMs = int64(temporalIdx+1) * step
+					if temporalIdx == numTemporal-1 {
+						requested.EndMs = durationMS
+					}
+					temporalIdx++
+				}
 				if profile == nil || requested.StartMs < 0 || requested.EndMs <= requested.StartMs || requested.EndMs > durationMS {
 					return nil, errors.New("native temporal Parts require motion_ui or spatial_3d and 0 <= start_ms < end_ms <= canonical animation duration within the 36000-frame budget")
 				}
@@ -141,13 +163,42 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		})
 	}
 	if len(manifestParts) == 0 {
-		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, or footer")
+		return nil, errors.New("manage_artifact create requires at least one stable HTML region id on header, main, section, article, nav, aside, footer, or div")
 	}
 	if profile != nil && len(requestedParts) == 0 {
-		// One whole-animation sample; all other meaningful regions remain global
-		// requirements. Do not turn capture controls into output metadata.
-		midpoint := durationMS / 2
-		manifestParts[0].CaptureTimeMS = &midpoint
+		// If manifestParts contains sequential scenes (e.g. part-1, part-2, scene-1, etc.),
+		// auto-slot them as temporal scenes so inactive scenes are not treated as static
+		// required selectors that fail the browser preview gate.
+		var seqScenes []*pebblestore.ArtifactV3Part
+		for i := range manifestParts {
+			id := strings.ToLower(manifestParts[i].ID)
+			if strings.HasPrefix(id, "part-") || strings.HasPrefix(id, "part_") || strings.HasPrefix(id, "scene-") || strings.HasPrefix(id, "scene_") {
+				seqScenes = append(seqScenes, &manifestParts[i])
+			}
+		}
+		if len(seqScenes) >= 2 {
+			step := durationMS / int64(len(seqScenes))
+			for i, sp := range seqScenes {
+				start := int64(i) * step
+				end := int64(i+1) * step
+				if i == len(seqScenes)-1 {
+					end = durationMS
+				}
+				mid := start + (end-start)/2
+				sp.CaptureTimeMS = &mid
+				sp.Temporal = &pebblestore.ArtifactV3TemporalScene{SceneID: sp.ID, StartMS: start, EndMS: end}
+			}
+			filtered := make([]pebblestore.ArtifactV3Part, 0, len(seqScenes))
+			for _, sp := range seqScenes {
+				filtered = append(filtered, *sp)
+			}
+			manifestParts = filtered
+		} else {
+			// One whole-animation sample; all other meaningful regions remain global
+			// requirements. Do not turn capture controls into output metadata.
+			midpoint := durationMS / 2
+			manifestParts[0].CaptureTimeMS = &midpoint
+		}
 	}
 	if raw, ok := args["native_parts"]; ok {
 		if len(requestedParts) != 0 {
@@ -188,7 +239,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 		result["message"] = "This exact ready Artifact V3 revision was already published in the current run; do not recreate it."
 		return result, nil
 	}
-	prompt := strings.TrimSpace(firstNonEmptyString(asString(args["collection_description"]), asString(args["collection_name"]), filename))
+	prompt := strings.TrimSpace(firstNonEmptyString(asString(args["title"]), asString(args["collection_description"]), asString(args["collection_name"]), filename))
 	prepare := ArtifactV3PrepareTurnRequest{
 		AccountScopeID:   principal.AccountScopeID,
 		UserID:           principal.UserID,
@@ -239,25 +290,21 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 	if err != nil {
 		return nil, err
 	}
-	if grant.Initial && len(inspection.Files) != 0 {
-		gate := ArtifactV3AuthorGate{}
-		if inspection.LatestGate != nil {
-			gate = *inspection.LatestGate
-		}
-		return directArtifactV3Retained(grant, gate), nil
+	if grant.Initial && len(inspection.Files) != 0 && inspection.LatestGate != nil && inspection.LatestGate.ProjectDigest == projectDigest {
+		return directArtifactV3Retained(grant, *inspection.LatestGate), nil
 	}
 	writeProject := func(path string, content []byte) error {
-		if grant.Initial {
-			return r.artifactV3Author.Create(ctx, author, grant, path, content)
-		}
 		current, readErr := r.artifactV3Author.Read(ctx, author, grant, path, 0, 0)
-		if readErr != nil {
-			return readErr
+		if readErr == nil {
+			if current.Content == string(content) {
+				return nil
+			}
+			if editErr := r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false); editErr == nil {
+				return nil
+			}
+			_ = r.artifactV3Author.Delete(ctx, author, grant, path)
 		}
-		if current.Content == string(content) {
-			return nil
-		}
-		return r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false)
+		return r.artifactV3Author.Create(ctx, author, grant, path, content)
 	}
 	if err := writeProject(pebblestore.ArtifactV3ManifestFilename, manifest); err != nil {
 		return fail("manifest_write_failed", err)
@@ -278,7 +325,7 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			diagnostic += "; sequential scenes need explicit parts kind=temporal with start_ms/end_ms and the same stable HTML id, plus __SWARM_ANIMATION_V1__ {version:'swarm.animation/v1', ready:async()=>{}, seek:async ms=>({time_ms:ms})}; seek must pause and render the requested playhead deterministically"
 		}
 		result := directArtifactV3Retained(grant, gate)
-		result["message"] = diagnostic + "; source retained: use author_v3 with draft_handle to repair"
+		result["message"] = diagnostic + "; source retained: make a corrected manage_artifact create call with complete HTML to repair"
 		return result, nil
 	}
 	finished, err := r.artifactV3Author.Finish(ctx, author, grant)

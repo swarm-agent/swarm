@@ -107,10 +107,6 @@ func automationHTTPError(w http.ResponseWriter, err error) {
 }
 
 func (s *Server) handleAutomations(w http.ResponseWriter, r *http.Request) {
-	if !automationsEnabled {
-		s.handleAutomationsDisabled(w, r)
-		return
-	}
 	principal, ok := PrincipalFromRequest(r)
 	if !ok || !principal.Valid() {
 		writeError(w, http.StatusUnauthorized, errors.New("trusted principal required"))

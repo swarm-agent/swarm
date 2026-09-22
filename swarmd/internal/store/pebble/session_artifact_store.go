@@ -1641,13 +1641,13 @@ func validateArtifactAnimationProfile(profile *SessionArtifactAnimationProfile) 
 	if len(profile.ProfileID) > 64 || len(profile.RegistryVersion) > 128 || len(profile.RuntimeKind) > 64 || len(profile.RuntimePackage) > 128 || len(profile.RuntimeVersion) > 64 || len(profile.SecondaryRuntimePackage) > 128 || len(profile.SecondaryRuntimeVersion) > 64 {
 		return errors.New("artifact animation profile metadata exceeds bounds")
 	}
-	if profile.ProfileID == "" || profile.RegistryVersion != "2026-08-16.v1" || profile.RuntimeKind == "" || (profile.RuntimePackage == "") != (profile.RuntimeVersion == "") || (profile.SecondaryRuntimePackage == "") != (profile.SecondaryRuntimeVersion == "") {
+	if profile.ProfileID == "" || (profile.RegistryVersion != "2026-08-16.v1" && profile.RegistryVersion != "2026-09-08.v2") || profile.RuntimeKind == "" || (profile.RuntimePackage == "") != (profile.RuntimeVersion == "") || (profile.SecondaryRuntimePackage == "") != (profile.SecondaryRuntimeVersion == "") {
 		return errors.New("artifact animation profile is incomplete")
 	}
 	var expectedBudgets SessionArtifactAnimationBudgets
 	switch profile.ProfileID {
 	case "motion_ui":
-		expectedBudgets = canonicalArtifactAnimationBudgets(3, 0, 2, 4_194_304, 0, 400)
+		expectedBudgets = canonicalArtifactAnimationBudgets(3, 0, 2, 4_194_304, 2_000, 400)
 		if profile.RuntimeKind != "native_css_waapi_svg" || profile.RuntimePackage != "" || profile.Heavy || profile.ImportedPlaybackOnly || profile.EditableSourceRequired {
 			return errors.New("artifact animation profile runtime does not match profile")
 		}

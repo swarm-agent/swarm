@@ -29,6 +29,7 @@ import (
 	"swarm/packages/swarmd/internal/artifactv2"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
@@ -226,6 +227,7 @@ type permissionService interface {
 	CurrentPolicy() (permission.Policy, error)
 	CurrentPolicyForAccount(accountScopeID string) (permission.Policy, error)
 	UpdateCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy permission.SessionDeployPolicy, planAcceptance permission.PlanAcceptancePolicy) (permission.Policy, error)
+	UpdateExecutionCapabilityPoliciesForAccount(accountScopeID string, sessionDeploy *permission.SessionDeployPolicy, planAcceptance *permission.PlanAcceptancePolicy, activeExecutionLimit *int) (permission.Policy, error)
 	UpdateBashApprovalProfileForAccount(accountScopeID string, profile permission.BashApprovalProfile) (permission.Policy, error)
 	UpsertRule(rule permission.PolicyRule) (permission.PolicyRule, error)
 	UpsertRuleForAccount(accountScopeID string, rule permission.PolicyRule) (permission.PolicyRule, error)
@@ -242,6 +244,10 @@ type permissionService interface {
 	SetBypassPermissions(enabled bool)
 	BypassPermissions() bool
 	CurrentPermissionStateForAccount(accountScopeID string) (permission.PermissionState, error)
+	UpdateActiveExecutionLimitForAccount(accountScopeID string, limit int) (permission.Policy, error)
+	ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot
+	AdmitExecution(ctx context.Context, req executioncapacity.AcquireRequest) (executioncapacity.Lease, error)
+	ReleaseExecution(lease executioncapacity.Lease) error
 }
 
 type notificationService interface {
@@ -488,6 +494,33 @@ func (s *Server) permissionBypassForAccount(accountScopeID string) bool {
 		}
 	}
 	return s.bypassPermissions
+}
+
+// ExecutionCapacity returns the shared account-scoped execution capacity manager if configured.
+func (s *Server) ExecutionCapacity() *executioncapacity.Manager {
+	if s == nil || s.perm == nil {
+		return nil
+	}
+	if p, ok := s.perm.(interface {
+		ExecutionCapacity() *executioncapacity.Manager
+	}); ok {
+		return p.ExecutionCapacity()
+	}
+	return nil
+}
+
+// ExecutionCapacitySnapshot returns the atomic capacity snapshot for an account.
+func (s *Server) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
+	if s == nil || s.perm == nil {
+		return executioncapacity.Snapshot{
+			AccountScopeID:       strings.TrimSpace(accountScopeID),
+			DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
+			SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+			Unavailable:          true,
+			Error:                "execution capacity service is unavailable",
+		}
+	}
+	return s.perm.ExecutionCapacitySnapshot(accountScopeID)
 }
 
 func (s *Server) SetWorktreeService(worktreeSvc worktreeService) {
@@ -4436,33 +4469,51 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_deploy": policy.SessionDeploy, "plan_acceptance": policy.PlanAcceptance})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":                     true,
+				"session_deploy":         policy.SessionDeploy,
+				"plan_acceptance":        policy.PlanAcceptance,
+				"active_execution_limit": policy.ActiveExecutionLimit,
+			})
 		case http.MethodPost, http.MethodPut:
-			current, err := s.perm.CurrentPolicyForAccount(accountScopeID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
-			}
 			var req struct {
-				SessionDeploy  *permission.SessionDeployPolicy  `json:"session_deploy"`
-				PlanAcceptance *permission.PlanAcceptancePolicy `json:"plan_acceptance"`
+				SessionDeploy        *permission.SessionDeployPolicy  `json:"session_deploy"`
+				PlanAcceptance       *permission.PlanAcceptancePolicy `json:"plan_acceptance"`
+				ActiveExecutionLimit *int                             `json:"active_execution_limit"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
+			if req.ActiveExecutionLimit != nil {
+				if err := permission.ValidateActiveExecutionLimit(*req.ActiveExecutionLimit); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			}
 			if req.SessionDeploy != nil {
-				current.SessionDeploy = *req.SessionDeploy
+				if err := permission.ValidateSessionDeployPolicy(*req.SessionDeploy); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
 			}
 			if req.PlanAcceptance != nil {
-				current.PlanAcceptance = *req.PlanAcceptance
+				if err := permission.ValidatePlanAcceptancePolicy(*req.PlanAcceptance); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
 			}
-			policy, err := s.perm.UpdateCapabilityPoliciesForAccount(accountScopeID, current.SessionDeploy, current.PlanAcceptance)
+			policy, err := s.perm.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, req.SessionDeploy, req.PlanAcceptance, req.ActiveExecutionLimit)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_deploy": policy.SessionDeploy, "plan_acceptance": policy.PlanAcceptance})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":                     true,
+				"session_deploy":         policy.SessionDeploy,
+				"plan_acceptance":        policy.PlanAcceptance,
+				"active_execution_limit": policy.ActiveExecutionLimit,
+			})
 		default:
 			methodNotAllowed(w)
 		}

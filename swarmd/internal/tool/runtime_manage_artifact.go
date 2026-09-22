@@ -1622,6 +1622,7 @@ func ignoredByRootGitignore(workspaceRoot, relative string) bool {
 		if negated {
 			line = strings.TrimPrefix(line, "!")
 		}
+		anchored := strings.HasPrefix(filepath.ToSlash(line), "/")
 		line = strings.TrimPrefix(filepath.ToSlash(line), "/")
 		if line == "" {
 			continue
@@ -1629,7 +1630,7 @@ func ignoredByRootGitignore(workspaceRoot, relative string) bool {
 		directory := strings.HasSuffix(line, "/")
 		line = strings.TrimSuffix(line, "/")
 		matched, _ := path.Match(line, relative)
-		if !strings.Contains(line, "/") {
+		if !anchored && !strings.Contains(line, "/") {
 			for _, part := range strings.Split(relative, "/") {
 				if partMatch, _ := path.Match(line, part); partMatch {
 					matched = true
@@ -2608,7 +2609,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			if strings.TrimSpace(run.IterationTheme) != "" {
 				presentation.Description = strings.TrimSpace(run.IterationTheme)
 			}
-			autoAccept = run.AutoAccept
+			if managedDestination {
+				autoAccept = run.AutoAccept
+			}
 		}
 
 		create := artifact.CreateInput{
@@ -3057,7 +3060,9 @@ func (r *Runtime) generateManagedAudioArtifact(
 			if strings.TrimSpace(run.IterationTheme) != "" {
 				presentation.Description = strings.TrimSpace(run.IterationTheme)
 			}
-			autoAccept = run.AutoAccept
+			if managedDestination {
+				autoAccept = run.AutoAccept
+			}
 		}
 
 		mediaType := strings.TrimSpace(generated.MediaType)
@@ -3545,7 +3550,7 @@ func validManagedArtifactStableID(value string) bool {
 		return false
 	}
 	for index, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || (index > 0 && (character == '_' || character == '-' || character == '.')) {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || (index > 0 && (character == '_' || character == '-' || character == '.')) {
 			continue
 		}
 		return false
@@ -3557,8 +3562,19 @@ func parseArtifactParts(raw any) ([]pebblestore.SessionArtifactPart, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	items, ok := raw.([]any)
-	if !ok || len(items) > pebblestore.SessionArtifactMaxParts {
+	var items []any
+	switch v := raw.(type) {
+	case []any:
+		items = v
+	case []map[string]any:
+		items = make([]any, len(v))
+		for i, m := range v {
+			items[i] = m
+		}
+	default:
+		return nil, errors.New("parts must be a bounded array")
+	}
+	if len(items) > pebblestore.SessionArtifactMaxParts {
 		return nil, errors.New("parts must be a bounded array")
 	}
 	parts := make([]pebblestore.SessionArtifactPart, 0, len(items))

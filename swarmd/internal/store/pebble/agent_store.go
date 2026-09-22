@@ -443,8 +443,6 @@ func normalizeAgentToolScopeKey(value string) string {
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
 		return "manage_environments"
-	case "manage-deployments", "manage_deployments":
-		return "manage_deployments"
 	case "manage-todos", "manage_todos":
 		return "manage_todos"
 	default:

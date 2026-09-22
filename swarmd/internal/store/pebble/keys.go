@@ -126,6 +126,11 @@ const (
 	KeyDeploymentAccountPrefix                     = "environments/deployment_by_account/"
 	KeyDeploymentLeaseAccountPrefix                = "environments/lease_by_account/"
 	KeyDeploymentActiveLeasePrefix                 = "environments/active_lease_by_account/"
+	KeyEnvironmentOperationAccountPrefix           = "environments/operation_by_account/"
+	KeyEnvironmentActiveOpAccountPrefix            = "environments/active_op_by_deployment/"
+	KeyEnvironmentOpIdempotencyPrefix              = "environments/op_idempotency_by_account/"
+	KeyEnvironmentSummaryAccountPrefix             = "environments/summary_by_account/"
+	KeyEnvironmentOpHistoryAccountPrefix           = "environments/op_history_by_account/"
 )
 
 const (
@@ -1702,6 +1707,50 @@ func DeploymentActiveLeasePrefixForAccount(accountScopeID, workspaceID string) s
 		return fmt.Sprintf("%s%s/", KeyDeploymentActiveLeasePrefix, accountPart)
 	}
 	return fmt.Sprintf("%s%s/%s/", KeyDeploymentActiveLeasePrefix, accountPart, workspacePart)
+}
+
+func KeyEnvironmentOperationForAccount(accountScopeID, workspaceID, operationID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyEnvironmentOperationAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(operationID))
+}
+
+func EnvironmentOperationPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyEnvironmentOperationAccountPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyEnvironmentOperationAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyEnvironmentOperationAccountPrefix, accountPart, workspacePart)
+}
+
+func KeyEnvironmentActiveOpForAccount(accountScopeID, workspaceID, deploymentID string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyEnvironmentActiveOpAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(deploymentID))
+}
+
+func KeyEnvironmentOpIdempotencyForAccount(accountScopeID, workspaceID, idempotencyKey string) string {
+	return fmt.Sprintf("%s%s/%s/%s", KeyEnvironmentOpIdempotencyPrefix, keyPart(accountScopeID), keyPart(workspaceID), keyPart(idempotencyKey))
+}
+
+func KeyEnvironmentSummaryForAccount(accountScopeID, workspaceID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyEnvironmentSummaryAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID))
+}
+
+func KeyEnvironmentOpHistoryForAccount(accountScopeID, workspaceID string, createdAt int64, operationID string) string {
+	return fmt.Sprintf("%s%s/%s/%018d/%s", KeyEnvironmentOpHistoryAccountPrefix, keyPart(accountScopeID), keyPart(workspaceID), reverseMillis(createdAt), keyPart(operationID))
+}
+
+func EnvironmentOpHistoryPrefixForAccount(accountScopeID, workspaceID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyEnvironmentOpHistoryAccountPrefix
+	}
+	workspacePart := keyPart(workspaceID)
+	if workspacePart == "" {
+		return fmt.Sprintf("%s%s/", KeyEnvironmentOpHistoryAccountPrefix, accountPart)
+	}
+	return fmt.Sprintf("%s%s/%s/", KeyEnvironmentOpHistoryAccountPrefix, accountPart, workspacePart)
 }
 
 func reverseMillis(value int64) int64 {

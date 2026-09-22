@@ -31,9 +31,11 @@ TOOLS = ('git', 'systemd-run', 'systemctl', 'systemd-nspawn', 'systemd-socket-ac
 PROXY_HELPER = '/usr/lib/systemd/systemd-socket-proxyd'
 # No source checkout, home, database, or host manager socket is mounted.
 # Build/install is deliberately in the guest; dependency caches must be in base.
-GUEST = r'''set -euo pipefail
+GUEST = r'''set -Eeuo pipefail
 phase() { current_phase=$1; printf '%s\n' "$1" > /exchange/phase; }
+# The exchange tmpfs bounds diagnostic storage to 1 MiB; the reader caps it at 8 KiB.
 trap 'printf "failed-%s\n" "$current_phase" > /exchange/phase' ERR
+build_step() { "$@" > /exchange/startup-error 2>&1; }
 phase source
 export TMPDIR=/var/tmp
 export HOME=/root
@@ -51,17 +53,19 @@ git -c core.hooksPath=/dev/null checkout --detach "$CANDIDATE_HEAD"
 test "$(git rev-parse HEAD)" = "$CANDIDATE_HEAD"
 cd /candidate/source/swarmd
 phase go-build
-CGO_ENABLED=1 go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
+CGO_ENABLED=1 build_step go build -p 2 -trimpath -o /out/swarmd ./cmd/swarmd
 cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/
 cd /candidate/source/web
 phase web-install
-cmp pnpm-lock.yaml /cache-manifests/web/pnpm-lock.yaml
-cmp package.json /cache-manifests/web/package.json
-cmp pnpm-workspace.yaml /cache-manifests/web/pnpm-workspace.yaml
-cp -a /cache-manifests/web/node_modules ./node_modules
+build_step cmp pnpm-lock.yaml /cache-manifests/web/pnpm-lock.yaml
+build_step cmp package.json /cache-manifests/web/package.json
+# Only this exact install-interactivity flag is irrelevant to cached dependency bytes.
+# Dependency overrides, allowBuilds and all security settings must still match.
+build_step node -e 'const fs = require("node:fs"); const normalize = p => fs.readFileSync(p,"utf8").split("\n").filter(l => l !== "confirmModulesPurge: false").join("\n"); if (normalize("pnpm-workspace.yaml") !== normalize("/cache-manifests/web/pnpm-workspace.yaml")) { console.error("offline pnpm workspace settings mismatch"); process.exit(1); }'
+build_step cp -a /cache-manifests/web/node_modules ./node_modules
 phase web-build
 export RAYON_NUM_THREADS=2 NODE_OPTIONS=--max-old-space-size=3072
-pnpm run build
+build_step pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
 phase daemon-start
 socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
@@ -500,6 +504,17 @@ class NspawnRuntime:
             'systemd-socket-activate', '--listen=127.0.0.1:' + str(self.ports(record)[index]),
             PROXY_HELPER, '--connections-max=64', address]
 
+    def print_failure_diagnostic(self, record):
+        error_path = Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'startup-error'
+        try:
+            fd = os.open(error_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    diagnostic = stream.read(8192).decode('utf-8', errors='replace')
+                    print('isolated unauthenticated candidate diagnostic: ' + diagnostic, file=sys.stderr)
+        except OSError:
+            pass
+
     def wait_ready(self, record, lane):
         deadline = time.monotonic() + self.settings.deadline
         next_touch = 0
@@ -520,6 +535,7 @@ class NspawnRuntime:
                     pass
                 print('local testbench: phase=' + phase, file=sys.stderr, flush=True)
                 if phase == 'failed' or phase.startswith('failed-'):
+                    self.print_failure_diagnostic(record)
                     raise PoolError('guest build failed at ' + phase)
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
@@ -531,16 +547,8 @@ class NspawnRuntime:
                         phase = last
                 except OSError:
                     pass
-                if phase == 'failed-daemon-start':
-                    error_path = Path(self.pool.config.root) / (self.name(record) + '.exchange') / 'startup-error'
-                    try:
-                        fd = os.open(error_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                        with os.fdopen(fd, 'rb') as stream:
-                            if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                                diagnostic = stream.read(4096).decode('utf-8', errors='replace')
-                                print('isolated unauthenticated startup diagnostic: ' + diagnostic, file=sys.stderr)
-                    except OSError:
-                        pass
+                if phase.startswith('failed-') or phase in {'go-build', 'web-build', 'daemon-start'}:
+                    self.print_failure_diagnostic(record)
                 raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
             for endpoint in ('api', 'desktop'):
@@ -576,6 +584,12 @@ class NspawnRuntime:
                                    self.name(r), str(Path(self.pool.config.root) / (self.name(r) + '.exchange'))])
                 name = self.name(r)
                 root = self.pool.config.root
+                docker_binds = []
+                if os.path.exists('/usr/bin/docker') and os.path.exists('/var/run/docker.sock'):
+                    docker_binds = [
+                        '--bind-ro=/usr/bin/docker:/usr/local/bin/docker',
+                        '--bind=/var/run/docker.sock:/var/run/docker.sock',
+                    ]
                 argv = self.start_args(r, self.units(r)[0]) + [
                     'systemd-nspawn', '--quiet', '--settings=no', '--register=no', '--keep-unit',
                     '--machine=' + name, '--image=' + root + '/' + name + '.raw',
@@ -583,7 +597,7 @@ class NspawnRuntime:
                     '--link-journal=no', '--as-pid2', '--console=pipe',
                     '--bind-ro=' + root + '/' + name + '.bundle:/input/source.bundle:idmap',
                     '--setenv=CANDIDATE_HEAD=' + head,
-                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap',
+                    '--bind=' + root + '/' + name + '.exchange:/exchange:idmap'] + docker_binds + [
                     '/bin/bash', '-c', GUEST]
                 self.commands.run(argv)
                 self.wait_ready(r, lane)

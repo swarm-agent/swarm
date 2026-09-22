@@ -496,6 +496,9 @@ func v3SessionWorksetSessionVisibleForWorkspaces(
 // Direct session-ID APIs may still access matching sessions; list, search, sync
 // membership, and realtime worksets must exclude them.
 func V3SessionNavigationHidden(session SessionSnapshot) bool {
+	if strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
+		return true
+	}
 	if session.Metadata == nil {
 		return false
 	}

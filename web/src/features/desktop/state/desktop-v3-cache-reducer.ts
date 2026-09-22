@@ -1,3 +1,4 @@
+import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
 import { reduceAutomationPages } from './desktop-automation-state'
 import type {
@@ -39,6 +40,7 @@ import { desktopPermissionIdentity, normalizeDesktopPermission, normalizeDesktop
 import { normalizeDesktopSessionPlan } from '../chat/services/session-plan-record'
 import { describeToolActivity, parseStructuredToolMessage } from '../chat/services/tool-message'
 import { assertDesktopV3RealtimeFrame, assertDesktopV3SnapshotIdentities, decodeSessionEventPayload, normalizeRealtimeEventFrame } from './desktop-v3-cache-wire'
+import { isAutomationExecutionSession } from './desktop-automation-purpose'
 import { isDesktopV3NavigationHiddenRecord } from './desktop-v3-session-visibility'
 import { mergeWorkspaceAITaskMonotonic } from '../../workspaces/todos/ai-task-reconciliation'
 import type { WorkspaceTodoAIState, WorkspaceTodoItem } from '../../workspaces/todos/types'
@@ -63,6 +65,7 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
     version: 1,
     automationPages: {},
     automationV2Pages: {},
+    environmentsByWorkspace: {},
     syncScopesById: {},
     realtime: {
       status: 'closed',
@@ -115,6 +118,16 @@ export function createEmptyDesktopV3CacheState(surface = 'desktop'): DesktopV3Ca
 
 export function desktopV3CacheReducer(state: DesktopV3CacheState, action: DesktopV3CacheAction): DesktopV3CacheState {
   switch (action.type) {
+    case 'environments.beginLoad':
+    case 'environments.loadSuccess':
+    case 'environments.loadError':
+    case 'environments.invalidate':
+    case 'environments.setHistoryFilter':
+    case 'environments.realtimeStatusChanged':
+    case 'environments.recordReceipt':
+    case 'environments.operationUpdated':
+    case 'environments.evict':
+      return { ...state, environmentsByWorkspace: reduceDesktopEnvironmentsState(state.environmentsByWorkspace, action) }
     case 'automationV2.begin':
     case 'automationV2.finish':
     case 'automationV2.invalidate':
@@ -408,7 +421,6 @@ export function applySnapshot(
   writeSyncScope(state, snapshot)
   upsertSessions(state, snapshot.sessions_by_id)
   mergeRecord(state.projectionsBySession, snapshot.projections_by_session)
-  state.sessionOrderByScope[snapshot.scope_id] = navigationVisibleSessionIds(state, removeTombstonedIds(state, snapshot.session_order ?? []))
   applyTombstonesBySession(state, snapshot.tombstones_by_session)
   if (syncResourceSetContains(snapshot.sync_scope.resource_set, 'run_intents')) {
     const authoritativeRunIntentSessionIds = new Set([
@@ -429,6 +441,7 @@ export function applySnapshot(
   }
   applyCurrentRunStateFromSyncSnapshot(state, snapshot)
   applySessionViewsFromSyncSnapshot(state, snapshot, new Set(Object.keys(snapshot.sessions_by_id ?? {})))
+  state.sessionOrderByScope[snapshot.scope_id] = navigationVisibleSessionIds(state, removeTombstonedIds(state, snapshot.session_order ?? []))
   for (const sessionId of snapshot.session_order ?? []) {
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && hydrateResponseCompletesSession(snapshot, sessionId)) {
@@ -507,7 +520,9 @@ export function applyHydrate(
       && hydrateResponseCanApplyHistory(state, sessionId)) {
       record.needsHydrate = false
     }
-    if (sidebarScopeId && record?.kind === 'full' && !isDesktopV3NavigationHiddenRecord(record) && !state.tombstonesBySession[sessionId]) {
+    const currentRunIntent = state.currentRunIntentBySession[sessionId]
+    const hasActiveRun = currentRunIntent ? ACTIVE_RUN_INTENT_STATUSES.has(currentRunIntent.status) : false
+    if (sidebarScopeId && record?.kind === 'full' && !isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun }) && !state.tombstonesBySession[sessionId]) {
       state.sessionOrderByScope[sidebarScopeId] = prependUnique(state.sessionOrderByScope[sidebarScopeId] ?? [], sessionId)
       const workset = state.worksetsById[sidebarScopeId]
       if (workset) {
@@ -1757,9 +1772,17 @@ export function upsertRunIntent(
 
   if (ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
     state.currentRunIntentBySession[sessionId] = enrichedRunIntent
+    const record = state.sessionsById[sessionId]
+    if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+      restoreSessionToSidebar(state, sessionId)
+    }
   } else if (TERMINAL_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)
     && state.currentRunIntentBySession[sessionId]?.run_id === enrichedRunIntent.run_id) {
     delete state.currentRunIntentBySession[sessionId]
+    const record = state.sessionsById[sessionId]
+    if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+      removeSessionFromNavigationMembership(state, sessionId)
+    }
   }
 
   const liveRuns = state.liveRunsBySession[sessionId] ?? {}
@@ -1835,10 +1858,21 @@ function applyTombstonesBySession(
 }
 
 function navigationVisibleSessionIds(state: DesktopV3CacheState, sessionIds: string[]): string[] {
-  return sessionIds.filter((sessionId) => !isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId]))
+  return sessionIds.filter((sessionId) => {
+    const record = state.sessionsById[sessionId]
+    const currentRunIntent = state.currentRunIntentBySession[sessionId]
+    const hasActiveRun = currentRunIntent ? ACTIVE_RUN_INTENT_STATUSES.has(currentRunIntent.status) : false
+    return !isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun })
+  })
 }
 
 function removeSessionFromNavigationMembership(state: DesktopV3CacheState, sessionId: string): void {
+  const record = state.sessionsById[sessionId]
+  const currentRunIntent = state.currentRunIntentBySession[sessionId]
+  const hasActiveRun = currentRunIntent ? ACTIVE_RUN_INTENT_STATUSES.has(currentRunIntent.status) : false
+  if (record?.kind === 'full' && isAutomationExecutionSession(record.session) && hasActiveRun) {
+    return
+  }
   for (const [scopeId, order] of Object.entries(state.sessionOrderByScope)) {
     state.sessionOrderByScope[scopeId] = order.filter((id) => id !== sessionId)
   }
@@ -1868,7 +1902,17 @@ export function applyWorksetSessionDiscovered(
     }
   }
 
-  if (isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId])) {
+  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
+  if (frame.current_run_state !== undefined) {
+    applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
+  }
+  const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
+  if (summary) applyPermissionSummary(state, sessionId, summary)
+  applyPlanSnapshotFromWorksetFrame(state, sessionId, frame)
+
+  const currentRunIntent = state.currentRunIntentBySession[sessionId]
+  const hasActiveRun = currentRunIntent ? ACTIVE_RUN_INTENT_STATUSES.has(currentRunIntent.status) : false
+  if (isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId], { active: hasActiveRun })) {
     removeSessionFromNavigationMembership(state, sessionId)
     return
   }
@@ -1903,12 +1947,6 @@ export function applyWorksetSessionDiscovered(
     }
   }
 
-  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
-  applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
-  const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
-  if (summary) applyPermissionSummary(state, sessionId, summary)
-  applyPlanSnapshotFromWorksetFrame(state, sessionId, frame)
-
   // Intentionally do not update state.realtime.endpointCursor here.
   // The matching durable event for this same endpoint record must be applied first.
 }
@@ -1933,7 +1971,17 @@ export function applyWorksetSessionUpdated(
     }
   }
 
-  if (isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId])) {
+  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
+  if (frame.current_run_state !== undefined) {
+    applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
+  }
+  const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
+  if (summary) applyPermissionSummary(state, sessionId, summary)
+  applyPlanSnapshotFromWorksetFrame(state, sessionId, frame)
+
+  const currentRunIntent = state.currentRunIntentBySession[sessionId]
+  const hasActiveRun = currentRunIntent ? ACTIVE_RUN_INTENT_STATUSES.has(currentRunIntent.status) : false
+  if (isDesktopV3NavigationHiddenRecord(state.sessionsById[sessionId], { active: hasActiveRun })) {
     removeSessionFromNavigationMembership(state, sessionId)
     state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
     return
@@ -1955,12 +2003,6 @@ export function applyWorksetSessionUpdated(
   workset.sessionIds = [sessionId, ...(workset.sessionIds ?? []).filter((id) => id !== sessionId)]
   workset.inactiveSessionIds = (workset.inactiveSessionIds ?? []).filter((id) => id !== sessionId)
   state.worksetsById[worksetIdValue] = workset
-
-  if (frame.projection) state.projectionsBySession[sessionId] = frame.projection
-  applyCurrentRunStateFrame(state, sessionId, frame.current_run_state)
-  const summary = normalizeDesktopPermissionSummary(frame.permission_summary, sessionId)
-  if (summary) applyPermissionSummary(state, sessionId, summary)
-  applyPlanSnapshotFromWorksetFrame(state, sessionId, frame)
   state.realtime.endpointCursor = frame.endpoint_cursor ?? state.realtime.endpointCursor
 }
 
@@ -2380,11 +2422,23 @@ function applyCurrentRunStateFrame(
     state.runIntentsBySession[sessionId] = byRunId
     if (runState.active) {
       state.currentRunIntentBySession[sessionId] = runIntent
+      const record = state.sessionsById[sessionId]
+      if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+        restoreSessionToSidebar(state, sessionId)
+      }
     } else {
       delete state.currentRunIntentBySession[sessionId]
+      const record = state.sessionsById[sessionId]
+      if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+        removeSessionFromNavigationMembership(state, sessionId)
+      }
     }
   } else {
     delete state.currentRunIntentBySession[sessionId]
+    const record = state.sessionsById[sessionId]
+    if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+      removeSessionFromNavigationMembership(state, sessionId)
+    }
   }
 }
 
@@ -4346,16 +4400,26 @@ function applyTaskStreamPatch(
   const pathId = stringValue(parsed.path_id)
   const directImageStream = pathId === 'tool.task.image_swarm.stream.v1'
   const directVideoStream = pathId === 'tool.task.video_swarm.stream.v1'
-  const directMediaStream = directImageStream || directVideoStream
+  const directDesignerStream = pathId === 'tool.task.designer_swarm.stream.v1'
+  const directMediaStream = directImageStream || directVideoStream || directDesignerStream
   if (pathId !== 'tool.task.stream.v2' && !directMediaStream) return false
-  const launchPatch = recordValue(directMediaStream ? (directVideoStream ? parsed.video : parsed.image) : parsed.launch)
+  const launchPatch = recordValue(
+    directMediaStream
+      ? (directDesignerStream ? parsed.designer : (directVideoStream ? parsed.video : parsed.image))
+      : parsed.launch
+  )
   const hasProgramMetadata = !directMediaStream && Boolean(
     stringValue(parsed.program_id)
     || recordValue(parsed.program)
     || recordValue(parsed.program_status),
   )
   if (!launchPatch && !hasProgramMetadata) return false
-  const launchKey = stringValue(directMediaStream ? (directVideoStream ? parsed.video_key : parsed.image_key) : parsed.launch_key)
+  const launchKey = stringValue(
+    directMediaStream
+      ? (directDesignerStream ? parsed.designer_key : (directVideoStream ? parsed.video_key : parsed.image_key))
+      : parsed.launch_key
+  )
+    || stringValue(launchPatch?.designer_key)
     || stringValue(launchPatch?.video_key)
     || stringValue(launchPatch?.image_key)
     || stringValue(launchPatch?.launch_key)
@@ -4363,7 +4427,7 @@ function applyTaskStreamPatch(
     || stringValue(launchPatch?.child_session_id)
     || (numberValue(parsed.launch_index) > 0 ? `launch:${numberValue(parsed.launch_index)}` : '')
     || (numberValue(launchPatch?.launch_index) > 0 ? `launch:${numberValue(launchPatch?.launch_index)}` : '')
-    || (numberValue(launchPatch?.index) > 0 ? `${directVideoStream ? 'video' : 'image'}:${numberValue(launchPatch?.index)}` : '')
+    || (numberValue(launchPatch?.index) > 0 ? `${directDesignerStream ? 'designer' : (directVideoStream ? 'video' : 'image')}:${numberValue(launchPatch?.index)}` : '')
   if (!launchKey && launchPatch) return false
 
   const stream = tool.taskStream ?? {

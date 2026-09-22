@@ -15,6 +15,7 @@ import {
   workspaceRepositorySetupPrompt,
   type WorkspaceRepositoryState,
 } from '../launcher/services/workspace-repository'
+import { prepareBaseline } from '../launcher/services/repository-review'
 import { postDesktopV3BackgroundRouterSessionStart } from '../../desktop/session-v3/write-api'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget } from '../../desktop/chat/services/chat-routing'
 import { desktopV3RoutedWorkspaceAuthority } from '../../desktop/session-v3/new-session-flow'
@@ -700,6 +701,51 @@ export function WorkspaceHomePage() {
     }
   }
 
+  const prepareBaselineForDraft = async (selectedPaths: string[], confirmOmissions: boolean, reviewDigest: string) => {
+    const path = modalState?.workspacePath.trim() || ''
+    const expected = modalRepositoryState?.path || path
+    if (!path || !expected || savingPath || repositoryHelpBusy) return
+    try {
+      const ready = await prepareBaseline({
+        path,
+        expected_resolved_path: expected,
+        review_digest: reviewDigest,
+        selected_paths: selectedPaths,
+        confirm_baseline: true,
+        confirm_omissions: confirmOmissions,
+      })
+      setModalRepositoryState(ready)
+      setModalError(null)
+      if (ready.state !== 'ready') throw new WorkspaceRepositoryPrerequisiteError(ready)
+      await submitModal(true)
+    } catch (error) {
+      if (error instanceof WorkspaceRepositoryPrerequisiteError) setModalRepositoryState(error.repository)
+      setModalError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
+      throw error
+    }
+  }
+
+  const useRepositoryRootForDraft = async (rootPath: string) => {
+    pickWorkspaceFolder(rootPath)
+    if (!modalState) return
+    try {
+      await saveWorkspace({
+        path: rootPath,
+        name: workspaceNameTouched ? draftName : fallbackWorkspaceNameFromPath(rootPath),
+        themeId: modalState.themeId,
+        makeCurrent: modalState.mode === 'edit' ? Boolean(editingWorkspace?.active || currentWorkspacePath === rootPath) : false,
+      })
+      closeModal()
+    } catch (err) {
+      if (err instanceof WorkspaceRepositoryPrerequisiteError) {
+        setModalRepositoryState(err.repository)
+        setModalError(null)
+        return
+      }
+      setModalError(err instanceof Error ? err.message : 'Failed to save workspace')
+    }
+  }
+
   const askSwarmForRepositoryHelp = async () => {
     if (repositoryHelpBusy || repositoryHelpSession) return
     const repository = modalRepositoryState
@@ -819,7 +865,7 @@ export function WorkspaceHomePage() {
     }
   }
 
-  const submitModal = async () => {
+  const submitModal = async (confirmCommittedOnly = false) => {
     if (!modalState) {
       return
     }
@@ -836,6 +882,7 @@ export function WorkspaceHomePage() {
         name: draftName,
         themeId: modalState.themeId,
         makeCurrent: modalState.mode === 'edit' ? Boolean(editingWorkspace?.active || currentWorkspacePath === workspacePath) : false,
+        confirmCommittedOnly,
       })
       closeModal()
     } catch (err) {
@@ -1084,6 +1131,8 @@ export function WorkspaceHomePage() {
         repositoryHelpBusy={repositoryHelpBusy}
         repositoryHelpLink={repositoryHelpSession ? <Link to="/$workspaceSlug/$sessionId" params={repositoryHelpSession} target="_blank" rel="noopener noreferrer">Open repository setup chat in a new tab</Link> : null}
         onInitializeRepository={() => { void initializeRepositoryForDraft() }}
+        onUseRepositoryRoot={(rootPath) => { void useRepositoryRootForDraft(rootPath) }}
+        onPrepareBaseline={prepareBaselineForDraft}
         onAskSwarmForRepositoryHelp={() => { void askSwarmForRepositoryHelp() }}
         personalizing={personalizing}
         personalizationMessage={personalizationMessage}
@@ -1118,8 +1167,9 @@ export function WorkspaceHomePage() {
         onCancelDeleteWorkspace={() => setDeleteTargetPath(null)}
         onConfirmDeleteWorkspace={handleConfirmDelete}
         onClose={() => { if (!savingPath && !repositoryHelpBusy) closeModal() }}
-        onSubmit={() => {
-          void submitModal()
+        onConfirmCommittedOnly={() => { void submitModal(true) }}
+        onSubmit={(confirmCommittedOnly?: boolean) => {
+          void submitModal(confirmCommittedOnly ?? Boolean(modalRepositoryState?.state === 'ready' && modalRepositoryState.contentReady === false))
         }}
       />
 

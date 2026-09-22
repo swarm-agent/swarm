@@ -41,9 +41,9 @@ const (
 	MaxDocumentTiles    = 64
 	MaxPNGBytes         = 16 << 20
 	SystemChromePath    = "/opt/google/chrome/chrome"
-	totalTimeout        = 45 * time.Second
-	documentTimeout     = 5 * time.Second
-	stateTimeout        = 5 * time.Second
+	totalTimeout        = 60 * time.Second
+	documentTimeout     = 15 * time.Second
+	stateTimeout        = 12 * time.Second
 )
 
 type Request struct {
@@ -214,6 +214,9 @@ func (r *ChromedpRenderer) Capture(parent context.Context, req Request) ([]Resul
 		// chromedp otherwise injects --no-sandbox when the daemon runs as root.
 		// Capture must fail closed if the reviewed Chromium sandbox is unavailable.
 		chromedp.Flag("no-sandbox", false),
+		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("js-flags", "--max-old-space-size=128"),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-component-update", true),
 		chromedp.Flag("disable-default-apps", true),
@@ -391,6 +394,7 @@ if (document.activeElement && document.activeElement.blur) document.activeElemen
 const selection=getSelection(); if(selection) selection.removeAllRanges();
 const temporal=%t;
 for (const animation of document.getAnimations()) { if (temporal) animation.pause(); else animation.cancel(); }
+if (!temporal) { try { window.requestAnimationFrame = () => 0; const maxTimer = setTimeout(() => {}, 0); for (let t = 0; t <= maxTimer; t++) { clearTimeout(t); clearInterval(t); } } catch (_) {} }
 const transparent=color=>color==='transparent'||/^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(color);
 const needsOpaqueCanvas=transparent(getComputedStyle(document.documentElement).backgroundColor)&&transparent(getComputedStyle(document.body).backgroundColor);
 const width=%d,height=%d;
@@ -456,6 +460,9 @@ func screenshot(ctx context.Context, viewportWidth, viewportHeight int) ([]byte,
 }
 
 func equalPixels(left, right []byte, viewportWidth, viewportHeight int) (bool, error) {
+	if bytes.Equal(left, right) {
+		return true, nil
+	}
 	decode := func(data []byte) (*image.RGBA, error) {
 		reader := bytes.NewReader(data)
 		img, err := png.Decode(reader)

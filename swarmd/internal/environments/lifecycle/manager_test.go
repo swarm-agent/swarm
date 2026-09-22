@@ -20,6 +20,7 @@ import (
 type mockProvider struct {
 	mu           sync.Mutex
 	kind         environments.ConnectionKind
+	depStates    map[string]environments.DeploymentStatus
 	deployCalls  int32
 	startCalls   int32
 	stopCalls    int32
@@ -32,12 +33,16 @@ type mockProvider struct {
 	stopErr    error
 	destroyErr error
 	execErr    error
+	inspectErr error
 
 	deployFunc func(ctx context.Context, req provider.DeployRequest) (*provider.DeployResult, error)
 }
 
 func newMockProvider(kind environments.ConnectionKind) *mockProvider {
-	return &mockProvider{kind: kind}
+	return &mockProvider{
+		kind:      kind,
+		depStates: make(map[string]environments.DeploymentStatus),
+	}
 }
 
 func (m *mockProvider) Kind() environments.ConnectionKind {
@@ -63,6 +68,12 @@ func (m *mockProvider) Deploy(ctx context.Context, req provider.DeployRequest) (
 	if m.deployFunc != nil {
 		return m.deployFunc(ctx, req)
 	}
+	m.mu.Lock()
+	if m.depStates == nil {
+		m.depStates = make(map[string]environments.DeploymentStatus)
+	}
+	m.depStates[req.Deployment.ID] = environments.DeploymentStatusRunning
+	m.mu.Unlock()
 	return &provider.DeployResult{
 		Runtime: environments.RuntimeMetadata{
 			ContainerID:         "mock_ctr_" + req.Deployment.ID,
@@ -80,8 +91,17 @@ func (m *mockProvider) Deploy(ctx context.Context, req provider.DeployRequest) (
 }
 
 func (m *mockProvider) Inspect(ctx context.Context, conn *environments.Connection, dep *environments.Deployment) (*provider.InspectResult, error) {
+	if m.inspectErr != nil {
+		return nil, m.inspectErr
+	}
+	m.mu.Lock()
+	status := dep.Status
+	if s, ok := m.depStates[dep.ID]; ok {
+		status = s
+	}
+	m.mu.Unlock()
 	return &provider.InspectResult{
-		Status:  dep.Status,
+		Status:  status,
 		Health:  dep.Health,
 		Runtime: dep.Runtime,
 	}, nil
@@ -89,11 +109,27 @@ func (m *mockProvider) Inspect(ctx context.Context, conn *environments.Connectio
 
 func (m *mockProvider) Start(ctx context.Context, conn *environments.Connection, dep *environments.Deployment) error {
 	atomic.AddInt32(&m.startCalls, 1)
+	if m.startErr == nil {
+		m.mu.Lock()
+		if m.depStates == nil {
+			m.depStates = make(map[string]environments.DeploymentStatus)
+		}
+		m.depStates[dep.ID] = environments.DeploymentStatusRunning
+		m.mu.Unlock()
+	}
 	return m.startErr
 }
 
 func (m *mockProvider) Stop(ctx context.Context, conn *environments.Connection, dep *environments.Deployment) error {
 	atomic.AddInt32(&m.stopCalls, 1)
+	if m.stopErr == nil {
+		m.mu.Lock()
+		if m.depStates == nil {
+			m.depStates = make(map[string]environments.DeploymentStatus)
+		}
+		m.depStates[dep.ID] = environments.DeploymentStatusStopped
+		m.mu.Unlock()
+	}
 	return m.stopErr
 }
 
@@ -456,6 +492,111 @@ func TestDeploymentManager_AtomicLeaseAndReuse(t *testing.T) {
 	}
 }
 
+func TestDeploymentManager_EnsureDeployment_StoppedContainerLifecycle(t *testing.T) {
+	h := setupTestHarness(t)
+	ctx := context.Background()
+	accountScope := "acc-stopped-test"
+	workspaceID := "ws-stopped-test"
+
+	conn := createTestConnection(t, h.connections, accountScope, workspaceID, "conn-stopped-1", "Local Docker")
+	env := createTestEnvironment(t, h.environments, accountScope, workspaceID, "env-stopped-reuse", conn.ID, true, 2, environments.ReleaseBehaviorNone)
+
+	// 1. Initial ensure provisions dep1
+	res1, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "session-1",
+	})
+	if err != nil {
+		t.Fatalf("initial ensure failed: %v", err)
+	}
+
+	// Release lease so dep1 is idle
+	_, err = h.manager.ReleaseDeployment(ctx, ReleaseDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		LeaseID:        res1.Lease.ID,
+	})
+	if err != nil {
+		t.Fatalf("release failed: %v", err)
+	}
+
+	// Simulate container stopping while idle
+	h.mockProv.mu.Lock()
+	h.mockProv.depStates[res1.Deployment.ID] = environments.DeploymentStatusStopped
+	h.mockProv.mu.Unlock()
+
+	// 2. Next EnsureDeployment should detect container is stopped, call prov.Start, and successfully reuse it
+	startBefore := atomic.LoadInt32(&h.mockProv.startCalls)
+	res2, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "session-2",
+	})
+	if err != nil {
+		t.Fatalf("ensure after stopped container failed: %v", err)
+	}
+	if !res2.Reused {
+		t.Errorf("expected res2 to be reused after successful restart")
+	}
+	if res2.Deployment.ID != res1.Deployment.ID {
+		t.Errorf("expected res2 deployment ID %q, got %q", res1.Deployment.ID, res2.Deployment.ID)
+	}
+	if atomic.LoadInt32(&h.mockProv.startCalls) != startBefore+1 {
+		t.Errorf("expected provider Start to be called to recover stopped container")
+	}
+
+	// 3. Now release again, and simulate start failure on reuse
+	_, err = h.manager.ReleaseDeployment(ctx, ReleaseDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		LeaseID:        res2.Lease.ID,
+	})
+	if err != nil {
+		t.Fatalf("release 2 failed: %v", err)
+	}
+
+	h.mockProv.mu.Lock()
+	h.mockProv.depStates[res1.Deployment.ID] = environments.DeploymentStatusStopped
+	h.mockProv.startErr = errors.New("cannot restart container")
+	h.mockProv.mu.Unlock()
+
+	// EnsureDeployment should fail to restart dep1, mark dep1 failed, and provision a new deployment (since max_instances=2)
+	deployBefore := atomic.LoadInt32(&h.mockProv.deployCalls)
+	res3, err := h.manager.EnsureDeployment(ctx, EnsureDeploymentRequest{
+		AccountScopeID: accountScope,
+		WorkspaceID:    workspaceID,
+		EnvironmentID:  env.ID,
+		ConsumerType:   environments.ConsumerTypeSession,
+		ConsumerID:     "session-3",
+	})
+	if err != nil {
+		t.Fatalf("ensure after unstartable container failed: %v", err)
+	}
+	if res3.Reused {
+		t.Errorf("expected res3 to NOT be reused when restart failed")
+	}
+	if res3.Deployment.ID == res1.Deployment.ID {
+		t.Errorf("expected new deployment, but got failed deployment ID")
+	}
+	if atomic.LoadInt32(&h.mockProv.deployCalls) != deployBefore+1 {
+		t.Errorf("expected new provider deploy call")
+	}
+
+	// Verify dep1 was marked failed in store
+	dep1, found, err := h.manager.GetDeployment(accountScope, workspaceID, res1.Deployment.ID)
+	if err != nil || !found {
+		t.Fatalf("get dep1 failed: %v", err)
+	}
+	if dep1.Status != environments.DeploymentStatusFailed {
+		t.Errorf("expected dep1 status to be failed, got %q", dep1.Status)
+	}
+}
+
 // TestDeploymentManager_ConcurrencySafety tests that concurrent callers cannot exceed max_instances
 // or acquire the same deployment simultaneously.
 func TestDeploymentManager_ConcurrencySafety(t *testing.T) {
@@ -736,13 +877,15 @@ func TestDeploymentManager_ReleaseBehavior(t *testing.T) {
 			t.Errorf("expected Destroy to be called for ReleaseBehaviorRecreate")
 		}
 
-		// Deployment should be deleted from active store
-		_, found, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
+		// Deployment should be retained in store with terminated status after recreate release
+		dep, found, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
 		if err != nil {
 			t.Fatalf("GetDeployment failed: %v", err)
 		}
-		if found {
-			t.Errorf("expected deployment to be deleted from store after recreate release")
+		if !found {
+			t.Errorf("expected deployment record to be retained in store after recreate release")
+		} else if dep.Status != environments.DeploymentStatusTerminated {
+			t.Errorf("expected deployment status %q, got %q", environments.DeploymentStatusTerminated, dep.Status)
 		}
 
 		// Next EnsureDeployment should provision a fresh instance
@@ -814,13 +957,15 @@ func TestDeploymentManager_DestroyDeployment(t *testing.T) {
 		t.Errorf("expected lease to be deactivated after destroy")
 	}
 
-	// Deployment should be deleted from active store
-	_, foundDep, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
+	// Deployment should be retained in store with terminated status
+	dep, foundDep, err := h.manager.GetDeployment(accountScope, workspaceID, res.Deployment.ID)
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
-	if foundDep {
-		t.Errorf("expected deployment to be deleted from store")
+	if !foundDep {
+		t.Errorf("expected deployment to be retained in store after destroy")
+	} else if dep.Status != environments.DeploymentStatusTerminated {
+		t.Errorf("expected deployment status %q, got %q", environments.DeploymentStatusTerminated, dep.Status)
 	}
 }
 

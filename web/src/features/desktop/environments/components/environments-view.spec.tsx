@@ -207,3 +207,44 @@ test('EnvironmentsView renders empty state when no environments configured', () 
   assert.match(markup, /No environments defined/)
   assert.match(markup, /Define Testbench Environment/)
 })
+
+test('EnvironmentsView renders primary overview deployed and operation totals', () => {
+  const markup = renderToStaticMarkup(
+    <EnvironmentsView
+      workspaceId="ws-1"
+      environments={mockEnvironments}
+      connections={mockConnections}
+      settings={mockSettings}
+      summary={{
+        accountScopeID: 'acc-1',
+        workspaceID: 'ws-1',
+        revision: 4,
+        updated_at: 1000,
+        active_deployments: 3,
+        running_exec_ops: 2,
+        queued_ops: 1,
+        running_ops: 2,
+        cancelling_ops: 0,
+        failed_ops: 1,
+        cleanup_failed_ops: 0,
+        unknown_ops: 0,
+        succeeded_ops: 15,
+        cancelled_ops: 0,
+        timed_out_ops: 0,
+        total_ops: 19,
+      }}
+      deployments={[]}
+      onRefresh={() => {}}
+      onSaveEnvironment={async () => {}}
+      onDeleteEnvironment={async () => {}}
+      onSetDefaultTestEnvironment={async () => {}}
+      onDeployEnvironment={async () => {}}
+    />,
+  )
+
+  assert.match(markup, /data-testid="primary-environments-totals"/, 'must render primary overview totals')
+  assert.match(markup, /data-testid="primary-active-deployments-count"[\s\S]*?>3</, 'active deployments count is 3')
+  assert.match(markup, /data-testid="primary-executing-commands-count"[\s\S]*?>2</, 'executing commands count is 2')
+  assert.match(markup, /data-testid="primary-running-ops-count"[\s\S]*?>3</, 'running ops count is 3')
+  assert.match(markup, /data-testid="primary-completed-ops-count"[\s\S]*?>15</, 'completed ops count is 15')
+})

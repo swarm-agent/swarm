@@ -1221,6 +1221,15 @@ func (s *Server) handleSessionsV3Delete(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+	if s.v3SessionExecutor != nil && s.sessions != nil && s.sessions.Store() != nil {
+		for _, id := range preview.SessionIDs {
+			if childIDs, err := s.sessions.Store().ListAutomationV2ChildSessionIDs(principal.AccountScopeID, id); err == nil {
+				for _, cid := range childIDs {
+					s.v3SessionExecutor.CancelRunsForSession(cid, "parent session deleted")
+				}
+			}
+		}
+	}
 	events, err := s.sessions.DeleteSessionsWithEventsIfUnchanged(preview.SessionIDs, expectedUpdatedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "changed after deletion preview") {
@@ -1304,6 +1313,15 @@ func (s *Server) handleSessionsV3PrimaryArchiveBatch(w http.ResponseWriter, r *h
 		writeError(w, http.StatusBadRequest, errors.New("session_ids must include at least one session id"))
 		return
 	}
+	if s.v3SessionExecutor != nil && s.sessions != nil && s.sessions.Store() != nil {
+		for _, session := range sessions {
+			if childIDs, err := s.sessions.Store().ListAutomationV2ChildSessionIDs(session.AccountScopeID, session.ID); err == nil {
+				for _, cid := range childIDs {
+					s.v3SessionExecutor.CancelRunsForSession(cid, "parent session archived")
+				}
+			}
+		}
+	}
 	events, err := s.sessions.ArchiveSessionsWithEvents(sessionIDsFromSnapshots(sessions))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -1346,6 +1364,13 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 			} else if pending > 0 {
 				writeError(w, http.StatusConflict, errors.New("deletion blocked by pending approval"))
 				return
+			}
+		}
+	}
+	if s.v3SessionExecutor != nil && s.sessions != nil && s.sessions.Store() != nil {
+		if childIDs, err := s.sessions.Store().ListAutomationV2ChildSessionIDs(session.AccountScopeID, session.ID); err == nil {
+			for _, cid := range childIDs {
+				s.v3SessionExecutor.CancelRunsForSession(cid, "parent session "+kind)
 			}
 		}
 	}

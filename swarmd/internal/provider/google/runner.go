@@ -408,10 +408,15 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 		return googleRequest{}, err
 	}
 	contents = normalizeGoogleContentsForRequest(contents)
+	staticInstructions, dynamicContext := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
+	if dynamicContext != "" && len(contents) > 0 {
+		lastIdx := len(contents) - 1
+		contents[lastIdx].Parts = append(contents[lastIdx].Parts, googlePart{Text: dynamicContext})
+	}
 	out := googleRequest{Contents: contents, ServiceTier: googleServiceTierForRequest(req)}
-	if strings.TrimSpace(req.Instructions) != "" {
+	if strings.TrimSpace(staticInstructions) != "" {
 		out.SystemInstruction = &googleContent{
-			Parts: []googlePart{{Text: strings.TrimSpace(req.Instructions)}},
+			Parts: []googlePart{{Text: strings.TrimSpace(staticInstructions)}},
 		}
 	}
 	if thinkingConfig := googleThinkingConfigForRequest(req); thinkingConfig != nil {

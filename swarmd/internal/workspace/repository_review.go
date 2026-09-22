@@ -19,8 +19,91 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 )
 
-const repositoryReviewFiles = 2048
-const repositoryReviewBytes int64 = 32 << 20
+const repositoryReviewFiles = 8192
+const repositoryReviewBytes int64 = 128 << 20
+const repositoryReviewSingleFileBytes int64 = 16 << 20
+
+func loadGitignorePatterns(root *os.Root) []string {
+	f, err := root.Open(".gitignore")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return nil
+	}
+	var patterns []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		patterns = append(patterns, line)
+	}
+	return patterns
+}
+
+func isStandardIgnoredDir(dirName string) bool {
+	switch dirName {
+	case ".git", "node_modules", ".cache", ".turbo", ".next", ".nuxt", ".output",
+		"__pycache__", ".pytest_cache", ".venv", "venv", "dist", "build", "target", "vendor":
+		return true
+	default:
+		return false
+	}
+}
+
+func isIgnoredDir(relPath, dirName string, patterns []string) bool {
+	if isStandardIgnoredDir(dirName) {
+		return true
+	}
+	relPath = filepath.ToSlash(relPath)
+	for _, pat := range patterns {
+		pat = filepath.ToSlash(strings.TrimSpace(pat))
+		if pat == "" {
+			continue
+		}
+		cleanPat := strings.TrimPrefix(strings.TrimSuffix(pat, "/"), "/")
+		if cleanPat == "" {
+			continue
+		}
+		if relPath == cleanPat || dirName == cleanPat {
+			return true
+		}
+		if matched, _ := filepath.Match(cleanPat, relPath); matched {
+			return true
+		}
+		if matched, _ := filepath.Match(cleanPat, dirName); matched {
+			return true
+		}
+		if strings.HasPrefix(relPath, cleanPat+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func isIgnoredFile(relPath, fileName string, patterns []string) bool {
+	relPath = filepath.ToSlash(relPath)
+	for _, pat := range patterns {
+		pat = filepath.ToSlash(strings.TrimSpace(pat))
+		if pat == "" || strings.HasSuffix(pat, "/") {
+			continue
+		}
+		cleanPat := strings.TrimPrefix(pat, "/")
+		if relPath == cleanPat || fileName == cleanPat {
+			return true
+		}
+		if matched, _ := filepath.Match(cleanPat, relPath); matched {
+			return true
+		}
+		if matched, _ := filepath.Match(cleanPat, fileName); matched {
+			return true
+		}
+	}
+	return false
+}
 
 // Files are explicit review candidates, never automatically selected. Hidden and
 // ignored files remain visible; symlinks and nested repositories are not importable.
@@ -68,8 +151,15 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 	default:
 		return review, &RepositoryPrerequisiteError{Repository: state}
 	}
-	if state.Repository != "" && state.Repository != state.Path || state.Message == repositoryMessageNonWorkTree {
-		return review, errors.New("select a normal repository root")
+	hasOwnGit := false
+	if root, openErr := os.OpenRoot(state.Path); openErr == nil {
+		if _, statErr := root.Lstat(".git"); statErr == nil {
+			hasOwnGit = true
+		}
+		root.Close()
+	}
+	if (state.Repository != "" && state.Repository != state.Path && hasOwnGit) || state.Message == repositoryMessageNonWorkTree {
+		return review, &RepositoryPrerequisiteError{Repository: state}
 	}
 	root, err := os.OpenRoot(state.Path)
 	if err != nil {
@@ -79,6 +169,7 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 	var total int64
 	deadline := time.Now().Add(2 * time.Minute)
 	visited := 0
+	gitignorePatterns := loadGitignorePatterns(root)
 	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if time.Now().After(deadline) {
 			return errors.New("content review exceeded its time limit")
@@ -100,6 +191,9 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 			return nil
 		}
 		if entry.IsDir() {
+			if isIgnoredDir(name, entry.Name(), gitignorePatterns) {
+				return fs.SkipDir
+			}
 			if _, e := root.Lstat(filepath.Join(name, ".git")); e == nil {
 				review.Files = append(review.Files, RepositoryReviewFile{Path: name, Selectable: false})
 				return fs.SkipDir
@@ -112,29 +206,34 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 		if e != nil {
 			return e
 		}
-		file := RepositoryReviewFile{Path: name, Size: info.Size(), Mode: uint32(info.Mode()), Selectable: info.Mode().IsRegular()}
+		ignored := isIgnoredFile(name, entry.Name(), gitignorePatterns)
+		tooLarge := info.Size() > repositoryReviewSingleFileBytes
+		selectable := info.Mode().IsRegular() && !ignored && !tooLarge
+		file := RepositoryReviewFile{Path: name, Size: info.Size(), Mode: uint32(info.Mode()), Selectable: selectable}
 		if file.Selectable {
-			total += info.Size()
-			if total > repositoryReviewBytes {
-				return errors.New("project exceeds bounded review byte limit")
+			if total+info.Size() > repositoryReviewBytes {
+				file.Selectable = false
+				review.Warning = "Some files exceed the total review size limit (128 MB) and cannot be imported in the initial commit."
+			} else {
+				total += info.Size()
+				f, e := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+				if e != nil {
+					return e
+				}
+				h := sha256.New()
+				n, e := io.Copy(h, io.LimitReader(f, repositoryReviewBytes+1))
+				closeErr := f.Close()
+				if e != nil {
+					return e
+				}
+				if closeErr != nil {
+					return closeErr
+				}
+				if n != info.Size() {
+					return errors.New("project changed during content review; retry")
+				}
+				file.Digest = hex.EncodeToString(h.Sum(nil))
 			}
-			f, e := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-			if e != nil {
-				return e
-			}
-			h := sha256.New()
-			n, e := io.Copy(h, io.LimitReader(f, repositoryReviewBytes+1))
-			closeErr := f.Close()
-			if e != nil {
-				return e
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-			if n != info.Size() {
-				return errors.New("project changed during content review; retry")
-			}
-			file.Digest = hex.EncodeToString(h.Sum(nil))
 		} else if info.Mode()&os.ModeSymlink != 0 {
 			target, e := root.Readlink(name)
 			if e != nil {
@@ -160,7 +259,7 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 		return review, err
 	}
 	indexDigest := ""
-	if state.Repository != "" {
+	if state.Repository != "" && state.Repository == state.Path {
 		indexed, err := runRepositoryGit(state.Path, "ls-files", "-z")
 		if err != nil {
 			return review, err
@@ -280,7 +379,7 @@ func (s *Service) PrepareRepositoryBaselineForPrincipal(principal identity.Princ
 	defer root.Close()
 	// Init is intentionally resumable. A later commit failure retains metadata,
 	// not a misleading successful catalog entry; no user files are removed.
-	if state.Repository == "" {
+	if _, statErr := root.Lstat(".git"); errors.Is(statErr, os.ErrNotExist) {
 		if err := root.Mkdir(".git", 0700); err != nil {
 			return state, err
 		}

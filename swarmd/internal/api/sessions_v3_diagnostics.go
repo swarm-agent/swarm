@@ -262,6 +262,12 @@ func (e *sessionV3Executor) recordSessionV3ContextOverflowDecision(job sessionV3
 			payload["context_utilization_percent"] = util
 		}
 	}
+	if sessionV3IsAnthropicTokenOverflowDiagnostic(rawError) {
+		payload["anthropic_token_overflow_matched"] = true
+		if util, ok := e.sessionV3ContextUtilizationPercent(job, cause); ok {
+			payload["context_utilization_percent"] = util
+		}
+	}
 	if e.server.sessions != nil {
 		if summary, ok, err := e.server.sessions.GetUsageSummary(job.SessionID); err != nil {
 			payload["usage_summary_error"] = err.Error()

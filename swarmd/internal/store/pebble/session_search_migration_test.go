@@ -3,8 +3,12 @@ package pebblestore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 func TestV3SessionSearchMigrationRebuildsVerifiesAndDeletesLegacyPostings(t *testing.T) {
@@ -148,5 +152,75 @@ func TestLegacySessionNamespaceCleanupAuditDefersEvtAndMsg(t *testing.T) {
 		if decision.Eligible || decision.Reason == "" {
 			t.Fatalf("unsafe audit decision = %+v", decision)
 		}
+	}
+}
+
+func TestV3SessionSearchMigrationCapsToolMessageTokens(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	sessionID := "migrate-tool-cap"
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: sessionID, UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Tool Cap Test", CreatedAt: 1000, UpdatedAt: 1000})
+
+	// Generate a simulated tool message with 200 distinct code tokens
+	var codeTokens []string
+	for i := 0; i < 200; i++ {
+		codeTokens = append(codeTokens, fmt.Sprintf("migrationtoken%04d", i))
+	}
+	rawCode := strings.Join(codeTokens, " ")
+
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		Kind:            V3SessionMutationAppendMessage,
+		SessionID:       sessionID,
+		UserID:          "user-1",
+		AccountScopeID:  "acct-1",
+		ClientRequestID: "tool-mig-req",
+		PayloadHash:     "tool-mig-hash",
+		NowUnixMs:       2000,
+		Message: &MessageSnapshot{
+			Role:    "tool",
+			Content: fmt.Sprintf(`{"summary":"read pkg/storage/store.go (100 lines)","output":%q}`, rawCode),
+		},
+	})
+	if err != nil {
+		t.Fatalf("append tool message: %v", err)
+	}
+
+	// Reset migration state in database so the migration runner will process this session
+	result, err := sessions.RunV3SessionSearchMigrationPass(context.Background(), time.UnixMilli(3000), 1)
+	if err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if result.SessionsMigrated != 1 {
+		t.Fatalf("expected 1 session migrated, got %+v", result)
+	}
+
+	// Verify posting key count is capped to maxV3SessionSearchToolTokens
+	prefix := fmt.Sprintf("%s%s/message/", keyV3SessionSearchPostingPrefix, sessionID)
+	iter, err := store.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefix),
+		UpperBound: []byte(prefix + "\xff"),
+	})
+	if err != nil {
+		t.Fatalf("new iter: %v", err)
+	}
+	postingKeyCount := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		postingKeyCount++
+	}
+	if err := iter.Close(); err != nil {
+		t.Fatalf("iter close: %v", err)
+	}
+
+	if postingKeyCount > maxV3SessionSearchToolTokens {
+		t.Fatalf("migration posting keys count %d exceeds tool cap %d", postingKeyCount, maxV3SessionSearchToolTokens)
+	}
+
+	// Verify deep code token was not indexed
+	leakedRes, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "migrationtoken0150", Limit: 10})
+	if err != nil {
+		t.Fatalf("search leaked: %v", err)
+	}
+	if len(leakedRes.Items) != 0 {
+		t.Fatalf("deep raw code token leaked into search postings via migration: %+v", leakedRes.Items)
 	}
 }

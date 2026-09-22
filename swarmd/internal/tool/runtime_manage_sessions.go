@@ -64,7 +64,61 @@ func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScop
 	}
 	action := strings.ToLower(strings.TrimSpace(stringValue(args["action"])))
 	if action == "inspect" {
-		return marshalManageSessions(map[string]any{"tool": "manage_sessions", "action": "inspect", "actions": []string{"list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "commit", "archive", "unarchive", "deploy", "create", "stop", "pause", "send_message", "compact"}, "categories": []string{"video", "needs_review", "blocked", "in_progress", "automation", "pinned", "active_chats", "archived"}, "prompt_free_actions": []string{"inspect", "list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "create", "stop", "pause", "send_message", "compact"}, "limits": map[string]int{"results": manageSessionsMaxLimit, "state_bulk_results": manageSessionsMaxStateBulk, "messages": manageSessionsMaxRead, "characters": manageSessionsMaxChars, "durable_event_scan": manageSessionsMaxEventScan, "commit_batch": manageSessionsMaxBatch, "archive_batch": manageSessionsMaxMutationBatch, "unarchive_batch": manageSessionsMaxMutationBatch, "deploy_batch": manageSessionsMaxDeployBatch}, "archive_requires_approval": true, "unarchive_requires_approval": true, "deploy_requires_approval": "always, including permission bypass; allow-always is forbidden", "deploy_selection": "first proposal selected by default; additional proposals require explicit selection in this approval", "deploy_authority": "server resolves agent, workspace, runtime/model, and managed worktree metadata and binds the approval to a canonical digest", "archive_semantics": "atomic preflight and durable mutation for up to 50 sessions; the batch fails without archiving any session when ownership, activity, or version validation fails", "unarchive_semantics": "atomic version-checked restoration for up to 50 archived, non-deleted sessions with canonical session.reactivated events and durable visibility", "search_modes": map[string]any{"default": "visible", "visible_authority": "canonical user-visible session search", "durable_log": "explicit-only owned-session technical event inspection; never auto-escalate"}, "usage": "only on an explicit user session-management request; card results are already visible and must not be manually relisted", "content_trust": "untrusted"})
+		snap := r.capacitySnapshot(scope.Principal.AccountScopeID)
+		if snap.Unavailable || snap.Error != "" {
+			errStr := snap.Error
+			if errStr == "" {
+				errStr = "execution capacity service is unavailable"
+			}
+			return "", fmt.Errorf("execution capacity service is unavailable: %s", errStr)
+		}
+		return marshalManageSessions(map[string]any{
+			"tool":                "manage_sessions",
+			"action":              "inspect",
+			"actions":             []string{"list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "commit", "archive", "unarchive", "deploy", "create", "stop", "pause", "send_message", "compact"},
+			"categories":          []string{"video", "needs_review", "blocked", "in_progress", "automation", "pinned", "active_chats", "archived"},
+			"prompt_free_actions": []string{"inspect", "list", "list_by_state", "review_worktrees", "search", "get", "read_messages", "git_status", "create", "stop", "pause", "send_message", "compact"},
+			"limits": map[string]int{
+				"results":            manageSessionsMaxLimit,
+				"state_bulk_results": manageSessionsMaxStateBulk,
+				"messages":           manageSessionsMaxRead,
+				"characters":         manageSessionsMaxChars,
+				"durable_event_scan": manageSessionsMaxEventScan,
+				"commit_batch":       manageSessionsMaxBatch,
+				"archive_batch":      manageSessionsMaxMutationBatch,
+				"unarchive_batch":    manageSessionsMaxMutationBatch,
+				"deploy_batch":       manageSessionsMaxDeployBatch,
+			},
+			"capacity": map[string]any{
+				"account_scope_id":       snap.AccountScopeID,
+				"effective_limit":        snap.EffectiveLimit,
+				"effective_overall_cap":  snap.EffectiveLimit,
+				"total_active":           snap.TotalActive,
+				"deployed_active":        snap.DeployedActive,
+				"pending":                snap.Pending,
+				"pending_scope":          "live admission waiters; durable overflow may also be pending",
+				"available_slots":        snap.Available,
+				"available":              snap.Available,
+				"deployment_batch_bound": snap.DeploymentBatchBound,
+				"saved_session_quota":    nil,
+				"saved_quota":            snap.SavedQuota,
+				"pool_model":             "one shared pool, default 100 ceiling not target; no per-agent deployment execution limit",
+			},
+			"archive_requires_approval":   true,
+			"unarchive_requires_approval": true,
+			"deploy_requires_approval":    "always, including permission bypass; allow-always is forbidden",
+			"deploy_selection":            "first proposal selected by default; additional proposals require explicit selection in this approval",
+			"deploy_authority":            "server resolves agent, workspace, runtime/model, and managed worktree metadata and binds the approval to a canonical digest",
+			"archive_semantics":           "atomic preflight and durable mutation for up to 50 sessions; the batch fails without archiving any session when ownership, activity, or version validation fails",
+			"unarchive_semantics":         "atomic version-checked restoration for up to 50 archived, non-deleted sessions with canonical session.reactivated events and durable visibility",
+			"search_modes": map[string]any{
+				"default":           "visible",
+				"visible_authority": "canonical user-visible session search",
+				"durable_log":       "explicit-only owned-session technical event inspection; never auto-escalate",
+			},
+			"usage":         "only on an explicit user session-management request; card results are already visible and must not be manually relisted",
+			"content_trust": "untrusted",
+		})
 	}
 	switch action {
 	case "list", "list_by_state":

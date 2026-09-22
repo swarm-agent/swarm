@@ -1266,6 +1266,8 @@ func TestSessionsV3ExecutorRejectsDuplicateEnqueueRun(t *testing.T) {
 	exec.startDelay = 250 * time.Millisecond
 	server.v3SessionExecutor = exec
 	job := sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-duplicate-enqueue", RunID: "run-duplicate"}
+	createTestSession(t, server.sessions, job.SessionID, job.Principal.AccountScopeID, nil)
+	recordTestPendingRunIntent(t, server, job.SessionID, job.RunID, job.Principal.AccountScopeID, job.Principal.UserID)
 	if !exec.EnqueueRun(job) {
 		t.Fatalf("first enqueue returned false")
 	}
@@ -1284,6 +1286,11 @@ func TestSessionsV3ExecutorRunsDifferentSessionsConcurrently(t *testing.T) {
 	exec.startDelay = 500 * time.Millisecond
 	server.v3SessionExecutor = exec
 
+	for _, suffix := range []string{"a", "b"} {
+		id, runID := "session-concurrent-"+suffix, "run-concurrent-"+suffix
+		createTestSession(t, server.sessions, id, testPrincipal().AccountScopeID, nil)
+		recordTestPendingRunIntent(t, server, id, runID, testPrincipal().AccountScopeID, testPrincipal().UserID)
+	}
 	if !exec.EnqueueRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "session-concurrent-a", RunID: "run-concurrent-a"}) {
 		t.Fatalf("first enqueue returned false")
 	}

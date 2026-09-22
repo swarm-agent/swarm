@@ -42,7 +42,7 @@ func TestTaskTargetCanonicalRootsAndProgramPreflight(t *testing.T) {
 			if selector == other {
 				want = other
 			}
-			got, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, taskLaunchSpec{RequestedSubagentType: agent, TargetWorkspacePath: selector})
+			got, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &taskLaunchSpec{RequestedSubagentType: agent, TargetWorkspacePath: selector})
 			if err != nil || got != want {
 				t.Fatalf("%s selector %q: %q %v", agent, selector, got, err)
 			}
@@ -52,13 +52,13 @@ func TestTaskTargetCanonicalRootsAndProgramPreflight(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, selector := range []string{filepath.Join(other, "nested"), filepath.Dir(other)} {
-		if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: selector}); err == nil {
+		if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: selector}); err == nil {
 			t.Fatalf("non-root target accepted: %s", selector)
 		}
 	}
 	stale := parent
 	stale.WorktreeBranch = "agent/wrong"
-	if _, _, err := svc.resolveTaskTargetWorkspace(stale, identity.Principal{}, taskLaunchSpec{RequestedSubagentType: "coder"}); err == nil {
+	if _, _, err := svc.resolveTaskTargetWorkspace(stale, identity.Principal{}, &taskLaunchSpec{RequestedSubagentType: "coder"}); err == nil {
 		t.Fatal("omitted target bypassed stale runtime validation")
 	}
 	p := taskProgramScheduler{service: svc, parentSession: parent, record: pebblestore.TaskProgramRecord{Definition: pebblestore.TaskProgramDefinition{Jobs: []pebblestore.TaskProgramJobSpec{{AgentType: "coder", WorkspacePath: source}, {AgentType: "coder", WorkspacePath: "."}}}}}
@@ -97,7 +97,7 @@ func TestTaskTargetTypedLaneIdentity(t *testing.T) {
 	svc := &Service{worktrees: wt}
 	binding := pebblestore.TaskProgramRepositoryLane{SourcePath: source, WorkspacePath: lane.WorkspacePath, Branch: lane.BranchName, BaseCommit: base.BaseCommit}
 	resolve := func(b pebblestore.TaskProgramRepositoryLane) error {
-		_, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: &b})
+		_, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &taskLaunchSpec{RequestedSubagentType: "coder", ProgramRepositoryLane: &b})
 		return err
 	}
 	if err := resolve(binding); err != nil {
@@ -187,7 +187,7 @@ func TestTaskTargetRuntimePreflightAndRegularChildren(t *testing.T) {
 		}
 	}
 	for i, selector := range []string{source, other} {
-		target, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: selector})
+		target, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: selector})
 		if err != nil {
 			t.Fatal(err)
 		}

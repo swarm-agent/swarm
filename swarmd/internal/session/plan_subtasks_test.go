@@ -33,7 +33,7 @@ func TestPlanSubtasksNormalizeLegacyAndAdvanceWithoutCompletingCheckpoint(t *tes
 	}
 }
 
-func TestPlanSubtaskCompletionRejectsLastTaskWithoutCheckpointCloseout(t *testing.T) {
+func TestPlanSubtaskCompletionAllowsLastTaskWithoutCheckpointCloseout(t *testing.T) {
 	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
 		ID: "plan-1", Title: "Plan", ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: "automatic", Shape: "checkpointed"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Tasks: []string{"first", "second"}}},
 	}, nil)
@@ -48,11 +48,11 @@ func TestPlanSubtaskCompletionRejectsLastTaskWithoutCheckpointCloseout(t *testin
 	}
 	checkpoint := &doc.Checkpoints[0]
 	err = completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskID: "task-2", CompletedAt: 3})
-	if err == nil || !strings.Contains(err.Error(), "complete_checkpoint=true") {
-		t.Fatalf("expected formal checkpoint closeout error, got %v", err)
+	if err != nil {
+		t.Fatalf("expected final subtask completion to succeed, got %v", err)
 	}
-	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.ActiveSubtaskID != "task-2" || checkpoint.Subtasks[1].Status != PlanSubtaskStatusInProgress {
-		t.Fatalf("rejected final subtask completion mutated checkpoint: %#v", checkpoint)
+	if checkpoint.Status != PlanCheckpointStatusInProgress || checkpoint.ActiveSubtaskID != "" || checkpoint.Subtasks[1].Status != PlanSubtaskStatusCompleted {
+		t.Fatalf("final subtask completion did not update checkpoint as expected: %#v", checkpoint)
 	}
 }
 

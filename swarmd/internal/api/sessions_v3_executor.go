@@ -15,6 +15,7 @@ import (
 	"strings"
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	compactruntime "swarm/packages/swarmd/internal/compact"
+	"swarm/packages/swarmd/internal/environments/lifecycle"
 	modelruntime "swarm/packages/swarmd/internal/model"
 
 	"swarm/packages/swarmd/internal/privacy"
@@ -26,7 +27,9 @@ import (
 	"sync"
 	"time"
 
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -91,6 +94,16 @@ type sessionV3ExecutorRunState struct {
 	job      sessionV3ExecutorJob
 }
 
+func isSessionArchived(metadata map[string]any) bool {
+	if metadata == nil {
+		return false
+	}
+	if v, ok := metadata["archived"].(bool); ok && v {
+		return true
+	}
+	return false
+}
+
 func sessionV3RunIntentForJob(job sessionV3ExecutorJob, status string, now int64) pebblestore.V3SessionRunIntent {
 	return pebblestore.V3SessionRunIntent{
 		SessionID:       strings.TrimSpace(job.SessionID),
@@ -129,6 +142,12 @@ type sessionV3Executor struct {
 	runStates        map[string]*sessionV3ExecutorRunState
 	recoveryConfirm  map[string]int64
 	recoveryCooldown map[string]int64
+
+	refillCh          chan struct{}
+	refillMu          sync.Mutex
+	refillAfterKey    string
+	refillResetFront  bool
+	refillPumpRunning bool
 }
 
 func newSessionV3Executor(server *Server) *sessionV3Executor {
@@ -150,7 +169,9 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 		runStates:                   make(map[string]*sessionV3ExecutorRunState),
 		recoveryConfirm:             make(map[string]int64),
 		recoveryCooldown:            make(map[string]int64),
+		refillCh:                    make(chan struct{}, 1),
 	}
+	exec.startRefillPump(ctx)
 	exec.recoverDurableRuns(ctx)
 	exec.startStaleRecoveryBackstop(ctx)
 	exec.startDailyUsageLimitWatcher(ctx)
@@ -194,11 +215,25 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	if job.SessionID == "" || job.RunID == "" {
 		return false
 	}
+	if e.server.sessions == nil {
+		return false
+	}
+	snapshot, found, err := e.server.sessions.GetSession(job.SessionID)
+	if err != nil || !found {
+		return false
+	}
+	if _, err := sessionV3ProviderToolPrincipal(job, snapshot); err != nil {
+		return false
+	}
+	intent, found, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
+	if err != nil || !found || intent.Status != sessionruntime.RunIntentPendingExecutor {
+		return false
+	}
 	ctx := e.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || e.server.isShuttingDown() {
 		return false
 	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
@@ -209,7 +244,26 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	}
 	if activeRunID := e.activeBySession[job.SessionID]; activeRunID != "" && activeRunID != job.RunID {
 		e.mu.Unlock()
-		return false
+		return true
+	}
+	if len(e.inFlightRuns) >= sessionV3ExecutorRecoveryLimit {
+		e.mu.Unlock()
+		return true
+	}
+	isAutomationRun := strings.HasPrefix(job.SessionID, "av2-execution-")
+	if isAutomationRun {
+		activeAutomationCount := 0
+		for _, state := range e.runStates {
+			if state != nil && !state.canceled {
+				if strings.HasPrefix(state.job.SessionID, "av2-execution-") {
+					activeAutomationCount++
+				}
+			}
+		}
+		if activeAutomationCount >= 5 {
+			e.mu.Unlock()
+			return false
+		}
 	}
 	e.inFlightRuns[runKey] = true
 	e.activeBySession[job.SessionID] = job.RunID
@@ -222,7 +276,11 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 	e.runStates[runKey].job = job
 	e.mu.Unlock()
 
-	go e.run(ctx, job)
+	if !e.server.beginActiveRun() {
+		e.finish(job)
+		return false
+	}
+	go func() { defer e.server.endActiveRun(); e.run(ctx, job) }()
 	return true
 }
 
@@ -236,6 +294,198 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 		delete(e.activeBySession, job.SessionID)
 	}
 	e.mu.Unlock()
+	e.refillPendingBacklog()
+}
+
+func (e *sessionV3Executor) triggerRefill() {
+	if e == nil {
+		return
+	}
+	select {
+	case e.refillCh <- struct{}{}:
+	default:
+	}
+}
+
+func (e *sessionV3Executor) startRefillPump(ctx context.Context) {
+	if e == nil || ctx == nil {
+		return
+	}
+	e.server.activeRunMu.Lock()
+	if e.server.shuttingDown.Load() {
+		e.server.activeRunMu.Unlock()
+		return
+	}
+	e.server.runWG.Add(1)
+	e.server.activeRunMu.Unlock()
+	e.mu.Lock()
+	e.refillPumpRunning = true
+	e.mu.Unlock()
+
+	go func() {
+		defer e.server.runWG.Done()
+		defer func() {
+			e.mu.Lock()
+			e.refillPumpRunning = false
+			e.mu.Unlock()
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-e.refillCh:
+				e.drainRefillPasses(ctx)
+			}
+		}
+	}()
+}
+
+func (e *sessionV3Executor) refillPendingBacklog() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.refillResetFront = true
+	pumpRunning := e.refillPumpRunning
+	e.mu.Unlock()
+
+	if pumpRunning {
+		e.triggerRefill()
+		return
+	}
+
+	ctx := e.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.drainRefillPasses(ctx)
+}
+
+func (e *sessionV3Executor) drainRefillPasses(ctx context.Context) {
+	if e == nil || e.server == nil || e.server.sessions == nil {
+		return
+	}
+	e.refillMu.Lock()
+	defer e.refillMu.Unlock()
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		e.mu.Lock()
+		inFlightCount := len(e.inFlightRuns)
+		reset := e.refillResetFront
+		if reset {
+			e.refillAfterKey = ""
+			e.refillResetFront = false
+		}
+		e.mu.Unlock()
+
+		if inFlightCount >= sessionV3ExecutorRecoveryLimit {
+			return
+		}
+
+		afterKey := e.refillAfterKey
+		maxPages := 20
+		var lastNextKey string
+
+		for page := 0; page < maxPages; page++ {
+			if ctx.Err() != nil {
+				return
+			}
+			intents, nextKey, err := e.server.sessions.ListSessionRunIntentsByStatusPaged(sessionruntime.RunIntentPendingExecutor, afterKey, sessionV3ExecutorRecoveryLimit)
+			if err != nil {
+				log.Printf("warning: session capacity pending scan failed: %v", err)
+				return
+			}
+			if len(intents) == 0 {
+				lastNextKey = ""
+				break
+			}
+			lastNextKey = nextKey
+
+			for _, intent := range intents {
+				if ctx.Err() != nil {
+					return
+				}
+				runKey := sessionV3ExecutorRunKey(intent.SessionID, intent.RunID)
+				e.mu.Lock()
+				alreadyInFlight := e.inFlightRuns[runKey]
+				activeRunID := e.activeBySession[intent.SessionID]
+				inFlightCount = len(e.inFlightRuns)
+				e.mu.Unlock()
+
+				if alreadyInFlight {
+					continue
+				}
+				if activeRunID != "" && activeRunID != intent.RunID {
+					continue
+				}
+				if inFlightCount >= sessionV3ExecutorRecoveryLimit {
+					break
+				}
+
+				session, ok, sErr := e.server.sessions.GetSession(intent.SessionID)
+				if sErr != nil {
+					log.Printf("warning: session capacity lookup failed: %v", sErr)
+					return
+				}
+				if !ok || isSessionArchived(session.Metadata) {
+					reason := "session not found"
+					if ok && isSessionArchived(session.Metadata) {
+						reason = "session is archived"
+					}
+					job := sessionV3ExecutorJob{
+						SessionID: intent.SessionID,
+						RunID:     intent.RunID,
+					}
+					_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+					continue
+				}
+
+				job := sessionV3ExecutorJob{
+					Principal: identity.Principal{
+						Type:           identity.PrincipalTypeUser,
+						UserID:         firstNonEmptyString(intent.UserID, session.UserID),
+						AccountScopeID: firstNonEmptyString(intent.AccountScopeID, session.AccountScopeID),
+					},
+					SessionID:       intent.SessionID,
+					RunID:           intent.RunID,
+					SourceMessageID: intent.SourceMessageID,
+					EpochID:         intent.EpochID,
+					PlanID:          intent.PlanID,
+					CheckpointID:    intent.CheckpointID,
+					AttemptID:       intent.AttemptID,
+					RunSessionID:    intent.RunSessionID,
+					ParentSessionID: intent.ParentSessionID,
+					ResumeContext:   intent.ResumeContext,
+				}
+				if !job.Principal.Valid() {
+					continue
+				}
+				e.EnqueueRun(job)
+			}
+
+			e.mu.Lock()
+			inFlightCount = len(e.inFlightRuns)
+			e.mu.Unlock()
+			if inFlightCount >= sessionV3ExecutorRecoveryLimit {
+				break
+			}
+			if nextKey == "" {
+				break
+			}
+			afterKey = nextKey
+		}
+
+		e.refillAfterKey = lastNextKey
+		if lastNextKey == "" {
+			return
+		}
+		if inFlightCount >= sessionV3ExecutorRecoveryLimit {
+			return
+		}
+	}
 }
 
 func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel context.CancelFunc) {
@@ -319,6 +569,27 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	if cancel != nil {
 		cancel()
 	}
+	if e.server != nil && e.server.deployments != nil {
+		wsIDs := make(map[string]bool)
+		if e.server.sessions != nil {
+			if sess, foundSess, _ := e.server.sessions.GetSession(job.SessionID); foundSess {
+				for _, g := range sess.WorkspaceGrants {
+					if strings.TrimSpace(g.WorkspaceID) != "" {
+						wsIDs[strings.TrimSpace(g.WorkspaceID)] = true
+					}
+				}
+			}
+		}
+		for wsID := range wsIDs {
+			_, _ = e.server.deployments.CancelOwner(context.Background(), lifecycle.CancelOwnerRequest{
+				AccountScopeID: job.Principal.AccountScopeID,
+				WorkspaceID:    wsID,
+				SessionID:      job.SessionID,
+				RunID:          job.RunID,
+				Reason:         reason,
+			})
+		}
+	}
 	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, tracked, err
@@ -355,6 +626,35 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 	return sessionruntime.SessionMutationResult{}, false, fmt.Errorf("v3 run %q is not active", job.RunID)
 }
 
+func (e *sessionV3Executor) CancelRunsForSession(sessionID, reason string) int {
+	if e == nil {
+		return 0
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0
+	}
+	e.mu.Lock()
+	var toCancel []sessionV3ExecutorJob
+	for _, state := range e.runStates {
+		if state != nil && !state.canceled {
+			if strings.TrimSpace(state.job.SessionID) == sessionID {
+				toCancel = append(toCancel, state.job)
+			}
+		}
+	}
+	e.mu.Unlock()
+
+	canceledCount := 0
+	for _, job := range toCancel {
+		_, canceled, _ := e.CancelRun(job, reason)
+		if canceled {
+			canceledCount++
+		}
+	}
+	return canceledCount
+}
+
 func (e *sessionV3Executor) CancelRunsForAccount(accountScopeID, reason string) int {
 	if e == nil {
 		return 0
@@ -373,8 +673,8 @@ func (e *sessionV3Executor) CancelRunsForAccount(accountScopeID, reason string) 
 
 	canceledCount := 0
 	for _, job := range toCancel {
-		_, canceled, err := e.CancelRun(job, reason)
-		if err == nil && canceled {
+		_, canceled, _ := e.CancelRun(job, reason)
+		if canceled {
 			canceledCount++
 		}
 	}
@@ -501,69 +801,72 @@ func (e *sessionV3Executor) recoverDurableRuns(ctx context.Context) {
 		return
 	default:
 	}
-	staleBefore := int64(0)
-	if e.runningStaleAfter > 0 {
-		staleBefore = time.Now().Add(-e.runningStaleAfter).UnixMilli()
-	}
-	intents, err := e.server.sessions.ListRecoverableSessionRunIntents(staleBefore, sessionV3ExecutorRecoveryLimit)
-	if err != nil {
-		log.Printf("warning: v3 session executor recovery scan failed: %v", err)
-		return
-	}
-	for _, intent := range intents {
-		if ctx.Err() != nil {
+
+	afterKey := ""
+	for {
+		runningIntents, nextKey, err := e.server.sessions.ListSessionRunIntentsByStatusPaged(sessionruntime.RunIntentRunning, afterKey, sessionV3ExecutorRecoveryLimit)
+		if err != nil {
+			log.Printf("warning: session capacity recovery scan failed: %v", err)
 			return
 		}
-		if strings.TrimSpace(intent.RunID) == "" || strings.TrimSpace(intent.SessionID) == "" {
-			continue
+		if len(runningIntents) == 0 {
+			break
 		}
-		job := sessionV3ExecutorJob{
-			Principal: identity.Principal{
-				Type:           identity.PrincipalTypeUser,
-				UserID:         intent.UserID,
-				AccountScopeID: intent.AccountScopeID,
-			},
-			SessionID:       intent.SessionID,
-			RunID:           intent.RunID,
-			SourceMessageID: intent.SourceMessageID,
-			EpochID:         intent.EpochID,
-			PlanID:          intent.PlanID,
-			CheckpointID:    intent.CheckpointID,
-			AttemptID:       intent.AttemptID,
-			RunSessionID:    intent.RunSessionID,
-			ParentSessionID: intent.ParentSessionID,
-			ResumeContext:   intent.ResumeContext,
-		}
-		if strings.TrimSpace(job.Principal.UserID) == "" || strings.TrimSpace(job.Principal.AccountScopeID) == "" {
-			if session, ok, err := e.server.sessions.GetSession(intent.SessionID); err != nil {
-				log.Printf("warning: v3 session executor recovery could not hydrate session %q for run %q: %v", intent.SessionID, intent.RunID, err)
+		for _, intent := range runningIntents {
+			if ctx.Err() != nil {
+				return
+			}
+			runKey := sessionV3ExecutorRunKey(intent.SessionID, intent.RunID)
+			e.mu.Lock()
+			alreadyInFlight := e.inFlightRuns[runKey]
+			e.mu.Unlock()
+			if alreadyInFlight {
 				continue
-			} else if ok {
-				if job.Principal.UserID == "" {
-					job.Principal.UserID = session.UserID
-				}
-				if job.Principal.AccountScopeID == "" {
-					job.Principal.AccountScopeID = session.AccountScopeID
+			}
+
+			job := sessionV3ExecutorJob{
+				Principal: identity.Principal{
+					Type:           identity.PrincipalTypeUser,
+					UserID:         intent.UserID,
+					AccountScopeID: intent.AccountScopeID,
+				},
+				SessionID: intent.SessionID,
+				RunID:     intent.RunID,
+			}
+			job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
+			if job.Principal.UserID == "" || job.Principal.AccountScopeID == "" {
+				if s, ok, sErr := e.server.sessions.GetSession(intent.SessionID); sErr == nil && ok {
+					if job.Principal.UserID == "" {
+						job.Principal.UserID = s.UserID
+					}
+					if job.Principal.AccountScopeID == "" {
+						job.Principal.AccountScopeID = s.AccountScopeID
+					}
 				}
 			}
-		}
-		if !job.Principal.Valid() {
-			log.Printf("warning: v3 session executor recovery skipped run %q for session %q: missing principal", intent.RunID, intent.SessionID)
-			continue
-		}
-		if intent.Status == sessionruntime.RunIntentRunning {
 			if err := e.failStaleRunningRunForRecovery(job); err != nil {
-				log.Printf("warning: v3 session executor recovery could not fail interrupted run %q for session %q: %v", job.RunID, job.SessionID, err)
+				log.Printf("warning: session capacity recovery reconciliation failed: %v", err)
 			}
-			continue
 		}
-		e.EnqueueRun(job)
+		if nextKey == "" {
+			break
+		}
+		afterKey = nextKey
 	}
+
+	e.refillPendingBacklog()
 }
 
 func (e *sessionV3Executor) failStaleRunningRunForRecovery(job sessionV3ExecutorJob) error {
-	_, err := e.recordRunStatus(job, sessionruntime.RunIntentInterrupted, "executor interrupted during daemon restart", "session.run.interrupted")
-	return err
+	result, err := e.recordRunStatus(job, sessionruntime.RunIntentInterrupted, "executor interrupted during daemon restart", "session.run.interrupted")
+	if err != nil {
+		return err
+	}
+	interruptedAt := time.Now().UnixMilli()
+	if result.RunIntent != nil && result.RunIntent.UpdatedAt > 0 {
+		interruptedAt = result.RunIntent.UpdatedAt
+	}
+	return e.reconcileCancelledPlanRun(job, "executor interrupted during daemon restart", interruptedAt)
 }
 
 func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
@@ -582,10 +885,6 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	e.attachCancel(job, runCancel)
-	if !e.server.beginActiveRun() {
-		return
-	}
-	defer e.server.endActiveRun()
 	if e.startDelay > 0 {
 		select {
 		case <-runCtx.Done():
@@ -596,19 +895,130 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if e.isRunCanceled(job) || runCtx.Err() != nil {
 		return
 	}
+	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
+	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor {
+		return
+	}
+	job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
+	sessionSnapshot, sessionFound, sessionErr := e.server.sessions.GetSession(job.SessionID)
+	if sessionErr != nil {
+		log.Printf("warning: session capacity lookup failed: %v", sessionErr)
+		return
+	}
+	if !sessionFound || isSessionArchived(sessionSnapshot.Metadata) {
+		reason := "session not found"
+		if sessionFound && isSessionArchived(sessionSnapshot.Metadata) {
+			reason = "session is archived"
+		}
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+		return
+	}
+
+	// Derive scope from session validated principal and enforce mandatory account matching before admission
+	if job.Principal.UserID == "" {
+		job.Principal.UserID = sessionSnapshot.UserID
+	}
+	if job.Principal.AccountScopeID == "" {
+		job.Principal.AccountScopeID = sessionSnapshot.AccountScopeID
+	}
+	if job.Principal.Type == "" {
+		job.Principal.Type = identity.PrincipalTypeUser
+	}
+	validatedPrincipal, pErr := sessionV3ProviderToolPrincipal(job, sessionSnapshot)
+	if pErr != nil {
+		reason := "session principal validation failed: " + pErr.Error()
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+		_, _ = e.recordRunFailureSystemMessage(job, reason)
+		return
+	}
+	job.Principal = validatedPrincipal
+	accountScopeID := validatedPrincipal.AccountScopeID
+
 	// Check daily usage limit before dispatching
 	if e.server != nil && e.server.sessions != nil {
-		if exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(job.Principal.AccountScopeID); err == nil && exceeded {
+		if exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(accountScopeID); err == nil && exceeded {
 			reason := fmt.Sprintf("daily usage limit exceeded ($%.4f spent today, limit is $%.2f)", currentCost, limitCost)
 			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
 			_, _ = e.recordRunFailureSystemMessage(job, reason)
 			return
 		}
 	}
-	intent, ok, err := e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
+
+	if e.server.perm == nil {
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "execution capacity service is unavailable", "session.run.failed")
+		return
+	}
+	var executionLease executioncapacity.Lease
+	if e.server.perm != nil {
+		kind := executioncapacity.ExecutionKindOrdinary
+		if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
+			kind = executioncapacity.ExecutionKindDeployed
+		}
+		var admitErr error
+		for {
+			var changed <-chan struct{}
+			if manager := e.server.ExecutionCapacity(); manager != nil {
+				changed = manager.Changed()
+			}
+			executionLease, admitErr = e.server.perm.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
+				AccountScopeID: accountScopeID, SessionID: job.SessionID, RunID: job.RunID, Kind: kind,
+			})
+			if !errors.Is(admitErr, executioncapacity.ErrQueueFull) || changed == nil {
+				break
+			}
+			select {
+			case <-runCtx.Done():
+				return
+			case <-changed:
+			}
+		}
+		if admitErr != nil {
+			if runCtx.Err() != nil {
+				return
+			}
+			if errors.Is(admitErr, executioncapacity.ErrClosed) {
+				// A closed admission service is shutting down, not a failed task.
+				// Keep this bounded executor job parked until shutdown cancellation
+				// rather than repeatedly refilling the same durable pending intent.
+				<-runCtx.Done()
+				return
+			}
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, admitErr.Error(), "session.run.failed")
+			_, _ = e.recordRunFailureSystemMessage(job, admitErr.Error())
+			return
+		}
+		defer func() {
+			if executionLease != nil {
+				_ = executionLease.Release()
+			}
+		}()
+		runCtx = executioncapacity.WithLease(runCtx, executionLease)
+	}
+
+	if e.isRunCanceled(job) || runCtx.Err() != nil {
+		return
+	}
+	if e.server != nil && e.server.sessions != nil {
+		if exceeded, currentCost, limitCost, err := e.server.sessions.CheckDailyLimit(accountScopeID); err == nil && exceeded {
+			reason := fmt.Sprintf("daily usage limit exceeded ($%.4f spent today, limit is $%.2f)", currentCost, limitCost)
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+			_, _ = e.recordRunFailureSystemMessage(job, reason)
+			return
+		}
+	}
+	intent, ok, err = e.server.sessions.GetSessionRunIntent(job.SessionID, job.RunID)
 	if err != nil || !ok || intent.Status != sessionruntime.RunIntentPendingExecutor {
 		return
 	}
+	if sessionSnapshot, sessionFound, sessionErr = e.server.sessions.GetSession(job.SessionID); sessionErr != nil || !sessionFound || isSessionArchived(sessionSnapshot.Metadata) {
+		reason := "session not found"
+		if sessionFound && isSessionArchived(sessionSnapshot.Metadata) {
+			reason = "session is archived"
+		}
+		_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, reason, "session.run.failed")
+		return
+	}
+
 	if _, err := e.recordRunStatus(job, sessionruntime.RunIntentRunning, "", "session.assistant.started"); err != nil {
 		return
 	}
@@ -867,6 +1277,10 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 	if current, ok, currentErr := e.server.sessions.GetV3SessionRunIntent(job.SessionID, job.RunID); currentErr != nil {
 		return sessionruntime.SessionMutationResult{}, currentErr
 	} else if ok {
+		// Stop guard: if the current intent is already terminal (cancelled), reject late completion/result updates
+		if current.Status == sessionruntime.RunIntentCancelled && status != sessionruntime.RunIntentCancelled {
+			return sessionruntime.SessionMutationResult{}, errors.New("cannot update status: run has already been cancelled")
+		}
 		if intent.SourceMessageID == "" {
 			intent.SourceMessageID = current.SourceMessageID
 		}
@@ -1775,6 +2189,23 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 }
 
 var sessionV3GoogleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
+var sessionV3AnthropicMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:prompt is too long:\s*\d+\s*tokens\s*>\s*(\d+)\s*maximum|tokens\s*>\s*(\d+)\s*max)`)
+var sessionV3GenericMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:maximum (?:context )?length is (\d+)|exceeds the maximum length \((\d+)\)|maximum token limit is (\d+)|context length of (\d+) tokens)`)
+
+func parseSessionV3GenericMaxAllowedTokens(detail string) int {
+	matches := sessionV3GenericMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	for i := 1; i < len(matches); i++ {
+		if matches[i] != "" {
+			if val, err := strconv.Atoi(matches[i]); err == nil && val > 0 {
+				return val
+			}
+		}
+	}
+	return 0
+}
 
 func parseSessionV3GoogleMaxAllowedTokens(detail string) int {
 	matches := sessionV3GoogleMaxAllowedTokensPattern.FindStringSubmatch(detail)
@@ -1786,6 +2217,32 @@ func parseSessionV3GoogleMaxAllowedTokens(detail string) int {
 		return 0
 	}
 	return val
+}
+
+func parseSessionV3AnthropicMaxAllowedTokens(detail string) int {
+	matches := sessionV3AnthropicMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	limitStr := matches[1]
+	if limitStr == "" && len(matches) > 2 {
+		limitStr = matches[2]
+	}
+	val, err := strconv.Atoi(limitStr)
+	if err != nil || val <= 0 {
+		return 0
+	}
+	return val
+}
+
+func sessionV3IsAnthropicTokenOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "prompt is too long") ||
+		strings.Contains(normalized, "prompt too long") ||
+		(strings.Contains(normalized, "tokens >") && (strings.Contains(normalized, "maximum") || strings.Contains(normalized, "max")))
 }
 
 func sessionV3IsGoogleTokenOverflowDiagnostic(detail string) bool {
@@ -1805,6 +2262,7 @@ func sessionV3IsContextOverflowDiagnostic(detail string) bool {
 		strings.Contains(normalized, "context length") ||
 		strings.Contains(normalized, "maximum context") ||
 		strings.Contains(normalized, "token limit exceeded") ||
+		sessionV3IsAnthropicTokenOverflowDiagnostic(detail) ||
 		sessionV3IsGoogleTokenOverflowDiagnostic(detail)
 }
 
@@ -1839,6 +2297,12 @@ func (e *sessionV3Executor) sessionV3ContextUtilizationPercent(job sessionV3Exec
 	}
 	if contextWindow <= 0 && cause != nil {
 		contextWindow = parseSessionV3GoogleMaxAllowedTokens(cause.Error())
+		if contextWindow <= 0 {
+			contextWindow = parseSessionV3AnthropicMaxAllowedTokens(cause.Error())
+		}
+		if contextWindow <= 0 {
+			contextWindow = parseSessionV3GenericMaxAllowedTokens(cause.Error())
+		}
 	}
 	if contextWindow > 0 {
 		var messages []pebblestore.MessageSnapshot
@@ -4086,25 +4550,6 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
 	instructions := strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
-	if stateCompiler, ok := e.server.runner.(interface {
-		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
-	}); ok && stateCompiler != nil {
-		checkpointContext := (*runruntime.RunPlanCheckpointContext)(nil)
-		if strings.TrimSpace(job.PlanID) != "" || strings.TrimSpace(job.CheckpointID) != "" {
-			checkpointContext = &runruntime.RunPlanCheckpointContext{
-				PlanID:          strings.TrimSpace(job.PlanID),
-				CheckpointID:    strings.TrimSpace(job.CheckpointID),
-				AttemptID:       strings.TrimSpace(job.AttemptID),
-				ParentSessionID: strings.TrimSpace(job.ParentSessionID),
-				SourceMessageID: strings.TrimSpace(job.SourceMessageID),
-			}
-		}
-		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
-		if stateErr != nil {
-			return sessionV3ResolvedRuntime{}, stateErr
-		}
-		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
-	}
 	instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
@@ -4130,6 +4575,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	toolChoice := "none"
 	if len(tools) > 0 {
 		toolChoice = "auto"
+	}
+	if stateCompiler, ok := e.server.runner.(interface {
+		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
+	}); ok && stateCompiler != nil {
+		checkpointContext := (*runruntime.RunPlanCheckpointContext)(nil)
+		if strings.TrimSpace(job.PlanID) != "" || strings.TrimSpace(job.CheckpointID) != "" {
+			checkpointContext = &runruntime.RunPlanCheckpointContext{
+				PlanID:          strings.TrimSpace(job.PlanID),
+				CheckpointID:    strings.TrimSpace(job.CheckpointID),
+				AttemptID:       strings.TrimSpace(job.AttemptID),
+				ParentSessionID: strings.TrimSpace(job.ParentSessionID),
+				SourceMessageID: strings.TrimSpace(job.SourceMessageID),
+			}
+		}
+		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
+		if stateErr != nil {
+			return sessionV3ResolvedRuntime{}, stateErr
+		}
+		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
 	}
 	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
@@ -4246,7 +4710,11 @@ func (e *sessionV3Executor) composeSessionV3Instructions(scope tool.WorkspaceSco
 	}); ok && hydrator != nil {
 		return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.permissionBypassForAccount(scope.Principal.AccountScopeID), agentProfile, "")
 	}
-	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
+	var permSvc *permission.Service
+	if p, ok := e.server.perm.(*permission.Service); ok {
+		permSvc = p
+	}
+	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, permSvc, e.server.agents, e.server.discovery, e.server.events)
 	return hydrator.ComposeRuntimeInstructions(scope, mode, e.server.permissionBypassForAccount(scope.Principal.AccountScopeID), agentProfile, "")
 }
 

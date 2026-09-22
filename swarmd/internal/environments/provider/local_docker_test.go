@@ -137,6 +137,13 @@ func newMockRunner() *mockRunner {
 		delete(m.containers, target)
 		return []byte(target + "\n"), nil
 	}
+	m.handlers["exec"] = func(args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "swarm-cleanup") {
+			return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+		}
+		return []byte("exec ok\n"), nil
+	}
 
 	return m
 }
@@ -1084,8 +1091,17 @@ func TestLocalDockerProvider_Exec(t *testing.T) {
 	}
 
 	argStr := strings.Join(executedArgs, " ")
-	if !strings.Contains(argStr, "exec -w /workspace -e FOO=BAR cid-exec ls -la") {
+	if !strings.Contains(argStr, "exec -w /workspace -e FOO=BAR cid-exec") {
 		t.Fatalf("unexpected executed args: %s", argStr)
+	}
+	if !strings.Contains(argStr, "swarm-supervisor") || !strings.Contains(argStr, "ls -la") {
+		t.Fatalf("missing supervisor or command in executed args: %s", argStr)
+	}
+	if res.OperationID == "" {
+		t.Fatal("expected non-empty OperationID")
+	}
+	if res.LastObservedAt.IsZero() {
+		t.Fatal("expected non-zero LastObservedAt")
 	}
 
 	// Test empty command returns error
@@ -1223,6 +1239,85 @@ func TestLocalDockerProvider_Deploy_ValidationErrors(t *testing.T) {
 	noHostPathEnv.Provisioning.Strategy.LocalMount.HostPath = ""
 	if _, err := p.Deploy(ctx, DeployRequest{Connection: conn, Environment: noHostPathEnv, Deployment: dep, WorkspacePath: ""}); err == nil {
 		t.Error("expected error when local_mount host path and workspace path are both empty")
+	}
+}
+
+func TestLocalDockerProvider_Deploy_RejectsStoppedContainer(t *testing.T) {
+	runner := newMockRunner()
+	p := NewLocalDockerProvider(runner)
+	absHostPath, _ := filepath.Abs("/workspace")
+
+	// Override "run" handler so container is created in stopped state
+	runner.handlers["run"] = func(args []string) ([]byte, error) {
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		name := "test-stopped-container"
+		for i, a := range args {
+			if a == "--name" && i+1 < len(args) {
+				name = args[i+1]
+				break
+			}
+		}
+		runner.portSeq++
+		cid := fmt.Sprintf("%012x", runner.portSeq)
+		cState := &mockContainerState{
+			ID:         cid,
+			Name:       name,
+			Running:    false,
+			HostPort:   "18080",
+			Health:     "none",
+			ExitCode:   0,
+			WorkingDir: "/workspace",
+		}
+		runner.containers[name] = cState
+		runner.containers[cid] = cState
+		return []byte(cid + "\n"), nil
+	}
+
+	conn := &environments.Connection{
+		ID:             "conn-1",
+		AccountScopeID: "acct-1",
+		WorkspaceID:    "ws-1",
+		Name:           "Local Docker",
+		Kind:           environments.ConnectionKindLocalDocker,
+	}
+	env := &environments.Environment{
+		ID:             "env-1",
+		AccountScopeID: "acct-1",
+		WorkspaceID:    "ws-1",
+		Name:           "Test Env",
+		Mode:           environments.EnvironmentModeDeployable,
+		Role:           environments.EnvironmentRoleTesting,
+		Container: environments.ContainerDefinition{
+			Image: "alpine:latest",
+		},
+		Provisioning: environments.WorkspaceProvisioning{
+			Strategy: environments.SourceStrategy{
+				Kind: environments.SourceStrategyKindLocalMount,
+				LocalMount: &environments.LocalMountConfig{
+					HostPath:      absHostPath,
+					ContainerPath: "/workspace",
+				},
+			},
+		},
+	}
+	dep := &environments.Deployment{
+		ID:             "dep-stopped",
+		Name:           "Test Deployment",
+		ConnectionID:   "conn-1",
+		AccountScopeID: "acct-1",
+		WorkspaceID:    "ws-1",
+		EnvironmentID:  "env-1",
+		Status:         environments.DeploymentStatusProvisioning,
+	}
+
+	ctx := context.Background()
+	_, err := p.Deploy(ctx, DeployRequest{Connection: conn, Environment: env, Deployment: dep})
+	if err == nil {
+		t.Fatal("expected Deploy to fail when newly deployed container is stopped")
+	}
+	if !strings.Contains(err.Error(), "is not running") {
+		t.Fatalf("expected error mentioning container is not running, got: %v", err)
 	}
 }
 
@@ -1370,5 +1465,430 @@ func TestLocalDockerProvider_Exec_WithStdin(t *testing.T) {
 	}
 	if !strings.Contains(res.Stdout, "sample payload input") {
 		t.Errorf("expected echo of stdin in stdout, got %q", res.Stdout)
+	}
+}
+
+func TestLocalDockerProvider_Exec_TimeoutAndCleanup(t *testing.T) {
+	runner := newMockRunner()
+	var cleanupCalled bool
+	var cleanupOpID string
+
+	runner.handlers["exec"] = func(args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "swarm-cleanup") {
+			cleanupCalled = true
+			for i, a := range args {
+				if a == "swarm-cleanup" && i+1 < len(args) {
+					cleanupOpID = args[i+1]
+				}
+			}
+			return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+		}
+		return []byte("exec ok\n"), nil
+	}
+
+	execCtx, cancelExec := context.WithCancel(context.Background())
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+		cancelExec()
+		return execCtx.Err()
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-timeout",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-timeout",
+		},
+	}
+
+	req := ExecRequest{
+		OperationID: "op-timeout-test",
+		Command:     []string{"sleep", "60"},
+		Timeout:     5 * time.Second,
+	}
+
+	_, err := p.Exec(execCtx, conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error on timed out/cancelled exec")
+	}
+	if !errors.Is(err, ErrOperationCancelled) {
+		t.Fatalf("expected ErrOperationCancelled, got: %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected cleanup command to be invoked on cancel/timeout")
+	}
+	if cleanupOpID != "op-timeout-test" {
+		t.Fatalf("expected cleanup for op-timeout-test, got: %q", cleanupOpID)
+	}
+}
+
+func TestLocalDockerProvider_Exec_DeadlineExceeded(t *testing.T) {
+	runner := newMockRunner()
+	var cleanupCalled bool
+	var cleanupOpID string
+
+	runner.handlers["exec"] = func(args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, "swarm-cleanup") {
+			cleanupCalled = true
+			for i, a := range args {
+				if a == "swarm-cleanup" && i+1 < len(args) {
+					cleanupOpID = args[i+1]
+				}
+			}
+			return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+		}
+		return []byte("exec ok\n"), nil
+	}
+
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+		time.Sleep(30 * time.Millisecond)
+		return context.DeadlineExceeded
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-deadline",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-deadline",
+		},
+	}
+	req := ExecRequest{
+		OperationID: "op-deadline-test",
+		Command:     []string{"sleep", "60"},
+		Timeout:     10 * time.Millisecond,
+	}
+
+	_, err := p.Exec(context.Background(), conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error on timed out exec")
+	}
+	if !errors.Is(err, ErrOperationTimedOut) {
+		t.Fatalf("expected ErrOperationTimedOut, got: %v", err)
+	}
+	if !cleanupCalled {
+		t.Fatal("expected cleanup command to be invoked on timeout")
+	}
+	if cleanupOpID != "op-deadline-test" {
+		t.Fatalf("expected cleanup for op-deadline-test, got: %q", cleanupOpID)
+	}
+}
+
+func TestLocalDockerProvider_Exec_ProbePrerequisitesFailed(t *testing.T) {
+	runner := newMockRunner()
+	runner.handlers["exec"] = func(args []string) ([]byte, error) {
+		argStr := strings.Join(args, " ")
+		if strings.Contains(argStr, probeScript) {
+			return []byte("mkdir: /run/swarm/operations: Read-only file system\n"), errors.New("exit status 1")
+		}
+		return []byte("exec ok\n"), nil
+	}
+
+	var ioCalled bool
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+		ioCalled = true
+		return nil
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-fail-probe",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-fail-probe",
+		},
+	}
+
+	req := ExecRequest{
+		Command: []string{"echo", "hi"},
+	}
+
+	_, err := p.Exec(context.Background(), conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error when supervisor primitives unavailable")
+	}
+	if !errors.Is(err, ErrSupervisorUnavailable) {
+		t.Fatalf("expected ErrSupervisorUnavailable, got: %v", err)
+	}
+	if ioCalled {
+		t.Fatal("command execution must not proceed when probe fails (fail closed)")
+	}
+}
+
+func TestLocalDockerProvider_Exec_InvalidOperationID(t *testing.T) {
+	runner := newMockRunner()
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-1",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-1",
+		},
+	}
+
+	invalidIDs := []string{
+		"../../etc/passwd",
+		"op; rm -rf /",
+		"op`id`",
+		"op$(id)",
+		"op\nkill 1",
+		"op space",
+		strings.Repeat("a", 129),
+		".",
+		"..",
+	}
+
+	for _, badID := range invalidIDs {
+		_, err := p.Exec(context.Background(), conn, dep, ExecRequest{
+			OperationID: badID,
+			Command:     []string{"echo", "hi"},
+		})
+		if err == nil {
+			t.Errorf("expected error for invalid operation ID %q", badID)
+		}
+		if !errors.Is(err, ErrInvalidOperationID) {
+			t.Errorf("expected ErrInvalidOperationID for %q, got: %v", badID, err)
+		}
+	}
+}
+
+func TestLocalDockerProvider_Exec_OutputCap(t *testing.T) {
+	runner := newMockRunner()
+	largeOutput := strings.Repeat("A", 10000)
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+		_, _ = stdout.Write([]byte(largeOutput))
+		return nil
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-cap",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-cap",
+		},
+	}
+
+	req := ExecRequest{
+		Command:   []string{"cat", "large"},
+		MaxOutput: 1024,
+	}
+
+	res, err := p.Exec(context.Background(), conn, dep, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Stdout) != 1024 {
+		t.Fatalf("expected stdout bounded to 1024 bytes, got %d", len(res.Stdout))
+	}
+	if !res.Truncated {
+		t.Fatal("expected Truncated to be true")
+	}
+}
+
+func TestLocalDockerProvider_Exec_ProgressCallback(t *testing.T) {
+	runner := newMockRunner()
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+		_, _ = stdout.Write([]byte("progress 1\n"))
+		_, _ = stdout.Write([]byte("progress 2\n"))
+		return nil
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-prog",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-prog",
+		},
+	}
+
+	var events []ExecProgress
+	req := ExecRequest{
+		OperationID: "op-progress-test",
+		Command:     []string{"my-task"},
+		OnProgress: func(pr ExecProgress) {
+			events = append(events, pr)
+		},
+	}
+
+	res, err := p.Exec(context.Background(), conn, dep, req)
+	if err != nil {
+		t.Fatalf("Exec failed: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 progress callbacks, got %d", len(events))
+	}
+	for i, ev := range events {
+		if ev.OperationID != "op-progress-test" {
+			t.Errorf("event %d has wrong OperationID: %q", i, ev.OperationID)
+		}
+		if ev.Stream != "stdout" {
+			t.Errorf("event %d has wrong stream: %q", i, ev.Stream)
+		}
+		if ev.Timestamp.IsZero() {
+			t.Errorf("event %d has zero timestamp", i)
+		}
+	}
+	if res.LastObservedAt.IsZero() {
+		t.Fatal("expected non-zero LastObservedAt")
+	}
+}
+
+func TestLocalDockerProvider_CancelExec_Success(t *testing.T) {
+	runner := newMockRunner()
+	var cleanupArgs []string
+	runner.handlers["exec"] = func(args []string) ([]byte, error) {
+		cleanupArgs = args
+		return []byte("SWARM_CLEANUP:TERMINATED\n"), nil
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-cancel",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-cancel",
+		},
+	}
+
+	req := CancelExecRequest{
+		OperationID: "op-cancel-123",
+		GracePeriod: 3 * time.Second,
+	}
+
+	res, err := p.CancelExec(context.Background(), conn, dep, req)
+	if err != nil {
+		t.Fatalf("CancelExec failed: %v", err)
+	}
+	if !res.Terminated {
+		t.Fatal("expected Terminated true")
+	}
+	if res.OperationID != "op-cancel-123" {
+		t.Fatalf("expected OperationID op-cancel-123, got: %s", res.OperationID)
+	}
+	if res.SignalSent != "SIGTERM/SIGKILL" {
+		t.Fatalf("expected SignalSent SIGTERM/SIGKILL, got: %s", res.SignalSent)
+	}
+	joined := strings.Join(cleanupArgs, " ")
+	if !strings.Contains(joined, "swarm-cleanup op-cancel-123 3") {
+		t.Fatalf("unexpected cleanup invocation args: %s", joined)
+	}
+}
+
+func TestLocalDockerProvider_CancelExec_PostRestart(t *testing.T) {
+	runner := newMockRunner()
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-restarted",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-restarted",
+		},
+	}
+
+	res, err := p.CancelExec(context.Background(), conn, dep, CancelExecRequest{
+		OperationID: "op-prior-daemon-run",
+	})
+	if err != nil {
+		t.Fatalf("CancelExec post-restart failed: %v", err)
+	}
+	if !res.Terminated {
+		t.Fatal("expected Terminated true for post-restart cancellation")
+	}
+}
+
+func TestLocalDockerProvider_CancelExec_PIDReuse(t *testing.T) {
+	runner := newMockRunner()
+	runner.handlers["exec"] = func(args []string) ([]byte, error) {
+		return []byte("SWARM_CLEANUP:PID_REUSE_DETECTED\n"), nil
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-reuse",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-reuse",
+		},
+	}
+
+	res, err := p.CancelExec(context.Background(), conn, dep, CancelExecRequest{
+		OperationID: "op-reused",
+	})
+	if err != nil {
+		t.Fatalf("CancelExec with PID reuse returned unexpected error: %v", err)
+	}
+	if !res.Terminated {
+		t.Fatal("expected Terminated true when PID reuse detected (process already exited)")
+	}
+	if !strings.Contains(res.ErrorMessage, "reused") {
+		t.Fatalf("expected ErrorMessage mentioning PID reuse, got: %q", res.ErrorMessage)
+	}
+}
+
+func TestLocalDockerProvider_CancelExec_CleanupFailure(t *testing.T) {
+	runner := newMockRunner()
+	runner.handlers["exec"] = func(args []string) ([]byte, error) {
+		return []byte("SWARM_CLEANUP:CLEANUP_FAILED\n"), errors.New("exit status 1")
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-fail-clean",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-fail-clean",
+		},
+	}
+
+	res, err := p.CancelExec(context.Background(), conn, dep, CancelExecRequest{
+		OperationID: "op-failed-clean",
+	})
+	if err == nil {
+		t.Fatal("expected error on cleanup failure")
+	}
+	if !errors.Is(err, ErrOperationCleanupFailed) {
+		t.Fatalf("expected ErrOperationCleanupFailed, got: %v", err)
+	}
+	if res.Terminated {
+		t.Fatal("expected Terminated false when cleanup failed")
+	}
+}
+
+func TestLocalDockerProvider_Exec_RedactedEnvInError(t *testing.T) {
+	runner := newMockRunner()
+	runner.ioHandlers["exec"] = func(stdin io.Reader, stdout, stderr io.Writer, args []string) error {
+		return errors.New("daemon connection lost")
+	}
+
+	p := NewLocalDockerProvider(runner)
+	conn := &environments.Connection{ID: "conn-1", Kind: environments.ConnectionKindLocalDocker}
+	dep := &environments.Deployment{
+		ID: "dep-secret",
+		Runtime: environments.RuntimeMetadata{
+			ContainerID: "cid-secret",
+		},
+	}
+
+	secretVal := "super-sensitive-token-12345"
+	req := ExecRequest{
+		Command: []string{"run-task"},
+		Env: map[string]string{
+			"SECRET_KEY": secretVal,
+		},
+	}
+
+	_, err := p.Exec(context.Background(), conn, dep, req)
+	if err == nil {
+		t.Fatal("expected error on exec failure")
+	}
+	if strings.Contains(err.Error(), secretVal) {
+		t.Fatalf("secret value leaked in error message: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "SECRET_KEY=[REDACTED]") {
+		t.Fatalf("expected redacted key in error message, got: %s", err.Error())
 	}
 }

@@ -295,9 +295,9 @@ func FormatWorkspaceEnvironmentPromptBlock(envCtx *WorkspaceEnvironmentContext) 
 
 	// 5. Agent test orchestration guidance
 	if envCtx.DefaultTestEnvironment != nil {
-		sb.WriteString(fmt.Sprintf("- test_guidance: When testing, evaluating, or executing testbenches, automatically acquire a deployment lease via `manage_deployments` action=\"ensure\" (environment_id=%q or omit for default), run commands with action=\"exec\", and release with action=\"release\" when done.\n", envCtx.DefaultTestEnvironment.ID))
+		sb.WriteString(fmt.Sprintf("- test_guidance: Inspect selected environment definition and worktree via `manage_environments` action=\"get\" (environment_id=%q). When executing tests, acquire deployment lease via `manage_environments` action=\"ensure\", run commands via `manage_environments` action=\"exec\" using returned receipts without busy polling, and release with `manage_environments` action=\"release\" when done.\n", envCtx.DefaultTestEnvironment.ID))
 	} else {
-		sb.WriteString("- test_guidance: When tests require a container/remote testbench, check available environments via `manage_environments` action=\"list\" or specify environment_id with `manage_deployments` action=\"ensure\". Release the lease with action=\"release\" when done.\n")
+		sb.WriteString("- test_guidance: When tests require a container/remote testbench, inspect available environments via `manage_environments` action=\"list\" or specify environment_id with `manage_environments` action=\"ensure\". Use returned receipts without busy polling, and release with action=\"release\" when done.\n")
 	}
 
 	content := strings.TrimSpace(sb.String())

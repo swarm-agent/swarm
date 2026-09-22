@@ -809,8 +809,8 @@ func TestRetainedArtifactDownstreamVideoStudioConversion(t *testing.T) {
 	if part.ArtifactV3Source.ArtifactID != destArtifactID {
 		t.Fatalf("part source artifactID = %s, want %s", part.ArtifactV3Source.ArtifactID, destArtifactID)
 	}
-	if part.DurationMS != 4000 {
-		t.Fatalf("conversion changed animation duration: %d", part.DurationMS)
+	if part.DurationMs != 4000 {
+		t.Fatalf("conversion changed animation duration: %d", part.DurationMs)
 	}
 	sourceRead, err := h.invokeTool(t, "session-dest", "read-motion-source", map[string]any{"action": "read_v3", "artifact_v3_reference": map[string]any{"session_id": "session-source", "artifact_id": artSource, "revision_ref": "revision-" + commitSource}})
 	if err != nil {

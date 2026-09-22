@@ -719,9 +719,14 @@ func (s *SessionStore) appendV3SessionSearchMessageInBatch(batch *pebble.Batch, 
 	return appendV3SessionSearchMessagePostingsInBatch(batch, session.ID, message)
 }
 
+const maxV3SessionSearchToolTokens = 40
+
 func appendV3SessionSearchMessagePostingsInBatch(batch *pebble.Batch, sessionID string, message MessageSnapshot) error {
 	searchContent := v3SessionSearchMessageContent(message)
 	tokens := v3SessionSearchTokens(searchContent)
+	if strings.EqualFold(strings.TrimSpace(message.Role), "tool") && len(tokens) > maxV3SessionSearchToolTokens {
+		tokens = tokens[:maxV3SessionSearchToolTokens]
+	}
 	snippetSource := newV3SessionSearchSnippetSource(searchContent)
 	for _, token := range tokens {
 		key := keyV3SessionSearchPosting(sessionID, "message", token)
@@ -740,12 +745,38 @@ func appendV3SessionSearchMessagePostingsInBatch(batch *pebble.Batch, sessionID 
 
 func v3SessionSearchMessageContent(message MessageSnapshot) string {
 	content := message.Content
-	if strings.EqualFold(strings.TrimSpace(message.Role), "tool") && message.Metadata != nil {
-		if bounded, ok := message.Metadata["search_index_content"].(string); ok && strings.TrimSpace(bounded) != "" {
-			return bounded
+	if strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+		if message.Metadata != nil {
+			if bounded, ok := message.Metadata["search_index_content"].(string); ok && strings.TrimSpace(bounded) != "" {
+				return bounded
+			}
 		}
+		return summarizeToolMessageContentForSearch(content)
 	}
 	return content
+}
+
+func summarizeToolMessageContentForSearch(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "{") {
+		var structured map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &structured); err == nil {
+			if summary, ok := structured["summary"].(string); ok && strings.TrimSpace(summary) != "" {
+				return summary
+			}
+			if comp, ok := structured["completed_output"].(string); ok && strings.TrimSpace(comp) != "" {
+				return truncateRunes(comp, 240)
+			}
+			if toolName, ok := structured["tool_name"].(string); ok && strings.TrimSpace(toolName) != "" {
+				args, _ := structured["arguments"].(string)
+				return fmt.Sprintf("%s %s", toolName, truncateRunes(args, 120))
+			}
+		}
+	}
+	return truncateRunes(trimmed, 240)
 }
 
 func v3SessionSearchMetadataTokens(session SessionSnapshot) map[string]v3SessionSearchIndexRecord {

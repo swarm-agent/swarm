@@ -529,6 +529,13 @@ func (s *Service) ListSessionRunIntentsByStatus(status string, limit int) ([]Ses
 	return s.store.ListV3SessionRunIntentsByStatus(status, limit)
 }
 
+func (s *Service) ListSessionRunIntentsByStatusPaged(status string, afterKey string, limit int) ([]SessionRunIntent, string, error) {
+	if s == nil || s.store == nil {
+		return nil, "", errors.New("session store is not configured")
+	}
+	return s.store.ListV3SessionRunIntentsByStatusPaged(status, afterKey, limit)
+}
+
 func (s *Service) ListRecoverableSessionRunIntents(staleRunningBeforeUnixMs int64, limit int) ([]SessionRunIntent, error) {
 	if s == nil || s.store == nil {
 		return nil, errors.New("session store is not configured")

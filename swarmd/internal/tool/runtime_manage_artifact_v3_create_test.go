@@ -148,6 +148,66 @@ func TestManageArtifactCreateUsesDirectArtifactV3HTMLPath(t *testing.T) {
 	}
 }
 
+// Requirement: createDirectArtifactV3HTML must accept optional title parameter
+// matching the manage_artifact public schema without returning an unsupported field error.
+func TestManageArtifactCreateV3AcceptsTitleField(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+	arguments := `{"action":"create","title":"System CPU Load","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero</main></body></html>"}`
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "title-test", Name: "manage_artifact", Arguments: arguments})
+	if err != nil {
+		t.Fatalf("expected title parameter to be accepted, got: %v", err)
+	}
+	if len(repository.turns) != 1 {
+		t.Fatalf("expected 1 turn prepared, got: %d", len(repository.turns))
+	}
+	if repository.turns[0].Prompt != "System CPU Load" {
+		t.Fatalf("expected turn prompt to match title, got: %q", repository.turns[0].Prompt)
+	}
+}
+
+// Requirement: createDirectArtifactV3HTML must accept div with an id as a stable region part.
+func TestManageArtifactCreateV3AcceptsDivWithID(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+	arguments := `{"action":"create","title":"Div Gauge","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><div id=\"dashboard\">Dashboard</div></body></html>"}`
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "div-test", Name: "manage_artifact", Arguments: arguments})
+	if err != nil {
+		t.Fatalf("expected div with id to be accepted, got: %v", err)
+	}
+	if len(repository.turns) != 1 {
+		t.Fatalf("expected 1 turn prepared, got: %d", len(repository.turns))
+	}
+}
+
+// Requirement: createDirectArtifactV3HTML must allow repairing an existing draft
+// with a subsequent create call without failing with compare-and-swap conflict.
+func TestManageArtifactCreateV3AllowsRepairWithoutConflict(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	runtime := NewRuntime(1)
+	runtime.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	ctx := WithArtifactRunContext(context.Background(), ArtifactRunContext{SessionID: "session-1", RunID: "run-1"})
+
+	arguments1 := `{"action":"create","title":"Initial","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero 1</main></body></html>"}`
+	_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-1", Name: "manage_artifact", Arguments: arguments1})
+	if err != nil {
+		t.Fatalf("first create call failed: %v", err)
+	}
+
+	arguments2 := `{"action":"create","title":"Repaired","filename":"index.html","media_type":"text/html","content":"<!doctype html><html><body><main id=\"hero\">Hero 2</main></body></html>"}`
+	_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "create-2", Name: "manage_artifact", Arguments: arguments2})
+	if err != nil {
+		t.Fatalf("second create call (repair) failed: %v", err)
+	}
+}
+
 // Requirement: createDirectArtifactV3HTML must reject invalid media and unresolved
 // region references before allocating an author turn or publishing any revision.
 // This tool-layer test keeps those negative boundaries independent of Part count.
@@ -352,4 +412,23 @@ func TestManageArtifactCreateV3CaptureUI(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDirectDesignerSwarmCreateManagedHTMLArtifactV3(t *testing.T) {
+	repository := &directArtifactV3RepoFake{}
+	rt := NewRuntime(1)
+	rt.SetArtifactV3AuthorService(NewArtifactV3AuthorService(t.TempDir(), repository, &artifactV3BuilderFake{}, &artifactV3PreviewerFake{}))
+	scope := WorkspaceScope{SessionID: "session-1", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account-1", UserID: "user-1"}}
+	run := ArtifactRunContext{SessionID: "session-1", RunID: "run-1"}
+	profile := &pebblestore.SessionArtifactAnimationProfile{ProfileID: "motion_ui"}
+	html := `<!doctype html><html><head><script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":6000,"fps":60}</script></head><body><section id="part-1"></section><section id="part-2"></section></body></html>`
+	parts := []map[string]any{
+		{"id": "part-1", "label": "Part 1", "kind": "temporal", "start_ms": 0, "end_ms": 3000, "selector": "#part-1"},
+		{"id": "part-2", "label": "Part 2", "kind": "temporal", "start_ms": 3000, "end_ms": 6000, "selector": "#part-2"},
+	}
+	out, err := rt.CreateManagedHTMLArtifactV3(context.Background(), scope, "call-1", "Test Animation", html, parts, profile, run)
+	if err != nil {
+		t.Fatalf("CreateManagedHTMLArtifactV3 failed: %v", err)
+	}
+	t.Logf("CreateManagedHTMLArtifactV3 result: %s", out)
 }

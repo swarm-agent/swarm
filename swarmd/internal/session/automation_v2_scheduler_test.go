@@ -12,12 +12,13 @@ import (
 type fixtureV2Host struct {
 	starts, cancels int
 	state           string
+	startErr        error
 	cancelErr       error
 }
 
 func (h *fixtureV2Host) Start(context.Context, store.AutomationV2Occurrence) error {
 	h.starts++
-	return nil
+	return h.startErr
 }
 func (h *fixtureV2Host) Cancel(context.Context, store.AutomationV2Occurrence) error {
 	h.cancels++
@@ -236,4 +237,201 @@ func TestAutomationV2SchedulerFiveMinuteForecast(t *testing.T) {
 		t.Fatalf("expected %d forecast slots for 5-minute schedule, got %d", expectedRemaining, len(progress.Forecast))
 	}
 	_ = r
+}
+
+// Purpose: when execution start fails, scheduler applies exponential backoff
+// (30s, 60s, 120s, 240s) and does not thrash on 1-second ticks; halts at 5 attempts.
+func TestAutomationV2SchedulerStartRetryBackoff(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := store.NewSessionStore(db)
+	yes := true
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: w.Path, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(ss, nil)
+	doc := store.SessionPlanDocument{
+		Title: "Retry Backoff",
+		Info:  store.SessionPlanInfo{Goal: "Retry Backoff"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Missed:           "skip",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{ID: "one", Title: "One", Status: "pending", Order: 1, Objective: "Check", AcceptanceCriteria: []string{"Checked"}}},
+	}
+	proposal, err := svc.ProposeAutomationV2("account", "owner", w.WorkspaceID, "author", &doc, store.AutomationV2Review{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.AcceptAutomationV2("account", "owner", w.WorkspaceID, "author", proposal.AutomationV2Review)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := &fixtureV2Host{state: "admitted", startErr: errors.New("worktree collision")}
+	scheduler := NewAutomationV2Scheduler(svc, host)
+
+	// Tick 1: start fails attempt 1 -> backoff 30s
+	now := r.NextDueAt
+	if err = scheduler.Tick(context.Background(), r, now); err == nil {
+		t.Fatal("expected start failure error")
+	}
+	if host.starts != 1 {
+		t.Fatalf("expected 1 start attempt, got %d", host.starts)
+	}
+
+	// Occurrence should be in state "unavailable", AttemptCount=1, NextRetryAt=now+30000
+	rows, _, err := ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("expected 1 occurrence, got %d (err: %v)", len(rows), err)
+	}
+	occ := rows[0]
+	if occ.State != "unavailable" || occ.AttemptCount != 1 || occ.NextRetryAt != now+30000 {
+		t.Fatalf("expected unavailable/1/retry=%d, got state=%s/attempt=%d/retry=%d", now+30000, occ.State, occ.AttemptCount, occ.NextRetryAt)
+	}
+
+	// Tick 2: 1 second later -> before NextRetryAt -> Start must NOT be called
+	if err = scheduler.Tick(context.Background(), r, now+1000); err != nil {
+		t.Fatalf("unexpected error on skipped tick: %v", err)
+	}
+	if host.starts != 1 {
+		t.Fatalf("expected still 1 start attempt (skipped due to backoff), got %d", host.starts)
+	}
+
+	// Tick 3: at NextRetryAt -> attempt 2 -> backoff 60s
+	retryTime := now + 30000
+	if err = scheduler.Tick(context.Background(), r, retryTime); err == nil {
+		t.Fatal("expected start failure error on retry")
+	}
+	if host.starts != 2 {
+		t.Fatalf("expected 2 start attempts, got %d", host.starts)
+	}
+	rows, _, _ = ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
+	occ = rows[0]
+	if occ.AttemptCount != 2 || occ.NextRetryAt != retryTime+60000 {
+		t.Fatalf("expected attempt 2 with retry=%d, got attempt=%d/retry=%d", retryTime+60000, occ.AttemptCount, occ.NextRetryAt)
+	}
+
+	// Advance through attempts 3, 4, 5
+	retryTime = occ.NextRetryAt
+	_ = scheduler.Tick(context.Background(), r, retryTime) // attempt 3
+	rows, _, _ = ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
+	retryTime = rows[0].NextRetryAt
+	_ = scheduler.Tick(context.Background(), r, retryTime) // attempt 4
+	rows, _, _ = ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
+	retryTime = rows[0].NextRetryAt
+	_ = scheduler.Tick(context.Background(), r, retryTime) // attempt 5
+
+	rows, _, _ = ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
+	occ = rows[0]
+	if occ.State != "failed" || occ.AttemptCount != 5 || occ.NextRetryAt != 0 {
+		t.Fatalf("expected permanently failed after 5 attempts, got state=%s, attempt=%d, nextRetry=%d", occ.State, occ.AttemptCount, occ.NextRetryAt)
+	}
+}
+
+// Purpose: when parent session is archived, scheduler cleanly cancels running/pending
+// occurrences without ErrAutomationV2Conflict lockup and stops admitting new work.
+func TestAutomationV2SchedulerArchivedSessionCancellation(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := store.NewSessionStore(db)
+	yes := true
+	if err = ss.CreateSession(store.SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", Mode: "auto", WorkspacePath: w.Path, WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: w.WorkspaceID, Path: w.Path, Available: &yes}}}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(ss, nil)
+	doc := store.SessionPlanDocument{
+		Title: "Archive Test",
+		Info:  store.SessionPlanInfo{Goal: "Archive Test"},
+		AutomationV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Missed:           "skip",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{ID: "one", Title: "One", Status: "pending", Order: 1, Objective: "Check", AcceptanceCriteria: []string{"Checked"}}},
+	}
+	proposal, err := svc.ProposeAutomationV2("account", "owner", w.WorkspaceID, "author", &doc, store.AutomationV2Review{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := svc.AcceptAutomationV2("account", "owner", w.WorkspaceID, "author", proposal.AutomationV2Review)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host := &fixtureV2Host{state: "running"}
+	scheduler := NewAutomationV2Scheduler(svc, host)
+
+	// Tick 1: admits and starts occurrence
+	now := r.NextDueAt
+	if err = scheduler.Tick(context.Background(), r, now); err != nil {
+		t.Fatalf("tick 1 failed: %v", err)
+	}
+	rows, _, err := ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", true, 25)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("expected 1 running occurrence, got %d (err: %v)", len(rows), err)
+	}
+
+	// Archive the session
+	if err = ss.ArchiveSession("author"); err != nil {
+		t.Fatalf("ArchiveSession failed: %v", err)
+	}
+
+	// Tick 2: scheduler encounters archived session -> must cancel occurrence cleanly, not fail with conflict
+	if err = scheduler.Tick(context.Background(), r, now+1000); err != nil {
+		t.Fatalf("tick 2 after archive failed: %v", err)
+	}
+	if host.cancels != 1 {
+		t.Fatalf("expected 1 cancel call on host, got %d", host.cancels)
+	}
+
+	// Verify occurrence transitioned to cancelled
+	rows, _, err = ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("expected 1 occurrence, got %d", len(rows))
+	}
+	if rows[0].State != "cancelled" {
+		t.Fatalf("expected occurrence state 'cancelled', got '%s'", rows[0].State)
+	}
 }

@@ -11,6 +11,7 @@ import {
 import { Button } from '../../../../components/ui/button'
 import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
 import { resolveWorkspaceBySlug } from '../../../workspaces/launcher/services/workspace-route'
+import { useDesktopEnvironments } from '../../runtime/desktop-environments-runtime'
 import {
   deleteConnection,
   deleteEnvironment,
@@ -25,7 +26,6 @@ import {
   setDefaultConnection,
   setDefaultTestEnvironment,
   startDeployment,
-  stopDeployment,
 } from '../services/environments-api'
 import { ConnectionsView } from '../components/connections-view'
 import { DeploymentsView } from '../components/deployments-view'
@@ -65,6 +65,15 @@ export function EnvironmentsPage() {
   const workspacePath = workspace?.path ?? ''
   const workspaceSlug = params.workspaceSlug ?? ''
 
+  // Desktop Environments Runtime & Realtime Demand
+  const {
+    state: envState,
+    refresh: refreshEnvironments,
+    stopDeployment: stopDepWithReceipt,
+    cancelOperation: cancelOpWithReceipt,
+    setHistoryFilter,
+  } = useDesktopEnvironments(workspaceId)
+
   // Query: Connections
   const connectionsQuery = useQuery({
     queryKey: ['environments-connections', workspaceId],
@@ -79,12 +88,11 @@ export function EnvironmentsPage() {
     enabled: Boolean(workspaceId),
   })
 
-  // Query: Deployments
+  // Query: Deployments (Event-driven via V3 realtime; no interval polling)
   const deploymentsQuery = useQuery({
     queryKey: ['environments-deployments', workspaceId],
     queryFn: ({ signal }) => fetchDeployments(workspaceId, signal, '', workspacePath),
     enabled: Boolean(workspaceId),
-    refetchInterval: 5000, // Poll deployments periodically for live container updates
   })
 
   const handleTabChange = (tab: EnvironmentsTabID) => {
@@ -117,6 +125,11 @@ export function EnvironmentsPage() {
     void queryClient.invalidateQueries({ queryKey: ['environments-connections', workspaceId] })
     void queryClient.invalidateQueries({ queryKey: ['environments-list', workspaceId] })
     void queryClient.invalidateQueries({ queryKey: ['environments-deployments', workspaceId] })
+  }
+
+  const handleRefreshAll = () => {
+    invalidateAll()
+    void refreshEnvironments({ force: true })
   }
 
   // Mutation Handlers
@@ -220,7 +233,18 @@ export function EnvironmentsPage() {
   const handleStopDeployment = async (id: string) => {
     setErrorMessage(null)
     try {
-      await stopDeployment(workspaceId, id, workspacePath)
+      await stopDepWithReceipt(id, workspacePath)
+      invalidateAll()
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+      throw err
+    }
+  }
+
+  const handleCancelOperation = async (id: string, reason?: string) => {
+    setErrorMessage(null)
+    try {
+      await cancelOpWithReceipt(id, reason, workspacePath)
       invalidateAll()
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
@@ -277,8 +301,20 @@ export function EnvironmentsPage() {
   const connections = connectionsQuery.data ?? []
   const environments = environmentsQuery.data?.environments ?? []
   const settings = environmentsQuery.data?.settings ?? { workspace_id: workspaceId, account_scope_id: '' }
-  const deployments = deploymentsQuery.data?.deployments ?? []
-  const activeLeases = deploymentsQuery.data?.activeLeases ?? {}
+  const deployments = (envState?.deployments && envState.deployments.length > 0)
+    ? envState.deployments
+    : (deploymentsQuery.data?.deployments ?? [])
+  const activeLeases = (envState?.activeLeases && Object.keys(envState.activeLeases).length > 0)
+    ? envState.activeLeases
+    : (deploymentsQuery.data?.activeLeases ?? {})
+  const summary = envState?.summary
+  const operations = envState?.operations ?? []
+  const historyPage = envState?.historyPage
+  const historyFilter = envState?.historyFilter
+  const realtimeStatus = envState?.realtimeStatus ?? 'connected'
+  const stale = envState?.stale ?? false
+  const lastObservedAt = envState?.lastObservedAt
+  const lastReceipt = envState?.lastReceipt
 
   return (
     <div className="flex h-full min-h-screen min-w-0 flex-1 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]" data-testid="environments-page">
@@ -385,12 +421,15 @@ export function EnvironmentsPage() {
             environments={environments}
             connections={connections}
             settings={settings}
+            summary={summary}
+            deployments={deployments}
             loading={environmentsQuery.isLoading}
             onRefresh={invalidateAll}
             onSaveEnvironment={handleSaveEnvironment}
             onDeleteEnvironment={handleDeleteEnvironment}
             onSetDefaultTestEnvironment={handleSetDefaultTestEnvironment}
             onDeployEnvironment={handleDeployEnvironment}
+            onSwitchToDeployments={() => handleTabChange('deployments')}
           />
         )}
 
@@ -415,13 +454,23 @@ export function EnvironmentsPage() {
             deployments={deployments}
             activeLeases={activeLeases}
             environments={environments}
-            loading={deploymentsQuery.isLoading}
-            onRefresh={invalidateAll}
+            loading={deploymentsQuery.isLoading || (Boolean(envState?.loading) && !envState?.summary)}
+            onRefresh={handleRefreshAll}
             onStartDeployment={handleStartDeployment}
             onStopDeployment={handleStopDeployment}
             onReleaseDeployment={handleReleaseDeployment}
             onDestroyDeployment={handleDestroyDeployment}
             onQuickLaunch={handleDeployEnvironment}
+            summary={summary}
+            operations={operations}
+            historyPage={historyPage}
+            historyFilter={historyFilter}
+            onSetHistoryFilter={setHistoryFilter}
+            realtimeStatus={realtimeStatus}
+            stale={stale}
+            lastObservedAt={lastObservedAt}
+            lastReceipt={lastReceipt}
+            onCancelOperation={handleCancelOperation}
           />
         )}
       </main>

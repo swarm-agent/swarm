@@ -7,5 +7,15 @@ export function isSettingsTabID(value: unknown): value is SettingsTabID {
 }
 
 export function normalizeSettingsTabID(value: unknown): SettingsTabID {
-  return value === 'agents' ? 'account' : value === 'models' ? 'actions' : value === 'images' ? 'media' : isSettingsTabID(value) ? value : 'account'
+  return value === 'agents'
+    ? 'account'
+    : value === 'models'
+      ? 'actions'
+      : value === 'images'
+        ? 'media'
+        : value === 'quick-actions' || value === 'quick_actions'
+          ? 'shortcuts'
+          : isSettingsTabID(value)
+            ? value
+            : 'account'
 }

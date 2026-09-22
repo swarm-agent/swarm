@@ -20,6 +20,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	compactruntime "swarm/packages/swarmd/internal/compact"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
@@ -39,8 +40,8 @@ const (
 	defaultHistoryLimit                   = 500
 	maxToolPreviewChars                   = 280
 	maxToolDeltaChars                     = 4000
-	maxToolInputBytes                     = 96 * 1024
-	maxToolInputPreview                   = 1200
+	maxToolInputBytes                     = 128 * 1024
+	maxToolInputPreview                   = 3000
 	maxRulePromptFiles                    = 3
 	maxRulePromptSourceBytes              = 32 * 1024
 	maxRulePromptAggregateBytes           = 64 * 1024
@@ -136,6 +137,7 @@ type Service struct {
 	runCounter                   atomic.Uint64
 	lifecycleMu                  sync.Mutex
 	activeRuns                   map[string]*activeSessionRun
+	pendingAdmissions            map[string]map[string]context.CancelFunc
 }
 
 func (s *Service) LongSessionSnapshot() map[string]any {
@@ -736,6 +738,9 @@ func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, provi
 	if tools != nil && sessions != nil {
 		tools.SetManageSessionService(sessions)
 	}
+	if tools != nil && permissions != nil {
+		tools.SetManageSessionCapacityProvider(permissions)
+	}
 	return &Service{
 		sessions:    sessions,
 		model:       modelSvc,
@@ -866,6 +871,25 @@ func (s *Service) SetEventPublisher(publish func(pebblestore.EventEnvelope)) {
 		return
 	}
 	s.eventPublish = publish
+}
+
+// ExecutionCapacity returns the shared account-scoped execution capacity manager if configured.
+func (s *Service) ExecutionCapacity() *executioncapacity.Manager {
+	if s == nil || s.permissions == nil {
+		return nil
+	}
+	return s.permissions.ExecutionCapacity()
+}
+
+// ExecutionCapacitySnapshot returns the atomic capacity snapshot for an account.
+func (s *Service) ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
+	if s == nil || s.permissions == nil {
+		return executioncapacity.Snapshot{
+			AccountScopeID: strings.TrimSpace(accountScopeID),
+			Unavailable:    true, Error: "execution capacity service is unavailable",
+		}
+	}
+	return s.permissions.ExecutionCapacitySnapshot(accountScopeID)
 }
 
 func (s *Service) maybeRefreshSessionGitState(sessionID string, sessionSnapshot pebblestore.SessionSnapshot) {
@@ -1221,8 +1245,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	emit := func(StreamEvent) {}
 	sessionResolved := false
 	lifecycleClaimed := false
+	var ownedExecutionLease executioncapacity.Lease
 	runID := strings.TrimSpace(options.RunID)
 	defer func() {
+		defer func() {
+			if ownedExecutionLease != nil {
+				_ = ownedExecutionLease.Release()
+			}
+		}()
 		if !sessionResolved || !lifecycleClaimed {
 			return
 		}
@@ -1284,7 +1314,10 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		return RunResult{}, fmt.Errorf("session %q not found", sessionID)
 	}
 	sessionResolved = true
-	acctScope := firstNonEmptyString(options.Principal.AccountScopeID, sessionSnapshot.AccountScopeID)
+	acctScope := sessionSnapshot.AccountScopeID
+	if (options.Principal.AccountScopeID != "" && options.Principal.AccountScopeID != acctScope) || (options.Principal.UserID != "" && options.Principal.UserID != sessionSnapshot.UserID) {
+		return RunResult{}, errors.New("run principal does not own session")
+	}
 	if s.sessions != nil {
 		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err == nil && exceeded {
 			return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
@@ -1406,6 +1439,59 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
+	var runCancel context.CancelFunc
+	runCtx, cancelRun := context.WithCancel(ctx)
+	runCancel = cancelRun
+	defer runCancel()
+	ctx = runCtx
+	runnerCtx = runCtx
+
+	if err := s.registerPendingAdmission(sessionID, runID, runCancel); err != nil {
+		return RunResult{}, err
+	}
+	defer s.removePendingAdmission(sessionID, runID)
+	var executionLease executioncapacity.Lease
+	if s.permissions != nil && s.permissions.ExecutionCapacity() != nil {
+		existingLease, hasLease := executioncapacity.LeaseFromContextForAccount(ctx, acctScope, sessionID, runID)
+		if manualCompact {
+			existingLease, hasLease = executioncapacity.ActiveSessionLeaseFromContext(ctx, acctScope, sessionID)
+		}
+		if hasLease && !existingLease.IsActive() {
+			return RunResult{}, errors.New("run cannot execute with a parked lease")
+		}
+		if !hasLease || existingLease == nil {
+			kind := executioncapacity.ExecutionKindOrdinary
+			if sessionruntime.IsDeployedSession(sessionSnapshot.Metadata) {
+				kind = executioncapacity.ExecutionKindDeployed
+			}
+			var admitErr error
+			executionLease, admitErr = s.permissions.AdmitExecution(runCtx, executioncapacity.AcquireRequest{
+				AccountScopeID: acctScope,
+				SessionID:      sessionID,
+				RunID:          runID,
+				Kind:           kind,
+			})
+			if admitErr != nil {
+				return RunResult{}, admitErr
+			}
+			ownedExecutionLease = executionLease
+			runCtx = executioncapacity.WithLease(runCtx, executionLease)
+			ctx = runCtx
+			runnerCtx = runCtx
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
+	if s.sessions != nil {
+		if exceeded, currentCost, limitCost, err := s.sessions.CheckDailyLimit(acctScope); err != nil {
+			return RunResult{}, err
+		} else if exceeded {
+			return RunResult{}, fmt.Errorf("daily usage limit exceeded: $%.4f spent today, limit is $%.2f", currentCost, limitCost)
+		}
+	}
+
 	if options.Background {
 		metadata := buildBackgroundRunMetadata(sessionSnapshot.Metadata, targetKind, targetName, resolvedExecutionContext)
 		updatedSession, _, updateErr := s.sessions.UpdateMetadata(sessionID, metadata)
@@ -1435,7 +1521,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		_, _ = s.permissions.CancelRunPending(permissionSessionID, runID, "run terminated before permission resolution")
 	}()
 
-	var runCancel context.CancelFunc
 	var emitMu sync.Mutex
 	emit = func(event StreamEvent) {
 		if strings.TrimSpace(event.SessionID) == "" {
@@ -1487,18 +1572,17 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 		emitMu.Unlock()
 	}
-	runCtx, cancelRun := context.WithCancel(ctx)
-	runCancel = cancelRun
-	defer runCancel()
-	ctx = runCtx
-	runnerCtx = runCtx
 	startSnapshot, err := s.beginSessionLifecycle(sessionID, runID, s.effectiveRunOwnerTransport(options, onEvent))
 	if err != nil {
 		return RunResult{}, err
 	}
 	lifecycleClaimed = true
-	emitLifecycleSnapshot(emit, startSnapshot)
 	s.attachLifecycleCancel(sessionID, runID, runCancel)
+	s.removePendingAdmission(sessionID, runID)
+	if err := ctx.Err(); err != nil {
+		return RunResult{}, err
+	}
+	emitLifecycleSnapshot(emit, startSnapshot)
 	if runningSnapshot, changed, err := s.transitionSessionLifecycle(sessionID, runID, lifecyclePhaseRunning); err == nil && changed {
 		emitLifecycleSnapshot(emit, runningSnapshot)
 	}
@@ -1547,9 +1631,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 	if targetedSubagentViaTask {
-		result, err := s.runTargetedSubagent(ctx, sessionSnapshot, options, targetName, emit)
+		var result RunResult
+		var subagentErr error
+		_, err := runWithParkedExecutionLease(ctx, sessionID, runID, func() (string, error) {
+			childCtx := executioncapacity.WithoutLease(ctx)
+			result, subagentErr = s.runTargetedSubagent(childCtx, sessionSnapshot, options, targetName, emit)
+			return "", subagentErr
+		})
 		if err != nil {
 			return RunResult{}, err
+		}
+		if subagentErr != nil {
+			return RunResult{}, subagentErr
 		}
 		result.SessionID = sessionID
 		result.Agent = activeAgent
@@ -3318,6 +3411,23 @@ func shouldTriggerContextCompaction(response provideriface.Response) bool {
 }
 
 var googleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
+var anthropicMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:prompt is too long:\s*\d+\s*tokens\s*>\s*(\d+)\s*maximum|tokens\s*>\s*(\d+)\s*max)`)
+var genericMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:maximum (?:context )?length is (\d+)|exceeds the maximum length \((\d+)\)|maximum token limit is (\d+)|context length of (\d+) tokens)`)
+
+func parseGenericMaxAllowedTokens(detail string) int {
+	matches := genericMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	for i := 1; i < len(matches); i++ {
+		if matches[i] != "" {
+			if val, err := strconv.Atoi(matches[i]); err == nil && val > 0 {
+				return val
+			}
+		}
+	}
+	return 0
+}
 
 func parseGoogleMaxAllowedTokens(detail string) int {
 	matches := googleMaxAllowedTokensPattern.FindStringSubmatch(detail)
@@ -3329,6 +3439,32 @@ func parseGoogleMaxAllowedTokens(detail string) int {
 		return 0
 	}
 	return val
+}
+
+func parseAnthropicMaxAllowedTokens(detail string) int {
+	matches := anthropicMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	limitStr := matches[1]
+	if limitStr == "" && len(matches) > 2 {
+		limitStr = matches[2]
+	}
+	val, err := strconv.Atoi(limitStr)
+	if err != nil || val <= 0 {
+		return 0
+	}
+	return val
+}
+
+func isAnthropicTokenOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "prompt is too long") ||
+		strings.Contains(normalized, "prompt too long") ||
+		(strings.Contains(normalized, "tokens >") && (strings.Contains(normalized, "maximum") || strings.Contains(normalized, "max")))
 }
 
 func isGoogleTokenOverflowDiagnostic(detail string) bool {
@@ -3358,6 +3494,8 @@ func isContextOverflowDiagnostic(detail string) bool {
 	case strings.Contains(normalized, "maximum context length"):
 		return true
 	case strings.Contains(normalized, "token limit exceeded"):
+		return true
+	case isAnthropicTokenOverflowDiagnostic(detail):
 		return true
 	case isGoogleTokenOverflowDiagnostic(detail):
 		return true
@@ -3429,6 +3567,12 @@ func (s *Service) runContextUtilizationPercent(sessionID string, contextWindow i
 	}
 	if contextWindow <= 0 && cause != nil {
 		contextWindow = parseGoogleMaxAllowedTokens(cause.Error())
+		if contextWindow <= 0 {
+			contextWindow = parseAnthropicMaxAllowedTokens(cause.Error())
+		}
+		if contextWindow <= 0 {
+			contextWindow = parseGenericMaxAllowedTokens(cause.Error())
+		}
 	}
 	if contextWindow > 0 && len(input) > 0 {
 		totalChars := 0
@@ -3703,6 +3847,7 @@ func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnap
 
 func compactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
 	messages = trimMessagesToLatestCompactionCheckpoint(messages)
+	messages = compactOlderToolMessagesForProviderContext(messages, 3)
 	if limit <= 0 || len(messages) <= limit {
 		return append([]pebblestore.MessageSnapshot(nil), messages...)
 	}

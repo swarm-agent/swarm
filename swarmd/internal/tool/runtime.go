@@ -36,6 +36,7 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/fff"
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -97,7 +98,7 @@ const (
 	searchDefinitionAfterContext        = 5
 	compactSearchHitRunes               = 140
 	compactSearchContextRunes           = 120
-	maxGrepLineChars                    = 500
+	maxGrepLineChars                    = 300
 	maxSafetyScanChars                  = 16 * 1024
 	maxSkillContentBytes                = 16 * 1024
 	maxSkillListPreview                 = 24
@@ -198,6 +199,7 @@ type Runtime struct {
 	focusedPartMu         sync.Mutex
 	focusedPartProtocols  map[string]focusedPartProtocolState
 	sessionController     manageSessionController
+	capacityProvider      manageSessionCapacityProvider
 	connections           manageConnectionStore
 	environmentsStore     manageEnvironmentStore
 	deploymentsStore      manageDeploymentStore
@@ -210,6 +212,10 @@ type manageSessionController interface {
 	CancelSessionRun(principal identity.Principal, sessionID, runID, reason string) (bool, error)
 	EnqueueSessionRun(principal identity.Principal, sessionID, runID, parentSessionID string) bool
 	CompactSession(ctx context.Context, principal identity.Principal, sessionID, note string) (map[string]any, error)
+}
+
+type manageSessionCapacityProvider interface {
+	ExecutionCapacitySnapshot(accountScopeID string) executioncapacity.Snapshot
 }
 
 type ExaRuntimeConfig struct {
@@ -374,6 +380,7 @@ type manageDeploymentLifecycleService interface {
 	ReleaseDeployment(ctx context.Context, req lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
 	DestroyDeployment(ctx context.Context, req lifecycle.DestroyDeploymentRequest) error
 	StopDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error
+	StartDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error
 	InspectDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*environments.Deployment, error)
 	ResolveAccess(ctx context.Context, accountScopeID, workspaceID, deploymentID string) (*provider.DeploymentAccess, error)
 	Exec(ctx context.Context, accountScopeID, workspaceID, deploymentID string, req provider.ExecRequest) (*provider.ExecResult, error)
@@ -381,6 +388,12 @@ type manageDeploymentLifecycleService interface {
 	ListDeployments(accountScopeID, workspaceID string, limit int) ([]environments.Deployment, error)
 	ListDeploymentsByEnvironment(accountScopeID, workspaceID, environmentID string, limit int) ([]environments.Deployment, error)
 	GetActiveLease(accountScopeID, workspaceID, deploymentID string) (environments.DeploymentLease, bool, error)
+	Submit(ctx context.Context, req lifecycle.SubmitOperationRequest) (*environments.EnvironmentOperation, error)
+	Get(ctx context.Context, accountScopeID, workspaceID, operationID string) (environments.EnvironmentOperation, bool, error)
+	History(ctx context.Context, q environments.OperationHistoryQuery) (environments.OperationHistoryPage, error)
+	Summary(ctx context.Context, accountScopeID, workspaceID string) (environments.EnvironmentSummary, error)
+	Cancel(ctx context.Context, req lifecycle.CancelOperationRequest) (*environments.EnvironmentOperation, error)
+	CancelOwner(ctx context.Context, req lifecycle.CancelOwnerRequest) (int, error)
 }
 
 type manageWorkspaceSettingsStore interface {
@@ -720,6 +733,69 @@ func (r *Runtime) GenerateManagedVideoArtifact(ctx context.Context, scope Worksp
 	return r.executeManageArtifact(ctx, scope, callID, args)
 }
 
+// CreateManagedHTMLArtifactV3 creates a managed HTML or animation Artifact V3 document directly.
+func (r *Runtime) CreateManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID, title, content string, parts []map[string]any, profile *pebblestore.SessionArtifactAnimationProfile, run ArtifactRunContext) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{
+		"action":     "create",
+		"title":      strings.TrimSpace(title),
+		"media_type": "text/html",
+		"content":    content,
+	}
+	if len(parts) > 0 {
+		args["parts"] = parts
+	}
+	if profile != nil {
+		args["animation_profile"] = map[string]any{"profile": profile.ProfileID}
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+// ReviseManagedHTMLArtifactV3 performs a targeted revision on an existing Artifact V3 document.
+func (r *Runtime) ReviseManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID string, artifactRef map[string]any, targetPartIDs []string, content string, run ArtifactRunContext) (string, error) {
+	if r == nil {
+		return "", errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, run)
+	args := map[string]any{
+		"action":                "revise_v3",
+		"artifact_v3_reference": artifactRef,
+		"target_part_ids":       targetPartIDs,
+		"content":               content,
+	}
+	return r.executeManageArtifact(ctx, scope, callID, args)
+}
+
+// ReadManagedArtifactV3HTML reads the exact HTML content and parts of a native Artifact V3 document.
+func (r *Runtime) ReadManagedArtifactV3HTML(ctx context.Context, scope WorkspaceScope, artifactRef map[string]any) (string, []pebblestore.ArtifactV3Part, error) {
+	if r == nil {
+		return "", nil, errors.New("manage_artifact runtime is not configured")
+	}
+	ctx = WithWorkspaceScope(ctx, scope)
+	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: scope.SessionID, RunID: "direct-read-" + scope.SessionID})
+	args := map[string]any{
+		"action":                "read_v3",
+		"artifact_v3_reference": artifactRef,
+	}
+	raw, err := r.executeManageArtifact(ctx, scope, "direct-read-base", args)
+	if err != nil {
+		return "", nil, err
+	}
+	var resp struct {
+		Content string                       `json:"content"`
+		Parts   []pebblestore.ArtifactV3Part `json:"parts"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return "", nil, fmt.Errorf("decode read_v3 response: %w", err)
+	}
+	return resp.Content, resp.Parts, nil
+}
+
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
 	if r != nil {
 		r.artifactV2Video = service
@@ -817,6 +893,37 @@ func (r *Runtime) SetManageSessionRealtimePublisher(publish func(pebblestore.V3R
 func (r *Runtime) SetManageSessionController(controller manageSessionController) {
 	if r != nil {
 		r.sessionController = controller
+	}
+}
+
+func (r *Runtime) SetManageSessionCapacityProvider(provider manageSessionCapacityProvider) {
+	if r != nil {
+		r.capacityProvider = provider
+	}
+}
+
+func (r *Runtime) capacitySnapshot(accountScopeID string) executioncapacity.Snapshot {
+	if r != nil {
+		if r.capacityProvider != nil {
+			return r.capacityProvider.ExecutionCapacitySnapshot(accountScopeID)
+		}
+		if provider, ok := r.sessionController.(interface {
+			ExecutionCapacitySnapshot(string) executioncapacity.Snapshot
+		}); ok {
+			return provider.ExecutionCapacitySnapshot(accountScopeID)
+		}
+		if provider, ok := r.sessions.(interface {
+			ExecutionCapacitySnapshot(string) executioncapacity.Snapshot
+		}); ok {
+			return provider.ExecutionCapacitySnapshot(accountScopeID)
+		}
+	}
+	return executioncapacity.Snapshot{
+		AccountScopeID:       strings.TrimSpace(accountScopeID),
+		DeploymentBatchBound: executioncapacity.DeploymentBatchBound,
+		SavedQuota:           executioncapacity.SavedQuotaNoneConfigured,
+		Unavailable:          true,
+		Error:                "execution capacity service is unavailable",
 	}
 }
 
@@ -1372,7 +1479,7 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote"},
+					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
 					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs"},
 					"child_session_id":      map[string]any{"type": "string"},
 					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -1398,7 +1505,6 @@ func (r *Runtime) Definitions() []Definition {
 		manageActionsDefinition(),
 		manageConnectionsDefinition(),
 		manageEnvironmentsDefinition(),
-		manageDeploymentsDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		artifactV3AuthorDefinition(),
@@ -1589,7 +1695,18 @@ func (r *Runtime) Definitions() []Definition {
 					"deliverable":        map[string]any{"type": "string", "description": "Specific child output the parent will verify."},
 					"concurrency_reason": map[string]any{"type": "string", "description": "Omit in mode=swarm; swarm concurrency is defined by count."},
 					"workspace_path":     map[string]any{"type": "string", "description": "Regular Coder/Finder single-launch target. Coder worktrees are based on the selected target repository HEAD."},
-					"owned_scope":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
+					"committed_source": map[string]any{
+						"type":        "object",
+						"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
+						"properties": map[string]any{
+							"task_call_id":     map[string]any{"type": "string"},
+							"child_session_id": map[string]any{"type": "string"},
+							"head_commit":      map[string]any{"type": "string"},
+						},
+						"required":             []string{"task_call_id", "child_session_id", "head_commit"},
+						"additionalProperties": false,
+					},
+					"owned_scope": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
 					"launches": map[string]any{
 						"type":        "array",
 						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Call action='help' for guide.",
@@ -1605,6 +1722,17 @@ func (r *Runtime) Definitions() []Definition {
 								"animation_profile": map[string]any{"type": "object", "description": "Optional animation profile: motion_ui, spatial_3d, vector_playback, or final_render."},
 								"output_mode":       map[string]any{"type": "string", "enum": []string{"managed", "workspace"}, "description": "Designer output contract only; defaults to managed."},
 								"workspace_path":    map[string]any{"type": "string", "description": "Optional authorized linked/shared workspace target for this Coder or Finder."},
+								"committed_source": map[string]any{
+									"type":        "object",
+									"description": "Optional prior committed Coder source for isolated correction/iteration. Requires task_call_id, child_session_id, and exact full head_commit.",
+									"properties": map[string]any{
+										"task_call_id":     map[string]any{"type": "string"},
+										"child_session_id": map[string]any{"type": "string"},
+										"head_commit":      map[string]any{"type": "string"},
+									},
+									"required":             []string{"task_call_id", "child_session_id", "head_commit"},
+									"additionalProperties": false,
+								},
 							},
 							"additionalProperties": true,
 						},
@@ -1962,9 +2090,9 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-connections", "manage_connections":
 		return r.executeManageConnections(ctx, scope, args)
 	case "manage-environments", "manage_environments":
-		return r.executeManageEnvironments(ctx, scope, args)
+		return r.executeManageEnvironments(ctx, scope, call.CallID, args)
 	case "manage-deployments", "manage_deployments":
-		return r.executeManageDeployments(ctx, scope, args)
+		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
 	case "artifact-v2-author", "artifact_v2_author":
 		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
 	case "artifact-v3-author", "artifact_v3_author":
@@ -2013,6 +2141,11 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	default:
 		return "", fmt.Errorf("custom tool %q has unsupported kind %q", name, definition.Kind)
 	}
+}
+
+type readLineItem struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
 }
 
 func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -2087,7 +2220,7 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxReadLineBytes)
 
-	lines := make([]map[string]any, 0, maxLines)
+	lines := make([]readLineItem, 0, maxLines)
 	currentLine := 0
 	truncated := false
 	lineTextTruncated := false
@@ -2107,9 +2240,9 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		if didTruncate {
 			lineTextTruncated = true
 		}
-		lines = append(lines, map[string]any{
-			"line": currentLine,
-			"text": text,
+		lines = append(lines, readLineItem{
+			Line: currentLine,
+			Text: text,
 		})
 		if safetyBuilder.Len() > 0 {
 			safetyBuilder.WriteByte('\n')
@@ -2118,6 +2251,12 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("read failed: %w", err)
+	}
+	totalLines := currentLine
+	if truncated {
+		for scanner.Scan() {
+			totalLines++
+		}
 	}
 	content := safetyBuilder.String()
 	nextLineStart := lineStart + len(lines)
@@ -2131,6 +2270,7 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		"max_lines":            maxLines,
 		"count":                len(lines),
 		"next_line_start":      nextLineStart,
+		"total_lines":          totalLines,
 		"eof":                  !truncated,
 		"truncated":            truncated,
 		"line_text_truncated":  lineTextTruncated,
@@ -2509,7 +2649,10 @@ func (r *Runtime) executeSearch(parent context.Context, scope WorkspaceScope, ar
 	payloadStyle := strings.ToLower(strings.TrimSpace(asString(args["_search_payload_style"])))
 	contentMode := normalizeSearchContentMode(args["content_mode"])
 	beforeContext := uint32FromArgs(args, "before_context", 0)
-	afterContext := uint32FromArgs(args, "after_context", searchDefinitionAfterContext)
+	afterContext := uint32(0)
+	if _, ok := args["after_context"]; ok || payloadStyle == "legacy" {
+		afterContext = uint32FromArgs(args, "after_context", searchDefinitionAfterContext)
+	}
 	fileOffset := uint32FromArgs(args, "file_offset", 0)
 	maxMatchesPerFile := uint32FromArgs(args, "max_matches_per_file", 0)
 	maxResults := clampInt(asInt(args["max_results"], defaultSearchResults), 1, maxSearchResults)
@@ -3868,6 +4011,19 @@ func buildCompactSearchContentResults(rows []searchContentRow, multiQuery bool) 
 			groups[key] = group
 			order = append(order, key)
 		}
+		items := group["items"].([]map[string]any)
+		duplicateLine := false
+		for _, existing := range items {
+			if existingLine, ok := existing["line"].(int); ok && existingLine == row.Line {
+				if !multiQuery || existing["query"] == row.Query {
+					duplicateLine = true
+					break
+				}
+			}
+		}
+		if duplicateLine {
+			continue
+		}
 		item := map[string]any{
 			"line": row.Line,
 			"text": row.Text,
@@ -4024,7 +4180,7 @@ func formatSearchQueryErrors(errs []error) string {
 }
 
 func rewriteSearchResultsForDisplay(primaryRoot string, searchRoots []string, force bool, results []searchQueryExecution) []searchQueryExecution {
-	if len(results) == 0 || (!force && len(searchRoots) <= 1) {
+	if len(results) == 0 {
 		return results
 	}
 	primaryRoot = filepath.Clean(strings.TrimSpace(primaryRoot))
@@ -6340,6 +6496,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 		return r.manageWorktreeIntegrate(scope, args)
 	case "promote":
 		return r.manageWorktreePromote(scope, args)
+	case "help":
+		return r.manageWorktreeHelp(args)
 	default:
 		return "", fmt.Errorf("manage-worktree action %q is unsupported", action)
 	}
@@ -6695,9 +6853,45 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 			return "", fmt.Errorf("promotion source branch or HEAD changed; expected branch %q at full HEAD %q, found branch %q at full HEAD %q; use manage-sessions git_status head_oid and retry", branch, c.head, sourceState.BranchName, sourceState.HeadCommit)
 		}
 
+		deliveryBase := capturedHead
+		parentID := strings.TrimSpace(asString(source.Metadata["parent_session_id"]))
+		hasCorrection := committedCorrectionMetadataPresent(source.Metadata)
+		if hasCorrection && parentID != "" {
+			parentSession, found, pErr := r.sessions.GetSession(parentID)
+			if pErr != nil || !found {
+				return "", fmt.Errorf("promotion source %q parent session %q not found", c.sessionID, parentID)
+			}
+			if parentSession.AccountScopeID != scope.Principal.AccountScopeID || parentSession.UserID != scope.Principal.UserID {
+				return "", fmt.Errorf("promotion source %q parent session belongs to different principal", c.sessionID)
+			}
+			var launchRow map[string]any
+			if launches, ok := parentSession.Metadata["task_launches"].(map[string]any); ok {
+				for _, rawEntry := range launches {
+					entry, _ := rawEntry.(map[string]any)
+					for _, raw := range manageWorktreeLaunchRows(entry) {
+						rMap, _ := raw.(map[string]any)
+						if asString(rMap["child_session_id"]) == source.ID {
+							launchRow = rMap
+							break
+						}
+					}
+					if launchRow != nil {
+						break
+					}
+				}
+			}
+			authBase, bErr := r.authenticateLineageDeliveryBase(parentSession, source, launchRow, sourcePath, capturedHead, sourceState.HeadCommit, 0)
+			if bErr != nil {
+				return "", fmt.Errorf("authenticate promotion source %q delivery base: %w", c.sessionID, bErr)
+			}
+			deliveryBase = authBase
+		} else if hasCorrection {
+			return "", fmt.Errorf("promotion source %q has correction markers but no parent session lineage", c.sessionID)
+		}
+
 		children = append(children, worktreeruntime.TaskIntegrationChild{
 			SessionID:  c.sessionID,
-			BaseCommit: capturedHead,
+			BaseCommit: deliveryBase,
 			HeadCommit: sourceState.HeadCommit,
 		})
 		resolvedBranches = append(resolvedBranches, branch)
@@ -6833,18 +7027,26 @@ func (r *Runtime) manageWorktreeIntegrate(scope WorkspaceScope, args map[string]
 			path := strings.TrimSpace(firstNonEmptyString(childSession.WorktreeRootPath, childSession.WorkspacePath))
 			baseCommit := strings.TrimSpace(asString(row["base_commit"]))
 			headCommit := strings.TrimSpace(asString(row["head_commit"]))
-			resolvedParentPath, resolveErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
-			if resolveErr != nil {
-				return "", fmt.Errorf("resolve selected child %q parent workspace: %w", id, resolveErr)
+			isProgram := strings.TrimSpace(asString(childSession.Metadata["task_program_id"])) != ""
+			destKind, destPath, _, _, destErr := r.resolveCommittedSourceDestination(scope, parent, childSession, row, isProgram)
+			if destErr != nil {
+				return "", fmt.Errorf("resolve selected child %q destination: %w", id, destErr)
 			}
-			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(resolvedParentPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
+			if destKind == DestinationKindCapturedPromotionOnly {
+				return "", fmt.Errorf("selected child %q has promotion-only captured destination and cannot be integrated; use promote instead", id)
+			}
+			state, inspectErr := r.worktrees.VerifyTaskIntegrationWorkspace(destPath, path, id, childSession.WorktreeBranch, baseCommit, headCommit)
 			if inspectErr != nil {
 				return "", fmt.Errorf("verify selected child %q lineage: %w", id, inspectErr)
 			}
 			if !state.Clean {
 				return "", fmt.Errorf("selected child %q is dirty:\n%s", id, state.Status)
 			}
-			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: resolvedParentPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: baseCommit, HeadCommit: state.HeadCommit}})
+			deliveryBase, bErr := r.authenticateLineageDeliveryBase(parent, childSession, row, path, baseCommit, state.HeadCommit, 0)
+			if bErr != nil {
+				return "", fmt.Errorf("authenticate child %q delivery base: %w", id, bErr)
+			}
+			candidates = append(candidates, candidate{callID: callID, index: asInt(row["launch_index"], 0), parentPath: destPath, child: worktreeruntime.TaskIntegrationChild{SessionID: id, BaseCommit: deliveryBase, HeadCommit: state.HeadCommit}})
 		}
 	}
 	if len(candidates) != len(selectedSet) {
@@ -6988,18 +7190,33 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 				children = append(children, child)
 				continue
 			}
-			parentPath, parentPathErr := r.manageWorktreeRecoveryDestination(scope, parent, childSession, row)
+			isProgram := strings.TrimSpace(asString(childSession.Metadata["task_program_id"])) != ""
+			destKind, destPath, destBranch, canonicalSource, destErr := r.resolveCommittedSourceDestination(scope, parent, childSession, row, isProgram)
 			parentState := worktreeruntime.TaskWorkspaceState{}
-			if parentPathErr == nil {
-				parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(parentPath)
-			}
-			if parentPathErr != nil {
-				child["parent_git_inspection_error"] = parentPathErr.Error()
+			if destErr != nil {
+				child["parent_git_inspection_error"] = destErr.Error()
 				child["child_state"] = "blocked"
+				child["source_eligibility_rejection_reason"] = fmt.Sprintf("destination resolution failed: %v", destErr)
 				children = append(children, child)
 				continue
 			}
-			child["parent_workspace_path"] = parentPath
+			var parentPathErr error
+			parentState, parentPathErr = r.worktrees.InspectTaskWorkspace(destPath)
+			if parentPathErr != nil {
+				child["parent_git_inspection_error"] = parentPathErr.Error()
+				child["child_state"] = "blocked"
+				child["source_eligibility_rejection_reason"] = fmt.Sprintf("inspect parent workspace failed: %v", parentPathErr)
+				children = append(children, child)
+				continue
+			}
+			parentPath := destPath
+			child["parent_workspace_path"] = destPath
+			child["parent_branch"] = destBranch
+			child["canonical_source_path"] = canonicalSource
+			child["destination_kind"] = destKind
+			if destKind == DestinationKindCapturedPromotionOnly {
+				child["promotion_only"] = true
+			}
 			path := childSession.WorktreeRootPath
 			childState := "blocked"
 			if path != "" {
@@ -7036,6 +7253,31 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 							childState = "integrated"
 						} else {
 							childState = "committed"
+						}
+					}
+					if (childState == "committed" || childState == "integrated") && state.Clean {
+						req := CommittedSourceRequest{
+							TaskCallID:     callID,
+							ChildSessionID: childSession.ID,
+							HeadCommit:     state.HeadCommit,
+						}
+						binding, resolveErr := r.ResolveCommittedSource(scope, req)
+						if resolveErr == nil {
+							child["committed_source"] = map[string]any{
+								"task_call_id":     callID,
+								"child_session_id": childSession.ID,
+								"head_commit":      state.HeadCommit,
+							}
+							child["committed_source_binding"] = binding
+							child["integration_base_commit"] = binding.IntegrationBaseCommit
+						} else {
+							child["source_eligibility_rejection_reason"] = resolveErr.Error()
+						}
+					} else {
+						if !state.Clean {
+							child["source_eligibility_rejection_reason"] = "child worktree is dirty"
+						} else {
+							child["source_eligibility_rejection_reason"] = fmt.Sprintf("child state is %s", childState)
 						}
 					}
 				}
@@ -7076,7 +7318,9 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 		state := strings.TrimSpace(asString(child["child_state"]))
 		stateCounts[state]++
 		if strings.EqualFold(state, "committed") {
-			committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
+			if !asBool(child["promotion_only"]) {
+				committedIDs = append(committedIDs, strings.TrimSpace(asString(child["child_session_id"])))
+			}
 		}
 	}
 	if len(committedIDs) > 0 {
@@ -7112,6 +7356,31 @@ func (r *Runtime) manageWorktreeCommitIntegrated(parentPath, baseCommit, headCom
 	// Compatibility for narrow test doubles and alternate implementations: the
 	// canonical worktree service provides patch-equivalent range classification.
 	return r.worktrees.TaskCommitDescendsFrom(parentPath, headCommit, parentHead)
+}
+
+func (r *Runtime) manageWorktreeHelp(args map[string]any) (string, error) {
+	help := map[string]any{
+		"status":      "ok",
+		"action":      "help",
+		"tool":        "manage-worktree",
+		"description": "Worktree lineage recall, integration, promotion, and source recovery manager. Call action='help' for workflow guidance.",
+		"actions": map[string]any{
+			"inspect":        "Inspect git commit history and integration status for workspace worktrees.",
+			"list":           "Alias for inspect.",
+			"recall":         "Read-only recall of delegated child Coder worktree states. Returns committed_source for eligible validated sources. Distinguishes session-owned lanes from promotion-only captured destinations.",
+			"inspect_source": "Inspect bounded UTF-8 files from an unfinished/blocked Coder child worktree.",
+			"retain_source":  "Retain bounded UTF-8 recovery files in parent metadata.",
+			"integrate":      "Preflight and integrate committed child worktree changes into the session-owned parent lane. Delivers inherited base commits (B..H) for corrected children while validating new handoff (C..H). Rejects captured promotion-only destinations.",
+			"promote":        "Promote committed child or session worktrees into captured workspace checkouts. Delivers full commit stack (B..H for corrected children).",
+			"help":           "Show workflow guidance and supported actions.",
+		},
+		"path_id": toolPathID("manage-worktree"),
+	}
+	encoded, err := json.Marshal(help)
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
 }
 
 func (r *Runtime) manageWorktreeInspect(scope WorkspaceScope, args map[string]any) (string, error) {
@@ -9132,8 +9401,6 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
 		return "manage_environments"
-	case "manage-deployments", "manage_deployments":
-		return "manage_deployments"
 	case "manage-artifact", "manage_artifact":
 		return "manage_artifact"
 	case "manage-todos", "manage_todos":
@@ -9727,8 +9994,6 @@ func canonicalStubToolName(raw string) string {
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
 		return "manage_environments"
-	case "manage-deployments", "manage_deployments":
-		return "manage_deployments"
 	case "manage-artifact", "manage_artifact":
 		return "manage_artifact"
 	case "manage-todos", "manage_todos":
@@ -9797,6 +10062,9 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 	if err != nil {
 		return "", "", "", err
 	}
+	if scope.WorktreeEnabled && strings.TrimSpace(scope.WorktreeRootPath) != "" {
+		workspacePath = filepath.Clean(scope.WorktreeRootPath)
+	}
 
 	if r != nil && r.workspace != nil {
 		wsScope, err := r.workspace.ScopeForPathForPrincipal(scope.Principal, workspacePath)
@@ -9823,17 +10091,23 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 			return "", "", "", fmt.Errorf("%s requires an account-owned canonical workspace", toolName)
 		}
 		workspaceID = wsScope.WorkspaceID
-		workspacePath = wsScope.WorkspacePath
-		return accountScopeID, workspaceID, workspacePath, nil
+		if !scope.WorktreeEnabled || strings.TrimSpace(scope.WorktreeRootPath) == "" {
+			workspacePath = wsScope.WorkspacePath
+		}
+	} else {
+		if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
+			workspaceID = wsID
+		} else if len(scope.Roots) > 0 {
+			workspaceID = "ws-test"
+		} else {
+			return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+		}
 	}
 
-	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
-		workspaceID = wsID
-	} else if len(scope.Roots) > 0 {
-		workspaceID = "ws-test"
-	} else {
-		return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" && wsID != workspaceID {
+		return "", "", "", fmt.Errorf("%s workspace ID mismatch: specified %q, authorized is %q", toolName, wsID, workspaceID)
 	}
+
 	return accountScopeID, workspaceID, workspacePath, nil
 }
 
@@ -10254,8 +10528,6 @@ func toolPathID(name string) string {
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":
 		return "tool.manage-environments.v1"
-	case "manage-deployments", "manage_deployments":
-		return "tool.manage-deployments.v1"
 	case "manage-artifact", "manage_artifact":
 		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":

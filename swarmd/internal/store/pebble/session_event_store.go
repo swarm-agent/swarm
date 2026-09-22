@@ -87,6 +87,7 @@ type V3SessionMutationInput struct {
 	workspaceCatalog             *workspaceCatalogMutation
 	AutomationPermission         *AutomationPermissionResolution `json:"-"`
 	automationRealtime           *automationRealtimeMutation
+	environmentRealtime          *environmentRealtimeMutation
 	automationAcceptance         *AutomationApproval
 	AutomationProposal           *AutomationPlanReference      `json:"automation_proposal,omitempty"`
 	SessionID                    string                        `json:"session_id"`
@@ -328,7 +329,7 @@ func (s *SessionStore) resolveV3RealtimeOutboxValue(value []byte) (V3RealtimeOut
 func estimatedSetBytes(key string, value []byte) uint64 { return uint64(len(key) + len(value)) }
 
 func newV3RealtimeOutboxMembershipFromSession(session SessionSnapshot, now int64) *V3RealtimeOutboxMembership {
-	if strings.TrimSpace(session.ID) == "" {
+	if strings.TrimSpace(session.ID) == "" || strings.HasPrefix(strings.TrimSpace(session.ID), "__") {
 		return nil
 	}
 	return &V3RealtimeOutboxMembership{
@@ -660,6 +661,8 @@ func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID 
 	return func() { s.store.sessionMutations.beforeMediaStagingBindCommit = previous }
 }
 
+// ApplyV3SessionMutation executes the atomic transaction flow for ApplySessionMutation,
+// persisting session events, projections, and outbox records in a single Pebble batch.
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")
@@ -1087,6 +1090,11 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if input.environmentRealtime != nil {
+		if err := setEnvironmentRealtimeMutationInBatch(batch, input.AccountScopeID, input.environmentRealtime); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if input.workspaceCatalog != nil {
 		if err := setWorkspaceCatalogMutationInBatch(batch, input.AccountScopeID, input.workspaceCatalog); err != nil {
 			return V3SessionMutationResult{}, err
@@ -1138,17 +1146,21 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
-		return V3SessionMutationResult{}, err
-	}
-	if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
-		return V3SessionMutationResult{}, err
+	if !strings.HasPrefix(strings.TrimSpace(input.SessionID), "__") {
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionEndpoint(input.SessionID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+		if err := batch.Set([]byte(KeyV3RealtimeOutboxBySessionSeq(input.SessionID, seq)), realtimeOutboxReferencePayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if err := batch.Set([]byte(KeyV3RealtimeOutboxByAuthScope(input.AccountScopeID, input.UserID, endpointSeq)), realtimeOutboxReferencePayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
-	if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
-		return V3SessionMutationResult{}, err
+	if !strings.HasPrefix(strings.TrimSpace(input.SessionID), "__") {
+		if err := batch.Set([]byte(KeyV3SessionProjection(input.SessionID)), projectionPayload, nil); err != nil {
+			return V3SessionMutationResult{}, err
+		}
 	}
 	if sessionProvided || messageProvided {
 		if err := s.setSessionInBatch(batch, session); err != nil {
@@ -2183,29 +2195,43 @@ func (s *SessionStore) ListV3SessionRunIntents(sessionID string, afterSeq uint64
 }
 
 func (s *SessionStore) ListV3SessionRunIntentsByStatus(status string, limit int) ([]V3SessionRunIntent, error) {
+	out, _, err := s.ListV3SessionRunIntentsByStatusPaged(status, "", limit)
+	return out, err
+}
+
+func (s *SessionStore) ListV3SessionRunIntentsByStatusPaged(status string, afterKey string, limit int) ([]V3SessionRunIntent, string, error) {
 	status = strings.TrimSpace(status)
 	if status == "" {
-		return nil, errors.New("run intent status is required")
+		return nil, "", errors.New("run intent status is required")
 	}
 	if limit <= 0 {
 		limit = 500
 	}
+	prefix := V3SessionRunIntentStatusPrefix(status)
+	startKey := ""
+	if strings.TrimSpace(afterKey) != "" {
+		startKey = strings.TrimSpace(afterKey) + "\x00"
+	}
 	out := make([]V3SessionRunIntent, 0, limit)
-	err := s.store.IteratePrefix(V3SessionRunIntentStatusPrefix(status), 100000, func(_ string, value []byte) error {
-		if len(out) >= limit {
-			return nil
-		}
+	var nextKey string
+	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: startKey, Limit: limit}, func(key string, value []byte) (bool, error) {
+		nextKey = key
 		var intent V3SessionRunIntent
 		if err := json.Unmarshal(value, &intent); err != nil {
-			return err
+			return true, err
 		}
-		if strings.TrimSpace(intent.Status) != status {
-			return nil
+		if strings.TrimSpace(intent.Status) == status {
+			out = append(out, intent)
 		}
-		out = append(out, intent)
-		return nil
+		return true, nil
 	})
-	return out, err
+	if err != nil {
+		return nil, "", err
+	}
+	if len(out) < limit {
+		nextKey = ""
+	}
+	return out, nextKey, nil
 }
 
 func (s *SessionStore) ListV3SessionRecoverableRunIntents(staleRunningBeforeUnixMs int64, limit int) ([]V3SessionRunIntent, error) {
@@ -3245,6 +3271,17 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 			if binding.AuthorityAssetID != strings.TrimSpace(reference.AssetID) || binding.DigestSHA256 != strings.ToLower(strings.TrimSpace(reference.DigestSHA256)) {
 				return fmt.Errorf("media staging binding %d does not match message authority", index)
 			}
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(input.SessionID), "__") {
+		if input.Message != nil {
+			return errors.New("synthetic session does not accept messages")
+		}
+		if input.Session != nil {
+			return errors.New("synthetic session does not accept session snapshot writes")
+		}
+		if input.PlanSave != nil {
+			return errors.New("synthetic session does not accept plan writes")
 		}
 	}
 	if err := validateCanonicalSessionID(input.SessionID); err != nil {

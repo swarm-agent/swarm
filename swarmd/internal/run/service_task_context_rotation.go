@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -95,7 +96,8 @@ func (s *Service) runDelegatedLogicalLaunch(ctx context.Context, launch taskLaun
 	if err := s.requireCurrentDelegatedLaunch(launch); err != nil {
 		return launch, RunResult{}, err
 	}
-	result, err := s.RunTurnStreaming(ctx, launch.ChildSession.ID, RunRequest{
+	childCtx := executioncapacity.WithoutLease(ctx)
+	result, err := s.RunTurnStreaming(childCtx, launch.ChildSession.ID, RunRequest{
 		Prompt: delegatedPrompt, TargetKind: RunTargetKindSubagent, TargetName: launch.SubagentProfile.Name, AgentName: launch.SubagentProfile.Name,
 	}, func() RunStartMeta {
 		meta := delegatedSubagentRunStartMeta(launch, permissionSessionID, principal, applySessionMutation)

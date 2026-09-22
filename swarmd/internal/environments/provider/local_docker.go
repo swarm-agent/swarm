@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -17,6 +17,9 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/environments"
 )
+
+var _ DeploymentProvider = (*LocalDockerProvider)(nil)
+var _ OperationCanceler = (*LocalDockerProvider)(nil)
 
 // LocalDockerProvider manages environment deployments on a local Docker daemon.
 type LocalDockerProvider struct {
@@ -102,16 +105,23 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		return nil, fmt.Errorf("invalid deployment record: %w", err)
 	}
 
+	deployCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		deployCtx, cancel = context.WithTimeout(ctx, DefaultOperationTimeout)
+		defer cancel()
+	}
+
 	cName := containerName(req.Environment.ID, req.Deployment.ID)
 
 	// Check if a container with this name already exists
 	inspectArgs := append(dockerHostArgs(req.Connection), "inspect", cName)
-	existingOut, inspectErr := p.runner.Run(ctx, "docker", inspectArgs...)
+	existingOut, inspectErr := p.runner.Run(deployCtx, "docker", inspectArgs...)
 	if inspectErr == nil {
 		ins, parseErr := parseDockerInspect(existingOut)
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable
-			insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+			insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 				ID:            req.Deployment.ID,
 				EnvironmentID: req.Environment.ID,
 				Runtime: environments.RuntimeMetadata{
@@ -129,11 +139,11 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		}
 		// Existing container is stopped, dead, or not reusable - remove it before recreation
 		rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-		_, _ = p.runner.Run(ctx, "docker", rmArgs...)
+		_, _ = p.runner.Run(deployCtx, "docker", rmArgs...)
 	}
 
-	// Build `docker run -d` arguments
-	runArgs := append(dockerHostArgs(req.Connection), "run", "-d", "--name", cName)
+	// Build `docker run -d` arguments with -i to keep STDIN open so interactive shell entrypoints do not exit
+	runArgs := append(dockerHostArgs(req.Connection), "run", "-d", "-i", "--name", cName)
 
 	// Scoping and metadata labels
 	runArgs = append(runArgs,
@@ -265,7 +275,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	}
 
 	// Run container
-	runOut, runErr := p.runner.Run(ctx, "docker", runArgs...)
+	runOut, runErr := p.runner.Run(deployCtx, "docker", runArgs...)
 	if runErr != nil {
 		return nil, fmt.Errorf("failed to deploy docker container %s: %w (output: %s)", cName, runErr, strings.TrimSpace(string(runOut)))
 	}
@@ -276,18 +286,18 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	if len(req.Environment.Container.SetupCommands) > 0 {
 		for i, cmdStr := range req.Environment.Container.SetupCommands {
 			execArgs := append(dockerHostArgs(req.Connection), "exec", cName, "sh", "-c", cmdStr)
-			setupOut, setupErr := p.runner.RunCombined(ctx, "docker", execArgs...)
+			setupOut, setupErr := p.runner.RunCombined(deployCtx, "docker", execArgs...)
 			if setupErr != nil {
 				// Destroy failed container
 				rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-				_, _ = p.runner.Run(ctx, "docker", rmArgs...)
-				return nil, fmt.Errorf("setup command [%d] %q failed: %w (output: %s)", i, cmdStr, setupErr, strings.TrimSpace(string(setupOut)))
+				_, _ = p.runner.Run(context.Background(), "docker", rmArgs...)
+				return nil, fmt.Errorf("setup command [%d] %q failed: %w (output: %s)", i, cmdStr, setupErr, sanitizeOutput(string(setupOut)))
 			}
 		}
 	}
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
-	insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 		ID:            req.Deployment.ID,
 		EnvironmentID: req.Environment.ID,
 		Runtime: environments.RuntimeMetadata{
@@ -297,6 +307,11 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect newly deployed container: %w", err)
+	}
+	if insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed {
+		rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
+		_, _ = p.runner.Run(context.Background(), "docker", rmArgs...)
+		return nil, fmt.Errorf("deployed container %s is not running (status: %s)", cName, insRes.Status)
 	}
 
 	runtimeMeta := insRes.Runtime
@@ -318,7 +333,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 			}
 			if mappedHostPort > 0 {
 				probeURL := fmt.Sprintf("http://127.0.0.1:%d%s", mappedHostPort, req.Environment.HealthCheck.HTTPPath)
-				statusCode, probeErr := p.httpGet(ctx, probeURL)
+				statusCode, probeErr := p.httpGet(deployCtx, probeURL)
 				if probeErr == nil && statusCode >= 200 && statusCode < 400 {
 					healthStatus = environments.HealthStatusHealthy
 				} else {
@@ -513,7 +528,6 @@ func (p *LocalDockerProvider) ResolveAccess(ctx context.Context, conn *environme
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
-
 	target := resolveContainerTarget(deployment)
 	if target == "" {
 		return nil, errors.New("cannot resolve access without container target or ID")
@@ -558,66 +572,41 @@ func (p *LocalDockerProvider) accessFromRuntime(rt environments.RuntimeMetadata)
 	}
 }
 
-// Exec executes a command inside the running deployment container.
+type localDockerTransport struct {
+	runner CommandRunner
+	conn   *environments.Connection
+}
+
+func (t *localDockerTransport) RunExec(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, execArgs ...string) error {
+	args := append(dockerHostArgs(t.conn), "exec")
+	args = append(args, execArgs...)
+	return t.runner.RunWithIO(ctx, stdin, stdout, stderr, "docker", args...)
+}
+
+func (t *localDockerTransport) RunExecCombined(ctx context.Context, execArgs ...string) ([]byte, error) {
+	args := append(dockerHostArgs(t.conn), "exec")
+	args = append(args, execArgs...)
+	return t.runner.RunCombined(ctx, "docker", args...)
+}
+
+// Exec executes a command inside the running deployment container under supervised process control.
 func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
-	if deployment == nil {
-		return nil, errors.New("deployment cannot be nil")
-	}
-	if len(req.Command) == 0 {
-		return nil, errors.New("exec command cannot be empty")
-	}
-
-	target := resolveContainerTarget(deployment)
-	if target == "" {
-		return nil, errors.New("cannot exec command without container target or ID")
-	}
-
-	execCtx := ctx
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
-	}
-
-	args := append(dockerHostArgs(conn), "exec")
-	if req.Stdin != nil {
-		args = append(args, "-i")
-	}
-	if req.WorkingDir != "" {
-		args = append(args, "-w", req.WorkingDir)
-	}
-
-	// Environment variable keys sorted for determinism
-	envKeys := make([]string, 0, len(req.Env))
-	for k := range req.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	for _, k := range envKeys {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, req.Env[k]))
-	}
-
-	args = append(args, target)
-	args = append(args, req.Command...)
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	err := p.runner.RunWithIO(execCtx, req.Stdin, &stdoutBuf, &stderrBuf, "docker", args...)
-
-	exitCode := 0
+	target, err := validateExecParams(deployment, req)
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return nil, fmt.Errorf("docker exec failed: %w", err)
-		}
+		return nil, err
 	}
+	transport := &localDockerTransport{runner: p.runner, conn: conn}
+	return executeSupervised(ctx, transport, target, req)
+}
 
-	return &ExecResult{
-		ExitCode: exitCode,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-	}, nil
+// CancelExec cancels a running or orphaned execution operation inside the target container.
+func (p *LocalDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
+	target, err := validateCancelParams(deployment, req)
+	if err != nil {
+		return nil, err
+	}
+	transport := &localDockerTransport{runner: p.runner, conn: conn}
+	return cancelSupervised(ctx, transport, target, req)
 }
 
 // Internal helpers
@@ -637,38 +626,6 @@ func dockerHostArgs(conn *environments.Connection) []string {
 		return []string{"-H", socket}
 	}
 	return nil
-}
-
-func sanitizeDockerName(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-' {
-			b.WriteRune(r)
-		} else {
-			b.WriteRune('-')
-		}
-	}
-	return b.String()
-}
-
-func containerName(envID, depID string) string {
-	return fmt.Sprintf("swarm-%s-%s", sanitizeDockerName(envID), sanitizeDockerName(depID))
-}
-
-func resolveContainerTarget(deployment *environments.Deployment) string {
-	if deployment == nil {
-		return ""
-	}
-	if deployment.Runtime.ContainerID != "" {
-		return deployment.Runtime.ContainerID
-	}
-	if deployment.Runtime.ProviderResourceID != "" {
-		return deployment.Runtime.ProviderResourceID
-	}
-	if deployment.EnvironmentID != "" && deployment.ID != "" {
-		return containerName(deployment.EnvironmentID, deployment.ID)
-	}
-	return deployment.ID
 }
 
 func resolveEnvValue(val string, overrides map[string]string) string {

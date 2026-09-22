@@ -224,7 +224,14 @@ func (a *artifactV3RuntimeAdapter) PrepareArtifactV3Turn(ctx context.Context, re
 		return tool.ArtifactV3AuthorGrant{}, err
 	}
 	if previous, found := existing.Drafts[grantID]; found {
-		if string(previous.Grant) != string(raw) {
+		var prevGrant tool.ArtifactV3AuthorGrant
+		if err := json.Unmarshal(previous.Grant, &prevGrant); err == nil {
+			prevGrant.ExpiresAt = grant.ExpiresAt
+			prevRaw, _ := json.Marshal(prevGrant)
+			if string(prevRaw) != string(raw) {
+				return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorConflict
+			}
+		} else if string(previous.Grant) != string(raw) {
 			return tool.ArtifactV3AuthorGrant{}, tool.ErrArtifactV3AuthorConflict
 		}
 	} else {
@@ -680,7 +687,7 @@ func artifactV3PreviewCaptureRequest(manifest pebblestore.ArtifactV3Manifest, fi
 	if timingErr != nil {
 		return request, timingErr
 	}
-	bridge := `<script data-swarm-capture-ui>(()=>{const duration=` + fmt.Sprint(durationMS) + `,fps=` + fmt.Sprint(sceneFPS) + `;const scenes=` + string(sceneJSON) + `;const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("capture_animation_runtime_invalid");let ready;try{ready=await api.ready()}catch(_){throw Error("capture_animation_ready_failed")}if(scenes[id]&&(!ready||ready.duration_ms!==duration||ready.fps!==fps))throw Error("capture_animation_timing_mismatch");if(typeof api.pause==="function")await api.pause();let ack;try{ack=await api.seek(times[id])}catch(_){throw Error("capture_animation_seek_failed")}if(!ack||ack.time_ms!==times[id])throw Error("capture_animation_time_mismatch");if(scenes[id]&&ack.scene_id!==scenes[id])throw Error("capture_animation_scene_mismatch");document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
+	bridge := `<script data-swarm-capture-ui>(()=>{const duration=` + fmt.Sprint(durationMS) + `,fps=` + fmt.Sprint(sceneFPS) + `;const scenes=` + string(sceneJSON) + `;const times=` + string(encoded) + `;globalThis.__SWARM_CAPTURE_V1__={version:"swarm.capture/v1",select:async id=>{if(!Object.hasOwn(times,id))throw Error("unknown temporal Part");const api=globalThis.__SWARM_ANIMATION_V1__;if(!api||api.version!=="swarm.animation/v1"||typeof api.ready!=="function"||typeof api.seek!=="function")throw Error("capture_animation_runtime_invalid");let ready;try{ready=await api.ready()}catch(_){throw Error("capture_animation_ready_failed")}if(scenes[id]&&(!ready||ready.duration_ms!==duration||ready.fps!==fps))throw Error("capture_animation_timing_mismatch");if(typeof api.pause==="function")await api.pause();let ack;try{ack=await api.seek(times[id])}catch(_){throw Error("capture_animation_seek_failed")}if(!ack||ack.time_ms!==times[id])throw Error("capture_animation_time_mismatch");if(scenes[id]&&ack.scene_id!==scenes[id])throw Error("capture_animation_scene_mismatch");try{if(typeof requestAnimationFrame==="function"){let _r=requestAnimationFrame(()=>{});while(_r>0)cancelAnimationFrame(_r--);}}catch(_){}document.documentElement.dataset.swarmCaptureState=id},ready:async id=>({state_id:id})}})();</script>`
 	body := request.Files[manifest.Entrypoint]
 	if index := strings.LastIndex(strings.ToLower(string(body)), "</body>"); index >= 0 {
 		request.Files[manifest.Entrypoint] = []byte(string(body[:index]) + bridge + string(body[index:]))
@@ -1734,7 +1741,17 @@ func (a *artifactV3RuntimeAdapter) LoadAuthorDraft(ctx context.Context, p tool.A
 	unbound := g
 	unbound.ProducerSessionID, unbound.ProducerRunID = "", ""
 	raw, err := json.Marshal(unbound)
-	if err != nil || string(raw) != string(d.Grant) {
+	if err != nil {
+		return zero, tool.ErrArtifactV3AuthorUnauthorized
+	}
+	var storedGrant tool.ArtifactV3AuthorGrant
+	if err := json.Unmarshal(d.Grant, &storedGrant); err == nil {
+		storedGrant.ExpiresAt = unbound.ExpiresAt
+		storedRaw, _ := json.Marshal(storedGrant)
+		if string(raw) != string(storedRaw) {
+			return zero, tool.ErrArtifactV3AuthorUnauthorized
+		}
+	} else if string(raw) != string(d.Grant) {
 		return zero, tool.ErrArtifactV3AuthorUnauthorized
 	}
 	state := zero

@@ -19,7 +19,7 @@ func TestTaskProgramDesignerImplicitRootSurvivesCohortAdmission(t *testing.T) {
 	svc := &Service{}
 	launch := taskLaunchSpec{RequestedSubagentType: "designer"}
 	program := &taskProgramSpec{Jobs: []taskProgramJob{{RequestedSubagentType: "designer"}}}
-	target, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, launch)
+	target, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &launch)
 	if err != nil || target != root {
 		t.Fatalf("first admission: %q %v", target, err)
 	}
@@ -27,12 +27,12 @@ func TestTaskProgramDesignerImplicitRootSurvivesCohortAdmission(t *testing.T) {
 	if launch.TargetWorkspacePath != "" || program.Jobs[0].TargetWorkspacePath != "" {
 		t.Fatal("implicit root persisted as explicit target")
 	}
-	target, _, err = svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, launch)
+	target, _, err = svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &launch)
 	if err != nil || target != root {
 		t.Fatalf("cohort admission: %q %v", target, err)
 	}
 	launch.TargetWorkspacePath = root
-	if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, launch); err == nil {
+	if _, _, err := svc.resolveTaskTargetWorkspace(parent, identity.Principal{}, &launch); err == nil {
 		t.Fatal("explicit Designer workspace target accepted")
 	}
 	for _, agent := range []string{"coder", "finder"} {

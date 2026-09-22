@@ -45,6 +45,12 @@ type manageDeploymentLifecycleService interface {
 	ListDeployments(accountScopeID, workspaceID string, limit int) ([]environments.Deployment, error)
 	ListDeploymentsByEnvironment(accountScopeID, workspaceID, environmentID string, limit int) ([]environments.Deployment, error)
 	GetActiveLease(accountScopeID, workspaceID, deploymentID string) (environments.DeploymentLease, bool, error)
+	Submit(ctx context.Context, req lifecycle.SubmitOperationRequest) (*environments.EnvironmentOperation, error)
+	Get(ctx context.Context, accountScopeID, workspaceID, operationID string) (environments.EnvironmentOperation, bool, error)
+	History(ctx context.Context, q environments.OperationHistoryQuery) (environments.OperationHistoryPage, error)
+	Summary(ctx context.Context, accountScopeID, workspaceID string) (environments.EnvironmentSummary, error)
+	Cancel(ctx context.Context, req lifecycle.CancelOperationRequest) (*environments.EnvironmentOperation, error)
+	CancelOwner(ctx context.Context, req lifecycle.CancelOwnerRequest) (int, error)
 }
 
 type manageWorkspaceSettingsStore interface {
@@ -80,33 +86,48 @@ func (s *Server) resolveEnvironmentScope(r *http.Request, rawWorkspaceID, rawPat
 	rawWorkspaceID = strings.TrimSpace(rawWorkspaceID)
 	rawPath = strings.TrimSpace(rawPath)
 
-	if rawWorkspaceID != "" {
-		workspaceID = rawWorkspaceID
-		if rawPath != "" {
-			workspacePath = rawPath
-		}
-		return accountScopeID, workspaceID, workspacePath, nil
-	}
-
-	if s.workspace != nil && rawPath != "" {
-		scope, scopeErr := s.workspace.ScopeForPathForPrincipal(principal, rawPath)
-		if scopeErr == nil && scope.Matched && strings.TrimSpace(scope.WorkspaceID) != "" {
-			return accountScopeID, scope.WorkspaceID, scope.WorkspacePath, nil
-		}
-	}
-
-	if s.workspace != nil {
-		list, listErr := s.workspace.ListKnownForPrincipal(principal, 1)
-		if listErr == nil && len(list) > 0 {
-			return accountScopeID, list[0].WorkspaceID, list[0].Path, nil
-		}
-	}
-
 	if rawWorkspaceID == "" && rawPath == "" {
-		return accountScopeID, "default", "", nil
+		return "", "", "", errors.New("workspace_id or workspace_path is required")
 	}
 
-	return accountScopeID, rawWorkspaceID, rawPath, nil
+	if s.workspace == nil {
+		if rawWorkspaceID != "" {
+			return accountScopeID, rawWorkspaceID, rawPath, nil
+		}
+		return accountScopeID, "ws-test", rawPath, nil
+	}
+
+	var entryPath string
+	if rawWorkspaceID != "" {
+		entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(principal, rawWorkspaceID)
+		if err != nil {
+			return "", "", "", fmt.Errorf("lookup workspace %q: %w", rawWorkspaceID, err)
+		}
+		if !found {
+			return "", "", "", fmt.Errorf("workspace %q not found", rawWorkspaceID)
+		}
+		workspaceID = entry.WorkspaceID
+		entryPath = entry.Path
+	}
+
+	if rawPath != "" {
+		scope, err := s.workspace.ScopeForPathForPrincipal(principal, rawPath)
+		if err != nil {
+			return "", "", "", fmt.Errorf("resolve workspace path %q: %w", rawPath, err)
+		}
+		if !scope.Matched || strings.TrimSpace(scope.WorkspaceID) == "" {
+			return "", "", "", fmt.Errorf("path %q does not belong to an authorized workspace", rawPath)
+		}
+		if workspaceID != "" && scope.WorkspaceID != workspaceID {
+			return "", "", "", fmt.Errorf("workspace ID %q and path %q do not match", workspaceID, rawPath)
+		}
+		workspaceID = scope.WorkspaceID
+		workspacePath = scope.WorkspacePath
+	} else {
+		workspacePath = entryPath
+	}
+
+	return accountScopeID, workspaceID, workspacePath, nil
 }
 
 // =============================================================================
@@ -407,9 +428,29 @@ type environmentMutationRequest struct {
 	WorkspaceID              string                    `json:"workspace_id"`
 	WorkspacePath            string                    `json:"workspace_path"`
 	ID                       string                    `json:"id"`
+	EnvironmentID            string                    `json:"environment_id"`
+	DeploymentID             string                    `json:"deployment_id"`
+	OperationID              string                    `json:"operation_id"`
+	LeaseID                  string                    `json:"lease_id"`
 	Environment              *environments.Environment `json:"environment,omitempty"`
 	DefaultTestEnvironmentID string                    `json:"default_test_environment_id,omitempty"`
 	DefaultConnectionID      string                    `json:"default_connection_id,omitempty"`
+	ConnectionID             string                    `json:"connection_id,omitempty"`
+	DeploymentName           string                    `json:"deployment_name,omitempty"`
+	ConsumerType             environments.ConsumerType `json:"consumer_type,omitempty"`
+	ConsumerID               string                    `json:"consumer_id,omitempty"`
+	SessionID                string                    `json:"session_id,omitempty"`
+	Command                  []string                  `json:"command,omitempty"`
+	WorkingDir               string                    `json:"working_dir,omitempty"`
+	Env                      map[string]string         `json:"env,omitempty"`
+	EnvOverrides             map[string]string         `json:"env_overrides,omitempty"`
+	TTLMillis                int64                     `json:"ttl_millis,omitempty"`
+	TimeoutMS                int                       `json:"timeout_ms,omitempty"`
+	Deadline                 int64                     `json:"deadline,omitempty"`
+	IdempotencyKey           string                    `json:"idempotency_key,omitempty"`
+	Reason                   string                    `json:"reason,omitempty"`
+	ReleaseReason            string                    `json:"release_reason,omitempty"`
+	MaxOutput                int                       `json:"max_output,omitempty"`
 }
 
 func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
@@ -417,6 +458,8 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("environment service not configured"))
 		return
 	}
+
+	subpath := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/environments"), "/")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -426,13 +469,191 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		actionQuery := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("action")))
+
+		if subpath == "summary" || actionQuery == "summary" {
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			summary, sErr := s.deployments.Summary(r.Context(), accountScopeID, workspaceID)
+			if sErr != nil {
+				writeError(w, http.StatusInternalServerError, sErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "summary": summary})
+			return
+		}
+
+		if subpath == "history" || actionQuery == "history" {
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			limit := 50
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				if parsed, pErr := strconv.Atoi(rawLimit); pErr == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
+			q := environments.OperationHistoryQuery{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				EnvironmentID:  strings.TrimSpace(r.URL.Query().Get("environment_id")),
+				DeploymentID:   strings.TrimSpace(r.URL.Query().Get("deployment_id")),
+				Actor:          strings.TrimSpace(r.URL.Query().Get("actor")),
+				SessionID:      strings.TrimSpace(r.URL.Query().Get("session_id")),
+				WorkerID:       strings.TrimSpace(r.URL.Query().Get("worker_id")),
+				Status:         environments.OperationStatus(strings.TrimSpace(r.URL.Query().Get("status"))),
+				Action:         strings.TrimSpace(r.URL.Query().Get("action_filter")),
+				Timezone:       strings.TrimSpace(r.URL.Query().Get("timezone")),
+				StartDate:      strings.TrimSpace(r.URL.Query().Get("start_date")),
+				EndDate:        strings.TrimSpace(r.URL.Query().Get("end_date")),
+				Cursor:         strings.TrimSpace(r.URL.Query().Get("cursor")),
+				Limit:          limit,
+			}
+			page, hErr := s.deployments.History(r.Context(), q)
+			if hErr != nil {
+				writeError(w, http.StatusInternalServerError, hErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":           true,
+				"history":      page,
+				"operations":   page.Operations,
+				"daily_totals": page.DailyTotals,
+				"summary":      page.Summary,
+				"next_cursor":  page.NextCursor,
+				"has_more":     page.HasMore,
+			})
+			return
+		}
+
+		if subpath == "operations" || actionQuery == "get_operation" || actionQuery == "operations" || actionQuery == "list_operations" {
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			opID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("operation_id")), strings.TrimSpace(r.URL.Query().Get("id")))
+			if opID != "" {
+				op, found, getErr := s.deployments.Get(r.Context(), accountScopeID, workspaceID, opID)
+				if getErr != nil {
+					writeError(w, http.StatusInternalServerError, getErr)
+					return
+				}
+				if !found {
+					writeError(w, http.StatusNotFound, fmt.Errorf("operation %q not found", opID))
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": op, "operation_id": op.OperationID, "status": op.Status})
+				return
+			}
+			limit := 50
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				if parsed, pErr := strconv.Atoi(rawLimit); pErr == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
+			page, hErr := s.deployments.History(r.Context(), environments.OperationHistoryQuery{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				EnvironmentID:  strings.TrimSpace(r.URL.Query().Get("environment_id")),
+				DeploymentID:   strings.TrimSpace(r.URL.Query().Get("deployment_id")),
+				Limit:          limit,
+			})
+			if hErr != nil {
+				writeError(w, http.StatusInternalServerError, hErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":         true,
+				"operations": page.Operations,
+				"count":      len(page.Operations),
+			})
+			return
+		}
+
+		if subpath == "deployments" || actionQuery == "list_deployments" || actionQuery == "deployments" {
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			limit := 100
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				if parsed, pErr := strconv.Atoi(rawLimit); pErr == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
+			envFilter := strings.TrimSpace(r.URL.Query().Get("environment_id"))
+			var list []environments.Deployment
+			var listErr error
+			if envFilter != "" {
+				list, listErr = s.deployments.ListDeploymentsByEnvironment(accountScopeID, workspaceID, envFilter, limit)
+			} else {
+				list, listErr = s.deployments.ListDeployments(accountScopeID, workspaceID, limit)
+			}
+			if listErr != nil {
+				writeError(w, http.StatusInternalServerError, listErr)
+				return
+			}
+			if list == nil {
+				list = []environments.Deployment{}
+			}
+			activeLeases := make(map[string]environments.DeploymentLease)
+			for _, dep := range list {
+				if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
+					activeLeases[dep.ID] = lease
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":            true,
+				"deployments":   list,
+				"active_leases": activeLeases,
+				"count":         len(list),
+			})
+			return
+		}
+
+		if actionQuery == "get_deployment" || subpath == "deployment" || strings.HasPrefix(subpath, "deployments/") {
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			depID := firstNonEmptyString(
+				strings.TrimSpace(r.URL.Query().Get("deployment_id")),
+				strings.TrimSpace(r.URL.Query().Get("id")),
+				strings.TrimPrefix(subpath, "deployments/"),
+			)
+			if depID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("deployment_id is required"))
+				return
+			}
+			dep, found, getErr := s.deployments.GetDeployment(accountScopeID, workspaceID, depID)
+			if getErr != nil {
+				writeError(w, http.StatusInternalServerError, getErr)
+				return
+			}
+			if !found {
+				writeError(w, http.StatusNotFound, fmt.Errorf("deployment %q not found", depID))
+				return
+			}
+			lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":               true,
+				"deployment":       dep,
+				"active_lease":     lease,
+				"has_active_lease": hasLease,
+			})
+			return
+		}
+
 		var settings environments.WorkspaceSettings
 		if s.workspaceEnvSettings != nil {
 			st, _, _ := s.workspaceEnvSettings.GetWorkspaceSettings(accountScopeID, workspaceID)
 			settings = st
 		}
 
-		envID := strings.TrimSpace(r.URL.Query().Get("id"))
+		envID := firstNonEmptyString(strings.TrimSpace(r.URL.Query().Get("environment_id")), strings.TrimSpace(r.URL.Query().Get("id")))
 		if envID != "" {
 			env, found, getErr := s.environments.Get(accountScopeID, workspaceID, envID)
 			if getErr != nil {
@@ -477,20 +698,165 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		accountScopeID, workspaceID, _, err := s.resolveEnvironmentScope(r, req.WorkspaceID, req.WorkspacePath)
+		accountScopeID, workspaceID, workspacePath, err := s.resolveEnvironmentScope(r, req.WorkspaceID, req.WorkspacePath)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, err)
 			return
 		}
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
+
+		// Cancellation routing
+		if subpath == "cancel" || subpath == "operations/cancel" || action == "cancel" || action == "cancel_operation" {
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			opID := firstNonEmptyString(strings.TrimSpace(req.OperationID), strings.TrimSpace(req.ID))
+			if opID == "" {
+				writeError(w, http.StatusBadRequest, errors.New("operation_id is required for cancel"))
+				return
+			}
+			reason := firstNonEmptyString(strings.TrimSpace(req.Reason), "cancelled via api")
+			op, cErr := s.deployments.Cancel(r.Context(), lifecycle.CancelOperationRequest{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				OperationID:    opID,
+				Reason:         reason,
+			})
+			if cErr != nil {
+				writeError(w, http.StatusBadRequest, cErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "operation": op, "operation_id": op.OperationID, "status": op.Status})
+			return
+		}
+
+		// Supervised runtime mutations on /v1/environments
 		switch action {
+		case "summary":
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			summary, sErr := s.deployments.Summary(r.Context(), accountScopeID, workspaceID)
+			if sErr != nil {
+				writeError(w, http.StatusInternalServerError, sErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "summary": summary})
+			return
+
+		case "history":
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+			q := environments.OperationHistoryQuery{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				EnvironmentID:  strings.TrimSpace(req.EnvironmentID),
+				DeploymentID:   strings.TrimSpace(req.DeploymentID),
+				Actor:          strings.TrimSpace(req.ConsumerID),
+				SessionID:      strings.TrimSpace(req.SessionID),
+			}
+			page, hErr := s.deployments.History(r.Context(), q)
+			if hErr != nil {
+				writeError(w, http.StatusInternalServerError, hErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":           true,
+				"history":      page,
+				"operations":   page.Operations,
+				"daily_totals": page.DailyTotals,
+				"summary":      page.Summary,
+				"next_cursor":  page.NextCursor,
+				"has_more":     page.HasMore,
+			})
+			return
+
+		case "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
+			if s.deployments == nil {
+				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
+				return
+			}
+
+			principal, _ := PrincipalFromRequest(r)
+			callerActor := principal.UserID
+			callerSessionID := ""
+			if req.SessionID != "" && s.sessions != nil {
+				if sess, found, _ := s.sessions.GetSession(strings.TrimSpace(req.SessionID)); found && sess.AccountScopeID == accountScopeID && sess.UserID == principal.UserID {
+					callerSessionID = sess.ID
+					if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+						workspacePath = sess.WorktreeRootPath
+					}
+				}
+			}
+
+			subReq := lifecycle.SubmitOperationRequest{
+				AccountScopeID: accountScopeID,
+				WorkspaceID:    workspaceID,
+				Action:         action,
+				EnvironmentID:  firstNonEmptyString(strings.TrimSpace(req.EnvironmentID), strings.TrimSpace(req.ID)),
+				DeploymentID:   strings.TrimSpace(req.DeploymentID),
+				LeaseID:        strings.TrimSpace(req.LeaseID),
+				ConnectionID:   strings.TrimSpace(req.ConnectionID),
+				DeploymentName: strings.TrimSpace(req.DeploymentName),
+				WorkspacePath:  workspacePath,
+				ConsumerType:   req.ConsumerType,
+				ConsumerID:     firstNonEmptyString(callerSessionID, strings.TrimSpace(req.ConsumerID)),
+				Command:        req.Command,
+				WorkingDir:     strings.TrimSpace(req.WorkingDir),
+				Env:            req.Env,
+				EnvOverrides:   req.EnvOverrides,
+				TTLMillis:      req.TTLMillis,
+				Deadline:       req.Deadline,
+				IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+				Reason:         firstNonEmptyString(strings.TrimSpace(req.ReleaseReason), strings.TrimSpace(req.Reason)),
+				MaxOutput:      req.MaxOutput,
+				Attribution: environments.OperationAttribution{
+					Actor:     callerActor,
+					SessionID: callerSessionID,
+				},
+			}
+			if req.TimeoutMS > 0 {
+				subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond
+			}
+
+			op, submitErr := s.deployments.Submit(r.Context(), subReq)
+			if submitErr != nil {
+				writeError(w, http.StatusBadRequest, submitErr)
+				return
+			}
+
+			resp := map[string]any{
+				"ok":           true,
+				"status":       op.Status,
+				"operation_id": op.OperationID,
+				"operation":    op,
+			}
+			if op.DeploymentID != "" {
+				resp["deployment_id"] = op.DeploymentID
+				if dep, found, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, op.DeploymentID); found {
+					resp["deployment"] = dep
+				}
+				if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease {
+					resp["lease"] = lease
+				}
+			}
+			if action == "destroy" {
+				resp["destroyed"] = true
+				resp["id"] = op.DeploymentID
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+
 		case "create", "update":
 			if req.Environment == nil {
 				writeError(w, http.StatusBadRequest, errors.New("environment object is required"))
 				return
 			}
-
 			env := *req.Environment
 			env.AccountScopeID = accountScopeID
 			env.WorkspaceID = workspaceID
@@ -533,18 +899,16 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "environment": saved, "settings": currentSettings})
 
 		case "delete":
-			envID := strings.TrimSpace(req.ID)
+			envID := firstNonEmptyString(strings.TrimSpace(req.EnvironmentID), strings.TrimSpace(req.ID))
 			if envID == "" {
 				writeError(w, http.StatusBadRequest, errors.New("environment id is required for delete"))
 				return
 			}
-
 			deleted, delErr := s.environments.Delete(accountScopeID, workspaceID, envID)
 			if delErr != nil {
 				writeError(w, http.StatusInternalServerError, delErr)
 				return
 			}
-
 			if s.workspaceEnvSettings != nil {
 				st, found, _ := s.workspaceEnvSettings.GetWorkspaceSettings(accountScopeID, workspaceID)
 				if found && st.DefaultTestEnvironmentID == envID {
@@ -552,7 +916,6 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 					_, _ = s.workspaceEnvSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &empty, nil)
 				}
 			}
-
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted, "id": envID})
 
 		case "set_default_test_environment":
@@ -560,7 +923,6 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, errors.New("workspace settings store not configured"))
 				return
 			}
-
 			targetID := strings.TrimSpace(req.DefaultTestEnvironmentID)
 			if targetID != "" {
 				_, found, getErr := s.environments.Get(accountScopeID, workspaceID, targetID)
@@ -573,13 +935,11 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-
 			_, updateErr := s.workspaceEnvSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, &targetID, nil)
 			if updateErr != nil {
 				writeError(w, http.StatusInternalServerError, updateErr)
 				return
 			}
-
 			updatedSettings, _, _ := s.workspaceEnvSettings.GetWorkspaceSettings(accountScopeID, workspaceID)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": updatedSettings})
 
@@ -588,7 +948,6 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, errors.New("workspace settings store not configured"))
 				return
 			}
-
 			targetID := strings.TrimSpace(req.DefaultConnectionID)
 			if targetID != "" && s.connections != nil {
 				_, found, getErr := s.connections.Get(accountScopeID, workspaceID, targetID)
@@ -601,13 +960,11 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-
 			_, updateErr := s.workspaceEnvSettings.UpdateWorkspaceSettings(accountScopeID, workspaceID, nil, &targetID)
 			if updateErr != nil {
 				writeError(w, http.StatusInternalServerError, updateErr)
 				return
 			}
-
 			updatedSettings, _, _ := s.workspaceEnvSettings.GetWorkspaceSettings(accountScopeID, workspaceID)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "settings": updatedSettings})
 
@@ -634,9 +991,20 @@ type deploymentMutationRequest struct {
 	ConnectionID   string                    `json:"connection_id"`
 	ConsumerType   environments.ConsumerType `json:"consumer_type"`
 	ConsumerID     string                    `json:"consumer_id"`
+	SessionID      string                    `json:"session_id"`
 	DeploymentName string                    `json:"deployment_name"`
 	ReleaseReason  string                    `json:"release_reason"`
+	Reason         string                    `json:"reason"`
 	Force          bool                      `json:"force"`
+	Command        []string                  `json:"command"`
+	WorkingDir     string                    `json:"working_dir"`
+	Env            map[string]string         `json:"env"`
+	EnvOverrides   map[string]string         `json:"env_overrides"`
+	TTLMillis      int64                     `json:"ttl_millis"`
+	TimeoutMS      int                       `json:"timeout_ms"`
+	Deadline       int64                     `json:"deadline"`
+	IdempotencyKey string                    `json:"idempotency_key"`
+	MaxOutput      int                       `json:"max_output"`
 }
 
 func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
@@ -724,132 +1092,78 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		action := strings.ToLower(strings.TrimSpace(req.Action))
-		switch action {
-		case "ensure":
-			consumerType := req.ConsumerType
-			if consumerType == "" {
-				consumerType = environments.ConsumerTypeSession
-			}
-			consumerID := strings.TrimSpace(req.ConsumerID)
-			if consumerID == "" {
-				consumerID = "client-" + uuid.NewString()[:8]
-			}
-
-			ensureReq := lifecycle.EnsureDeploymentRequest{
-				AccountScopeID: accountScopeID,
-				WorkspaceID:    workspaceID,
-				EnvironmentID:  strings.TrimSpace(req.EnvironmentID),
-				ConnectionID:   strings.TrimSpace(req.ConnectionID),
-				ConsumerType:   consumerType,
-				ConsumerID:     consumerID,
-				DeploymentName: strings.TrimSpace(req.DeploymentName),
-				WorkspacePath:  workspacePath,
-			}
-
-			result, ensureErr := s.deployments.EnsureDeployment(r.Context(), ensureReq)
-			if ensureErr != nil {
-				writeError(w, http.StatusBadRequest, ensureErr)
-				return
-			}
-
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":         true,
-				"deployment": result.Deployment,
-				"lease":      result.Lease,
-				"reused":     result.Reused,
-			})
-
-		case "start":
-			depID := strings.TrimSpace(req.DeploymentID)
-			if depID == "" {
-				writeError(w, http.StatusBadRequest, errors.New("deployment_id is required"))
-				return
-			}
-			if startErr := s.deployments.StartDeployment(r.Context(), accountScopeID, workspaceID, depID); startErr != nil {
-				writeError(w, http.StatusInternalServerError, startErr)
-				return
-			}
-			dep, _, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, depID)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": dep})
-
-		case "stop":
-			depID := strings.TrimSpace(req.DeploymentID)
-			if depID == "" {
-				writeError(w, http.StatusBadRequest, errors.New("deployment_id is required"))
-				return
-			}
-			if stopErr := s.deployments.StopDeployment(r.Context(), accountScopeID, workspaceID, depID); stopErr != nil {
-				writeError(w, http.StatusInternalServerError, stopErr)
-				return
-			}
-			dep, _, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, depID)
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deployment": dep})
-
-		case "release":
-			leaseID := strings.TrimSpace(req.LeaseID)
-			if leaseID == "" {
-				// If lease_id wasn't provided, try resolving from deployment_id
-				depID := strings.TrimSpace(req.DeploymentID)
-				if depID != "" {
-					if active, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, depID); ok {
-						leaseID = active.ID
-					}
+		principal, _ := PrincipalFromRequest(r)
+		callerActor := principal.UserID
+		callerSessionID := ""
+		if req.SessionID != "" && s.sessions != nil {
+			if sess, found, _ := s.sessions.GetSession(strings.TrimSpace(req.SessionID)); found && sess.AccountScopeID == accountScopeID && sess.UserID == principal.UserID {
+				callerSessionID = sess.ID
+				if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+					workspacePath = sess.WorktreeRootPath
 				}
 			}
-			if leaseID == "" {
-				writeError(w, http.StatusBadRequest, errors.New("lease_id or deployment_id with active lease is required"))
-				return
-			}
-
-			reason := strings.TrimSpace(req.ReleaseReason)
-			if reason == "" {
-				reason = "user released via desktop ui"
-			}
-
-			releaseReq := lifecycle.ReleaseDeploymentRequest{
-				AccountScopeID: accountScopeID,
-				WorkspaceID:    workspaceID,
-				LeaseID:        leaseID,
-				Reason:         reason,
-			}
-
-			result, relErr := s.deployments.ReleaseDeployment(r.Context(), releaseReq)
-			if relErr != nil {
-				writeError(w, http.StatusBadRequest, relErr)
-				return
-			}
-
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":         true,
-				"lease":      result.Lease,
-				"deployment": result.Deployment,
-			})
-
-		case "destroy":
-			depID := strings.TrimSpace(req.DeploymentID)
-			if depID == "" {
-				writeError(w, http.StatusBadRequest, errors.New("deployment_id is required"))
-				return
-			}
-
-			destroyReq := lifecycle.DestroyDeploymentRequest{
-				AccountScopeID: accountScopeID,
-				WorkspaceID:    workspaceID,
-				DeploymentID:   depID,
-				Reason:         "user destroyed via desktop ui",
-			}
-
-			if destErr := s.deployments.DestroyDeployment(r.Context(), destroyReq); destErr != nil {
-				writeError(w, http.StatusInternalServerError, destErr)
-				return
-			}
-
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "destroyed": true, "id": depID})
-
-		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("unknown deployment action %q", action))
 		}
+
+		action := strings.ToLower(strings.TrimSpace(req.Action))
+		depID := strings.TrimSpace(req.DeploymentID)
+		leaseID := strings.TrimSpace(req.LeaseID)
+
+		subReq := lifecycle.SubmitOperationRequest{
+			AccountScopeID: accountScopeID,
+			WorkspaceID:    workspaceID,
+			Action:         action,
+			EnvironmentID:  strings.TrimSpace(req.EnvironmentID),
+			DeploymentID:   depID,
+			LeaseID:        leaseID,
+			ConnectionID:   strings.TrimSpace(req.ConnectionID),
+			DeploymentName: strings.TrimSpace(req.DeploymentName),
+			WorkspacePath:  workspacePath,
+			ConsumerType:   req.ConsumerType,
+			ConsumerID:     firstNonEmptyString(callerSessionID, strings.TrimSpace(req.ConsumerID)),
+			Command:        req.Command,
+			WorkingDir:     strings.TrimSpace(req.WorkingDir),
+			Env:            req.Env,
+			EnvOverrides:   req.EnvOverrides,
+			TTLMillis:      req.TTLMillis,
+			Deadline:       req.Deadline,
+			IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+			Reason:         firstNonEmptyString(strings.TrimSpace(req.ReleaseReason), strings.TrimSpace(req.Reason)),
+			MaxOutput:      req.MaxOutput,
+			Attribution: environments.OperationAttribution{
+				Actor:     callerActor,
+				SessionID: callerSessionID,
+			},
+		}
+		if req.TimeoutMS > 0 {
+			subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond
+		}
+
+		op, submitErr := s.deployments.Submit(r.Context(), subReq)
+		if submitErr != nil {
+			writeError(w, http.StatusBadRequest, submitErr)
+			return
+		}
+
+		resp := map[string]any{
+			"ok":           true,
+			"status":       op.Status,
+			"operation_id": op.OperationID,
+			"operation":    op,
+		}
+		if op.DeploymentID != "" {
+			resp["deployment_id"] = op.DeploymentID
+			if dep, found, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, op.DeploymentID); found {
+				resp["deployment"] = dep
+			}
+			if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease {
+				resp["lease"] = lease
+			}
+		}
+		if action == "destroy" {
+			resp["destroyed"] = true
+			resp["id"] = op.DeploymentID
+		}
+		writeJSON(w, http.StatusOK, resp)
 
 	default:
 		methodNotAllowed(w)

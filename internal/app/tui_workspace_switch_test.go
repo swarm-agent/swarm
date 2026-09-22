@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -131,6 +132,172 @@ func TestWorkspaceSaveDoesNotSwitchActiveWorkspace(t *testing.T) {
 	state := app.home.HomepageState()
 	if makeCurrent || app.workspacePath != "/repo-a" || state.SelectedWorkspace.Path != "/repo-a" {
 		t.Fatalf("workspace save state = make_current:%v workspace:%q selected:%#v", makeCurrent, app.workspacePath, state.SelectedWorkspace)
+	}
+}
+
+func TestWorkspaceSaveFacilitatesGitInitWhenNoGit(t *testing.T) {
+	var (
+		addCalled      int
+		reviewCalled   int
+		baselineCalled int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/add":
+			addCalled++
+			if baselineCalled == 0 {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"ok":    false,
+					"code":  "workspace_repository_not_ready",
+					"error": "A committed Git repository is required",
+				})
+				return
+			}
+			var req struct {
+				Path string `json:"path"`
+				Name string `json:"name"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":        true,
+				"workspace": client.WorkspaceResolution{WorkspacePath: req.Path, ResolvedPath: req.Path, WorkspaceName: req.Name},
+			})
+		case "/v1/workspace/repository/review":
+			reviewCalled++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"review": client.OnboardingReview{
+					Repository: client.OnboardingRepository{State: "not_repository", Path: "/no-git"},
+					Digest:     "digest-abc",
+					Files: []client.OnboardingReviewFile{
+						{Path: "main.go", Size: 150, Selectable: true},
+					},
+				},
+			})
+		case "/v1/workspace/repository/baseline":
+			baselineCalled++
+			var req client.OnboardingBaseline
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"repository": client.OnboardingRepository{
+					State:      "ready",
+					Path:       req.Path,
+					HeadCommit: "head-commit-123",
+				},
+			})
+		case "/v1/workspace/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":         true,
+				"workspaces": []client.WorkspaceEntry{{Path: "/no-git", WorkspaceName: "No Git", Active: true}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", activePath: "/repo-a", workspacePath: "/repo-a", homeModel: model.EmptyHome(), gitStatusCh: make(chan gitStatusRefreshResult, 1)}
+	app.home = ui.NewHomePage(app.homeModel)
+	app.home.ShowWorkspaceModal()
+
+	// 1. User tries to save a workspace on a directory without git
+	app.handleWorkspaceModalAction(ui.WorkspaceModalAction{
+		Kind:        ui.WorkspaceModalActionSave,
+		Path:        "/no-git",
+		Name:        "No Git",
+		MakeCurrent: true,
+	})
+
+	// Review menu should now be active!
+	if !app.home.WorkspaceModalReviewActive() {
+		t.Fatalf("expected review menu to be active after saving non-git directory; addCalled=%d reviewCalled=%d", addCalled, reviewCalled)
+	}
+
+	// 2. User confirms git baseline and creates initial commit
+	action, ok := app.home.PopWorkspaceModalAction()
+	if ok {
+		t.Fatalf("did not expect action yet before user submits review: %#v", action)
+	}
+
+	// Navigate to baseline control (action index 2: 0=toggle_all, 1=main.go, 2=baseline, 3=cancel)
+	// Since all selectable files are selected, controls are:
+	// 0: toggle_all
+	// 1: main.go
+	// 2: baseline
+	// 3: cancel
+	app.home.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	app.home.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	app.home.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone))
+	action, ok = app.home.PopWorkspaceModalAction()
+	if !ok || action.Kind != ui.WorkspaceModalActionBaseline {
+		t.Fatalf("expected WorkspaceModalActionBaseline, got %#v", action)
+	}
+
+	// 3. Process baseline action
+	app.handleWorkspaceModalAction(action)
+
+	if baselineCalled != 1 {
+		t.Fatalf("expected baselineCalled=1, got %d", baselineCalled)
+	}
+	if addCalled != 2 {
+		t.Fatalf("expected addCalled=2 (initial + after baseline), got %d", addCalled)
+	}
+	if app.workspacePath != "/no-git" {
+		t.Fatalf("workspacePath = %q, want /no-git", app.workspacePath)
+	}
+}
+
+func TestTUIWorkspaceSaveSubdirectoryReportsRepositoryRoot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/add":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":    false,
+				"code":  "workspace_repository_not_ready",
+				"error": "Select the Git repository root as the Swarm workspace",
+				"repository": map[string]any{
+					"state":           "not_repository",
+					"path":            "/repo/sub",
+					"repository_root": "/repo",
+					"message":         "Select the Git repository root as the Swarm workspace",
+				},
+			})
+		case "/v1/workspace/repository":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"repository": client.OnboardingRepository{
+					State:          "not_repository",
+					Path:           "/repo/sub",
+					RepositoryRoot: "/repo",
+					Message:        "Select the Git repository root as the Swarm workspace",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", activePath: "/repo-a", workspacePath: "/repo-a", homeModel: model.EmptyHome(), gitStatusCh: make(chan gitStatusRefreshResult, 1)}
+	app.home = ui.NewHomePage(app.homeModel)
+	app.home.ShowWorkspaceModal()
+
+	app.handleWorkspaceModalAction(ui.WorkspaceModalAction{
+		Kind:        ui.WorkspaceModalActionSave,
+		Path:        "/repo/sub",
+		Name:        "Sub",
+		MakeCurrent: true,
+	})
+
+	if app.home.WorkspaceModalReviewActive() {
+		t.Fatal("expected review menu NOT to be active for repository subdirectory")
+	}
+	errText := app.home.WorkspaceModalError()
+	if !strings.Contains(errText, "select git repository root /repo instead") {
+		t.Fatalf("expected error mentioning repository root /repo, got: %q", errText)
 	}
 }
 

@@ -83,6 +83,13 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 	}
 
 	s.lifecycleMu.Lock()
+	pendingCancelled := false
+	for pendingRunID, cancel := range s.pendingAdmissions[sessionID] {
+		if runID == "" || pendingRunID == runID {
+			cancel()
+			pendingCancelled = true
+		}
+	}
 	current, ok, err := s.sessions.GetLifecycle(sessionID)
 	if err != nil {
 		s.lifecycleMu.Unlock()
@@ -90,15 +97,24 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 	}
 	if !ok || !current.Active {
 		s.lifecycleMu.Unlock()
+		if pendingCancelled {
+			return nil
+		}
 		return ErrSessionRunNotActive
 	}
 	if runID != "" && !strings.EqualFold(runID, strings.TrimSpace(current.RunID)) {
 		s.lifecycleMu.Unlock()
+		if pendingCancelled {
+			return nil
+		}
 		return ErrSessionRunNotActive
 	}
 	active := s.activeRuns[sessionID]
 	if active == nil || !strings.EqualFold(strings.TrimSpace(active.runID), strings.TrimSpace(current.RunID)) {
 		s.lifecycleMu.Unlock()
+		if pendingCancelled {
+			return nil
+		}
 		return ErrSessionRunNotActive
 	}
 	active.userStop = true

@@ -1,7 +1,6 @@
 package provider
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 )
 
 var _ DeploymentProvider = (*SSHDockerProvider)(nil)
+var _ OperationCanceler = (*SSHDockerProvider)(nil)
 
 // SSHDockerProvider manages environment deployments on a remote Docker daemon via SSH.
 // Strictly adheres to security architecture: NO private keys, passwords, or secrets are stored
@@ -101,8 +101,6 @@ func (p *SSHDockerProvider) Capabilities(ctx context.Context, conn *environments
 }
 
 // Deploy provisions and starts a Docker container on the remote SSH host.
-// Validates and respects remote_existing_path workspace provisioning, strictly rejecting
-// invalid assumptions about local/remote filesystem sharing.
 func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
 	if req.Connection == nil {
 		return nil, errors.New("connection cannot be nil")
@@ -126,15 +124,22 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		return nil, fmt.Errorf("invalid deployment record: %w", err)
 	}
 
+	deployCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		deployCtx, cancel = context.WithTimeout(ctx, DefaultOperationTimeout)
+		defer cancel()
+	}
+
 	cName := containerName(req.Environment.ID, req.Deployment.ID)
 
 	// Check if a container with this name already exists on the remote host
-	inspectOut, inspectErr := p.runSSH(ctx, req.Connection, "docker", "inspect", cName)
+	inspectOut, inspectErr := p.runSSH(deployCtx, req.Connection, "docker", "inspect", cName)
 	if inspectErr == nil {
 		ins, parseErr := parseDockerInspect(inspectOut)
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable on remote host
-			insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+			insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 				ID:            req.Deployment.ID,
 				EnvironmentID: req.Environment.ID,
 				Runtime: environments.RuntimeMetadata{
@@ -152,11 +157,11 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		}
 		// Existing container is stopped, dead, or not reusable - remove it before recreation
 		rmArgs := []string{"docker", "rm", "-f", "-v", cName}
-		_, _ = p.runSSH(ctx, req.Connection, rmArgs...)
+		_, _ = p.runSSH(deployCtx, req.Connection, rmArgs...)
 	}
 
-	// Build `docker run -d` arguments for the remote host
-	runArgs := []string{"docker", "run", "-d", "--name", cName}
+	// Build `docker run -d` arguments with -i to keep STDIN open so interactive shell entrypoints do not exit
+	runArgs := []string{"docker", "run", "-d", "-i", "--name", cName}
 
 	// Scoping and metadata labels
 	runArgs = append(runArgs,
@@ -253,11 +258,9 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		remoteWorkspacePath = rep.ContainerPath
 
 	case environments.SourceStrategyKindLocalMount:
-		// Invariant: Reject local_mount on remote SSH host to prevent false assumptions about shared filesystems
 		return nil, errors.New("local_mount workspace provisioning strategy cannot be used with remote SSH host: local filesystem is not shared with remote host; use remote_existing_path or sync instead")
 
 	case environments.SourceStrategyKindRegistryImage:
-		// Image-only provisioning, no volume mounts required
 		remoteWorkspacePath = workingDir
 
 	case environments.SourceStrategyKindSync:
@@ -317,7 +320,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	}
 
 	// Run container on remote host over SSH
-	runOut, runErr := p.runSSH(ctx, req.Connection, runArgs...)
+	runOut, runErr := p.runSSH(deployCtx, req.Connection, runArgs...)
 	if runErr != nil {
 		return nil, fmt.Errorf("failed to deploy remote docker container %s on %s: %w (output: %s)", cName, sshHostName(req.Connection), runErr, strings.TrimSpace(string(runOut)))
 	}
@@ -328,18 +331,18 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	if len(req.Environment.Container.SetupCommands) > 0 {
 		for i, cmdStr := range req.Environment.Container.SetupCommands {
 			execArgs := []string{"docker", "exec", cName, "sh", "-c", cmdStr}
-			setupOut, setupErr := p.runSSHCombined(ctx, req.Connection, execArgs...)
+			setupOut, setupErr := p.runSSHCombined(deployCtx, req.Connection, execArgs...)
 			if setupErr != nil {
 				// Destroy failed container on remote host
 				rmArgs := []string{"docker", "rm", "-f", "-v", cName}
-				_, _ = p.runSSH(ctx, req.Connection, rmArgs...)
-				return nil, fmt.Errorf("setup command [%d] %q failed on remote container %s: %w (output: %s)", i, cmdStr, cName, setupErr, strings.TrimSpace(string(setupOut)))
+				_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+				return nil, fmt.Errorf("setup command [%d] %q failed on remote container %s: %w (output: %s)", i, cmdStr, cName, setupErr, sanitizeOutput(string(setupOut)))
 			}
 		}
 	}
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
-	insRes, err := p.Inspect(ctx, req.Connection, &environments.Deployment{
+	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
 		ID:            req.Deployment.ID,
 		EnvironmentID: req.Environment.ID,
 		Runtime: environments.RuntimeMetadata{
@@ -349,6 +352,11 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect newly deployed remote container: %w", err)
+	}
+	if insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed {
+		rmArgs := []string{"docker", "rm", "-f", "-v", cName}
+		_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+		return nil, fmt.Errorf("deployed container %s is not running (status: %s)", cName, insRes.Status)
 	}
 
 	runtimeMeta := insRes.Runtime
@@ -371,7 +379,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 			if mappedHostPort > 0 {
 				host := req.Connection.SSH.Host
 				probeURL := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(mappedHostPort)), req.Environment.HealthCheck.HTTPPath)
-				statusCode, probeErr := p.httpGet(ctx, probeURL)
+				statusCode, probeErr := p.httpGet(deployCtx, probeURL)
 				if probeErr == nil && statusCode >= 200 && statusCode < 400 {
 					healthStatus = environments.HealthStatusHealthy
 				} else {
@@ -607,65 +615,39 @@ func (p *SSHDockerProvider) accessFromRuntime(rt environments.RuntimeMetadata, c
 	}
 }
 
-// Exec executes a command inside the running remote container over SSH.
+type sshDockerTransport struct {
+	provider *SSHDockerProvider
+	conn     *environments.Connection
+}
+
+func (t *sshDockerTransport) RunExec(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, execArgs ...string) error {
+	remoteArgs := append([]string{"docker", "exec"}, execArgs...)
+	return t.provider.runSSHWithIO(ctx, t.conn, stdin, stdout, stderr, remoteArgs...)
+}
+
+func (t *sshDockerTransport) RunExecCombined(ctx context.Context, execArgs ...string) ([]byte, error) {
+	remoteArgs := append([]string{"docker", "exec"}, execArgs...)
+	return t.provider.runSSHCombined(ctx, t.conn, remoteArgs...)
+}
+
+// Exec executes a command inside the running remote container over SSH with supervisor process group management.
 func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
-	if deployment == nil {
-		return nil, errors.New("deployment cannot be nil")
-	}
-	if len(req.Command) == 0 {
-		return nil, errors.New("exec command cannot be empty")
-	}
-	target := resolveContainerTarget(deployment)
-	if target == "" {
-		return nil, errors.New("cannot exec command without container target or ID")
-	}
-
-	execCtx := ctx
-	if req.Timeout > 0 {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, req.Timeout)
-		defer cancel()
-	}
-
-	dockerExecArgs := []string{"docker", "exec"}
-	if req.Stdin != nil {
-		dockerExecArgs = append(dockerExecArgs, "-i")
-	}
-	if req.WorkingDir != "" {
-		dockerExecArgs = append(dockerExecArgs, "-w", req.WorkingDir)
-	}
-
-	// Environment variable keys sorted for determinism
-	envKeys := make([]string, 0, len(req.Env))
-	for k := range req.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	for _, k := range envKeys {
-		dockerExecArgs = append(dockerExecArgs, "-e", fmt.Sprintf("%s=%s", k, req.Env[k]))
-	}
-
-	dockerExecArgs = append(dockerExecArgs, target)
-	dockerExecArgs = append(dockerExecArgs, req.Command...)
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	err := p.runSSHWithIO(execCtx, conn, req.Stdin, &stdoutBuf, &stderrBuf, dockerExecArgs...)
-
-	exitCode := 0
+	target, err := validateExecParams(deployment, req)
 	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			return nil, fmt.Errorf("ssh docker exec failed: %w", err)
-		}
+		return nil, err
 	}
+	transport := &sshDockerTransport{provider: p, conn: conn}
+	return executeSupervised(ctx, transport, target, req)
+}
 
-	return &ExecResult{
-		ExitCode: exitCode,
-		Stdout:   stdoutBuf.String(),
-		Stderr:   stderrBuf.String(),
-	}, nil
+// CancelExec cancels a running or orphaned execution operation inside the remote target container.
+func (p *SSHDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
+	target, err := validateCancelParams(deployment, req)
+	if err != nil {
+		return nil, err
+	}
+	transport := &sshDockerTransport{provider: p, conn: conn}
+	return cancelSupervised(ctx, transport, target, req)
 }
 
 // Internal SSH command construction helpers

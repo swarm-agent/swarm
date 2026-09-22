@@ -14,7 +14,7 @@ var (
 	artifactHTMLIterationManifest = regexp.MustCompile(`(?is)<script\s+([^>]*)>(.*?)</script\s*>`)
 	artifactHTMLIterationID       = regexp.MustCompile(`(?i)(?:^|\s)id\s*=\s*["']swarm-iteration-manifest["'](?:\s|$)`)
 	artifactHTMLManifestType      = regexp.MustCompile(`(?i)(?:^|\s)type\s*=\s*["']application/json["'](?:\s|$)`)
-	artifactHTMLRegion            = regexp.MustCompile(`(?is)<(header|main|section|article|nav|aside|footer)\b((?:[^>"']|"[^"]*"|'[^']*')*)>`)
+	artifactHTMLRegion            = regexp.MustCompile(`(?is)<(header|main|section|article|nav|aside|footer|div)\b((?:[^>"']|"[^"]*"|'[^']*')*)>`)
 	artifactHTMLAttributes        = regexp.MustCompile(`([^\s=/'"<>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?`)
 )
 

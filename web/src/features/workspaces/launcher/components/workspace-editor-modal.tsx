@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { AlertTriangle, ArrowUp, Bot, ChevronDown, ChevronRight, Folder, FolderPlus, GitBranch, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Folder, FolderPlus, GitBranch, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -8,7 +8,8 @@ import { cn } from '../../../../lib/cn'
 import { formatWorkspacePath } from '../services/workspace-format'
 import { createWorkspaceThemeStyle, WORKSPACE_THEME_OPTIONS } from '../services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../types/workspace'
-import type { WorkspaceRepositoryState } from '../services/workspace-repository'
+import { WorkspaceRepositoryPrerequisiteError, type WorkspaceRepositoryState } from '../services/workspace-repository'
+import { prepareBaseline, reviewRepository, type RepositoryReview } from '../services/repository-review'
 import { WorkspaceDefinitionStatus } from './workspace-definition-status'
 
 export interface WorkspaceEditorAvailableDirectory {
@@ -39,6 +40,9 @@ interface WorkspaceEditorModalProps {
   repositoryHelpBusy?: boolean
   repositoryHelpLink?: ReactNode
   onInitializeRepository?: () => void
+  onUseRepositoryRoot?: (rootPath: string) => void
+  onConfirmCommittedOnly?: () => void
+  onPrepareBaseline?: (selectedPaths: string[], confirmOmissions: boolean, reviewDigest: string) => Promise<void>
   onAskSwarmForRepositoryHelp?: () => void
   personalizing?: boolean
   personalizationMessage?: string | null
@@ -60,10 +64,16 @@ interface WorkspaceEditorModalProps {
   onCancelDeleteWorkspace?: () => void
   onConfirmDeleteWorkspace?: () => void
   onClose: () => void
-  onSubmit: () => void
+  onSubmit: (confirmCommittedOnly?: boolean) => void
 }
 
 const INHERIT_THEME_ID = 'inherit'
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
 
 function normalizeThemeId(themeId: string): string {
   const normalized = themeId.trim().toLowerCase()
@@ -116,6 +126,9 @@ export function WorkspaceEditorModal({
   repositoryHelpBusy = false,
   repositoryHelpLink,
   onInitializeRepository,
+  onUseRepositoryRoot,
+  onConfirmCommittedOnly,
+  onPrepareBaseline,
   onAskSwarmForRepositoryHelp,
   personalizing = false,
   personalizationMessage = null,
@@ -139,6 +152,13 @@ export function WorkspaceEditorModal({
   onClose,
   onSubmit,
 }: WorkspaceEditorModalProps) {
+  const [showCommitMenu, setShowCommitMenu] = useState(false)
+  const [review, setReview] = useState<RepositoryReview | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const [selectedFiles, setSelectedFiles] = useState<string[]>([])
+  const [confirmOmissions, setConfirmOmissions] = useState(false)
+  const [baselineBusy, setBaselineBusy] = useState(false)
   const [draggingWorkspacePath, setDraggingWorkspacePath] = useState<string | null>(null)
   const [folderPickerMode, setFolderPickerMode] = useState<FolderPickerMode>(null)
   const [folderPickerSearch, setFolderPickerSearch] = useState('')
@@ -151,7 +171,14 @@ export function WorkspaceEditorModal({
       setFolderPickerMode(null)
       setFolderPickerSearch('')
     }
-  }, [open])
+    setShowCommitMenu(false)
+    setReview(null)
+    setReviewLoading(false)
+    setReviewError(null)
+    setSelectedFiles([])
+    setConfirmOmissions(false)
+    setBaselineBusy(false)
+  }, [open, workspacePath])
 
   const normalizedThemeId = normalizeThemeId(themeId)
   const themePreviewStyle = createWorkspaceThemeStyle(normalizedThemeId === INHERIT_THEME_ID ? 'black' : normalizedThemeId, '--workspace-theme-preview')
@@ -160,7 +187,40 @@ export function WorkspaceEditorModal({
     ...WORKSPACE_THEME_OPTIONS,
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
-  const repositoryReady = mode === 'edit' || repositoryState?.state === 'ready'
+  const hasUncommittedContent = Boolean(repositoryState?.state === 'ready' && repositoryState.contentReady === false)
+  const repositoryReady = mode === 'edit' || (repositoryState?.state === 'ready' && !hasUncommittedContent)
+  const isInsideSubdirectory = Boolean(
+    repositoryState?.repositoryRoot &&
+    repositoryState.path &&
+    repositoryState.repositoryRoot !== repositoryState.path
+  )
+
+  const handleSelectRepositoryRootPath = () => {
+    if (!repositoryState?.repositoryRoot) return
+    const rootPath = repositoryState.repositoryRoot
+    if (onPickWorkspaceFolder) {
+      onPickWorkspaceFolder(rootPath)
+    } else {
+      onWorkspacePathChange(rootPath)
+    }
+    setShowCommitMenu(false)
+    setReview(null)
+    setReviewError(null)
+  }
+
+  const handleUseRepositoryRootAndAdd = () => {
+    if (!repositoryState?.repositoryRoot) return
+    const rootPath = repositoryState.repositoryRoot
+    setShowCommitMenu(false)
+    setReview(null)
+    setReviewError(null)
+    if (onUseRepositoryRoot) {
+      onUseRepositoryRoot(rootPath)
+    } else {
+      handleSelectRepositoryRootPath()
+      onSubmit()
+    }
+  }
   const currentPath = browser?.resolvedPath ?? ''
   const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
   const visiblePickerEntries = useMemo(() => {
@@ -173,6 +233,68 @@ export function WorkspaceEditorModal({
   }, [browser?.entries, folderPickerSearch])
   if (!open) {
     return null
+  }
+
+  const loadReview = async (targetPath: string) => {
+    setReviewLoading(true)
+    setReviewError(null)
+    try {
+      const data = await reviewRepository(targetPath)
+      if (data.repository?.repositoryRoot && data.repository.repositoryRoot !== data.repository.path) {
+        throw new Error('Select the Git repository root as the Swarm workspace')
+      }
+      setReview(data)
+      const selectablePaths = data.files.filter((f) => f.selectable).map((f) => f.path)
+      setSelectedFiles(selectablePaths)
+      setConfirmOmissions(true)
+    } catch (err) {
+      if (err instanceof WorkspaceRepositoryPrerequisiteError && err.repository.repositoryRoot && err.repository.repositoryRoot !== err.repository.path) {
+        setReviewError(err.repository.message || 'Select the Git repository root as the Swarm workspace')
+      } else {
+        setReviewError(err instanceof Error ? err.message : 'Could not scan files in directory')
+      }
+    } finally {
+      setReviewLoading(false)
+    }
+  }
+
+  const handleOpenCommitMenu = () => {
+    const target = workspacePath.trim() || currentPath
+    if (!target) return
+    setShowCommitMenu(true)
+    void loadReview(target)
+  }
+
+  const handleCommitBaseline = async () => {
+    if (!review || baselineBusy) return
+    const selectableCount = review.files.filter((f) => f.selectable).length
+    const allSelected = selectedFiles.length === selectableCount
+    const omissionsConsent = allSelected || confirmOmissions
+    if (!omissionsConsent) return
+
+    setBaselineBusy(true)
+    setReviewError(null)
+    try {
+      if (onPrepareBaseline) {
+        await onPrepareBaseline(selectedFiles, omissionsConsent, review.digest)
+      } else {
+        const target = workspacePath.trim() || currentPath
+        const ready = await prepareBaseline({
+          path: target,
+          expected_resolved_path: target,
+          review_digest: review.digest,
+          selected_paths: selectedFiles,
+          confirm_baseline: true,
+          confirm_omissions: omissionsConsent,
+        })
+        if (ready.state !== 'ready') throw new Error('Repository setup did not produce a ready Git repository')
+        onSubmit()
+      }
+    } catch (err) {
+      setReviewError(err instanceof Error ? err.message : 'Failed to initialize Git repository and commit files')
+    } finally {
+      setBaselineBusy(false)
+    }
   }
 
   const openFolderPicker = (nextMode: Exclude<FolderPickerMode, null>) => {
@@ -477,22 +599,247 @@ export function WorkspaceEditorModal({
                     {repositoryReady ? <GitBranch size={18} className="mt-0.5 shrink-0 text-[var(--app-success)]" /> : <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />}
                     <div className="grid gap-1">
                       <h3 className="text-sm font-semibold text-[var(--app-text)]">
-                        {repositoryReady ? 'Git repository ready' : repositoryState.state === 'git_unavailable' ? 'Git is not installed or available' : repositoryState.state === 'needs_initial_commit' ? 'Create the first Git commit' : 'A committed Git repository is required'}
+                        {repositoryReady
+                          ? 'Git repository ready'
+                          : hasUncommittedContent
+                            ? 'Uncommitted changes detected'
+                            : repositoryState?.state === 'git_unavailable'
+                              ? 'Git is not installed or available'
+                              : repositoryState?.state === 'needs_initial_commit'
+                                ? 'Create the first Git commit'
+                                : 'A committed Git repository is required'}
                       </h3>
                       <p className="text-sm leading-6 text-[var(--app-text-muted)]">
                         {repositoryReady
                           ? 'This folder has a Git HEAD and can use Swarm managed worktrees.'
-                          : <>Swarm isolates agent work in managed worktrees. {repositoryState.message}</>}
+                          : hasUncommittedContent
+                            ? 'Swarm isolates agent work in managed worktrees using the committed HEAD. Uncommitted files and modifications will not enter agent worktrees.'
+                            : isInsideSubdirectory
+                              ? <>This folder is inside a Git repository. Select the repository root <code className="rounded bg-[var(--app-surface)] px-1 py-0.5 font-mono text-xs">{repositoryState?.repositoryRoot}</code> as the Swarm workspace.</>
+                              : <>Swarm isolates agent work in managed worktrees. {repositoryState?.message}</>}
                       </p>
                     </div>
                   </div>
-                  {!repositoryReady && repositoryState?.canSetup && onInitializeRepository ? (
-                    <Button type="button" onClick={onInitializeRepository} disabled={repositoryBusy || repositoryHelpBusy}>
+                  {hasUncommittedContent && !showCommitMenu ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          if (onConfirmCommittedOnly) {
+                            onConfirmCommittedOnly()
+                          } else {
+                            onSubmit(true)
+                          }
+                        }}
+                        disabled={saving || repositoryBusy || baselineBusy}
+                      >
+                        <Check size={14} />
+                        Add workspace using committed HEAD
+                      </Button>
+                    </div>
+                  ) : null}
+                  {!repositoryReady && isInsideSubdirectory && repositoryState?.repositoryRoot && !showCommitMenu ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        onClick={handleUseRepositoryRootAndAdd}
+                        disabled={repositoryBusy || repositoryHelpBusy || baselineBusy}
+                      >
+                        <GitBranch size={14} />
+                        Use repository root and add workspace
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={handleOpenCommitMenu}
+                        disabled={repositoryBusy || repositoryHelpBusy || reviewLoading || baselineBusy}
+                      >
+                        <FolderPlus size={14} />
+                        Initialize as independent Git repository
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleSelectRepositoryRootPath}
+                        disabled={repositoryBusy || repositoryHelpBusy || baselineBusy}
+                      >
+                        Select repository root path
+                      </Button>
+                    </div>
+                  ) : null}
+                  {!repositoryReady && !isInsideSubdirectory && repositoryState?.canSetup && onInitializeRepository && !showCommitMenu ? (
+                    <Button type="button" onClick={onInitializeRepository} disabled={repositoryBusy || repositoryHelpBusy || baselineBusy}>
                       {repositoryBusy ? <RefreshCw size={14} className="animate-spin" /> : <GitBranch size={14} />}
                       {repositoryBusy ? 'Initializing…' : 'Initialize Git repository and add workspace'}
                     </Button>
                   ) : null}
-                  {!repositoryReady && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && repositoryState.state !== 'not_repository' && !repositoryHelpLink && onAskSwarmForRepositoryHelp ? (
+                  {!repositoryReady && !isInsideSubdirectory && repositoryState && repositoryState.state !== 'git_unavailable' && !showCommitMenu ? (
+                    <Button
+                      type="button"
+                      variant={repositoryState.canSetup ? 'outline' : 'secondary'}
+                      onClick={handleOpenCommitMenu}
+                      disabled={repositoryBusy || repositoryHelpBusy || reviewLoading || baselineBusy}
+                    >
+                      <FolderPlus size={14} />
+                      {repositoryState.canSetup ? 'Choose files to commit…' : 'Initialize Git repository and choose files to commit'}
+                    </Button>
+                  ) : null}
+                  {!repositoryReady && showCommitMenu ? (
+                    <div className="grid gap-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3 text-sm">
+                      <div className="flex items-center justify-between gap-2 border-b border-[var(--app-border)] pb-2">
+                        <div>
+                          <h4 className="font-semibold text-[var(--app-text)]">
+                            Commit files to initial Git commit
+                          </h4>
+                          <p className="text-xs text-[var(--app-text-muted)]">
+                            Select which files or folders to include in the initial Git commit.
+                          </p>
+                        </div>
+                        {review && review.files.length > 0 ? (
+                          <div className="flex items-center gap-2 text-xs">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedFiles(review.files.filter((f) => f.selectable).map((f) => f.path))}
+                              className="text-[var(--app-primary)] hover:underline"
+                              disabled={baselineBusy}
+                            >
+                              Select all
+                            </button>
+                            <span className="text-[var(--app-text-subtle)]">·</span>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedFiles([])}
+                              className="text-[var(--app-primary)] hover:underline"
+                              disabled={baselineBusy}
+                            >
+                              Deselect all
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {reviewLoading ? (
+                        <div className="flex items-center gap-2 py-3 text-xs text-[var(--app-text-muted)]">
+                          <RefreshCw size={14} className="animate-spin" />
+                          <span>Scanning directory content…</span>
+                        </div>
+                      ) : reviewError ? (
+                        <div className="grid gap-2">
+                          <p className="text-xs text-[var(--app-error)]">{reviewError}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isInsideSubdirectory && repositoryState?.repositoryRoot ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={handleSelectRepositoryRootPath}
+                              >
+                                <GitBranch size={14} />
+                                Switch to repository root ({repositoryState.repositoryRoot})
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void loadReview(workspacePath.trim() || currentPath)}
+                              >
+                                Retry
+                              </Button>
+                            )}
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setShowCommitMenu(false)}
+                            >
+                              Back
+                            </Button>
+                          </div>
+                        </div>
+                      ) : review && review.files.length === 0 ? (
+                        <p className="text-xs text-[var(--app-text-muted)]">
+                          This folder is empty. An empty initial commit will be created.
+                        </p>
+                      ) : review ? (
+                        <div className="grid gap-2">
+                          <div className="max-h-48 overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2 grid gap-1">
+                            {review.files.map((file) => {
+                              const isSelected = selectedFiles.includes(file.path)
+                              return (
+                                <label
+                                  key={file.path}
+                                  className="flex items-center gap-2.5 rounded px-2 py-1 text-xs text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] cursor-pointer"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    disabled={!file.selectable || baselineBusy}
+                                    onChange={(e) => {
+                                      if (e.target.checked) {
+                                        setSelectedFiles((prev) => [...prev, file.path])
+                                      } else {
+                                        setSelectedFiles((prev) => prev.filter((p) => p !== file.path))
+                                      }
+                                    }}
+                                    className="rounded border-[var(--app-border)]"
+                                  />
+                                  <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                                  <span className="shrink-0 text-[10px] text-[var(--app-text-subtle)]">
+                                    {formatBytes(file.size)}
+                                  </span>
+                                  {!file.selectable ? (
+                                    <span className="shrink-0 text-[10px] text-[var(--app-warning)]">cannot import</span>
+                                  ) : null}
+                                </label>
+                              )
+                            })}
+                          </div>
+                          <div className="flex items-center justify-between text-xs text-[var(--app-text-subtle)]">
+                            <span>
+                              {selectedFiles.length} of {review.files.filter((f) => f.selectable).length} files selected
+                            </span>
+                          </div>
+                          {selectedFiles.length < review.files.filter((f) => f.selectable).length ? (
+                            <label className="flex items-start gap-2 text-xs text-[var(--app-text-muted)] cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={confirmOmissions}
+                                disabled={baselineBusy}
+                                onChange={(e) => setConfirmOmissions(e.target.checked)}
+                                className="mt-0.5 rounded border-[var(--app-border)]"
+                              />
+                              <span>I understand omitted files will not enter managed worktrees.</span>
+                            </label>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <Button
+                          type="button"
+                          onClick={() => void handleCommitBaseline()}
+                          disabled={
+                            baselineBusy ||
+                            reviewLoading ||
+                            !review ||
+                            (selectedFiles.length < (review?.files.filter((f) => f.selectable).length ?? 0) && !confirmOmissions)
+                          }
+                        >
+                          {baselineBusy ? <RefreshCw size={14} className="animate-spin" /> : <GitBranch size={14} />}
+                          {baselineBusy ? 'Initializing Git…' : 'Initialize Git and create workspace'}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setShowCommitMenu(false)}
+                          disabled={baselineBusy}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {!repositoryReady && !isInsideSubdirectory && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && repositoryState.state !== 'not_repository' && !repositoryHelpLink && onAskSwarmForRepositoryHelp && !showCommitMenu ? (
                     <Button type="button" variant="outline" onClick={onAskSwarmForRepositoryHelp} disabled={repositoryBusy || repositoryHelpBusy}>
                       {repositoryHelpBusy ? <RefreshCw size={14} className="animate-spin" /> : <Bot size={14} />}
                       {repositoryHelpBusy ? 'Starting session…' : 'Ask Swarm to help set up this repository'}
@@ -628,8 +975,16 @@ export function WorkspaceEditorModal({
                 Use as workspace folder
               </Button>
             ) : (
-              <Button type="button" onClick={onSubmit} disabled={saving || repositoryBusy || repositoryHelpBusy}>
-                {saving ? 'Saving…' : mode === 'create' ? repositoryState && !repositoryReady ? 'Recheck and add workspace' : 'Create workspace' : 'Save workspace'}
+              <Button type="button" onClick={() => onSubmit(hasUncommittedContent)} disabled={saving || repositoryBusy || repositoryHelpBusy}>
+                {saving
+                  ? 'Saving…'
+                  : mode === 'create'
+                    ? hasUncommittedContent
+                      ? 'Add workspace using committed HEAD'
+                      : repositoryState && !repositoryReady
+                        ? 'Recheck and add workspace'
+                        : 'Create workspace'
+                    : 'Save workspace'}
               </Button>
             )}
           </div>

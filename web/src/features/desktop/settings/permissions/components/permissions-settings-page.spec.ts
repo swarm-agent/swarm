@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { BASH_APPROVAL_PROFILES, buildPrefixDenyRulePayload, normalizeBashApprovalProfile, sessionMutationDecision, type PermissionRule } from './permissions-settings-page'
-import { normalizeCapabilityPolicies } from '../../../permissions/services/capability-policy'
+import {
+  DEFAULT_ACTIVE_EXECUTION_LIMIT,
+  normalizeActiveExecutionLimit,
+  normalizeCapabilityPolicies,
+  validateActiveExecutionLimit,
+} from '../../../permissions/services/capability-policy'
 
 const settingsSource = readFileSync(new URL('./permissions-settings-page.tsx', import.meta.url), 'utf8')
 
@@ -108,19 +113,52 @@ test('protected change settings keep skill and session mutation policies isolate
   assert.match(settingsSource, /skill_change/)
 })
 
-test('capability settings default session deployment and plan acceptance to ask', () => {
+test('capability settings default session deployment and plan acceptance to ask with default execution limit', () => {
   assert.deepEqual(normalizeCapabilityPolicies(null), {
     session_deploy: { mode: 'ask', automatic_deployments_per_parent_run: 0, over_limit_action: 'ask' },
     plan_acceptance: { mode: 'ask' },
+    active_execution_limit: DEFAULT_ACTIVE_EXECUTION_LIMIT,
   })
 })
 
-test('capability settings preserve bounded deployment and always-allow plan acceptance payloads', () => {
+test('capability settings preserve bounded deployment, always-allow plan acceptance, and explicit execution limit', () => {
   assert.deepEqual(normalizeCapabilityPolicies({
     session_deploy: { mode: 'bounded', automatic_deployments_per_parent_run: 3, over_limit_action: 'deny' },
     plan_acceptance: { mode: 'always_allow' },
+    active_execution_limit: 42,
   }), {
     session_deploy: { mode: 'bounded', automatic_deployments_per_parent_run: 3, over_limit_action: 'deny' },
     plan_acceptance: { mode: 'always_allow' },
+    active_execution_limit: 42,
   })
+})
+
+test('active execution limit validation fails closed on non-integer or out-of-bounds input', () => {
+  assert.equal(validateActiveExecutionLimit(0), 'Active execution limit must be between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(-5), 'Active execution limit must be between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(10001), 'Active execution limit must be between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(3.14), 'Active execution limit must be an integer between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(NaN), 'Active execution limit must be an integer between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit('100'), 'Active execution limit must be an integer between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(null), 'Active execution limit must be an integer between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(undefined), 'Active execution limit must be an integer between 1 and 10000.')
+  assert.equal(validateActiveExecutionLimit(1), null)
+  assert.equal(validateActiveExecutionLimit(100), null)
+  assert.equal(validateActiveExecutionLimit(10000), null)
+})
+
+test('active execution limit normalization falls back to default 100', () => {
+  assert.equal(normalizeActiveExecutionLimit(undefined), 100)
+  for (const invalid of [null, 0, -1, 50000]) {
+    assert.throws(() => normalizeActiveExecutionLimit(invalid), /Active execution limit/)
+  }
+  assert.equal(normalizeActiveExecutionLimit(50), 50)
+})
+
+test('permissions settings page renders active execution limit controls with fail-closed validation', () => {
+  assert.match(settingsSource, /Active execution limit/)
+  assert.match(settingsSource, /Max concurrent active executions/)
+  assert.match(settingsSource, /aria-label="Active execution limit"/)
+  assert.match(settingsSource, /validateActiveExecutionLimit/)
+  assert.match(settingsSource, /default 100 ceiling not target; no per-agent deployment execution limit/)
 })

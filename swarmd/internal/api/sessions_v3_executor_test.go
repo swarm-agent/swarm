@@ -1004,3 +1004,67 @@ func TestResolveSessionV3ProviderToolsCanonicalizesDefinitionNames(t *testing.T)
 		t.Fatalf("provider tool names mismatch\n got: %v\nwant: %v", names, expected)
 	}
 }
+
+// Purpose: CancelRunsForSession cancels all active runs for the specified session ID.
+func TestSessionV3CancelRunsForSession(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	created := createSessionsV3PrimaryTestSession(t, server, "cancel-sess-target", "cancel target")
+	canceled := false
+	exec := &sessionV3Executor{
+		server: server,
+		runStates: map[string]*sessionV3ExecutorRunState{
+			sessionV3ExecutorRunKey(created.ID, "run-1"): {
+				job: sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID, RunID: "run-1"},
+				cancel: func() {
+					canceled = true
+				},
+			},
+			sessionV3ExecutorRunKey("other-session", "run-2"): {
+				job: sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: "other-session", RunID: "run-2"},
+			},
+		},
+	}
+	server.v3SessionExecutor = exec
+	count := exec.CancelRunsForSession(created.ID, "test cancel")
+	if count != 1 {
+		t.Fatalf("expected 1 run cancelled, got %d", count)
+	}
+	if !canceled {
+		t.Fatal("expected cancel callback to be invoked")
+	}
+	if exec.runStates[sessionV3ExecutorRunKey(created.ID, "run-1")].canceled != true {
+		t.Fatal("expected run state to be marked canceled")
+	}
+	if exec.runStates[sessionV3ExecutorRunKey("other-session", "run-2")].canceled == true {
+		t.Fatal("expected unrelated run not to be canceled")
+	}
+}
+
+// Purpose: EnqueueRun limits concurrent background automation executions to 5.
+func TestSessionV3AutomationConcurrencyCap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec := &sessionV3Executor{
+		ctx:             ctx,
+		server:          &Server{},
+		inFlightRuns:    make(map[string]bool),
+		activeBySession: make(map[string]string),
+		runStates:       make(map[string]*sessionV3ExecutorRunState),
+	}
+	// Simulate 5 active automation runs
+	for i := 1; i <= 5; i++ {
+		sessID := fmt.Sprintf("av2-execution-occ-%d", i)
+		runID := fmt.Sprintf("run-%d", i)
+		runKey := sessionV3ExecutorRunKey(sessID, runID)
+		exec.inFlightRuns[runKey] = true
+		exec.activeBySession[sessID] = runID
+		exec.runStates[runKey] = &sessionV3ExecutorRunState{
+			job: sessionV3ExecutorJob{SessionID: sessID, RunID: runID},
+		}
+	}
+	// 6th automation run must be rejected due to concurrency cap
+	job6 := sessionV3ExecutorJob{SessionID: "av2-execution-occ-6", RunID: "run-6"}
+	if enqueued := exec.EnqueueRun(job6); enqueued {
+		t.Fatal("expected 6th concurrent automation execution to be rejected by concurrency cap")
+	}
+}

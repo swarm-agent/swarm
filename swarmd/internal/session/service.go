@@ -499,6 +499,11 @@ func (s *Service) tombstoneSessionsWithEventsExpected(sessionIDs []string, kind 
 			return nil, err
 		}
 	} else {
+		for _, session := range sessions {
+			if childIDs, err := s.store.ListAutomationV2ChildSessionIDs(session.AccountScopeID, session.ID); err == nil && len(childIDs) > 0 {
+				_ = s.store.DeleteSessions(childIDs)
+			}
+		}
 		if err := s.store.DeleteSessions(normalizedIDs); err != nil {
 			return nil, err
 		}

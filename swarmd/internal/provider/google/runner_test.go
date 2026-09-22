@@ -1631,3 +1631,97 @@ func TestGoogleTrailingModelTurnRecoversUnary(t *testing.T) {
 		t.Fatalf("receivedContents last turn role = %q, want user", lastTurn.Role)
 	}
 }
+
+func TestBuildGoogleRequestPrefixFreezingAcrossTurns(t *testing.T) {
+	// Purpose:
+	// - Invariant: Google SystemInstruction must remain byte-for-byte frozen across turns,
+	//   ensuring implicit KV context caching yields the 75% cached token discount.
+	// - Boundary/authority: buildGoogleRequest in swarmd/internal/provider/google/runner.go.
+	// - Threat/regression: Dynamic run state (RunID, task checkmarks) and per-turn timestamps
+	//   in request-runtime-context bust the prefix hash at Token 0 on every turn.
+
+	staticPrompt := "You are Swarm, the primary orchestration agent.\nMaster harness instructions.\nTools contract."
+
+	turn1Instructions := staticPrompt + "\n\nDurable run state (authoritative; do not infer or override it from transcript or UI):\n" +
+		`{"current_run_id":"run-turn-1","active_checkpoint":{"tasks":["Task 1"]}}` +
+		"\n\n[request-runtime-context]\n- current_utc_time: 2026-09-22T11:00:00Z\n- current_provider: google\n- current_model: gemini-3.8-flash"
+
+	turn2Instructions := staticPrompt + "\n\nDurable run state (authoritative; do not infer or override it from transcript or UI):\n" +
+		`{"current_run_id":"run-turn-2","active_checkpoint":{"tasks":["Task 1 (completed)"]}}` +
+		"\n\n[request-runtime-context]\n- current_utc_time: 2026-09-22T11:05:32Z\n- current_provider: google\n- current_model: gemini-3.8-flash"
+
+	reqTurn1 := provideriface.Request{
+		Model:        "gemini-3.8-flash",
+		Instructions: turn1Instructions,
+		Input: []map[string]any{
+			{"role": "user", "content": "Hello Swarm"},
+		},
+	}
+
+	reqTurn2 := provideriface.Request{
+		Model:        "gemini-3.8-flash",
+		Instructions: turn2Instructions,
+		Input: []map[string]any{
+			{"role": "user", "content": "Hello Swarm"},
+			{"role": "assistant", "content": "Hello! How can I help?"},
+			{"role": "user", "content": "What is the status?"},
+		},
+	}
+
+	built1, err := buildGoogleRequest(reqTurn1)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest(Turn 1) failed: %v", err)
+	}
+
+	built2, err := buildGoogleRequest(reqTurn2)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest(Turn 2) failed: %v", err)
+	}
+
+	// 1. Verify SystemInstruction is 100% byte-for-byte identical across turns (Prefix Freezing)
+	if built1.SystemInstruction == nil || len(built1.SystemInstruction.Parts) == 0 {
+		t.Fatal("built1 SystemInstruction is empty")
+	}
+	if built2.SystemInstruction == nil || len(built2.SystemInstruction.Parts) == 0 {
+		t.Fatal("built2 SystemInstruction is empty")
+	}
+	sys1 := built1.SystemInstruction.Parts[0].Text
+	sys2 := built2.SystemInstruction.Parts[0].Text
+	if sys1 != sys2 {
+		t.Fatalf("SystemInstruction mutated across turns!\nTurn 1:\n%s\n\nTurn 2:\n%s", sys1, sys2)
+	}
+	if sys1 != staticPrompt {
+		t.Fatalf("SystemInstruction does not match expected static prompt: got %q, want %q", sys1, staticPrompt)
+	}
+
+	// 2. Verify dynamic runtime context was safely delivered in the latest user turn
+	last1 := built1.Contents[len(built1.Contents)-1]
+	foundT1 := false
+	for _, part := range last1.Parts {
+		if strings.Contains(part.Text, "run-turn-1") && strings.Contains(part.Text, "2026-09-22T11:00:00Z") {
+			foundT1 = true
+			break
+		}
+	}
+	if !foundT1 {
+		t.Fatalf("Turn 1 dynamic context missing from last user turn: %+v", last1.Parts)
+	}
+
+	last2 := built2.Contents[len(built2.Contents)-1]
+	foundT2 := false
+	for _, part := range last2.Parts {
+		if strings.Contains(part.Text, "run-turn-2") && strings.Contains(part.Text, "2026-09-22T11:05:32Z") {
+			foundT2 = true
+			break
+		}
+	}
+	if !foundT2 {
+		t.Fatalf("Turn 2 dynamic context missing from last user turn: %+v", last2.Parts)
+	}
+
+	// 3. Verify Turn 1 user message in Turn 2 history remained completely intact
+	if built2.Contents[0].Parts[0].Text != built1.Contents[0].Parts[0].Text {
+		t.Fatalf("Turn 1 user message in Turn 2 history does not match Turn 1 original user message: got %q, want %q",
+			built2.Contents[0].Parts[0].Text, built1.Contents[0].Parts[0].Text)
+	}
+}
