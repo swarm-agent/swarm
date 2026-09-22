@@ -19,3 +19,12 @@ test('workspace editor modal facilitates Git init and file commit menu', () => {
   assert.match(source, /reviewRepository/)
   assert.match(source, /prepareBaseline/)
 })
+
+test('workspace editor modal facilitates switching to repository root when in subdirectory', () => {
+  // Verifies the modal detects subdirectories of Git repositories and provides quick actions
+  assert.match(source, /isInsideSubdirectory/)
+  assert.match(source, /Use repository root and add workspace/)
+  assert.match(source, /Select repository root path/)
+  assert.match(source, /Switch to repository root/)
+  assert.match(source, /onUseRepositoryRoot/)
+})

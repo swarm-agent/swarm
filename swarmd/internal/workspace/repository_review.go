@@ -69,7 +69,7 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 		return review, &RepositoryPrerequisiteError{Repository: state}
 	}
 	if state.Repository != "" && state.Repository != state.Path || state.Message == repositoryMessageNonWorkTree {
-		return review, errors.New("select a normal repository root")
+		return review, &RepositoryPrerequisiteError{Repository: state}
 	}
 	root, err := os.OpenRoot(state.Path)
 	if err != nil {

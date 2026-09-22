@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -245,6 +246,58 @@ func TestWorkspaceSaveFacilitatesGitInitWhenNoGit(t *testing.T) {
 	}
 	if app.workspacePath != "/no-git" {
 		t.Fatalf("workspacePath = %q, want /no-git", app.workspacePath)
+	}
+}
+
+func TestTUIWorkspaceSaveSubdirectoryReportsRepositoryRoot(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspace/add":
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":    false,
+				"code":  "workspace_repository_not_ready",
+				"error": "Select the Git repository root as the Swarm workspace",
+				"repository": map[string]any{
+					"state":           "not_repository",
+					"path":            "/repo/sub",
+					"repository_root": "/repo",
+					"message":         "Select the Git repository root as the Swarm workspace",
+				},
+			})
+		case "/v1/workspace/repository":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"repository": client.OnboardingRepository{
+					State:          "not_repository",
+					Path:           "/repo/sub",
+					RepositoryRoot: "/repo",
+					Message:        "Select the Git repository root as the Swarm workspace",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{api: testAPIWithToken(server.URL), route: "home", activePath: "/repo-a", workspacePath: "/repo-a", homeModel: model.EmptyHome(), gitStatusCh: make(chan gitStatusRefreshResult, 1)}
+	app.home = ui.NewHomePage(app.homeModel)
+	app.home.ShowWorkspaceModal()
+
+	app.handleWorkspaceModalAction(ui.WorkspaceModalAction{
+		Kind:        ui.WorkspaceModalActionSave,
+		Path:        "/repo/sub",
+		Name:        "Sub",
+		MakeCurrent: true,
+	})
+
+	if app.home.WorkspaceModalReviewActive() {
+		t.Fatal("expected review menu NOT to be active for repository subdirectory")
+	}
+	errText := app.home.WorkspaceModalError()
+	if !strings.Contains(errText, "select git repository root /repo instead") {
+		t.Fatalf("expected error mentioning repository root /repo, got: %q", errText)
 	}
 }
 

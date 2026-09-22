@@ -263,7 +263,41 @@ func TestRepositoryBaselinePublicationFailureResumes(t *testing.T) {
 	}
 }
 
-// Requirement: effective-UID ACL-aware access, not terminal/root assumptions,
+// Requirement: ReviewRepositoryForPrincipal must reject subdirectories of a
+// repository with a typed RepositoryPrerequisiteError referencing the repository root.
+func TestRepositoryReviewRejectsSubdirectoryWithRepositoryRootPrerequisite(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	root := t.TempDir()
+	if _, err := runRepositoryGit(root, "init", "--initial-branch=main", "--template="); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "subfolder")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	review, err := svc.ReviewRepositoryForPrincipal(testPrincipal(), sub)
+	if err == nil {
+		t.Fatal("expected prerequisite error for repository subdirectory")
+	}
+	prereq, ok := err.(*RepositoryPrerequisiteError)
+	if !ok {
+		t.Fatalf("expected *RepositoryPrerequisiteError, got %T: %v", err, err)
+	}
+	if prereq.Repository.Repository != root {
+		t.Fatalf("expected repository root %q, got %q", root, prereq.Repository.Repository)
+	}
+	if prereq.Repository.State != RepositoryStateNotRepository {
+		t.Fatalf("expected state %q, got %q", RepositoryStateNotRepository, prereq.Repository.State)
+	}
+	if len(review.Files) != 0 {
+		t.Fatalf("expected no review files, got %d", len(review.Files))
+	}
+}
+
 // governs setup. An inaccessible parent must reject before directory mutation.
 func TestRepositoryRuntimeAccessRejectsUnwritableParent(t *testing.T) {
 	if os.Geteuid() == 0 {

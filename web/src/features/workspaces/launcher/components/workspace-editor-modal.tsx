@@ -8,7 +8,7 @@ import { cn } from '../../../../lib/cn'
 import { formatWorkspacePath } from '../services/workspace-format'
 import { createWorkspaceThemeStyle, WORKSPACE_THEME_OPTIONS } from '../services/workspace-theme'
 import type { WorkspaceBrowseResult, WorkspaceEntry } from '../types/workspace'
-import type { WorkspaceRepositoryState } from '../services/workspace-repository'
+import { WorkspaceRepositoryPrerequisiteError, type WorkspaceRepositoryState } from '../services/workspace-repository'
 import { prepareBaseline, reviewRepository, type RepositoryReview } from '../services/repository-review'
 import { WorkspaceDefinitionStatus } from './workspace-definition-status'
 
@@ -40,6 +40,7 @@ interface WorkspaceEditorModalProps {
   repositoryHelpBusy?: boolean
   repositoryHelpLink?: ReactNode
   onInitializeRepository?: () => void
+  onUseRepositoryRoot?: (rootPath: string) => void
   onPrepareBaseline?: (selectedPaths: string[], confirmOmissions: boolean, reviewDigest: string) => Promise<void>
   onAskSwarmForRepositoryHelp?: () => void
   personalizing?: boolean
@@ -124,6 +125,7 @@ export function WorkspaceEditorModal({
   repositoryHelpBusy = false,
   repositoryHelpLink,
   onInitializeRepository,
+  onUseRepositoryRoot,
   onPrepareBaseline,
   onAskSwarmForRepositoryHelp,
   personalizing = false,
@@ -184,6 +186,38 @@ export function WorkspaceEditorModal({
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
   const repositoryReady = mode === 'edit' || repositoryState?.state === 'ready'
+  const isInsideSubdirectory = Boolean(
+    repositoryState?.repositoryRoot &&
+    repositoryState.path &&
+    repositoryState.repositoryRoot !== repositoryState.path
+  )
+
+  const handleSelectRepositoryRootPath = () => {
+    if (!repositoryState?.repositoryRoot) return
+    const rootPath = repositoryState.repositoryRoot
+    if (onPickWorkspaceFolder) {
+      onPickWorkspaceFolder(rootPath)
+    } else {
+      onWorkspacePathChange(rootPath)
+    }
+    setShowCommitMenu(false)
+    setReview(null)
+    setReviewError(null)
+  }
+
+  const handleUseRepositoryRootAndAdd = () => {
+    if (!repositoryState?.repositoryRoot) return
+    const rootPath = repositoryState.repositoryRoot
+    setShowCommitMenu(false)
+    setReview(null)
+    setReviewError(null)
+    if (onUseRepositoryRoot) {
+      onUseRepositoryRoot(rootPath)
+    } else {
+      handleSelectRepositoryRootPath()
+      onSubmit()
+    }
+  }
   const currentPath = browser?.resolvedPath ?? ''
   const currentPathLabel = currentPath ? formatWorkspacePath(currentPath) : '—'
   const visiblePickerEntries = useMemo(() => {
@@ -203,18 +237,29 @@ export function WorkspaceEditorModal({
     setReviewError(null)
     try {
       const data = await reviewRepository(targetPath)
+      if (data.repository?.repositoryRoot && data.repository.repositoryRoot !== data.repository.path) {
+        throw new Error('Select the Git repository root as the Swarm workspace')
+      }
       setReview(data)
       const selectablePaths = data.files.filter((f) => f.selectable).map((f) => f.path)
       setSelectedFiles(selectablePaths)
       setConfirmOmissions(true)
     } catch (err) {
-      setReviewError(err instanceof Error ? err.message : 'Could not scan files in directory')
+      if (err instanceof WorkspaceRepositoryPrerequisiteError && err.repository.repositoryRoot && err.repository.repositoryRoot !== err.repository.path) {
+        setReviewError(err.repository.message || 'Select the Git repository root as the Swarm workspace')
+      } else {
+        setReviewError(err instanceof Error ? err.message : 'Could not scan files in directory')
+      }
     } finally {
       setReviewLoading(false)
     }
   }
 
   const handleOpenCommitMenu = () => {
+    if (isInsideSubdirectory) {
+      handleSelectRepositoryRootPath()
+      return
+    }
     const target = workspacePath.trim() || currentPath
     if (!target) return
     setShowCommitMenu(true)
@@ -560,17 +605,39 @@ export function WorkspaceEditorModal({
                       <p className="text-sm leading-6 text-[var(--app-text-muted)]">
                         {repositoryReady
                           ? 'This folder has a Git HEAD and can use Swarm managed worktrees.'
-                          : <>Swarm isolates agent work in managed worktrees. {repositoryState.message}</>}
+                          : isInsideSubdirectory
+                            ? <>This folder is inside a Git repository. Select the repository root <code className="rounded bg-[var(--app-surface)] px-1 py-0.5 font-mono text-xs">{repositoryState?.repositoryRoot}</code> as the Swarm workspace.</>
+                            : <>Swarm isolates agent work in managed worktrees. {repositoryState?.message}</>}
                       </p>
                     </div>
                   </div>
-                  {!repositoryReady && repositoryState?.canSetup && onInitializeRepository && !showCommitMenu ? (
+                  {!repositoryReady && isInsideSubdirectory && repositoryState?.repositoryRoot && !showCommitMenu ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        onClick={handleUseRepositoryRootAndAdd}
+                        disabled={repositoryBusy || repositoryHelpBusy || baselineBusy}
+                      >
+                        <GitBranch size={14} />
+                        Use repository root and add workspace
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleSelectRepositoryRootPath}
+                        disabled={repositoryBusy || repositoryHelpBusy || baselineBusy}
+                      >
+                        Select repository root path
+                      </Button>
+                    </div>
+                  ) : null}
+                  {!repositoryReady && !isInsideSubdirectory && repositoryState?.canSetup && onInitializeRepository && !showCommitMenu ? (
                     <Button type="button" onClick={onInitializeRepository} disabled={repositoryBusy || repositoryHelpBusy || baselineBusy}>
                       {repositoryBusy ? <RefreshCw size={14} className="animate-spin" /> : <GitBranch size={14} />}
                       {repositoryBusy ? 'Initializing…' : 'Initialize Git repository and add workspace'}
                     </Button>
                   ) : null}
-                  {!repositoryReady && repositoryState && repositoryState.state !== 'git_unavailable' && !showCommitMenu ? (
+                  {!repositoryReady && !isInsideSubdirectory && repositoryState && repositoryState.state !== 'git_unavailable' && !showCommitMenu ? (
                     <Button
                       type="button"
                       variant={repositoryState.canSetup ? 'outline' : 'secondary'}
@@ -623,14 +690,35 @@ export function WorkspaceEditorModal({
                       ) : reviewError ? (
                         <div className="grid gap-2">
                           <p className="text-xs text-[var(--app-error)]">{reviewError}</p>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void loadReview(workspacePath.trim() || currentPath)}
-                          >
-                            Retry
-                          </Button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {isInsideSubdirectory && repositoryState?.repositoryRoot ? (
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={handleSelectRepositoryRootPath}
+                              >
+                                <GitBranch size={14} />
+                                Switch to repository root ({repositoryState.repositoryRoot})
+                              </Button>
+                            ) : (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void loadReview(workspacePath.trim() || currentPath)}
+                              >
+                                Retry
+                              </Button>
+                            )}
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setShowCommitMenu(false)}
+                            >
+                              Back
+                            </Button>
+                          </div>
                         </div>
                       ) : review && review.files.length === 0 ? (
                         <p className="text-xs text-[var(--app-text-muted)]">
@@ -715,7 +803,7 @@ export function WorkspaceEditorModal({
                       </div>
                     </div>
                   ) : null}
-                  {!repositoryReady && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && repositoryState.state !== 'not_repository' && !repositoryHelpLink && onAskSwarmForRepositoryHelp && !showCommitMenu ? (
+                  {!repositoryReady && !isInsideSubdirectory && repositoryState && repositoryState.state !== 'git_unavailable' && !repositoryState.canSetup && repositoryState.state !== 'not_repository' && !repositoryHelpLink && onAskSwarmForRepositoryHelp && !showCommitMenu ? (
                     <Button type="button" variant="outline" onClick={onAskSwarmForRepositoryHelp} disabled={repositoryBusy || repositoryHelpBusy}>
                       {repositoryHelpBusy ? <RefreshCw size={14} className="animate-spin" /> : <Bot size={14} />}
                       {repositoryHelpBusy ? 'Starting session…' : 'Ask Swarm to help set up this repository'}

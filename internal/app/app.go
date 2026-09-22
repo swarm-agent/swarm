@@ -5548,10 +5548,22 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		defer cancel()
 		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
 		if err != nil {
+			inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer inspectCancel()
+			if repoState, inspectErr := a.api.InspectOnboardingRepository(inspectCtx, targetPath); inspectErr == nil && repoState.RepositoryRoot != "" && repoState.RepositoryRoot != targetPath {
+				a.home.SetWorkspaceModalLoading(false)
+				a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: select git repository root %s instead", repoState.RepositoryRoot))
+				return
+			}
 			reviewCtx, reviewCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer reviewCancel()
 			review, reviewErr := a.api.ReviewOnboardingRepository(reviewCtx, targetPath)
 			if reviewErr == nil && (review.Repository.State == "not_repository" || review.Repository.State == "needs_assisted_setup" || review.Repository.State == "needs_initial_commit" || len(review.Files) >= 0) {
+				if review.Repository.RepositoryRoot != "" && review.Repository.RepositoryRoot != targetPath {
+					a.home.SetWorkspaceModalLoading(false)
+					a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: select git repository root %s instead", review.Repository.RepositoryRoot))
+					return
+				}
 				a.home.OpenWorkspaceModalReview(targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent, action.LinkedDirectory, review)
 				a.home.SetWorkspaceModalLoading(false)
 				return

@@ -2,13 +2,14 @@ package client
 
 // Repository state comes from the authenticated daemon, not terminal-local Git.
 type OnboardingRepository struct {
-	State        string `json:"state"`
-	Path         string `json:"path"`
-	HeadCommit   string `json:"head_commit"`
-	CanSetup     bool   `json:"can_setup"`
-	ContentReady bool   `json:"content_ready"`
-	NeedsReview  bool   `json:"needs_review"`
-	Message      string `json:"message"`
+	State          string `json:"state"`
+	Path           string `json:"path"`
+	RepositoryRoot string `json:"repository_root,omitempty"`
+	HeadCommit     string `json:"head_commit"`
+	CanSetup       bool   `json:"can_setup"`
+	ContentReady   bool   `json:"content_ready"`
+	NeedsReview    bool   `json:"needs_review"`
+	Message        string `json:"message"`
 }
 type OnboardingReviewFile struct {
 	Path       string `json:"path"`

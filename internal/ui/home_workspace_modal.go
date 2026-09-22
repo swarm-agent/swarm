@@ -237,6 +237,10 @@ func (p *HomePage) WorkspaceModalIntent() string {
 	return strings.TrimSpace(p.workspaceModal.Intent)
 }
 
+func (p *HomePage) WorkspaceModalError() string {
+	return strings.TrimSpace(p.workspaceModal.Error)
+}
+
 func (p *HomePage) SetWorkspaceModalData(entries []WorkspaceModalWorkspace) {
 	selectedPath := p.selectedWorkspaceModalPath()
 	p.workspaceModal.Workspaces = append([]WorkspaceModalWorkspace(nil), entries...)
