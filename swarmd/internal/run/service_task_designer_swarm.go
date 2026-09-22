@@ -176,13 +176,13 @@ func validateGeneratedDesignerHTML(html string, isAnimation bool) error {
 		return errors.New("output does not contain a valid <html>...</html> document")
 	}
 	if isAnimation {
-		if !strings.Contains(trimmed, `id="swarm-animation-manifest"`) && !strings.Contains(trimmed, `id='swarm-animation-manifest'`) {
+		if !strings.Contains(trimmed, "swarm-animation-manifest") {
 			return errors.New("missing <script id=\"swarm-animation-manifest\" type=\"application/json\"> manifest")
 		}
 		if !strings.Contains(trimmed, "__SWARM_ANIMATION_V1__") {
 			return errors.New("missing window.__SWARM_ANIMATION_V1__ animation bridge")
 		}
-		if !strings.Contains(trimmed, `"swarm.animation/v1"`) && !strings.Contains(trimmed, `'swarm.animation/v1'`) {
+		if !strings.Contains(trimmed, "swarm.animation/v1") {
 			return errors.New("__SWARM_ANIMATION_V1__ must declare version: \"swarm.animation/v1\"")
 		}
 		if !strings.Contains(trimmed, "ready") || !strings.Contains(trimmed, "seek") {
@@ -190,7 +190,7 @@ func validateGeneratedDesignerHTML(html string, isAnimation bool) error {
 		}
 	}
 	hasID := false
-	for _, tag := range []string{"<main", "<div", "<section", "<article"} {
+	for _, tag := range []string{"<main", "<div", "<section", "<article", "<canvas", "<svg"} {
 		if strings.Contains(lower, tag) && strings.Contains(lower, "id=") {
 			hasID = true
 			break
@@ -562,6 +562,7 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 		Reference *taskArtifactReference
 		Parts     []pebblestore.SessionArtifactPart
 		Err       error
+		Attempts  int
 	}
 	results := make([]designerResult, len(prepared))
 	sem := make(chan struct{}, directDesignerSwarmGenerationParallelism)
@@ -671,6 +672,7 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 				if valErr == nil {
 					generatedHTML = extracted
 					lastErr = nil
+					results[i].Attempts = attempt + 1
 					break
 				}
 
@@ -869,6 +871,8 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 			"stream_key":            prepared[i].StreamKey,
 			"execution":             "router_to_designer_model",
 			"child_session_created": false,
+			"attempts":              res.Attempts,
+			"one_shot":              res.Attempts == 1,
 		}
 		if res.Err != nil {
 			status = "error"
