@@ -23,7 +23,7 @@ import (
 
 const (
 	directDesignerSwarmRouterParallelism     = 8
-	directDesignerSwarmGenerationParallelism = 8
+	directDesignerSwarmGenerationParallelism = 4
 	directDesignerSwarmMaxRepairAttempts     = 2
 	directDesignerSwarmMaxOutputRunes        = 512000
 )
@@ -163,7 +163,8 @@ func extractHTMLFromModelOutput(raw string) string {
 	if m := reBare.FindStringSubmatch(trimmed); len(m) > 1 {
 		return strings.TrimSpace(m[1])
 	}
-	return trimmed
+	reImportMap := regexp.MustCompile(`(?is)<script\s+type=["']importmap["'].*?</script>`)
+	return reImportMap.ReplaceAllString(trimmed, "")
 }
 
 func validateGeneratedDesignerHTML(html string, isAnimation bool) error {
@@ -720,6 +721,10 @@ func (s *Service) executeDirectDesignerSwarm(ctx context.Context, sessionID, ses
 				})
 				if runErr != nil && !overLimit {
 					lastErr = runErr
+					if attempt < directDesignerSwarmMaxRepairAttempts {
+						time.Sleep(time.Duration(attempt+1) * 600 * time.Millisecond)
+						continue
+					}
 					break
 				}
 
