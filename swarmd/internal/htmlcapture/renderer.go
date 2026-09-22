@@ -41,9 +41,9 @@ const (
 	MaxDocumentTiles    = 64
 	MaxPNGBytes         = 16 << 20
 	SystemChromePath    = "/opt/google/chrome/chrome"
-	totalTimeout        = 45 * time.Second
-	documentTimeout     = 5 * time.Second
-	stateTimeout        = 5 * time.Second
+	totalTimeout        = 60 * time.Second
+	documentTimeout     = 15 * time.Second
+	stateTimeout        = 12 * time.Second
 )
 
 type Request struct {
