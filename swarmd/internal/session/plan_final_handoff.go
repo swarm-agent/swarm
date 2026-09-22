@@ -25,7 +25,7 @@ const (
 	PlanFinalHandoffMaxCopyableCodeBlocks     = 3
 	PlanFinalHandoffMaxCodeBlockLabelRunes    = 80
 	PlanFinalHandoffMaxCodeBlockLanguageRunes = 32
-	PlanFinalHandoffMaxCodeBlockRunes         = 8 * 1024
+	PlanFinalHandoffMaxCodeBlockRunes         = 64 * 1024
 	PlanFinalHandoffMaxSuggestedPrompts       = 3
 	PlanFinalHandoffMaxPromptLabelRunes       = 80
 	PlanFinalHandoffMaxSuggestedPromptRunes   = 800
