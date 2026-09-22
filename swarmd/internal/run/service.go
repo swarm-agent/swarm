@@ -3703,6 +3703,7 @@ func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnap
 
 func compactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
 	messages = trimMessagesToLatestCompactionCheckpoint(messages)
+	messages = compactOlderToolMessagesForProviderContext(messages, 6)
 	if limit <= 0 || len(messages) <= limit {
 		return append([]pebblestore.MessageSnapshot(nil), messages...)
 	}

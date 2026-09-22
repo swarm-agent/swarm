@@ -2,7 +2,10 @@ package pebblestore
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+
+	"github.com/cockroachdb/pebble"
 )
 
 func TestSearchV3SessionsRecentPaginationMergesActiveAndArchived(t *testing.T) {
@@ -243,6 +246,73 @@ func TestSessionSearchToolMessageUsesExplicitBoundedIndexContent(t *testing.T) {
 	messages, err := sessions.ListV3SessionMessages("bounded-tool-search", 0, 10)
 	if err != nil || len(messages) != 1 || messages[0].Content != `{"output":"durable-only-needle"}` {
 		t.Fatalf("durable tool message changed: messages=%+v err=%v", messages, err)
+	}
+}
+
+func TestSessionSearchToolMessageCapsIndexedTokensAndAvoidsCodeBleed(t *testing.T) {
+	store := openV3SessionEventTestStore(t)
+	sessions := NewSessionStore(store)
+	sessionID := "tool-cap-session"
+	createSearchTestSession(t, sessions, SessionSnapshot{ID: sessionID, UserID: "user-1", AccountScopeID: "acct-1", WorkspacePath: t.TempDir(), Title: "Tool Test", CreatedAt: 1000, UpdatedAt: 1000})
+
+	// Generate a simulated tool message with 200 distinct code tokens
+	var codeTokens []string
+	for i := 0; i < 200; i++ {
+		codeTokens = append(codeTokens, fmt.Sprintf("variabletoken%04d", i))
+	}
+	rawCode := strings.Join(codeTokens, " ")
+
+	_, err := sessions.ApplyV3SessionMutation(V3SessionMutationInput{
+		Kind:            V3SessionMutationAppendMessage,
+		SessionID:       sessionID,
+		UserID:          "user-1",
+		AccountScopeID:  "acct-1",
+		ClientRequestID: "tool-cap-req",
+		PayloadHash:     "tool-cap-hash",
+		NowUnixMs:       2000,
+		Message: &MessageSnapshot{
+			Role:    "tool",
+			Content: fmt.Sprintf(`{"summary":"read pkg/storage/store.go (100 lines)","output":%q}`, rawCode),
+		},
+	})
+	if err != nil {
+		t.Fatalf("append tool message: %v", err)
+	}
+
+	// 1. Verify summary terms match
+	matchRes, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "storage", Limit: 10})
+	if err != nil || len(matchRes.Items) != 1 || matchRes.Items[0].ID != sessionID {
+		t.Fatalf("expected storage summary match, got: %+v, err: %v", matchRes.Items, err)
+	}
+
+	// 2. Count total posting keys written in Pebble for this session
+	prefix := fmt.Sprintf("%s%s/message/", keyV3SessionSearchPostingPrefix, sessionID)
+	iter, err := store.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefix),
+		UpperBound: []byte(prefix + "\xff"),
+	})
+	if err != nil {
+		t.Fatalf("new iter: %v", err)
+	}
+	postingKeyCount := 0
+	for iter.First(); iter.Valid(); iter.Next() {
+		postingKeyCount++
+	}
+	if err := iter.Close(); err != nil {
+		t.Fatalf("iter close: %v", err)
+	}
+
+	if postingKeyCount > maxV3SessionSearchToolTokens {
+		t.Fatalf("posting keys count %d exceeds tool cap %d", postingKeyCount, maxV3SessionSearchToolTokens)
+	}
+
+	// 3. Verify raw code token #150 did NOT leak into search postings
+	leakedRes, err := sessions.SearchV3Sessions(V3SessionSearchOptions{AccountScopeID: "acct-1", UserID: "user-1", Global: true, Query: "variabletoken0150", Limit: 10})
+	if err != nil {
+		t.Fatalf("search leaked: %v", err)
+	}
+	if len(leakedRes.Items) != 0 {
+		t.Fatalf("deep raw code token leaked into search postings: %+v", leakedRes.Items)
 	}
 }
 

@@ -59,6 +59,7 @@ Do not add session behavior to v1/v2 session handlers, legacy snapshots, fronten
 
 ### Plans, agents, and tools
 
+- **Never modify system prompts, master harness prompts, or tool schemas without an explicit user instruction.** Prompts and tool definitions are delicate orchestration contracts governing model routing, one-shot accuracy, and contract invariants. General performance optimization, token reduction, or benchmarking tasks do not authorize altering prompt text, system prompts, or tool descriptions.
 - Plans and checkpoint execution are durable V3 session state. Plan mutations, approval, attempts, and terminal outcomes must use the canonical plan/session mutation paths rather than side files or UI-only state.
 - System-agent identity and security contracts are code-owned in `swarmd/internal/agent/system_agent_registry.go`. User-visible system agents are Swarm, Compact, Finder, Coder, and Designer. Router and other internal agents perform bounded system work.
 - Agent model authority is the canonical account-scoped agent-model settings service. Do not recreate legacy per-profile model authorities or re-resolve mutable profile state in the middle of an existing session/run.

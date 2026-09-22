@@ -1320,12 +1320,10 @@ func (s *Service) storeProviderManagedToolResultV3(config providerToolInvokerCon
 		principal = identity.Principal{Type: identity.PrincipalTypeUser, UserID: session.UserID, AccountScopeID: session.AccountScopeID}
 	}
 	messageMetadata := providerManagedV3ToolMessageMetadata(config, call, metadata, result)
-	toolName := canonicalToolName(call.Name)
-	if (toolName == "read" && len(strings.TrimSpace(result.Output)) > maxToolInputBytes) || toolName == "websearch" || toolName == "webfetch" {
-		// Session search needs a representative tool result, not every token in a
-		// large read or web response. Keep durable history/realtime content full,
-		// but build postings from the bounded completion summary only.
-		messageMetadata["search_index_content"] = formatProviderManagedToolCompletedOutput(call, result)
+	// Build search index postings from bounded completion summary for all tools,
+	// keeping durable history and realtime content full without bloating search postings with raw code tokens.
+	if summary := formatToolSearchIndexContent(call, result); strings.TrimSpace(summary) != "" {
+		messageMetadata["search_index_content"] = summary
 	}
 	content, err := formatV3ProviderManagedToolResultRecord(call, messageMetadata, result)
 	if err != nil {
