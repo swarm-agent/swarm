@@ -26,13 +26,6 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
-func asString(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
 func runCommittedSourceGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
