@@ -335,6 +335,75 @@ func TestRepositoryReviewAllowsSubdirectoryInitializationAsIndependentRepo(t *te
 	}
 }
 
+// Requirement: ReviewRepositoryForPrincipal must skip node_modules and directories/files
+// matching .gitignore so that large dependency folders do not exceed bounded review limits.
+func TestRepositoryReviewSkipsNodeModulesAndGitignoredDirectories(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	store, cleanup := newTestWorkspaceStore(t)
+	defer cleanup()
+	svc := NewService(store)
+	dir := t.TempDir()
+
+	// Source files
+	if err := os.WriteFile(filepath.Join(dir, "index.ts"), []byte("console.log('hi')"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Gitignore
+	gitignoreContent := "node_modules/\n*.log\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "app.log"), []byte("log data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Node modules directory with many files
+	nmDir := filepath.Join(dir, "node_modules", "some-pkg")
+	if err := os.MkdirAll(nmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nmDir, "large.js"), []byte("const x = 1;"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	review, err := svc.ReviewRepositoryForPrincipal(testPrincipal(), dir)
+	if err != nil {
+		t.Fatalf("expected review to succeed, got: %v", err)
+	}
+
+	fileMap := make(map[string]RepositoryReviewFile)
+	for _, f := range review.Files {
+		fileMap[f.Path] = f
+	}
+
+	if _, found := fileMap["index.ts"]; !found || !fileMap["index.ts"].Selectable {
+		t.Fatal("expected index.ts to be found and selectable")
+	}
+	if _, found := fileMap["package.json"]; !found || !fileMap["package.json"].Selectable {
+		t.Fatal("expected package.json to be found and selectable")
+	}
+	if _, found := fileMap[".gitignore"]; !found || !fileMap[".gitignore"].Selectable {
+		t.Fatal("expected .gitignore to be found and selectable")
+	}
+
+	// node_modules should be completely skipped
+	for path := range fileMap {
+		if strings.HasPrefix(path, "node_modules") {
+			t.Fatalf("expected node_modules to be skipped, but found %q", path)
+		}
+	}
+
+	// app.log is ignored by .gitignore, so it must be marked non-selectable
+	if f, found := fileMap["app.log"]; found && f.Selectable {
+		t.Fatal("expected app.log to be unselectable because it matches .gitignore")
+	}
+}
+
 // governs setup. An inaccessible parent must reject before directory mutation.
 func TestRepositoryRuntimeAccessRejectsUnwritableParent(t *testing.T) {
 	if os.Geteuid() == 0 {
