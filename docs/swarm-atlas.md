@@ -1975,16 +1975,16 @@ All six GCP workflow consumers resolve reviewed configuration from Repository Se
   - In streaming mode, HTTP 503 errors occur before response streaming starts; response bodies are drained and closed cleanly on each retry attempt to prevent socket leaks.
   - If retries are exhausted, the sanitized 503 status error is returned.
 
-- **Google token count overflow recognition and 85% context utilization compaction (`api/sessions_v3_executor.go`, `api/sessions_v3_diagnostics.go`, `run/service.go`):**
+- **Google & Anthropic token count overflow recognition (`api/sessions_v3_executor.go`, `api/sessions_v3_diagnostics.go`, `run/service.go`):**
   - Google Gemini returns HTTP 400 with `INVALID_ARGUMENT` and message `The input token count exceeds the maximum number of tokens allowed <limit>.` when context exceeds the model's limit (e.g. 1,048,576 tokens).
-  - Added `sessionV3IsGoogleTokenOverflowDiagnostic` and `isGoogleTokenOverflowDiagnostic` pattern matching Google's input token overflow error messages (`input token count exceeds`, `exceeds the maximum number of tokens allowed`, `maximum number of tokens allowed`).
-  - Added `parseSessionV3GoogleMaxAllowedTokens` and `parseGoogleMaxAllowedTokens` extracting the model token ceiling directly from the error message when not otherwise resolved.
+  - Anthropic Claude returns HTTP 400 with `invalid_request_error` and message `prompt is too long: <tokens> tokens > <limit> maximum` when context exceeds the model's limit (e.g. 200,000 tokens).
+  - Added `sessionV3IsGoogleTokenOverflowDiagnostic` / `isGoogleTokenOverflowDiagnostic` and `sessionV3IsAnthropicTokenOverflowDiagnostic` / `isAnthropicTokenOverflowDiagnostic` pattern matching provider token overflow error messages (`input token count exceeds`, `exceeds the maximum number of tokens allowed`, `maximum number of tokens allowed`, `prompt is too long`, `prompt too long`, `tokens > ... maximum`).
+  - Added `parseSessionV3GoogleMaxAllowedTokens` / `parseGoogleMaxAllowedTokens` and `parseSessionV3AnthropicMaxAllowedTokens` / `parseAnthropicMaxAllowedTokens` extracting the model token ceiling directly from the error message when not otherwise resolved.
   - Added `sessionV3ContextUtilizationPercent` and `runContextUtilizationPercent` determining context window utilization percentage against the model's context window from recorded `SessionUsageSummary` or estimated message token counts (approx 4 chars/token).
-  - In `sessions_v3_executor.go:shouldTriggerContextOverflowCompaction` and `run/service.go:tryContextOverflowCompaction`, when Google token overflow is detected, context window utilization is checked:
-    - If utilization >= 85.0%, context compaction triggers with the Compact agent to summarize previous turns into a checkpoint, creates a continuation epoch, and resumes with Gemini on the compacted context.
-    - If utilization < 85.0%, compaction is not triggered, preventing improper compaction loops and returning the error cleanly.
-    - Generic `context_length_exceeded` / `context window exceeded` diagnostics continue to trigger compaction unconditionally for backward compatibility.
-  - Diagnostic logging in `recordSessionV3ContextOverflowDecision` includes `google_token_overflow_matched` and `context_utilization_percent`.
+  - In `sessions_v3_executor.go:shouldTriggerContextOverflowCompaction` and `run/service.go:tryContextOverflowCompaction`, when token overflow is detected:
+    - For Google token overflow, context window utilization is checked (utilization >= 85.0%).
+    - For Anthropic token overflow, context compaction triggers automatically with the Compact agent to summarize previous turns into a checkpoint, creates a continuation epoch, and resumes on the compacted context.
+  - Diagnostic logging in `recordSessionV3ContextOverflowDecision` includes `google_token_overflow_matched`, `anthropic_token_overflow_matched`, and `context_utilization_percent`.
 
 - **Post-compaction session continuation and Google multi-turn conversation turn normalization (`provider/google/runner.go`, `api/sessions_v3_executor.go`, `api/sessions_v3_stale_recovery.go`, `web/src/features/desktop/chat/components/desktop-v3-existing-conversation-pane.tsx`):**
   - Google Gemini API strictly requires that multi-turn chat requests do not end with a model turn (`"Requests ending with a model turn are not supported."`), start with a user turn, and alternate between user and model.
@@ -2502,7 +2502,18 @@ Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test
 - **Validation:**
   - Ran `scripts/run-critical-tests.sh fast` (100% pass across 80 Desktop tests and security packages).
 
-### 2026-09-22 — Provider System Instruction Prefix Freezing (Google Gemini & Anthropic Claude)
+### 2026-09-22 — Anthropic Token Overflow Recognition and Context Compaction
+
+- **Anthropic Context Overflow Compaction (`swarmd/internal/api/sessions_v3_executor.go`, `swarmd/internal/api/sessions_v3_diagnostics.go`, `swarmd/internal/run/service.go`):**
+  - Added `sessionV3IsAnthropicTokenOverflowDiagnostic` and `isAnthropicTokenOverflowDiagnostic` recognizing Anthropic's HTTP 400 `invalid_request_error` signature (`prompt is too long: X tokens > Y maximum`, `prompt too long`).
+  - Added `parseSessionV3AnthropicMaxAllowedTokens` and `parseAnthropicMaxAllowedTokens` extracting the maximum token ceiling from Anthropic's error message to populate missing context window metadata.
+  - Wired Anthropic overflow matching into `sessionV3IsContextOverflowDiagnostic` and `isContextOverflowDiagnostic` so that context length errors from Claude (Haiku, Sonnet, Opus, Fable) automatically trigger context compaction with the Compact agent, create a continuation epoch, and resume execution without failing the session.
+  - Updated `recordSessionV3ContextOverflowDecision` in `sessions_v3_diagnostics.go` with `anthropic_token_overflow_matched` tracking.
+- **Validation:**
+  - Added `swarmd/internal/api/sessions_v3_anthropic_overflow_test.go` (`TestAnthropicTokenOverflowDiagnosticMatching`) verifying matching across Anthropic SDK and JSON error formats, negative rejection, and token limit parsing.
+  - Added `swarmd/internal/run/service_anthropic_overflow_test.go` (`TestRunIsAnthropicTokenOverflowDiagnostic`) verifying matching and token parsing in `run.Service`.
+  - Ran `scripts/run-critical-tests.sh fast` (100% pass across 80 tests).
+  - Ran `scripts/check-atlas-sync.sh`.
 
 - **System Instruction Prefix Freezing (`swarmd/internal/provider/interfaces/runtime.go`, `swarmd/internal/api/sessions_v3_executor.go`, `swarmd/internal/provider/google/runner.go`, `swarmd/internal/provider/anthropic/runner.go`):**
   - Added `SplitStaticInstructionsAndDynamicContext(instructions string) (staticPart, dynamicPart string)` to `provider/interfaces/runtime.go` to separate invariant system prompts, workspace rules, and tool contracts from dynamic per-turn envelopes (durable run state JSON, timestamps in `[request-runtime-context]`).

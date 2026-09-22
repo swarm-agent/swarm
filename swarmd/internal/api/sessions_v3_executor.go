@@ -1845,6 +1845,7 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 }
 
 var sessionV3GoogleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
+var sessionV3AnthropicMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:prompt is too long:\s*\d+\s*tokens\s*>\s*(\d+)\s*maximum|tokens\s*>\s*(\d+)\s*max)`)
 
 func parseSessionV3GoogleMaxAllowedTokens(detail string) int {
 	matches := sessionV3GoogleMaxAllowedTokensPattern.FindStringSubmatch(detail)
@@ -1856,6 +1857,32 @@ func parseSessionV3GoogleMaxAllowedTokens(detail string) int {
 		return 0
 	}
 	return val
+}
+
+func parseSessionV3AnthropicMaxAllowedTokens(detail string) int {
+	matches := sessionV3AnthropicMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	limitStr := matches[1]
+	if limitStr == "" && len(matches) > 2 {
+		limitStr = matches[2]
+	}
+	val, err := strconv.Atoi(limitStr)
+	if err != nil || val <= 0 {
+		return 0
+	}
+	return val
+}
+
+func sessionV3IsAnthropicTokenOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "prompt is too long") ||
+		strings.Contains(normalized, "prompt too long") ||
+		(strings.Contains(normalized, "tokens >") && (strings.Contains(normalized, "maximum") || strings.Contains(normalized, "max")))
 }
 
 func sessionV3IsGoogleTokenOverflowDiagnostic(detail string) bool {
@@ -1875,6 +1902,7 @@ func sessionV3IsContextOverflowDiagnostic(detail string) bool {
 		strings.Contains(normalized, "context length") ||
 		strings.Contains(normalized, "maximum context") ||
 		strings.Contains(normalized, "token limit exceeded") ||
+		sessionV3IsAnthropicTokenOverflowDiagnostic(detail) ||
 		sessionV3IsGoogleTokenOverflowDiagnostic(detail)
 }
 
@@ -1909,6 +1937,9 @@ func (e *sessionV3Executor) sessionV3ContextUtilizationPercent(job sessionV3Exec
 	}
 	if contextWindow <= 0 && cause != nil {
 		contextWindow = parseSessionV3GoogleMaxAllowedTokens(cause.Error())
+		if contextWindow <= 0 {
+			contextWindow = parseSessionV3AnthropicMaxAllowedTokens(cause.Error())
+		}
 	}
 	if contextWindow > 0 {
 		var messages []pebblestore.MessageSnapshot

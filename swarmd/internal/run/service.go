@@ -3318,6 +3318,7 @@ func shouldTriggerContextCompaction(response provideriface.Response) bool {
 }
 
 var googleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
+var anthropicMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:prompt is too long:\s*\d+\s*tokens\s*>\s*(\d+)\s*maximum|tokens\s*>\s*(\d+)\s*max)`)
 
 func parseGoogleMaxAllowedTokens(detail string) int {
 	matches := googleMaxAllowedTokensPattern.FindStringSubmatch(detail)
@@ -3329,6 +3330,32 @@ func parseGoogleMaxAllowedTokens(detail string) int {
 		return 0
 	}
 	return val
+}
+
+func parseAnthropicMaxAllowedTokens(detail string) int {
+	matches := anthropicMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	limitStr := matches[1]
+	if limitStr == "" && len(matches) > 2 {
+		limitStr = matches[2]
+	}
+	val, err := strconv.Atoi(limitStr)
+	if err != nil || val <= 0 {
+		return 0
+	}
+	return val
+}
+
+func isAnthropicTokenOverflowDiagnostic(detail string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(detail))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "prompt is too long") ||
+		strings.Contains(normalized, "prompt too long") ||
+		(strings.Contains(normalized, "tokens >") && (strings.Contains(normalized, "maximum") || strings.Contains(normalized, "max")))
 }
 
 func isGoogleTokenOverflowDiagnostic(detail string) bool {
@@ -3358,6 +3385,8 @@ func isContextOverflowDiagnostic(detail string) bool {
 	case strings.Contains(normalized, "maximum context length"):
 		return true
 	case strings.Contains(normalized, "token limit exceeded"):
+		return true
+	case isAnthropicTokenOverflowDiagnostic(detail):
 		return true
 	case isGoogleTokenOverflowDiagnostic(detail):
 		return true
@@ -3429,6 +3458,9 @@ func (s *Service) runContextUtilizationPercent(sessionID string, contextWindow i
 	}
 	if contextWindow <= 0 && cause != nil {
 		contextWindow = parseGoogleMaxAllowedTokens(cause.Error())
+		if contextWindow <= 0 {
+			contextWindow = parseAnthropicMaxAllowedTokens(cause.Error())
+		}
 	}
 	if contextWindow > 0 && len(input) > 0 {
 		totalChars := 0
