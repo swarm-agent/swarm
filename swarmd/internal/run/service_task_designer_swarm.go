@@ -237,7 +237,11 @@ CRITICAL ARCHITECTURE REQUIREMENTS:
    - Must be a complete HTML document starting with <!DOCTYPE html> and closing with </html>.
    - All styling in <style>, all scripts in <script>.
    - Zero external CDNs, remote scripts, or remote stylesheet links. The document must work fully offline.
-   - Stage element: include a main container element with an id attribute (e.g. <main id="swarm-animation-stage"> or <div id="stage">) filling the 1920x1080 viewport with a dark background (#020205).
+   - Styling:
+     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #020205; display: flex; align-items: center; justify-content: center; }
+     #swarm-animation-stage { position: relative; width: 1920px; height: 1080px; max-width: 100%; max-height: 100%; overflow: hidden; background: #020205; }
+     canvas, svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+   - Stage element: include a main container element with an id attribute (e.g. <main id="swarm-animation-stage">) filling the 1920x1080 viewport with a dark background (#020205).
 `)
 
 	if isSpatial3D {
@@ -291,30 +295,46 @@ CRITICAL ARCHITECTURE REQUIREMENTS:
 `, durationMS, durationMS))
 	} else {
 		sys.WriteString(fmt.Sprintf(`2. Animation Contract & Controller Implementation:
-   - In <head>, declare:
-     <script id="swarm-animation-manifest" type="application/json">
-     {"version":"swarm.animation/v1","duration_ms":%d,"fps":60}
+   - In <head>, declare manifest and synchronous controller:
+     <script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":%d,"fps":60}</script>
+     <script>
+       const DURATION = %d;
+       let renderFrame = null;
+       let stopAnimation = null;
+
+       window.__SWARM_ANIMATION_V1__ = {
+         version: "swarm.animation/v1",
+         ready: async () => ({ duration_ms: DURATION, fps: 60 }),
+         pause: async () => { if (stopAnimation) stopAnimation(); },
+         seek: async (time_ms) => {
+           if (stopAnimation) stopAnimation();
+           const clamped = Math.max(0, Math.min(DURATION, Number(time_ms) || 0));
+           if (typeof renderFrame === 'function') {
+             try { renderFrame(clamped); } catch (_) {}
+           }
+           return { time_ms: clamped };
+         }
+       };
+       globalThis.__SWARM_ANIMATION_V1__ = window.__SWARM_ANIMATION_V1__;
      </script>
-     (Do NOT add extra fields to this JSON).
 
    - In <script>, implement deterministic frame rendering (Canvas 2D or SVG):
-     const DURATION = %d;
      let animId = null;
      let isPlaying = false;
      let startTime = 0;
 
-     function stopLoop() {
+     stopAnimation = () => {
        isPlaying = false;
        if (animId) {
          cancelAnimationFrame(animId);
          animId = null;
        }
-     }
+     };
 
-     function renderState(time_ms) {
+     renderFrame = (time_ms) => {
        // Synchronously draw canvas, SVG, or DOM visual state strictly from time_ms.
        // All positions, transforms, and opacities derived purely from time_ms.
-     }
+     };
 
      function play() {
        if (isPlaying) return;
@@ -323,28 +343,13 @@ CRITICAL ARCHITECTURE REQUIREMENTS:
        function loop(now) {
          if (!isPlaying) return;
          const elapsed = (now - startTime) %% DURATION;
-         renderState(elapsed);
+         renderFrame(elapsed);
          animId = requestAnimationFrame(loop);
        }
        animId = requestAnimationFrame(loop);
      }
 
-     window.__SWARM_ANIMATION_V1__ = {
-       version: "swarm.animation/v1",
-       ready: async () => ({ duration_ms: DURATION, fps: 60 }),
-       pause: async () => {
-         stopLoop();
-       },
-       seek: async (time_ms) => {
-         stopLoop(); // MUST stop continuous loop immediately
-         const clamped = Math.max(0, Math.min(DURATION, Number(time_ms) || 0));
-         renderState(clamped); // Synchronously draw static frame
-         return { time_ms: clamped };
-       }
-     };
-     globalThis.__SWARM_ANIMATION_V1__ = window.__SWARM_ANIMATION_V1__;
-
-     renderState(0);
+     renderFrame(0);
      play();
 
    - STABILITY AUDIT REQUIREMENT:
