@@ -652,3 +652,64 @@ func assertNotContains(t *testing.T, haystack, needle string) {
 		t.Fatalf("expected %q not to contain %q", haystack, needle)
 	}
 }
+
+func TestBuildAnthropicRequestPrefixFreezingAcrossTurns(t *testing.T) {
+	staticInstructions := "You are Swarm, an AI coding assistant.\nRules:\n- Never leak secrets."
+	turn1Instructions := staticInstructions + "\n\n" + `Durable run state (authoritative; do not infer or override it from transcript or UI):
+{"session_mode":"auto","active_checkpoint":{"id":"cp-1","tasks":["task1"]}}` + "\n\n" + `[request-runtime-context]
+- current_utc_time: 2026-09-22T12:00:00Z`
+	turn2Instructions := staticInstructions + "\n\n" + `Durable run state (authoritative; do not infer or override it from transcript or UI):
+{"session_mode":"auto","active_checkpoint":{"id":"cp-1","tasks":["task1","task2"]}}` + "\n\n" + `[request-runtime-context]
+- current_utc_time: 2026-09-22T12:00:15Z`
+
+	req1 := provideriface.Request{
+		Model:        "claude-3-5-haiku-20241022",
+		Instructions: turn1Instructions,
+		Input: []map[string]any{
+			{"role": "user", "content": "hello turn 1"},
+		},
+	}
+	req2 := provideriface.Request{
+		Model:        "claude-3-5-haiku-20241022",
+		Instructions: turn2Instructions,
+		Input: []map[string]any{
+			{"role": "user", "content": "hello turn 1"},
+			{"role": "assistant", "content": "response 1"},
+			{"role": "user", "content": "hello turn 2"},
+		},
+	}
+
+	params1, err := buildAnthropicMessageParams(req1, "claude-3-5-haiku-20241022")
+	if err != nil {
+		t.Fatalf("buildAnthropicMessageParams turn 1: %v", err)
+	}
+	params2, err := buildAnthropicMessageParams(req2, "claude-3-5-haiku-20241022")
+	if err != nil {
+		t.Fatalf("buildAnthropicMessageParams turn 2: %v", err)
+	}
+
+	sys1 := mustMarshalJSON(t, params1.System)
+	sys2 := mustMarshalJSON(t, params2.System)
+	if sys1 != sys2 {
+		t.Fatalf("System instructions mutated across turns!\nTurn 1: %s\nTurn 2: %s", sys1, sys2)
+	}
+	if !strings.Contains(sys1, "You are Swarm") {
+		t.Fatalf("System instructions missing static prompt: %s", sys1)
+	}
+	if strings.Contains(sys1, "current_utc_time") {
+		t.Fatalf("System instructions contains dynamic timestamp: %s", sys1)
+	}
+	if strings.Contains(sys1, "active_checkpoint") {
+		t.Fatalf("System instructions contains dynamic checkpoint state: %s", sys1)
+	}
+
+	// Verify dynamic context was appended to the latest user message
+	msg2JSON := mustMarshalJSON(t, params2.Messages)
+	if !strings.Contains(msg2JSON, "2026-09-22T12:00:15Z") {
+		t.Fatalf("Messages missing dynamic timestamp for turn 2: %s", msg2JSON)
+	}
+	if !strings.Contains(msg2JSON, "task2") {
+		t.Fatalf("Messages missing updated checkpoint state for turn 2: %s", msg2JSON)
+	}
+}
+

@@ -359,15 +359,27 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 	if modelName == "" {
 		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, errors.New("model is required")
 	}
+	params, err := buildAnthropicMessageParams(req, modelName)
+	if err != nil {
+		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
+	}
+	requestOptions := anthropicRequestOptions(req.ModelCatalog, req.ServiceTier)
+	client := anthropicapi.NewClient(anthropicClientOptions(strings.TrimSpace(record.APIKey))...)
+	return client, modelName, params, requestOptions, nil
+}
+
+func buildAnthropicMessageParams(req provideriface.Request, modelName string) (anthropicapi.MessageNewParams, error) {
+	staticInstructions, dynamicContext := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
 	messages, err := buildAnthropicMessages(req.Input, req.MediaContract)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
+		return anthropicapi.MessageNewParams{}, err
 	}
+	messages = appendAnthropicDynamicContext(messages, dynamicContext)
 	tools, enablePromptCaching, err := buildAnthropicTools(req.Tools)
 	if err != nil {
-		return anthropicapi.Client{}, "", anthropicapi.MessageNewParams{}, nil, err
+		return anthropicapi.MessageNewParams{}, err
 	}
-	system := buildAnthropicSystem(req.Instructions)
+	system := buildAnthropicSystem(staticInstructions)
 	if len(system) > 0 {
 		enablePromptCaching = true
 	}
@@ -390,15 +402,13 @@ func (r *Runner) buildRequest(ctx context.Context, req provideriface.Request) (a
 	if toolChoice := anthropicToolChoice(req.ToolChoice, req.ParallelToolCalls); toolChoice != nil {
 		params.ToolChoice = *toolChoice
 	}
-	requestOptions := anthropicRequestOptions(req.ModelCatalog, req.ServiceTier)
 	if serviceTier := anthropicProviderServiceTier(req.ModelCatalog, req.ServiceTier); serviceTier != "" {
 		params.ServiceTier = serviceTier
 	}
 	if enablePromptCaching {
 		applyAnthropicPromptCaching(&params, tools)
 	}
-	client := anthropicapi.NewClient(anthropicClientOptions(strings.TrimSpace(record.APIKey))...)
-	return client, modelName, params, requestOptions, nil
+	return params, nil
 }
 
 func (r *Runner) anthropicAuthRecord(ctx context.Context) (pebblestore.AuthCredentialRecord, error) {
@@ -484,6 +494,23 @@ func applyAnthropicPromptCaching(params *anthropicapi.MessageNewParams, tools []
 	if lastTool != nil {
 		lastTool.CacheControl = newEphemeralCacheControl()
 	}
+}
+
+func appendAnthropicDynamicContext(messages []anthropicapi.MessageParam, dynamicContext string) []anthropicapi.MessageParam {
+	dynamicContext = strings.TrimSpace(dynamicContext)
+	if dynamicContext == "" {
+		return messages
+	}
+	block := anthropicapi.NewTextBlock(dynamicContext)
+	if len(messages) == 0 {
+		return []anthropicapi.MessageParam{anthropicapi.NewUserMessage(block)}
+	}
+	lastIdx := len(messages) - 1
+	if messages[lastIdx].Role == anthropicapi.MessageParamRoleUser {
+		messages[lastIdx].Content = append(messages[lastIdx].Content, block)
+		return messages
+	}
+	return append(messages, anthropicapi.NewUserMessage(block))
 }
 
 func buildAnthropicSystem(instructions string) []anthropicapi.TextBlockParam {

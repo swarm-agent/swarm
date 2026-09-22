@@ -2500,14 +2500,16 @@ Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test
 - **Validation:**
   - Ran `scripts/run-critical-tests.sh fast` (100% pass across 80 Desktop tests and security packages).
 
-### 2026-09-22 — Provider System Instruction Prefix Freezing & Google Gemini Context Caching
+### 2026-09-22 — Provider System Instruction Prefix Freezing (Google Gemini & Anthropic Claude)
 
-- **System Instruction Prefix Freezing (`swarmd/internal/provider/interfaces/runtime.go`, `swarmd/internal/api/sessions_v3_executor.go`, `swarmd/internal/provider/google/runner.go`):**
+- **System Instruction Prefix Freezing (`swarmd/internal/provider/interfaces/runtime.go`, `swarmd/internal/api/sessions_v3_executor.go`, `swarmd/internal/provider/google/runner.go`, `swarmd/internal/provider/anthropic/runner.go`):**
   - Added `SplitStaticInstructionsAndDynamicContext(instructions string) (staticPart, dynamicPart string)` to `provider/interfaces/runtime.go` to separate invariant system prompts, workspace rules, and tool contracts from dynamic per-turn envelopes (durable run state JSON, timestamps in `[request-runtime-context]`).
   - Reordered instruction assembly in `sessions_v3_executor.go:resolveSessionV3Runtime` so static `AppendResolvedModelPolicyInstructions` and `AppendSessionMediaInstructions` are grouped contiguously before dynamic `ComposeDurableRunStateInstructions`.
   - Updated `buildGoogleRequest` in `provider/google/runner.go` to deliver `staticInstructions` in `out.SystemInstruction` and append `dynamicContext` to the latest active user turn in `out.Contents`. This ensures `SystemInstruction` remains 100% byte-for-byte identical across consecutive turns, unlocking Google Gemini's implicit KV context caching and the 75% cached token discount.
+  - Updated `buildAnthropicMessageParams` and `appendAnthropicDynamicContext` in `provider/anthropic/runner.go` to deliver `staticInstructions` to `System` (keeping the Anthropic system prompt byte-identical and preserving the `cache_control` breakpoint) and append `dynamicContext` to the latest active user turn message.
 - **Validation:**
   - Added unit test `TestBuildGoogleRequestPrefixFreezingAcrossTurns` in `swarmd/internal/provider/google/runner_test.go` asserting byte-identical `SystemInstruction` across turns while dynamic context is delivered in the latest turn envelope.
+  - Added unit test `TestBuildAnthropicRequestPrefixFreezingAcrossTurns` in `swarmd/internal/provider/anthropic/runner_test.go` asserting byte-identical `System` instructions across turns and dynamic context appended to latest user message.
   - Executed `scripts/run-critical-tests.sh fast` (100% pass, 80 tests) and `scripts/run-critical-tests.sh deep` (100% pass).
   - Executed `scripts/check-atlas-sync.sh`.
 
