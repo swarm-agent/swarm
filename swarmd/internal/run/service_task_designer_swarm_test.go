@@ -280,4 +280,7 @@ func TestEnsureAnimationSeekSceneID(t *testing.T) {
 	if !strings.Contains(patched, "freezeLoops") || !strings.Contains(patched, "activeRAFs") {
 		t.Fatalf("expected patched HTML to include loop guardian, got:\n%s", patched)
 	}
+	if !strings.Contains(patched, "isPaused = false") {
+		t.Fatalf("expected patched HTML seek to reset isPaused for playback, got:\n%s", patched)
+	}
 }

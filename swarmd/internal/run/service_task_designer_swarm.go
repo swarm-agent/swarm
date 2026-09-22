@@ -433,6 +433,10 @@ function wrapController(api) {
       isPaused = false;
       return await origPlay();
     };
+  } else {
+    api.play = async function() {
+      isPaused = false;
+    };
   }
 
   api.pause = async function() {
@@ -447,8 +451,11 @@ function wrapController(api) {
       res = await origSeek(time_ms);
     }
     freezeLoops();
+    isPaused = false;
     if (!res || typeof res !== "object") {
       res = { time_ms: time_ms };
+    } else if (typeof res.time_ms !== "number") {
+      res.time_ms = time_ms;
     }
     if (!res.scene_id && typeof getSceneId === "function") {
       res.scene_id = getSceneId(time_ms);
