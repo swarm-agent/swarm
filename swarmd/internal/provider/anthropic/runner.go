@@ -487,6 +487,9 @@ func applyAnthropicPromptCaching(params *anthropicapi.MessageNewParams, tools []
 		return
 	}
 	params.CacheControl = newEphemeralCacheControl()
+	if len(params.System) > 0 {
+		params.System[len(params.System)-1].CacheControl = newEphemeralCacheControl()
+	}
 	if len(tools) == 0 {
 		return
 	}

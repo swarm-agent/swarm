@@ -281,8 +281,8 @@ func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T
 	}
 	params := anthropicapiMessageParamsForCacheTest(tools, buildAnthropicSystem("system prompt"))
 	encoded := mustMarshalJSON(t, params)
-	if got := strings.Count(encoded, `"cache_control"`); got != 2 {
-		t.Fatalf("cache_control count = %d, want 2: %s", got, encoded)
+	if got := strings.Count(encoded, `"cache_control"`); got != 3 {
+		t.Fatalf("cache_control count = %d, want 3: %s", got, encoded)
 	}
 
 	decoded := map[string]any{}
@@ -302,8 +302,8 @@ func TestBuildRequestPlacesPromptCacheControlsAtOfficialBreakpoints(t *testing.T
 		t.Fatalf("top-level cache_control missing: %v", decoded)
 	}
 	systemBlocks := decoded["system"].([]any)
-	if _, ok := systemBlocks[0].(map[string]any)["cache_control"]; ok {
-		t.Fatalf("system block should not carry explicit cache_control: %v", systemBlocks[0])
+	if _, ok := systemBlocks[0].(map[string]any)["cache_control"]; !ok {
+		t.Fatalf("system block missing explicit cache_control: %v", systemBlocks[0])
 	}
 }
 

@@ -55,7 +55,9 @@ type ModelBaselinePricing struct {
 var baselinePricingTable = map[string]ModelBaselinePricing{
 	"anthropic:claude-3-7-sonnet":   {InputPricePerMillion: 3.0, OutputPricePerMillion: 15.0, CachedInputPricePerMillion: 0.30, HasCached: true},
 	"anthropic:claude-3-5-sonnet":   {InputPricePerMillion: 3.0, OutputPricePerMillion: 15.0, CachedInputPricePerMillion: 0.30, HasCached: true},
-	"anthropic:claude-3-5-haiku":    {InputPricePerMillion: 0.80, OutputPricePerMillion: 4.0, CachedInputPricePerMillion: 0.08, HasCached: true},
+	"anthropic:claude-3-5-haiku":          {InputPricePerMillion: 0.80, OutputPricePerMillion: 4.0, CachedInputPricePerMillion: 0.08, HasCached: true},
+	"anthropic:claude-haiku-4-5":          {InputPricePerMillion: 0.80, OutputPricePerMillion: 4.0, CachedInputPricePerMillion: 0.08, HasCached: true},
+	"anthropic:claude-haiku-4-5-20251001": {InputPricePerMillion: 0.80, OutputPricePerMillion: 4.0, CachedInputPricePerMillion: 0.08, HasCached: true},
 	"anthropic:claude-sonnet-5":     {InputPricePerMillion: 2.0, OutputPricePerMillion: 10.0, CachedInputPricePerMillion: 0.20, HasCached: true},
 	"anthropic:claude-opus-5":       {InputPricePerMillion: 5.0, OutputPricePerMillion: 25.0, CachedInputPricePerMillion: 0.50, HasCached: true},
 	"anthropic:claude-fable-5-1":    {InputPricePerMillion: 10.0, OutputPricePerMillion: 50.0, CachedInputPricePerMillion: 1.0, HasCached: true},
