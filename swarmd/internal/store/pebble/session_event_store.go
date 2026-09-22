@@ -661,6 +661,8 @@ func (s *SessionStore) SetMediaStagingBindCommitHookForTest(hook func(sessionID 
 	return func() { s.store.sessionMutations.beforeMediaStagingBindCommit = previous }
 }
 
+// ApplyV3SessionMutation executes the atomic transaction flow for ApplySessionMutation,
+// persisting session events, projections, and outbox records in a single Pebble batch.
 func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3SessionMutationResult, error) {
 	if s == nil || s.store == nil {
 		return V3SessionMutationResult{}, errors.New("session store is not configured")

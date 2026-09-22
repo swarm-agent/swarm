@@ -39,8 +39,8 @@ const (
 	defaultHistoryLimit                   = 500
 	maxToolPreviewChars                   = 280
 	maxToolDeltaChars                     = 4000
-	maxToolInputBytes                     = 96 * 1024
-	maxToolInputPreview                   = 1200
+	maxToolInputBytes                     = 128 * 1024
+	maxToolInputPreview                   = 3000
 	maxRulePromptFiles                    = 3
 	maxRulePromptSourceBytes              = 32 * 1024
 	maxRulePromptAggregateBytes           = 64 * 1024
@@ -3703,7 +3703,7 @@ func trimMessagesToLatestCompactionCheckpoint(messages []pebblestore.MessageSnap
 
 func compactMessagesForProviderContext(messages []pebblestore.MessageSnapshot, limit int) []pebblestore.MessageSnapshot {
 	messages = trimMessagesToLatestCompactionCheckpoint(messages)
-	messages = compactOlderToolMessagesForProviderContext(messages, 4)
+	messages = compactOlderToolMessagesForProviderContext(messages, 3)
 	if limit <= 0 || len(messages) <= limit {
 		return append([]pebblestore.MessageSnapshot(nil), messages...)
 	}

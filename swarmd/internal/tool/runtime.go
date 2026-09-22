@@ -2084,6 +2084,11 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	}
 }
 
+type readLineItem struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
 func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	target, err := openRootedWorkspacePath(scope, asString(args["path"]))
 	if err != nil {
@@ -2156,7 +2161,7 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxReadLineBytes)
 
-	lines := make([]map[string]any, 0, maxLines)
+	lines := make([]readLineItem, 0, maxLines)
 	currentLine := 0
 	truncated := false
 	lineTextTruncated := false
@@ -2176,9 +2181,9 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		if didTruncate {
 			lineTextTruncated = true
 		}
-		lines = append(lines, map[string]any{
-			"line": currentLine,
-			"text": text,
+		lines = append(lines, readLineItem{
+			Line: currentLine,
+			Text: text,
 		})
 		if safetyBuilder.Len() > 0 {
 			safetyBuilder.WriteByte('\n')
@@ -2187,6 +2192,12 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("read failed: %w", err)
+	}
+	totalLines := currentLine
+	if truncated {
+		for scanner.Scan() {
+			totalLines++
+		}
 	}
 	content := safetyBuilder.String()
 	nextLineStart := lineStart + len(lines)
@@ -2200,6 +2211,7 @@ func executeRead(scope WorkspaceScope, args map[string]any) (string, error) {
 		"max_lines":            maxLines,
 		"count":                len(lines),
 		"next_line_start":      nextLineStart,
+		"total_lines":          totalLines,
 		"eof":                  !truncated,
 		"truncated":            truncated,
 		"line_text_truncated":  lineTextTruncated,
@@ -4109,7 +4121,7 @@ func formatSearchQueryErrors(errs []error) string {
 }
 
 func rewriteSearchResultsForDisplay(primaryRoot string, searchRoots []string, force bool, results []searchQueryExecution) []searchQueryExecution {
-	if len(results) == 0 || (!force && len(searchRoots) <= 1) {
+	if len(results) == 0 {
 		return results
 	}
 	primaryRoot = filepath.Clean(strings.TrimSpace(primaryRoot))

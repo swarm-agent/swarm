@@ -45,6 +45,7 @@ type v3RealtimeWorksetSubscription struct {
 	AutoSubscribeSessions bool
 }
 
+// handleV3RealtimeStream handles /v3/realtime/stream subscription and cursor dispatch over WebSocket.
 func (s *Server) handleV3RealtimeStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)

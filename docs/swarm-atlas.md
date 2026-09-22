@@ -2486,3 +2486,18 @@ Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test
   - Updated `TestCalculateTurnCostFormulas` and usage window tests in `swarmd/internal/api/sessions_v3_usage_dashboard_test.go` and `sessions_v3_usage_window_test.go`.
   - Verified migration against copied database (10,565 turns, 1.87B tokens, 160 rollups, $221.08 total cost) and deleted temporary copy.
 
+### 2026-09-22 — Tool Runtime Line Items and Multi-Turn Compaction Optimization
+
+- **Tool Runtime Line Allocations & Telemetry (`swarmd/internal/tool/runtime.go`):**
+  - Replaced dynamic `[]map[string]any` slice in `executeRead` with concrete `[]readLineItem` struct to eliminate per-line heap allocations and boxing overhead during high-volume reads across concurrent sessions.
+  - Added `total_lines` count to `read` response payload when reads truncate to prevent defensive blind pagination.
+  - Updated `rewriteSearchResultsForDisplay` to consistently rewrite search result paths to primary workspace root relative paths.
+- **Provider Context & Multi-Turn Context Compaction (`swarmd/internal/run/service.go`, `swarmd/internal/run/service_tool_output.go`):**
+  - Expanded `maxToolInputBytes` to 128 KB and `maxToolInputPreview` to 3,000 runes to accommodate full single-shot tool reads.
+  - Lowered tool compaction threshold to 512 bytes and adjusted retention window to 3 most recent messages, compacting older intermediate read and search results into concise summaries to prevent multi-turn prompt token inflation.
+- **Documentation & Symbol Search Anchoring (`swarmd/internal/store/pebble/session_event_store.go`, `swarmd/internal/api/sessions_v3_realtime_ws.go`):**
+  - Added canonical Go doc comments referencing `ApplySessionMutation` on `ApplyV3SessionMutation` and `/v3/realtime/stream` on `handleV3RealtimeStream` to ensure architectural search queries resolve accurately on the first query.
+- **Validation:**
+  - Ran `scripts/run-critical-tests.sh fast` (100% pass across 80 Desktop tests and security packages).
+
+

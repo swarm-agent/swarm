@@ -380,7 +380,7 @@ func compactStoredToolMessageContent(raw string) (string, bool) {
 	if !ok || record.Tool == "" || record.CallID == "" {
 		return "", false
 	}
-	if len(record.Output) <= 1024 {
+	if len(record.Output) <= 512 {
 		return "", false
 	}
 	replacement := record.CompletedOutput
