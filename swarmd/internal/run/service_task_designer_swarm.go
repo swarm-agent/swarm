@@ -163,7 +163,7 @@ func extractHTMLFromModelOutput(raw string) string {
 	if m := reBare.FindStringSubmatch(trimmed); len(m) > 1 {
 		return strings.TrimSpace(m[1])
 	}
-	reImportMap := regexp.MustCompile(`(?is)<script\s+type=["']importmap["'].*?</script>`)
+	reImportMap := regexp.MustCompile(`(?is)<script[^>]*\btype\s*=\s*["']?(?:importmap|application/importmap\+json)["']?[^>]*>.*?</script>`)
 	return reImportMap.ReplaceAllString(trimmed, "")
 }
 
@@ -245,28 +245,46 @@ CRITICAL ARCHITECTURE REQUIREMENTS:
    - In <head>, declare:
      <script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":%d,"fps":60}</script>
      (Do NOT add extra fields to this JSON).
+   - In <head>, declare the animation controller synchronously:
+     <script>
+       const DURATION = %d;
+       let renderFrame = null;
+       let stopAnimation = null;
+       let sceneReadyPromise = new Promise((resolve) => { window.__resolveScene = resolve; });
+
+       window.__SWARM_ANIMATION_V1__ = {
+         version: "swarm.animation/v1",
+         ready: async () => {
+           await sceneReadyPromise;
+           return { duration_ms: DURATION, fps: 60 };
+         },
+         pause: async () => { if (stopAnimation) stopAnimation(); },
+         seek: async (time_ms) => {
+           if (stopAnimation) stopAnimation();
+           await sceneReadyPromise;
+           const clamped = Math.max(0, Math.min(DURATION, Number(time_ms) || 0));
+           if (renderFrame) renderFrame(clamped);
+           return { time_ms: clamped };
+         }
+       };
+       globalThis.__SWARM_ANIMATION_V1__ = window.__SWARM_ANIMATION_V1__;
+     </script>
    - In <script type="module">:
      import * as THREE from 'three';
-     (Do NOT use CDN URLs; the bare 'three' import is provided by Swarm's runtime import map).
-   - Set up WebGLRenderer, PerspectiveCamera, Scene, lighting, and 3D meshes.
-   - Implement renderState(time_ms) to update 3D mesh rotations, positions, and materials strictly from time_ms, then call renderer.render(scene, camera).
-   - Implement controller:
-     window.__SWARM_ANIMATION_V1__ = {
-       version: "swarm.animation/v1",
-       ready: async () => ({ duration_ms: %d, fps: 60 }),
-       pause: async () => { stopLoop(); },
-       seek: async (time_ms) => {
-         stopLoop();
-         const clamped = Math.max(0, Math.min(%d, Number(time_ms) || 0));
-         renderState(clamped);
-         return { time_ms: clamped };
-       }
+     (CRITICAL: Do NOT write <script type="importmap">! The bare 'three' import is provided automatically by Swarm).
+     // Set up WebGLRenderer, PerspectiveCamera, Scene, lighting, and 3D meshes.
+     renderFrame = (time_ms) => {
+       // Update 3D rotations, positions, materials strictly from time_ms
+       renderer.render(scene, camera);
      };
-     globalThis.__SWARM_ANIMATION_V1__ = window.__SWARM_ANIMATION_V1__;
+     stopAnimation = () => { if (animId) { cancelAnimationFrame(animId); animId = null; } };
+     window.__resolveScene();
+     renderFrame(0);
+     play();
    - STABILITY AUDIT REQUIREMENT:
      When seek(time_ms) or pause() is called, stop all continuous animation loops immediately.
      The canvas and DOM must remain 100%% static and motionless at time_ms until playback resumes.
-`, durationMS, durationMS, durationMS))
+`, durationMS, durationMS))
 	} else {
 		sys.WriteString(fmt.Sprintf(`2. Animation Contract & Controller Implementation:
    - In <head>, declare:
