@@ -226,24 +226,59 @@ func extractDurationFromPrompt(prompt string) int64 {
 
 func composeDirectDesignerSwarmPrompt(parentPrompt, baseTheme string, controls *taskSwarmIterationControls, delta taskSwarmHydratedDelta, isIteration bool, baseHTML string, profile *pebblestore.SessionArtifactAnimationProfile, durationMS int64) (string, string) {
 	var sys strings.Builder
+	isSpatial3D := profile != nil && profile.ProfileID == "spatial_3d"
+
 	sys.WriteString(`You are Designer, Swarm's compiled UI and animation generation engine.
 Your assignment is to generate a complete, production-ready, standalone single-file HTML5 document.
 
-CRITICAL REQUIREMENTS:
+CRITICAL ARCHITECTURE REQUIREMENTS:
 1. Complete Standalone HTML5:
    - Must be a complete HTML document starting with <!DOCTYPE html> and closing with </html>.
    - All styling in <style>, all scripts in <script>.
    - Zero external CDNs, remote scripts, or remote stylesheet links. The document must work fully offline.
    - Stage element: include a main container element with an id attribute (e.g. <main id="swarm-animation-stage"> or <div id="stage">) filling the 1920x1080 viewport with a dark background (#020205).
+`)
 
-2. Animation Contract & Controller Implementation:
+	if isSpatial3D {
+		sys.WriteString(fmt.Sprintf(`2. Spatial 3D / Three.js Animation Contract:
+   - In <head>, declare:
+     <script id="swarm-animation-manifest" type="application/json">{"version":"swarm.animation/v1","duration_ms":%d,"fps":60}</script>
+     (Do NOT add extra fields to this JSON).
+   - In <script type="module">:
+     import * as THREE from 'three';
+     (Do NOT use CDN URLs; the bare 'three' import is provided by Swarm's runtime import map).
+   - Set up WebGLRenderer, PerspectiveCamera, Scene, lighting, and 3D meshes.
+   - Implement renderState(time_ms) to update 3D mesh rotations, positions, and materials strictly from time_ms, then call renderer.render(scene, camera).
+   - Implement controller:
+     window.__SWARM_ANIMATION_V1__ = {
+       version: "swarm.animation/v1",
+       ready: async () => ({ duration_ms: %d, fps: 60 }),
+       pause: async () => { stopLoop(); },
+       seek: async (time_ms) => {
+         stopLoop();
+         const clamped = Math.max(0, Math.min(%d, Number(time_ms) || 0));
+         renderState(clamped);
+         return { time_ms: clamped };
+       }
+     };
+     globalThis.__SWARM_ANIMATION_V1__ = window.__SWARM_ANIMATION_V1__;
+   - STABILITY AUDIT REQUIREMENT:
+     When seek(time_ms) or pause() is called, stop all continuous animation loops immediately.
+     The canvas and DOM must remain 100%% static and motionless at time_ms until playback resumes.
+`, durationMS, durationMS, durationMS))
+	} else {
+		sys.WriteString(fmt.Sprintf(`2. Animation Contract & Controller Implementation:
    - In <head>, declare:
      <script id="swarm-animation-manifest" type="application/json">
-     {"version":"swarm.animation/v1","duration_ms":` + fmt.Sprintf("%d", durationMS) + `,"fps":60}
+     {"version":"swarm.animation/v1","duration_ms":%d,"fps":60}
      </script>
-   - In <script>, implement deterministic frame rendering and loop cancellation:
+     (Do NOT add extra fields to this JSON).
+
+   - In <script>, implement deterministic frame rendering (Canvas 2D or SVG):
+     const DURATION = %d;
      let animId = null;
      let isPlaying = false;
+     let startTime = 0;
 
      function stopLoop() {
        isPlaying = false;
@@ -255,25 +290,47 @@ CRITICAL REQUIREMENTS:
 
      function renderState(time_ms) {
        // Synchronously draw canvas, SVG, or DOM visual state strictly from time_ms.
+       // All positions, transforms, and opacities derived purely from time_ms.
+     }
+
+     function play() {
+       if (isPlaying) return;
+       isPlaying = true;
+       startTime = performance.now();
+       function loop(now) {
+         if (!isPlaying) return;
+         const elapsed = (now - startTime) %% DURATION;
+         renderState(elapsed);
+         animId = requestAnimationFrame(loop);
+       }
+       animId = requestAnimationFrame(loop);
      }
 
      window.__SWARM_ANIMATION_V1__ = {
        version: "swarm.animation/v1",
-       ready: async () => ({ duration_ms: ` + fmt.Sprintf("%d", durationMS) + `, fps: 60 }),
+       ready: async () => ({ duration_ms: DURATION, fps: 60 }),
        pause: async () => {
          stopLoop();
        },
        seek: async (time_ms) => {
          stopLoop(); // MUST stop continuous loop immediately
-         renderState(time_ms); // Synchronously draw static frame
-         return { time_ms: time_ms };
+         const clamped = Math.max(0, Math.min(DURATION, Number(time_ms) || 0));
+         renderState(clamped); // Synchronously draw static frame
+         return { time_ms: clamped };
        }
      };
+     globalThis.__SWARM_ANIMATION_V1__ = window.__SWARM_ANIMATION_V1__;
 
-   - STABILITY REQUIREMENT:
+     renderState(0);
+     play();
+
+   - STABILITY AUDIT REQUIREMENT:
      When seek(time_ms) or pause() is called, stop all continuous animation loops immediately.
-     The canvas and DOM must remain 100% static and motionless at time_ms until playback resumes.
+     The canvas and DOM must remain 100%% static and motionless at time_ms until playback resumes.
+`, durationMS, durationMS))
+	}
 
+	sys.WriteString(`
 3. Output Format:
    - Return ONLY the complete single-file HTML document wrapped in a single ` + "```html ... ```" + ` block.
    - Do NOT include any conversational preamble or commentary outside the code block.`)
