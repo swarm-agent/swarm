@@ -62,3 +62,28 @@ func TestAnthropicTokenOverflowDiagnosticMatching(t *testing.T) {
 		t.Fatalf("parseSessionV3AnthropicMaxAllowedTokens(unrelated) = %d, want 0", limit)
 	}
 }
+
+func TestGenericAndFireworksTokenOverflowDiagnosticMatching(t *testing.T) {
+	// Purpose:
+	// - Requirement: OpenRouter/Fireworks/OpenAI context overflow error strings must be parsed to extract token window.
+	// - Threat/regression: Failure to parse context limit leaves contextWindow=0, disabling compaction.
+	// - Boundary/authority: parseSessionV3GenericMaxAllowedTokens in api/sessions_v3_executor.go.
+	// - Narrowest test layer: Unit test verifying limit extraction across provider error signatures.
+	const fwSample = "Input length (135000) exceeds the maximum length (131072)"
+	const orSample = "This endpoint's maximum context length is 131072 tokens. However, you requested 135000 tokens"
+	const oaiSample = "This model's maximum context length is 128000 tokens. However, you requested 130000 tokens"
+	const genericSample = "context length of 65536 tokens was exceeded"
+
+	if limit := parseSessionV3GenericMaxAllowedTokens(fwSample); limit != 131072 {
+		t.Fatalf("parseSessionV3GenericMaxAllowedTokens(fwSample) = %d, want 131072", limit)
+	}
+	if limit := parseSessionV3GenericMaxAllowedTokens(orSample); limit != 131072 {
+		t.Fatalf("parseSessionV3GenericMaxAllowedTokens(orSample) = %d, want 131072", limit)
+	}
+	if limit := parseSessionV3GenericMaxAllowedTokens(oaiSample); limit != 128000 {
+		t.Fatalf("parseSessionV3GenericMaxAllowedTokens(oaiSample) = %d, want 128000", limit)
+	}
+	if limit := parseSessionV3GenericMaxAllowedTokens(genericSample); limit != 65536 {
+		t.Fatalf("parseSessionV3GenericMaxAllowedTokens(genericSample) = %d, want 65536", limit)
+	}
+}

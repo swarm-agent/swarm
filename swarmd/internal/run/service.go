@@ -3319,6 +3319,22 @@ func shouldTriggerContextCompaction(response provideriface.Response) bool {
 
 var googleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
 var anthropicMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:prompt is too long:\s*\d+\s*tokens\s*>\s*(\d+)\s*maximum|tokens\s*>\s*(\d+)\s*max)`)
+var genericMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:maximum (?:context )?length is (\d+)|exceeds the maximum length \((\d+)\)|maximum token limit is (\d+)|context length of (\d+) tokens)`)
+
+func parseGenericMaxAllowedTokens(detail string) int {
+	matches := genericMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	for i := 1; i < len(matches); i++ {
+		if matches[i] != "" {
+			if val, err := strconv.Atoi(matches[i]); err == nil && val > 0 {
+				return val
+			}
+		}
+	}
+	return 0
+}
 
 func parseGoogleMaxAllowedTokens(detail string) int {
 	matches := googleMaxAllowedTokensPattern.FindStringSubmatch(detail)
@@ -3460,6 +3476,9 @@ func (s *Service) runContextUtilizationPercent(sessionID string, contextWindow i
 		contextWindow = parseGoogleMaxAllowedTokens(cause.Error())
 		if contextWindow <= 0 {
 			contextWindow = parseAnthropicMaxAllowedTokens(cause.Error())
+		}
+		if contextWindow <= 0 {
+			contextWindow = parseGenericMaxAllowedTokens(cause.Error())
 		}
 	}
 	if contextWindow > 0 && len(input) > 0 {

@@ -1846,6 +1846,22 @@ func (e *sessionV3Executor) contextOverflowCompactedAssistantResponse(ctx contex
 
 var sessionV3GoogleMaxAllowedTokensPattern = regexp.MustCompile(`(?i)maximum number of tokens allowed\s+(\d+)`)
 var sessionV3AnthropicMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:prompt is too long:\s*\d+\s*tokens\s*>\s*(\d+)\s*maximum|tokens\s*>\s*(\d+)\s*max)`)
+var sessionV3GenericMaxAllowedTokensPattern = regexp.MustCompile(`(?i)(?:maximum (?:context )?length is (\d+)|exceeds the maximum length \((\d+)\)|maximum token limit is (\d+)|context length of (\d+) tokens)`)
+
+func parseSessionV3GenericMaxAllowedTokens(detail string) int {
+	matches := sessionV3GenericMaxAllowedTokensPattern.FindStringSubmatch(detail)
+	if len(matches) < 2 {
+		return 0
+	}
+	for i := 1; i < len(matches); i++ {
+		if matches[i] != "" {
+			if val, err := strconv.Atoi(matches[i]); err == nil && val > 0 {
+				return val
+			}
+		}
+	}
+	return 0
+}
 
 func parseSessionV3GoogleMaxAllowedTokens(detail string) int {
 	matches := sessionV3GoogleMaxAllowedTokensPattern.FindStringSubmatch(detail)
@@ -1939,6 +1955,9 @@ func (e *sessionV3Executor) sessionV3ContextUtilizationPercent(job sessionV3Exec
 		contextWindow = parseSessionV3GoogleMaxAllowedTokens(cause.Error())
 		if contextWindow <= 0 {
 			contextWindow = parseSessionV3AnthropicMaxAllowedTokens(cause.Error())
+		}
+		if contextWindow <= 0 {
+			contextWindow = parseSessionV3GenericMaxAllowedTokens(cause.Error())
 		}
 	}
 	if contextWindow > 0 {

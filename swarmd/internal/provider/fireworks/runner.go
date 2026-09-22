@@ -275,10 +275,11 @@ func applyServingResolutionToPayload(payload *chatCompletionRequest, serving req
 func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, error) {
 	messages := make([]map[string]any, 0, len(req.Input)+1)
 	media := fireworksMediaRequestState{}
-	if instructions := strings.TrimSpace(req.Instructions); instructions != "" {
+	staticInstructions, dynamicContext := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
+	if staticInstructions != "" {
 		messages = append(messages, map[string]any{
 			"role":    "system",
-			"content": instructions,
+			"content": staticInstructions,
 		})
 	}
 	for _, item := range req.Input {
@@ -315,6 +316,36 @@ func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, e
 			"role":    mappedRole,
 			"content": content,
 		})
+	}
+	if dynamicContext != "" {
+		lastUserIdx := -1
+		for i := len(messages) - 1; i >= 0; i-- {
+			if role, ok := messages[i]["role"].(string); ok && role == "user" {
+				lastUserIdx = i
+				break
+			}
+		}
+		if lastUserIdx >= 0 {
+			switch c := messages[lastUserIdx]["content"].(type) {
+			case string:
+				messages[lastUserIdx]["content"] = c + "\n\n" + dynamicContext
+			case []map[string]any:
+				messages[lastUserIdx]["content"] = append(c, map[string]any{
+					"type": "text",
+					"text": dynamicContext,
+				})
+			default:
+				messages = append(messages, map[string]any{
+					"role":    "user",
+					"content": dynamicContext,
+				})
+			}
+		} else {
+			messages = append(messages, map[string]any{
+				"role":    "user",
+				"content": dynamicContext,
+			})
+		}
 	}
 	return messages, nil
 }

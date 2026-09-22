@@ -2526,5 +2526,14 @@ Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test
   - Executed `scripts/run-critical-tests.sh fast` (100% pass, 80 tests) and `scripts/run-critical-tests.sh deep` (100% pass).
   - Executed `scripts/check-atlas-sync.sh`.
 
+- **Fireworks & OpenRouter System Prefix Freezing & Generic Context Overflow Parsing (`swarmd/internal/provider/fireworks/runner.go`, `swarmd/internal/provider/openrouter/runner.go`, `swarmd/internal/api/sessions_v3_executor.go`, `swarmd/internal/run/service.go`):**
+  - Integrated `SplitStaticInstructionsAndDynamicContext` into `buildChatCompletionMessages` in both Fireworks and OpenRouter runners so the `"role": "system"` message is strictly frozen across consecutive turns, while dynamic runtime context and timestamps are appended cleanly to the latest user message. This preserves server-side prefix KV caching for models like GLM 5.3 Flash, DeepSeek V3/R1, and Llama 3.3.
+  - Added `parseSessionV3GenericMaxAllowedTokens` and `parseGenericMaxAllowedTokens` pattern matching Fireworks (`exceeds the maximum length (131072)`), OpenRouter (`maximum context length is 131072 tokens`), and OpenAI context length overflow errors, enabling automatic compaction recovery across all third-party providers.
+- **Validation:**
+  - Added `TestGenericAndFireworksTokenOverflowDiagnosticMatching` in `swarmd/internal/api/sessions_v3_anthropic_overflow_test.go` asserting limit extraction across Fireworks, OpenRouter, and OpenAI error formats.
+  - Ran live single-agent multi-turn benchmark on `accounts/fireworks/models/glm-5p3-flash`: confirmed **90.6% Turn 1** and **86.8% Turn 2 cache hit rates**, 70.3% dollar savings ($0.0032 for 2 full turns), and 2.0s follow-up turn completion.
+  - Executed `scripts/run-critical-tests.sh fast` (100% pass across 80 tests).
+  - Executed `scripts/check-atlas-sync.sh`.
+
 
 
