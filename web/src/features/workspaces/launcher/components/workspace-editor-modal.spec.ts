@@ -29,3 +29,11 @@ test('workspace editor modal facilitates switching to repository root when in su
   assert.match(source, /Switch to repository root/)
   assert.match(source, /onUseRepositoryRoot/)
 })
+
+test('workspace editor modal facilitates committed HEAD confirmation when uncommitted changes exist', () => {
+  // Verifies the modal handles repositories with uncommitted files and offers one-click committed-only confirmation
+  assert.match(source, /hasUncommittedContent/)
+  assert.match(source, /Uncommitted changes detected/)
+  assert.match(source, /Add workspace using committed HEAD/)
+  assert.match(source, /onConfirmCommittedOnly/)
+})

@@ -5547,6 +5547,9 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
+		if err != nil && strings.Contains(err.Error(), "Uncommitted content will not enter managed worktrees") {
+			resolution, err = a.api.AddWorkspaceWithContentConsent(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent, true)
+		}
 		if err != nil {
 			inspectCtx, inspectCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer inspectCancel()
@@ -5630,6 +5633,9 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			return
 		}
 		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
+		if err != nil && strings.Contains(err.Error(), "Uncommitted content will not enter managed worktrees") {
+			resolution, err = a.api.AddWorkspaceWithContentConsent(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent, true)
+		}
 		if err != nil {
 			a.home.SetWorkspaceModalLoading(false)
 			a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: %v", err))

@@ -717,7 +717,7 @@ export function WorkspaceHomePage() {
       setModalRepositoryState(ready)
       setModalError(null)
       if (ready.state !== 'ready') throw new WorkspaceRepositoryPrerequisiteError(ready)
-      await submitModal()
+      await submitModal(true)
     } catch (error) {
       if (error instanceof WorkspaceRepositoryPrerequisiteError) setModalRepositoryState(error.repository)
       setModalError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
@@ -865,7 +865,7 @@ export function WorkspaceHomePage() {
     }
   }
 
-  const submitModal = async () => {
+  const submitModal = async (confirmCommittedOnly = false) => {
     if (!modalState) {
       return
     }
@@ -882,6 +882,7 @@ export function WorkspaceHomePage() {
         name: draftName,
         themeId: modalState.themeId,
         makeCurrent: modalState.mode === 'edit' ? Boolean(editingWorkspace?.active || currentWorkspacePath === workspacePath) : false,
+        confirmCommittedOnly,
       })
       closeModal()
     } catch (err) {
@@ -1166,8 +1167,9 @@ export function WorkspaceHomePage() {
         onCancelDeleteWorkspace={() => setDeleteTargetPath(null)}
         onConfirmDeleteWorkspace={handleConfirmDelete}
         onClose={() => { if (!savingPath && !repositoryHelpBusy) closeModal() }}
-        onSubmit={() => {
-          void submitModal()
+        onConfirmCommittedOnly={() => { void submitModal(true) }}
+        onSubmit={(confirmCommittedOnly?: boolean) => {
+          void submitModal(confirmCommittedOnly ?? Boolean(modalRepositoryState?.state === 'ready' && modalRepositoryState.contentReady === false))
         }}
       />
 

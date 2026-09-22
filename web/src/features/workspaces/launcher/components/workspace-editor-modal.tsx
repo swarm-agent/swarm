@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { AlertTriangle, ArrowUp, Bot, ChevronDown, ChevronRight, Folder, FolderPlus, GitBranch, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Folder, FolderPlus, GitBranch, Home, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { Card } from '../../../../components/ui/card'
 import { Button } from '../../../../components/ui/button'
 import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
@@ -41,6 +41,7 @@ interface WorkspaceEditorModalProps {
   repositoryHelpLink?: ReactNode
   onInitializeRepository?: () => void
   onUseRepositoryRoot?: (rootPath: string) => void
+  onConfirmCommittedOnly?: () => void
   onPrepareBaseline?: (selectedPaths: string[], confirmOmissions: boolean, reviewDigest: string) => Promise<void>
   onAskSwarmForRepositoryHelp?: () => void
   personalizing?: boolean
@@ -63,7 +64,7 @@ interface WorkspaceEditorModalProps {
   onCancelDeleteWorkspace?: () => void
   onConfirmDeleteWorkspace?: () => void
   onClose: () => void
-  onSubmit: () => void
+  onSubmit: (confirmCommittedOnly?: boolean) => void
 }
 
 const INHERIT_THEME_ID = 'inherit'
@@ -126,6 +127,7 @@ export function WorkspaceEditorModal({
   repositoryHelpLink,
   onInitializeRepository,
   onUseRepositoryRoot,
+  onConfirmCommittedOnly,
   onPrepareBaseline,
   onAskSwarmForRepositoryHelp,
   personalizing = false,
@@ -185,7 +187,8 @@ export function WorkspaceEditorModal({
     ...WORKSPACE_THEME_OPTIONS,
   ]
   const selectedWorkspaceIndex = workspaces.findIndex((workspace) => workspace.path === workspacePath)
-  const repositoryReady = mode === 'edit' || repositoryState?.state === 'ready'
+  const hasUncommittedContent = Boolean(repositoryState?.state === 'ready' && repositoryState.contentReady === false)
+  const repositoryReady = mode === 'edit' || (repositoryState?.state === 'ready' && !hasUncommittedContent)
   const isInsideSubdirectory = Boolean(
     repositoryState?.repositoryRoot &&
     repositoryState.path &&
@@ -596,17 +599,45 @@ export function WorkspaceEditorModal({
                     {repositoryReady ? <GitBranch size={18} className="mt-0.5 shrink-0 text-[var(--app-success)]" /> : <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />}
                     <div className="grid gap-1">
                       <h3 className="text-sm font-semibold text-[var(--app-text)]">
-                        {repositoryReady ? 'Git repository ready' : repositoryState.state === 'git_unavailable' ? 'Git is not installed or available' : repositoryState.state === 'needs_initial_commit' ? 'Create the first Git commit' : 'A committed Git repository is required'}
+                        {repositoryReady
+                          ? 'Git repository ready'
+                          : hasUncommittedContent
+                            ? 'Uncommitted changes detected'
+                            : repositoryState?.state === 'git_unavailable'
+                              ? 'Git is not installed or available'
+                              : repositoryState?.state === 'needs_initial_commit'
+                                ? 'Create the first Git commit'
+                                : 'A committed Git repository is required'}
                       </h3>
                       <p className="text-sm leading-6 text-[var(--app-text-muted)]">
                         {repositoryReady
                           ? 'This folder has a Git HEAD and can use Swarm managed worktrees.'
-                          : isInsideSubdirectory
-                            ? <>This folder is inside a Git repository. Select the repository root <code className="rounded bg-[var(--app-surface)] px-1 py-0.5 font-mono text-xs">{repositoryState?.repositoryRoot}</code> as the Swarm workspace.</>
-                            : <>Swarm isolates agent work in managed worktrees. {repositoryState?.message}</>}
+                          : hasUncommittedContent
+                            ? 'Swarm isolates agent work in managed worktrees using the committed HEAD. Uncommitted files and modifications will not enter agent worktrees.'
+                            : isInsideSubdirectory
+                              ? <>This folder is inside a Git repository. Select the repository root <code className="rounded bg-[var(--app-surface)] px-1 py-0.5 font-mono text-xs">{repositoryState?.repositoryRoot}</code> as the Swarm workspace.</>
+                              : <>Swarm isolates agent work in managed worktrees. {repositoryState?.message}</>}
                       </p>
                     </div>
                   </div>
+                  {hasUncommittedContent && !showCommitMenu ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          if (onConfirmCommittedOnly) {
+                            onConfirmCommittedOnly()
+                          } else {
+                            onSubmit(true)
+                          }
+                        }}
+                        disabled={saving || repositoryBusy || baselineBusy}
+                      >
+                        <Check size={14} />
+                        Add workspace using committed HEAD
+                      </Button>
+                    </div>
+                  ) : null}
                   {!repositoryReady && isInsideSubdirectory && repositoryState?.repositoryRoot && !showCommitMenu ? (
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
@@ -944,8 +975,16 @@ export function WorkspaceEditorModal({
                 Use as workspace folder
               </Button>
             ) : (
-              <Button type="button" onClick={onSubmit} disabled={saving || repositoryBusy || repositoryHelpBusy}>
-                {saving ? 'Saving…' : mode === 'create' ? repositoryState && !repositoryReady ? 'Recheck and add workspace' : 'Create workspace' : 'Save workspace'}
+              <Button type="button" onClick={() => onSubmit(hasUncommittedContent)} disabled={saving || repositoryBusy || repositoryHelpBusy}>
+                {saving
+                  ? 'Saving…'
+                  : mode === 'create'
+                    ? hasUncommittedContent
+                      ? 'Add workspace using committed HEAD'
+                      : repositoryState && !repositoryReady
+                        ? 'Recheck and add workspace'
+                        : 'Create workspace'
+                    : 'Save workspace'}
               </Button>
             )}
           </div>

@@ -25,6 +25,7 @@ test('workspace creation facilitates Git init and file commit review menu', () =
   assert.match(source, /onPrepareBaseline=\{prepareBaselineForDraft\}/)
   assert.match(source, /useRepositoryRootForDraft/)
   assert.match(source, /onUseRepositoryRoot=/)
+  assert.match(source, /onConfirmCommittedOnly=/)
   assert.match(editorSource, /Commit files to initial Git commit/)
   assert.match(editorSource, /Initialize Git repository and choose files to commit/)
   assert.match(editorSource, /Choose files to commit/)
