@@ -10,6 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+
+	"swarm-refactor/swarmtui/internal/client"
 )
 
 type WorkspaceModalWorkspace struct {
@@ -29,6 +31,7 @@ type WorkspaceModalActionKind string
 const (
 	WorkspaceModalActionRefresh         WorkspaceModalActionKind = "refresh"
 	WorkspaceModalActionSave            WorkspaceModalActionKind = "save"
+	WorkspaceModalActionBaseline        WorkspaceModalActionKind = "baseline"
 	WorkspaceModalActionSelect          WorkspaceModalActionKind = "select"
 	WorkspaceModalActionDelete          WorkspaceModalActionKind = "delete"
 	WorkspaceModalActionMove            WorkspaceModalActionKind = "move"
@@ -38,15 +41,19 @@ const (
 )
 
 type WorkspaceModalAction struct {
-	Kind            WorkspaceModalActionKind
-	Path            string
-	Name            string
-	ThemeID         string
-	MakeCurrent     bool
-	Delta           int
-	DirectoryPath   string
-	LinkedDirectory string
-	StatusHint      string
+	Kind             WorkspaceModalActionKind
+	Path             string
+	Name             string
+	ThemeID          string
+	MakeCurrent      bool
+	Delta            int
+	DirectoryPath    string
+	LinkedDirectory  string
+	StatusHint       string
+	ReviewDigest     string
+	SelectedPaths    []string
+	ConfirmBaseline  bool
+	ConfirmOmissions bool
 }
 
 type workspaceModalDetailActionID string
@@ -113,6 +120,18 @@ type workspaceModalEditorField struct {
 	Help        string
 }
 
+type WorkspaceModalReview struct {
+	Path             string
+	Name             string
+	ThemeID          string
+	MakeCurrent      bool
+	LinkedDirectory  string
+	Review           client.OnboardingReview
+	Selected         map[string]bool
+	ConfirmOmissions bool
+	ActionIndex      int
+}
+
 type workspaceModalState struct {
 	Visible           bool
 	Loading           bool
@@ -126,6 +145,7 @@ type workspaceModalState struct {
 	SelectedAction    int
 	ConfirmDelete     bool
 	Editor            *workspaceModalEditor
+	Review            *WorkspaceModalReview
 	DirectoryPath     string
 	AddDirectoryPath  string
 	ActionMenuVisible bool
@@ -148,6 +168,38 @@ func (p *HomePage) ShowWorkspaceModal() {
 func (p *HomePage) HideWorkspaceModal() {
 	p.workspaceModal = workspaceModalState{}
 	p.pendingWorkspaceAction = nil
+}
+
+func (p *HomePage) OpenWorkspaceModalReview(path, name, themeID string, makeCurrent bool, linkedDirectory string, review client.OnboardingReview) {
+	selected := make(map[string]bool)
+	for _, f := range review.Files {
+		if f.Selectable {
+			selected[f.Path] = true
+		}
+	}
+	actionIndex := 0
+	if len(review.Files) == 0 {
+		actionIndex = 1
+	}
+	p.workspaceModal.Review = &WorkspaceModalReview{
+		Path:             path,
+		Name:             name,
+		ThemeID:          themeID,
+		MakeCurrent:      makeCurrent,
+		LinkedDirectory:  linkedDirectory,
+		Review:           review,
+		Selected:         selected,
+		ConfirmOmissions: true,
+		ActionIndex:      actionIndex,
+	}
+	p.workspaceModal.Visible = true
+	p.workspaceModal.Loading = false
+	p.workspaceModal.Status = "Choose files to commit in the initial Git commit"
+	p.workspaceModal.Error = ""
+}
+
+func (p *HomePage) WorkspaceModalReviewActive() bool {
+	return p.workspaceModal.Review != nil
 }
 
 func (p *HomePage) WorkspaceModalVisible() bool {
@@ -222,6 +274,10 @@ func (p *HomePage) PopWorkspaceModalAction() (WorkspaceModalAction, bool) {
 }
 
 func (p *HomePage) handleWorkspaceModalKey(ev *tcell.EventKey) {
+	if p.workspaceModal.Review != nil {
+		p.handleWorkspaceModalReviewKey(ev)
+		return
+	}
 	if p.workspaceModal.Editor != nil {
 		p.handleWorkspaceModalEditorKey(ev)
 		return
@@ -1876,7 +1932,10 @@ func (p *HomePage) drawWorkspaceModal(s tcell.Screen) {
 		rowY++
 	}
 
-	if p.workspaceModal.Editor != nil {
+	if p.workspaceModal.Review != nil {
+		p.drawWorkspaceModalReview(s, contentRect)
+		return
+	} else if p.workspaceModal.Editor != nil {
 		p.drawWorkspaceModalEditor(s, rect)
 	}
 }
@@ -2384,4 +2443,232 @@ func workspaceModalEditorFieldLine(field workspaceModalEditorField, selected boo
 		line += "  [locked]"
 	}
 	return line
+}
+
+type workspaceModalReviewControl struct {
+	Label  string
+	Action string
+	Path   string
+}
+
+func (p *HomePage) workspaceModalReviewControls() []workspaceModalReviewControl {
+	r := p.workspaceModal.Review
+	if r == nil {
+		return nil
+	}
+	controls := make([]workspaceModalReviewControl, 0)
+	if len(r.Review.Files) > 0 {
+		allSelected := true
+		for _, f := range r.Review.Files {
+			if f.Selectable && !r.Selected[f.Path] {
+				allSelected = false
+				break
+			}
+		}
+		toggleMark := "[ ]"
+		toggleLabel := "Select All Files"
+		if allSelected {
+			toggleMark = "[x]"
+			toggleLabel = "Deselect All Files"
+		}
+		controls = append(controls, workspaceModalReviewControl{
+			Label:  fmt.Sprintf("%s %s", toggleMark, toggleLabel),
+			Action: "toggle_all",
+		})
+		for _, f := range r.Review.Files {
+			mark := "[ ]"
+			if r.Selected[f.Path] {
+				mark = "[x]"
+			}
+			if !f.Selectable {
+				mark = "[-]"
+			}
+			controls = append(controls, workspaceModalReviewControl{
+				Label:  fmt.Sprintf("%s %s (%d bytes)", mark, f.Path, f.Size),
+				Action: "file",
+				Path:   f.Path,
+			})
+		}
+		if !allSelected {
+			mark := "[ ]"
+			if r.ConfirmOmissions {
+				mark = "[x]"
+			}
+			controls = append(controls, workspaceModalReviewControl{
+				Label:  mark + " Omitted/uncommitted files will NOT enter worktrees",
+				Action: "omissions",
+			})
+		}
+	} else {
+		controls = append(controls, workspaceModalReviewControl{
+			Label:  "Directory is empty — create empty initial commit",
+			Action: "empty_info",
+		})
+	}
+	controls = append(controls, workspaceModalReviewControl{
+		Label:  "> Initialize Git & Save Workspace",
+		Action: "baseline",
+	})
+	controls = append(controls, workspaceModalReviewControl{
+		Label:  "Cancel",
+		Action: "cancel",
+	})
+	return controls
+}
+
+func (p *HomePage) handleWorkspaceModalReviewKey(ev *tcell.EventKey) {
+	r := p.workspaceModal.Review
+	if r == nil {
+		return
+	}
+	controls := p.workspaceModalReviewControls()
+	if len(controls) == 0 {
+		p.workspaceModal.Review = nil
+		return
+	}
+
+	switch {
+	case ev.Key() == tcell.KeyEsc:
+		p.workspaceModal.Review = nil
+		p.workspaceModal.Status = "Git setup cancelled"
+		return
+	case ev.Key() == tcell.KeyTab || ev.Key() == tcell.KeyDown:
+		r.ActionIndex = (r.ActionIndex + 1) % len(controls)
+		return
+	case ev.Key() == tcell.KeyBacktab || ev.Key() == tcell.KeyUp:
+		r.ActionIndex = (r.ActionIndex + len(controls) - 1) % len(controls)
+		return
+	case ev.Key() == tcell.KeyEnter || (ev.Key() == tcell.KeyRune && ev.Rune() == ' '):
+		if r.ActionIndex < 0 || r.ActionIndex >= len(controls) {
+			return
+		}
+		c := controls[r.ActionIndex]
+		switch c.Action {
+		case "toggle_all":
+			allSelected := true
+			for _, f := range r.Review.Files {
+				if f.Selectable && !r.Selected[f.Path] {
+					allSelected = false
+					break
+				}
+			}
+			if allSelected {
+				r.Selected = make(map[string]bool)
+				r.ConfirmOmissions = false
+			} else {
+				for _, f := range r.Review.Files {
+					if f.Selectable {
+						r.Selected[f.Path] = true
+					}
+				}
+				r.ConfirmOmissions = true
+			}
+			return
+		case "file":
+			for _, f := range r.Review.Files {
+				if f.Path == c.Path && f.Selectable {
+					r.Selected[c.Path] = !r.Selected[c.Path]
+					break
+				}
+			}
+			return
+		case "omissions":
+			r.ConfirmOmissions = !r.ConfirmOmissions
+			return
+		case "baseline":
+			p.submitWorkspaceModalBaseline()
+			return
+		case "cancel":
+			p.workspaceModal.Review = nil
+			p.workspaceModal.Status = "Git setup cancelled"
+			return
+		}
+	}
+}
+
+func (p *HomePage) submitWorkspaceModalBaseline() {
+	r := p.workspaceModal.Review
+	if r == nil {
+		return
+	}
+	selectedPaths := make([]string, 0)
+	for _, f := range r.Review.Files {
+		if r.Selected[f.Path] {
+			selectedPaths = append(selectedPaths, f.Path)
+		}
+	}
+	selectableCount := 0
+	for _, f := range r.Review.Files {
+		if f.Selectable {
+			selectableCount++
+		}
+	}
+	allSelected := len(selectedPaths) == selectableCount
+	confirmOmissions := r.ConfirmOmissions || allSelected
+	if !confirmOmissions && len(r.Review.Files) > 0 {
+		p.workspaceModal.Error = "Please confirm omitted files before initializing Git"
+		return
+	}
+	action := WorkspaceModalAction{
+		Kind:             WorkspaceModalActionBaseline,
+		Path:             r.Path,
+		Name:             r.Name,
+		ThemeID:          r.ThemeID,
+		MakeCurrent:      r.MakeCurrent,
+		LinkedDirectory:  r.LinkedDirectory,
+		ReviewDigest:     r.Review.Digest,
+		SelectedPaths:    selectedPaths,
+		ConfirmBaseline:  true,
+		ConfirmOmissions: confirmOmissions,
+		StatusHint:       fmt.Sprintf("Initializing Git and saving workspace %s ...", r.Name),
+	}
+	p.workspaceModal.Review = nil
+	p.enqueueWorkspaceModalAction(action)
+}
+
+func (p *HomePage) drawWorkspaceModalReview(s tcell.Screen, parent Rect) {
+	r := p.workspaceModal.Review
+	if r == nil {
+		return
+	}
+	width := parent.W - 12
+	if width > 96 {
+		width = 96
+	}
+	if width < 48 {
+		width = parent.W - 4
+	}
+	controls := p.workspaceModalReviewControls()
+	height := minInt(parent.H-4, len(controls)+8)
+	if height < 10 {
+		height = 10
+	}
+	rect := Rect{
+		X: parent.X + (parent.W-width)/2,
+		Y: parent.Y + (parent.H-height)/2,
+		W: width,
+		H: height,
+	}
+	FillRect(s, rect, p.theme.Panel)
+	DrawBox(s, rect, p.theme.BorderActive)
+
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, "Initialize Git Repository")
+	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.Primary, clampTail(r.Path, rect.W-4))
+	DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.TextMuted, "Select files/folders to commit in the initial Git commit:")
+
+	listHeight := maxInt(1, rect.H-6)
+	start := maxInt(0, r.ActionIndex-listHeight+1)
+	for i := start; i < len(controls) && i < start+listHeight; i++ {
+		prefix := "  "
+		style := p.theme.Text
+		if i == r.ActionIndex {
+			prefix = "> "
+			style = p.theme.Primary
+		}
+		rowY := rect.Y + 4 + i - start
+		DrawText(s, rect.X+2, rowY, rect.W-4, style, clampEllipsis(prefix+controls[i].Label, rect.W-4))
+	}
+
+	footerY := rect.Y + rect.H - 1
+	DrawText(s, rect.X+2, footerY, rect.W-4, p.theme.TextMuted, "Up/Down Move - Space/Enter Toggle/Select - Esc Cancel")
 }

@@ -5548,6 +5548,14 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 		defer cancel()
 		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
 		if err != nil {
+			reviewCtx, reviewCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer reviewCancel()
+			review, reviewErr := a.api.ReviewOnboardingRepository(reviewCtx, targetPath)
+			if reviewErr == nil && (review.Repository.State == "not_repository" || review.Repository.State == "needs_assisted_setup" || review.Repository.State == "needs_initial_commit" || len(review.Files) >= 0) {
+				a.home.OpenWorkspaceModalReview(targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent, action.LinkedDirectory, review)
+				a.home.SetWorkspaceModalLoading(false)
+				return
+			}
 			a.home.SetWorkspaceModalLoading(false)
 			a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: %v", err))
 			return
@@ -5573,6 +5581,69 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			status = fmt.Sprintf("workspace saved and directory linked: %s", displayPath(resolution.ResolvedPath))
 			if action.MakeCurrent {
 				status = fmt.Sprintf("workspace saved, directory linked, and switched: %s", displayPath(resolution.ResolvedPath))
+			}
+		}
+		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
+		a.home.SetWorkspaceModalStatus(status)
+		a.queueReload(false)
+	case ui.WorkspaceModalActionBaseline:
+		targetPath := strings.TrimSpace(action.Path)
+		if targetPath == "" {
+			targetPath = a.activeContextPath()
+		}
+		if strings.TrimSpace(targetPath) == "" {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError("workspace path is required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		req := client.OnboardingBaseline{
+			Path:                 targetPath,
+			ExpectedResolvedPath: targetPath,
+			ReviewDigest:         action.ReviewDigest,
+			SelectedPaths:        action.SelectedPaths,
+			ConfirmBaseline:      true,
+			ConfirmOmissions:     action.ConfirmOmissions,
+		}
+		repo, err := a.api.PrepareOnboardingBaseline(ctx, req)
+		if err != nil {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError(fmt.Sprintf("git initialization failed: %v", err))
+			return
+		}
+		if repo.State != "ready" {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError("git repository is not ready after baseline")
+			return
+		}
+		resolution, err := a.api.AddWorkspace(ctx, targetPath, strings.TrimSpace(action.Name), strings.TrimSpace(action.ThemeID), action.MakeCurrent)
+		if err != nil {
+			a.home.SetWorkspaceModalLoading(false)
+			a.home.SetWorkspaceModalError(fmt.Sprintf("save workspace failed: %v", err))
+			return
+		}
+		linkedDir := strings.TrimSpace(action.LinkedDirectory)
+		if linkedDir != "" {
+			if _, dirErr := a.api.AddWorkspaceDirectory(ctx, strings.TrimSpace(resolution.ResolvedPath), linkedDir); dirErr != nil {
+				a.home.SetWorkspaceModalLoading(false)
+				a.home.SetWorkspaceModalError(fmt.Sprintf("link workspace directory failed: %v", dirErr))
+				return
+			}
+		}
+		if action.MakeCurrent {
+			a.homeModel.WorkspaceSetupPath = ""
+			a.syncActiveWorkspaceSelection(resolution)
+		}
+		a.refreshWorkspaceModalData("")
+		status := fmt.Sprintf("git initialized and workspace saved: %s", displayPath(resolution.ResolvedPath))
+		if action.MakeCurrent {
+			status = fmt.Sprintf("git initialized, workspace saved and switched: %s", displayPath(resolution.ResolvedPath))
+		}
+		if linkedDir != "" {
+			status = fmt.Sprintf("git initialized, workspace saved and directory linked: %s", displayPath(resolution.ResolvedPath))
+			if action.MakeCurrent {
+				status = fmt.Sprintf("git initialized, workspace saved, directory linked, and switched: %s", displayPath(resolution.ResolvedPath))
 			}
 		}
 		a.home.SetWorkspaceModalDirectory(a.activeContextPath())
