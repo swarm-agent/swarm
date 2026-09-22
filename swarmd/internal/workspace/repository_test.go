@@ -362,3 +362,35 @@ func TestSetupRepositoryCreatesNewDaemonHomeChildOnlyAfterConsent(t *testing.T) 
 		t.Fatalf("setup enrolled workspace: %v %v", entries, err)
 	}
 }
+
+func TestInspectRepositorySubdirectoryUnderHomeWithGit(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	fakeHome := t.TempDir()
+	if _, err := runRepositoryGit(fakeHome, "init", "--initial-branch=main", "--template="); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(fakeHome, "my-new-project")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "app.py"), []byte("print('hello')"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	account := &user.User{
+		Uid:      strconv.Itoa(os.Geteuid()),
+		HomeDir:  fakeHome,
+		Username: "testuser",
+	}
+	state := inspectRepositoryForAccount(sub, account)
+	if state.Repository != "" {
+		t.Fatalf("expected state.Repository to be empty (not home), got %q", state.Repository)
+	}
+	if state.State != RepositoryStateNeedsAssistedSetup {
+		t.Fatalf("expected state %q, got %q", RepositoryStateNeedsAssistedSetup, state.State)
+	}
+	if !state.NeedsReview {
+		t.Fatal("expected needs_review to be true")
+	}
+}

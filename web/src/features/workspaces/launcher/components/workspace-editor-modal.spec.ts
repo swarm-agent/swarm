@@ -24,6 +24,7 @@ test('workspace editor modal facilitates switching to repository root when in su
   // Verifies the modal detects subdirectories of Git repositories and provides quick actions
   assert.match(source, /isInsideSubdirectory/)
   assert.match(source, /Use repository root and add workspace/)
+  assert.match(source, /Initialize as independent Git repository/)
   assert.match(source, /Select repository root path/)
   assert.match(source, /Switch to repository root/)
   assert.match(source, /onUseRepositoryRoot/)

@@ -263,9 +263,10 @@ func TestRepositoryBaselinePublicationFailureResumes(t *testing.T) {
 	}
 }
 
-// Requirement: ReviewRepositoryForPrincipal must reject subdirectories of a
-// repository with a typed RepositoryPrerequisiteError referencing the repository root.
-func TestRepositoryReviewRejectsSubdirectoryWithRepositoryRootPrerequisite(t *testing.T) {
+// Requirement: ReviewRepositoryForPrincipal and PrepareRepositoryBaselineForPrincipal
+// must allow subdirectories without their own .git to be initialized as independent
+// Git repositories without modifying the outer repository.
+func TestRepositoryReviewAllowsSubdirectoryInitializationAsIndependentRepo(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	store, cleanup := newTestWorkspaceStore(t)
@@ -275,26 +276,62 @@ func TestRepositoryReviewRejectsSubdirectoryWithRepositoryRootPrerequisite(t *te
 	if _, err := runRepositoryGit(root, "init", "--initial-branch=main", "--template="); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "root.txt"), []byte("root file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRepositoryGit(root, "add", "root.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runRepositoryGit(root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "root commit"); err != nil {
+		t.Fatal(err)
+	}
+	rootHead, _ := runRepositoryGit(root, "rev-parse", "HEAD")
+
 	sub := filepath.Join(root, "subfolder")
 	if err := os.Mkdir(sub, 0755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(sub, "sub.txt"), []byte("sub file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	review, err := svc.ReviewRepositoryForPrincipal(testPrincipal(), sub)
-	if err == nil {
-		t.Fatal("expected prerequisite error for repository subdirectory")
+	if err != nil {
+		t.Fatalf("expected review to succeed for subdirectory, got error: %v", err)
 	}
-	prereq, ok := err.(*RepositoryPrerequisiteError)
-	if !ok {
-		t.Fatalf("expected *RepositoryPrerequisiteError, got %T: %v", err, err)
+	if len(review.Files) != 1 || review.Files[0].Path != "sub.txt" {
+		t.Fatalf("expected review.Files = [sub.txt], got: %#v", review.Files)
 	}
-	if prereq.Repository.Repository != root {
-		t.Fatalf("expected repository root %q, got %q", root, prereq.Repository.Repository)
+
+	req := RepositoryBaselineRequest{
+		Path:                 sub,
+		ExpectedResolvedPath: sub,
+		ReviewDigest:         review.Digest,
+		SelectedPaths:        []string{"sub.txt"},
+		ConfirmBaseline:      true,
+		ConfirmOmissions:     true,
 	}
-	if prereq.Repository.State != RepositoryStateNotRepository {
-		t.Fatalf("expected state %q, got %q", RepositoryStateNotRepository, prereq.Repository.State)
+	state, err := svc.PrepareRepositoryBaselineForPrincipal(testPrincipal(), req)
+	if err != nil {
+		t.Fatalf("expected baseline to succeed, got error: %v", err)
 	}
-	if len(review.Files) != 0 {
-		t.Fatalf("expected no review files, got %d", len(review.Files))
+	if state.State != RepositoryStateReady {
+		t.Fatalf("expected state ready, got: %s", state.State)
+	}
+
+	// Verify sub has its own .git and HEAD commit
+	subHead, err := runRepositoryGit(sub, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || subHead == "" {
+		t.Fatalf("expected sub HEAD commit, got %q: %v", subHead, err)
+	}
+	if subHead == rootHead {
+		t.Fatalf("expected sub HEAD commit to differ from root HEAD commit")
+	}
+
+	// Verify outer root HEAD was not changed
+	currentRootHead, _ := runRepositoryGit(root, "rev-parse", "HEAD")
+	if currentRootHead != rootHead {
+		t.Fatalf("outer root HEAD changed from %q to %q", rootHead, currentRootHead)
 	}
 }
 

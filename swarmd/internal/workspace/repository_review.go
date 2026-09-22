@@ -68,7 +68,14 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 	default:
 		return review, &RepositoryPrerequisiteError{Repository: state}
 	}
-	if state.Repository != "" && state.Repository != state.Path || state.Message == repositoryMessageNonWorkTree {
+	hasOwnGit := false
+	if root, openErr := os.OpenRoot(state.Path); openErr == nil {
+		if _, statErr := root.Lstat(".git"); statErr == nil {
+			hasOwnGit = true
+		}
+		root.Close()
+	}
+	if (state.Repository != "" && state.Repository != state.Path && hasOwnGit) || state.Message == repositoryMessageNonWorkTree {
 		return review, &RepositoryPrerequisiteError{Repository: state}
 	}
 	root, err := os.OpenRoot(state.Path)
@@ -160,7 +167,7 @@ func (s *Service) ReviewRepositoryForPrincipal(principal identity.Principal, pat
 		return review, err
 	}
 	indexDigest := ""
-	if state.Repository != "" {
+	if state.Repository != "" && state.Repository == state.Path {
 		indexed, err := runRepositoryGit(state.Path, "ls-files", "-z")
 		if err != nil {
 			return review, err
@@ -280,7 +287,7 @@ func (s *Service) PrepareRepositoryBaselineForPrincipal(principal identity.Princ
 	defer root.Close()
 	// Init is intentionally resumable. A later commit failure retains metadata,
 	// not a misleading successful catalog entry; no user files are removed.
-	if state.Repository == "" {
+	if _, statErr := root.Lstat(".git"); errors.Is(statErr, os.ErrNotExist) {
 		if err := root.Mkdir(".git", 0700); err != nil {
 			return state, err
 		}

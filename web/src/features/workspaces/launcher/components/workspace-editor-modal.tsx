@@ -256,10 +256,6 @@ export function WorkspaceEditorModal({
   }
 
   const handleOpenCommitMenu = () => {
-    if (isInsideSubdirectory) {
-      handleSelectRepositoryRootPath()
-      return
-    }
     const target = workspacePath.trim() || currentPath
     if (!target) return
     setShowCommitMenu(true)
@@ -620,6 +616,15 @@ export function WorkspaceEditorModal({
                       >
                         <GitBranch size={14} />
                         Use repository root and add workspace
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={handleOpenCommitMenu}
+                        disabled={repositoryBusy || repositoryHelpBusy || reviewLoading || baselineBusy}
+                      >
+                        <FolderPlus size={14} />
+                        Initialize as independent Git repository
                       </Button>
                       <Button
                         type="button"

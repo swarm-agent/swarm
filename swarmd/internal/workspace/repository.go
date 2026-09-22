@@ -60,7 +60,14 @@ func daemonWorkspaceGuidance(account *user.User, uid string) RuntimeWorkspaceGui
 }
 
 func writableDaemonHome(account *user.User, uid string) (string, error) {
-	if account == nil || account.Uid != uid || !filepath.IsAbs(account.HomeDir) {
+	if account == nil || account.Uid != uid {
+		var err error
+		account, err = user.LookupId(uid)
+		if err != nil {
+			return "", errors.New("daemon account home is unavailable")
+		}
+	}
+	if !filepath.IsAbs(account.HomeDir) {
 		return "", errors.New("daemon account home is unavailable")
 	}
 	home := filepath.Clean(account.HomeDir)
@@ -331,11 +338,26 @@ func inspectRepositoryForAccount(path string, account *user.User) RepositoryStat
 		return repositoryFailure(path, err)
 	}
 	if state.Repository != path {
+		if isRuntimeHome(state.Repository, account) {
+			state.Repository = ""
+			state.State = RepositoryStateNotRepository
+			state.CanSetup = directoryIsEmpty(path)
+			state.NeedsReview = !state.CanSetup
+			if state.CanSetup {
+				state.Message = "Swarm workspaces require a Git repository with an initial commit; setup creates only an empty starting commit, without staging or committing existing files"
+			} else {
+				state.State = RepositoryStateNeedsAssistedSetup
+				state.Message = "Swarm workspaces require a Git repository with an initial commit; review and commit this directory's existing files before adding it"
+			}
+			state.Actions = []string{"review_content", "setup", "choose_directory"}
+			return state
+		}
 		state.State = RepositoryStateNotRepository
 		state.HeadCommit = ""
-		state.CanSetup = false
+		state.CanSetup = true
 		state.NeedsReview = true
-		state.Message = "Select the Git repository root as the Swarm workspace"
+		state.Message = "Select the Git repository root as the Swarm workspace, or initialize this directory as an independent Git repository"
+		state.Actions = []string{"review_content", "setup", "choose_directory"}
 		return state
 	}
 	head, err := runRepositoryGit(path, "rev-parse", "--verify", "HEAD^{commit}")
@@ -493,7 +515,14 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if state.State == RepositoryStateReady && state.Repository == resolved {
 		return state, nil // Response loss must not create another initial commit.
 	}
-	if state.State == RepositoryStateNeedsInitialCommit || state.Repository != "" || state.Message == repositoryMessageNonWorkTree {
+	hasOwnGit := false
+	if _, err := os.Lstat(filepath.Join(resolved, ".git")); err == nil {
+		hasOwnGit = true
+	}
+	if hasOwnGit {
+		return state, errors.New("repository setup found an existing .git in this directory")
+	}
+	if state.State == RepositoryStateNeedsInitialCommit || state.Message == repositoryMessageNonWorkTree {
 		return state, errors.New("repository setup rejects directories that are already inside Git repositories")
 	}
 	if !homeSelected && !directoryIsEmpty(resolved) {
