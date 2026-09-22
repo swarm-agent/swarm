@@ -1622,6 +1622,7 @@ func ignoredByRootGitignore(workspaceRoot, relative string) bool {
 		if negated {
 			line = strings.TrimPrefix(line, "!")
 		}
+		anchored := strings.HasPrefix(filepath.ToSlash(line), "/")
 		line = strings.TrimPrefix(filepath.ToSlash(line), "/")
 		if line == "" {
 			continue
@@ -1629,7 +1630,7 @@ func ignoredByRootGitignore(workspaceRoot, relative string) bool {
 		directory := strings.HasSuffix(line, "/")
 		line = strings.TrimSuffix(line, "/")
 		matched, _ := path.Match(line, relative)
-		if !strings.Contains(line, "/") {
+		if !anchored && !strings.Contains(line, "/") {
 			for _, part := range strings.Split(relative, "/") {
 				if partMatch, _ := path.Match(line, part); partMatch {
 					matched = true
@@ -2608,7 +2609,9 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 			if strings.TrimSpace(run.IterationTheme) != "" {
 				presentation.Description = strings.TrimSpace(run.IterationTheme)
 			}
-			autoAccept = run.AutoAccept
+			if managedDestination {
+				autoAccept = run.AutoAccept
+			}
 		}
 
 		create := artifact.CreateInput{
@@ -3057,7 +3060,9 @@ func (r *Runtime) generateManagedAudioArtifact(
 			if strings.TrimSpace(run.IterationTheme) != "" {
 				presentation.Description = strings.TrimSpace(run.IterationTheme)
 			}
-			autoAccept = run.AutoAccept
+			if managedDestination {
+				autoAccept = run.AutoAccept
+			}
 		}
 
 		mediaType := strings.TrimSpace(generated.MediaType)
