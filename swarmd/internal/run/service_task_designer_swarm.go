@@ -250,7 +250,10 @@ CRITICAL ARCHITECTURE REQUIREMENTS:
        const DURATION = %d;
        let renderFrame = null;
        let stopAnimation = null;
-       let sceneReadyPromise = new Promise((resolve) => { window.__resolveScene = resolve; });
+       let sceneReadyPromise = new Promise((resolve) => {
+         window.__resolveScene = resolve;
+         setTimeout(resolve, 1500);
+       });
 
        window.__SWARM_ANIMATION_V1__ = {
          version: "swarm.animation/v1",
@@ -261,9 +264,10 @@ CRITICAL ARCHITECTURE REQUIREMENTS:
          pause: async () => { if (stopAnimation) stopAnimation(); },
          seek: async (time_ms) => {
            if (stopAnimation) stopAnimation();
-           await sceneReadyPromise;
            const clamped = Math.max(0, Math.min(DURATION, Number(time_ms) || 0));
-           if (renderFrame) renderFrame(clamped);
+           if (typeof renderFrame === 'function') {
+             try { renderFrame(clamped); } catch (_) {}
+           }
            return { time_ms: clamped };
          }
        };
