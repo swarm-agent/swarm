@@ -299,6 +299,9 @@ func (r *Runtime) createDirectArtifactV3HTML(ctx context.Context, scope Workspac
 			if current.Content == string(content) {
 				return nil
 			}
+			if editErr := r.artifactV3Author.Edit(ctx, author, grant, path, []byte(current.Content), content, false); editErr == nil {
+				return nil
+			}
 			_ = r.artifactV3Author.Delete(ctx, author, grant, path)
 		}
 		return r.artifactV3Author.Create(ctx, author, grant, path, content)
