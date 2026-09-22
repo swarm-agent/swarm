@@ -2,10 +2,10 @@
   "schema_version": "2026-08-14.2",
   "api_version": "v1",
   "snapshot_schema_version": "2026-08-14.2",
-  "snapshot_id": "swarm-models-v1-c1ef3f604dea5bc9",
-  "snapshot_version": "c1ef3f604dea5bc9",
-  "generated_at": "2026-09-19T07:42:52.180Z",
-  "model_count": 734,
+  "snapshot_id": "swarm-models-v1-a3f89d56602c6fdf",
+  "snapshot_version": "a3f89d56602c6fdf",
+  "generated_at": "2026-09-22T16:55:13.525Z",
+  "model_count": 735,
   "provider_count": 7,
   "hydrated_provider_count": 6,
   "definitions": {
@@ -1237,12 +1237,12 @@
     },
     "anthropic": {
       "plan": {
-        "model": "claude-fable-5-1",
+        "model": "claude-opus-5-5",
         "thinking": "xhigh",
         "fast": "off"
       },
       "auto": {
-        "model": "claude-fable-5-1",
+        "model": "claude-opus-5-5",
         "thinking": "high",
         "fast": "off"
       },
@@ -1391,12 +1391,12 @@
     },
     "anthropic": {
       "plan": {
-        "model": "claude-fable-5-1",
+        "model": "claude-opus-5-5",
         "thinking": "xhigh",
         "fast": "off"
       },
       "auto": {
-        "model": "claude-fable-5-1",
+        "model": "claude-opus-5-5",
         "thinking": "high",
         "fast": "off"
       },
@@ -1416,8 +1416,8 @@
         "fast": "off"
       },
       "coder": {
-        "model": "claude-fable-5-1",
-        "thinking": "high",
+        "model": "claude-opus-5-5",
+        "thinking": "medium",
         "fast": "off"
       },
       "designer": {
@@ -1566,12 +1566,12 @@
       "auth_required_for_hydration": true,
       "recommendations": {
         "plan": {
-          "model": "claude-fable-5-1",
+          "model": "claude-opus-5-5",
           "thinking": "xhigh",
           "fast": "off"
         },
         "auto": {
-          "model": "claude-fable-5-1",
+          "model": "claude-opus-5-5",
           "thinking": "high",
           "fast": "off"
         },
@@ -1591,8 +1591,8 @@
           "fast": "off"
         },
         "coder": {
-          "model": "claude-fable-5-1",
-          "thinking": "high",
+          "model": "claude-opus-5-5",
+          "thinking": "medium",
           "fast": "off"
         },
         "designer": {
@@ -1606,7 +1606,7 @@
           "fast": "off"
         }
       },
-      "model_count": 11,
+      "model_count": 12,
       "sources": [
         {
           "source_id": "anthropic_models_api",
@@ -1626,6 +1626,13 @@
           "source_id": "anthropic_fable_5_1_docs",
           "kind": "official_docs",
           "url": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
+          "method": "GET",
+          "auth_required": false
+        },
+        {
+          "source_id": "anthropic_opus_5_5_docs",
+          "kind": "official_docs",
+          "url": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
           "method": "GET",
           "auth_required": false
         },
@@ -2315,7 +2322,7 @@
       "provider_id": "anthropic",
       "provider_display_name": "Anthropic",
       "source_url": "https://api.anthropic.com/v1/models",
-      "model_count": 11,
+      "model_count": 12,
       "path": "/v1/models/anthropic.json"
     },
     {
@@ -3408,7 +3415,7 @@
           "source_id": "anthropic_fable_5_1_docs",
           "source_url": "https://platform.claude.com/docs/en/models/fable-5-1/overview",
           "source_kind": "official_docs",
-          "fetched_at": "2026-09-19T07:42:52.180Z",
+          "fetched_at": "2026-09-22T16:55:13.525Z",
           "confidence": "high",
           "verification_status": "verified",
           "fields": [
@@ -3834,7 +3841,7 @@
         "reviewed_at": null,
         "notes": "Anthropic entry hydrated from first-party model docs pending Models API visibility verification. Claude API service-tier metadata is mapped for Swarm off/fast/batch where documented; provider Fast Mode is represented separately as serving.fast_mode; and Claude thinking controls and token pricing are mapped from first-party docs."
       },
-      "updated_at": "2026-09-19T07:42:52.180Z",
+      "updated_at": "2026-09-22T16:55:13.525Z",
       "media": {
         "input_understanding": {
           "audio": false,
@@ -8495,6 +8502,741 @@
         "notes": "Anthropic entry hydrated from the authenticated first-party Models API. Claude API service-tier metadata is mapped for Swarm off/fast/batch where documented; provider Fast Mode is represented separately as serving.fast_mode; and Claude thinking controls are mapped from first-party adaptive/effort/extended-thinking docs. Pricing, alias, deprecation, and cloud-provider mapping enrichment is pending."
       },
       "updated_at": "2026-07-26T05:42:06.130Z",
+      "media": {
+        "input_understanding": {
+          "audio": false,
+          "image": true,
+          "video": false
+        },
+        "output_generation": {
+          "audio": false,
+          "image": false,
+          "video": false
+        },
+        "categories": [
+          "image_understanding"
+        ]
+      }
+    },
+    {
+      "schema_version": "2026-08-14.2",
+      "catalog_id": "anthropic/claude-opus-5-5",
+      "provider_id": "anthropic",
+      "provider_display_name": "Anthropic",
+      "model_id": "claude-opus-5-5",
+      "display_name": "Claude Opus 5.5",
+      "description": null,
+      "family": "claude",
+      "external_ids": {
+        "provider_canonical_slug": "claude-opus-5-5",
+        "hugging_face_id": null,
+        "upstream_model_id": "claude-opus-5-5"
+      },
+      "lifecycle": {
+        "created_at": "2026-09-22T00:00:00.000Z",
+        "created_at_unix_seconds": 1790035200,
+        "release_date": "2026-09-22",
+        "knowledge_cutoff": "2026-06",
+        "deprecation_date": null,
+        "expiration_date": null
+      },
+      "availability_status": "available",
+      "architecture": {
+        "source_modality": "multimodal->text",
+        "tokenizer": null,
+        "instruct_type": null,
+        "parameter_count": null,
+        "active_parameter_count": null
+      },
+      "modalities": {
+        "input": [
+          "file",
+          "image",
+          "text"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "capabilities": {
+        "supports_text_input": true,
+        "supports_text_output": true,
+        "supports_image_input": true,
+        "supports_image_output": false,
+        "supports_audio_input": false,
+        "supports_audio_output": false,
+        "supports_video_input": false,
+        "supports_video_output": false,
+        "supports_file_input": true,
+        "supports_pdf_input": true,
+        "supports_voice": false,
+        "supports_tools": null,
+        "supports_parallel_tool_calls": null,
+        "supports_structured_outputs": true,
+        "supports_json_mode": true,
+        "supports_reasoning": true,
+        "supports_embeddings": false,
+        "supports_batch": true,
+        "supports_fine_tuning": false,
+        "supports_caching": true
+      },
+      "thinking": {
+        "supported": true,
+        "control_kind": "adaptive",
+        "supported_swarm_settings": [
+          "off",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_swarm_setting": "off",
+        "provider_parameter": "thinking.type + output_config.effort",
+        "provider_supported_values": [
+          "adaptive",
+          "high",
+          "low",
+          "max",
+          "medium",
+          "xhigh"
+        ],
+        "provider_default_value": null,
+        "can_disable": true,
+        "supports_budget_tokens": false,
+        "supports_effort_levels": true,
+        "supports_reasoning_content": true,
+        "swarm_setting_mappings": [
+          {
+            "swarm_setting": "off",
+            "provider_value": null,
+            "effective_provider_value": null,
+            "behavior": "disabled",
+            "notes": "Omit thinking or pass thinking.type=disabled to disable adaptive thinking."
+          },
+          {
+            "swarm_setting": "low",
+            "provider_value": "low",
+            "effective_provider_value": "low",
+            "behavior": "effort",
+            "notes": "Send thinking.type=adaptive and output_config.effort at this level."
+          },
+          {
+            "swarm_setting": "medium",
+            "provider_value": "medium",
+            "effective_provider_value": "medium",
+            "behavior": "effort",
+            "notes": "Send thinking.type=adaptive and output_config.effort at this level."
+          },
+          {
+            "swarm_setting": "high",
+            "provider_value": "high",
+            "effective_provider_value": "high",
+            "behavior": "effort",
+            "notes": "Send thinking.type=adaptive and output_config.effort at this level."
+          },
+          {
+            "swarm_setting": "xhigh",
+            "provider_value": "xhigh",
+            "effective_provider_value": "xhigh",
+            "behavior": "effort",
+            "notes": "Send thinking.type=adaptive and output_config.effort at this level."
+          }
+        ],
+        "unsupported_swarm_settings": [],
+        "source_ids": [
+          "anthropic_opus_5_5_docs",
+          "anthropic_thinking_docs",
+          "anthropic_effort_docs"
+        ],
+        "notes": "Adaptive thinking is the supported thinking mode for claude-opus-5-5; manual thinking.type=enabled with budget_tokens is not supported on this model class. Supported effort values from Anthropic capabilities/docs: low, medium, high, xhigh, max."
+      },
+      "limits": {
+        "context_window_tokens": 1000000,
+        "max_input_tokens": 1000000,
+        "max_output_tokens": 128000,
+        "max_reasoning_tokens": null
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_price_per_million_tokens": 4,
+        "output_price_per_million_tokens": 20,
+        "cached_input_price_per_million_tokens": 0.2,
+        "reasoning_price_per_million_tokens": null,
+        "image_input_price": null,
+        "image_output_price": null,
+        "audio_input_price": null,
+        "audio_output_price": null,
+        "billing": {
+          "status": "verified",
+          "lines": [
+            {
+              "kind": "billing_rate",
+              "billable": "text_input",
+              "unit": "million_tokens",
+              "price_usd": 4,
+              "variant": "standard_input",
+              "conditions": {
+                "service_tier": "standard"
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            },
+            {
+              "kind": "billing_rate",
+              "billable": "text_output",
+              "unit": "million_tokens",
+              "price_usd": 20,
+              "variant": "standard_output",
+              "conditions": {
+                "service_tier": "standard"
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            },
+            {
+              "kind": "billing_rate",
+              "billable": "text_input",
+              "unit": "million_tokens",
+              "price_usd": 5,
+              "variant": "cache_write_5m",
+              "conditions": {
+                "service_tier": "standard",
+                "cache_operation": "write",
+                "ttl_minutes": 5
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            },
+            {
+              "kind": "billing_rate",
+              "billable": "text_input",
+              "unit": "million_tokens",
+              "price_usd": 8,
+              "variant": "cache_write_1h",
+              "conditions": {
+                "service_tier": "standard",
+                "cache_operation": "write",
+                "ttl_minutes": 60
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            },
+            {
+              "kind": "billing_rate",
+              "billable": "text_input",
+              "unit": "million_tokens",
+              "price_usd": 0.2,
+              "variant": "cache_read",
+              "conditions": {
+                "service_tier": "standard",
+                "cache_operation": "read"
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            },
+            {
+              "kind": "billing_rate",
+              "billable": "text_input",
+              "unit": "million_tokens",
+              "price_usd": 2,
+              "variant": "batch_input",
+              "conditions": {
+                "service_tier": "batch",
+                "discount_percent": 50
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            },
+            {
+              "kind": "billing_rate",
+              "billable": "text_output",
+              "unit": "million_tokens",
+              "price_usd": 10,
+              "variant": "batch_output",
+              "conditions": {
+                "service_tier": "batch",
+                "discount_percent": 50
+              },
+              "source_ids": [
+                "anthropic_pricing_docs"
+              ]
+            }
+          ],
+          "notes": "Anthropic pricing docs publish Standard token rates, 5-minute and 1-hour prompt-cache writes, cache reads, and a 50% Batch API discount. Thinking tokens are billed as output tokens rather than a separate reasoning rate."
+        },
+        "is_free": false
+      },
+      "parameters": {
+        "supported_parameters": [
+          "max_tokens",
+          "metadata",
+          "model",
+          "service_tier",
+          "stop_sequences",
+          "stream",
+          "system",
+          "temperature",
+          "thinking",
+          "top_k",
+          "top_p"
+        ],
+        "default_parameters": {},
+        "supported_voices": null
+      },
+      "routing": {
+        "routed_through_provider_id": "anthropic",
+        "upstream_provider_ids": [
+          "anthropic"
+        ],
+        "top_provider_context_window_tokens": 1000000,
+        "top_provider_max_output_tokens": 128000,
+        "top_provider_is_moderated": null,
+        "per_request_limits": null
+      },
+      "links": {
+        "details_url": "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "docs_url": "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "pricing_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+        "endpoint_url": "https://api.anthropic.com/v1/models"
+      },
+      "sources": [
+        {
+          "source_id": "anthropic_opus_5_5_docs",
+          "source_url": "https://platform.claude.com/docs/en/models/opus-5-5/overview",
+          "source_kind": "official_docs",
+          "fetched_at": "2026-09-22T16:55:13.525Z",
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "availability_status",
+            "capabilities",
+            "catalog_id",
+            "display_name",
+            "family",
+            "lifecycle",
+            "limits",
+            "modalities",
+            "model_id",
+            "parameters",
+            "provider_id",
+            "provider_specific.anthropic",
+            "provider_specific.anthropic.serving",
+            "routing"
+          ]
+        },
+        {
+          "source_id": "anthropic_models_api_reference",
+          "source_url": "https://platform.claude.com/docs/en/api/models",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.anthropic.capabilities",
+            "provider_specific.anthropic.multimodal.models_api_capability_fields"
+          ]
+        },
+        {
+          "source_id": "anthropic_messages_api_docs",
+          "source_url": "https://platform.claude.com/docs/en/api/messages",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "architecture.source_modality",
+            "capabilities.supports_audio_input",
+            "capabilities.supports_audio_output",
+            "capabilities.supports_file_input",
+            "capabilities.supports_image_input",
+            "capabilities.supports_image_output",
+            "capabilities.supports_pdf_input",
+            "capabilities.supports_text_input",
+            "capabilities.supports_text_output",
+            "capabilities.supports_video_input",
+            "capabilities.supports_video_output",
+            "modalities",
+            "provider_specific.anthropic.multimodal"
+          ]
+        },
+        {
+          "source_id": "anthropic_vision_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/vision",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.anthropic.multimodal.image"
+          ]
+        },
+        {
+          "source_id": "anthropic_pdf_support_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/pdf-support",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "capabilities.supports_file_input",
+            "capabilities.supports_pdf_input",
+            "provider_specific.anthropic.multimodal.pdf"
+          ]
+        },
+        {
+          "source_id": "anthropic_api_overview_docs",
+          "source_url": "https://platform.claude.com/docs/en/api/overview",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "provider_specific.anthropic.multimodal.request"
+          ]
+        },
+        {
+          "source_id": "anthropic_models_overview_docs",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/models/overview",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "aliases",
+            "cloud_provider_ids",
+            "deprecation_dates",
+            "knowledge_cutoffs",
+            "lifecycle",
+            "pricing",
+            "serving_tiers"
+          ]
+        },
+        {
+          "source_id": "anthropic_model_ids_docs",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "aliases",
+            "bedrock_ids",
+            "model_id_format",
+            "vertex_ids"
+          ]
+        },
+        {
+          "source_id": "anthropic_model_deprecations_docs",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/model-deprecations",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "availability_status",
+            "deprecation_date",
+            "expiration_date"
+          ]
+        },
+        {
+          "source_id": "anthropic_pricing_docs",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "verified",
+          "fields": [
+            "pricing",
+            "provider_specific.anthropic.pricing"
+          ]
+        },
+        {
+          "source_id": "anthropic_service_tiers_docs",
+          "source_url": "https://platform.claude.com/docs/en/api/service-tiers",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "capabilities.supports_batch",
+            "parameters.supported_parameters",
+            "provider_specific.anthropic.serving"
+          ]
+        },
+        {
+          "source_id": "anthropic_thinking_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "limits.max_reasoning_tokens",
+            "parameters.supported_parameters",
+            "provider_specific.anthropic.supported_effort_levels",
+            "provider_specific.anthropic.supported_thinking_types",
+            "thinking"
+          ]
+        },
+        {
+          "source_id": "anthropic_effort_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/effort",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "high",
+          "verification_status": "verified",
+          "fields": [
+            "thinking.provider_supported_values",
+            "thinking.swarm_setting_mappings"
+          ]
+        },
+        {
+          "source_id": "anthropic_extended_thinking_docs",
+          "source_url": "https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+          "source_kind": "official_docs",
+          "fetched_at": null,
+          "confidence": "medium",
+          "verification_status": "missing",
+          "fields": [
+            "thinking.provider_parameter",
+            "thinking.supports_budget_tokens"
+          ]
+        }
+      ],
+      "provider_specific": {
+        "anthropic": {
+          "api_surface": "claude_api",
+          "api_version": "2023-06-01",
+          "type": "model",
+          "capabilities": {
+            "batch": {
+              "supported": true
+            },
+            "effort": {
+              "supported": true,
+              "low": {
+                "supported": true
+              },
+              "medium": {
+                "supported": true
+              },
+              "high": {
+                "supported": true
+              },
+              "xhigh": {
+                "supported": true
+              },
+              "max": {
+                "supported": true
+              }
+            },
+            "image_input": {
+              "supported": true
+            },
+            "pdf_input": {
+              "supported": true
+            },
+            "structured_outputs": {
+              "supported": true
+            },
+            "thinking": {
+              "supported": true,
+              "types": {
+                "adaptive": {
+                  "supported": true
+                },
+                "enabled": {
+                  "supported": false
+                }
+              }
+            }
+          },
+          "supported_effort_levels": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "supported_thinking_types": [
+            "adaptive"
+          ],
+          "fast_mode": null,
+          "multimodal": {
+            "api_surface": "messages",
+            "input_content_block_types": [
+              "text",
+              "image",
+              "document"
+            ],
+            "output_content_block_types": [
+              "text"
+            ],
+            "text": {
+              "input": true,
+              "output": true
+            },
+            "image": {
+              "input": true,
+              "output": false,
+              "input_content_block_type": "image",
+              "supported_input_media_types": [
+                "image/gif",
+                "image/jpeg",
+                "image/png",
+                "image/webp"
+              ],
+              "animated_image_support": false,
+              "max_base64_encoded_bytes_per_image": null,
+              "published_max_base64_encoded_size_per_image": {
+                "value": 10,
+                "unit": "MB"
+              },
+              "max_images_per_request": 600,
+              "limit_scope": "Direct Claude API. Anthropic publishes 10 MB per base64-encoded image but does not define MB as a byte count, so the exact bytes field remains null. URL and Files API sources are not assigned an undocumented per-image byte limit."
+            },
+            "file": {
+              "input": true,
+              "supported_input_types": [
+                "pdf"
+              ],
+              "note": "Generic file input means at least one documented file type is accepted; it does not imply arbitrary binary file support."
+            },
+            "pdf": {
+              "input": true,
+              "input_content_block_type": "document",
+              "media_type": "application/pdf",
+              "visual_understanding": true,
+              "max_bytes_per_pdf": null,
+              "max_pdfs_per_request": null,
+              "max_pages_per_request": 600,
+              "limit_scope": "Anthropic publishes aggregate request and page limits, not a separate per-PDF byte cap or PDF-count cap."
+            },
+            "request": {
+              "max_request_size_bytes": null,
+              "published_max_request_size": {
+                "value": 32,
+                "unit": "MB"
+              },
+              "max_combined_media_bytes": null,
+              "limit_scope": "Direct Claude API Messages request payload, including text, images, PDFs, and all other request content. Anthropic publishes 32 MB without defining MB as a byte count, so the exact bytes field remains null. Anthropic does not publish a separate media-only combined byte cap."
+            },
+            "audio": {
+              "input": false,
+              "output": false
+            },
+            "video": {
+              "input": false,
+              "output": false
+            },
+            "source_ids": [
+              "anthropic_models_overview_docs",
+              "anthropic_messages_api_docs",
+              "anthropic_vision_docs",
+              "anthropic_pdf_support_docs",
+              "anthropic_api_overview_docs"
+            ],
+            "notes": "Current Claude models accept text, image, and PDF document input and generate text output. Direct Claude API limits are recorded exactly where Anthropic documents them. Null per-PDF and media-only byte/count fields mean Anthropic does not publish a separate exact limit, not that the input is unlimited."
+          },
+          "supports_pdf_input": true,
+          "supports_citations": null,
+          "supports_code_execution": null,
+          "supports_context_management": null,
+          "serving": {
+            "supported": true,
+            "supported_tiers": [
+              "standard",
+              "batch"
+            ],
+            "default_tier": "standard",
+            "provider_parameter": "service_tier",
+            "provider_default_value": "auto",
+            "provider_supported_values": [
+              "auto",
+              "standard_only"
+            ],
+            "tiers": {
+              "standard": {
+                "tier": "standard",
+                "swarm_setting": "off",
+                "provider_parameter": "service_tier",
+                "provider_value": "standard_only",
+                "response_usage_service_tier": "standard",
+                "api_surface": "messages",
+                "interface": "synchronous",
+                "pricing": {
+                  "relative_to_standard": "standard",
+                  "multiplier_min": 1,
+                  "multiplier_max": 1,
+                  "discount_percent": null,
+                  "notes": "Standard Tier uses regular Claude API capacity and pricing."
+                },
+                "capacity_behavior": "Uses regular rate limits and does not consume Priority Tier committed capacity.",
+                "latency": "Best effort",
+                "reliability": "Best-effort availability; requests are prioritized alongside other standard traffic.",
+                "notes": "Swarm off maps to Anthropic service_tier=standard_only so requests do not use Priority Tier capacity."
+              },
+              "priority": null,
+              "batch": {
+                "tier": "batch",
+                "swarm_setting": "batch",
+                "provider_parameter": null,
+                "provider_value": null,
+                "response_usage_service_tier": null,
+                "api_surface": "messages_batch_api",
+                "interface": "asynchronous",
+                "pricing": {
+                  "relative_to_standard": "unknown",
+                  "multiplier_min": null,
+                  "multiplier_max": null,
+                  "discount_percent": null,
+                  "notes": "The service-tier docs identify Batch as a separate asynchronous tier; exact pricing should stay with Anthropic pricing docs enrichment."
+                },
+                "capacity_behavior": "Separate asynchronous workflow outside normal synchronous capacity planning.",
+                "latency": "Asynchronous; suitable for work that can wait.",
+                "reliability": "Designed for throughput and asynchronous workloads rather than lowest latency.",
+                "notes": "Batch is a separate Anthropic API surface, not a service_tier value on synchronous Messages requests."
+              }
+            },
+            "fast_mode": null,
+            "source_ids": [
+              "anthropic_service_tiers_docs"
+            ],
+            "notes": "Anthropic serving tiers mapped for Swarm: off=Standard via service_tier=standard_only, fast=Priority via service_tier=auto where Priority is documented, and batch=Batch API. Anthropic provider Fast Mode is represented separately as serving.fast_mode with speed=fast and is not the same as Priority Tier. Priority assignment is capacity-dependent and reported in response usage.service_tier."
+          },
+          "docs_enrichment_status": "partial_serving_tiers",
+          "pricing_enrichment_status": "official_anthropic_pricing_docs",
+          "note": "Official model docs supplies identity, release timestamp, token limits, and capability evidence. Anthropic service-tier, provider Fast Mode, thinking-control, and pricing metadata is documented in normalized provider fields; model aliases, cloud provider IDs, and deprecation dates require follow-up official-docs enrichment."
+        }
+      },
+      "swarm": {
+        "routing_roles": [],
+        "labels": {
+          "best_for_coding": null,
+          "best_for_reasoning": true,
+          "best_for_fast_chat": null,
+          "best_for_vision": null,
+          "best_for_voice": false,
+          "best_for_image_generation": false,
+          "best_for_low_cost": null
+        },
+        "measurements": {
+          "time_to_first_token_ms": null,
+          "output_tokens_per_second": null,
+          "reliability_score": null,
+          "sample_count": null,
+          "measured_at": null
+        },
+        "reviewed_at": null,
+        "notes": "Anthropic entry hydrated from first-party model docs pending Models API visibility verification. Claude API service-tier metadata is mapped for Swarm off/fast/batch where documented; provider Fast Mode is represented separately as serving.fast_mode; and Claude thinking controls and token pricing are mapped from first-party docs."
+      },
+      "updated_at": "2026-09-22T16:55:13.525Z",
       "media": {
         "input_understanding": {
           "audio": false,
