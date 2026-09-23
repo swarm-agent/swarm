@@ -3705,8 +3705,9 @@ export function DesktopV3ExistingConversationPane({
             onSlashCommand={onSlashCommand}
             developerMode={developerMode}
             onOpenActionSettings={onOpenActionSettings}
-          />}
-        </div>
+          />
+        )}
+      </div>
 
         {showConversationSidebarColumn ? (
           <div

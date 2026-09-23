@@ -1321,16 +1321,18 @@ export function AutomationV2Workspace({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Bot size={14} className="text-[var(--app-primary)]" />
-                        <span className="text-xs font-semibold text-[var(--app-text)]">{r.title || r.automation_id}</span>
+                        <span className="text-xs font-semibold text-[var(--app-text)]">{r.document?.title || r.automation_id}</span>
                       </div>
                       <span className={cn(
                         'rounded-md px-2 py-0.5 text-[10px] font-bold uppercase',
-                        r.status === 'enabled' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-zinc-500/10 text-zinc-500'
+                        r.enabled && !r.cancelled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-zinc-500/10 text-zinc-500'
                       )}>
-                        {r.status}
+                        {r.cancelled ? 'cancelled' : (r.enabled ? 'enabled' : 'disabled')}
                       </span>
                     </div>
-                    {r.summary && <p className="text-[11px] text-[var(--app-text-muted)] line-clamp-2">{r.summary}</p>}
+                    {typeof r.document?.summary === 'string' && r.document.summary ? (
+                      <p className="text-[11px] text-[var(--app-text-muted)] line-clamp-2">{r.document.summary}</p>
+                    ) : null}
                   </div>
                 ))}
               </div>

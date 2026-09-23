@@ -18,7 +18,6 @@ import {
   Inbox,
   LoaderCircle,
   MessageSquareReply,
-  Music,
   RefreshCcw,
   Send,
   Share2,
@@ -88,7 +87,7 @@ function formatDateGroupKey(timestamp: number): { key: string; label: string } {
 
 export function DeliverablesInbox({
   workspaceId,
-  workspaceSlug,
+  workspaceSlug: _workspaceSlug,
   onOpenSession,
   selectedWorkerId,
   highlightId,
@@ -952,7 +951,7 @@ export function DeliverableCard({
             </Button>
 
             <Button
-              variant="default"
+              variant="primary"
               size="sm"
               onClick={onApprove}
               disabled={isLoading}
