@@ -1619,7 +1619,7 @@ func (r *Runtime) Definitions() []Definition {
 		{
 			Type:        "function",
 			Name:        "task",
-			Description: "Delegate heavy work via Finder, Coder, or Designer launches, staged Task Programs, or Iteration Swarms (mode=swarm). For image swarms (e.g. '10 images of x'), use mode=swarm agent_type=image count=N. For creative video swarms, use mode=swarm agent_type=video count=N. Every spawn requires top-level prompt. Staged programs use program={id, stages, jobs}. Swarm mode uses agent_type and count (omit launches). Regular mode uses launches array. Call action='help' topic='program' or 'swarm' for schema.",
+			Description: "Delegate normal heavy work through explicit Finder, Coder, or Designer launches, optionally submit one staged Task Program, or set mode=swarm for an Iteration Swarm: fast parallel alternatives or independent trials (internal explore strategy remains implicit for backward compatibility). When asked for multiple images, an image swarm, or a high numbered image count (e.g. '10 images of x', 'make an image swarm of 5 logos'), use mode=swarm with agent_type=image and count=N directly—do not search workspace code or generate images one by one with manage_artifact. When asked for creative video swarms or multiple video variants, use mode=swarm with agent_type=video and count=N directly. When asked for multiple UI/design iterations or variants, use mode=swarm with agent_type=designer and count=N (managed artifacts) or regular workspace Designer launches. Every spawn call, including an inline Task Program start, requires a non-empty top-level prompt; meta_prompt, description, launches, and program do not replace it. For inline Task Program starts, max_concurrency belongs only inside program and should normally be omitted; it is never a task-call top-level field. In regular mode, use the structured launches array; Do not embed launch JSON as text embedded in prompt (not text embedded in prompt). Designer requires explicitly requested multiple UI/design iterations or variants (prohibited for ordinary UI work and single-design requests); workspace Designers share the parent checkout with read/search/find/list and write/edit (no Bash or Git) on distinct non-overlapping workspace-relative scopes, while managed Designers produce ordinary reusable artifacts. Approved-checkpoint starts omit program and max_concurrency. Only status calls and starts that load the canonical task_program from the active approved checkpoint may omit prompt. Swarm mode uses the same subagent policy: agent_type and count generate the wave; omit launches and regular-launch fields such as concurrency_reason; Omit in mode=swarm; swarm concurrency is defined by count. Idea Swarms send the same question directly without Router.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1632,16 +1632,16 @@ func (r *Runtime) Definitions() []Definition {
 					"program":    taskProgramToolSchema(),
 					"swarm_mode": map[string]any{"type": "boolean", "description": "Compatibility alias for mode=swarm. Do not combine with mode=regular."},
 
-					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "video", "idea"}, "description": "Required for mode=swarm: coder, designer, image, video, idea. Direct dispatch for image and video swarms."},
+					"agent_type": map[string]any{"type": "string", "enum": []string{"coder", "designer", "image", "video", "idea"}, "description": "Required for mode=swarm (coder, designer, image, video, idea). image and video independently Router-hydrate the parent brief plus each base theme and dispatch directly to the account image or video model without agent sessions. Use image for image swarms or generating multiple images/variations (e.g. '10 images of x'), video for direct video swarms/variations, designer for managed design iteration swarms, coder for code trials, idea for parallel answering."},
 					"count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 256, "description": "Final worker count for mode=swarm. The account's separate swarm-mode limit controls approval-free capacity; over-limit waves follow its configured action within this absolute bound."},
 					"themes":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional Coder/Designer/image seed themes; cardinality must equal count."},
 					"groups":     map[string]any{"type": "array", "items": map[string]any{"type": "object"}, "description": "Optional Coder/Designer groups. Call action='help' for schema."},
 					"iteration_controls": map[string]any{"type": "object", "properties": map[string]any{
-						"preserve": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Details to preserve."},
-						"change":   map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}, "description": "The only dimensions to vary during iteration."},
-						"exclude":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Additions or directions to avoid."},
+						"preserve": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored details every Router and worker must preserve."},
+						"change":   map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "string"}, "description": "The only dimensions the Router may vary during this focused iteration."},
+						"exclude":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Parent-authored additions or directions every Router and worker must avoid."},
 					}, "required": []string{"change"}, "additionalProperties": false, "description": "Parent iteration boundary for Designer/image swarms."},
-					"output_contract":   map[string]any{"type": "string", "description": "Shared swarm deliverable contract."},
+					"output_contract":   map[string]any{"type": "string", "description": "Shared Coder/Designer/image swarm deliverable contract. Omit for Idea swarms."},
 					"animation_profile": artifact.AnimationProfileToolSchema(),
 					"source_artifact": map[string]any{"type": "object", "properties": map[string]any{
 						"session_id": map[string]any{"type": "string"}, "collection_id": map[string]any{"type": "string"},
@@ -1709,7 +1709,7 @@ func (r *Runtime) Definitions() []Definition {
 					"owned_scope": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Declared files, directories, or output target owned by the child. Omitted Coder scope safely defaults to its isolated worktree."},
 					"launches": map[string]any{
 						"type":        "array",
-						"description": "Regular mode launches wave. Omit in mode=swarm.",
+						"description": "Regular mode only: the exact dependency-ready wave for one task approval. Omit launches in mode=swarm because agent_type and count generate the wave. Call action='help' for guide.",
 						"items": map[string]any{
 							"type": "object",
 							"properties": map[string]any{
