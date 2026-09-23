@@ -447,7 +447,7 @@ func (s *PlanLifecycleService) startSessionCheckpoint(input PlanLifecycleSession
 	if active, ok, err := s.sessions.GetActivePlan(session.ID); err != nil {
 		return PlanLifecycleResult{}, err
 	} else if ok {
-		return PlanLifecycleResult{}, fmt.Errorf("start_session_checkpoint requires no active plan; active plan %q already exists, use request_followup_checkpoint for one ordered checkpoint, amend_plan for future changes, or request_new_plan with plan_id for whole-plan replacement", active.ID)
+		return PlanLifecycleResult{}, fmt.Errorf("start_session_checkpoint requires no active plan; active plan %q already exists, use transition_checkpoint_boundary for one ordered checkpoint, amend_plan for future changes, or request_new_plan with plan_id for whole-plan replacement", active.ID)
 	}
 	request := strings.TrimSpace(input.ChangeRequest)
 	if request == "" {

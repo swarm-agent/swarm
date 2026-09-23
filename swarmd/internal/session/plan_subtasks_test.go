@@ -268,3 +268,114 @@ func TestPlanSubtaskCompletionDoesNotCreateMultipleInProgress(t *testing.T) {
 		t.Fatalf("document validation failed: %v", err)
 	}
 }
+
+func TestAddPlanCheckpointSubtaskAcceptsTopLevelTitleAndString(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
+		ID:    "plan-1",
+		Title: "Plan",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Test goal"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Checkpoint 1",
+			Tasks:              []string{"first"},
+			AcceptanceCriteria: []string{"Criteria 1"},
+			Subtasks: []pebblestore.SessionPlanSubtask{
+				{ID: "task-1", Title: "First", Status: PlanSubtaskStatusCompleted, Order: 1},
+			},
+			ActiveSubtaskID: "",
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Test top-level Title
+	opTopLevel := PlanDocumentPatchOperation{
+		CheckpointID: "cp-1",
+		Title:        "Second task from top-level title",
+	}
+	if err := addPlanCheckpointSubtask(doc, opTopLevel); err != nil {
+		t.Fatalf("expected top-level title to succeed, got %v", err)
+	}
+	checkpoint := doc.Checkpoints[0]
+	if len(checkpoint.Subtasks) != 2 || checkpoint.Subtasks[1].Title != "Second task from top-level title" {
+		t.Fatalf("unexpected subtasks after top-level add: %#v", checkpoint.Subtasks)
+	}
+
+	// 2. Test JSON unmarshaling with string subtask
+	patchJSON := []byte(`{"checkpoint_id":"cp-1","subtask":"Third task from string subtask"}`)
+	var patch PlanDocumentPatch
+	if err := patch.UnmarshalJSON(patchJSON); err != nil {
+		t.Fatalf("unmarshal patch with string subtask failed: %v", err)
+	}
+	if patch.Subtask == nil || patch.Subtask.Title != "Third task from string subtask" {
+		t.Fatalf("expected subtask to be parsed from string, got %#v", patch.Subtask)
+	}
+	if err := addPlanCheckpointSubtask(doc, patch); err != nil {
+		t.Fatalf("addPlanCheckpointSubtask failed with string subtask patch: %v", err)
+	}
+	if len(doc.Checkpoints[0].Subtasks) != 3 || doc.Checkpoints[0].Subtasks[2].Title != "Third task from string subtask" {
+		t.Fatalf("unexpected subtasks after string subtask add: %#v", doc.Checkpoints[0].Subtasks)
+	}
+}
+
+// Requirement: terminal progress must not report unfinished work as completed.
+// Threat: a caller omits a pending subtask from subtask_ids and requests checkpoint closure.
+// The plan mutation authority is completePlanCheckpointSubtask; this narrow fixture
+// asserts both the rejection and unchanged durable document state.
+func TestCompletePlanCheckpointSubtaskRejectsUnfinishedWorkAtomically(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
+		ID:    "plan-1",
+		Title: "Plan",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Test goal"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Checkpoint 1",
+			Tasks:              []string{"first", "second", "third"},
+			AcceptanceCriteria: []string{"Criteria 1"},
+			Subtasks: []pebblestore.SessionPlanSubtask{
+				{ID: "task-1", Title: "First", Status: PlanSubtaskStatusCompleted, Order: 1},
+				{ID: "task-2", Title: "Second", Status: PlanSubtaskStatusInProgress, Order: 2},
+				{ID: "task-3", Title: "Third", Status: PlanSubtaskStatusPending, Order: 3},
+			},
+			ActiveSubtaskID: "task-2",
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	op := PlanDocumentPatchOperation{
+		CheckpointID:       "cp-1",
+		SubtaskID:          "task-2",
+		CompleteCheckpoint: true,
+		CompletedAt:        5,
+		Report:             "done",
+		Result:             "done",
+		AttemptID:          "attempt-1",
+		RunID:              "run-1",
+		RunSessionID:       "session-1",
+		ParentSessionID:    "parent-1",
+	}
+	before := *clonePlanDocument(doc)
+	if err := completePlanCheckpointSubtask(doc, op); err == nil || !strings.Contains(err.Error(), "task-3") {
+		t.Fatalf("expected unfinished task-3 rejection, got: %v", err)
+	}
+	if !reflect.DeepEqual(*doc, before) {
+		t.Fatalf("failed terminal call mutated plan: before=%#v after=%#v", before.Checkpoints, doc.Checkpoints)
+	}
+
+	op.SubtaskIDs = []string{"task-2", "task-3"}
+	op.SubtaskID = ""
+	if err := completePlanCheckpointSubtask(doc, op); err != nil {
+		t.Fatalf("expected complete batch to close checkpoint, got: %v", err)
+	}
+	for _, st := range doc.Checkpoints[0].Subtasks {
+		if st.Status != PlanSubtaskStatusCompleted {
+			t.Fatalf("explicitly completed batch left subtask unresolved: %#v", st)
+		}
+	}
+	if doc.Checkpoints[0].Status != PlanCheckpointStatusCompleted {
+		t.Fatalf("checkpoint not completed: %#v", doc.Checkpoints[0])
+	}
+}

@@ -2562,6 +2562,12 @@ Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test
   - Added unit test `TestPlanSubtaskCompletionDoesNotCreateMultipleInProgress` in `swarmd/internal/session/plan_subtasks_test.go`.
   - `bash scripts/run-critical-tests.sh fast` passes all tests.
   - `bash scripts/check-atlas-sync.sh` passes.
+- **Plan-manage argument handling and explicit progress safety (`swarmd/internal/session/plan_document.go`, `swarmd/internal/session/plan_subtasks.go`, `swarmd/internal/session/plan_lifecycle_service.go`):**
+  - `PlanDocumentPatch.UnmarshalJSON` accepts a string `subtask` or top-level `title` for add_subtask, while preserving the structured subtask contract. `addPlanCheckpointSubtask` uses the supplied title when a subtask object is absent.
+  - `completePlanCheckpointSubtask` rejects checkpoint closure when a pending or active task was not explicitly included in `subtask_ids`. It validates before changing statuses, rather than silently marking unfinished work done. A complete batch can close the checkpoint atomically.
+  - `startSessionCheckpoint` reports the current `transition_checkpoint_boundary` action instead of the retired action in its active-plan diagnostic.
+  - The requirement-first negative test `TestCompletePlanCheckpointSubtaskRejectsUnfinishedWorkAtomically` verifies both rejection and unchanged plan state. `TestAddPlanCheckpointSubtaskAcceptsTopLevelTitleAndString` covers argument handling. This is focused deterministic evidence, not live provider-backed proof; the baseline/candidate scenario matrix and repeat protocol are in `docs/checkpoints/plan-manage-benchmark-matrix.md`.
+  - The earlier single-run latency comparison and character-based token estimate are not controlled, revision-bound cost or adherence evidence. Prompt instructions and tool schema descriptions are unchanged.
 
 
 

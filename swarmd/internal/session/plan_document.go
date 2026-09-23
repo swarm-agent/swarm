@@ -275,6 +275,7 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 // one normal plan revision for the accepted update.
 type PlanDocumentPatch struct {
 	Operation          string                                           `json:"operation,omitempty"`
+	Title              string                                           `json:"title,omitempty"`
 	Info               *pebblestore.SessionPlanInfo                     `json:"info,omitempty"`
 	InfoFields         map[string]json.RawMessage                       `json:"-"`
 	ExecutionPolicy    *pebblestore.SessionPlanExecutionPolicy          `json:"execution_policy,omitempty"`
@@ -317,12 +318,45 @@ func (p *PlanDocumentPatch) UnmarshalJSON(raw []byte) error {
 	type alias PlanDocumentPatch
 	var base alias
 	if err := json.Unmarshal(raw, &base); err != nil {
-		return err
+		var rawMap map[string]json.RawMessage
+		if unmarshalErr := json.Unmarshal(raw, &rawMap); unmarshalErr == nil {
+			if subtaskRaw, ok := rawMap["subtask"]; ok && len(subtaskRaw) > 0 {
+				var subtaskStr string
+				if json.Unmarshal(subtaskRaw, &subtaskStr) == nil && strings.TrimSpace(subtaskStr) != "" {
+					delete(rawMap, "subtask")
+					sanitized, _ := json.Marshal(rawMap)
+					if err2 := json.Unmarshal(sanitized, &base); err2 == nil {
+						base.Subtask = &pebblestore.SessionPlanSubtask{
+							Title: strings.TrimSpace(subtaskStr),
+						}
+						err = nil
+					}
+				}
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
 	*p = PlanDocumentPatch(base)
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return err
+	}
+	if p.Subtask == nil {
+		if subtaskRaw, ok := payload["subtask"]; ok && len(subtaskRaw) > 0 {
+			var subtaskStr string
+			if json.Unmarshal(subtaskRaw, &subtaskStr) == nil && strings.TrimSpace(subtaskStr) != "" {
+				p.Subtask = &pebblestore.SessionPlanSubtask{
+					Title: strings.TrimSpace(subtaskStr),
+				}
+			}
+		}
+	}
+	if p.Subtask == nil && strings.TrimSpace(p.Title) != "" {
+		p.Subtask = &pebblestore.SessionPlanSubtask{
+			Title: strings.TrimSpace(p.Title),
+		}
 	}
 	if infoRaw, ok := payload["info"]; ok && len(infoRaw) > 0 && string(infoRaw) != "null" {
 		var fields map[string]json.RawMessage
