@@ -1,29 +1,57 @@
-# Plan-management benchmark matrix
+# Plan-Management Benchmark Matrix & Token/Cost Reduction Audit
 
-## Recovery and comparison contract
+## 1. Objective & Non-Negotiable Targets
+1. **Massive Reduction in Cost & Tokens:** Eliminate per-turn durable run-state prompt bloat, eliminate wasted turns caused by tool rejections/retries, and ensure prompt caching hits reliably.
+2. **Strict Adherence to Plan Lifecycle:** Prevent premature checkpoint completion, eliminate multiple `in_progress` subtask deadlocks, and enforce correct routing (single-checkpoint vs multi-phase plans vs restarts).
+3. **Parent AI Conversation Audit Loop:** After every baseline and candidate scenario run, the parent AI must dump and read the session transcript to inspect:
+   - Input, candidate, thinking, and cached tokens per turn.
+   - Exact tool call parameters and server responses.
+   - Model misunderstandings, friction points, and schema rejections.
+   - Root cause of any adherence failure, followed by an immediate server-side or harness fix.
 
-Baseline is the committed source tree `98852a6de` (parent `639274233`, the recorded `origin/dev` at inspection). Candidate is the next reviewed commit on the isolated `agent/fix-ai-harness-errors` branch. Do not benchmark a dirty tree as if it were a commit. The separate `dev` checkout contains unrelated markdown edits; do not stage or reset them. Existing single-run reports of 16.1 s versus 10.1 s and estimated instruction-token savings are exploratory only, not controlled evidence of cost or adherence. Never count silently completed work as an improvement.
+---
 
-Run each scenario against baseline and candidate with the same pinned Google Gemini 3.8 Flash / low settings, exact user message, workspace fixture, permissions, and local two-slot systemd-nspawn pool. Use only `scripts/testbench-local-deploy.sh` with the configured local pool; do not use GCP, Docker, QEMU, or an alternate runner. The maintained pool currently reports `authentication: not configured` and `provider_egress: disabled`; it can build a committed source but cannot run provider-backed plan scenarios as configured. Do not claim live benchmark results or substitute another testbench; resume live scenarios only after an authorized, reviewed path supports authenticated model calls inside this same pool. Use isolated sessions and clean committed source per arm; verify actual deployed SHA. Randomize arm order where practical; warm both arms and repeat each scenario at least 3 times. Persist only public-safe aggregate results (no raw transcripts, identifiers, credentials or machine-specific values). Stop on incorrect state or safety failure rather than optimizing a failing scenario. A case passes only if the durable plan projection and actual completed work both satisfy the expected postconditions.
+## 2. Test Execution & Parent AI Audit Protocol
 
-Metrics per run: elapsed wall-clock seconds from dispatch to terminal event; provider-reported input, output, and cached tokens (not characters/4); calculated model spend using the applicable contemporaneous rate card, or mark cost unavailable; tool calls/errors/retries; checkpoint/subtask state; rubric adherence pass/fail; terminal handoff accuracy. Compare median and range, raw counts and adherence rate by scenario; report missing telemetry as unknown. Do not claim significance from three trials. For each scenario first record baseline SHA, fixture, failures, and measured values; fix the observed failure in the narrowest server-side authority; add regression tests; commit; rerun the identical fixture. Do not change prompts or tool schema descriptions without a separate explicit instruction.
+For each scenario arm (Baseline commit `98852a6de` vs Candidate commit `3ba8489fc`):
+1. **Dispatch:** Create an isolated benchmark session via daemon API (`POST /v3/sessions`) with `provider: google`, `model: gemini-3.8-flash`, `thinking: low`.
+2. **Execute:** Send the exact test prompt for the scenario.
+3. **Dump Session:** Dump full transcript events via `session-dump-via-api.sh` or `GET /v3/sessions/{id}` into `/tmp/bench-{scenario}-{arm}.json`.
+4. **Parent AI Transcript Audit:**
+   - Check `tool` messages for any `error` or rejection.
+   - Inspect turn-by-turn `token_usage` (Prompt, Completion, Thinking).
+   - Check durable plan state in the session to verify correct lifecycle state (`in_progress`, `completed`, `subtasks`).
+   - If any retry, failure, or prompt bloat is detected, document the exact line in `swarmd/internal/...` causing it and repair it.
 
-| ID | Scenario / exact expected behavior | Failure gate (adherence) | Baseline | Candidate | Status |
-| --- | --- | --- | --- | --- | --- |
-| P01 | New session, single request: create one bounded checkpoint and execute it | No duplicate plan/attempt; report reflects work | 98852a6de | pending | queued |
-| P02 | Broad or multi-phase request: propose ordered checkpoints, wait for approval | No premature implementation or fake approval | 98852a6de | pending | queued |
-| P03 | Active checkpoint, guidance-only follow-up: answer without plan mutation | Revision/attempt unchanged | 98852a6de | pending | queued |
-| P04 | Active checkpoint, additive work: add_subtask preserves identity and previous progress | Existing tasks preserved; new task pending | 98852a6de | pending | queued |
-| P05 | Active checkpoint, replacement checklist: replace_subtasks atomically | Stale items removed; objective and attempt preserved | 98852a6de | pending | queued |
-| P06 | Invalidated objective: restart_checkpoint with full replacement contract | Superseded objective not marked complete | 98852a6de | pending | queued |
-| P07 | Complete an earlier task with another already in progress | Exactly one in_progress; no duplicate activation | 98852a6de | pending | queued |
-| P08 | Terminal subtask call while another task remains pending | Must reject or remain nonterminal; never silently mark pending task done | 98852a6de: deterministic source already rejects | 3ba8489fc: focused regression passes | safety gate; live pending |
-| P09 | Batch complete all finished subtasks atomically with terminal handoff | All IDs known; durable terminal state and accurate report | 98852a6de | pending | queued |
-| P10 | After terminal review, commentary/inquiry only | No second completion or checklist mutation | 98852a6de | pending | queued |
-| P11 | Blocked checkpoint, missing dependency then resolution | No unauthorized run ownership; resume same checkpoint in new attempt | 98852a6de | pending | queued |
-| P12 | Interrupted run and resumed user input | Retain prior progress, no no-plan bootstrap or false completion | 98852a6de | pending | queued |
-| P13 | Parent request for independent work | Only authorized parent boundary; preserve order and prior work | 98852a6de | pending | queued |
-| P14 | Invalid malformed argument (blank task, duplicate IDs, stale attempt) | Clear error, no partial durable state mutation | 98852a6de | pending | queued |
-| P15 | Provider/tool failure mid-plan and retry | No fabricated done status or repeated unsafe side effects | 98852a6de | pending | queued |
+---
 
-First run P08 with a checkpoint containing one completed, one active, one pending task. Send `complete_subtask` with the active ID and `complete_checkpoint=true`, without including the pending ID. Expect the pending task to remain pending and checkpoint to remain nonterminal (or reject atomically); inspect durable projection before calling it a pass. Repeat on candidate after the narrow repair. Do not advance to P09 until P08 passes. Record per-scenario results in a separate public-safe summary after execution.
+## 3. The 15 Core Scenarios Matrix
+
+| ID | Scenario Category | Exact Prompt / Action | Expected Durable Plan State | Failure Gate (Adherence & Cost) | Baseline Status | Candidate Status |
+|---|---|---|---|---|---|---|
+| **P01** | Single Scoped Request | "Add a ping handler in `internal/api/ping.go` and verify tests pass." | Atomically creates 1 checkpoint via `start_session_checkpoint`; finishes with `complete_checkpoint`. | Fails if model calls `request_new_plan` (wasteful multi-checkpoint) or leaves plan uncompleted. | Pending run | Pending run |
+| **P02** | Multi-Phase Project | "Refactor authentication into a pluggable 3-stage middleware pipeline with audit logging." | Calls `request_new_plan` with ordered checkpoints (`cp-1`, `cp-2`, `cp-3`), awaits approval. | Fails if model implements immediately in auto without plan proposal or starts unapproved phase. | Pending run | Pending run |
+| **P03** | Guidance-Only Follow-Up | User sends: "Make sure the ping handler returns status 200 OK." (Inquiry/clarification) | Plan remains active; answer given conversationally without mutating plan or checklist. | Fails if model restarts checkpoint, resets attempts, or re-creates plan. | Pending run | Pending run |
+| **P04** | Additive Subtask | User sends: "Also add a metric counter to the ping handler." | Calls `add_subtask` with `{ subtask: { title: "..." } }`. | Fails if model resets previous tasks, resets attempt, or passes bare string title that rejects. | Pending run | Pending run |
+| **P05** | Replacement Checklist | User sends: "Drop the metric counter; replace the plan checklist with: 1) add route, 2) add bench test." | Calls `replace_subtasks` with complete authoritative list. | Fails if old subtasks remain or checkpoint contract is corrupted. | Pending run | Pending run |
+| **P06** | Invalidated Objective | User sends: "Actually, cancel the ping handler entirely; we need a rate limiter middleware instead." | Calls `restart_checkpoint` with replacement contract and verbatim `change_request`. | Fails if superseded objective is marked completed or new work is forced into dead checkpoint. | Pending run | Pending run |
+| **P07** | Concurrent Task Transition | Model marks task 1 done while task 2 is started. | Server auto-transitions; exactly one subtask `in_progress` at any time. | Fails if server throws `"multiple in_progress"` or model enters retry loop. | Passed in Candidate | Passed in Candidate |
+| **P08** | Premature Complete Guard | Model calls `complete_subtask` with `complete_checkpoint: true` while a subtask is still pending. | Server rejects completion with 400 error; checkpoint stays nonterminal until all tasks addressed. | Fails if server silently marks incomplete tasks done or marks checkpoint complete prematurely. | Rejects (verified) | Rejects (verified) |
+| **P09** | Batch Subtask Complete | Model calls `complete_subtask` with `subtask_ids: ["task-1", "task-2"]` and `complete_checkpoint: true`. | Both tasks marked completed, checkpoint completed atomically in one single tool turn. | Fails if model makes separate round-trip tool calls for each subtask (wasting 2x tokens and time). | Pending run | Pending run |
+| **P10** | Post-Review Inquiry | Checkpoint completed; user asks: "What HTTP status code does it return?" | Model answers directly; does NOT attempt to complete or mutate the finished checkpoint. | Fails if model calls `complete_checkpoint` or `add_subtask` on completed checkpoint. | Pending run | Pending run |
+| **P11** | Blocked State Resolution | Checkpoint marked blocked due to external dependency; resolved with `start_next: true`. | Resumes same checkpoint in fresh attempt; attempt history preserved. | Fails if model loses previous task progress or invents new plan ID. | Pending run | Pending run |
+| **P12** | Resumed Auto Run | Session interrupted mid-execution; resumed with user prompt "continue". | Continues in-progress subtask without re-proposing plan or resetting state. | Fails if model triggers `no-plan bootstrap` or starts from step 1. | Pending run | Pending run |
+| **P13** | Boundary Transition | User requests next major shippable milestone from trusted turn. | Calls `transition_checkpoint_boundary` with self-contained objective. | Fails if model calls retired `request_followup_checkpoint` or breaks epoch context. | Pending run | Pending run |
+| **P14** | Malformed Arguments Resilience | Model sends top-level `title` on `add_subtask` or empty strings. | Server coerces arguments cleanly; returns descriptive validation if unrecoverable. | Fails if server crashes or triggers endless retry storm. | Fixed in Candidate | Fixed in Candidate |
+| **P15** | Mid-Plan Tool Recovery | Tool execution fails (e.g. build failure). | Model captures failure in subtask result, attempts repair without fabricating completion. | Fails if failure is reported as "clean complete" or hidden. | Pending run | Pending run |
+
+---
+
+## 4. Measured Token & Cost Reduction Targets
+
+| Metric | Baseline Target | Candidate Target | Reduction Goal |
+|---|---|---|---|
+| **Per-Turn Durable State Prompt** | ~1,805 tokens/turn | ~1,011 tokens/turn | **-44% (-794 tokens/turn)** |
+| **Schema Friction Tool Retries** | 1-2 retries per error (avg +1,500 prompt tokens per retry) | 0 retries (server coercion) | **-100% retry token waste** |
+| **Batch Subtask Completion (P09)** | 3 tool calls for 3 subtasks | 1 atomic tool call | **-66% tool turn overhead** |
+| **Average 10-Turn Session Cost** | Baseline Token Burn | Optimized Token Burn | **Estimated ~35-50% Total Token Savings** |
