@@ -12,10 +12,13 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 	"time"
 )
 
 const (
+	DisableMintReportEnv       = "SWARM_DISABLE_MINT_REPORT"
 	MintReportURL              = "https://swarmagent.dev/api/mint"
 	mintIdentifierVersion      = 1
 	mintReportTimeout          = 5 * time.Second
@@ -50,6 +53,9 @@ func newMintReporter(service *Service, endpoint string, client *http.Client) *Mi
 }
 
 func (r *MintReporter) ReportPending(ctx context.Context) error {
+	if IsMintReportDisabled() {
+		return nil
+	}
 	if r == nil || r.service == nil || r.client == nil {
 		return errors.New("mint reporter is not configured")
 	}
@@ -123,4 +129,9 @@ func validateMintReportEndpoint(raw string) (*url.URL, error) {
 func mintReportIdentifier(swarmID string) string {
 	sum := sha256.Sum256([]byte("swarm-mint-v1\x00" + swarmID))
 	return hex.EncodeToString(sum[:])
+}
+
+func IsMintReportDisabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv(DisableMintReportEnv)))
+	return val == "1" || val == "true" || val == "yes"
 }

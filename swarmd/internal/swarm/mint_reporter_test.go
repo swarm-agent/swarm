@@ -116,3 +116,59 @@ func TestMintReporterRejectsUnsafeEndpointBeforeSending(t *testing.T) {
 		t.Fatal("unsafe endpoint reached transport")
 	}
 }
+
+func TestMintReporterSuppressedWhenDisabled(t *testing.T) {
+	for _, val := range []string{"1", "true", "yes", "True", " 1 "} {
+		t.Run("env="+val, func(t *testing.T) {
+			t.Setenv(DisableMintReportEnv, val)
+			svc, _ := newTestService(t)
+			if _, err := svc.EnsureLocalState(EnsureLocalStateInput{}); err != nil {
+				t.Fatalf("ensure local state: %v", err)
+			}
+			called := false
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				called = true
+				return nil, nil
+			})}
+			reporter := newMintReporter(svc, MintReportURL, client)
+			if err := reporter.ReportPending(context.Background()); err != nil {
+				t.Fatalf("ReportPending failed: %v", err)
+			}
+			if called {
+				t.Fatalf("expected no HTTP request when %s=%q, but transport was called", DisableMintReportEnv, val)
+			}
+			// Verify report remains pending so it can be sent when re-enabled
+			if _, pending, err := svc.PendingMintReport(); err != nil || !pending {
+				t.Fatalf("expected report to remain pending, got pending=%t err=%v", pending, err)
+			}
+		})
+	}
+}
+
+func TestIsMintReportDisabled(t *testing.T) {
+	tests := []struct {
+		envVal   string
+		expected bool
+	}{
+		{"", false},
+		{"0", false},
+		{"false", false},
+		{"no", false},
+		{"random", false},
+		{"1", true},
+		{"true", true},
+		{"TRUE", true},
+		{"yes", true},
+		{"YES", true},
+		{" 1 ", true},
+		{" true ", true},
+	}
+	for _, tt := range tests {
+		t.Run("env="+tt.envVal, func(t *testing.T) {
+			t.Setenv(DisableMintReportEnv, tt.envVal)
+			if got := IsMintReportDisabled(); got != tt.expected {
+				t.Errorf("IsMintReportDisabled() = %v, want %v for env %q", got, tt.expected, tt.envVal)
+			}
+		})
+	}
+}
