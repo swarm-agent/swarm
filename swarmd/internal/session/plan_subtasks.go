@@ -262,12 +262,25 @@ func completePlanCheckpointSubtask(doc *pebblestore.SessionPlanDocument, op Plan
 		})
 		return err
 	}
+	var activeInProgressID string
 	for i := range checkpoint.Subtasks {
-		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusPending {
-			checkpoint.Subtasks[i].Status = PlanSubtaskStatusInProgress
-			checkpoint.Subtasks[i].StartedAt = op.CompletedAt
-			checkpoint.ActiveSubtaskID = checkpoint.Subtasks[i].ID
-			break
+		if checkpoint.Subtasks[i].Status == PlanSubtaskStatusInProgress {
+			if activeInProgressID == "" {
+				activeInProgressID = checkpoint.Subtasks[i].ID
+				checkpoint.ActiveSubtaskID = activeInProgressID
+			} else {
+				checkpoint.Subtasks[i].Status = PlanSubtaskStatusPending
+			}
+		}
+	}
+	if activeInProgressID == "" {
+		for i := range checkpoint.Subtasks {
+			if checkpoint.Subtasks[i].Status == PlanSubtaskStatusPending {
+				checkpoint.Subtasks[i].Status = PlanSubtaskStatusInProgress
+				checkpoint.Subtasks[i].StartedAt = op.CompletedAt
+				checkpoint.ActiveSubtaskID = checkpoint.Subtasks[i].ID
+				break
+			}
 		}
 	}
 	return nil

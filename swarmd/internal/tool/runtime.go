@@ -2365,8 +2365,21 @@ func validateBashArguments(args map[string]any) (string, error) {
 		return "", errors.New("bash requires command")
 	}
 
-	rawExplanation, ok := args["explanation"].([]any)
-	if !ok || len(rawExplanation) == 0 {
+	var rawExplanation []any
+	switch exp := args["explanation"].(type) {
+	case []any:
+		rawExplanation = exp
+	case []string:
+		for _, s := range exp {
+			rawExplanation = append(rawExplanation, s)
+		}
+	case string:
+		if trimmed := strings.TrimSpace(exp); trimmed != "" {
+			rawExplanation = []any{trimmed}
+			args["explanation"] = rawExplanation
+		}
+	}
+	if len(rawExplanation) == 0 {
 		return "", errors.New("bash requires explanation as a non-empty list of precise command effects")
 	}
 	for index, entry := range rawExplanation {
@@ -3192,7 +3205,7 @@ func parseFindQueries(args map[string]any) ([]string, error) {
 	}
 	queries = append(queries, asStringSlice(args["queries"])...)
 	if len(queries) == 0 {
-		return nil, errors.New("find requires query or queries")
+		return []string{"*"}, nil
 	}
 	seen := make(map[string]struct{}, len(queries))
 	deduped := make([]string, 0, len(queries))
@@ -3209,7 +3222,7 @@ func parseFindQueries(args map[string]any) ([]string, error) {
 		deduped = append(deduped, query)
 	}
 	if len(deduped) == 0 {
-		return nil, errors.New("find requires at least one non-empty query")
+		return []string{"*"}, nil
 	}
 	if len(deduped) > maxSearchQueries {
 		return nil, fmt.Errorf("find supports at most %d queries per call; split the batch and retry", maxSearchQueries)

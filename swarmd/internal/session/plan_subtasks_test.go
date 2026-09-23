@@ -226,3 +226,45 @@ func TestPlanSubtaskResumeRejectsBlockedAndFailedCheckpoints(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanSubtaskCompletionDoesNotCreateMultipleInProgress(t *testing.T) {
+	doc, err := NormalizePlanDocumentForSave("plan-1", "Plan", &pebblestore.SessionPlanDocument{
+		ID:    "plan-1",
+		Title: "Plan",
+		Info:  pebblestore.SessionPlanInfo{Goal: "Test goal"},
+		Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Checkpoint 1",
+			Tasks:              []string{"first", "second", "third"},
+			AcceptanceCriteria: []string{"Criteria 1"},
+			Subtasks: []pebblestore.SessionPlanSubtask{
+				{ID: "task-1", Title: "First", Status: PlanSubtaskStatusCompleted, Order: 1},
+				{ID: "task-2", Title: "Second", Status: PlanSubtaskStatusInProgress, Order: 2},
+				{ID: "task-3", Title: "Third", Status: PlanSubtaskStatusPending, Order: 3},
+			},
+			ActiveSubtaskID: "task-2",
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := completePlanCheckpointSubtask(doc, PlanDocumentPatchOperation{CheckpointID: "cp-1", SubtaskID: "task-1", CompletedAt: 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	checkpoint := doc.Checkpoints[0]
+	if checkpoint.ActiveSubtaskID != "task-2" {
+		t.Fatalf("expected ActiveSubtaskID = task-2, got %q", checkpoint.ActiveSubtaskID)
+	}
+	if checkpoint.Subtasks[1].Status != PlanSubtaskStatusInProgress {
+		t.Fatalf("expected task-2 to be in_progress, got %q", checkpoint.Subtasks[1].Status)
+	}
+	if checkpoint.Subtasks[2].Status != PlanSubtaskStatusPending {
+		t.Fatalf("expected task-3 to remain pending, got %q", checkpoint.Subtasks[2].Status)
+	}
+
+	if err := ValidateExecutablePlanDocument(doc); err != nil {
+		t.Fatalf("document validation failed: %v", err)
+	}
+}

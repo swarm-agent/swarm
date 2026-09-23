@@ -1105,8 +1105,21 @@ func assessBashEffect(arguments, normalizedCommand string) BashEffectAssessment 
 	if !ok || strings.TrimSpace(command) == "" {
 		return invalid("command is required")
 	}
-	explanation, ok := payload["explanation"].([]any)
-	if !ok || len(explanation) == 0 {
+	var explanation []any
+	switch exp := payload["explanation"].(type) {
+	case []any:
+		explanation = exp
+	case []string:
+		for _, s := range exp {
+			explanation = append(explanation, s)
+		}
+	case string:
+		if trimmed := strings.TrimSpace(exp); trimmed != "" {
+			explanation = []any{trimmed}
+			payload["explanation"] = explanation
+		}
+	}
+	if len(explanation) == 0 {
 		return invalid("explanation must contain at least one item")
 	}
 	for _, item := range explanation {

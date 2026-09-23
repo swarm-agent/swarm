@@ -1255,7 +1255,7 @@ func parseArtifactBatchReferences(raw any) ([]artifact.MaterializeBatchItem, []p
 func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifact.Principal, scope WorkspaceScope, callID, requestID string, args map[string]any) (pebblestore.SessionArtifactVariant, map[string]any, error) {
 	for key := range args {
 		switch key {
-		case "action", "source", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "animation_profile", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
+		case "action", "source", "title", "collection_id", "collection_name", "collection_description", "filename", "media_type", "presentation", "output_requirements", "animation_profile", "source_session_id", "source_collection_id", "source_variant_id", "source_event_seq":
 		default:
 			return pebblestore.SessionArtifactVariant{}, nil, fmt.Errorf("manage_artifact publish_workspace contains unsupported field %q", key)
 		}
@@ -1392,8 +1392,16 @@ func (r *Runtime) publishWorkspaceArtifact(ctx context.Context, principal artifa
 			}
 		}
 	}
+	title := strings.TrimSpace(asString(args["title"]))
+	collectionName := strings.TrimSpace(asString(args["collection_name"]))
+	if collectionName == "" && title != "" {
+		collectionName = title
+	}
+	if presentation.Label == "" && title != "" {
+		presentation.Label = title
+	}
 	create := artifact.CreateInput{
-		RequestID: requestID, CollectionID: collectionID, CollectionName: strings.TrimSpace(asString(args["collection_name"])), CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
+		RequestID: requestID, CollectionID: collectionID, CollectionName: collectionName, CollectionDescription: strings.TrimSpace(asString(args["collection_description"])),
 		VariantID: variantID, Filename: filename, MediaType: mediaType, Presentation: presentation, OutputRequirements: requirements, AnimationProfile: inheritedAnimationProfile, Parts: parts, AutoAccept: true,
 		SourceSessionID: sourceSessionID, SourceCollectionID: sourceCollectionID, SourceVariantID: sourceVariantID, SourceEventSeq: sourceEventSeq,
 	}

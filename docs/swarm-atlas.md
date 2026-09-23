@@ -2548,11 +2548,21 @@ Inspected `scripts/check-precommit.sh` → `scripts/check-changelog.sh:self_test
 - **Fireworks & OpenRouter System Prefix Freezing & Generic Context Overflow Parsing (`swarmd/internal/provider/fireworks/runner.go`, `swarmd/internal/provider/openrouter/runner.go`, `swarmd/internal/api/sessions_v3_executor.go`, `swarmd/internal/run/service.go`):**
   - Integrated `SplitStaticInstructionsAndDynamicContext` into `buildChatCompletionMessages` in both Fireworks and OpenRouter runners so the `"role": "system"` message is strictly frozen across consecutive turns, while dynamic runtime context and timestamps are appended cleanly to the latest user message. This preserves server-side prefix KV caching for models like GLM 5.3 Flash, DeepSeek V3/R1, and Llama 3.3.
   - Added `parseSessionV3GenericMaxAllowedTokens` and `parseGenericMaxAllowedTokens` pattern matching Fireworks (`exceeds the maximum length (131072)`), OpenRouter (`maximum context length is 131072 tokens`), and OpenAI context length overflow errors, enabling automatic compaction recovery across all third-party providers.
+- **Harness Recurring AI Error Fixes (`swarmd/internal/tool/runtime.go`, `swarmd/internal/permission/policy.go`, `swarmd/internal/tool/runtime_manage_artifact.go`, `swarmd/internal/session/plan_subtasks.go`):**
+  - Analyzed and resolved recurring tool errors identified from session `a03b98843581944b2bc4b24490be74e5`:
+    * `find requires query or queries`: In `swarmd/internal/tool/runtime.go:parseFindQueries`, when `query` and `queries` are omitted or empty, `find` now defaults to `[]string{"*"}`. This allows natural directory discovery queries (e.g. `find {"path": "projects/my-dir"}`) without failing when `query` is omitted.
+    * `bash requires explanation as a non-empty list of precise command effects`: In `swarmd/internal/tool/runtime.go:validateBashArguments` and `swarmd/internal/permission/policy.go:assessBashEffect`, `explanation` now accepts both single strings (`string`) and arrays (`[]string`, `[]any`), normalizing non-empty strings to `[]any{trimmedString}`. This prevents validation errors when models send a single concise sentence string.
+    * `manage_artifact publish_workspace contains unsupported field "title"`: In `swarmd/internal/tool/runtime_manage_artifact.go:publishWorkspaceArtifact`, added `"title"` to the accepted fields for `publish_workspace`. When provided, `title` is propagated to `create.CollectionName` (if `collection_name` is omitted) and `presentation.Label` (if `presentation.Label` is omitted).
+    * `plan document checkpoint has multiple in_progress subtasks`: In `swarmd/internal/session/plan_subtasks.go:completePlanCheckpointSubtasks`, added check for existing `in_progress` subtasks before auto-advancing a pending subtask to `in_progress`. If an `in_progress` subtask already exists (e.g. when re-completing an earlier task), it preserves the active in-progress subtask without advancing a second one, and resets any duplicate in-progress subtasks to pending, preventing document validation corruption.
 - **Validation:**
-  - Added `TestGenericAndFireworksTokenOverflowDiagnosticMatching` in `swarmd/internal/api/sessions_v3_anthropic_overflow_test.go` asserting limit extraction across Fireworks, OpenRouter, and OpenAI error formats.
-  - Ran live single-agent multi-turn benchmark on `accounts/fireworks/models/glm-5p3-flash`: confirmed **90.6% Turn 1** and **86.8% Turn 2 cache hit rates**, 70.3% dollar savings ($0.0032 for 2 full turns), and 2.0s follow-up turn completion.
-  - Executed `scripts/run-critical-tests.sh fast` (100% pass across 80 tests).
-  - Executed `scripts/check-atlas-sync.sh`.
+  - Added unit test `TestFindRuntimeAcceptsOmittedQuery` in `swarmd/internal/tool/runtime_search_contract_test.go`.
+  - Added unit test `TestValidateBashCallArgumentsAcceptsStringExplanation` in `swarmd/internal/tool/runtime_bash_contract_test.go`.
+  - Added unit test `TestBashEffectAssessmentAcceptsStringExplanation` in `swarmd/internal/permission/policy_test.go`.
+  - Added unit test assertions in `TestManageArtifactPublishWorkspaceRejectsUnsafePrivateSourcesAndPreservesLineage` in `swarmd/internal/tool/runtime_manage_artifact_test.go` and fixed `fakeArtifactAuthority` inspection frame counting.
+  - Added unit test `TestPlanSubtaskCompletionDoesNotCreateMultipleInProgress` in `swarmd/internal/session/plan_subtasks_test.go`.
+  - `bash scripts/run-critical-tests.sh fast` passes all tests.
+  - `bash scripts/check-atlas-sync.sh` passes.
+
 
 
 

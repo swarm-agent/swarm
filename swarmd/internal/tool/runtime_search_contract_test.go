@@ -132,6 +132,29 @@ func TestSearchRuntimeMissDoesNotBecomeFileSearch(t *testing.T) {
 	}
 }
 
+func TestFindRuntimeAcceptsOmittedQuery(t *testing.T) {
+	t.Setenv("SWARM_FFF_SEARCH_HELPER", searchEvalHelperPath(t))
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "file_a.txt"), []byte("a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := NewRuntime(1)
+	defer runtime.Close()
+	scope := WorkspaceScope{PrimaryPath: root, Roots: []string{root}}
+	args, _ := json.Marshal(map[string]any{"path": root, "max_results": 8, "timeout_ms": 4000})
+	output, err := runtime.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{Name: "find", Arguments: string(args)})
+	if err != nil {
+		t.Fatalf("find failed: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if asInt(decoded["count"], 0) != 1 {
+		t.Fatalf("expected 1 file found, got output: %s", output)
+	}
+}
+
 func TestSearchRuntimeUsesCompactDefinitionAwarePayload(t *testing.T) {
 	t.Setenv("SWARM_FFF_SEARCH_HELPER", searchEvalHelperPath(t))
 	repoRoot := searchEvalRepoRoot(t)

@@ -73,6 +73,13 @@ func TestBashDefinitionShowsRoutineBuildAsOneDirectLine(t *testing.T) {
 	}
 }
 
+func TestValidateBashCallArgumentsAcceptsStringExplanation(t *testing.T) {
+	arguments := `{"command":"git status","explanation":"Check working-tree status.","category":"read","critical":false}`
+	if err := ValidateBashCallArguments(arguments); err != nil {
+		t.Fatalf("string explanation rejected: %v", err)
+	}
+}
+
 func TestValidateBashCallArgumentsAcceptsCriticalDelete(t *testing.T) {
 	arguments := `{"command":"rm old.log","explanation":["Remove old.log."],"category":"delete","critical":true}`
 	if err := ValidateBashCallArguments(arguments); err != nil {
