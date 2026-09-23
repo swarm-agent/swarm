@@ -668,9 +668,12 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	// media_inspect has no permission prompt: its provider-visible schema exists
 	// only after the current model/media intersection admits it, and the handler
 	// below revalidates that contract plus ownership, scope, type, and size.
-	if automationV2PlanCall(call) {
-		if permissionSessionID != config.sessionID || !strings.EqualFold(config.agentProfile.Name, "swarm") || (canonicalToolName(call.Name) == "exit_plan_mode" && !pebblestore.AgentExitPlanModeEnabled(config.agentProfile)) {
-			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Automation plan authoring requires the primary session's own enabled plan capability"}, 0, nil
+	if workerDocumentInPlanCall(call) {
+		return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"}, 0, nil
+	}
+	if workerProposalCall(call) {
+		if permissionSessionID != config.sessionID || !strings.EqualFold(config.agentProfile.Name, "swarm") {
+			return tool.Result{CallID: call.CallID, Name: call.Name, Error: "Worker proposal authoring requires the primary Swarm conversation and its trusted principal"}, 0, nil
 		}
 		current, _, err := s.automationV2ToolSession(config.sessionID)
 		if err != nil {

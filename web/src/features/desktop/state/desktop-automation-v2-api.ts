@@ -3,7 +3,7 @@ import type { DesktopPermissionRecord } from '../types/realtime'
 
 export interface AutomationV2Settings {
   schema_version: 2
-  schedule: { kind: 'interval' | 'cron'; interval_seconds?: number; cron?: string; timezone?: string }
+  schedule: { kind: 'interval' | 'cron' | 'trigger'; interval_seconds?: number; cron?: string; timezone?: string }
   expiration: { kind: 'indefinite' | 'at'; expires_at?: number }
   missed: 'skip' | 'coalesce'
   overlap: 'serialize' | 'independent'

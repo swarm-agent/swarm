@@ -422,21 +422,16 @@ func TestAutomationV2SchedulerArchivedSessionCancellation(t *testing.T) {
 		t.Fatalf("ArchiveSession failed: %v", err)
 	}
 
-	// Tick 2: scheduler encounters archived session -> must cancel occurrence cleanly, not fail with conflict
+	// Archiving the authoring chat preserves the existing safe cancellation rule.
 	if err = scheduler.Tick(context.Background(), r, now+1000); err != nil {
 		t.Fatalf("tick 2 after archive failed: %v", err)
 	}
 	if host.cancels != 1 {
-		t.Fatalf("expected 1 cancel call on host, got %d", host.cancels)
+		t.Fatalf("expected host cancellation after archive, got %d", host.cancels)
 	}
-
-	// Verify occurrence transitioned to cancelled
 	rows, _, err = ss.ListAutomationV2Occurrences("account", "owner", w.WorkspaceID, "author", "", false, 25)
-	if err != nil || len(rows) != 1 {
-		t.Fatalf("expected 1 occurrence, got %d", len(rows))
-	}
-	if rows[0].State != "cancelled" {
-		t.Fatalf("expected occurrence state 'cancelled', got '%s'", rows[0].State)
+	if err != nil || len(rows) != 1 || rows[0].State != "cancelled" {
+		t.Fatalf("archived occurrence not cancelled: %+v (%v)", rows, err)
 	}
 }
 

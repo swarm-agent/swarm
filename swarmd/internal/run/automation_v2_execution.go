@@ -165,6 +165,7 @@ func (h *AutomationV2ExecutionHost) Start(ctx context.Context, o store.Automatio
 			// The recurring option remains in the immutable occurrence receipt; this is
 			// a single authorized execution copy, not another recurring definition.
 			doc.AutomationV2 = nil
+			doc.WorkerV2 = nil
 			if len(o.TriggerContext) > 0 {
 				ctxBytes, _ := json.MarshalIndent(o.TriggerContext, "", "  ")
 				triggerContextBlock := fmt.Sprintf("\n\n[Trigger Event Context]\n%s\n", string(ctxBytes))

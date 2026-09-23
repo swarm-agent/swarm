@@ -72,6 +72,9 @@ type AutomationV2Record struct {
 	CancelThrough int64                  `json:"cancel_through,omitempty"`
 	Archived      bool                   `json:"archived,omitempty"`
 	ArchivedAt    int64                  `json:"archived_at,omitempty"`
+	// Independent workers do not turn their authoring conversation into a worker.
+	// Absent on pre-existing accepted records, which retain legacy binding rules.
+	Independent bool `json:"independent,omitempty"`
 }
 type SessionAutomationV2Binding struct {
 	AutomationID string `json:"automation_id"`
@@ -455,11 +458,8 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 	}
 	p := m.proposal
 	if m.decline {
-		if run, ok, err := s.GetV3SessionActiveRunIntent(in.SessionID); err != nil {
-			return err
-		} else if ok && (run.Status == V3RunIntentRunning || run.Status == V3RunIntentPendingExecutor) {
-			return ErrAutomationV2Conflict
-		}
+		// Declining an exact pending worker review does not stop the authoring
+		// conversation or its active run.
 		var prior AutomationV2Proposal
 		found, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior)
 		if err != nil {
@@ -498,13 +498,9 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 	} else if p.BaseGeneration != 0 {
 		return ErrAutomationV2Conflict
 	}
-	if m.accept {
-		if run, ok, err := s.GetV3SessionActiveRunIntent(in.SessionID); err != nil {
-			return err
-		} else if ok && (run.Status == V3RunIntentRunning || run.Status == V3RunIntentPendingExecutor) {
-			return ErrAutomationV2Conflict
-		}
-	}
+	// A worker review is proposed by an authoring run. The user may accept it
+	// while that same run is still finishing; the exact review and ownership
+	// checks below, not run idleness, authorize acceptance.
 	var prior AutomationV2Proposal
 	found, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior)
 	if err != nil {
@@ -539,16 +535,21 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 			}
 			id, generation = previous.AutomationID, previous.Generation+1
 		}
-		m.record = AutomationV2Record{AutomationV2Proposal: prior, AutomationID: id, AcceptedBy: in.UserID, AcceptedAt: time.Now().UnixMilli(), Authorization: prior.Document.AutomationV2.Expiration, Enabled: true, Generation: generation, CancelThrough: previous.CancelThrough}
+		m.record = AutomationV2Record{AutomationV2Proposal: prior, AutomationID: id, AcceptedBy: in.UserID, AcceptedAt: time.Now().UnixMilli(), Authorization: prior.Document.AutomationV2.Expiration, Enabled: true, Generation: generation, CancelThrough: previous.CancelThrough, Independent: true}
 		m.record.NextDueAt, err = AutomationV2NextDue(*prior.Document.AutomationV2, m.record.AcceptedAt, m.record.AcceptedAt)
 		if err != nil {
 			return err
 		}
-		current.AutomationV2 = &SessionAutomationV2Binding{id, p.WorkspaceID, p.Digest}
-		if current.Metadata != nil {
-			delete(current.Metadata, "navigation_hidden")
+		// Legacy accepted records bound this conversation and made it read-only.
+		// A reviewed revision detaches that binding atomically with the new grant.
+		// New workers never bind the authoring session at all.
+		if current.AutomationV2 != nil {
+			if !found || previous.Independent || current.AutomationV2.AutomationID != id || current.AutomationV2.WorkspaceID != p.WorkspaceID {
+				return ErrAutomationV2Conflict
+			}
+			current.AutomationV2 = nil
+			in.Session = &current
 		}
-		in.Session = &current
 	}
 	payload, err := json.Marshal(map[string]any{"proposal_id": p.ProposalID, "revision": p.Revision, "digest": p.Digest, "automation_id": m.record.AutomationID})
 	in.EventPayload = payload

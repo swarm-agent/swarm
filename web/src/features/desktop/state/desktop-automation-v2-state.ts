@@ -1,5 +1,21 @@
 import { automationV2PermissionProposal, type AutomationV2Proposal, type AutomationV2Read, type AutomationV2Response } from './desktop-automation-v2-api'
 import type { DesktopV3CacheState } from './desktop-v3-cache-types'
+import type { DesktopPermissionRecord } from '../types/realtime'
+
+/** A worker awaiting user review is a permission on an ordinary authoring chat. */
+export function selectPendingWorkerSidebarReviews(state: DesktopV3CacheState): Array<{ permission: DesktopPermissionRecord; proposal: AutomationV2Proposal }> {
+  const reviews: Array<{ permission: DesktopPermissionRecord; proposal: AutomationV2Proposal }> = []
+  for (const [sessionId, permissions] of Object.entries(state.permissionsBySession)) {
+    if (state.tombstonesBySession[sessionId]) continue
+    for (const permission of permissions) {
+      if (permission.status !== 'pending' || permission.requirement !== 'automation_v2_acceptance') continue
+      const proposal = automationV2PermissionProposal(permission)
+      if (!proposal || !proposal.session_id || proposal.session_id !== sessionId || !proposal.workspace_id) continue
+      reviews.push({ permission, proposal })
+    }
+  }
+  return reviews
+}
 export interface AutomationV2Page { input: AutomationV2Read; data?: AutomationV2Response; requestId?: string; generation: number; loading: boolean; stale: boolean; error?: string }
 export type AutomationV2Pages = Record<string, AutomationV2Page>
 export type AutomationV2CacheAction =
@@ -38,7 +54,7 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
       const req = String(permission.requirement || '').toLowerCase()
       if (status !== 'pending' || req !== 'automation_v2_acceptance') continue
       const proposal = automationV2PermissionProposal(permission)
-      if (!proposal) continue
+      if (!proposal || !proposal.session_id || state.tombstonesBySession[proposal.session_id]) continue
       const sessionRec = state.sessionsById[proposal.session_id]
       const sessionWorkspaceId = sessionRec?.kind === 'full'
         ? (sessionRec.session.automation_v2?.workspace_id ||
@@ -47,7 +63,7 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
            sessionRec.session.metadata?.swarm_v3_purpose_workspace_id)
         : undefined
       const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
-      if (workspaceId && effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) continue
+      if (workspaceId && effectiveWorkspaceId !== workspaceId) continue
       if (seenProposalIds.has(proposal.proposal_id)) continue
       seenProposalIds.add(proposal.proposal_id)
       proposals.push(proposal)
@@ -57,6 +73,7 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
   for (const page of Object.values(state.automationV2Pages ?? {})) {
     if (page.input.action === 'review' && page.data?.proposal) {
       const proposal = page.data.proposal
+      if (!proposal.session_id || state.tombstonesBySession[proposal.session_id]) continue
       const sessionRec = state.sessionsById[proposal.session_id]
       const sessionWorkspaceId = sessionRec?.kind === 'full'
         ? (sessionRec.session.automation_v2?.workspace_id ||
@@ -65,14 +82,17 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
            sessionRec.session.metadata?.swarm_v3_purpose_workspace_id)
         : undefined
       const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
-      if (workspaceId && effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) continue
+      if (workspaceId && effectiveWorkspaceId !== workspaceId) continue
       if (seenProposalIds.has(proposal.proposal_id)) continue
       const permRecord = (state.permissionsBySession?.[proposal.session_id] ?? []).find(
         p => p.id === 'permission_' + proposal.proposal_id ||
              (String(p.requirement || '').toLowerCase() === 'automation_v2_acceptance' &&
               (p.toolArguments?.includes(proposal.proposal_id) || (p as any).tool_arguments?.includes(proposal.proposal_id)))
       )
-      if (permRecord && String(permRecord.status || '').toLowerCase() !== 'pending') {
+      // A hydrated empty permission list is authoritative: an old review page
+      // cannot resurrect a worker card after acceptance or decline.
+      if (state.permissionsBySession?.[proposal.session_id] !== undefined &&
+          (!permRecord || String(permRecord.status || '').toLowerCase() !== 'pending')) {
         continue
       }
       const isAccepted = Object.values(state.automationV2Pages ?? {}).some(

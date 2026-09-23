@@ -71,7 +71,8 @@ import {
 import { createBlockerTransitionTracker } from '../runtime/blocker-transitions'
 import { AutomationProgressView } from '../tools/automations/automation-progress'
 import { AutomationSidebarCompactCard, AutomationSidebarExpandedContainer, AutomationV2SidebarMetadata, AutomationV2SidebarSummaryIndicator, selectAutomationSummaryCounts } from '../tools/automations/automation-v2-sidebar-metadata'
-import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
+import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
+import { PendingWorkerSidebarReviews } from '../tools/automations/pending-worker-sidebar-reviews'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 import { isDesktopV3SessionTailReady, selectDesktopSidebarRows, selectDesktopVideoStudioRows, selectNotificationSummary, selectOrderedNotifications, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
@@ -1868,7 +1869,6 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     const record = state.sessionsById[session.id]
     return record?.kind === 'full' ? record.session.automation : undefined
   })
-  const automationV2 = useDesktopV3CacheSelector(state => selectAutomationV2Identity(state, session.id))
   useEffect(() => {
     // Sidebar bootstrap carries permission summaries, not every review payload.
     // Hydrate once when pending identity is unknown; no timer or title inference.
@@ -1887,8 +1887,8 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     }
     return undefined
   })
-  const isPlanRow = !automation && !automationV2 && rowType === 'plan_session'
-  const isAutomationRow = Boolean(automationV2 === 'accepted' || automation)
+  const isPlanRow = !automation && rowType === 'plan_session'
+  const isAutomationRow = Boolean(automation || (sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2))
   const checkpointProgressLabel = sessionPlanCheckpointProgressLabel(session)
   const checkpointCounts = sessionPlanCheckpointCounts(session)
   const compactingTimer = compactingActive && compactingStartedAt !== null ? formatDurationCompact(now - compactingStartedAt) : ''
@@ -1922,7 +1922,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
     : activeSession
       ? sessionActivityLabel(session)
       : sessionMeta(session) || ''
-  const rightSideLabel = hasPendingPermission || isPlanRow || automationV2 ? '' : singleStatusLabel
+  const rightSideLabel = hasPendingPermission || isPlanRow || isAutomationRow ? '' : singleStatusLabel
   const statusTone = sessionStatusTone(session)
   const showStatusCircle = activeSession || statusTone === 'error'
   const checkpointTotalCount = Math.max(0, checkpointCounts.totalCount)
@@ -2243,7 +2243,7 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
                     />
                   ) : null}
                   <span className="min-w-0 truncate">
-                    {automationV2 === 'pending' ? 'Plan · ' : ''}{rowTitle}
+                    {rowTitle}
                   </span>
                 </span>
               )}
@@ -2301,10 +2301,10 @@ const SessionRow = memo(function SessionRow({ active, now, session: initialSessi
           ) : null}
         </span>
       </div>
-      {automationV2 ? (
+      {isAutomationRow && sessionFullRec?.kind === 'full' && sessionFullRec.session.automation_v2 ? (
         <AutomationV2SidebarMetadata
           sessionId={session.id}
-          identity={automationV2}
+          identity="accepted"
           now={now}
           needsApproval={hasPendingPermission}
           workspaceSlug={rowWorkspaceSlug}
@@ -2525,9 +2525,9 @@ function renderSidebarSessionGroups(input: RenderSidebarSessionGroupsInput): JSX
     const overflowExpanded = input.expandedOverflowGroups[group.id] ?? false
     const rootCount = Math.max(nodes.filter((node) => node.depth === 0).length, isAutomationGroup && hasAutomationWork ? (automationCounts?.total ?? 0) : 0)
     const limit = isAutomationGroup ? SIDEBAR_AUTOMATION_VISIBLE_ROOT_LIMIT : SIDEBAR_NEEDS_REVIEW_VISIBLE_ROOT_LIMIT
-    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && rootCount > limit
+    const hasOverflow = (group.id === 'needs_review' || isAutomationGroup) && nodes.filter(node => node.depth === 0).length > limit
     const visibleNodes = sidebarVisibleGroupNodes(nodes, group.id, overflowExpanded)
-    const hiddenRootCount = Math.max(0, rootCount - limit)
+    const hiddenRootCount = Math.max(0, nodes.filter(node => node.depth === 0).length - limit)
     const collapseControl = (
       <button
         type="button"
@@ -3524,6 +3524,14 @@ export function DesktopAppPage() {
     ?? visibleSidebarWorkspaceEntries[0]
     ?? null
   const topWorkspaceId = topWorkspace?.workspaceId
+  const pendingWorkerCount = useDesktopV3CacheSelector(state => selectPendingWorkerSidebarReviews(state).length)
+  const previousPendingWorkerCount = useRef(0)
+  // A newly pending review opens the full sidebar once, without trapping the
+  // user there when they deliberately switch back to focus mode.
+  useEffect(() => {
+    if (pendingWorkerCount > previousPendingWorkerCount.current) setSidebarDisplayMode('full')
+    previousPendingWorkerCount.current = pendingWorkerCount
+  }, [pendingWorkerCount, setSidebarDisplayMode])
   const topWorkspaceLabel = topWorkspace?.workspaceName?.trim() || 'Default Workspace'
   const topWorkspacePath = topWorkspace?.path || selectedWorkspacePath || ''
   const topWorkspaceSlug = topWorkspacePath
@@ -3841,10 +3849,9 @@ export function DesktopAppPage() {
     const workspaceSlug = workspaceSlugByPath.get(workspacePath)
       ?? workspaceRouteSlugBase({ path: workspacePath, workspaceName: session.workspaceName })
 
-    const automationIdentity = selectAutomationV2Identity(getDesktopV3CacheSnapshot(), normalizedSessionId)
-    if (automationIdentity === 'accepted') {
-      const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
-      const workerId = (sessionRec?.kind === 'full' && sessionRec.session.automation_v2?.automation_id) || normalizedSessionId
+    const sessionRec = getDesktopV3CacheSnapshot().sessionsById[normalizedSessionId]
+    if (sessionRec?.kind === 'full' && sessionRec.session.automation_v2) {
+      const workerId = sessionRec.session.automation_v2.automation_id || normalizedSessionId
       void navigate({
         to: '/$workspaceSlug/workers/$workerId',
         params: {
@@ -5727,9 +5734,11 @@ export function DesktopAppPage() {
                       <RefreshCcw size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="flex min-w-0 items-center justify-between gap-1.5">
                         <span className="min-w-0 truncate">Workers</span>
+                        {pendingWorkerCount > 0 ? <span className="rounded-full bg-[var(--app-warning-bg)] px-1.5 text-[var(--app-warning)]" aria-label={`${pendingWorkerCount} worker reviews pending`}>{pendingWorkerCount}</span> : null}
                         <AutomationV2SidebarSummaryIndicator workspaceId={topWorkspaceId} workspaceSlug={topWorkspaceSlug} />
                       </span>
                     </button>
+                    {pendingWorkerCount > 0 ? <PendingWorkerSidebarReviews onOpenChat={handleSelectSession} /> : null}
                     <button
                       type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"

@@ -3007,7 +3007,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		}
 		for i, call := range toolCalls {
-			if next := mapString(decodeToolPayload(gatedResults[i].Output), "next_action"); automationV2PlanCall(call) && gatedResults[i].Error == "" && (next == "await_automation_acceptance" || next == "await_worker_acceptance") {
+			if next := mapString(decodeToolPayload(gatedResults[i].Output), "next_action"); workerProposalCall(call) && gatedResults[i].Error == "" && (next == "await_automation_acceptance" || next == "await_worker_acceptance") {
 				terminalPlanState.MarkTerminal()
 			}
 		}

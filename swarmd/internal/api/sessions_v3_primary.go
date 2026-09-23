@@ -681,7 +681,7 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 	for _, record := range permissions {
 		toolName := strings.TrimSpace(record.ToolName)
 		status := strings.TrimSpace(record.Status)
-		if strings.TrimSpace(record.ID) == req.PermissionID && (status == pebblestore.PermissionStatusPending || status == pebblestore.PermissionStatusApproved) && (toolName == "exit_plan_mode" || toolName == "plan_manage") {
+		if strings.TrimSpace(record.ID) == req.PermissionID && (status == pebblestore.PermissionStatusPending || status == pebblestore.PermissionStatusApproved) && (toolName == "exit_plan_mode" || toolName == "plan_manage" || (req.AutomationV2 && toolName == "manage_workers" && record.Requirement == "automation_v2_acceptance")) {
 			bound = true
 			planPermission = record
 			break
@@ -703,6 +703,9 @@ func (s *Server) handleSessionV3SystemSidechat(w http.ResponseWriter, r *http.Re
 			return
 		}
 		backendPlanID := strings.TrimSpace(firstNonEmpty(sessionsV3MapString(planContext, "plan_id"), sessionsV3MapString(planContext, "id")))
+		if req.AutomationV2 && backendPlanID == "" {
+			backendPlanID = req.PlanID // resolved from the exact current worker review above
+		}
 		backendRevision := sessionsV3SidechatInt64(planContext["proposal_revision"])
 		if backendPlanID == "" || backendRevision <= 0 || planContext["document"] == nil {
 			writeError(w, http.StatusConflict, errors.New("pending plan proposal is missing plan_id, proposal_revision, or document"))

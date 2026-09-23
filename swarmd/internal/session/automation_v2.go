@@ -25,6 +25,9 @@ func (s *Service) ProposeAutomationV2(account, user, workspace, sessionID string
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return pebblestore.AutomationV2Proposal{}, err
 	}
+	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
+		doc.AutomationV2 = doc.WorkerV2
+	}
 	if doc.AutomationV2 == nil || doc.Automation != nil {
 		return pebblestore.AutomationV2Proposal{}, errors.New("exclusive automation_v2 required")
 	}

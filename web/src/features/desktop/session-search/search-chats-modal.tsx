@@ -6,8 +6,6 @@ import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dial
 import { ModalCloseButton } from '../../../components/ui/modal-close-button'
 import { updateSessionV3Title } from '../session-v3/api'
 import { unarchiveDesktopV3ReviewSessions } from '../session-v3/review-worktrees-api'
-import { getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
-import { selectAutomationV2Identity } from '../state/desktop-automation-v2-state'
 import { activateSearchSession } from './search-session-activation'
 import {
   deleteDesktopSessions,
@@ -203,8 +201,7 @@ export function SearchChatsModal({ open, onOpenChange, onOpenSession }: SearchCh
     const isAutomation = Boolean(
       item.metadata?.automation_v2 ||
       item.metadata?.automation_v2_authoring_session_id ||
-      item.metadata?.automation_v2_occurrence_id ||
-      selectAutomationV2Identity(getDesktopV3CacheSnapshot(), item.id)
+      item.metadata?.automation_v2_occurrence_id
     )
     return <div key={item.id} className={child ? 'ml-6 border-l border-[var(--app-border)] pl-3' : ''}>
       <div className="grid gap-2 px-4 py-3 hover:bg-[var(--app-surface-hover)] sm:grid-cols-[minmax(0,1fr)_auto] sm:px-5">

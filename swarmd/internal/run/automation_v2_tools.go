@@ -10,8 +10,9 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// automationV2PlanCall recognizes typed documents only, never titles or prose.
-func automationV2PlanCall(call tool.Call) bool {
+// workerDocumentInPlanCall rejects worker authoring through session-plan tools.
+// Only the dedicated manage_workers proposal action may publish a worker review.
+func workerDocumentInPlanCall(call tool.Call) bool {
 	name := canonicalToolName(call.Name)
 	if name != "exit_plan_mode" && name != "plan_manage" {
 		return false
@@ -22,13 +23,27 @@ func automationV2PlanCall(call tool.Call) bool {
 	}
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(args["document"], &doc) != nil {
-		return false
+		var encoded string
+		if json.Unmarshal(args["document"], &encoded) != nil || json.Unmarshal([]byte(encoded), &doc) != nil {
+			return false
+		}
 	}
 	if _, ok := doc["worker_v2"]; ok {
 		return true
 	}
 	_, ok := doc["automation_v2"]
 	return ok
+}
+
+func workerProposalCall(call tool.Call) bool {
+	name := canonicalToolName(call.Name)
+	if name != "manage_workers" {
+		return false
+	}
+	var args struct {
+		Action string `json:"action"`
+	}
+	return json.Unmarshal([]byte(call.Arguments), &args) == nil && args.Action == "propose"
 }
 
 func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, string, error) {
@@ -53,26 +68,25 @@ func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, str
 	return current, "", errors.New("available primary workspace required")
 }
 
-func (s *Service) executeAutomationV2PlanTool(id, mode string, call tool.Call) (string, error) {
+func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		return "", err
 	}
-	if canonicalToolName(call.Name) == "exit_plan_mode" {
-		if mode != "plan" {
-			return "", errors.New("exit_plan_mode requires Plan mode; use plan_manage request_new_plan in Auto")
-		}
-	} else if mapString(args, "action") != "request_new_plan" {
-		return "", errors.New("automation_v2 uses request_new_plan with automation_review for edits, never ordinary plan mutation or approval")
+	if mapString(args, "action") != "propose" {
+		return "", errors.New("manage_workers action=propose required")
 	}
 	for key := range args {
-		if key != "document" && key != "action" && key != "title" && key != "plan" && key != "automation_review" && key != "worker_review" {
+		if key != "document" && key != "action" && key != "worker_review" {
 			return "", fmt.Errorf("worker proposal does not accept %s; submit complete instructions and worker_review only for an exact pending edit", key)
 		}
 	}
 	doc, err := planDocumentFromArgsForTool(args, call.Name)
 	if err != nil {
 		return "", err
+	}
+	if doc == nil || doc.WorkerV2 == nil {
+		return "", errors.New("complete worker_v2 document required")
 	}
 	current, workspace, err := s.automationV2ToolSession(id)
 	if err != nil {
@@ -81,10 +95,6 @@ func (s *Service) executeAutomationV2PlanTool(id, mode string, call tool.Call) (
 	var review store.AutomationV2Review
 	if raw, ok := args["worker_review"]; ok {
 		if err := unmarshalPlanToolArg(raw, &review, "worker_review"); err != nil {
-			return "", err
-		}
-	} else if raw, ok := args["automation_review"]; ok {
-		if err := unmarshalPlanToolArg(raw, &review, "automation_review"); err != nil {
 			return "", err
 		}
 	}

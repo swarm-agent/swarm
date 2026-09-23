@@ -17,7 +17,6 @@ import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
-  CalendarClock,
   CheckCircle2,
   Check,
   ChevronDown,
@@ -34,11 +33,10 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
-import { Button } from "../../../../components/ui/button";
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { WorkerSessionBanner } from '../../tools/automations/worker-session-banner';
-import { ChatMarkdown, SearchReadToolGroupView } from "./chat-markdown";
+import { ChatMarkdown, SearchReadToolGroupView, isPendingWorkerProposalResult } from "./chat-markdown";
 import {
   buildStructuredToolMessage,
 } from "../services/tool-message";
@@ -164,6 +162,7 @@ import {
   permissionRequiresApproval,
 } from "../../permissions/services/permission-payload";
 import { DesktopInlineBashPermissionCard } from "./desktop-inline-bash-permission-card";
+import { DesktopPendingWorkerAlert, DesktopAcceptedWorkerCard } from "./desktop-pending-worker-alert";
 import {
   DesktopInlinePlanReviewCard,
   structuredPlanDocumentFromPermission,
@@ -1419,6 +1418,24 @@ function buildDesktopV3PlanHandoffItem(
   } as Extract<DesktopV3RenderItem, { type: DesktopV3PlanHandoffType }>;
 }
 
+function isWorkerProposalToolResult(toolName: string | undefined, state: string, output: unknown): boolean {
+  if (!['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(toolName?.trim().toLowerCase() ?? '') || state !== 'done') return false;
+  if (isPendingWorkerProposalResult(output)) return true;
+  if (typeof output !== 'string') return false;
+  try {
+    return isPendingWorkerProposalResult(JSON.parse(output));
+  } catch {
+    return false;
+  }
+}
+
+function isWorkerProposalMessage(message: MessageSnapshot): boolean {
+  const tool = message.toolMessage;
+  return !!tool && (isWorkerProposalToolResult(tool.tool, tool.state, tool.outputJson)
+    || isWorkerProposalToolResult(tool.tool, tool.state, tool.output)
+    || isWorkerProposalToolResult(tool.tool, tool.state, tool.completedOutput));
+}
+
 export function buildDesktopV3LiveRunRenderItems(
   run: LiveRunOverlay,
   options: {
@@ -1468,6 +1485,7 @@ export function buildDesktopV3LiveRunRenderItems(
     });
   }
   for (const tool of Object.values(run.toolCallsByCallId)) {
+    if (isWorkerProposalToolResult(tool.toolName, ['completed', 'done'].includes(tool.status ?? '') ? 'done' : tool.status ?? '', tool.outputText)) continue;
     const id = `live-tool:${tool.callId || tool.toolInstanceId}`;
     if (options.committedToolKeys?.has(id)) continue;
     items.push({
@@ -1511,6 +1529,7 @@ export function buildDesktopV3ConversationRenderItems(
     (message) =>
       !isDesktopV3ManualCompactionAckMessage(message) &&
       !isDesktopV3CompactionContinuationMessage(message) &&
+      !isWorkerProposalMessage(message) &&
       !pendingMessageIds.has(message.id),
   );
   const finalHandoffKeys = new Set(
@@ -1827,10 +1846,13 @@ export function DesktopV3ExistingConversationPane({
   const pendingModalPermissions = pendingPermissions.filter(
     (permission) =>
       !isPlanProposalPermission(permission) &&
+      !isAutomationPermission(permission) &&
       permissionDisplayToolName(permission.toolName) !== "bash",
   );
   const selectedPermission = pendingModalPermissions[0] ?? null;
   const pendingPlanPermission = pendingPlanPermissions[0] ?? null;
+  const pendingWorkerPermissions = pendingPermissions.filter(isAutomationPermission);
+  const [acceptedWorker, setAcceptedWorker] = useState<{ sessionId: string; title: string; workerId: string } | null>(null);
   const pendingPlanDocument = useMemo(
     () => pendingPlanPermission
       ? structuredPlanDocumentFromPermission(pendingPlanPermission)
@@ -1839,16 +1861,8 @@ export function DesktopV3ExistingConversationPane({
   );
   const [planAgentMobileOpen, setPlanAgentMobileOpen] = useState(false);
   const [resolvingPlanPermissionId, setResolvingPlanPermissionId] = useState("");
-  const [automationModalDismissedId, setAutomationModalDismissedId] = useState<string | null>(null);
   const heldPlanPermissionRef = useRef<DesktopPermissionRecord | null>(null);
   const planSidebarViewport = usePlanSidebarViewport() && presentation !== "sidebar";
-  const pendingAutomationPermission = pendingPermissions.find(isAutomationPermission) ?? null;
-  useEffect(() => {
-    if (!pendingAutomationPermission) {
-      setAutomationModalDismissedId(null);
-    }
-  }, [pendingAutomationPermission?.id]);
-  const isAutomationModalOpen = Boolean(selectedPermission) && (!isAutomationPermission(selectedPermission) || automationModalDismissedId !== selectedPermission.id);
   useEffect(() => {
     setPlanAgentMobileOpen(false);
   }, [pendingPlanPermission?.id]);
@@ -3465,39 +3479,14 @@ export function DesktopV3ExistingConversationPane({
                     onOpenPermissions={openPermissionsSettings}
                   />
                 ))}
-                {pendingAutomationPermission && automationModalDismissedId === pendingAutomationPermission.id ? (
-                  <div
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 shadow-sm"
-                    data-testid="automation-modal-reopen-banner"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
-                        <CalendarClock size={18} aria-hidden="true" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--app-primary)]">
-                            Pending Worker
-                          </span>
-                          <span className="rounded-full bg-[var(--app-primary-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-primary)]">
-                            Modal review
-                          </span>
-                        </div>
-                        <p className="mt-0.5 truncate text-sm font-semibold text-[var(--app-text)]">
-                          {structuredPlanDocumentFromPermission(pendingAutomationPermission)?.title || "Worker plan review"}
-                        </p>
-                      </div>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="primary"
-                      size="sm"
-                      onClick={() => setAutomationModalDismissedId(null)}
-                    >
-                      Open worker modal
-                    </Button>
-                  </div>
-                ) : null}
+                {pendingWorkerPermissions.map(permission => (
+                  <DesktopPendingWorkerAlert
+                    key={permission.id}
+                    permission={permission}
+                    onAccepted={(title, workerId) => setAcceptedWorker({ sessionId: normalizedSessionId, title, workerId })}
+                  />
+                ))}
+                {acceptedWorker?.sessionId === normalizedSessionId && !pendingWorkerPermissions.length ? <DesktopAcceptedWorkerCard title={acceptedWorker.title} workerId={acceptedWorker.workerId} /> : null}
                 {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}
@@ -3828,15 +3817,11 @@ export function DesktopV3ExistingConversationPane({
 
       <DesktopPermissionModal
         key={`permission:${normalizedSessionId}`}
-        open={isAutomationModalOpen}
+        open={Boolean(selectedPermission)}
         permission={selectedPermission}
         pendingCount={pendingModalPermissions.length}
         sessionMode={sessionMode}
-        onOpenChange={(open) => {
-          if (!open && selectedPermission && isAutomationPermission(selectedPermission)) {
-            setAutomationModalDismissedId(selectedPermission.id);
-          }
-        }}
+        onOpenChange={() => {}}
         onOpenPermissions={openPermissionsSettings}
         onResolve={handleResolvePermission}
       />

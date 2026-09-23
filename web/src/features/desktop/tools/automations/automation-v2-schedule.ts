@@ -35,6 +35,7 @@ export function scheduleTime(schedule: AutomationSchedule): string {
 
 export function scheduleLabel(schedule: AutomationSchedule): string {
   if (schedule.kind === 'interval') return intervalLabel(schedule.interval_seconds ?? 0)
+  if (schedule.kind === 'trigger') return 'On demand'
   const mode = scheduleMode(schedule)
   if (mode === 'daily') return `Daily at ${scheduleTime(schedule)}`
   if (mode === 'weekly') return `${weekdays[Number(schedule.cron!.trim().split(/\s+/)[4])]} at ${scheduleTime(schedule)}`
@@ -44,6 +45,7 @@ export function scheduleLabel(schedule: AutomationSchedule): string {
 // A nominal cadence, not admissions or guaranteed completed runs. Wall-clock
 // days can vary with DST, and intervals are anchored to acceptance, not midnight.
 export function scheduleFrequency(schedule: AutomationSchedule): string {
+  if (schedule.kind === 'trigger') return 'Runs only when triggered'
   if (schedule.kind === 'interval') {
     const seconds = schedule.interval_seconds ?? 0
     if (!Number.isSafeInteger(seconds) || seconds < 60 || seconds > 31622400) return 'Choose a valid interval'

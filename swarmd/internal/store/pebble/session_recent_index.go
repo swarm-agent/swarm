@@ -161,7 +161,9 @@ func (s *SessionStore) selectV3RecentWorksetSessionsFromIndex(reader pebble.Read
 		if !v3SessionWorksetSessionVisibleForWorkspaces(session, options.AccountScopeID, options.UserID, options.WorkspacePath, options.WorkspacePaths) {
 			return true, nil
 		}
-		if SessionAutomationManagementWorkspace(session) != "" && session.AutomationV2 == nil {
+		// Management chats remain hidden by purpose; a worker binding must not
+		// turn one into an ordinary recent conversation.
+		if SessionAutomationManagementWorkspace(session) != "" {
 			return true, nil
 		}
 		sessions = append(sessions, session)

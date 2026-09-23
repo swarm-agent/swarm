@@ -406,11 +406,12 @@ export function selectAutomationSummaryCounts(
           }
         }
       }
-      if (!isRunning) {
+      // Authoring chat activity is not a worker occurrence. Legacy bound
+      // sessions are still represented by their explicit automation_v2 binding.
+      const authorSession = state.sessionsById[record.session_id]
+      if (!isRunning && authorSession?.kind === 'full' && authorSession.session.automation_v2) {
         const authorIntent = state.currentRunIntentBySession[record.session_id]
-        if (authorIntent && ['pending_executor', 'running', 'dispatch_blocked'].includes(authorIntent.status)) {
-          isRunning = true
-        }
+        if (authorIntent && ['pending_executor', 'running', 'dispatch_blocked'].includes(authorIntent.status)) isRunning = true
       }
       if (isRunning) {
         running++

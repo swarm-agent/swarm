@@ -104,23 +104,33 @@ func testAutomationV2AtomicAcceptance(t *testing.T, expiration AutomationV2Expir
 	if !reflect.DeepEqual(accepted.Document, doc) || accepted.Authorization != expiration || !accepted.Enabled {
 		t.Fatal("review changed", accepted)
 	}
-	// Requirement: accepted authoring chats reject free-form turns atomically.
-	// Threat: a late user message starts an ordinary run and contaminates the
-	// accepted conversation. The real mutation boundary must publish nothing.
+	// Requirement: acceptance grants a separate worker and keeps authoring chat
+	// writable. Threat: accepting the worker silently commandeers the authoring
+	// session or converts the next ordinary message into scheduled execution.
+	current, _, err = s.GetSession(original.ID)
+	if err != nil || current.AutomationV2 != nil || !accepted.Independent {
+		t.Fatal("authoring chat was bound to worker", err)
+	}
 	beforeSeq, err := s.readV3SessionSequence(original.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: original.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "late-user", PayloadHash: "late-user", Message: &MessageSnapshot{ID: "late-user", Role: "user", Content: "Change the task now"}})
-	if err == nil {
-		t.Fatal("accepted automation accepted free-form conversation")
+	if err != nil {
+		t.Fatal("accepted worker blocked ordinary conversation", err)
 	}
 	afterSeq, err := s.readV3SessionSequence(original.ID)
-	if err != nil || afterSeq != beforeSeq {
-		t.Fatal("rejected message published state", err)
+	if err != nil || afterSeq <= beforeSeq {
+		t.Fatal("ordinary message was not published", err)
 	}
 	if _, exists, err := s.GetV3SessionActiveRunIntent(original.ID); err != nil || exists {
-		t.Fatal("rejected message admitted a run", err)
+		t.Fatal("ordinary message admitted a worker run", err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: original.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "ordinary-run", PayloadHash: "ordinary-run", RunIntent: &V3SessionRunIntent{RunID: "ordinary-run", Status: V3RunIntentPendingExecutor}}); err != nil {
+		t.Fatal("accepted worker blocked ordinary chat execution", err)
+	}
+	if run, exists, err := s.GetV3SessionActiveRunIntent(original.ID); err != nil || !exists || run.RunID != "ordinary-run" || run.PlanID != "" {
+		t.Fatal("chat run became worker execution", err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -134,6 +144,78 @@ func testAutomationV2AtomicAcceptance(t *testing.T, expiration AutomationV2Expir
 	replayed, err := s.AcceptAutomationV2("account", "owner", workspaceID, original.ID, p.AutomationV2Review, fixtureAutomationV2Validator)
 	if err != nil || !reflect.DeepEqual(accepted, replayed) {
 		t.Fatal("restart replay changed", err)
+	}
+}
+
+// Requirement: accepting a pending worker must not depend on the authoring run
+// having finished. Threat: a valid review gets a spurious 409 while its proposal
+// tool call is still active. The real session mutation/store boundary proves the
+// exact review succeeds during a running intent, while stale and foreign reviews
+// cannot create a binding, receipt, or additional event.
+func TestAutomationV2AcceptDuringAuthoringRun(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	available := true
+	if err := s.CreateSession(SessionSnapshot{ID: "author", AccountScopeID: "account", UserID: "owner", WorkspacePath: workspace.Path, WorkspaceGrants: []WorkspaceGrant{{Kind: WorkspaceGrantPrimary, WorkspaceID: workspace.WorkspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "author", AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "author-pending", PayloadHash: "author-pending", RunIntent: &V3SessionRunIntent{RunID: "run-author", Status: V3RunIntentPendingExecutor}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: "author", AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationRecordRunIntent, ClientRequestID: "author-running", PayloadHash: "author-running", RunIntent: &V3SessionRunIntent{RunID: "run-author", Status: V3RunIntentRunning}}); err != nil {
+		t.Fatal(err)
+	}
+	doc := SessionPlanDocument{Title: "Triggered worker", Info: SessionPlanInfo{Goal: "Run on demand"}, Checkpoints: []SessionPlanCheckpoint{{ID: "cp-1", Title: "Work", Objective: "Implement", Status: "pending", Order: 1, AcceptanceCriteria: []string{"Works"}}}, AutomationV2: &AutomationV2Settings{SchemaVersion: 2, Schedule: AutomationV2Schedule{Kind: "trigger"}, Missed: "skip", Overlap: "serialize", ActivateOnAccept: true, Expiration: AutomationV2Expiration{Kind: "indefinite"}}}
+	proposal, err := s.ProposeAutomationV2("account", "owner", workspace.WorkspaceID, "author", doc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.readV3SessionSequence("author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		user   string
+		review AutomationV2Review
+	}{{"owner", AutomationV2Review{ProposalID: proposal.ProposalID, Revision: proposal.Revision, Digest: "stale"}}, {"foreign", proposal.AutomationV2Review}} {
+		if _, err := s.AcceptAutomationV2("account", tc.user, workspace.WorkspaceID, "author", tc.review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+			t.Fatalf("stale/foreign review: %v", err)
+		}
+		seq, err := s.readV3SessionSequence("author")
+		if err != nil || seq != before {
+			t.Fatalf("rejected acceptance changed events: %d != %d: %v", seq, before, err)
+		}
+		if session, _, err := s.GetSession("author"); err != nil || session.AutomationV2 != nil {
+			t.Fatalf("rejected acceptance bound worker: %v", err)
+		}
+		if _, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "author"); err != nil || found {
+			t.Fatalf("rejected acceptance created record: %v", err)
+		}
+	}
+	accepted, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "author", proposal.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil || !accepted.Enabled || accepted.Digest != proposal.Digest {
+		t.Fatalf("valid pending review rejected during authoring: %+v %v", accepted, err)
+	}
+	if run, found, err := s.GetV3SessionActiveRunIntent("author"); err != nil || !found || run.RunID != "run-author" {
+		t.Fatalf("authoring run was changed by acceptance: %+v %v", run, err)
 	}
 }
 
@@ -283,6 +365,29 @@ func TestAutomationV2AuthorityIntegrityReplay(t *testing.T) {
 	if err := accept(); err != nil {
 		t.Fatal(err)
 	}
+	// A revised accepted worker retains its identity and the original chat
+	// remains writable. Old review bytes cannot activate a newer revision.
+	initial, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "conversation")
+	if err != nil || !found || !initial.Independent {
+		t.Fatal("independent acceptance missing", err)
+	}
+	fourthDoc := third.Document
+	fourthDoc.Title = "Revised worker instructions"
+	fourth, err := s.ProposeAutomationV2("account", "owner", workspace.WorkspaceID, "conversation", fourthDoc, third.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "conversation", third.AutomationV2Review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+		t.Fatal("stale worker acceptance changed accepted policy", err)
+	}
+	revised, err := s.AcceptAutomationV2("account", "owner", workspace.WorkspaceID, "conversation", fourth.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil || revised.AutomationID != initial.AutomationID || !revised.Independent || revised.Generation <= initial.Generation {
+		t.Fatal("independent revision lost worker identity", err)
+	}
+	chat, found, err := s.GetSession("conversation")
+	if err != nil || !found || chat.AutomationV2 != nil {
+		t.Fatal("revision commandeered authoring chat", err)
+	}
 	member.Status = "revoked"
 	if _, err := identity.PutAccountUser(member); err != nil {
 		t.Fatal(err)
@@ -363,28 +468,28 @@ func TestAutomationV2ArchivedAndDeletedSessionLifecycle(t *testing.T) {
 		t.Fatalf("archive session failed: %v", err)
 	}
 
-	// Active listing (exclude) should return 0 records without conflict error
+	// Author-chat archive suspends its worker under the existing lifecycle.
 	excludeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "exclude")
 	if err != nil || len(excludeRows) != 0 {
-		t.Fatalf("expected 0 exclude records: rows=%+v, err=%v", excludeRows, err)
+		t.Fatalf("archived worker remained active: rows=%+v, err=%v", excludeRows, err)
 	}
 
-	// Archived only listing should return 1 archived record
+	// Archived-only discovery retains the worker and its ownership.
 	onlyRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "only")
 	if err != nil || len(onlyRows) != 1 || !onlyRows[0].Archived {
-		t.Fatalf("expected 1 archived record: rows=%+v, err=%v", onlyRows, err)
+		t.Fatalf("archived worker not discoverable: rows=%+v, err=%v", onlyRows, err)
 	}
 
-	// Include listing should return 1 archived record
+	// Include listing retains the archived worker receipt.
 	includeRows, _, err := s.ListAutomationV2Records("account", "owner", workspace.WorkspaceID, "", 10, "include")
 	if err != nil || len(includeRows) != 1 || !includeRows[0].Archived {
-		t.Fatalf("expected 1 include record: rows=%+v, err=%v", includeRows, err)
+		t.Fatalf("expected archived record: rows=%+v, err=%v", includeRows, err)
 	}
 
-	// GetAutomationV2Record should return the record with Archived=true
+	// Direct lookup reports archived state without losing worker identity.
 	rec, found, err := s.GetAutomationV2Record("account", "owner", workspace.WorkspaceID, "auto-session")
 	if err != nil || !found || !rec.Archived || rec.ArchivedAt <= 0 {
-		t.Fatalf("expected found archived record with timestamp: found=%v, rec=%+v, err=%v", found, rec, err)
+		t.Fatalf("worker archive receipt missing: found=%v, rec=%+v, err=%v", found, rec, err)
 	}
 
 	// Unarchive the session
@@ -584,5 +689,43 @@ func TestAutomationV2LegacyDocumentDigestCompatibility(t *testing.T) {
 	}
 	if records[0].SessionID != "legacy-session" {
 		t.Fatalf("unexpected record session_id: %s", records[0].SessionID)
+	}
+	// A pre-existing bound record without the independent marker retains its
+	// read-only chat and archive behavior until an exact reviewed revision.
+	legacy := accepted
+	legacy.Independent = false
+	if err := db.PutJSON(automationV2Key("accepted", "account", "legacy-session"), legacy); err != nil {
+		t.Fatal(err)
+	}
+	chat, _, err := s.GetSession("legacy-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat.AutomationV2 = &SessionAutomationV2Binding{AutomationID: legacy.AutomationID, WorkspaceID: w.WorkspaceID, Digest: legacy.Digest}
+	if err := s.UpdateSession(chat); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: chat.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "legacy-user", PayloadHash: "legacy-user", Message: &MessageSnapshot{ID: "legacy-user", Role: "user", Content: "Still read-only"}}); err == nil {
+		t.Fatal("legacy bound chat unexpectedly became writable")
+	}
+	revisionDoc := legacyDoc
+	revisionDoc.Title = "Reviewed independent revision"
+	updated, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, chat.ID, revisionDoc, p.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, chat.ID, p.AutomationV2Review, fixtureAutomationV2Validator); !errors.Is(err, ErrAutomationV2Conflict) {
+		t.Fatal("stale legacy review accepted", err)
+	}
+	migrated, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, chat.ID, updated.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil || migrated.AutomationID != legacy.AutomationID || !migrated.Independent {
+		t.Fatal("reviewed legacy revision did not detach", err)
+	}
+	chat, _, err = s.GetSession(chat.ID)
+	if err != nil || chat.AutomationV2 != nil {
+		t.Fatal("legacy binding not removed atomically", err)
+	}
+	if _, err := s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: chat.ID, AccountScopeID: "account", UserID: "owner", Kind: V3SessionMutationAppendMessage, ClientRequestID: "migrated-user", PayloadHash: "migrated-user", Message: &MessageSnapshot{ID: "migrated-user", Role: "user", Content: "Ordinary chat"}}); err != nil {
+		t.Fatal("migrated chat is not writable", err)
 	}
 }

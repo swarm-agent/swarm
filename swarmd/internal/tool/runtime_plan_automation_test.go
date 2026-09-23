@@ -37,7 +37,7 @@ func TestAutomationV2RetiresLegacyPlanAdapters(t *testing.T) {
 				t.Fatal("legacy definition advertised")
 			}
 			for _, a := range p["action"].(map[string]any)["enum"].([]string) {
-				if a != "review" && a != "context" && a != "list" && a != "progress" && a != "help" {
+				if a != "review" && a != "context" && a != "list" && a != "progress" && a != "propose" && a != "help" {
 					t.Fatal("mutation advertised", a)
 				}
 			}

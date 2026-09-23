@@ -1,6 +1,5 @@
 import type { DesktopSessionPlanCheckpoint, DesktopSessionPlanDocument, DesktopSessionPlanRecord, TaskToolRow } from '../chat/types/chat'
 import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, DesktopPermissionRecord } from '../types/realtime'
-import { selectAutomationV2Identity } from './desktop-automation-v2-state'
 import { safeString } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
@@ -308,7 +307,7 @@ function buildDesktopV3SidebarRows(
       rowType: planState.planExecution ? 'plan_session' : 'single_chat',
       sidebarGroup: isRunningExecution
         ? 'in_progress'
-        : (selectAutomationV2Identity(state, sessionId) ? 'automation' : desktopSidebarGroupForRow({
+        : (record.kind === 'full' && (record.session.automation_v2 || record.session.automation) ? 'automation' : desktopSidebarGroupForRow({
             hasActivePlan: planState.hasActivePlan,
             planExecution: planState.planExecution,
             hasActiveRun,

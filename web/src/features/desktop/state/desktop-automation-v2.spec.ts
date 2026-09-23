@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { validateAutomationV2, automationV2Review, type AutomationV2Settings } from './desktop-automation-v2-api'
-import { reduceAutomationV2Pages, automationV2PageKey, selectAutomationV2Identity, selectPendingAutomationV2Proposals, type AutomationV2Pages } from './desktop-automation-v2-state'
+import { reduceAutomationV2Pages, automationV2PageKey, selectAutomationV2Identity, selectPendingAutomationV2Proposals, selectPendingWorkerSidebarReviews, type AutomationV2Pages } from './desktop-automation-v2-state'
 import { DesktopAutomationV2Runtime } from '../runtime/desktop-automation-v2'
 import { createEmptyDesktopV3CacheState } from './desktop-v3-cache-reducer'
 import { selectDesktopSidebarRows } from './desktop-v3-cache-selectors'
@@ -53,6 +53,30 @@ test('V2 sidebar identity uses permission and accepted binding, never titles', (
   assert.equal(selectAutomationV2Identity(state, 's'), 'accepted')
 })
 
+// Requirement: proposal and revised review appear in the global Workers sidebar
+// with the exact permission, even when a different workspace is selected.
+// Threat: foreign/settled/tombstoned permissions becoming actionable or a stale
+// proposal remaining after revision. The canonical cache selector is the narrowest layer.
+test('pending worker sidebar reviews track exact revisions across workspaces', () => {
+  const state = createEmptyDesktopV3CacheState()
+  const payload = (workspace: string, revision: number) => ({
+    review_kind: 'worker_v2', scope: { workspace_id: workspace, account_id: 'account' },
+    worker_review: { proposal_id: 'p-' + workspace, revision, digest: String(revision).repeat(64) },
+    document: { title: 'Check ' + workspace, info: { goal: 'Review repository status' },
+      checkpoints: [{ id: 'cp-1', title: 'Inspect', acceptance_criteria: ['Complete'] }],
+      worker_v2: { schema_version: 2, schedule: { kind: 'interval', interval_seconds: 3600 }, expiration: { kind: 'indefinite' }, missed: 'skip', overlap: 'serialize', activate_on_accept: true } },
+  })
+  state.permissionsBySession.author = [{ id: 'permission_p-a', sessionId: 'author', status: 'pending', requirement: 'automation_v2_acceptance', toolArguments: JSON.stringify(payload('a', 1)) } as any]
+  state.permissionsBySession.other = [{ id: 'permission_p-b', sessionId: 'other', status: 'pending', requirement: 'automation_v2_acceptance', toolArguments: JSON.stringify(payload('b', 1)) } as any]
+  assert.deepEqual(selectPendingWorkerSidebarReviews(state).map(({ proposal }) => proposal.workspace_id), ['a', 'b'])
+  state.permissionsBySession.author[0].toolArguments = JSON.stringify(payload('a', 2))
+  assert.equal(selectPendingWorkerSidebarReviews(state)[0].proposal.revision, 2)
+  state.permissionsBySession.other[0].status = 'denied'
+  assert.deepEqual(selectPendingWorkerSidebarReviews(state).map(({ proposal }) => proposal.session_id), ['author'])
+  state.tombstonesBySession.author = { session_id: 'author' } as any
+  assert.equal(selectPendingWorkerSidebarReviews(state).length, 0)
+})
+
 test('selectPendingAutomationV2Proposals selects pending proposals by workspace and deduplicates', () => {
   const state = createEmptyDesktopV3CacheState()
   const propPayload = {
@@ -94,6 +118,10 @@ test('selectPendingAutomationV2Proposals selects pending proposals by workspace 
 
   const allProps = selectPendingAutomationV2Proposals(state)
   assert.equal(allProps.length, 2)
+  // A cached review page must not revive a settled or absent permission.
+  state.automationV2Pages.old = { input: { action: 'review', workspace_id: 'ws-1', session_id: 's1' }, generation: 1, loading: false, stale: false, data: { proposal: ws1Props[0] } }
+  state.permissionsBySession.s1 = []
+  assert.equal(selectPendingAutomationV2Proposals(state, 'ws-1').length, 0)
 })
 
 // Requirement: progress embeds immutable accepted snapshots belonging to the
@@ -120,18 +148,20 @@ test('V2 progress rejects foreign nested accepted snapshots without replacing ob
   lease.release()
 })
 
-// Requirement: pending/accepted automation authors occupy the Automation section,
-// not Needs Review or Active Chats. Canonical selector state proves grouping;
-// rejection, hidden sidechats and tombstones must not leak or duplicate rows.
-test('V2 sidebar groups automation authors without exposing hidden or removed sessions', () => {
+// Requirement: pending review remains on the authoring chat, accepted independent
+// workers remain in the workers list, and legacy bound workers keep their section.
+// Threat: moving an ordinary chat into Workers or losing a cross-workspace review.
+test('V2 sidebar keeps authoring chats ordinary while retaining legacy bound workers', () => {
   const state = createEmptyDesktopV3CacheState()
   state.sessionOrderByScope.scope = ['author', 'ordinary', 'hidden']
   for (const id of state.sessionOrderByScope.scope) state.sessionsById[id] = { kind: 'full', session: { id, title: 'Automation title is not identity' }, needsHydrate: false } as any
   state.permissionsBySession.author = [{ status: 'pending', requirement: 'automation_v2_acceptance' } as any]
   state.sessionsById.hidden = { kind: 'full', session: { id: 'hidden', navigation_hidden: true, automation_v2: { automation_id: 'a', workspace_id: 'w', digest: 'd' } }, needsHydrate: false } as any
   let rows = selectDesktopSidebarRows(state, 'scope')
-  assert.deepEqual(rows.map(row => [row.sessionId, row.sidebarGroup]), [['author', 'automation'], ['ordinary', 'active_chats']])
+  assert.deepEqual(rows.map(row => [row.sessionId, row.sidebarGroup]), [['author', 'active_chats'], ['ordinary', 'active_chats']])
   state.permissionsBySession.author = []
+  assert.equal(selectDesktopSidebarRows(state, 'scope')[0].sidebarGroup, 'active_chats')
+  state.automationV2Pages.accepted = { input: { action: 'list', workspace_id: 'w' }, generation: 1, stale: false, loading: false, data: { records: [{ session_id: 'author', workspace_id: 'w', automation_id: 'a' } as any] } }
   assert.equal(selectDesktopSidebarRows(state, 'scope')[0].sidebarGroup, 'active_chats')
   state.sessionsById.author = { kind: 'full', session: { id: 'author', automation_v2: { automation_id: 'a', workspace_id: 'w', digest: 'd' } }, needsHydrate: false } as any
   assert.equal(selectDesktopSidebarRows(state, 'scope')[0].sidebarGroup, 'automation')

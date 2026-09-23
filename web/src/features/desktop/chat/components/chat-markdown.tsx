@@ -2593,6 +2593,14 @@ function shouldRenderPreviewAsPlain(toolName: string): boolean {
   }
 }
 
+export function isPendingWorkerProposalResult(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const result = payload as Record<string, unknown>;
+  return result.status === 'pending_review'
+    && result.next_action === 'await_worker_acceptance'
+    && result.review_kind === 'worker_v2';
+}
+
 function parseToolJSON(value: string): Record<string, unknown> | null {
   const trimmed = value.trim();
   if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null;
@@ -3322,6 +3330,9 @@ export function ToolMessageView({
     && !toolMessage.completedOutput.trim();
   if (['manage_workers', 'manage-workers', 'manage_automation', 'manage-automation'].includes(normalizedToolName) && toolMessage.state === 'done') {
     const payload = toolMessage.outputJson ?? parseToolJSON(toolMessage.output) ?? parseToolJSON(toolMessage.completedOutput);
+    // Worker V2 approval is a durable permission rendered in the Workers sidebar,
+    // not an actionable card (or a second tool result) in the chat transcript.
+    if (isPendingWorkerProposalResult(payload) || isPendingWorkerProposalResult(parseToolJSON(toolMessage.completedOutput))) return null;
     if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
   }
   if (normalizedToolName === "bash") {

@@ -20,7 +20,7 @@ import (
 )
 
 // Purpose: the real provider invoker, permission gate and session/store boundary
-// must turn schema-constrained fresh Plan/Auto calls into only a pending review.
+// must turn schema-constrained dedicated Worker proposals in Plan/Auto into only a pending review.
 // Prevent circular V1 prerequisites, self-approval, one-shot execution, stale
 // edits and policy bypass. A temp Pebble store is the narrow integration layer
 // proving durable postconditions without a provider or running daemon.
@@ -65,10 +65,7 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			name := "plan_manage"
-			if mode == "plan" {
-				name = "exit_plan_mode"
-			}
+			name := "manage_workers"
 			defs := filterToolDefinitions(convertToolDefinitions(svc.ListAgentToolDefinitionsForAccount("account")), disabled)
 			var schema *jsonschema.Resolved
 			for _, d := range defs {
@@ -88,10 +85,7 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 				t.Fatalf("%s absent from actual primary tool inventory", name)
 			}
 			doc := map[string]any{"title": "Automation plan: report", "info": map[string]any{"goal": "Report repository status"}, "automation_v2": map[string]any{"schema_version": 2, "schedule": map[string]any{"kind": "interval", "interval_seconds": 900}, "missed": "skip", "overlap": "serialize", "activate_on_accept": true}, "checkpoints": []any{map[string]any{"id": "report", "title": "Report", "status": "pending", "order": 1, "tasks": []string{"Report repository status without changes"}, "acceptance_criteria": []string{"Factual report returned"}}}}
-			args := map[string]any{"document": doc}
-			if mode == "auto" {
-				args["action"] = "request_new_plan"
-			}
+			args := map[string]any{"action": "propose", "document": doc}
 			calls := 0
 			invoke := func(args map[string]any, overlay *permission.Policy) provideriface.ToolExecutionResult {
 				t.Helper()
@@ -141,6 +135,10 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 			if _, found, _ := sessions.GetActivePlan("author"); found {
 				t.Fatal("ordinary active plan created")
 			}
+			snapshot, ok, err := sessions.GetSession("author")
+			if err != nil || !ok || snapshot.Mode != mode {
+				t.Fatalf("proposal changed authoring session mode: %q %v", snapshot.Mode, err)
+			}
 			if _, found, _ := ss.GetV3SessionActiveRunIntent("author"); found {
 				t.Fatal("one-shot run created")
 			}
@@ -148,14 +146,11 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 			if err != nil || len(pending) != 1 {
 				t.Fatal("missing unique permission", err)
 			}
-			if pending[0].Requirement != "automation_v2_acceptance" || !strings.Contains(pending[0].ToolArguments, "Accept automation") {
-				t.Fatal("not an explicit Automation plan review")
+			if pending[0].Requirement != "automation_v2_acceptance" || pending[0].ToolName != "manage_workers" || pending[0].Mode != "plan" || !strings.Contains(pending[0].ToolArguments, "Accept worker") || strings.Contains(pending[0].ToolArguments, "request_new_plan") {
+				t.Fatal("not a dedicated pending worker review")
 			}
 			// Runtime rejects schema-valid ambiguity before changing the pending head.
-			bad := map[string]any{"document": doc, "automation_review": p.AutomationV2Review}
-			if mode == "auto" {
-				bad["action"] = "request_new_plan"
-			}
+			bad := map[string]any{"action": "propose", "document": doc, "worker_review": p.AutomationV2Review}
 			doc["automation_v2"].(map[string]any)["schedule"] = map[string]any{"kind": "cron", "cron": "0 18 * * *"}
 			if got := invoke(bad, policy); got.Error == "" || !strings.Contains(got.Error, "timezone") {
 				t.Fatalf("missing timezone not actionable: %s", got.Error)
@@ -189,7 +184,7 @@ func TestAutomationV2ProviderDispatch(t *testing.T) {
 				t.Fatal("sidechat changed finite expiry")
 			}
 			old := p.AutomationV2Review
-			args["automation_review"] = old
+			args["worker_review"] = old
 			doc["automation_v2"].(map[string]any)["schedule"] = map[string]any{"kind": "cron", "cron": "0 18 * * *", "timezone": "UTC"}
 			result = invoke(args, policy)
 			if result.Error != "" {
@@ -241,7 +236,7 @@ func TestAutomationV2DoesNotInferOrdinaryPlan(t *testing.T) {
 	id := snap.ID
 	args := `{"action":"request_new_plan","document":{"title":"Hourly automation discussion","info":{"goal":"Write a one-time report"},"checkpoints":[{"id":"report","title":"Report","status":"pending","order":1,"tasks":["Write the report once"],"acceptance_criteria":["Report delivered"]}]}}`
 	call := tool.Call{Name: "plan_manage", Arguments: args}
-	if automationV2PlanCall(call) {
+	if workerDocumentInPlanCall(call) {
 		t.Fatal("inferred recurrence from title")
 	}
 	payload, needed, err := svc.buildPlanManagePermissionPayload(id, call)
@@ -339,12 +334,27 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 			map[string]any{"id": "report", "title": "Report", "status": "pending", "order": 1, "tasks": []string{"Report repository status without changes"}, "acceptance_criteria": []string{"Factual report returned"}},
 		},
 	}
-	args := map[string]any{"action": "request_new_plan", "document": doc}
+	args := map[string]any{"action": "propose", "document": doc}
 	raw, _ := json.Marshal(args)
 	invoker := svc.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"}, sessionMode: "auto", runID: "authoring", providerManagedV3: true, applySessionMutation: sessions.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	res, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "plan_manage", CallID: "call-1", Arguments: string(raw)})
+	legacy := map[string]any{"action": "request_new_plan", "document": doc}
+	legacyRaw, _ := json.Marshal(legacy)
+	for _, oldTool := range []string{"plan_manage", "exit_plan_mode"} {
+		oldArgs := legacyRaw
+		if oldTool == "exit_plan_mode" {
+			oldArgs, _ = json.Marshal(map[string]any{"document": doc})
+		}
+		oldResult, callErr := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: oldTool, CallID: "legacy-" + oldTool, Arguments: string(oldArgs)})
+		if callErr != nil || !strings.Contains(oldResult.Error, "manage_workers action=propose") {
+			t.Fatalf("%s should reject worker authoring: %s %v", oldTool, oldResult.Error, callErr)
+		}
+	}
+	if _, found, _ := sessions.GetAutomationV2Proposal("account", "owner", w.WorkspaceID, "author"); found {
+		t.Fatal("legacy session-plan path persisted a worker proposal")
+	}
+	res, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "manage_workers", CallID: "call-1", Arguments: string(raw)})
 	if err != nil || res.Error != "" {
 		t.Fatalf("worker_v2 plan dispatch failed: %s %v", res.Error, err)
 	}
@@ -357,6 +367,12 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 	}
 	if p.Document.WorkerV2 == nil || p.Document.AutomationV2 == nil {
 		t.Fatal("expected mirrored worker_v2 and automation_v2 in proposal document")
+	}
+	if pending, err := ps.ListPendingPermissions("author", 10); err != nil || len(pending) != 1 || pending[0].Requirement != "automation_v2_acceptance" || pending[0].ToolName != "manage_workers" {
+		t.Fatalf("dedicated worker review card missing: %v %v", pending, err)
+	}
+	if _, found, err := sessions.GetActivePlan("author"); err != nil || found {
+		t.Fatalf("worker proposal created an active session plan: %v %v", found, err)
 	}
 	// Verify manage_workers review in a fresh turn
 	invoker2 := svc.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"}, sessionMode: "auto", runID: "authoring-2", providerManagedV3: true, applySessionMutation: sessions.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})

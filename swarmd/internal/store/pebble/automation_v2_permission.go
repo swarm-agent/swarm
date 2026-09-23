@@ -19,24 +19,24 @@ func (s *SessionStore) setAutomationV2PermissionInBatch(batch *pebble.Batch, m *
 	if err != nil {
 		return err
 	}
-	consequence := "Accept automation creates and activates this recurring plan. First execution follows the schedule; no immediate one-shot run."
+	consequence := "Accept worker creates and activates this worker. First execution follows the schedule; no immediate one-shot run."
 	var accepted AutomationV2Record
 	if exists, readErr := s.store.GetJSON(automationV2Key("accepted", p.AccountID, p.SessionID), &accepted); readErr != nil {
 		return readErr
 	} else if exists {
-		consequence = "Accept automation replaces future instructions and schedule on the existing automation and activates the accepted revision. Already admitted work keeps its original snapshot; no immediate run."
+		consequence = "Accept worker replaces future instructions and schedule on the existing worker and activates the accepted revision. Already admitted work keeps its original snapshot; no immediate run."
 	}
 	payload, err := json.Marshal(map[string]any{
-		"path_id": "permission.automation-v2-plan.v2", "review_kind": "automation_v2", "action": "request_new_plan",
-		"title": "Automation plan", "document": p.Document, "plan_id": p.ProposalID, "proposal_revision": p.Revision,
-		"automation_review": p.AutomationV2Review, "scope": map[string]string{"account_id": p.AccountID, "workspace_id": p.WorkspaceID},
+		"path_id": "permission.automation-v2-plan.v2", "review_kind": "worker_v2", "action": "propose",
+		"title": "Worker review", "document": p.Document, "proposal_revision": p.Revision,
+		"worker_review": p.AutomationV2Review, "scope": map[string]string{"account_id": p.AccountID, "workspace_id": p.WorkspaceID},
 		"acceptance_consequence": consequence,
 		"acceptance":             map[string]any{"method": "POST", "path": "/v3/automations/v2/accept", "body": map[string]any{"action": "accept_automation", "workspace_id": p.WorkspaceID, "session_id": p.SessionID, "review": p.AutomationV2Review}},
 	})
 	if err != nil {
 		return err
 	}
-	record := PermissionRecord{ID: AutomationV2PermissionID(p.ProposalID), SessionID: p.SessionID, ToolName: "plan_manage", ToolArguments: string(payload), ProposalRevision: int64(p.Revision), Requirement: "automation_v2_acceptance", Mode: "plan", Status: PermissionStatusPending, ExecutionStatus: PermissionExecWaitingApproval, CreatedAt: p.CreatedAt, UpdatedAt: p.CreatedAt, PermissionRequested: p.CreatedAt}
+	record := PermissionRecord{ID: AutomationV2PermissionID(p.ProposalID), SessionID: p.SessionID, ToolName: "manage_workers", ToolArguments: string(payload), ProposalRevision: int64(p.Revision), Requirement: "automation_v2_acceptance", Mode: "plan", Status: PermissionStatusPending, ExecutionStatus: PermissionExecWaitingApproval, CreatedAt: p.CreatedAt, UpdatedAt: p.CreatedAt, PermissionRequested: p.CreatedAt}
 	var prior *PermissionRecord
 	if found {
 		prior = &previous

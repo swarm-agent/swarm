@@ -175,6 +175,21 @@ test('summary counts aggregate active running and scheduled states without listi
   assert.equal(counts.upcoming, 0)
 })
 
+// Requirement: an ordinary chat continues running independently of its accepted
+// worker. Threat: sidebar falsely advertises that the worker is running when only
+// the authoring Swarm chat has a run intent. Selector is the narrowest boundary.
+test('accepted independent worker ignores authoring chat run intent', () => {
+  const key = automationV2PageKey({ action: 'list', workspace_id: 'w' })
+  const state = {
+    automationV2Pages: { [key]: { input: { action: 'list', workspace_id: 'w' }, data: { records: [{ automation_id: 'worker', session_id: 'author', workspace_id: 'w', enabled: true, cancelled: false, authorization: { kind: 'indefinite' } }] } } },
+    sessionsById: { author: { kind: 'full', session: { id: 'author', title: 'Ordinary chat' } } },
+    permissionsBySession: {}, currentRunIntentBySession: { author: { status: 'running' } },
+  } as unknown as DesktopV3CacheState
+  const counts = selectAutomationSummaryCounts(state, 'w', 1000)
+  assert.equal(counts.running, 0)
+  assert.equal(counts.scheduled, 1)
+})
+
 test('sidebar summary badge and metadata row display running state, runs today, and upcoming counts', () => {
   const badgeMarkup = renderToStaticMarkup(
     <AutomationSidebarSummaryBadge

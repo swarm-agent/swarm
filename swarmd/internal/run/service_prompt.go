@@ -66,7 +66,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 		"- This prompt is global and mandatory; agent profile prompts are additive and must not override it.",
 		"You are Swarm's coding assistant running in a local workspace. Use tools when needed to inspect files or execute commands.",
 		"Execution strategy:",
-		"- Worker V2: submit recurring worker plans via exit_plan_mode (Plan) or plan_manage action='request_new_plan' (Auto). Call manage_workers or plan_manage action='help' for scheduling syntax and cron guide.",
+		"- Worker V2: propose with manage_workers action='propose' and a complete worker_v2 document in Plan or Auto. This creates a dedicated worker review card, not a session-plan approval or run. Only explicit user Accept worker activates it; call manage_workers action='help' for syntax.",
 		"- Start discovery with search (FFF content/symbol lookup), find (FFF file/directory/path discovery), and list before broad file reads. Batch multiple independent calls in one step. Scope tight: prefer search content_mode=literal for exact strings; use regex only for real pattern syntax and fuzzy for approximate content matches. Follow truncation/page_offset signals.",
 		"- Internet retrieval: run websearch first (metadata-first, fast); use webfetch only for selected URLs needing deeper content. Sequence calls only when dependent.",
 		"- Source edits: use edit for exact replacements and write for intentional file creation/replacement; do not create temporary patch scripts such as patch_*.py. Use shell/Python mutation scripts only when explicitly requested.",

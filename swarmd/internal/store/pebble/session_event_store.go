@@ -3255,10 +3255,10 @@ func validateV3SessionMutationInput(input V3SessionMutationInput) error {
 	if input.Kind == V3SessionMutationCreateSession && input.Session != nil && input.Session.AutomationV2 != nil {
 		return ErrAutomationV2Conflict
 	}
-	if input.PlanAcceptance != nil && input.PlanAcceptance.Plan.Document != nil && input.PlanAcceptance.Plan.Document.AutomationV2 != nil {
+	if input.PlanAcceptance != nil && input.PlanAcceptance.Plan.Document != nil && (input.PlanAcceptance.Plan.Document.AutomationV2 != nil || input.PlanAcceptance.Plan.Document.WorkerV2 != nil) {
 		return ErrAutomationV2Conflict
 	}
-	if input.PlanSave != nil && input.PlanSave.Plan.Document != nil && input.PlanSave.Plan.Document.AutomationV2 != nil && (input.PlanSave.Activate || input.PlanSave.Plan.ApprovalState == "approved") {
+	if input.PlanSave != nil && input.PlanSave.Plan.Document != nil && (input.PlanSave.Plan.Document.AutomationV2 != nil || input.PlanSave.Plan.Document.WorkerV2 != nil) && (input.PlanSave.Activate || input.PlanSave.Plan.ApprovalState == "approved") {
 		return ErrAutomationV2Conflict
 	}
 	if len(input.MediaStagingBindings) > 0 {

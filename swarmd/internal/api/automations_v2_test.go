@@ -195,8 +195,8 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 				t.Fatal("accepted executable snapshot mismatch", err)
 			}
 			snapshot, found, err := ss.GetSession("conversation")
-			if err != nil || !found || snapshot.AutomationV2 == nil || snapshot.AutomationV2.AutomationID != first.AutomationID || snapshot.AutomationV2.Digest != first.Digest {
-				t.Fatal("accepted binding mismatch", err)
+			if err != nil || !found || snapshot.AutomationV2 != nil || !first.Independent {
+				t.Fatal("acceptance converted the authoring chat", err)
 			}
 			if _, found, err := ss.GetV3SessionActiveRunIntent("conversation"); err != nil || found {
 				t.Fatal("acceptance started one-shot", err)
@@ -260,17 +260,17 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 				t.Fatal("revision not applied")
 			}
 
-			// Test archived_mode discovery
+			// Archive remains a safety fence for the worker's authoring-session key.
 			if err := ss.ArchiveSession("conversation"); err != nil {
 				t.Fatal(err)
 			}
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=exclude", "", "owner", false)
 			if w.Code != 200 || strings.Contains(w.Body.String(), first.AutomationID) {
-				t.Fatal("expected archived automation excluded", w.Body.String())
+				t.Fatal("archived worker remained in active list", w.Body.String())
 			}
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=only", "", "owner", false)
 			if w.Code != 200 || !strings.Contains(w.Body.String(), first.AutomationID) {
-				t.Fatal("expected archived automation returned with archived_mode=only", w.Body.String())
+				t.Fatal("archived worker missing from history", w.Body.String())
 			}
 			w = call(http.MethodGet, "?workspace_id="+workspaceID+"&archived_mode=invalid", "", "owner", false)
 			if w.Code != 400 {

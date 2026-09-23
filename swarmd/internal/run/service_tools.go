@@ -1702,7 +1702,11 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			decisions[i].Result.Error = message
 			continue
 		}
-		if automationV2PlanCall(toolCalls[i]) {
+		if workerDocumentInPlanCall(toolCalls[i]) {
+			decisions[i].Result.Error = "Worker proposals require manage_workers action=propose; session-plan tools cannot author workers"
+			continue
+		}
+		if workerProposalCall(toolCalls[i]) {
 			current, _, scopeErr := s.automationV2ToolSession(sessionID)
 			if scopeErr != nil {
 				decisions[i].Result.Error = scopeErr.Error()
@@ -1719,7 +1723,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				decisions[i].Result.Error = explain.Reason
 				continue
 			}
-			output, err := s.executeAutomationV2PlanTool(sessionID, sessionruntime.NormalizeMode(sessionMode), toolCalls[i])
+			output, err := s.executeWorkerProposalTool(sessionID, toolCalls[i])
 			decisions[i].Result.Output = output
 			if err != nil {
 				decisions[i].Err = err
@@ -2903,8 +2907,8 @@ func decodeAskUserFeedback(feedback string) (string, map[string]string) {
 }
 
 func (s *Service) executeExitPlanModeTool(sessionID, sessionMode string, agentProfile pebblestore.AgentProfile, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) (string, error) {
-	if automationV2PlanCall(tool.Call{Name: "exit_plan_mode", Arguments: arguments}) {
-		return s.executeAutomationV2PlanTool(sessionID, sessionMode, tool.Call{Name: "exit_plan_mode", Arguments: arguments})
+	if workerDocumentInPlanCall(tool.Call{Name: "exit_plan_mode", Arguments: arguments}) {
+		return "", errors.New("Worker proposals require manage_workers action=propose; exit_plan_mode cannot author workers")
 	}
 	input, args, userMessage, err := s.prepareExitPlanModeLifecycleInput(sessionID, arguments, feedback)
 	if err != nil {
@@ -3212,8 +3216,8 @@ func (s *Service) executePlanManageToolWithMutation(sessionID, arguments, feedba
 }
 
 func (s *Service) executePlanManageToolWithLifecycleRunContext(sessionID, arguments, feedback string, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error), lifecycleRun planLifecycleRunContext) (string, error) {
-	if automationV2PlanCall(tool.Call{Name: "plan_manage", Arguments: arguments}) {
-		return s.executeAutomationV2PlanTool(sessionID, "auto", tool.Call{Name: "plan_manage", Arguments: arguments})
+	if workerDocumentInPlanCall(tool.Call{Name: "plan_manage", Arguments: arguments}) {
+		return "", errors.New("Worker proposals require manage_workers action=propose; plan_manage cannot author workers")
 	}
 	if s.sessions == nil {
 		return "", errors.New("session service is not configured")

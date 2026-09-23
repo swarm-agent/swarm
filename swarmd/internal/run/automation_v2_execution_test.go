@@ -79,7 +79,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := sessions.NewService(ss, events)
-	doc := store.SessionPlanDocument{Title: "Harmless report", Info: store.SessionPlanInfo{Goal: "Return the exact accepted instruction"}, AutomationV2: &store.AutomationV2Settings{SchemaVersion: 2, Schedule: store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, Missed: "coalesce", Overlap: "serialize", ActivateOnAccept: true}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "report", Title: "Report", Status: "pending", Order: 1, Tasks: []string{"Return ONLY: fixture acknowledged"}, AcceptanceCriteria: []string{"Exact fixture phrase returned"}}}}
+	doc := store.SessionPlanDocument{Title: "Harmless report", Info: store.SessionPlanInfo{Goal: "Return the exact accepted instruction"}, WorkerV2: &store.AutomationV2Settings{SchemaVersion: 2, Schedule: store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}, Missed: "coalesce", Overlap: "independent", ActivateOnAccept: true}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "report", Title: "Report", Status: "pending", Order: 1, Tasks: []string{"Return ONLY: fixture acknowledged"}, AcceptanceCriteria: []string{"Exact fixture phrase returned"}}}}
 	permissions := permission.NewService(store.NewPermissionStore(db), events, nil)
 	permissions.SetBypassPermissions(true)
 	authoring := NewService(service, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
@@ -88,7 +88,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, err := json.Marshal(map[string]any{"action": "request_new_plan", "document": doc})
+	args, err := json.Marshal(map[string]any{"action": "propose", "document": doc})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,14 +98,14 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	}
 	// Provider JSON omits unspecified expiration rather than serializing a Go
 	// zero-value struct; the advertised optional field must normalize indefinite.
-	delete(instance.(map[string]any)["document"].(map[string]any)["automation_v2"].(map[string]any), "expiration")
+	delete(instance.(map[string]any)["document"].(map[string]any)["worker_v2"].(map[string]any), "expiration")
 	args, err = json.Marshal(instance)
 	if err != nil {
 		t.Fatal(err)
 	}
 	validated := false
 	for _, definition := range filterToolDefinitions(convertToolDefinitions(authoring.ListAgentToolDefinitionsForAccount("account")), disabled) {
-		if definition.Name != "plan_manage" {
+		if definition.Name != "manage_workers" {
 			continue
 		}
 		raw, _ := json.Marshal(definition.Parameters)
@@ -132,7 +132,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		t.Fatal("fixture must start without automation", err)
 	}
 	invoker := authoring.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: p, sessionMode: "auto", runID: "authoring", providerManagedV3: true, applySessionMutation: service.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
-	result, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "plan_manage", CallID: "fresh-proposal", Arguments: string(args)})
+	result, err := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "manage_workers", CallID: "fresh-proposal", Arguments: string(args)})
 	if err != nil || result.Error != "" || !result.RestartTurn {
 		t.Fatalf("fresh dispatch: %+v %v", result, err)
 	}
@@ -154,7 +154,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	// browser gesture: the browser-to-server proof remains a separate live gate.
 	oldReview := proposal.AutomationV2Review
 	doc.Checkpoints[0].Tasks = []string{"Return ONLY: user-edited fixture acknowledged"}
-	doc.AutomationV2.Schedule.IntervalSeconds = 120
+	doc.WorkerV2.Schedule.IntervalSeconds = 120
 	proposal, err = service.ProposeAutomationV2("account", "owner", w.WorkspaceID, "author", &doc, oldReview)
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	if !reflect.DeepEqual(accepted.Document, proposal.Document) || accepted.Authorization.Kind != "indefinite" || accepted.NextDueAt != accepted.AcceptedAt+120000 {
 		t.Fatal("edited settings or anchor drift")
 	}
-	step := doc.AutomationV2.Schedule.IntervalSeconds * 1000
+	step := doc.WorkerV2.Schedule.IntervalSeconds * 1000
 	agents := agent.NewService(store.NewAgentStore(db), events)
 	if err = agents.EnsureDefaults(); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(plan.Document.Checkpoints[0].Tasks, doc.Checkpoints[0].Tasks) || plan.Document.AutomationV2 != nil {
+		if !reflect.DeepEqual(plan.Document.Checkpoints[0].Tasks, doc.Checkpoints[0].Tasks) || plan.Document.AutomationV2 != nil || plan.Document.WorkerV2 != nil {
 			t.Fatal("instruction drift")
 		}
 		intent.Status = sessions.RunIntentRunning
@@ -268,12 +268,12 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	}
 	failPublish = false
 	scheduler = sessions.NewAutomationV2Scheduler(service, host)
-	if err = scheduler.Tick(ctx, accepted, accepted.NextDueAt); err == nil {
+	if err = scheduler.Tick(ctx, accepted, first.NextRetryAt); err == nil {
 		t.Fatal("wake failure hidden after preparation replay")
 	}
 	intent, ok, err := service.GetSessionRunIntent(first.SessionID, first.RunID)
 	if err != nil || !ok || intent.Status != sessions.RunIntentPendingExecutor {
-		t.Fatal("durable wake recovery missing", err)
+		t.Fatalf("durable wake recovery missing: found=%v status=%q err=%v", ok, intent.Status, err)
 	}
 	execSession, found, err := service.GetSession(first.SessionID)
 	if err != nil || !found {
@@ -310,7 +310,11 @@ func TestAutomationV2ScheduledCheckpointExecution(t *testing.T) {
 	if err = scheduler.Tick(ctx, accepted, accepted.NextDueAt+2); err != nil {
 		t.Fatal(err)
 	}
-	if err = scheduler.Tick(ctx, accepted, accepted.NextDueAt+step); err != nil {
+	secondRecord, _, err := service.GetAutomationV2Record("account", "owner", w.WorkspaceID, "author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = scheduler.Tick(ctx, accepted, secondRecord.NextDueAt); err != nil {
 		t.Fatal(err)
 	}
 	if len(executed) != 2 {

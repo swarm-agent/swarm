@@ -497,10 +497,10 @@ func TestAutomationV2ControlDeleteAutomation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify session has AutomationV2 binding
+	// New workers are independent; deleting one must not alter authoring chat.
 	sess, _, err := s.GetSession(sessionID)
-	if err != nil || sess.AutomationV2 == nil {
-		t.Fatalf("expected session to have AutomationV2 binding, got %+v (err: %v)", sess.AutomationV2, err)
+	if err != nil || sess.AutomationV2 != nil || !r.Independent {
+		t.Fatalf("worker commandeered authoring chat: %+v (err: %v)", sess.AutomationV2, err)
 	}
 
 	// Call ControlAutomationV2 with "delete_automation"
