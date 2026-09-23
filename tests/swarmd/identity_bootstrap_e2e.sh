@@ -7,6 +7,8 @@ set -euo pipefail
 # handleWorkspaceRepositorySetup action creates the baseline, without mutation
 # on rejection. API and filesystem assertions are not a rendered TUI proof.
 
+export SWARM_DISABLE_MINT_REPORT=1
+
 EVIDENCE_DIR="${1:-.tmp/checkpoint-1/slice-1.7/$(date -u +%Y%m%dT%H%M%SZ)-vm-final-gate}"
 HOST_EVIDENCE_DIR="${SWARM_HOST_EVIDENCE_DIR:-}"
 mkdir -p "${EVIDENCE_DIR}"
@@ -177,6 +179,7 @@ start_daemon() {
   CACHE_DIRECTORY="${CACHE_DIR}" \
   LOGS_DIRECTORY="${RUN_ROOT}/system-logs" \
   SWARM_CHILD_STARTUP_CONFIG="${STARTUP_CONFIG_TEXT}" \
+  SWARM_DISABLE_MINT_REPORT=1 \
     "${BIN}" --listen "127.0.0.1:${API_PORT}" --desktop-port "${DESKTOP_PORT}" --data-dir "${DATA_DIR}/swarm" --db-path "${DB_PATH}" --lock-path "${RUNTIME_DIR}/swarmd.lock" \
     >"${DAEMON_LOG}.current" 2>&1 &
   DAEMON_PID="$!"
