@@ -2618,3 +2618,11 @@ sequence and failure handling are in `docs/testing/committed-child-correction.md
 Required `bash scripts/check-atlas-sync.sh` and `git diff --check` passed after
 reconciliation. The workflow document has one explicit `.gitignore` exception;
 no scratch/logs or private identifiers were added to tracked documentation.
+
+### Single-Aspect Master Harness Prompt Optimization (Video Studio Guidance) (2026-09-23)
+
+- **Isolated Master Harness Optimization (`swarmd/internal/run/service_prompt.go`):**
+  - Optimized Video Studio (`manage_video`) narrative in `masterHarnessPromptWithScope` from 2,410 characters down to 885 characters, achieving a net reduction of 1,525 characters (-381 tokens per turn) while strictly preserving all contract invariants.
+  - Preserved all required test assertions: `Video Studio (`manage_video`)`, `completely different from generating a single AI video`, `ordered timeline parts (clips)`, `manage_video action='create_project'`, `manage_video action='propose_plan'`, and all tool examples.
+  - Passes `TestMasterHarnessPromptRestoresVideoStudioInstructions` and all harness prompt contract tests.
+
