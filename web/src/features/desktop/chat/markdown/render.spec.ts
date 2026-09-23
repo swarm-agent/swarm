@@ -179,3 +179,40 @@ test('MarkdownRenderer preserves exact needs-review identifier text', () => {
   assert.doesNotMatch(html, /mark_neds_review/)
   assert.doesNotMatch(html, /<em>/)
 })
+
+test('MarkdownRenderer parses and renders inline LaTeX math expressions', () => {
+  const content = 'The variable $I_{\\text{cached}}$ is cheap, while $O$ is expensive with $\\ge 95\\%$ hit rate.'
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /font-serif/)
+  assert.match(html, /italic px-0\.5[\s\S]*>I</)
+  assert.match(html, /<sub[\s\S]*cached[\s\S]*<\/sub>/)
+  assert.match(html, /italic px-0\.5[\s\S]*>O</)
+  assert.match(html, /≥/)
+  assert.match(html, /9[\s\S]*5[\s\S]*%/)
+})
+
+test('MarkdownRenderer parses and renders display LaTeX math blocks', () => {
+  const content = [
+    'Formula for cost:',
+    '$$',
+    '\\text{Cost}(t) = \\underbrace{I_{\\text{cached}} \\times P_{\\text{cached}}}_{\\text{History}} + O',
+    '$$',
+  ].join('\n')
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /Cost/)
+  assert.match(html, /History/)
+  assert.match(html, /×/)
+})
+
+test('MarkdownRenderer preserves regular currency expressions', () => {
+  const content = 'The cost is $10 and then $20 for the service.'
+
+  const html = renderToStaticMarkup(createElement(MarkdownRenderer, { content }))
+
+  assert.match(html, /\$10 and then \$20/)
+  assert.doesNotMatch(html, /<sub/)
+})
