@@ -37,3 +37,19 @@ func TestStartPendingMintReportDoesNotBlockStartup(t *testing.T) {
 	}
 	close(reporter.release)
 }
+
+func TestStartPendingMintReportSuppressedWhenDisabled(t *testing.T) {
+	for _, val := range []string{"1", "true", "yes", "TRUE", " 1 "} {
+		t.Run("env="+val, func(t *testing.T) {
+			t.Setenv("SWARM_DISABLE_MINT_REPORT", val)
+			reporter := &blockingMintReporter{started: make(chan struct{}), release: make(chan struct{})}
+			startPendingMintReport(context.Background(), reporter)
+
+			select {
+			case <-reporter.started:
+				t.Fatalf("expected mint report not to start when SWARM_DISABLE_MINT_REPORT=%q", val)
+			case <-time.After(50 * time.Millisecond):
+			}
+		})
+	}
+}

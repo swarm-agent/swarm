@@ -12,11 +12,14 @@ type pendingMintReporter interface {
 }
 
 func startMintReport(ctx context.Context, service *swarmruntime.Service) {
+	if swarmruntime.IsMintReportDisabled() {
+		return
+	}
 	startPendingMintReport(ctx, swarmruntime.NewMintReporter(service))
 }
 
 func startPendingMintReport(ctx context.Context, reporter pendingMintReporter) {
-	if ctx == nil || reporter == nil {
+	if ctx == nil || reporter == nil || swarmruntime.IsMintReportDisabled() {
 		return
 	}
 	go func() {
