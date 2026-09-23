@@ -19,26 +19,35 @@ type DeliverableActionContract struct {
 	Parameters      map[string]any `json:"parameters,omitempty"`
 }
 
+type DeliverableRevisionFeedback struct {
+	RequestedAt int64    `json:"requested_at"`
+	RequestedBy string   `json:"requested_by,omitempty"`
+	Notes       string   `json:"notes"`
+	Tags        []string `json:"tags,omitempty"`
+}
+
 type DeliverableRecord struct {
-	ID             string                         `json:"id"`
-	AccountID      string                         `json:"account_id"`
-	WorkspaceID    string                         `json:"workspace_id,omitempty"`
-	WorkspacePath  string                         `json:"workspace_path,omitempty"`
-	WorkerID       string                         `json:"worker_id,omitempty"`
-	OccurrenceID   string                         `json:"occurrence_id,omitempty"`
-	SessionID      string                         `json:"session_id,omitempty"`
-	Title          string                         `json:"title"`
-	Kind           string                         `json:"kind"` // "social_post", "alert", "report", "pr_patch", "media_bundle", "custom"
-	Status         string                         `json:"status"` // "pending_review", "approved", "rejected", "published", "dismissed"
-	Summary        string                         `json:"summary,omitempty"`
-	Payload        map[string]any                 `json:"payload,omitempty"` // posts, tweets, report text, diffs, etc.
-	MediaRefs      []SessionPlanArtifactReference `json:"media_refs,omitempty"`
-	ActionContract *DeliverableActionContract     `json:"action_contract,omitempty"`
-	ActionResult   map[string]any                 `json:"action_result,omitempty"`
-	CreatedAt      int64                          `json:"created_at"`
-	UpdatedAt      int64                          `json:"updated_at"`
-	ReviewedAt     int64                          `json:"reviewed_at,omitempty"`
-	ReviewedBy     string                         `json:"reviewed_by,omitempty"`
+	ID               string                         `json:"id"`
+	AccountID        string                         `json:"account_id"`
+	WorkspaceID      string                         `json:"workspace_id,omitempty"`
+	WorkspacePath    string                         `json:"workspace_path,omitempty"`
+	WorkerID         string                         `json:"worker_id,omitempty"`
+	OccurrenceID     string                         `json:"occurrence_id,omitempty"`
+	SessionID        string                         `json:"session_id,omitempty"`
+	Title            string                         `json:"title"`
+	Kind             string                         `json:"kind"` // "social_post", "alert", "report", "pr_patch", "media_bundle", "custom"
+	Status           string                         `json:"status"` // "pending_review", "approved", "rejected", "published", "dismissed", "needs_revision"
+	Summary          string                         `json:"summary,omitempty"`
+	Payload          map[string]any                 `json:"payload,omitempty"` // posts, tweets, report text, diffs, etc.
+	MediaRefs        []SessionPlanArtifactReference `json:"media_refs,omitempty"`
+	ActionContract   *DeliverableActionContract     `json:"action_contract,omitempty"`
+	ActionResult     map[string]any                 `json:"action_result,omitempty"`
+	RevisionFeedback *DeliverableRevisionFeedback   `json:"revision_feedback,omitempty"`
+	RevisionHistory  []DeliverableRevisionFeedback  `json:"revision_history,omitempty"`
+	CreatedAt        int64                          `json:"created_at"`
+	UpdatedAt        int64                          `json:"updated_at"`
+	ReviewedAt       int64                          `json:"reviewed_at,omitempty"`
+	ReviewedBy       string                         `json:"reviewed_by,omitempty"`
 }
 
 type DeliverableFilter struct {
@@ -65,10 +74,10 @@ func (d *DeliverableRecord) Validate() error {
 		d.Status = "pending_review"
 	}
 	switch d.Status {
-	case "pending_review", "approved", "rejected", "published", "dismissed":
+	case "pending_review", "approved", "rejected", "published", "dismissed", "needs_revision":
 		// valid
 	default:
-		return errors.New("invalid deliverable status; must be pending_review, approved, rejected, published, or dismissed")
+		return errors.New("invalid deliverable status; must be pending_review, approved, rejected, published, dismissed, or needs_revision")
 	}
 	return nil
 }
@@ -291,6 +300,33 @@ func (s *SessionStore) UpdateDeliverableStatus(accountScopeID, id, status, revie
 	if actionResult != nil {
 		rec.ActionResult = actionResult
 	}
+
+	if err := s.PutDeliverable(accountScopeID, &rec); err != nil {
+		return rec, err
+	}
+	return rec, nil
+}
+
+func (s *SessionStore) RequestChangesDeliverable(accountScopeID, id, notes string, tags []string, requestedBy string) (DeliverableRecord, error) {
+	rec, found, err := s.GetDeliverable(accountScopeID, id)
+	if err != nil {
+		return rec, err
+	}
+	if !found {
+		return rec, errors.New("deliverable not found")
+	}
+
+	now := time.Now().UnixMilli()
+	fb := DeliverableRevisionFeedback{
+		RequestedAt: now,
+		RequestedBy: requestedBy,
+		Notes:       notes,
+		Tags:        tags,
+	}
+	rec.Status = "needs_revision"
+	rec.RevisionFeedback = &fb
+	rec.RevisionHistory = append(rec.RevisionHistory, fb)
+	rec.UpdatedAt = now
 
 	if err := s.PutDeliverable(accountScopeID, &rec); err != nil {
 		return rec, err

@@ -135,7 +135,39 @@ func TestDeliverableStoreCRUD(t *testing.T) {
 		t.Fatalf("expected 1 approved deliverable (deliv1), got %d", len(approvedList))
 	}
 
-	// 8. Delete deliverable
+	// 8. Test RequestChangesDeliverable
+	revised, err := sessionStore.RequestChangesDeliverable(accountID, deliv1.ID, "Please tighten the punchline in tweet 2", []string{"Tone", "Length"}, "reviewer_alice")
+	if err != nil {
+		t.Fatalf("failed to request changes: %v", err)
+	}
+	if revised.Status != "needs_revision" {
+		t.Fatalf("expected status needs_revision, got %s", revised.Status)
+	}
+	if revised.RevisionFeedback == nil {
+		t.Fatalf("expected RevisionFeedback to be populated")
+	}
+	if revised.RevisionFeedback.Notes != "Please tighten the punchline in tweet 2" {
+		t.Fatalf("expected notes to match, got %q", revised.RevisionFeedback.Notes)
+	}
+	if len(revised.RevisionFeedback.Tags) != 2 || revised.RevisionFeedback.Tags[0] != "Tone" {
+		t.Fatalf("expected tags [Tone Length], got %+v", revised.RevisionFeedback.Tags)
+	}
+	if len(revised.RevisionHistory) != 1 {
+		t.Fatalf("expected revision history len 1, got %d", len(revised.RevisionHistory))
+	}
+
+	// Verify status index for needs_revision
+	needsRevList, err := sessionStore.ListDeliverables(accountID, DeliverableFilter{
+		Status: "needs_revision",
+	})
+	if err != nil {
+		t.Fatalf("failed to list needs_revision: %v", err)
+	}
+	if len(needsRevList) != 1 || needsRevList[0].ID != deliv1.ID {
+		t.Fatalf("expected 1 deliverable in needs_revision, got %d", len(needsRevList))
+	}
+
+	// 9. Delete deliverable
 	if err := sessionStore.DeleteDeliverable(accountID, deliv2.ID); err != nil {
 		t.Fatalf("failed to delete deliverable: %v", err)
 	}

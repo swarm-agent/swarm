@@ -251,5 +251,38 @@ func (s *Server) handleDeliverables(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if subAction == "request_changes" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed; POST required"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "automations:write", "sessions:write") {
+			return
+		}
+
+		var reqBody struct {
+			Notes string   `json:"notes"`
+			Tags  []string `json:"tags"`
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+		if err == nil && len(body) > 0 {
+			_ = json.Unmarshal(body, &reqBody)
+		}
+
+		updated, err := db.RequestChangesDeliverable(p.AccountScopeID, id, reqBody.Notes, reqBody.Tags, p.UserID)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				writeError(w, http.StatusNotFound, err)
+			} else {
+				writeError(w, http.StatusInternalServerError, err)
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deliverable": updated,
+		})
+		return
+	}
+
 	writeError(w, http.StatusNotFound, errors.New("unknown deliverable action"))
 }

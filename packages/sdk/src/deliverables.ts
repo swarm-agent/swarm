@@ -87,6 +87,23 @@ export class SwarmDeliverablesNamespace {
   }
 
   /**
+   * Requests changes on a deliverable, sending it back to the worker with feedback notes and optional tags.
+   */
+  async requestChanges(
+    id: string,
+    params: { notes: string; tags?: string[] }
+  ): Promise<DeliverableRecord> {
+    const res = await this.transport.request<{ deliverable: DeliverableRecord }>(
+      `/v3/deliverables/${encodeURIComponent(id)}/request_changes`,
+      {
+        method: 'POST',
+        body: params,
+      }
+    );
+    return res.data.deliverable;
+  }
+
+  /**
    * Deletes a deliverable permanently from the mailbox.
    */
   async delete(id: string): Promise<void> {

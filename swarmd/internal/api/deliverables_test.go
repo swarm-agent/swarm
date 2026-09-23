@@ -120,22 +120,39 @@ func TestDeliverablesAPI(t *testing.T) {
 		t.Fatalf("expected published_to x, got %v", actionRes["published_to"])
 	}
 
-	// 5. Create another deliverable and dismiss it
-	alertBody := `{
+	// 5. Create another deliverable and test request_changes
+	revBody := `{
 		"title": "Alert: Nightly Build Drift",
 		"kind": "alert",
 		"worker_id": "worker_build_sentinel",
 		"summary": "1 file drifted in dev worktree"
 	}`
-	w = call(http.MethodPost, "", alertBody, []string{"automations:write"})
+	w = call(http.MethodPost, "", revBody, []string{"automations:write"})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
 	}
-	var alertResp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &alertResp)
-	alertID := alertResp["deliverable"].(map[string]any)["id"].(string)
+	var revResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &revResp)
+	revID := revResp["deliverable"].(map[string]any)["id"].(string)
 
-	w = call(http.MethodPost, "/"+alertID+"/dismiss", "{}", []string{"automations:write"})
+	reqChangesPayload := `{"notes": "Include the drifted filename in the summary", "tags": ["Detail", "Context"]}`
+	w = call(http.MethodPost, "/"+revID+"/request_changes", reqChangesPayload, []string{"automations:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on request_changes, got %d: %s", w.Code, w.Body.String())
+	}
+	var reqChangesResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &reqChangesResp)
+	revisedDeliv := reqChangesResp["deliverable"].(map[string]any)
+	if revisedDeliv["status"].(string) != "needs_revision" {
+		t.Fatalf("expected status needs_revision, got %v", revisedDeliv["status"])
+	}
+	fb := revisedDeliv["revision_feedback"].(map[string]any)
+	if fb["notes"].(string) != "Include the drifted filename in the summary" {
+		t.Fatalf("expected feedback notes, got %v", fb["notes"])
+	}
+
+	// Dismiss it now
+	w = call(http.MethodPost, "/"+revID+"/dismiss", "{}", []string{"automations:write"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 on dismiss, got %d: %s", w.Code, w.Body.String())
 	}

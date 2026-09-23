@@ -25,6 +25,7 @@ import {
   Sparkles,
   Trash2,
   XCircle,
+  Columns2,
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
@@ -839,7 +840,29 @@ export function AutomationV2Workspace({
   const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [suggestionsCollapsed, setSuggestionsCollapsed] = useState(false)
-  const [workspaceMode, setWorkspaceMode] = useState<'workers' | 'inbox'>('workers')
+  const [workspaceMode, setWorkspaceMode] = useState<'workers' | 'inbox' | 'split'>('workers')
+  const [inboxWorkerFilter, setInboxWorkerFilter] = useState<string>('all')
+  const [inboxHighlightId, setInboxHighlightId] = useState<string | undefined>()
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const tab = params.get('tab')
+    const mode = params.get('mode')
+    const workerId = params.get('worker_id')
+    const deliverableId = params.get('deliverable_id')
+    if (tab === 'deliverables' || tab === 'inbox' || mode === 'inbox') {
+      setWorkspaceMode('inbox')
+    } else if (tab === 'split' || mode === 'split') {
+      setWorkspaceMode('split')
+    }
+    if (workerId) {
+      setInboxWorkerFilter(workerId)
+    }
+    if (deliverableId) {
+      setInboxHighlightId(deliverableId)
+    }
+  }, [])
 
   const isArchivedTab = statusFilter === 'archived'
   const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: !isArchivedTab ? cursor : undefined }), [workspaceId, cursor, isArchivedTab])
@@ -1197,6 +1220,19 @@ export function AutomationV2Workspace({
               <Inbox size={13} />
               <span>Agent Mailbox</span>
             </button>
+            <button
+              data-testid="tab-split"
+              onClick={() => setWorkspaceMode('split')}
+              className={cn(
+                'flex items-center gap-1.5 rounded-lg px-3 py-1 font-medium transition-colors',
+                workspaceMode === 'split'
+                  ? 'bg-[var(--app-primary)] text-white shadow-2xs font-semibold'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              )}
+            >
+              <Columns2 size={13} />
+              <span>Split View</span>
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1225,7 +1261,91 @@ export function AutomationV2Workspace({
             workspacePath={workspacePath}
             workspaceSlug={workspaceSlug}
             onOpenSession={onOpenSession}
+            selectedWorkerId={inboxWorkerFilter !== 'all' ? inboxWorkerFilter : undefined}
+            highlightId={inboxHighlightId}
           />
+        </div>
+      ) : workspaceMode === 'split' ? (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col xl:flex-row overflow-hidden">
+          <main className="min-w-0 flex-1 space-y-6 p-5 sm:p-6 overflow-y-auto border-r border-[var(--app-border)]">
+            {selected ? (
+              selectedRecord ? (
+                <AutomationV2WorkerDetailPage
+                  workspaceId={workspaceId}
+                  workspacePath={workspacePath}
+                  workspaceSlug={workspaceSlug}
+                  record={selectedRecord}
+                  pendingProposal={pendingProposalBySessionId.get(selectedRecord.session_id)}
+                  onBack={() => {
+                    setSelected('')
+                    if (onSelectWorker) onSelectWorker()
+                    else if (typeof window !== 'undefined' && window.history && workspaceSlug) {
+                      window.history.pushState(null, '', `/${encodeURIComponent(workspaceSlug)}/workers`)
+                    }
+                  }}
+                  onOpenSession={onOpenSession}
+                  onChat={handleChatWithAutomation}
+                  onAskForChanges={handleAskForChanges}
+                  onControlRecord={handleControlRecord}
+                  onArchiveRecord={handleArchiveRecord}
+                  onDeleteRecord={handleDeleteRecord}
+                  actionLoadingId={actionLoadingId}
+                />
+              ) : page?.loading ? (
+                <div className="p-8 text-center space-y-2">
+                  <div className="text-sm font-medium text-[var(--app-text)]">Loading worker details…</div>
+                  <p className="text-xs text-[var(--app-text-muted)]">Looking up worker ID “{selected}”…</p>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center bg-[var(--app-surface)] space-y-3">
+                  <h3 className="text-base font-semibold text-[var(--app-text)]">Worker not found</h3>
+                  <p className="text-xs text-[var(--app-text-muted)]">Worker ID “{selected}” could not be found in this workspace.</p>
+                  <Button variant="outline" size="sm" onClick={() => { setSelected(''); onSelectWorker?.() }}>
+                    <ChevronLeft size={14} />
+                    <span>Back to all Workers</span>
+                  </Button>
+                </div>
+              )
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-semibold">Active Workers</h2>
+                  <span className="text-xs text-[var(--app-text-muted)]">{records.length} registered</span>
+                </div>
+                {records.map((r) => (
+                  <div
+                    key={r.session_id}
+                    onClick={() => setSelected(r.session_id)}
+                    className="cursor-pointer rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3.5 shadow-2xs hover:border-[var(--app-primary-border)] transition-colors space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Bot size={14} className="text-[var(--app-primary)]" />
+                        <span className="text-xs font-semibold text-[var(--app-text)]">{r.title || r.automation_id}</span>
+                      </div>
+                      <span className={cn(
+                        'rounded-md px-2 py-0.5 text-[10px] font-bold uppercase',
+                        r.status === 'enabled' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-zinc-500/10 text-zinc-500'
+                      )}>
+                        {r.status}
+                      </span>
+                    </div>
+                    {r.summary && <p className="text-[11px] text-[var(--app-text-muted)] line-clamp-2">{r.summary}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </main>
+          <div className="w-full xl:w-[500px] 2xl:w-[580px] overflow-y-auto p-5 sm:p-6 bg-[var(--app-bg-alt)]/20 shrink-0">
+            <DeliverablesInbox
+              workspaceId={workspaceId}
+              workspacePath={workspacePath}
+              workspaceSlug={workspaceSlug}
+              onOpenSession={onOpenSession}
+              selectedWorkerId={inboxWorkerFilter !== 'all' ? inboxWorkerFilter : undefined}
+              highlightId={inboxHighlightId}
+            />
+          </div>
         </div>
       ) : (
         /* Main Body + Sidecar Layout */

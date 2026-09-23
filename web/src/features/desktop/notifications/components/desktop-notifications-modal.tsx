@@ -227,9 +227,9 @@ export function DesktopNotificationsModal({
                           href={record.actionURL}
                           target="_blank"
                           rel="noreferrer"
-                          title="Open session in a new tab"
+                          title={record.actionURL.includes('tab=deliverables') ? 'Open deliverable in review inbox' : 'Open session in a new tab'}
                         >
-                          <ExternalLink size={14} /> Go to session
+                          <ExternalLink size={14} /> {record.actionURL.includes('tab=deliverables') || record.actionURL.includes('/workers') ? 'Review deliverable' : 'Go to session'}
                         </a>
                       ) : null}
                       {record.status === 'active' && !record.readAt ? (

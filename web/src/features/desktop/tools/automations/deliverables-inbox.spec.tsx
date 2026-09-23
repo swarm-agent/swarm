@@ -106,6 +106,7 @@ test('DeliverableCard: renders publication receipt when approved', () => {
       deliverable={publishedDeliverable}
       onApprove={() => {}}
       onDismiss={() => {}}
+      onRequestChanges={() => {}}
       onDelete={() => {}}
     />
   )
@@ -113,4 +114,102 @@ test('DeliverableCard: renders publication receipt when approved', () => {
   assert.match(markup, /Publication Receipt/)
   assert.match(markup, /Target: x/)
   assert.doesNotMatch(markup, /data-testid="approve-publish-btn"/)
+})
+
+test('DeliverableCard: renders media deliverable with video and image previews', () => {
+  const mediaDeliverable: DeliverableRecord = {
+    id: 'deliv_media_101',
+    account_id: 'acct_1',
+    worker_id: 'designer_bot',
+    title: 'Brand Launch Video & Hero Banner',
+    kind: 'media',
+    status: 'pending_review',
+    payload: {
+      video_url: '/artifacts/video_render.mp4',
+      image_url: '/artifacts/hero_banner.png',
+    },
+    created_at: 1789990000000,
+    updated_at: 1789990000000,
+  }
+
+  const markup = renderToStaticMarkup(
+    <DeliverableCard
+      deliverable={mediaDeliverable}
+      onApprove={() => {}}
+      onDismiss={() => {}}
+      onRequestChanges={() => {}}
+      onDelete={() => {}}
+    />
+  )
+
+  assert.match(markup, /Brand Launch Video &amp; Hero Banner|Brand Launch Video & Hero Banner/)
+  assert.match(markup, /MEDIA DELIVERABLE ASSETS/)
+  assert.match(markup, /src="\/artifacts\/video_render\.mp4"/)
+  assert.match(markup, /src="\/artifacts\/hero_banner\.png"/)
+  assert.match(markup, /data-testid="request-changes-btn"/)
+})
+
+test('DeliverableCard: renders code patch with unified diff and additions/deletions', () => {
+  const codeDeliverable: DeliverableRecord = {
+    id: 'deliv_code_202',
+    account_id: 'acct_1',
+    worker_id: 'bugfix_coder',
+    title: 'Fix(auth): prevent division by zero in token limiter',
+    kind: 'code_patch',
+    status: 'pending_review',
+    payload: {
+      branch: 'agent/fix-token-limiter',
+      diff: '--- a/limiter.go\n+++ b/limiter.go\n@@ -10,3 +10,4 @@\n- rate := total / step\n+ if step <= 0 { return 0 }\n+ rate := total / step',
+    },
+    created_at: 1789990000000,
+    updated_at: 1789990000000,
+  }
+
+  const markup = renderToStaticMarkup(
+    <DeliverableCard
+      deliverable={codeDeliverable}
+      onApprove={() => {}}
+      onDismiss={() => {}}
+      onRequestChanges={() => {}}
+      onDelete={() => {}}
+    />
+  )
+
+  assert.match(markup, /CODE PATCH \/ DIFF/)
+  assert.match(markup, /agent\/fix-token-limiter/)
+  assert.match(markup, /if step &lt;= 0 { return 0 }|if step <= 0 { return 0 }/)
+})
+
+test('DeliverableCard: renders revision feedback callout when status is needs_revision', () => {
+  const needsRevisionDeliv: DeliverableRecord = {
+    id: 'deliv_rev_303',
+    account_id: 'acct_1',
+    worker_id: 'worker_social_bot',
+    title: 'Revised Product Announcement',
+    kind: 'social_post',
+    status: 'needs_revision',
+    revision_feedback: {
+      requested_at: 1789991000000,
+      requested_by: 'user_roy',
+      notes: 'Make the headline punchier and remove 2 hashtags',
+      tags: ['Tone', 'Length'],
+    },
+    created_at: 1789990000000,
+    updated_at: 1789991000000,
+  }
+
+  const markup = renderToStaticMarkup(
+    <DeliverableCard
+      deliverable={needsRevisionDeliv}
+      onApprove={() => {}}
+      onDismiss={() => {}}
+      onRequestChanges={() => {}}
+      onDelete={() => {}}
+    />
+  )
+
+  assert.match(markup, /Awaiting Worker Revision/)
+  assert.match(markup, /Make the headline punchier and remove 2 hashtags/)
+  assert.match(markup, /#Tone/)
+  assert.match(markup, /#Length/)
 })

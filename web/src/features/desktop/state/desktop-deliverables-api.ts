@@ -7,6 +7,13 @@ export interface DeliverableActionContract {
   parameters?: Record<string, unknown>;
 }
 
+export interface DeliverableRevisionFeedback {
+  requested_at: number;
+  requested_by?: string;
+  notes: string;
+  tags?: string[];
+}
+
 export interface DeliverableRecord {
   id: string;
   account_id: string;
@@ -16,8 +23,8 @@ export interface DeliverableRecord {
   occurrence_id?: string;
   session_id?: string;
   title: string;
-  kind: 'social_post' | 'alert' | 'report' | 'pr_patch' | 'media_bundle' | 'custom' | string;
-  status: 'pending_review' | 'approved' | 'rejected' | 'published' | 'dismissed' | string;
+  kind: 'social_post' | 'alert' | 'report' | 'pr_patch' | 'media_bundle' | 'code_patch' | 'media' | 'custom' | string;
+  status: 'pending_review' | 'approved' | 'rejected' | 'published' | 'dismissed' | 'needs_revision' | string;
   summary?: string;
   payload?: Record<string, unknown>;
   media_refs?: Array<{
@@ -31,6 +38,8 @@ export interface DeliverableRecord {
   }>;
   action_contract?: DeliverableActionContract;
   action_result?: Record<string, unknown>;
+  revision_feedback?: DeliverableRevisionFeedback;
+  revision_history?: DeliverableRevisionFeedback[];
   created_at: number;
   updated_at: number;
   reviewed_at?: number;
@@ -81,6 +90,20 @@ export async function dismissDeliverable(id: string): Promise<DeliverableRecord>
     `/v3/deliverables/${encodeURIComponent(id)}/dismiss`,
     {
       method: 'POST',
+    }
+  )
+  return res.deliverable
+}
+
+export async function requestDeliverableChanges(
+  id: string,
+  params: { notes: string; tags?: string[] }
+): Promise<DeliverableRecord> {
+  const res = await requestJson<{ deliverable: DeliverableRecord }>(
+    `/v3/deliverables/${encodeURIComponent(id)}/request_changes`,
+    {
+      method: 'POST',
+      body: JSON.stringify(params),
     }
   )
   return res.deliverable

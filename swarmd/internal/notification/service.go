@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -624,6 +625,22 @@ func NotificationActionURL(workspaceName, workspacePath, sessionID string) strin
 		return ""
 	}
 	return "/" + workspaceSlug + "/" + strings.TrimSpace(sessionID)
+}
+
+func DeliverableActionURL(workspaceName, workspacePath, workerID, deliverableID string) string {
+	workspaceSlug := notificationWorkspaceSlug(workspaceName, workspacePath)
+	if workspaceSlug == "" {
+		workspaceSlug = "workspace"
+	}
+	q := url.Values{}
+	q.Set("tab", "deliverables")
+	if strings.TrimSpace(workerID) != "" {
+		q.Set("worker_id", strings.TrimSpace(workerID))
+	}
+	if strings.TrimSpace(deliverableID) != "" {
+		q.Set("deliverable_id", strings.TrimSpace(deliverableID))
+	}
+	return "/" + workspaceSlug + "/workers?" + q.Encode()
 }
 
 func notificationWorkspaceSlug(workspaceName, workspacePath string) string {
