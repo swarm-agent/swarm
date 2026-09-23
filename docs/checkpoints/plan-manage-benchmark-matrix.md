@@ -17,7 +17,7 @@ Metrics per run: elapsed wall-clock seconds from dispatch to terminal event; pro
 | P05 | Active checkpoint, replacement checklist: replace_subtasks atomically | Stale items removed; objective and attempt preserved | 98852a6de | pending | queued |
 | P06 | Invalidated objective: restart_checkpoint with full replacement contract | Superseded objective not marked complete | 98852a6de | pending | queued |
 | P07 | Complete an earlier task with another already in progress | Exactly one in_progress; no duplicate activation | 98852a6de | pending | queued |
-| P08 | Terminal subtask call while another task remains pending | Must reject or remain nonterminal; never silently mark pending task done | 98852a6de | pending | first safety gate |
+| P08 | Terminal subtask call while another task remains pending | Must reject or remain nonterminal; never silently mark pending task done | 98852a6de: deterministic source already rejects | 3ba8489fc: focused regression passes | safety gate; live pending |
 | P09 | Batch complete all finished subtasks atomically with terminal handoff | All IDs known; durable terminal state and accurate report | 98852a6de | pending | queued |
 | P10 | After terminal review, commentary/inquiry only | No second completion or checklist mutation | 98852a6de | pending | queued |
 | P11 | Blocked checkpoint, missing dependency then resolution | No unauthorized run ownership; resume same checkpoint in new attempt | 98852a6de | pending | queued |
