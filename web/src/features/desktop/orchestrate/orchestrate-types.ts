@@ -112,6 +112,7 @@ export interface RunningTask {
   elapsed: string
   subtasks: { id: string; title: string; completed: boolean }[]
   diffPreview?: string
+  deliverables?: MediaDeliverable[]
 }
 
 export interface OrchestratorMessage {
