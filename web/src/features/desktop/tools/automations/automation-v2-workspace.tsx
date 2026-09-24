@@ -1292,6 +1292,10 @@ export function AutomationV2Workspace({
                     }
                   }}
                   onOpenSession={onOpenSession}
+                  onViewMailbox={(workerId) => {
+                    setWorkspaceMode('inbox')
+                    if (workerId) setInboxWorkerFilter(workerId)
+                  }}
                   onChat={handleChatWithAutomation}
                   onSendRequest={setSendRequestRecord}
                   onAskForChanges={handleAskForChanges}
@@ -1378,6 +1382,10 @@ export function AutomationV2Workspace({
                   }
                 }}
                 onOpenSession={onOpenSession}
+                onViewMailbox={(workerId) => {
+                  setWorkspaceMode('inbox')
+                  if (workerId) setInboxWorkerFilter(workerId)
+                }}
                 onChat={handleChatWithAutomation}
                 onSendRequest={setSendRequestRecord}
                 onAskForChanges={handleAskForChanges}
@@ -2137,6 +2145,7 @@ export function AutomationV2WorkerDetailPage({
   pendingProposal,
   onBack,
   onOpenSession,
+  onViewMailbox,
   onChat,
   onSendRequest,
   onAskForChanges,
@@ -2152,6 +2161,7 @@ export function AutomationV2WorkerDetailPage({
   pendingProposal?: AutomationV2Proposal
   onBack: () => void
   onOpenSession?: (id: string) => void
+  onViewMailbox?: (workerId?: string) => void
   onChat?: (id: string) => void
   onSendRequest?: (record: AutomationV2Record) => void
   onAskForChanges?: (id: string) => void
@@ -2160,6 +2170,35 @@ export function AutomationV2WorkerDetailPage({
   onDeleteRecord: (record: AutomationV2Record) => void
   actionLoadingId: string | null
 }) {
+  const [inlinePrompt, setInlinePrompt] = useState('')
+  const [inlineSubmitting, setInlineSubmitting] = useState(false)
+  const [inlineError, setInlineError] = useState<string | null>(null)
+  const [inlineSuccessOcc, setInlineSuccessOcc] = useState<AutomationV2Occurrence | null>(null)
+
+  const handleInlineSend = async () => {
+    if (!inlinePrompt.trim() || inlineSubmitting) return
+    setInlineSubmitting(true)
+    setInlineError(null)
+    setInlineSuccessOcc(null)
+    try {
+      const res = await desktopAutomationV2.trigger({
+        workspace_id: workspaceId || record.workspace_id,
+        worker_id: workerIdentifier,
+        prompt: inlinePrompt.trim(),
+      })
+      if (res.ok && res.occurrence) {
+        setInlineSuccessOcc(res.occurrence)
+        setInlinePrompt('')
+        void desktopAutomationV2.refresh(input)
+      } else {
+        setInlineError(res.error || 'Failed to trigger worker request')
+      }
+    } catch (err: any) {
+      setInlineError(err?.message || 'Failed to trigger worker request')
+    } finally {
+      setInlineSubmitting(false)
+    }
+  }
   const [timezone, setTimezone] = useState(() => record.document?.automation_v2?.schedule?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)
   const [cursor, setCursor] = useState<string>()
   const [editing, setEditing] = useState(false)
@@ -2422,6 +2461,234 @@ export function AutomationV2WorkerDetailPage({
           />
         </div>
       )}
+
+      {/* Inline Request Box */}
+      <section
+        aria-label="Send Request to Worker"
+        className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-5 shadow-xs space-y-4"
+        data-testid="worker-inline-request-box"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary)] text-white shadow-2xs">
+              <SendHorizontal size={15} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--app-text)]">
+                Send Request to {liveRecord.document?.title || workerIdentifier}
+              </h3>
+              <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
+                Dispatch an on-demand task to this worker in an isolated worktree. Every request is tracked below with full lifecycle status.
+              </p>
+            </div>
+          </div>
+          {inlineSuccessOcc && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 size={13} />
+              Request Submitted
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <textarea
+            value={inlinePrompt}
+            onChange={(e) => setInlinePrompt(e.target.value)}
+            placeholder="Type instructions or task for this worker..."
+            rows={2}
+            className="w-full resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 text-xs text-[var(--app-text)] outline-hidden focus:border-[var(--app-primary)] transition-colors"
+            data-testid="worker-inline-prompt-input"
+          />
+          {inlineError && (
+            <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 p-2.5 text-xs text-[var(--app-danger)]">
+              {inlineError}
+            </div>
+          )}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-[var(--app-text-muted)]">
+                Tracked in real time • Delivered to Agent Mailbox upon completion
+              </span>
+            </div>
+            <Button
+              size="sm"
+              disabled={!inlinePrompt.trim() || inlineSubmitting}
+              onClick={handleInlineSend}
+              className="gap-1.5 rounded-xl text-xs font-semibold shadow-2xs"
+              data-testid="worker-inline-send-btn"
+            >
+              {inlineSubmitting ? <LoaderCircle size={13} className="animate-spin" /> : <SendHorizontal size={13} />}
+              <span>{inlineSubmitting ? 'Sending Request…' : 'Send Request'}</span>
+            </Button>
+          </div>
+        </div>
+      </section>
+
+      {/* Tracked Requests & Lifecycle Section */}
+      <section
+        aria-label="Tracked Requests & Lifecycle"
+        className="rounded-2xl border border-[var(--app-border)]/80 bg-[var(--app-surface)] p-5 shadow-xs space-y-4"
+        data-testid="worker-tracked-requests-section"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-border)]/50 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex size-7 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+              <Sparkles size={14} />
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--app-text)]">
+                Tracked Requests & Lifecycle
+              </h3>
+              <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
+                Real-time lifecycle pipeline for tasks sent to this worker.
+              </p>
+            </div>
+          </div>
+          <span className="rounded-full bg-[var(--app-surface-hover)] px-2.5 py-0.5 text-xs font-semibold text-[var(--app-text-muted)]">
+            {occurrences.length} {occurrences.length === 1 ? 'request' : 'requests'} tracked
+          </span>
+        </div>
+
+        {occurrences.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[var(--app-border)] p-6 text-center text-xs text-[var(--app-text-muted)]">
+            No requests sent yet. Type a prompt above and click Send Request to trigger this worker.
+          </div>
+        ) : (
+          <div className="space-y-3.5" data-testid="tracked-requests-list">
+            {occurrences.slice(0, 10).map((occ) => {
+              const promptText = (occ.trigger_context && typeof occ.trigger_context.prompt === 'string' && occ.trigger_context.prompt)
+                || (occ.summary)
+                || (occ.accepted?.document?.title ? `Run: ${occ.accepted.document.title}` : `Execution run`)
+              const isRunning = occ.state === 'running' || occ.state === 'admitted'
+              const delivs = extractOccurrenceDeliverables(occ)
+              const hasDeliverables = delivs.length > 0 || occ.closing_state === 'deliverable_ready'
+              const isAlert = occ.closing_state === 'attention_alert' || occ.state === 'failed' || occ.state === 'unavailable'
+              const isBlocked = occ.closing_state === 'blocked' || occ.state === 'blocked'
+              const isCleanDone = isOccurrenceRoutineClean(occ) && !hasDeliverables && !isAlert && !isBlocked
+
+              return (
+                <div
+                  key={occ.id}
+                  className="rounded-xl border border-[var(--app-border)] bg-[var(--app-bg-alt)]/40 p-4 space-y-3 transition-colors hover:border-[var(--app-primary-border)]"
+                  data-testid={`tracked-request-${occ.id}`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-md bg-[var(--app-surface)] px-2 py-0.5 text-[10px] font-mono text-[var(--app-text-muted)] border border-[var(--app-border)]/60">
+                          {occ.id.slice(0, 10)}
+                        </span>
+                        <span className="text-[11px] text-[var(--app-text-muted)] flex items-center gap-1">
+                          <Clock3 size={11} />
+                          {formatScheduleDateTime(occ.admitted_at || occ.due_at || Date.now(), effectiveDisplayTimezone)}
+                        </span>
+                      </div>
+                      <p className="text-xs font-semibold text-[var(--app-text)] leading-relaxed line-clamp-2">
+                        {promptText}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {hasDeliverables && onViewMailbox && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => onViewMailbox(workerIdentifier)}
+                          className="h-7 gap-1 text-[11px] rounded-lg font-semibold text-[var(--app-primary)] border-[var(--app-primary-border)] bg-[var(--app-primary-soft)] hover:bg-[var(--app-primary)] hover:text-white transition-colors"
+                          data-testid="request-view-mailbox-btn"
+                        >
+                          <Inbox size={12} />
+                          <span>View in Mailbox ({delivs.length})</span>
+                        </Button>
+                      )}
+                      {onOpenSession && occ.session_id && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => onOpenSession(occ.session_id)}
+                          className="h-7 gap-1 text-[11px] rounded-lg text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                          data-testid="request-inspect-session-btn"
+                        >
+                          <ExternalLink size={11} />
+                          <span>Session</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Lifecycle Pipeline Nodes */}
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--app-border)]/40 text-[11px]">
+                    {/* Node 1: Request Sent */}
+                    <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-medium">
+                      <CheckCircle2 size={13} className="shrink-0 text-emerald-500" />
+                      <span>1. Request Sent</span>
+                    </div>
+
+                    {/* Node 2: In Progress */}
+                    <div className={cn(
+                      'flex items-center gap-1.5 font-medium',
+                      isRunning
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-emerald-600 dark:text-emerald-400'
+                    )}>
+                      {isRunning ? (
+                        <>
+                          <LoaderCircle size={13} className="shrink-0 animate-spin text-amber-500" />
+                          <span>2. In Progress…</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 size={13} className="shrink-0 text-emerald-500" />
+                          <span>2. Executed</span>
+                        </>
+                      )}
+                    </div>
+
+                    {/* Node 3: Outcome */}
+                    <div className={cn(
+                      'flex items-center gap-1.5 font-medium',
+                      isRunning
+                        ? 'text-[var(--app-text-muted)]'
+                        : hasDeliverables || isCleanDone
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : isBlocked
+                            ? 'text-amber-600 dark:text-amber-400'
+                            : 'text-red-600 dark:text-red-400'
+                    )}>
+                      {isRunning ? (
+                        <>
+                          <Clock3 size={13} className="shrink-0 text-[var(--app-text-muted)]" />
+                          <span>3. Awaiting output</span>
+                        </>
+                      ) : hasDeliverables ? (
+                        <>
+                          <CheckCircle2 size={13} className="shrink-0 text-emerald-500" />
+                          <span className="font-semibold">3. Done (Delivered)</span>
+                        </>
+                      ) : isCleanDone ? (
+                        <>
+                          <CheckCircle2 size={13} className="shrink-0 text-emerald-500" />
+                          <span>3. Done (Clean)</span>
+                        </>
+                      ) : isBlocked ? (
+                        <>
+                          <AlertCircle size={13} className="shrink-0 text-amber-500" />
+                          <span>3. Blocked</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertTriangle size={13} className="shrink-0 text-red-500" />
+                          <span>3. Attention Alert</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Off-Site Deployment & Trigger Secret */}
       {showDeploySecret && (

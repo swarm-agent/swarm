@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import React from 'react'
+;(globalThis as any).React = React
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AutomationV2SendRequestModal } from './automation-v2-send-request-modal'
 import { AutomationV2WorkerDetailPage, AutomationV2Workspace } from './automation-v2-workspace'
@@ -71,6 +72,23 @@ test('AutomationV2WorkerDetailPage renders Send request to worker button', () =>
 
   assert.match(markup, /data-testid="detail-send-request-to-worker-btn"/)
   assert.match(markup, /Send request to worker/)
+  assert.match(markup, /data-testid="worker-inline-request-box"/)
+  assert.match(markup, /data-testid="worker-inline-prompt-input"/)
+  assert.match(markup, /data-testid="worker-inline-send-btn"/)
+  assert.match(markup, /data-testid="worker-tracked-requests-section"/)
+})
+
+test('DeliverablesInbox renders workspace filter and defaults to All Workspaces', async () => {
+  const { DeliverablesInbox } = await import('./deliverables-inbox')
+  const markup = renderToStaticMarkup(
+    <DeliverablesInbox
+      workspaceId="ws-swarm-go"
+      workspaceSlug="swarm-go"
+    />
+  )
+  assert.match(markup, /data-testid="deliverables-workspace-filter"/)
+  assert.match(markup, /All Workspaces/)
+  assert.match(markup, /Current Workspace/)
 })
 
 test('AutomationV2Workspace flat overview renders Send request to worker on worker cards', () => {

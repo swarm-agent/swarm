@@ -98,6 +98,7 @@ export function DeliverablesInbox({
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
 
   // Filters
+  const [workspaceFilter, setWorkspaceFilter] = useState<'all' | 'current'>('all')
   const [statusFilter, setStatusFilter] = useState<
     'pending_review' | 'needs_revision' | 'approved' | 'dismissed' | 'all'
   >('pending_review')
@@ -111,7 +112,7 @@ export function DeliverablesInbox({
     setError(null)
     try {
       const items = await fetchDeliverables({
-        workspace_id: workspaceId || undefined,
+        workspace_id: workspaceFilter === 'current' ? (workspaceId || undefined) : undefined,
         limit: 100,
       })
       setDeliverables(items)
@@ -124,7 +125,7 @@ export function DeliverablesInbox({
 
   useEffect(() => {
     void loadItems()
-  }, [workspaceId])
+  }, [workspaceId, workspaceFilter])
 
   // Aggregate worker IDs for the filter dropdown
   const uniqueWorkers = useMemo(() => {
@@ -303,8 +304,20 @@ export function DeliverablesInbox({
           ))}
         </div>
 
-        {/* Kind and Worker Dropdowns */}
+        {/* Kind, Worker, and Workspace Dropdowns */}
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 text-xs text-[var(--app-text-muted)]">
+            <select
+              data-testid="deliverables-workspace-filter"
+              value={workspaceFilter}
+              onChange={(e) => setWorkspaceFilter(e.target.value as 'all' | 'current')}
+              className="h-8 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs text-[var(--app-text)] outline-hidden font-medium"
+            >
+              <option value="all">All Workspaces</option>
+              <option value="current">Current Workspace</option>
+            </select>
+          </div>
+
           <div className="flex items-center gap-1.5 text-xs text-[var(--app-text-muted)]">
             <Filter className="h-3.5 w-3.5" />
             <select
@@ -563,6 +576,14 @@ export function DeliverableCard({
                   minute: '2-digit',
                 })}
               </span>
+              {deliverable.workspace_path && (
+                <>
+                  <span>•</span>
+                  <span className="rounded-md bg-[var(--app-surface-hover)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)] border border-[var(--app-border)]/60">
+                    {deliverable.workspace_path.split('/').filter(Boolean).pop()}
+                  </span>
+                </>
+              )}
             </div>
           </div>
         </div>

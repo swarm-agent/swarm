@@ -59,6 +59,7 @@ export interface AutomationV2Occurrence {
   admitted_at?: number
   observed_at?: number
   closing_state?: string
+  trigger_context?: Record<string, unknown>
   deliverables?: AutomationV2OccurrenceDeliverable[]
   artifacts?: AutomationV2OccurrenceDeliverable[]
   summary?: string
