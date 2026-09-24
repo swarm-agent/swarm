@@ -1,11 +1,16 @@
 export type OrchestrateThemeId =
-  // 5 Minimal Apple Dark Warm Peach Themes
+  // 5 Modern Unassuming Navy & Slate Themes
+  | 'modern_navy'
+  | 'midnight_slate'
+  | 'deep_indigo'
+  | 'steel_cobalt'
+  | 'nordic_dark'
+  // Backward compatibility aliases
   | 'apple_peach'
   | 'vision_glass'
   | 'studio_obsidian'
   | 'cupertino_mono'
   | 'sunset_titanium'
-  // Compatibility aliases
   | 'creator_apricot'
   | 'creator_operator'
   | 'creator_sunset'
@@ -89,11 +94,14 @@ export interface RunningAutomation {
   totalRuns: number
 }
 
+export type DeliverableThumbnailType = 'cyber_lattice' | 'neural_core' | 'orbital_data' | 'default'
+
 export interface MediaDeliverable {
   id: string
   title: string
   type: 'video' | 'image' | 'audio' | 'code' | 'report'
   previewUrl?: string
+  thumbnailType?: DeliverableThumbnailType
   videoAspect?: '16:9' | '9:16' | '1:1'
   duration?: string
   status: 'ready' | 'generating' | 'accepted' | 'rejected'
@@ -103,16 +111,38 @@ export interface MediaDeliverable {
   metrics?: { views?: string; tokens?: string; renderTime?: string }
 }
 
+export interface TaskStep {
+  step: number
+  label: string
+  status: 'complete' | 'processing' | 'pending'
+}
+
+export interface DiffLine {
+  lineNum: number
+  type: 'del' | 'add' | 'normal'
+  text: string
+}
+
 export interface RunningTask {
   id: string
   title: string
+  subtitle?: string
   agentType: 'coder' | 'finder' | 'designer' | 'swarm'
   status: 'running' | 'completed' | 'needs_review' | 'blocked'
   workspaceTarget: string
   elapsed: string
   subtasks: { id: string; title: string; completed: boolean }[]
+  stepTimeline?: TaskStep[]
   diffPreview?: string
+  diffLines?: DiffLine[]
   deliverables?: MediaDeliverable[]
+}
+
+export interface VideoProgressCard {
+  title: string
+  progressPercent: number
+  clipsLabel: string
+  aspect?: string
 }
 
 export interface OrchestratorMessage {
@@ -122,4 +152,6 @@ export interface OrchestratorMessage {
   timestamp: string
   actionPills?: { label: string; action: string }[]
   linkedDeliverableIds?: string[]
+  videoProgressCard?: VideoProgressCard
+  actionButton?: { label: string; action: string }
 }
