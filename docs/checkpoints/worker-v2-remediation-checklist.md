@@ -65,14 +65,14 @@ This document records the exact, comprehensive list of problems discovered durin
 
 ## 2. Phased Execution Roadmap
 
-- [ ] **Phase 1: Fix Duplicate Workers (Current Focus)**
+- [x] **Phase 1: Fix Duplicate Workers (Current Focus)**
   - Deduplicate worker listings by stable identity so only one card per logical worker appears on the Workers page.
   - Collapse duplicate accepted records in API listing or store query so each worker has a single authoritative state.
   - Verify and test that multiple revisions / repeated accepts of the same worker do not create duplicate cards.
-- [ ] **Phase 2: Fix Worker ID Isolation & Progress Bleed**
+- [x] **Phase 2: Fix Worker ID Isolation & Progress Bleed**
   - Stop mapping `worker_id` -> authoring `session_id`.
   - Isolate progress, history, and occurrences strictly to the specific `worker_id`.
-- [ ] **Phase 3: Fix Execution Session Visibility in Sidebar**
+- [x] **Phase 3: Fix Execution Session Visibility in Sidebar**
   - Allow running and review-pending worker execution sessions to appear in `in_progress` / `needs_review` in Desktop sidebar.
 - [ ] **Phase 4: Concurrency & Queue Alignment**
   - Implement durable queueing or accurate UI messaging for overlapping triggers.

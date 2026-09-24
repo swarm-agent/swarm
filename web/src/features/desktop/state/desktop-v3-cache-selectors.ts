@@ -291,9 +291,13 @@ function buildDesktopV3SidebarRows(
     if (state.tombstonesBySession[sessionId]) continue
     const record = state.sessionsById[sessionId]
     const hasActiveRun = hasActiveRunIntent(state.currentRunIntentBySession[sessionId])
-    if (!record || isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun }) || !includeRecord(record)) continue
     const planState = buildDesktopSidebarPlanState(state, sessionId)
-    const isRunningExecution = record.kind === 'full' && isAutomationExecutionSession(record.session) && hasActiveRun
+    const pendingPermissionCount = state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0
+    const needsReview = planState.hasActivePlan && (planState.reviewRequired || planState.planExecution?.execution_summary?.review_required === true)
+    const isExecutionSession = record?.kind === 'full' && isAutomationExecutionSession(record.session)
+    const executionSessionVisible = isExecutionSession && (hasActiveRun || needsReview || pendingPermissionCount > 0)
+    if (!record || isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun || executionSessionVisible }) || !includeRecord(record)) continue
+    const isRunningExecution = isExecutionSession && hasActiveRun
     rows.push({
       sessionId,
       record: cloneSessionCacheRecord(record),

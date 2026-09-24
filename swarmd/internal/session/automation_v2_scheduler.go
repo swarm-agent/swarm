@@ -203,7 +203,14 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 	if err != nil {
 		return out, err
 	}
-	out = AutomationV2Progress{Record: r, ObservedAt: now, Timezone: timezone, Forecast: []int64{}, Occurrences: rows, NextCursor: next, Complete: next == ""}
+	filteredRows := make([]store.AutomationV2Occurrence, 0, len(rows))
+	for _, o := range rows {
+		if r.AutomationID != "" && o.Record.AutomationID != "" && o.Record.AutomationID != r.AutomationID {
+			continue
+		}
+		filteredRows = append(filteredRows, o)
+	}
+	out = AutomationV2Progress{Record: r, ObservedAt: now, Timezone: timezone, Forecast: []int64{}, Occurrences: filteredRows, NextCursor: next, Complete: next == ""}
 	switch {
 	case r.Archived:
 		out.NoNextReason = "archived"
@@ -244,15 +251,23 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 	return out, nil
 }
 func (s *Service) ControlAutomationV2(account, user, workspace, id string, generation uint64, action string) (store.AutomationV2Record, error) {
-	if r, found, err := s.store.GetAutomationV2Record(account, user, workspace, id); err == nil && found && r.SessionID != "" {
-		id = r.SessionID
+	if r, found, err := s.store.GetAutomationV2Record(account, user, workspace, id); err == nil && found {
+		if r.AutomationID != "" {
+			id = r.AutomationID
+		} else if r.SessionID != "" {
+			id = r.SessionID
+		}
 	}
 	return s.store.ControlAutomationV2(account, user, workspace, id, generation, action, time.Now().UnixMilli())
 }
 
 func (s *Service) TriggerAutomationV2(account, user, workspace, id string, triggerContext map[string]any) (store.AutomationV2Occurrence, error) {
-	if r, found, err := s.store.GetAutomationV2Record(account, user, workspace, id); err == nil && found && r.SessionID != "" {
-		id = r.SessionID
+	if r, found, err := s.store.GetAutomationV2Record(account, user, workspace, id); err == nil && found {
+		if r.AutomationID != "" {
+			id = r.AutomationID
+		} else if r.SessionID != "" {
+			id = r.SessionID
+		}
 	}
 	return s.store.TriggerAutomationV2(account, user, workspace, id, triggerContext, time.Now().UnixMilli())
 }
