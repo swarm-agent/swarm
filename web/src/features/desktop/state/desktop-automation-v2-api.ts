@@ -106,7 +106,8 @@ export function automationV2PermissionProposal(permission: DesktopPermissionReco
     const doc = payload.document
     const settings = doc?.worker_v2 || doc?.automation_v2
     const isAutomationV2 = payload.review_kind === 'worker_v2' || payload.review_kind === 'automation_v2' || Boolean(settings)
-    if (!isAutomationV2 || !workspaceId || !settings || !doc?.checkpoints?.length) return null
+    if (!isAutomationV2 || !workspaceId || !settings) return null
+    if (!Array.isArray(doc.checkpoints)) doc.checkpoints = []
     if (!doc.automation_v2) doc.automation_v2 = settings
     if (!doc.worker_v2) doc.worker_v2 = settings
     return { ...review, workspace_id: workspaceId, account_id: accountId, session_id: sessionId, document: doc }
