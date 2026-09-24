@@ -46,7 +46,13 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 		return empty, errors.New("automation v2 preparation authorities unavailable")
 	}
 	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: r.UserID, AccountScopeID: r.AccountID, AccountScopeSource: identity.AccountScopeSourceServerState}
-	entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(p, r.WorkspaceID)
+	targetWorkspaceID := r.WorkspaceID
+	if r.Document.WorkerV2 != nil && strings.TrimSpace(r.Document.WorkerV2.WorkspaceID) != "" {
+		targetWorkspaceID = strings.TrimSpace(r.Document.WorkerV2.WorkspaceID)
+	} else if r.Document.AutomationV2 != nil && strings.TrimSpace(r.Document.AutomationV2.WorkspaceID) != "" {
+		targetWorkspaceID = strings.TrimSpace(r.Document.AutomationV2.WorkspaceID)
+	}
+	entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(p, targetWorkspaceID)
 	if err != nil {
 		return empty, err
 	}
@@ -73,7 +79,7 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	if err != nil {
 		return empty, err
 	}
-	if canonical.SourceWorkspaceID != r.WorkspaceID || canonical.Metadata == nil {
+	if canonical.SourceWorkspaceID != targetWorkspaceID || canonical.Metadata == nil {
 		return empty, store.ErrAutomationV2Conflict
 	}
 	allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, o.SessionID, "HEAD", "agent/automation-v2-"+o.ID[:16])
@@ -82,6 +88,45 @@ func (h *AutomationV2ExecutionHost) prepare(ctx context.Context, o store.Automat
 	}
 	available := true
 	grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}
+	var additionalWorkspaceIDs []string
+	if len(r.WorkspaceIDs) > 0 {
+		additionalWorkspaceIDs = append(additionalWorkspaceIDs, r.WorkspaceIDs...)
+	}
+	if r.Document.WorkerV2 != nil && len(r.Document.WorkerV2.WorkspaceIDs) > 0 {
+		additionalWorkspaceIDs = append(additionalWorkspaceIDs, r.Document.WorkerV2.WorkspaceIDs...)
+	}
+	if r.Document.AutomationV2 != nil && len(r.Document.AutomationV2.WorkspaceIDs) > 0 {
+		additionalWorkspaceIDs = append(additionalWorkspaceIDs, r.Document.AutomationV2.WorkspaceIDs...)
+	}
+	seenWorkspaces := map[string]struct{}{
+		canonical.SourceWorkspaceID: {},
+	}
+	for _, secID := range additionalWorkspaceIDs {
+		secID = strings.TrimSpace(secID)
+		if secID == "" {
+			continue
+		}
+		if _, seen := seenWorkspaces[secID]; seen {
+			continue
+		}
+		seenWorkspaces[secID] = struct{}{}
+		secEntry, secFound, secErr := s.workspace.GetByWorkspaceIDForPrincipal(p, secID)
+		if secErr != nil || !secFound {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(secEntry.State), "active") {
+			continue
+		}
+		secAvail := true
+		grants = append(grants, store.WorkspaceGrant{
+			Kind:                store.WorkspaceGrantAdditional,
+			WorkspaceID:         secEntry.WorkspaceID,
+			WorkspaceGeneration: secEntry.WorkspaceGeneration,
+			Path:                secEntry.Path,
+			Name:                secEntry.Name,
+			Available:           &secAvail,
+		})
+	}
 	pref, err := manageSessionsDeployModelProfilePreference(model, sessions.ModeAuto)
 	if err != nil {
 		return empty, err

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -77,7 +78,7 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, 
 		return "", errors.New("manage_workers action=propose required")
 	}
 	for key := range args {
-		if key != "document" && key != "action" && key != "worker_review" {
+		if key != "document" && key != "action" && key != "worker_review" && key != "workspace_id" && key != "workspace_ids" {
 			return "", fmt.Errorf("worker proposal does not accept %s; submit complete instructions and worker_review only for an exact pending edit", key)
 		}
 	}
@@ -87,6 +88,16 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, 
 	}
 	if doc == nil || doc.WorkerV2 == nil {
 		return "", errors.New("complete worker_v2 document required")
+	}
+	if wsID := mapString(args, "workspace_id"); wsID != "" && doc.WorkerV2.WorkspaceID == "" {
+		doc.WorkerV2.WorkspaceID = wsID
+	}
+	if rawIDs, ok := args["workspace_ids"].([]any); ok && len(doc.WorkerV2.WorkspaceIDs) == 0 {
+		for _, item := range rawIDs {
+			if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+				doc.WorkerV2.WorkspaceIDs = append(doc.WorkerV2.WorkspaceIDs, strings.TrimSpace(str))
+			}
+		}
 	}
 	current, workspace, err := s.automationV2ToolSession(id)
 	if err != nil {

@@ -17,6 +17,8 @@ import (
 // are deliberately absent from this independently versioned contract.
 type AutomationV2Settings struct {
 	SchemaVersion    int                    `json:"schema_version"`
+	WorkspaceID      string                 `json:"workspace_id,omitempty"`
+	WorkspaceIDs     []string               `json:"workspace_ids,omitempty"`
 	Schedule         AutomationV2Schedule   `json:"schedule"`
 	Missed           string                 `json:"missed"`
 	Overlap          string                 `json:"overlap"`
@@ -54,6 +56,7 @@ type AutomationV2Proposal struct {
 	AccountID      string              `json:"account_id"`
 	UserID         string              `json:"user_id"`
 	WorkspaceID    string              `json:"workspace_id"`
+	WorkspaceIDs   []string            `json:"workspace_ids,omitempty"`
 	SessionID      string              `json:"session_id"`
 	Document       SessionPlanDocument `json:"document"`
 	CreatedAt      int64               `json:"created_at"`
@@ -90,6 +93,14 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 	}
 	if a.SchemaVersion != 2 || !a.ActivateOnAccept || (a.Missed != "skip" && a.Missed != "coalesce") || (a.Overlap != "serialize" && a.Overlap != "independent") {
 		return errors.New("invalid automation v2 policy")
+	}
+	if len(a.WorkspaceID) > 256 {
+		return errors.New("workspace_id exceeds 256 characters")
+	}
+	for _, id := range a.WorkspaceIDs {
+		if len(id) > 256 {
+			return errors.New("workspace_ids element exceeds 256 characters")
+		}
 	}
 	if a.DailyRunCap < 0 {
 		return errors.New("daily_run_cap must not be negative")
@@ -400,7 +411,32 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 	} else if found {
 		baseGeneration = current.Generation
 	}
-	p := AutomationV2Proposal{BaseGeneration: baseGeneration, AutomationV2Review: AutomationV2Review{proposalID, expected.Revision + 1, digest}, AccountID: account, UserID: user, WorkspaceID: workspace, SessionID: id, Document: doc, CreatedAt: time.Now().UnixMilli()}
+	var workspaceIDs []string
+	if doc.AutomationV2 != nil {
+		if doc.AutomationV2.WorkspaceID != "" {
+			workspaceIDs = append(workspaceIDs, doc.AutomationV2.WorkspaceID)
+		}
+		workspaceIDs = append(workspaceIDs, doc.AutomationV2.WorkspaceIDs...)
+	}
+	if doc.WorkerV2 != nil {
+		if doc.WorkerV2.WorkspaceID != "" {
+			workspaceIDs = append(workspaceIDs, doc.WorkerV2.WorkspaceID)
+		}
+		workspaceIDs = append(workspaceIDs, doc.WorkerV2.WorkspaceIDs...)
+	}
+	deduped := make([]string, 0, len(workspaceIDs))
+	seenWS := make(map[string]struct{}, len(workspaceIDs))
+	for _, wid := range workspaceIDs {
+		wid = strings.TrimSpace(wid)
+		if wid == "" {
+			continue
+		}
+		if _, ok := seenWS[wid]; !ok {
+			seenWS[wid] = struct{}{}
+			deduped = append(deduped, wid)
+		}
+	}
+	p := AutomationV2Proposal{BaseGeneration: baseGeneration, AutomationV2Review: AutomationV2Review{proposalID, expected.Revision + 1, digest}, AccountID: account, UserID: user, WorkspaceID: workspace, WorkspaceIDs: deduped, SessionID: id, Document: doc, CreatedAt: time.Now().UnixMilli()}
 	m := &automationV2Mutation{proposal: p, expected: expected, validate: validate}
 	_, err = s.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: id, AccountScopeID: account, UserID: user, Kind: V3SessionMutationUpdateMetadata, EventType: "session.automation_v2.proposed", ClientRequestID: fmt.Sprintf("av2:proposal:%s:%d", proposalID, p.Revision), PayloadHash: digest, automationV2: m})
 	if err != nil {

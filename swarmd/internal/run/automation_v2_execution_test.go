@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"os/exec"
@@ -867,5 +868,217 @@ func TestAutomationV2ClosingStateContractAndFallbacks(t *testing.T) {
 	}
 	if occ6.ClosingState != "routine_clean" {
 		t.Errorf("expected graceful fallback to routine_clean, got %q", occ6.ClosingState)
+	}
+}
+
+func TestAutomationV2MultiWorkspaceScoping(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// 1. Primary workspace repo
+	primaryRepo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "dev"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture-primary"}} {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", primaryRepo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git primary: %v %s", err, out)
+		}
+	}
+
+	// 2. Secondary workspace repo
+	secondaryRepo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "dev"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture-secondary"}} {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", secondaryRepo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git secondary: %v %s", err, out)
+		}
+	}
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ids := store.NewIdentityStore(db)
+	if _, err = ids.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ids.PutAccountUser(store.AccountUserRecord{ID: "member", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := workspace.NewService(store.NewWorkspaceStore(db))
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "owner"}
+	wPrimary, err := ws.AddForPrincipal(p, primaryRepo, "primary", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wSecondary, err := ws.AddForPrincipal(p, secondaryRepo, "secondary", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ss := store.NewSessionStore(db)
+	if err = ss.CompleteRepositoryHistoryMaintenance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	if err = ss.CreateSession(store.SessionSnapshot{
+		ID:             "author",
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  primaryRepo,
+		WorkspaceGrants: []store.WorkspaceGrant{{
+			Kind:        store.WorkspaceGrantPrimary,
+			WorkspaceID: wPrimary.WorkspaceID,
+			Path:        primaryRepo,
+			Available:   &yes,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := sessions.NewService(ss, events)
+
+	// Document specifies secondary workspace
+	doc := store.SessionPlanDocument{
+		Title: "Multi-workspace worker",
+		Info:  store.SessionPlanInfo{Goal: "Verify multi-workspace scoping"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      wPrimary.WorkspaceID,
+			WorkspaceIDs:     []string{wSecondary.WorkspaceID},
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60},
+			Missed:           "coalesce",
+			Overlap:          "independent",
+			ActivateOnAccept: true,
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{
+			ID:     "step1",
+			Title:  "Step 1",
+			Status: "pending",
+			Order:  1,
+			Tasks:  []string{"Check both workspaces"},
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+
+	permissions := permission.NewService(store.NewPermissionStore(db), events, nil)
+	permissions.SetBypassPermissions(true)
+	authoring := NewService(service, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	profile := agent.SwarmAgentProfileForContext(store.AgentProfile{})
+	if _, _, _, err = authoring.compileResolvedAgentToolContract("account", profile); err != nil {
+		t.Fatal(err)
+	}
+
+	call := tool.Call{
+		Name:      "manage_workers",
+		Arguments: fmt.Sprintf(`{"action":"propose","document":%s}`, string(mustJSON(t, doc))),
+	}
+	out, err := authoring.executeWorkerProposalTool("author", call)
+	if err != nil {
+		t.Fatalf("proposal failed: %v", err)
+	}
+	var propResult struct {
+		WorkerReview store.AutomationV2Review `json:"worker_review"`
+	}
+	if err = json.Unmarshal([]byte(out), &propResult); err != nil {
+		t.Fatalf("unmarshal proposal result: %v", err)
+	}
+
+	accepted, err := service.AcceptAutomationV2("account", "owner", wPrimary.WorkspaceID, "author", propResult.WorkerReview)
+	if err != nil {
+		t.Fatalf("accept failed: %v", err)
+	}
+
+	// Verify proposal and accepted record carry WorkspaceIDs
+	var foundSecondaryInRecord bool
+	for _, wid := range accepted.WorkspaceIDs {
+		if wid == wSecondary.WorkspaceID {
+			foundSecondaryInRecord = true
+			break
+		}
+	}
+	if !foundSecondaryInRecord {
+		t.Fatalf("expected accepted record to contain secondary workspace_id %s, got %v", wSecondary.WorkspaceID, accepted.WorkspaceIDs)
+	}
+
+	// Trigger execution and prepare occurrence
+	agents := agent.NewService(store.NewAgentStore(db), events)
+	if err = agents.EnsureDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	models := model.NewService(store.NewModelStore(db), events, model.NewCatalogService(store.NewModelCatalogStore(db)))
+	if err = models.EnsureBootDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	_, _, utility, ok, err := models.RecommendedCatalogDefaults("codex")
+	if err != nil || !ok {
+		t.Fatal("model defaults", err)
+	}
+	assignment := store.AgentModelAssignment{Provider: "codex", Model: utility.Model, Thinking: utility.DefaultThinking}
+	settings := store.NewAgentModelSettingsStore(db)
+	if _, err = settings.PutForAccount(store.AgentModelSettingsRecord{
+		AccountScopeID: "account",
+		Swarm:          store.SwarmAgentModelAssignments{Action: assignment, Plan: assignment},
+		SystemAgents:   store.SystemAgentModelAssignments{Compact: assignment, Finder: assignment, Coder: assignment, Designer: assignment, Router: assignment},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runs := &Service{tools: tool.NewRuntime(1), sessions: service, workspace: ws, agents: agents, agentModelSettings: agentmodelsettings.NewService(settings)}
+	runs.sessionDeployCanonicalize = func(in SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error) {
+		return SessionDeployCanonicalization{SourceWorkspaceID: wPrimary.WorkspaceID, SourceWorkspaceGeneration: 1, SourceWorkspacePath: primaryRepo, SourceWorkspaceName: "primary", Metadata: map[string]any{}}, nil
+	}
+	trees := worktree.NewService(store.NewWorktreeStore(db), ws, nil)
+	enqueue := func(principal identity.Principal, intent store.V3SessionRunIntent) bool {
+		return true
+	}
+	host, err := NewAutomationV2ExecutionHost(runs, ss, trees, service.ApplySessionMutation, enqueue)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	occ, err := ss.TriggerAutomationV2("account", "owner", wPrimary.WorkspaceID, accepted.SessionID, nil, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("trigger failed: %v", err)
+	}
+
+	snapshot, err := host.prepare(ctx, occ)
+	if err != nil {
+		t.Fatalf("prepare failed: %v", err)
+	}
+
+	// Verify snapshot has primary, worktree, AND secondary workspace grants
+	var hasPrimary, hasWorktree, hasSecondary bool
+	for _, g := range snapshot.WorkspaceGrants {
+		if g.Kind == store.WorkspaceGrantPrimary && g.WorkspaceID == wPrimary.WorkspaceID {
+			hasPrimary = true
+		}
+		if g.Kind == store.WorkspaceGrantWorktree {
+			hasWorktree = true
+		}
+		if g.Kind == store.WorkspaceGrantAdditional && g.WorkspaceID == wSecondary.WorkspaceID {
+			hasSecondary = true
+		}
+	}
+	if !hasPrimary {
+		t.Errorf("missing primary workspace grant")
+	}
+	if !hasWorktree {
+		t.Errorf("missing worktree workspace grant")
+	}
+	if !hasSecondary {
+		t.Errorf("missing secondary workspace grant (WorkspaceGrantAdditional)")
 	}
 }
