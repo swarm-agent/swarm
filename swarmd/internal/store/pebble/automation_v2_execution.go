@@ -358,12 +358,14 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			return ErrAutomationV2Conflict
 		}
 		if r.Document.AutomationV2.Overlap == "serialize" {
-			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 1)
+			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 10)
 			if err != nil {
 				return err
 			}
-			if len(rows) > 0 {
-				return ErrAutomationV2Conflict
+			for _, row := range rows {
+				if row.State == "admitted" || row.State == "running" || (row.State == "unavailable" && row.NextRetryAt > now) {
+					return ErrAutomationV2Conflict
+				}
 			}
 		}
 		if r.Document.AutomationV2.DailyRunCap > 0 {
@@ -448,12 +450,14 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			return ErrAutomationV2Conflict
 		}
 		if r.Document.AutomationV2.Overlap == "serialize" {
-			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 1)
+			rows, _, err := s.ListAutomationV2Occurrences(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID, "", true, 10)
 			if err != nil {
 				return err
 			}
-			if len(rows) > 0 {
-				return ErrAutomationV2Conflict
+			for _, row := range rows {
+				if row.State == "admitted" || row.State == "running" || (row.State == "unavailable" && row.NextRetryAt > now) {
+					return ErrAutomationV2Conflict
+				}
 			}
 		}
 		if r.Document.AutomationV2.DailyRunCap > 0 {
@@ -677,7 +681,7 @@ func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V
 		if err = batch.Set([]byte(automationV2OccurrenceKey(o)), b, nil); err != nil {
 			return err
 		}
-		if AutomationV2Terminal(o.State) {
+		if AutomationV2Terminal(o.State) || (o.State == "unavailable" && o.NextRetryAt <= 0) {
 			err = batch.Delete([]byte(automationV2PendingKey(o)), nil)
 		} else {
 			err = batch.Set([]byte(automationV2PendingKey(o)), b, nil)
