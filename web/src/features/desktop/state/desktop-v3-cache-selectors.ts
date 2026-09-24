@@ -293,7 +293,7 @@ function buildDesktopV3SidebarRows(
     const hasActiveRun = hasActiveRunIntent(state.currentRunIntentBySession[sessionId])
     const planState = buildDesktopSidebarPlanState(state, sessionId)
     const pendingPermissionCount = state.permissionSummaryBySessionId[sessionId]?.pendingApprovalCount ?? 0
-    const needsReview = planState.hasActivePlan && (planState.reviewRequired || planState.planExecution?.execution_summary?.review_required === true)
+    const needsReview = Boolean(planState.hasActivePlan && planState.planExecution?.reviewRequired)
     const isExecutionSession = record?.kind === 'full' && isAutomationExecutionSession(record.session)
     const executionSessionVisible = isExecutionSession && (hasActiveRun || needsReview || pendingPermissionCount > 0)
     if (!record || isDesktopV3NavigationHiddenRecord(record, { active: hasActiveRun || executionSessionVisible }) || !includeRecord(record)) continue
