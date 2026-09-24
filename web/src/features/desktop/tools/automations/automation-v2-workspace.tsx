@@ -29,6 +29,7 @@ import {
   Trash2,
   XCircle,
   Columns2,
+  SendHorizontal,
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
@@ -55,7 +56,8 @@ import { getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../../stat
 import { AutomationV2PlanReview } from './automation-v2-plan-review'
 import { AutomationV2Sidecar } from './automation-v2-sidecar'
 import { DeliverablesInbox } from './deliverables-inbox'
-import { scheduleLabel, scheduleFrequency, formatScheduleDateTime, getOccurrenceDayKey } from './automation-v2-schedule'
+import { AutomationV2SendRequestModal } from './automation-v2-send-request-modal'
+import { scheduleLabel, scheduleFrequency, formatScheduleDateTime, getOccurrenceDayKey, type AutomationSchedule } from './automation-v2-schedule'
 
 export interface AutomationStarterTemplate {
   id: string
@@ -985,6 +987,8 @@ export function AutomationV2Workspace({
     )
   }, [records, activeRecords, archivedRecords, selected])
 
+  const [sendRequestRecord, setSendRequestRecord] = useState<AutomationV2Record | null>(null)
+
   const handleOpenWorkerDetail = (rec: AutomationV2Record) => {
     const targetId = rec.automation_id || rec.session_id
     setSelected(rec.session_id)
@@ -1289,6 +1293,7 @@ export function AutomationV2Workspace({
                   }}
                   onOpenSession={onOpenSession}
                   onChat={handleChatWithAutomation}
+                  onSendRequest={setSendRequestRecord}
                   onAskForChanges={handleAskForChanges}
                   onControlRecord={handleControlRecord}
                   onArchiveRecord={handleArchiveRecord}
@@ -1374,6 +1379,7 @@ export function AutomationV2Workspace({
                 }}
                 onOpenSession={onOpenSession}
                 onChat={handleChatWithAutomation}
+                onSendRequest={setSendRequestRecord}
                 onAskForChanges={handleAskForChanges}
                 onControlRecord={handleControlRecord}
                 onArchiveRecord={handleArchiveRecord}
@@ -1576,7 +1582,9 @@ export function AutomationV2Workspace({
               )
             })}
             {filteredRecords.map((record) => {
-              const schedule = record.document.automation_v2.schedule
+              const docAny = record.document as Record<string, any> | undefined
+              const schedule = (docAny?.automation_v2?.schedule ||
+                docAny?.worker_v2?.schedule) as AutomationSchedule | undefined
               const isSelected = selected === record.session_id
               const isExpanded = Boolean(expandedIds[record.session_id])
               const isArchived = Boolean(record.archived)
@@ -1641,11 +1649,13 @@ export function AutomationV2Workspace({
                       )}
                       <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px] font-medium text-[var(--app-text)] font-mono">
                         <Clock3 size={11} className="text-[var(--app-text-subtle)] shrink-0" />
-                        <span>{scheduleLabel(schedule)}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}</span>
+                        <span>{schedule ? scheduleLabel(schedule) : 'On demand'}{schedule?.timezone ? ` · ${schedule.timezone}` : ''}</span>
                       </span>
-                      <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
-                        {scheduleFrequency(schedule)}
-                      </span>
+                      {schedule && (
+                        <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-primary-border)]/45 bg-[var(--app-primary-soft)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--app-primary)]">
+                          {scheduleFrequency(schedule)}
+                        </span>
+                      )}
                       <span className="text-[11px] text-[var(--app-text-muted)]">
                         {(record.document.checkpoints?.length ?? 0)} {(record.document.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'} · Rev {record.revision}
                       </span>
@@ -1691,9 +1701,9 @@ export function AutomationV2Workspace({
                   {/* Schedule Metadata */}
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--app-text-subtle)]">
                     <span className="font-mono text-[var(--app-text)] font-medium rounded-md border border-[var(--app-border)]/50 bg-[var(--app-bg-alt)] px-2 py-0.5 text-[11px]">
-                      {scheduleLabel(schedule)}
+                      {schedule ? scheduleLabel(schedule) : 'On demand'}
                     </span>
-                    {schedule.timezone && <span>({schedule.timezone})</span>}
+                    {schedule?.timezone && <span>({schedule.timezone})</span>}
                     <span>·</span>
                     <span>
                       {record.authorization.kind === 'indefinite'
@@ -1754,16 +1764,28 @@ export function AutomationV2Workspace({
                               <span>Ask the worker agent for any changes</span>
                             </Button>
                           ) : (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-8 gap-1.5 rounded-xl text-xs"
-                              onClick={() => handleChatWithAutomation(record.session_id)}
-                              title="Discuss or optimize this worker with Swarm"
-                            >
-                              <MessageSquare size={13} />
-                              <span>Discuss with Swarm</span>
-                            </Button>
+                            <div className="flex items-center gap-1.5">
+                              <Button
+                                size="sm"
+                                className="h-8 gap-1.5 rounded-xl text-xs font-semibold"
+                                onClick={() => setSendRequestRecord(record)}
+                                title="Send a request or task prompt to this worker"
+                                data-testid="send-request-to-worker-btn"
+                              >
+                                <SendHorizontal size={13} />
+                                <span>Send request to worker</span>
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 gap-1.5 rounded-xl text-xs"
+                                onClick={() => handleChatWithAutomation(record.session_id)}
+                                title="Discuss or optimize this worker with Swarm"
+                              >
+                                <MessageSquare size={13} />
+                                <span>Discuss with Swarm</span>
+                              </Button>
+                            </div>
                           )}
                           <Button
                             size="sm"
@@ -2093,6 +2115,17 @@ export function AutomationV2Workspace({
           </div>
         </div>
       )}
+
+      <AutomationV2SendRequestModal
+        open={Boolean(sendRequestRecord)}
+        onOpenChange={(open) => {
+          if (!open) setSendRequestRecord(null)
+        }}
+        record={sendRequestRecord}
+        workspaceId={workspaceId}
+        workspaceSlug={workspaceSlug}
+        onOpenSession={onOpenSession}
+      />
     </div>
   )
 }
@@ -2105,6 +2138,7 @@ export function AutomationV2WorkerDetailPage({
   onBack,
   onOpenSession,
   onChat,
+  onSendRequest,
   onAskForChanges,
   onControlRecord,
   onArchiveRecord,
@@ -2119,6 +2153,7 @@ export function AutomationV2WorkerDetailPage({
   onBack: () => void
   onOpenSession?: (id: string) => void
   onChat?: (id: string) => void
+  onSendRequest?: (record: AutomationV2Record) => void
   onAskForChanges?: (id: string) => void
   onControlRecord: (record: AutomationV2Record, action: 'pause' | 'resume') => Promise<void>
   onArchiveRecord: (record: AutomationV2Record) => Promise<void>
@@ -2184,7 +2219,9 @@ export function AutomationV2WorkerDetailPage({
   const page = useAutomationV2Page(input)
   const progress = page?.data?.progress
   const liveRecord = progress?.record || record
-  const schedule = liveRecord.document.automation_v2.schedule
+  const docAny = liveRecord.document as Record<string, any> | undefined
+  const schedule = (docAny?.automation_v2?.schedule ||
+    docAny?.worker_v2?.schedule) as AutomationSchedule | undefined
   const scheduleTimezone = schedule?.timezone
   const effectiveDisplayTimezone = scheduleTimezone || timezone
   const time = (ms: number) => formatScheduleDateTime(ms, effectiveDisplayTimezone)
@@ -2321,6 +2358,16 @@ export function AutomationV2WorkerDetailPage({
           >
             <KeyRound size={13} />
             <span>{showDeploySecret ? 'Hide secret' : 'Deploy secret'}</span>
+          </Button>
+          <Button
+            size="sm"
+            className="h-8 gap-1.5 rounded-xl text-xs font-semibold"
+            onClick={() => onSendRequest?.(liveRecord)}
+            title="Send a request or task prompt to this worker"
+            data-testid="detail-send-request-to-worker-btn"
+          >
+            <SendHorizontal size={13} />
+            <span>Send request to worker</span>
           </Button>
           <Button
             size="sm"

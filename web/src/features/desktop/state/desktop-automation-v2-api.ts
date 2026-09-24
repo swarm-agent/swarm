@@ -180,3 +180,26 @@ export function mintAutomationV2Token(input: AutomationV2TokenRequest): Promise<
     body: JSON.stringify(input),
   })
 }
+
+export interface AutomationV2TriggerRequest {
+  workspace_id: string
+  worker_id?: string
+  session_id?: string
+  automation_id?: string
+  prompt?: string
+  context?: Record<string, unknown>
+}
+
+export interface AutomationV2TriggerResponse {
+  ok: boolean
+  occurrence: AutomationV2Occurrence
+  error?: string
+}
+
+export function triggerAutomationV2(input: AutomationV2TriggerRequest): Promise<AutomationV2TriggerResponse> {
+  return requestJson<AutomationV2TriggerResponse>('/v3/automations/v2/trigger', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}
+

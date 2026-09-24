@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from 'react'
 import { buildDesktopV3ChildCardHydrateInput, postDesktopV3SyncHydrate } from '../state/desktop-v3-sync-api'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
-import { readAutomationV2, mutateAutomationV2, type AutomationV2Read, type AutomationV2Mutation } from '../state/desktop-automation-v2-api'
+import { readAutomationV2, mutateAutomationV2, triggerAutomationV2, type AutomationV2Read, type AutomationV2Mutation, type AutomationV2TriggerRequest, type AutomationV2TriggerResponse } from '../state/desktop-automation-v2-api'
 import { automationV2PageKey, type AutomationV2Pages, type AutomationV2CacheAction } from '../state/desktop-automation-v2-state'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
 export class DesktopAutomationV2Runtime {
@@ -33,7 +33,7 @@ export class DesktopAutomationV2Runtime {
     this.hydrations.set(sessionId, entry)
     return entry.promise
   }
-  constructor(private deps = { read: readAutomationV2, mutate: mutateAutomationV2, pages: (): AutomationV2Pages => getDesktopV3CacheSnapshot().automationV2Pages, dispatch: (action: AutomationV2CacheAction) => dispatchDesktopV3Cache(action) }) {}
+  constructor(private deps = { read: readAutomationV2, mutate: mutateAutomationV2, trigger: triggerAutomationV2, pages: (): AutomationV2Pages => getDesktopV3CacheSnapshot().automationV2Pages, dispatch: (action: AutomationV2CacheAction) => dispatchDesktopV3Cache(action) }) {}
   acquire(input: AutomationV2Read) {
     const key = automationV2PageKey(input), old = this.demand.get(key)
     if (!old && this.demand.size >= 48) throw new Error('Too many automation pages open')
@@ -87,6 +87,14 @@ export class DesktopAutomationV2Runtime {
       if (input.action === 'accept_automation' || input.action === 'propose_automation' || input.action === 'decline_automation') await this.reconcileSession(input.session_id)
       return result
     } finally { this.invalidate(input.workspace_id, input.session_id) }
+  }
+  async trigger(input: AutomationV2TriggerRequest): Promise<AutomationV2TriggerResponse> {
+    try {
+      const result = await this.deps.trigger(input)
+      return result
+    } finally {
+      this.invalidate(input.workspace_id, input.worker_id || input.session_id)
+    }
   }
 }
 export const desktopAutomationV2 = new DesktopAutomationV2Runtime()
