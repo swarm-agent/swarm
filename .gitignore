@@ -54,10 +54,17 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Local env files
+# Local env and secret files
 .env
 .env.*
 !.env.example
+*.env
+*.env.*
+!*.env.example
+secrets.env
+.secrets.env
+*.secret
+*.secrets
 
 # Local investigation/tooling artifacts
 /.agents/
