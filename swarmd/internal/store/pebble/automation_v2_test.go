@@ -976,3 +976,115 @@ func TestAutomationV2MultiWorkerAndCrossWorkspace(t *testing.T) {
 		t.Fatalf("multi-workspace worker %s not retrievable in w2: found=%v err=%v", accMulti.AutomationID, foundInW2Get, err)
 	}
 }
+
+func TestAutomationV2DeduplicateWorkersByStableIdentity(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	identity := NewIdentityStore(db)
+	if _, err := identity.PutUser(UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountScope(AccountScopeRecord{ID: "account", Type: AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.PutAccountUser(AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Deduplication Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	sessionID := "worker-session-dedup"
+	if err = s.CreateSession(SessionSnapshot{
+		ID:             sessionID,
+		AccountScopeID: "account",
+		UserID:         "owner",
+		Mode:           "auto",
+		WorkspacePath:  w.Path,
+		WorkspaceGrants: []WorkspaceGrant{{
+			Kind:        WorkspaceGrantPrimary,
+			WorkspaceID: w.WorkspaceID,
+			Path:        w.Path,
+			Available:   &yes,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	doc1 := SessionPlanDocument{
+		Title: "Specialist Worker",
+		Info:  SessionPlanInfo{Goal: "First proposal version"},
+		WorkerV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      w.WorkspaceID,
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Task 1",
+			Objective:          "Do task 1",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+
+	p1, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, sessionID, doc1, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("first proposal failed: %v", err)
+	}
+	acc1, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, sessionID, p1.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("first acceptance failed: %v", err)
+	}
+
+	// Verify initial listing shows exactly 1 worker
+	list1, _, err := s.ListAutomationV2Records("account", "owner", w.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("list 1 failed: %v", err)
+	}
+	if len(list1) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(list1))
+	}
+
+	// Simulate an unlinked re-proposal in the same session with new proposal/generation
+	doc2 := doc1
+	doc2.Info.Goal = "Second updated version of the worker"
+	p2, err := s.ProposeAutomationV2("account", "owner", w.WorkspaceID, sessionID, doc2, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("second proposal failed: %v", err)
+	}
+	acc2, err := s.AcceptAutomationV2("account", "owner", w.WorkspaceID, sessionID, p2.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("second acceptance failed: %v", err)
+	}
+
+	// ListAutomationV2Records must return exactly 1 record, which must be the newer worker (acc2)
+	list2, _, err := s.ListAutomationV2Records("account", "owner", w.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("list 2 failed: %v", err)
+	}
+	if len(list2) != 1 {
+		t.Fatalf("expected duplicate to be collapsed to 1 record, got %d", len(list2))
+	}
+	if list2[0].AutomationID != acc2.AutomationID {
+		t.Fatalf("expected active record %s, got %s", acc2.AutomationID, list2[0].AutomationID)
+	}
+
+	// Verify that the obsolete acc1 AutomationID key was removed from the store
+	var oldRec AutomationV2Record
+	foundOld, _ := s.store.GetJSON(automationV2Key("accepted", "account", acc1.AutomationID), &oldRec)
+	if foundOld {
+		t.Fatalf("expected obsolete worker record %s to be cleaned up from Pebble store", acc1.AutomationID)
+	}
+}

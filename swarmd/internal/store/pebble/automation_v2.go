@@ -774,6 +774,13 @@ func (s *SessionStore) setAutomationV2InBatch(batch *pebble.Batch, in V3SessionM
 			return err
 		}
 	} else {
+		var priorRec AutomationV2Record
+		if ok, err := s.store.GetJSON(automationV2Key("accepted", p.AccountID, p.SessionID), &priorRec); err == nil && ok {
+			if priorRec.AutomationID != "" && priorRec.AutomationID != m.record.AutomationID && priorRec.WorkspaceID == m.record.WorkspaceID {
+				_ = batch.Delete([]byte(automationV2Key("accepted", p.AccountID, priorRec.AutomationID)), nil)
+				_ = batch.Delete([]byte(automationV2SessionWorkerKey(p.AccountID, p.SessionID, priorRec.AutomationID)), nil)
+			}
+		}
 		if err := batch.Set([]byte(automationV2Key("accepted", p.AccountID, m.record.AutomationID)), b, nil); err != nil {
 			return err
 		}
@@ -846,13 +853,13 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		return nil, "", err
 	}
 	defer iter.Close()
-	out := []AutomationV2Record{}
+	raw := []AutomationV2Record{}
 	next := ""
 	bytes := 0
-	seen := make(map[string]bool)
+	seenID := make(map[string]bool)
 	for visited, valid := 0, iter.First(); valid; valid = iter.Next() {
-		if visited >= 100 || len(out) >= limit || bytes >= 1024*1024 {
-			return out, next, nil
+		if visited >= 100 || len(raw) >= limit*3 || bytes >= 1024*1024 {
+			break
 		}
 		visited++
 		next = string(iter.Key())
@@ -860,7 +867,7 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		if err := json.Unmarshal(iter.Value(), &r); err != nil {
 			return nil, "", err
 		}
-		if seen[r.AutomationID] {
+		if seenID[r.AutomationID] {
 			continue
 		}
 		matchesWorkspace := workspace == "" || r.WorkspaceID == workspace
@@ -882,7 +889,7 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		if err != nil {
 			continue
 		}
-		seen[r.AutomationID] = true
+		seenID[r.AutomationID] = true
 		r.Archived = isArchived
 		r.ArchivedAt = archivedAt
 		if mode == "exclude" && isArchived {
@@ -892,7 +899,57 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 			continue
 		}
 		bytes += len(iter.Value())
-		out = append(out, r)
+		raw = append(raw, r)
 	}
-	return out, "", iter.Error()
+
+	dedupMap := make(map[string]int)
+	out := []AutomationV2Record{}
+	for _, r := range raw {
+		title := strings.ToLower(strings.TrimSpace(r.Document.Title))
+		stableKey := r.SessionID
+		if stableKey == "" {
+			stableKey = r.AutomationID
+		}
+		key := fmt.Sprintf("%s:%s", r.WorkspaceID, stableKey)
+		titleKey := ""
+		if title != "" {
+			titleKey = fmt.Sprintf("%s:title:%s", r.WorkspaceID, title)
+		}
+
+		targetIdx := -1
+		if idx, ok := dedupMap[key]; ok {
+			targetIdx = idx
+		} else if titleKey != "" {
+			if idx, ok := dedupMap[titleKey]; ok {
+				targetIdx = idx
+			}
+		}
+
+		if targetIdx >= 0 {
+			existing := out[targetIdx]
+			if isNewerWorkerRecord(r, existing) {
+				out[targetIdx] = r
+			}
+		} else {
+			dedupMap[key] = len(out)
+			if titleKey != "" {
+				dedupMap[titleKey] = len(out)
+			}
+			out = append(out, r)
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, next, iter.Error()
+}
+
+func isNewerWorkerRecord(a, b AutomationV2Record) bool {
+	if a.Generation != b.Generation {
+		return a.Generation > b.Generation
+	}
+	if a.Revision != b.Revision {
+		return a.Revision > b.Revision
+	}
+	return a.AcceptedAt >= b.AcceptedAt
 }

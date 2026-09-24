@@ -812,6 +812,34 @@ export function PendingAutomationCard({
   )
 }
 
+function deduplicateWorkerRecords(list: AutomationV2Record[]): AutomationV2Record[] {
+  const map = new Map<string, AutomationV2Record>()
+  for (const r of list) {
+    const docAny = r.document as Record<string, any> | undefined
+    const title = (r.document?.title || docAny?.worker_v2?.name || docAny?.automation_v2?.name || '').trim().toLowerCase()
+    // Stable worker identity: session_id is the primary authoring container.
+    // If records in the same workspace share the same non-empty title, they represent the same named worker persona.
+    const stableKey = r.session_id ? `session:${r.session_id}` : (title ? `title:${r.workspace_id}:${title}` : `id:${r.automation_id}`)
+    const existing = map.get(stableKey)
+    if (!existing) {
+      map.set(stableKey, r)
+    } else {
+      const rGen = r.generation ?? 0
+      const existingGen = existing.generation ?? 0
+      const rRev = r.revision ?? 0
+      const existingRev = existing.revision ?? 0
+      const rTime = r.accepted_at ?? 0
+      const existingTime = existing.accepted_at ?? 0
+      const isNewer = rGen > existingGen ||
+        (rGen === existingGen && (rRev > existingRev || (rRev === existingRev && rTime >= existingTime)))
+      if (isNewer) {
+        map.set(stableKey, r)
+      }
+    }
+  }
+  return Array.from(map.values())
+}
+
 export function AutomationV2Workspace({
   workspaceId,
   workspacePath,
@@ -873,11 +901,13 @@ export function AutomationV2Workspace({
   const isArchivedTab = statusFilter === 'archived'
   const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: !isArchivedTab ? cursor : undefined }), [workspaceId, cursor, isArchivedTab])
   const activePage = useAutomationV2Page(activeInput)
-  const activeRecords = activePage?.data?.records ?? []
+  const rawActiveRecords = activePage?.data?.records ?? []
+  const activeRecords = useMemo(() => deduplicateWorkerRecords(rawActiveRecords), [rawActiveRecords])
 
   const archivedInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: isArchivedTab ? cursor : undefined, archived_mode: 'only' as const }), [workspaceId, cursor, isArchivedTab])
   const archivedPage = useAutomationV2Page(archivedInput)
-  const archivedRecords = archivedPage?.data?.records ?? []
+  const rawArchivedRecords = archivedPage?.data?.records ?? []
+  const archivedRecords = useMemo(() => deduplicateWorkerRecords(rawArchivedRecords), [rawArchivedRecords])
 
   const page = isArchivedTab ? archivedPage : activePage
   const records = isArchivedTab ? archivedRecords : activeRecords
@@ -983,9 +1013,11 @@ export function AutomationV2Workspace({
       records.find((r) => r.session_id === selected || r.automation_id === selected) ??
       activeRecords.find((r) => r.session_id === selected || r.automation_id === selected) ??
       archivedRecords.find((r) => r.session_id === selected || r.automation_id === selected) ??
+      rawActiveRecords.find((r) => r.session_id === selected || r.automation_id === selected) ??
+      rawArchivedRecords.find((r) => r.session_id === selected || r.automation_id === selected) ??
       null
     )
-  }, [records, activeRecords, archivedRecords, selected])
+  }, [records, activeRecords, archivedRecords, rawActiveRecords, rawArchivedRecords, selected])
 
   const [sendRequestRecord, setSendRequestRecord] = useState<AutomationV2Record | null>(null)
 
