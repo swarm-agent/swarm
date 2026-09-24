@@ -16,8 +16,9 @@ const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/t
 const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const UsagePage = withStartupScreen(lazy(() => import('../features/desktop/usage/pages/usage-page').then((module) => ({ default: module.UsagePage }))))
-const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media'])
-const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media'])
+const OrchestratePage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/orchestrate-page').then((module) => ({ default: module.OrchestratePage }))))
+const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'orchestrate'])
+const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'orchestrate'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))
 
 function currentWorkspaceRoute(pathname: string): { sessionId?: string } | null {
@@ -450,6 +451,19 @@ const workspaceImageToolSessionRoute = createRoute({
   component: ImageToolPage,
 })
 
+const orchestrateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/orchestrate',
+  component: OrchestratePage,
+})
+
+const workspaceOrchestrateRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/$workspaceSlug/orchestrate',
+  parseParams: validateWorkspaceParams,
+  component: OrchestratePage,
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   settingsRoute,
@@ -479,6 +493,8 @@ const routeTree = rootRoute.addChildren([
   workspaceVideoToolRoute,
   workspaceImageToolRoute,
   workspaceImageToolSessionRoute,
+  orchestrateRoute,
+  workspaceOrchestrateRoute,
 ])
 
 export const router = createRouter({

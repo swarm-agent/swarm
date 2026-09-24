@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { observePageActivity, withPageRequest } from '../../../app/page-lifecycle'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMatchRoute, useNavigate, useSearch, Link, Outlet } from '@tanstack/react-router'
-import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Coins, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
+import { Archive, Bell, Bot, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Coins, Cpu, Download, Film, Folder, GitBranch, GitCommitHorizontal, GitMerge, Image as ImageIcon, Keyboard, ListChecks, ListTodo, LoaderCircle, Menu, MessageSquare, Mic, MoreVertical, NotepadText, Pencil, Pin, Plus, RefreshCcw, Save, Search, Server, Settings, Trash2, X, XCircle } from 'lucide-react'
 import { Button } from '../../../components/ui/button'
 import { Card } from '../../../components/ui/card'
 import { Dialog, DialogBackdrop, DialogPanel } from '../../../components/ui/dialog'
@@ -2810,6 +2810,9 @@ export function DesktopAppPage() {
   const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
   const globalWorkersMatch = matchRoute({ to: '/workers', fuzzy: false })
   const globalWorkersDetailMatch = matchRoute({ to: '/workers/$workerId', fuzzy: false })
+  const workspaceOrchestrateMatch = matchRoute({ to: '/$workspaceSlug/orchestrate', fuzzy: false })
+  const globalOrchestrateMatch = matchRoute({ to: '/orchestrate', fuzzy: false })
+  const isOrchestrateRoute = Boolean(workspaceOrchestrateMatch || globalOrchestrateMatch)
   const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch || globalWorkersMatch || globalWorkersDetailMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
@@ -5724,6 +5727,28 @@ export function DesktopAppPage() {
                     >
                       <ImageIcon size={13} strokeWidth={1.8} className="text-[var(--app-text-subtle)]" />
                       <span className="min-w-0 truncate">Media</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)]"
+                      onClick={() => {
+                        setMobileSidebarOpen(false)
+                        if (topWorkspaceSlug) {
+                          void navigate({ to: '/$workspaceSlug/orchestrate', params: { workspaceSlug: topWorkspaceSlug } })
+                        } else {
+                          void navigate({ to: '/orchestrate' })
+                        }
+                      }}
+                      aria-label="Open Orchestrate Mode"
+                      aria-current={isOrchestrateRoute ? 'page' : undefined}
+                      title="Orchestrate Mode"
+                      data-testid="sidebar-orchestrate-btn"
+                    >
+                      <Cpu size={13} strokeWidth={1.8} className="text-cyan-400" />
+                      <span className="flex min-w-0 items-center justify-between gap-1.5">
+                        <span className="min-w-0 truncate font-semibold text-[var(--app-text)]">Orchestrate</span>
+                        <span className="rounded bg-cyan-950 px-1 text-[9px] font-bold text-cyan-400 border border-cyan-800">NEW</span>
+                      </span>
                     </button>
                     <button
                       type="button"
