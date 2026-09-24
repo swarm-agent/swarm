@@ -1894,6 +1894,18 @@ export function AutomationV2Workspace({
             })}
           </div>
 
+          {/* Dedicated Request Box & Lifecycle Tracker for Outside /workers Page */}
+          <AutomationV2OverviewRequestBox
+            records={activeRecords}
+            workspaceId={workspaceId}
+            workspaceSlug={workspaceSlug}
+            onOpenSession={onOpenSession}
+            onViewMailbox={(workerId) => {
+              setWorkspaceMode('inbox')
+              if (workerId) setInboxWorkerFilter(workerId)
+            }}
+          />
+
           {/* Empty State */}
           {page?.data && !page.loading && !page.stale && !hasAnyItems && (
             <div className="rounded-2xl border border-dashed border-[var(--app-border)] p-8 text-center bg-[var(--app-surface)] space-y-3">
@@ -2137,6 +2149,362 @@ export function AutomationV2Workspace({
     </div>
   )
 }
+
+function AutomationV2OverviewRequestBox({
+  records,
+  workspaceId,
+  workspaceSlug: _workspaceSlug,
+  onOpenSession,
+  onViewMailbox,
+}: {
+  records: AutomationV2Record[]
+  workspaceId: string
+  workspaceSlug?: string
+  onOpenSession?: (id: string) => void
+  onViewMailbox?: (workerId?: string) => void
+}) {
+  const [selectedSessionId, setSelectedSessionId] = useState<string>(() => records[0]?.session_id || '')
+  const [prompt, setPrompt] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submittedOcc, setSubmittedOcc] = useState<AutomationV2Occurrence | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (records.length > 0 && (!selectedSessionId || !records.some((r) => r.session_id === selectedSessionId))) {
+      setSelectedSessionId(records[0].session_id)
+    }
+  }, [records, selectedSessionId])
+
+  const selectedRecord = useMemo(
+    () => records.find((r) => r.session_id === selectedSessionId) || records[0],
+    [records, selectedSessionId]
+  )
+
+  const progressInput = useMemo(
+    () => ({
+      action: 'progress' as const,
+      workspace_id: workspaceId,
+      session_id: selectedSessionId || 'default',
+      timezone: 'UTC',
+    }),
+    [workspaceId, selectedSessionId]
+  )
+  const progressPage = useAutomationV2Page(progressInput)
+  const occurrences = useMemo(
+    () => progressPage?.data?.progress?.occurrences ?? [],
+    [progressPage?.data?.progress?.occurrences]
+  )
+
+  const handleSend = async () => {
+    const trimmed = prompt.trim()
+    if (!trimmed || !selectedRecord) return
+    setSubmitting(true)
+    setError(null)
+    setSubmittedOcc(null)
+    try {
+      const occ = await desktopAutomationV2.trigger({
+        workspace_id: workspaceId,
+        session_id: selectedRecord.session_id,
+        prompt: trimmed,
+      })
+      setSubmittedOcc(occ.occurrence)
+      setPrompt('')
+      void desktopAutomationV2.refresh(progressInput)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to dispatch request to worker')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (records.length === 0) return null
+
+  const workerTitle = selectedRecord?.document?.title || selectedRecord?.automation_id || 'Worker'
+  const recentOccurrences = occurrences.slice(0, 5)
+
+  return (
+    <section
+      aria-label="Send Request to Worker"
+      className="rounded-2xl border border-[var(--app-primary-border)]/80 bg-[var(--app-surface)] p-5 shadow-xs space-y-4"
+      data-testid="workers-overview-request-box"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary)] text-white shadow-2xs">
+            <SendHorizontal size={15} />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-[var(--app-text)]">
+              Send Request to Worker
+            </h3>
+            <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
+              Dispatch an on-demand prompt or task to any deployed worker. Track the request and its full lifecycle in real time below.
+            </p>
+          </div>
+        </div>
+        {submittedOcc && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+            <CheckCircle2 size={13} />
+            Request Submitted
+          </span>
+        )}
+      </div>
+
+      {records.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <span className="text-xs font-medium text-[var(--app-text-muted)]">Target Worker:</span>
+          <div className="flex flex-wrap gap-1.5">
+            {records.map((r) => {
+              const isTarget = r.session_id === selectedRecord?.session_id
+              return (
+                <button
+                  key={r.session_id}
+                  type="button"
+                  onClick={() => setSelectedSessionId(r.session_id)}
+                  className={cn(
+                    "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors border",
+                    isTarget
+                      ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)] font-semibold shadow-2xs"
+                      : "border-[var(--app-border)] bg-[var(--app-surface-hover)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                  )}
+                >
+                  <Bot size={12} className="inline mr-1 opacity-70" />
+                  {r.document?.title || r.automation_id}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder={`Type a prompt or instructions for ${workerTitle} (e.g. generate a graphic, audit repo, create post)...`}
+          rows={2}
+          className="w-full resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 text-xs text-[var(--app-text)] outline-hidden focus:border-[var(--app-primary)] transition-colors"
+          data-testid="overview-request-prompt-input"
+        />
+        {error && (
+          <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 p-2.5 text-xs text-[var(--app-danger)]">
+            {error}
+          </div>
+        )}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-[var(--app-text-muted)]">
+              Targeting: <strong className="text-[var(--app-text)]">{workerTitle}</strong> • Isolated session worktree
+            </span>
+          </div>
+          <Button
+            size="sm"
+            disabled={!prompt.trim() || submitting}
+            onClick={handleSend}
+            className="gap-1.5 rounded-xl text-xs font-semibold shadow-2xs"
+            data-testid="overview-request-send-btn"
+          >
+            {submitting ? (
+              <>
+                <LoaderCircle size={13} className="animate-spin" />
+                <span>Dispatching…</span>
+              </>
+            ) : (
+              <>
+                <SendHorizontal size={13} />
+                <span>Send request</span>
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* Tracked Lifecycle Section */}
+      <div className="pt-2 border-t border-[var(--app-border)]/60 space-y-3" data-testid="overview-tracked-requests">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--app-text)]">
+            <Clock3 size={13} className="text-[var(--app-primary)]" />
+            <span>Tracked Requests & Lifecycle for {workerTitle}</span>
+          </div>
+          <span className="text-[11px] text-[var(--app-text-muted)]">
+            {recentOccurrences.length} {recentOccurrences.length === 1 ? 'request' : 'requests'} tracked
+          </span>
+        </div>
+
+        {recentOccurrences.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[var(--app-border)] p-4 text-center text-xs text-[var(--app-text-muted)] bg-[var(--app-bg-alt)]/30">
+            No on-demand requests sent yet. Type a prompt above and click Send Request to dispatch one.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {recentOccurrences.map((occ) => {
+              const triggerCtx = occ.trigger_context as Record<string, any> | undefined
+              const promptText = triggerCtx?.prompt ? String(triggerCtx.prompt) : null
+              const isRunning = occ.state === 'running' || occ.state === 'admitted'
+              const isDone = occ.state === 'completed' || occ.closing_state === 'routine_clean' || occ.closing_state === 'deliverable_ready'
+              const isAlert = occ.closing_state === 'attention_alert' || occ.state === 'failed'
+              const isBlocked = occ.closing_state === 'blocked'
+              const hasDeliverable = occ.closing_state === 'deliverable_ready' || (occ.deliverables && occ.deliverables.length > 0)
+
+              return (
+                <div
+                  key={occ.id}
+                  className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3.5 space-y-3 shadow-2xs"
+                  data-testid="overview-request-card"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="space-y-1 max-w-xl">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-[var(--app-primary)]">
+                          Request
+                        </span>
+                        <span className="text-[11px] text-[var(--app-text-muted)]">
+                          {occ.admitted_at ? new Date(occ.admitted_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Pending'}
+                        </span>
+                      </div>
+                      <p className="text-xs font-medium text-[var(--app-text)] leading-snug">
+                        "{promptText || occ.summary || 'Worker execution request'}"
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {occ.session_id && onOpenSession && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => onOpenSession(occ.session_id)}
+                          className="h-7 gap-1 text-[11px] text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                          title="Open session worktree"
+                        >
+                          <ExternalLink size={12} />
+                          <span>Session</span>
+                        </Button>
+                      )}
+                      {hasDeliverable && onViewMailbox && (
+                        <Button
+                          size="sm"
+                          onClick={() => onViewMailbox(selectedRecord?.automation_id || selectedRecord?.session_id)}
+                          className="h-7 gap-1 rounded-lg text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs"
+                          title="View deliverable in Agent Mailbox"
+                        >
+                          <Inbox size={12} />
+                          <span>View in Mailbox</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 3-Stage Lifecycle Pipeline */}
+                  <div className="grid grid-cols-3 gap-2 pt-1 border-t border-[var(--app-border)]/50">
+                    {/* Node 1: Request Sent */}
+                    <div className="rounded-lg bg-[var(--app-surface)] p-2 border border-[var(--app-border)]/60 text-xs">
+                      <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-semibold text-[11px]">
+                        <CheckCircle2 size={13} />
+                        <span>1. Request Sent</span>
+                      </div>
+                      <div className="mt-1 text-[10px] text-[var(--app-text-muted)] truncate font-mono">
+                        {occ.session_id ? occ.session_id.slice(0, 16) + '…' : 'Admitted'}
+                      </div>
+                    </div>
+
+                    {/* Node 2: In Progress */}
+                    <div className={cn(
+                      "rounded-lg p-2 border text-xs transition-colors",
+                      isRunning
+                        ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)]/30 text-[var(--app-primary)]"
+                        : isDone || isAlert || isBlocked
+                        ? "border-[var(--app-border)]/60 bg-[var(--app-surface)] text-[var(--app-text-muted)]"
+                        : "border-[var(--app-border)]/40 bg-[var(--app-bg-alt)] opacity-60"
+                    )}>
+                      <div className="flex items-center gap-1.5 font-semibold text-[11px]">
+                        {isRunning ? (
+                          <>
+                            <LoaderCircle size={13} className="animate-spin text-[var(--app-primary)]" />
+                            <span className="text-[var(--app-primary)]">2. In Progress…</span>
+                          </>
+                        ) : isDone ? (
+                          <>
+                            <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" />
+                            <span className="text-emerald-600 dark:text-emerald-400">2. Executed</span>
+                          </>
+                        ) : (
+                          <>
+                            <Clock3 size={13} />
+                            <span>2. Worktree Run</span>
+                          </>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[10px] truncate text-[var(--app-text-muted)]">
+                        {isRunning ? 'Executing plan in worktree' : isDone ? 'Run finished' : 'Pending start'}
+                      </div>
+                    </div>
+
+                    {/* Node 3: Completion Outcome */}
+                    <div className={cn(
+                      "rounded-lg p-2 border text-xs transition-colors",
+                      hasDeliverable
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                        : isDone
+                        ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-600 dark:text-emerald-400"
+                        : isAlert
+                        ? "border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 text-[var(--app-danger)]"
+                        : isBlocked
+                        ? "border-amber-500/40 bg-amber-500/10 text-amber-600"
+                        : isRunning
+                        ? "border-[var(--app-border)]/60 bg-[var(--app-surface)] text-[var(--app-text-muted)]"
+                        : "border-[var(--app-border)]/40 bg-[var(--app-bg-alt)] opacity-60"
+                    )}>
+                      <div className="flex items-center gap-1.5 font-semibold text-[11px]">
+                        {hasDeliverable ? (
+                          <>
+                            <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" />
+                            <span>3. Done (Delivered)</span>
+                          </>
+                        ) : isDone ? (
+                          <>
+                            <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" />
+                            <span>3. Done (Clean)</span>
+                          </>
+                        ) : isAlert ? (
+                          <>
+                            <AlertCircle size={13} className="text-[var(--app-danger)]" />
+                            <span>3. Problem / Alert</span>
+                          </>
+                        ) : isBlocked ? (
+                          <>
+                            <Clock3 size={13} className="text-amber-500" />
+                            <span>3. Blocked</span>
+                          </>
+                        ) : (
+                          <>
+                            <Clock3 size={13} />
+                            <span>3. Outcome</span>
+                          </>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[10px] truncate text-[var(--app-text-muted)]">
+                        {hasDeliverable
+                          ? 'Available in Agent Mailbox'
+                          : isDone
+                          ? 'Routine clean execution'
+                          : isAlert
+                          ? (occ.summary || 'Attention needed')
+                          : isRunning
+                          ? 'Awaiting completion…'
+                          : 'Pending'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 export function AutomationV2WorkerDetailPage({
   workspaceId,
   workspacePath: _workspacePath,

@@ -2,32 +2,47 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
+  BarChart2,
+  Bookmark,
   Bot,
   Calendar,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Code2,
   Copy,
+  Download,
   ExternalLink,
+  FileCode,
   FileText,
   Film,
   Filter,
   GitPullRequest,
+  Globe,
+  Heart,
   Image as ImageIcon,
   Inbox,
+  Layers,
   LoaderCircle,
+  MessageCircle,
+  MessageSquare,
   MessageSquareReply,
+  MoreHorizontal,
   RefreshCcw,
+  Repeat2,
   Send,
   Share2,
-  Sparkles,
   Tag,
+  ThumbsUp,
   Trash2,
+  Volume2,
   XCircle,
 } from 'lucide-react'
 import { Button } from '../../../../components/ui/button'
 import { cn } from '../../../../lib/cn'
+import { fetchDesktopV3Artifact } from '../../session-v3/artifact-api'
 import {
   approveDeliverable,
   dismissDeliverable,
@@ -430,6 +445,928 @@ interface DeliverableCardProps {
   isLoading?: boolean
 }
 
+export function XLogo({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-label="X (Twitter) logo">
+      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+    </svg>
+  )
+}
+
+export function XVerifiedBadge({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={cn('shrink-0 text-sky-500 fill-current', className)} viewBox="0 0 24 24" aria-label="Verified account">
+      <path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.79-4-4-4-.495 0-.965.084-1.4.238C14.55 2.475 13.18 1.6 11.6 1.6c-1.58 0-2.95.875-3.6 2.148-.435-.154-.905-.238-1.4-.238-2.21 0-4 1.79-4 4 0 .495.084.965.238 1.4C1.575 9.55.7 10.92.7 12.5c0 1.58.875 2.95 2.148 3.6-.154.435-.238.905-.238 1.4 0 2.21 1.79 4 4 4 .495 0 .965-.084 1.4-.238 1.25 1.273 2.62 2.148 4.2 2.148 1.58 0 2.95-.875 3.6-2.148.435.154.905.238 1.4.238 2.21 0 4-1.79 4-4 0-.495-.084-.965-.238-1.4 1.273-.65 2.148-2.02 2.148-3.6zm-12.71 4.29l-4.58-4.58 1.41-1.41 3.17 3.17 6.59-6.59 1.41 1.41-8 8z" />
+    </svg>
+  )
+}
+
+export function LinkedInLogo({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-label="LinkedIn logo">
+      <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.46 10.9h2.79v8.37H6.46v-8.37M7.86 6.5a1.63 1.63 0 1 0 0 3.26 1.63 1.63 0 0 0 0-3.26z" />
+    </svg>
+  )
+}
+
+export function formatSocialTokens(text: string, platform: 'x' | 'linkedin') {
+  if (!text) return null
+  const tokenRegex = /(https?:\/\/[^\s]+|#[A-Za-z0-9_]+|@[A-Za-z0-9_]+|\$[A-Za-z0-9]+)/g
+  const parts = text.split(tokenRegex)
+
+  return parts.map((part, i) => {
+    if (!part) return null
+    if (part.startsWith('http://') || part.startsWith('https://')) {
+      return (
+        <a
+          key={i}
+          href={part}
+          target="_blank"
+          rel="noreferrer noopener"
+          className={cn(
+            'hover:underline break-all',
+            platform === 'x'
+              ? 'text-sky-500 dark:text-sky-400 font-normal'
+              : 'text-[#0a66c2] dark:text-sky-400 font-medium'
+          )}
+        >
+          {part}
+        </a>
+      )
+    }
+    if (part.startsWith('#')) {
+      return (
+        <span
+          key={i}
+          className={cn(
+            'cursor-pointer hover:underline',
+            platform === 'x'
+              ? 'text-sky-500 dark:text-sky-400 font-normal'
+              : 'text-[#0a66c2] dark:text-sky-400 font-semibold'
+          )}
+        >
+          {part}
+        </span>
+      )
+    }
+    if (part.startsWith('@')) {
+      return (
+        <span
+          key={i}
+          className={cn(
+            'cursor-pointer hover:underline',
+            platform === 'x'
+              ? 'text-sky-500 dark:text-sky-400 font-normal'
+              : 'text-[#0a66c2] dark:text-sky-400 font-semibold'
+          )}
+        >
+          {part}
+        </span>
+      )
+    }
+    if (part.startsWith('$')) {
+      return (
+        <span
+          key={i}
+          className={cn(
+            'cursor-pointer hover:underline',
+            platform === 'x'
+              ? 'text-sky-500 dark:text-sky-400 font-normal'
+              : 'text-[#0a66c2] dark:text-sky-400 font-semibold'
+          )}
+        >
+          {part}
+        </span>
+      )
+    }
+    return <span key={i}>{part}</span>
+  })
+}
+
+export interface SocialMediaAttachmentGalleryProps {
+  mediaUrls?: string[]
+  videoUrl?: string
+  linkPreview?: {
+    url: string
+    title?: string
+    description?: string
+    image_url?: string
+    domain?: string
+  }
+  platform?: 'x' | 'linkedin'
+  onSelectImage?: (url: string) => void
+}
+
+export function SocialMediaAttachmentGallery({
+  mediaUrls = [],
+  videoUrl,
+  linkPreview,
+  platform = 'x',
+  onSelectImage,
+}: SocialMediaAttachmentGalleryProps) {
+  if (videoUrl) {
+    return (
+      <div className="overflow-hidden rounded-2xl border border-[var(--app-border)]/80 bg-black shadow-xs">
+        <video
+          controls
+          playsInline
+          src={videoUrl}
+          className="max-h-80 w-full object-contain mx-auto"
+        />
+      </div>
+    )
+  }
+
+  if (mediaUrls.length === 1) {
+    const url = mediaUrls[0]
+    return (
+      <div
+        className={cn(
+          'overflow-hidden rounded-2xl border border-[var(--app-border)]/80 bg-black/5 dark:bg-black/30 shadow-xs group relative',
+          platform === 'linkedin' ? 'rounded-xl' : 'rounded-2xl'
+        )}
+      >
+        <img
+          src={url}
+          alt="Social attachment"
+          onClick={() => onSelectImage?.(url)}
+          className="max-h-96 w-full object-cover transition-opacity hover:opacity-95 cursor-pointer"
+        />
+      </div>
+    )
+  }
+
+  if (mediaUrls.length === 2) {
+    return (
+      <div
+        className={cn(
+          'grid grid-cols-2 gap-1.5 overflow-hidden rounded-2xl border border-[var(--app-border)]/80 bg-black/5 dark:bg-black/30 shadow-xs',
+          platform === 'linkedin' ? 'rounded-xl' : 'rounded-2xl'
+        )}
+      >
+        {mediaUrls.map((url, i) => (
+          <img
+            key={i}
+            src={url}
+            alt={`Attachment ${i + 1}`}
+            onClick={() => onSelectImage?.(url)}
+            className="h-56 w-full object-cover cursor-pointer hover:opacity-95 transition-opacity"
+          />
+        ))}
+      </div>
+    )
+  }
+
+  if (mediaUrls.length === 3) {
+    return (
+      <div
+        className={cn(
+          'grid grid-cols-2 gap-1.5 overflow-hidden rounded-2xl border border-[var(--app-border)]/80 bg-black/5 dark:bg-black/30 shadow-xs',
+          platform === 'linkedin' ? 'rounded-xl' : 'rounded-2xl'
+        )}
+      >
+        <img
+          src={mediaUrls[0]}
+          alt="Attachment 1"
+          onClick={() => onSelectImage?.(mediaUrls[0])}
+          className="row-span-2 h-full w-full object-cover cursor-pointer hover:opacity-95 transition-opacity"
+        />
+        <div className="flex flex-col gap-1.5">
+          <img
+            src={mediaUrls[1]}
+            alt="Attachment 2"
+            onClick={() => onSelectImage?.(mediaUrls[1])}
+            className="h-[110px] w-full object-cover cursor-pointer hover:opacity-95 transition-opacity"
+          />
+          <img
+            src={mediaUrls[2]}
+            alt="Attachment 3"
+            onClick={() => onSelectImage?.(mediaUrls[2])}
+            className="h-[110px] w-full object-cover cursor-pointer hover:opacity-95 transition-opacity"
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (mediaUrls.length >= 4) {
+    return (
+      <div
+        className={cn(
+          'grid grid-cols-2 gap-1.5 overflow-hidden rounded-2xl border border-[var(--app-border)]/80 bg-black/5 dark:bg-black/30 shadow-xs',
+          platform === 'linkedin' ? 'rounded-xl' : 'rounded-2xl'
+        )}
+      >
+        {mediaUrls.slice(0, 4).map((url, i) => (
+          <img
+            key={i}
+            src={url}
+            alt={`Attachment ${i + 1}`}
+            onClick={() => onSelectImage?.(url)}
+            className="h-36 w-full object-cover cursor-pointer hover:opacity-95 transition-opacity"
+          />
+        ))}
+      </div>
+    )
+  }
+
+  if (linkPreview) {
+    return (
+      <a
+        href={linkPreview.url}
+        target="_blank"
+        rel="noreferrer noopener"
+        className={cn(
+          'block overflow-hidden rounded-2xl border border-[var(--app-border)]/80 bg-[var(--app-surface-subtle)] hover:bg-[var(--app-surface-hover)] transition-colors shadow-xs',
+          platform === 'linkedin' ? 'rounded-xl' : 'rounded-2xl'
+        )}
+      >
+        {linkPreview.image_url && (
+          <img
+            src={linkPreview.image_url}
+            alt={linkPreview.title || 'Link preview'}
+            className="h-44 w-full object-cover"
+          />
+        )}
+        <div className="p-3 space-y-1">
+          <span className="text-[11px] font-mono text-[var(--app-text-muted)] uppercase tracking-wider block">
+            {linkPreview.domain || (linkPreview.url ? new URL(linkPreview.url).hostname : 'link')}
+          </span>
+          {linkPreview.title && (
+            <h4 className="text-xs font-semibold text-[var(--app-text)] line-clamp-1">
+              {linkPreview.title}
+            </h4>
+          )}
+          {linkPreview.description && (
+            <p className="text-[11px] text-[var(--app-text-muted)] line-clamp-2">
+              {linkPreview.description}
+            </p>
+          )}
+        </div>
+      </a>
+    )
+  }
+
+  return null
+}
+
+export interface TwitterReplicaCardProps {
+  post: {
+    text: string
+    media_urls?: string[]
+    video_url?: string
+    author_name?: string
+    author_handle?: string
+    author_avatar?: string
+    link_preview?: any
+  }
+  workerId?: string
+  created_at?: number
+  postIndex?: number
+  totalPosts?: number
+  onCopyText?: () => void
+}
+
+export function TwitterReplicaCard({
+  post,
+  workerId,
+  created_at,
+  postIndex,
+  totalPosts,
+  onCopyText,
+}: TwitterReplicaCardProps) {
+  const [liked, setLiked] = useState(false)
+  const [reposted, setReposted] = useState(false)
+  const [bookmarked, setBookmarked] = useState(false)
+
+  const displayName = post.author_name || (workerId ? workerId.replace(/^worker_/, '').replace(/_/g, ' ') : 'Swarm AI')
+  const handle = post.author_handle || (workerId ? workerId.replace(/^worker_/, '') : 'swarm_agent')
+
+  return (
+    <div
+      data-testid="twitter-replica-card"
+      className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 p-4 shadow-xs space-y-3 font-sans transition-all"
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          {post.author_avatar ? (
+            <img
+              src={post.author_avatar}
+              alt={displayName}
+              className="h-10 w-10 rounded-full object-cover shrink-0"
+            />
+          ) : (
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-sky-500 to-blue-600 text-white font-bold text-sm shadow-xs">
+              {displayName.charAt(0).toUpperCase()}
+            </div>
+          )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-bold text-sm text-zinc-900 dark:text-zinc-100 truncate">
+                {displayName}
+              </span>
+              <XVerifiedBadge className="h-4 w-4" />
+              <span className="text-zinc-500 dark:text-zinc-400 text-xs">
+                @{handle}
+              </span>
+              <span className="text-zinc-400 dark:text-zinc-600 text-xs">·</span>
+              <span className="text-zinc-500 dark:text-zinc-400 text-xs">
+                {created_at ? new Date(created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Just now'}
+              </span>
+            </div>
+            {typeof postIndex === 'number' && typeof totalPosts === 'number' && totalPosts > 1 && (
+              <div className="mt-0.5">
+                <span className="rounded-md bg-sky-500/10 px-1.5 py-0.2 text-[10px] font-bold text-sky-600 dark:text-sky-400 font-mono">
+                  Tweet {postIndex + 1} of {totalPosts}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {onCopyText && (
+            <button
+              onClick={onCopyText}
+              title="Copy Tweet Text"
+              className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <XLogo className="h-4 w-4 text-zinc-800 dark:text-zinc-200" />
+        </div>
+      </div>
+
+      {/* Tweet Body */}
+      <div className="text-[14px] leading-relaxed text-zinc-900 dark:text-zinc-100 whitespace-pre-wrap">
+        {formatSocialTokens(post.text, 'x')}
+      </div>
+
+      {/* Media Attachments */}
+      {(post.media_urls?.length || post.video_url || post.link_preview) && (
+        <div className="pt-1">
+          <SocialMediaAttachmentGallery
+            mediaUrls={post.media_urls}
+            videoUrl={post.video_url}
+            linkPreview={post.link_preview}
+            platform="x"
+          />
+        </div>
+      )}
+
+      {/* Engagement Action Bar */}
+      <div className="flex items-center justify-between border-t border-zinc-100 dark:border-zinc-800/80 pt-2.5 text-zinc-500 dark:text-zinc-400 text-xs">
+        <button
+          className="flex items-center gap-1.5 hover:text-sky-500 transition-colors group"
+          title="Reply"
+        >
+          <div className="rounded-full p-1.5 group-hover:bg-sky-500/10 transition-colors">
+            <MessageCircle className="h-4 w-4" />
+          </div>
+          <span className="text-[11px]">18</span>
+        </button>
+
+        <button
+          onClick={() => setReposted((p) => !p)}
+          className={cn(
+            'flex items-center gap-1.5 transition-colors group',
+            reposted ? 'text-emerald-500 font-semibold' : 'hover:text-emerald-500'
+          )}
+          title="Repost"
+        >
+          <div className="rounded-full p-1.5 group-hover:bg-emerald-500/10 transition-colors">
+            <Repeat2 className="h-4 w-4" />
+          </div>
+          <span className="text-[11px]">{reposted ? 43 : 42}</span>
+        </button>
+
+        <button
+          onClick={() => setLiked((p) => !p)}
+          className={cn(
+            'flex items-center gap-1.5 transition-colors group',
+            liked ? 'text-rose-500 font-semibold' : 'hover:text-rose-500'
+          )}
+          title="Like"
+        >
+          <div className="rounded-full p-1.5 group-hover:bg-rose-500/10 transition-colors">
+            <Heart className={cn('h-4 w-4', liked && 'fill-rose-500')} />
+          </div>
+          <span className="text-[11px]">{liked ? 193 : 192}</span>
+        </button>
+
+        <button
+          className="flex items-center gap-1.5 hover:text-sky-500 transition-colors group"
+          title="Views"
+        >
+          <div className="rounded-full p-1.5 group-hover:bg-sky-500/10 transition-colors">
+            <BarChart2 className="h-4 w-4" />
+          </div>
+          <span className="text-[11px]">4.1K</span>
+        </button>
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setBookmarked((p) => !p)}
+            className={cn(
+              'rounded-full p-1.5 hover:text-sky-500 hover:bg-sky-500/10 transition-colors',
+              bookmarked && 'text-sky-500'
+            )}
+            title="Bookmark"
+          >
+            <Bookmark className={cn('h-4 w-4', bookmarked && 'fill-sky-500')} />
+          </button>
+          <button
+            className="rounded-full p-1.5 hover:text-sky-500 hover:bg-sky-500/10 transition-colors"
+            title="Share"
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export interface LinkedInReplicaCardProps {
+  post: {
+    text: string
+    media_urls?: string[]
+    video_url?: string
+    author_name?: string
+    author_handle?: string
+    author_title?: string
+    author_avatar?: string
+    link_preview?: any
+  }
+  workerId?: string
+  created_at?: number
+  onCopyText?: () => void
+}
+
+export function LinkedInReplicaCard({
+  post,
+  workerId,
+  created_at,
+  onCopyText,
+}: LinkedInReplicaCardProps) {
+  const [liked, setLiked] = useState(false)
+
+  const displayName = post.author_name || (workerId ? workerId.replace(/^worker_/, '').replace(/_/g, ' ') : 'Swarm Specialist')
+  const authorTitle = post.author_title || 'Autonomous AI Specialist • 1st • Follow'
+
+  return (
+    <div
+      data-testid="linkedin-replica-card"
+      className="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 shadow-xs space-y-3 font-sans transition-all"
+    >
+      {/* Header */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3 min-w-0">
+          {post.author_avatar ? (
+            <img
+              src={post.author_avatar}
+              alt={displayName}
+              className="h-12 w-12 rounded-full object-cover shrink-0"
+            />
+          ) : (
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gradient-to-tr from-blue-700 to-indigo-600 text-white font-bold text-base shadow-xs">
+              {displayName.charAt(0).toUpperCase()}
+            </div>
+          )}
+          <div className="min-w-0">
+            <h4 className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate">
+              {displayName}
+            </h4>
+            <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate">
+              {authorTitle}
+            </p>
+            <div className="flex items-center gap-1 text-[11px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+              <span>{created_at ? new Date(created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '1h'}</span>
+              <span>•</span>
+              <span className="flex items-center gap-0.5">
+                <Globe className="h-3 w-3" />
+                <span>Public</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {onCopyText && (
+            <button
+              onClick={onCopyText}
+              title="Copy LinkedIn Post"
+              className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <span className="rounded bg-[#0a66c2] text-white px-1.5 py-0.5 text-[10px] font-bold tracking-wider">
+            in
+          </span>
+          <button className="text-zinc-400 hover:text-zinc-600">
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Post Text */}
+      <div className="text-[13px] leading-relaxed text-zinc-800 dark:text-zinc-200 whitespace-pre-wrap">
+        {formatSocialTokens(post.text, 'linkedin')}
+      </div>
+
+      {/* Media Attachments */}
+      {(post.media_urls?.length || post.video_url || post.link_preview) && (
+        <div className="pt-1">
+          <SocialMediaAttachmentGallery
+            mediaUrls={post.media_urls}
+            videoUrl={post.video_url}
+            linkPreview={post.link_preview}
+            platform="linkedin"
+          />
+        </div>
+      )}
+
+      {/* Reactions Count Stats */}
+      <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800/80 pb-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <div className="flex items-center gap-1.5">
+          <div className="flex -space-x-1">
+            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-white text-[9px]">👍</span>
+            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white text-[9px]">❤️</span>
+            <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-white text-[9px]">👏</span>
+          </div>
+          <span className="font-medium text-zinc-600 dark:text-zinc-300">{liked ? 89 : 88}</span>
+        </div>
+        <div>
+          <span>16 comments • 5 reposts</span>
+        </div>
+      </div>
+
+      {/* Action Buttons Bar */}
+      <div className="grid grid-cols-4 gap-1 pt-1 text-xs text-zinc-600 dark:text-zinc-400">
+        <button
+          onClick={() => setLiked((p) => !p)}
+          className={cn(
+            'flex items-center justify-center gap-1.5 rounded-lg py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors font-medium',
+            liked && 'text-[#0a66c2] font-semibold'
+          )}
+        >
+          <ThumbsUp className={cn('h-4 w-4', liked && 'fill-[#0a66c2]')} />
+          <span>Like</span>
+        </button>
+
+        <button className="flex items-center justify-center gap-1.5 rounded-lg py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors font-medium">
+          <MessageSquare className="h-4 w-4" />
+          <span>Comment</span>
+        </button>
+
+        <button className="flex items-center justify-center gap-1.5 rounded-lg py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors font-medium">
+          <Repeat2 className="h-4 w-4" />
+          <span>Repost</span>
+        </button>
+
+        <button className="flex items-center justify-center gap-1.5 rounded-lg py-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors font-medium">
+          <Send className="h-4 w-4" />
+          <span>Send</span>
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export interface HtmlSandboxPreviewProps {
+  html: string
+  title?: string
+  className?: string
+}
+
+export function HtmlSandboxPreview({ html, title, className }: HtmlSandboxPreviewProps) {
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview')
+  const [copied, setCopied] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  return (
+    <div
+      data-testid="html-sandbox-preview"
+      className={cn(
+        'overflow-hidden rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xs space-y-0',
+        className
+      )}
+    >
+      <div className="flex items-center justify-between border-b border-[var(--app-border)]/60 bg-[var(--app-surface-subtle)] px-3 py-2 text-xs">
+        <div className="flex items-center gap-2">
+          <FileCode className="h-4 w-4 text-[var(--app-primary)]" />
+          <span className="font-semibold text-[var(--app-text)]">{title || 'HTML Interactive Sandbox'}</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-[11px]">
+            <button
+              onClick={() => setViewMode('preview')}
+              className={cn(
+                'rounded-md px-2 py-0.5 font-medium transition-colors',
+                viewMode === 'preview'
+                  ? 'bg-[var(--app-primary)] text-white font-bold'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              )}
+            >
+              Interactive Preview
+            </button>
+            <button
+              onClick={() => setViewMode('code')}
+              className={cn(
+                'rounded-md px-2 py-0.5 font-medium transition-colors',
+                viewMode === 'code'
+                  ? 'bg-[var(--app-primary)] text-white font-bold'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+              )}
+            >
+              HTML Source
+            </button>
+          </div>
+
+          {viewMode === 'preview' && (
+            <button
+              onClick={() => setReloadKey((k) => k + 1)}
+              title="Reload sandbox"
+              className="rounded-md p-1 text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)]"
+            >
+              <RefreshCcw className="h-3.5 w-3.5" />
+            </button>
+          )}
+
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(html)
+              setCopied(true)
+              setTimeout(() => setCopied(false), 2000)
+            }}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] font-medium"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+            <span>{copied ? 'Copied' : 'Copy'}</span>
+          </button>
+        </div>
+      </div>
+
+      {viewMode === 'preview' ? (
+        <div className="p-2 bg-white">
+          <iframe
+            key={reloadKey}
+            sandbox="allow-scripts allow-same-origin"
+            srcDoc={html}
+            title={title || 'HTML Preview Sandbox'}
+            className="h-80 w-full rounded-lg border border-zinc-200 bg-white"
+          />
+        </div>
+      ) : (
+        <div className="max-h-80 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed text-[var(--app-text)] bg-[var(--app-bg-alt)] whitespace-pre">
+          {html}
+        </div>
+      )}
+    </div>
+  )
+}
+
+export interface AudioPlayerCardProps {
+  audioUrl: string
+  title?: string
+  label?: string
+  className?: string
+}
+
+export function AudioPlayerCard({ audioUrl, title, label, className }: AudioPlayerCardProps) {
+  return (
+    <div
+      data-testid="audio-player-card"
+      className={cn(
+        'rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-3.5 shadow-xs space-y-2.5',
+        className
+      )}
+    >
+      <div className="flex items-center justify-between text-xs">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400">
+            <Volume2 className="h-4 w-4" />
+          </div>
+          <div>
+            <h4 className="font-semibold text-[var(--app-text)]">{title || label || 'Audio Deliverable'}</h4>
+            <span className="text-[10px] text-[var(--app-text-muted)]">HTML5 Audio Player</span>
+          </div>
+        </div>
+
+        <a
+          href={audioUrl}
+          download={label || 'audio.mp3'}
+          className="flex items-center gap-1 text-[11px] text-[var(--app-primary)] hover:underline font-medium"
+        >
+          <Download className="h-3 w-3" />
+          <span>Download</span>
+        </a>
+      </div>
+
+      <div className="flex items-center gap-0.5 h-6 px-1 bg-[var(--app-surface-subtle)] rounded-md opacity-80">
+        {[12, 24, 16, 8, 20, 28, 14, 18, 22, 10, 16, 26, 18, 12, 20, 15, 25, 30, 20, 16, 22, 18, 10, 14].map((h, i) => (
+          <div
+            key={i}
+            className="flex-1 bg-[var(--app-primary)] rounded-full transition-all"
+            style={{ height: `${h}px` }}
+          />
+        ))}
+      </div>
+
+      <audio controls src={audioUrl} className="w-full h-8" />
+    </div>
+  )
+}
+
+export interface VideoPlayerCardProps {
+  videoUrl: string
+  title?: string
+  label?: string
+  className?: string
+}
+
+export function VideoPlayerCard({ videoUrl, title, label, className }: VideoPlayerCardProps) {
+  return (
+    <div
+      data-testid="video-player-card"
+      className={cn(
+        'overflow-hidden rounded-xl border border-[var(--app-border)] bg-black shadow-xs space-y-0',
+        className
+      )}
+    >
+      <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/90 px-3 py-1.5 text-xs text-zinc-200">
+        <div className="flex items-center gap-1.5">
+          <Film className="h-3.5 w-3.5 text-purple-400" />
+          <span className="font-medium truncate">{title || label || 'Video Deliverable'}</span>
+        </div>
+        <a
+          href={videoUrl}
+          download={label || 'video.mp4'}
+          className="flex items-center gap-1 text-[11px] text-purple-400 hover:text-purple-300 font-medium"
+        >
+          <Download className="h-3 w-3" />
+          <span>Download</span>
+        </a>
+      </div>
+
+      <video
+        controls
+        playsInline
+        src={videoUrl}
+        className="max-h-80 w-full object-contain mx-auto bg-black"
+      />
+    </div>
+  )
+}
+
+export interface JsonInspectorCardProps {
+  data: unknown
+  title?: string
+  className?: string
+}
+
+export function JsonInspectorCard({ data, title, className }: JsonInspectorCardProps) {
+  const [copied, setCopied] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(true)
+
+  const jsonString = useMemo(() => {
+    try {
+      return JSON.stringify(data, null, 2)
+    } catch {
+      return String(data)
+    }
+  }, [data])
+
+  return (
+    <div
+      data-testid="json-inspector-card"
+      className={cn(
+        'rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-xs space-y-0 overflow-hidden',
+        className
+      )}
+    >
+      <div className="flex items-center justify-between border-b border-[var(--app-border)]/60 bg-[var(--app-surface-subtle)] px-3 py-2 text-xs">
+        <div className="flex items-center gap-2">
+          <Code2 className="h-4 w-4 text-[var(--app-primary)]" />
+          <span className="font-semibold text-[var(--app-text)]">{title || 'JSON Data Deliverable'}</span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsExpanded((e) => !e)}
+            className="flex items-center gap-1 text-[11px] text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+          >
+            {isExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+            <span>{isExpanded ? 'Collapse' : 'Expand'}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(jsonString)
+              setCopied(true)
+              setTimeout(() => setCopied(false), 2000)
+            }}
+            className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-[var(--app-text-muted)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text)] font-medium"
+          >
+            {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+            <span>{copied ? 'Copied JSON' : 'Copy JSON'}</span>
+          </button>
+        </div>
+      </div>
+
+      {isExpanded && (
+        <pre className="max-h-72 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed text-[var(--app-text)] bg-[var(--app-bg-alt)] whitespace-pre">
+          {jsonString}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+export function ArtifactImagePreview({
+  sessionId,
+  artifactId,
+  label,
+  className,
+}: {
+  sessionId: string
+  artifactId: string
+  label?: string
+  className?: string
+}) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    let objectUrl: string | null = null
+    setLoading(true)
+    setError(false)
+
+    fetchDesktopV3Artifact(sessionId, artifactId)
+      .then((blob) => {
+        if (!active) return
+        objectUrl = URL.createObjectURL(blob)
+        setImageUrl(objectUrl)
+        setLoading(false)
+      })
+      .catch((err) => {
+        if (!active) return
+        console.error('Failed to load artifact image:', err)
+        setError(true)
+        setLoading(false)
+      })
+
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [sessionId, artifactId])
+
+  if (loading) {
+    return (
+      <div className={cn("flex h-36 w-full items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-xs text-[var(--app-text-muted)]", className)}>
+        <LoaderCircle className="h-4 w-4 animate-spin text-[var(--app-primary)]" />
+        <span className="ml-2">Loading image deliverable preview…</span>
+      </div>
+    )
+  }
+
+  if (error || !imageUrl) {
+    return (
+      <div className={cn("flex h-20 w-full items-center justify-center rounded-xl border border-dashed border-[var(--app-border)] bg-[var(--app-surface-subtle)] text-xs text-[var(--app-text-muted)]", className)}>
+        <ImageIcon className="h-4 w-4 mr-1.5 opacity-60" />
+        <span>Image artifact ({label || artifactId})</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn("overflow-hidden rounded-xl border border-[var(--app-border)] bg-black/5 dark:bg-black/30 shadow-xs", className)}>
+      <img
+        src={imageUrl}
+        alt={label || 'Deliverable image preview'}
+        className="max-h-80 w-full object-contain mx-auto"
+      />
+      <div className="border-t border-[var(--app-border)]/50 bg-[var(--app-surface)] px-3 py-1.5 text-[11px] text-[var(--app-text-muted)] flex items-center justify-between">
+        <span className="truncate font-medium">{label || artifactId}</span>
+        <a
+          href={imageUrl}
+          download={label || `${artifactId}.jpg`}
+          className="text-[var(--app-primary)] hover:underline ml-2 shrink-0 font-medium"
+        >
+          Download
+        </a>
+      </div>
+    </div>
+  )
+}
+
 export function DeliverableCard({
   deliverable,
   isHighlighted,
@@ -457,7 +1394,7 @@ export function DeliverableCard({
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [copied, setCopied] = useState(false)
 
-  const PRESET_TAGS = ['Tone', 'Length', 'Media', 'Formatting', 'Code', 'Accuracy']
+  const PRESET_TAGS = ['Tone', 'Length', 'Media', 'Formatting', 'Accuracy', 'Hook', 'Call to Action', 'Hashtags', 'Code']
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
@@ -477,20 +1414,92 @@ export function DeliverableCard({
   }
 
   // Extract posts from payload if social post
-  const posts: Array<{ text: string; media_urls?: string[] }> = useMemo(() => {
+  const posts: Array<{
+    text: string
+    media_urls?: string[]
+    video_url?: string
+    author_name?: string
+    author_handle?: string
+    author_title?: string
+    author_avatar?: string
+    link_preview?: any
+  }> = useMemo(() => {
     if (!deliverable.payload) return []
     if (Array.isArray(deliverable.payload.posts)) {
       return deliverable.payload.posts.map((p: any) =>
-        typeof p === 'string' ? { text: p } : { text: p.text || '', media_urls: p.media_urls }
+        typeof p === 'string'
+          ? { text: p }
+          : {
+              text: p.text || '',
+              media_urls: p.media_urls || (p.image_url ? [p.image_url] : undefined),
+              video_url: p.video_url,
+              author_name: p.author_name || (deliverable.payload?.author_name as string),
+              author_handle: p.author_handle || (deliverable.payload?.author_handle as string),
+              author_title: p.author_title || (deliverable.payload?.author_title as string),
+              author_avatar: p.author_avatar || (deliverable.payload?.author_avatar as string),
+              link_preview: p.link_preview,
+            }
       )
     }
     if (Array.isArray(deliverable.payload.tweets)) {
       return deliverable.payload.tweets.map((t: any) =>
-        typeof t === 'string' ? { text: t } : { text: t.text || '' }
+        typeof t === 'string'
+          ? { text: t }
+          : {
+              text: t.text || '',
+              media_urls: t.media_urls || (t.image_url ? [t.image_url] : undefined),
+              video_url: t.video_url,
+              author_name: t.author_name || (deliverable.payload?.author_name as string),
+              author_handle: t.author_handle || (deliverable.payload?.author_handle as string),
+              author_avatar: t.author_avatar || (deliverable.payload?.author_avatar as string),
+              link_preview: t.link_preview,
+            }
       )
     }
+    if (deliverable.payload.tweet) {
+      const t = deliverable.payload.tweet as any
+      return [
+        typeof t === 'string'
+          ? { text: t }
+          : {
+              text: t.text || '',
+              media_urls: t.media_urls || (t.image_url ? [t.image_url] : undefined),
+              video_url: t.video_url,
+              author_name: t.author_name,
+              author_handle: t.author_handle,
+            },
+      ]
+    }
+    if (deliverable.payload.post) {
+      const p = deliverable.payload.post as any
+      return [
+        typeof p === 'string'
+          ? { text: p }
+          : {
+              text: p.text || '',
+              media_urls: p.media_urls || (p.image_url ? [p.image_url] : undefined),
+              video_url: p.video_url,
+              author_name: p.author_name,
+              author_handle: p.author_handle,
+              author_title: p.author_title,
+            },
+      ]
+    }
+    if (isSocial && typeof deliverable.payload.text === 'string') {
+      return [{ text: deliverable.payload.text }]
+    }
     return []
-  }, [deliverable.payload])
+  }, [deliverable.payload, isSocial])
+
+  // Platform selection for social post replicas
+  const defaultPlatform = useMemo<'x' | 'linkedin'>(() => {
+    if (deliverable.action_contract?.action === 'publish_linkedin_post') return 'linkedin'
+    if (deliverable.title.toLowerCase().includes('linkedin')) return 'linkedin'
+    if (deliverable.payload?.platform === 'linkedin') return 'linkedin'
+    return 'x'
+  }, [deliverable])
+
+  const [activePlatform, setActivePlatform] = useState<'x' | 'linkedin'>(defaultPlatform)
 
   const actionContract = deliverable.action_contract
   const isXPostAction = actionContract?.action === 'publish_x_post'
@@ -628,12 +1637,20 @@ export function DeliverableCard({
               <MessageSquareReply className="h-3.5 w-3.5" />
               Awaiting Worker Revision
             </span>
-            <span>
-              {new Date(deliverable.revision_feedback.requested_at).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </span>
+            <div className="flex items-center gap-2">
+              <span>
+                {new Date(deliverable.revision_feedback.requested_at).toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </span>
+              <button
+                onClick={() => setShowReviseForm(true)}
+                className="text-[10px] text-amber-700 dark:text-amber-400 underline hover:opacity-80 font-medium"
+              >
+                Edit Feedback
+              </button>
+            </div>
           </div>
           {deliverable.revision_feedback.notes && (
             <p className="text-xs font-medium text-[var(--app-text)] bg-[var(--app-surface)] p-2.5 rounded-lg border border-amber-500/20">
@@ -657,47 +1674,82 @@ export function DeliverableCard({
 
       {/* Universal Kind Views */}
 
-      {/* 1. Social Post Format: Premade Tweets Thread */}
+      {/* 1. Social Post Format: Authentic Replicas for Twitter/X and LinkedIn */}
       {isSocial && posts.length > 0 && (
-        <div className="space-y-2.5 rounded-xl border border-[var(--app-border)]/80 bg-[var(--app-bg-alt)]/50 p-3.5">
-          <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--app-text-muted)]">
-            <span>PREMADE THREAD ({posts.length} {posts.length === 1 ? 'POST' : 'POSTS'})</span>
-            {isXPostAction && (
-              <span className="text-blue-500 flex items-center gap-1">
-                Target: X (Twitter)
+        <div className="space-y-3 rounded-xl border border-[var(--app-border)]/80 bg-[var(--app-bg-alt)]/50 p-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--app-border)]/50 pb-2.5">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-semibold text-[var(--app-text-muted)]">
+                PREMADE THREAD ({posts.length} {posts.length === 1 ? 'POST' : 'POSTS'})
               </span>
-            )}
+              {isXPostAction && (
+                <span className="text-blue-500 text-[11px] flex items-center gap-1 font-medium">
+                  Target: X (Twitter)
+                </span>
+              )}
+            </div>
+
+            {/* Platform Replica Switcher */}
+            <div className="flex items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs">
+              <button
+                onClick={() => setActivePlatform('x')}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                  activePlatform === 'x'
+                    ? 'bg-black text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-2xs'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                )}
+              >
+                <XLogo className="h-3 w-3" />
+                <span>Twitter / X</span>
+              </button>
+              <button
+                onClick={() => setActivePlatform('linkedin')}
+                className={cn(
+                  'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                  activePlatform === 'linkedin'
+                    ? 'bg-[#0a66c2] text-white shadow-2xs'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                )}
+              >
+                <LinkedInLogo className="h-3 w-3" />
+                <span>LinkedIn</span>
+              </button>
+            </div>
           </div>
 
-          <div className="space-y-3">
-            {posts.map((post, idx) => (
-              <div
-                key={idx}
-                className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-3 shadow-2xs space-y-2"
-              >
-                <div className="flex items-center justify-between text-[10px] text-[var(--app-text-muted)]">
-                  <span className="font-bold text-[var(--app-primary)]">
-                    Tweet {idx + 1} of {posts.length}
-                  </span>
-                  <span>{post.text.length} / 280 chars</span>
-                </div>
-                <p className="text-xs text-[var(--app-text)] whitespace-pre-wrap leading-relaxed">
-                  {post.text}
-                </p>
-                {post.media_urls && post.media_urls.length > 0 && (
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {post.media_urls.map((url, i) => (
-                      <span
-                        key={i}
-                        className="rounded-md bg-[var(--app-surface-hover)] px-2 py-0.5 text-[10px] text-[var(--app-text-muted)] font-mono"
-                      >
-                        Media: {url}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="space-y-4">
+            {activePlatform === 'x' ? (
+              posts.map((post, idx) => (
+                <TwitterReplicaCard
+                  key={idx}
+                  post={post}
+                  workerId={deliverable.worker_id}
+                  created_at={deliverable.created_at}
+                  postIndex={idx}
+                  totalPosts={posts.length}
+                  onCopyText={() => {
+                    navigator.clipboard.writeText(post.text)
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 2000)
+                  }}
+                />
+              ))
+            ) : (
+              posts.map((post, idx) => (
+                <LinkedInReplicaCard
+                  key={idx}
+                  post={post}
+                  workerId={deliverable.worker_id}
+                  created_at={deliverable.created_at}
+                  onCopyText={() => {
+                    navigator.clipboard.writeText(post.text)
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 2000)
+                  }}
+                />
+              ))
+            )}
           </div>
         </div>
       )}
@@ -712,13 +1764,7 @@ export function DeliverableCard({
 
           {/* Video Preview if video URL present */}
           {typeof deliverable.payload.video_url === 'string' && (
-            <div className="overflow-hidden rounded-xl bg-black border border-[var(--app-border)]">
-              <video
-                controls
-                src={deliverable.payload.video_url}
-                className="max-h-72 w-full object-contain"
-              />
-            </div>
+            <VideoPlayerCard videoUrl={deliverable.payload.video_url} title={deliverable.title} />
           )}
 
           {/* Image Preview if image URL present */}
@@ -734,14 +1780,28 @@ export function DeliverableCard({
 
           {/* Audio Preview if audio URL present */}
           {typeof deliverable.payload.audio_url === 'string' && (
-            <div className="p-3 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)]">
-              <audio controls src={deliverable.payload.audio_url} className="w-full" />
-            </div>
+            <AudioPlayerCard audioUrl={deliverable.payload.audio_url} title={deliverable.title} />
           )}
         </div>
       )}
 
-      {/* 3. Report Format: Rich Document View */}
+      {/* 3. HTML Interactive Sandbox Preview (if html present in payload) */}
+      {deliverable.payload && typeof deliverable.payload.html === 'string' && (
+        <HtmlSandboxPreview
+          html={deliverable.payload.html}
+          title={deliverable.title}
+        />
+      )}
+
+      {/* 4. JSON / Data Inspector (if json/data present in payload) */}
+      {deliverable.payload && Boolean(deliverable.payload.json || deliverable.payload.data) && (
+        <JsonInspectorCard
+          data={deliverable.payload.json || deliverable.payload.data}
+          title={deliverable.title}
+        />
+      )}
+
+      {/* 5. Report Format: Rich Document View */}
       {isReport && deliverable.payload && typeof deliverable.payload.content === 'string' && (
         <div className="space-y-2 rounded-xl border border-[var(--app-border)]/80 bg-[var(--app-bg-alt)]/50 p-3.5">
           <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--app-text-muted)]">
@@ -755,7 +1815,7 @@ export function DeliverableCard({
                 setCopied(true)
                 setTimeout(() => setCopied(false), 2000)
               }}
-              className="flex items-center gap-1 text-[10px] text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+              className="flex items-center gap-1 text-[10px] text-[var(--app-text-muted)] hover:text-[var(--app-text)] font-medium"
             >
               {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
               {copied ? 'Copied' : 'Copy'}
@@ -767,7 +1827,7 @@ export function DeliverableCard({
         </div>
       )}
 
-      {/* 4. Code Patch / Diff Format */}
+      {/* 6. Code Patch / Diff Format */}
       {isCode && deliverable.payload && (
         <div className="space-y-2 rounded-xl border border-[var(--app-border)]/80 bg-[var(--app-bg-alt)]/50 p-3.5">
           <div className="flex items-center justify-between text-[11px] font-semibold text-[var(--app-text-muted)]">
@@ -804,7 +1864,7 @@ export function DeliverableCard({
         </div>
       )}
 
-      {/* 5. Alert Format: Severity Details */}
+      {/* 7. Alert Format: Severity Details */}
       {isAlert && deliverable.payload && (
         <div className="space-y-2 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 text-xs">
           <div className="flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-400">
@@ -824,17 +1884,46 @@ export function DeliverableCard({
         </div>
       )}
 
-      {/* Attached Media Artifact References */}
+      {/* Attached Media Artifact References & Visual Previews */}
       {deliverable.media_refs && deliverable.media_refs.length > 0 && (
-        <div className="space-y-1.5">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
-            Attached Deliverable Artifacts ({deliverable.media_refs.length})
+        <div className="space-y-2.5 pt-1">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)] flex items-center gap-1.5">
+            <Layers className="h-3.5 w-3.5 text-purple-500" />
+            <span>Attached Deliverable Artifacts ({deliverable.media_refs.length})</span>
           </div>
+
+          {/* Render Rich Previews for Media Artifacts */}
+          <div className="space-y-3">
+            {deliverable.media_refs.map((m, i) => {
+              const isImg =
+                m.media_type?.startsWith('image/') ||
+                /\.(png|jpe?g|webp|gif|svg)$/i.test(m.filename || m.path || m.label || '') ||
+                deliverable.kind === 'media' ||
+                deliverable.kind === 'media_bundle'
+
+              const sessionId = (m.session_id as string) || deliverable.session_id
+              const artifactId = (m.artifact_id as string) || (m.variant_id as string)
+
+              if (isImg && sessionId && artifactId) {
+                return (
+                  <ArtifactImagePreview
+                    key={`img-${i}`}
+                    sessionId={sessionId}
+                    artifactId={artifactId}
+                    label={m.label || m.filename || m.path || 'Image deliverable'}
+                  />
+                )
+              }
+              return null
+            })}
+          </div>
+
+          {/* Artifact Reference Chips */}
           <div className="flex flex-wrap gap-2">
             {deliverable.media_refs.map((m, i) => (
               <div
                 key={i}
-                className="flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs text-[var(--app-text)]"
+                className="flex items-center gap-1.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 py-1 text-xs text-[var(--app-text)] shadow-2xs"
               >
                 <FileText className="h-3.5 w-3.5 text-[var(--app-primary)]" />
                 <span>{m.label || m.filename || m.path || 'Artifact'}</span>
@@ -844,27 +1933,57 @@ export function DeliverableCard({
         </div>
       )}
 
-      {/* Publication / Result Receipt (if approved/published) */}
-      {isApproved && deliverable.action_result && (
-        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs space-y-1">
-          <div className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="h-4 w-4" />
-            <span>Publication Receipt</span>
+      {/* Accepted & Ready Banner (when approved/published) */}
+      {isApproved && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3.5 text-xs space-y-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 font-semibold text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="h-4 w-4" />
+              <span>Accepted & Ready for Use</span>
+            </div>
+            <span className="rounded-full bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+              Copy-Ready
+            </span>
           </div>
-          <p className="text-[11px] text-[var(--app-text-muted)]">
-            Target: {String(deliverable.action_result.published_to || 'Executed Action')} • Status:{' '}
-            {String(deliverable.action_result.status || 'Success')}
-          </p>
+
+          <div className="flex items-center gap-2 pt-1">
+            {posts.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const allText = posts
+                    .map((p, i) => `${posts.length > 1 ? `${i + 1}/${posts.length} ` : ''}${p.text}`)
+                    .join('\n\n')
+                  navigator.clipboard.writeText(allText)
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 2000)
+                }}
+                className="h-7 text-xs gap-1.5"
+              >
+                {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+                <span>{copied ? 'Copied Thread!' : (posts.length > 1 ? 'Copy Full Thread' : 'Copy Post Content')}</span>
+              </Button>
+            )}
+          </div>
+
+          {deliverable.action_result && (
+            <div className="border-t border-emerald-500/10 pt-2 text-[11px] text-[var(--app-text-muted)]">
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400">Publication Receipt: </span>
+              Target: {String(deliverable.action_result.published_to || 'Executed Action')} • Status:{' '}
+              {String(deliverable.action_result.status || 'Success')}
+            </div>
+          )}
         </div>
       )}
 
       {/* Inline Request Changes / Revision Form */}
       {showReviseForm && (
-        <div className="rounded-xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 space-y-3 shadow-xs">
+        <div className="rounded-xl border border-amber-500/30 bg-[var(--app-surface)] p-4 space-y-3 shadow-xs">
           <div className="flex items-center justify-between text-xs font-semibold text-[var(--app-text)]">
-            <span className="flex items-center gap-1.5 text-[var(--app-primary)]">
+            <span className="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
               <MessageSquareReply className="h-4 w-4" />
-              Request Changes from AI Worker
+              Send Back for Worker Revision
             </span>
             <button
               onClick={() => setShowReviseForm(false)}
@@ -873,6 +1992,10 @@ export function DeliverableCard({
               Cancel
             </button>
           </div>
+
+          <p className="text-[11px] text-[var(--app-text-muted)]">
+            Provide feedback and tags to guide the worker. The worker will be prompted to revise this deliverable.
+          </p>
 
           {/* Quick Tag Chips */}
           <div className="space-y-1">
@@ -890,7 +2013,7 @@ export function DeliverableCard({
                     className={cn(
                       'rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors',
                       isSelected
-                        ? 'bg-[var(--app-primary)] text-white font-bold'
+                        ? 'bg-amber-600 text-white font-bold'
                         : 'bg-[var(--app-surface-hover)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
                     )}
                   >
@@ -907,7 +2030,7 @@ export function DeliverableCard({
             onChange={(e) => setRevisionNotes(e.target.value)}
             placeholder="Tell the worker what to adjust (e.g. Make the hook punchier, use darker colors, trim length)..."
             rows={3}
-            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 text-xs text-[var(--app-text)] placeholder:text-[var(--app-text-muted)] outline-hidden focus:border-[var(--app-primary)]"
+            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-2.5 text-xs text-[var(--app-text)] placeholder:text-[var(--app-text-muted)] outline-hidden focus:border-amber-500"
           />
 
           <div className="flex justify-end gap-2">
@@ -968,7 +2091,7 @@ export function DeliverableCard({
               data-testid="request-changes-btn"
             >
               <MessageSquareReply className="h-3.5 w-3.5" />
-              Request Changes
+              Send Back / Request Revision
             </Button>
 
             <Button
@@ -984,9 +2107,9 @@ export function DeliverableCard({
               ) : isXPostAction ? (
                 <Send className="h-3.5 w-3.5" />
               ) : (
-                <Sparkles className="h-3.5 w-3.5" />
+                <CheckCircle2 className="h-3.5 w-3.5" />
               )}
-              {isXPostAction ? 'Approve & Publish to X' : 'Approve & Execute Action'}
+              {isXPostAction ? 'Approve & Publish to X' : 'Accept / Approve'}
             </Button>
           </div>
         )}
