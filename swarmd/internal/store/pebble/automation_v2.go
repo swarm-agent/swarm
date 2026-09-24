@@ -248,7 +248,16 @@ func (s *SessionStore) findAcceptedWorker(account, user, workspace, targetID, se
 		if err := json.Unmarshal(iter.Value(), &rec); err != nil {
 			continue
 		}
-		if (user != "" && rec.AcceptedBy != user) || (workspace != "" && rec.WorkspaceID != workspace) {
+		matchesWorkspace := workspace == "" || rec.WorkspaceID == workspace
+		if !matchesWorkspace {
+			for _, wid := range rec.WorkspaceIDs {
+				if wid == workspace {
+					matchesWorkspace = true
+					break
+				}
+			}
+		}
+		if (user != "" && rec.AcceptedBy != user) || !matchesWorkspace {
 			continue
 		}
 		if rec.AutomationID == targetID || rec.ProposalID == targetID || rec.SessionID == targetID || (sessionID != "" && rec.SessionID == sessionID) {
@@ -833,7 +842,16 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		if seen[r.AutomationID] {
 			continue
 		}
-		if r.UserID != user || (workspace != "" && r.WorkspaceID != workspace) {
+		matchesWorkspace := workspace == "" || r.WorkspaceID == workspace
+		if !matchesWorkspace {
+			for _, wid := range r.WorkspaceIDs {
+				if wid == workspace {
+					matchesWorkspace = true
+					break
+				}
+			}
+		}
+		if r.UserID != user || !matchesWorkspace {
 			continue
 		}
 		if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, r.WorkspaceID, r.SessionID); err != nil {

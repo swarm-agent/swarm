@@ -908,4 +908,71 @@ func TestAutomationV2MultiWorkerAndCrossWorkspace(t *testing.T) {
 	if err != nil || !ok2After || rec2After.Generation != 1 || rec2After.Document.Title != "Worker 2 on Workspace 1" {
 		t.Fatalf("worker 2 was affected by worker 1 edit: %v", rec2After)
 	}
+
+	// 5. Multi-workspace worker visible in both workspaces
+	multiWSDoc := SessionPlanDocument{
+		Title: "Multi-Workspace Worker",
+		Info:  SessionPlanInfo{Goal: "Visible in w1 and w2"},
+		WorkerV2: &AutomationV2Settings{
+			SchemaVersion:    2,
+			WorkspaceID:      w1.WorkspaceID,
+			WorkspaceIDs:     []string{w1.WorkspaceID, w2.WorkspaceID},
+			Schedule:         AutomationV2Schedule{Kind: "trigger"},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []SessionPlanCheckpoint{{
+			ID:                 "cp-1",
+			Title:              "Multi Task",
+			Objective:          "Multi workspace task",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Done"},
+		}},
+	}
+	pMulti, err := s.ProposeAutomationV2("account", "owner", w1.WorkspaceID, sessionID, multiWSDoc, AutomationV2Review{}, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("multi-workspace proposal failed: %v", err)
+	}
+	accMulti, err := s.AcceptAutomationV2("account", "owner", w1.WorkspaceID, sessionID, pMulti.AutomationV2Review, fixtureAutomationV2Validator)
+	if err != nil {
+		t.Fatalf("multi-workspace acceptance failed: %v", err)
+	}
+	// Must appear when listing w1
+	w1List, _, err := s.ListAutomationV2Records("account", "owner", w1.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("listing w1 failed: %v", err)
+	}
+	foundInW1 := false
+	for _, r := range w1List {
+		if r.AutomationID == accMulti.AutomationID {
+			foundInW1 = true
+			break
+		}
+	}
+	if !foundInW1 {
+		t.Fatalf("multi-workspace worker %s not found when listing w1", accMulti.AutomationID)
+	}
+	// Must ALSO appear when listing w2!
+	w2List, _, err := s.ListAutomationV2Records("account", "owner", w2.WorkspaceID, "", 10)
+	if err != nil {
+		t.Fatalf("listing w2 failed: %v", err)
+	}
+	foundInW2 := false
+	for _, r := range w2List {
+		if r.AutomationID == accMulti.AutomationID {
+			foundInW2 = true
+			break
+		}
+	}
+	if !foundInW2 {
+		t.Fatalf("multi-workspace worker %s not found when listing w2", accMulti.AutomationID)
+	}
+	// Must be retrievable in w2 via GetAutomationV2Record
+	recInW2, foundInW2Get, err := s.GetAutomationV2Record("account", "owner", w2.WorkspaceID, accMulti.AutomationID)
+	if err != nil || !foundInW2Get || recInW2.AutomationID != accMulti.AutomationID {
+		t.Fatalf("multi-workspace worker %s not retrievable in w2: found=%v err=%v", accMulti.AutomationID, foundInW2Get, err)
+	}
 }
