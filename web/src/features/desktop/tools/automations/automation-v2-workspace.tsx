@@ -6,16 +6,19 @@ import {
   ArchiveRestore,
   Bot,
   Calendar,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   Clock3,
+  Copy,
   ExternalLink,
   FileText,
   GitBranch,
   Inbox,
+  KeyRound,
   LoaderCircle,
   MessageSquare,
   Pause,
@@ -38,6 +41,7 @@ import {
   type AutomationV2OccurrenceDeliverable,
   type AutomationV2Proposal,
   type AutomationV2Settings,
+  mintAutomationV2Token,
 } from '../../state/desktop-automation-v2-api'
 import { selectPendingAutomationV2Proposals } from '../../state/desktop-automation-v2-state'
 import { dispatchDesktopV3Cache } from '../../state/desktop-v3-cache-store'
@@ -2126,6 +2130,48 @@ export function AutomationV2WorkerDetailPage({
   const [editing, setEditing] = useState(false)
   const [viewMode, setViewMode] = useState<'today' | 'all'>('today')
   const [statusFilter, setStatusFilter] = useState<'all' | 'clean' | 'deliverable' | 'alert' | 'blocked'>('all')
+  const [showDeploySecret, setShowDeploySecret] = useState(false)
+  const [deploySecretToken, setDeploySecretToken] = useState<string | null>(null)
+  const [deploySecretCopied, setDeploySecretCopied] = useState(false)
+  const [deploySecretLoading, setDeploySecretLoading] = useState(false)
+  const [deploySecretError, setDeploySecretError] = useState<string | null>(null)
+  const [saveToSecretsEnv, setSaveToSecretsEnv] = useState(true)
+  const [curlCopied, setCurlCopied] = useState(false)
+
+  const handleGenerateDeploySecret = async () => {
+    setDeploySecretLoading(true)
+    setDeploySecretError(null)
+    try {
+      const res = await mintAutomationV2Token({
+        workspace_id: workspaceId,
+        worker_id: workerIdentifier,
+        save_to_secrets: saveToSecretsEnv,
+      })
+      if (res && res.token) {
+        setDeploySecretToken(res.token)
+        setShowDeploySecret(true)
+      } else {
+        setDeploySecretError('Failed to generate deploy token')
+      }
+    } catch (err) {
+      setDeploySecretError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeploySecretLoading(false)
+    }
+  }
+
+  const handleCopyDeploySecret = () => {
+    if (!deploySecretToken) return
+    void navigator.clipboard?.writeText(deploySecretToken)
+    setDeploySecretCopied(true)
+    setTimeout(() => setDeploySecretCopied(false), 2000)
+  }
+
+  const handleCopyCurl = (cmd: string) => {
+    void navigator.clipboard?.writeText(cmd)
+    setCurlCopied(true)
+    setTimeout(() => setCurlCopied(false), 2000)
+  }
 
   const input = useMemo(() => ({
     action: 'progress' as const,
@@ -2263,6 +2309,22 @@ export function AutomationV2WorkerDetailPage({
           <Button
             size="sm"
             variant="outline"
+            className="h-8 gap-1.5 rounded-xl text-xs"
+            onClick={() => {
+              setShowDeploySecret((v) => !v)
+              if (!deploySecretToken && !showDeploySecret) {
+                void handleGenerateDeploySecret()
+              }
+            }}
+            data-testid="worker-deploy-secret-toggle-btn"
+            title="Generate and copy deploy secret for off-site deployment"
+          >
+            <KeyRound size={13} />
+            <span>{showDeploySecret ? 'Hide secret' : 'Deploy secret'}</span>
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             className="h-8 rounded-xl text-xs"
             onClick={() => onChat?.(liveRecord.session_id)}
             title="Discuss or optimize this worker with Swarm"
@@ -2312,6 +2374,131 @@ export function AutomationV2WorkerDetailPage({
             onAskForChanges={() => onAskForChanges?.(liveRecord.session_id)}
           />
         </div>
+      )}
+
+      {/* Off-Site Deployment & Trigger Secret */}
+      {showDeploySecret && (
+        <section
+          aria-label="Deploy Secret & Off-Site Trigger"
+          className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-primary-soft)]/20 p-5 space-y-4"
+          data-testid="worker-deploy-secret-section"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--app-primary-border)]/40 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="flex size-7 items-center justify-center rounded-lg bg-[var(--app-primary-soft)] text-[var(--app-primary)]">
+                <KeyRound size={15} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--app-text)]">
+                  Deploy Secret & Off-Site Trigger
+                </h3>
+                <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
+                  Scoped token (<code className="font-mono text-[11px] text-[var(--app-primary)]">automations:trigger</code>) to trigger this worker off-site via HTTP API or remote curl commands.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 gap-1.5 rounded-xl text-xs"
+                onClick={() => void handleGenerateDeploySecret()}
+                disabled={deploySecretLoading}
+                data-testid="regenerate-deploy-secret-btn"
+              >
+                {deploySecretLoading ? <LoaderCircle size={13} className="animate-spin" /> : <RefreshCcw size={13} />}
+                <span>{deploySecretToken ? 'Generate New Secret' : 'Generate Secret'}</span>
+              </Button>
+            </div>
+          </div>
+
+          {deploySecretError && (
+            <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 p-3 text-xs text-[var(--app-danger)]">
+              {deploySecretError}
+            </div>
+          )}
+
+          {deploySecretToken ? (
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium uppercase tracking-wider text-[var(--app-text-muted)]">
+                  Bearer Token
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={deploySecretToken}
+                    className="flex-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-1.5 font-mono text-xs text-[var(--app-text)] selection:bg-[var(--app-primary)]/20"
+                    data-testid="deploy-secret-token"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 gap-1 rounded-xl text-xs"
+                    onClick={handleCopyDeploySecret}
+                    data-testid="copy-deploy-secret-btn"
+                  >
+                    {deploySecretCopied ? <Check size={13} className="text-[var(--app-success)]" /> : <Copy size={13} />}
+                    <span>{deploySecretCopied ? 'Copied' : 'Copy'}</span>
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Off-Site cURL Example
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 gap-1 text-[11px] text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                    onClick={() => handleCopyCurl(`curl -X POST ${typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:5555'}/v3/automations/v2/trigger \\\n  -H "Authorization: Bearer ${deploySecretToken}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"worker_id":"${workerIdentifier}"}'`)}
+                    data-testid="copy-deploy-curl-btn"
+                  >
+                    {curlCopied ? <Check size={12} className="text-[var(--app-success)]" /> : <Copy size={12} />}
+                    <span>{curlCopied ? 'cURL Copied' : 'Copy cURL'}</span>
+                  </Button>
+                </div>
+                <pre className="rounded-xl border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/80 p-3 font-mono text-[11px] text-[var(--app-text)] overflow-x-auto leading-relaxed" data-testid="deploy-secret-curl">
+{`curl -X POST ${typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:5555'}/v3/automations/v2/trigger \\
+  -H "Authorization: Bearer ${deploySecretToken}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"worker_id":"${workerIdentifier}"}'`}
+                </pre>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1 text-xs text-[var(--app-text-muted)]">
+                <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={saveToSecretsEnv}
+                    onChange={(e) => setSaveToSecretsEnv(e.target.checked)}
+                    className="rounded border-[var(--app-border)] text-[var(--app-primary)] focus:ring-0"
+                  />
+                  <span>Save/sync to <code className="font-mono text-[11px]">~/.config/swarm/secrets.env</code> (SWARM_TRIGGER_TOKEN)</span>
+                </label>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-2 py-4 text-center">
+              <p className="text-xs text-[var(--app-text-muted)]">
+                Click below to generate an off-site deploy secret for this worker.
+              </p>
+              <Button
+                size="sm"
+                className="h-8 gap-1.5 rounded-xl text-xs"
+                onClick={() => void handleGenerateDeploySecret()}
+                disabled={deploySecretLoading}
+                data-testid="generate-deploy-secret-btn"
+              >
+                {deploySecretLoading ? <LoaderCircle size={13} className="animate-spin" /> : <KeyRound size={13} />}
+                <span>Generate Deploy Secret</span>
+              </Button>
+            </div>
+          )}
+        </section>
       )}
 
       {/* Active Plan & Instructions */}

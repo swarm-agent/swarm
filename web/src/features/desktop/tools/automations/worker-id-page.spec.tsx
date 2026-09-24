@@ -269,3 +269,22 @@ test('AutomationV2Workspace without initialSessionId renders flat overview and d
   assert.doesNotMatch(markup, /Worker not found/)
   assert.doesNotMatch(markup, /could not be found in this workspace/)
 })
+
+test('AutomationV2WorkerDetailPage renders Deploy Secret button and section for off-site deployment', () => {
+  const markup = renderToStaticMarkup(
+    <AutomationV2WorkerDetailPage
+      workspaceId="ws-test"
+      workspacePath="/path/to/work"
+      workspaceSlug="my-workspace"
+      record={sampleWorkerRecord}
+      onBack={() => {}}
+      onControlRecord={async () => {}}
+      onArchiveRecord={async () => {}}
+      onDeleteRecord={() => {}}
+      actionLoadingId={null}
+    />
+  )
+
+  assert.match(markup, /data-testid="worker-deploy-secret-toggle-btn"/)
+  assert.match(markup, /Deploy secret/)
+})

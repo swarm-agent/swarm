@@ -949,3 +949,165 @@ func TestAutomationV2TriggerWorkerAcceptanceMintsToken(t *testing.T) {
 		t.Fatalf("expected token scopes to contain automations:trigger, got %v", tokRec.Scopes)
 	}
 }
+
+// Purpose: accepting a stable/harness worker (e.g. cron or interval) must NOT automatically mint a deploy token,
+// but users can later mint a deploy secret/token attached to that worker via POST /v3/automations/v2/token.
+func TestAutomationV2StableWorkerDoesNotMintTokenAndAllowsPostAcceptanceMint(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	events, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authStore := store.NewClientAuthStore(db)
+	secSvc := security.NewService(authStore, events)
+
+	ss := store.NewSessionStore(db)
+	identityStore := store.NewIdentityStore(db)
+	if _, err := identityStore.PutUser(store.UserRecord{ID: "owner", Username: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountScope(store.AccountScopeRecord{ID: "account", Type: store.AccountScopeTypePersonal, CreatedByUserID: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identityStore.PutAccountUser(store.AccountUserRecord{ID: "membership", AccountScopeID: "account", UserID: "owner", Status: "active"}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := store.NewWorkspaceStore(db).AddForAccount("account", t.TempDir(), "Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := workspace.WorkspaceID
+	available := true
+	if err := ss.CreateSession(store.SessionSnapshot{ID: "conversation", AccountScopeID: "account", UserID: "owner", WorkspacePath: t.TempDir(), WorkspaceGrants: []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: workspaceID, Path: workspace.Path, Available: &available}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	secretsDir := t.TempDir()
+	secretsFile := filepath.Join(secretsDir, "secrets.env")
+	t.Setenv("SWARM_SECRETS_FILE", secretsFile)
+	t.Setenv("SWARM_TRIGGER_TOKEN", "")
+
+	s := &Server{sessions: sessionruntime.NewService(ss, nil), security: secSvc}
+	h := s.apiMux()
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, AutomationsV2Path+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	encode := func(v any) string {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	// 1. Propose stable/harness worker (e.g. interval)
+	doc := &store.SessionPlanDocument{
+		Title: "Stable Harness Worker",
+		Info:  store.SessionPlanInfo{Goal: "Periodic execution on Swarm harness"},
+		WorkerV2: &store.AutomationV2Settings{
+			SchemaVersion:    2,
+			Schedule:         store.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 3600},
+			Missed:           "skip",
+			Overlap:          "serialize",
+			ActivateOnAccept: true,
+			Expiration:       store.AutomationV2Expiration{Kind: "indefinite"},
+		},
+		Checkpoints: []store.SessionPlanCheckpoint{{
+			ID:                 "task",
+			Title:              "Run task",
+			Objective:          "Perform periodic check",
+			Status:             "pending",
+			Order:              1,
+			AcceptanceCriteria: []string{"Delivered"},
+		}},
+	}
+	propReq := automationV2Request{Action: "propose_automation", WorkspaceID: workspaceID, SessionID: "conversation", Document: doc}
+	w := call(http.MethodPost, "/proposal", encode(propReq))
+	if w.Code != 200 {
+		t.Fatalf("proposal failed: %d %s", w.Code, w.Body.String())
+	}
+	var propResp struct {
+		Proposal store.AutomationV2Proposal `json:"proposal"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &propResp); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Accept specialist worker
+	accReq := automationV2Request{
+		Action:      "accept_automation",
+		WorkspaceID: workspaceID,
+		SessionID:   "conversation",
+		Review:      propResp.Proposal.AutomationV2Review,
+	}
+	w = call(http.MethodPost, "/accept", encode(accReq))
+	if w.Code != 200 {
+		t.Fatalf("accept failed: %d %s", w.Code, w.Body.String())
+	}
+
+	var accResp struct {
+		Record      store.AutomationV2Record `json:"record"`
+		TokenMinted bool                     `json:"token_minted"`
+		TokenPath   string                   `json:"token_path"`
+		Message     string                   `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &accResp); err != nil {
+		t.Fatal(err)
+	}
+
+	if accResp.TokenMinted {
+		t.Fatal("expected token_minted false for stable harness worker")
+	}
+	if accResp.Message != "" {
+		t.Fatalf("expected empty message, got %q", accResp.Message)
+	}
+
+	// 3. Verify no token was created in secrets file
+	savedToken, err := security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err == nil && savedToken != "" {
+		t.Fatalf("expected no token saved, got %q", savedToken)
+	}
+
+	// 4. Test minting token post-acceptance via POST /v3/automations/v2/token
+	tokReq := automationV2TokenRequest{
+		WorkspaceID: workspaceID,
+		WorkerID:    accResp.Record.AutomationID,
+	}
+	w = call(http.MethodPost, "/token", encode(tokReq))
+	if w.Code != 200 {
+		t.Fatalf("token endpoint failed: %d %s", w.Code, w.Body.String())
+	}
+	var tokResp struct {
+		OK        bool   `json:"ok"`
+		Token     string `json:"token"`
+		WorkerID  string `json:"worker_id"`
+		TokenPath string `json:"token_path"`
+		Message   string `json:"message"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &tokResp); err != nil {
+		t.Fatal(err)
+	}
+	if !tokResp.OK || !strings.HasPrefix(tokResp.Token, "swk_") {
+		t.Fatalf("expected valid token starting with swk_, got %+v", tokResp)
+	}
+	if tokResp.WorkerID != accResp.Record.AutomationID {
+		t.Fatalf("expected worker_id %s, got %s", accResp.Record.AutomationID, tokResp.WorkerID)
+	}
+
+	savedToken, err = security.GetLocalSecret("SWARM_TRIGGER_TOKEN")
+	if err != nil || savedToken != tokResp.Token {
+		t.Fatalf("expected saved token %q, got %q (err: %v)", tokResp.Token, savedToken, err)
+	}
+}

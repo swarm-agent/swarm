@@ -151,3 +151,32 @@ export function mutateAutomationV2(input: AutomationV2Mutation): Promise<Automat
   const path = input.action === 'propose_automation' ? 'proposal' : input.action === 'accept_automation' ? 'accept' : input.action === 'decline_automation' ? 'decline' : 'control'
   return requestJson(`/v3/automations/v2/${path}`, { method: 'POST', body: JSON.stringify(input) })
 }
+
+export interface AutomationV2TokenRequest {
+  workspace_id?: string
+  worker_id?: string
+  automation_id?: string
+  save_to_secrets?: boolean
+}
+
+export interface AutomationV2TokenResponse {
+  ok: boolean
+  token: string
+  record?: {
+    id: string
+    name: string
+    scopes: string[]
+    created_at: number
+    worker_id?: string
+  }
+  worker_id: string
+  token_path?: string
+  message: string
+}
+
+export function mintAutomationV2Token(input: AutomationV2TokenRequest): Promise<AutomationV2TokenResponse> {
+  return requestJson<AutomationV2TokenResponse>('/v3/automations/v2/token', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}

@@ -38,6 +38,23 @@ type automationV2TriggerRequest struct {
 	Context      map[string]any `json:"context,omitempty"`
 }
 
+type automationV2TokenRequest struct {
+	WorkspaceID   string `json:"workspace_id,omitempty"`
+	WorkerID      string `json:"worker_id,omitempty"`
+	AutomationID  string `json:"automation_id,omitempty"`
+	SaveToSecrets *bool  `json:"save_to_secrets,omitempty"`
+}
+
+func isTriggerWorker(doc store.SessionPlanDocument) bool {
+	if doc.WorkerV2 != nil && doc.WorkerV2.Schedule.Kind == "trigger" {
+		return true
+	}
+	if doc.AutomationV2 != nil && doc.AutomationV2.Schedule.Kind == "trigger" {
+		return true
+	}
+	return false
+}
+
 func automationV2Error(w http.ResponseWriter, err error) {
 	if errors.Is(err, store.ErrAutomationV2Conflict) {
 		writeError(w, http.StatusConflict, errors.New("automation ownership or review conflict"))
@@ -166,11 +183,11 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" && r.URL.Path != AutomationsV2Path+"/trigger" {
+	if r.URL.Path != AutomationsV2Path+"/proposal" && r.URL.Path != AutomationsV2Path+"/accept" && r.URL.Path != AutomationsV2Path+"/decline" && r.URL.Path != AutomationsV2Path+"/control" && r.URL.Path != AutomationsV2Path+"/trigger" && r.URL.Path != AutomationsV2Path+"/token" {
 		http.NotFound(w, r)
 		return
 	}
-	if r.URL.Path != AutomationsV2Path+"/trigger" {
+	if r.URL.Path != AutomationsV2Path+"/trigger" && r.URL.Path != AutomationsV2Path+"/token" {
 		if !s.requireScope(w, r, "automations:write") {
 			return
 		}
@@ -205,6 +222,12 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, errors.New("target worker or session required"))
 			return
 		}
+		if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil {
+			if scopedRec.WorkerID != "" && scopedRec.WorkerID != targetID {
+				writeError(w, http.StatusForbidden, fmt.Errorf("scoped deploy token is restricted to worker %q", scopedRec.WorkerID))
+				return
+			}
+		}
 		if strings.TrimSpace(req.Prompt) != "" {
 			if req.Context == nil {
 				req.Context = make(map[string]any)
@@ -230,6 +253,77 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			}()
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "occurrence": occurrence})
+		return
+	}
+	if r.URL.Path == AutomationsV2Path+"/token" {
+		if !s.requireScope(w, r, "automations:write") {
+			return
+		}
+		var req automationV2TokenRequest
+		d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 300*1024))
+		d.DisallowUnknownFields()
+		if err := d.Decode(&req); err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		if err := d.Decode(new(any)); err != io.EOF {
+			automationV2Error(w, errors.New("trailing payload"))
+			return
+		}
+		workerID := strings.TrimSpace(req.WorkerID)
+		if workerID == "" {
+			workerID = strings.TrimSpace(req.AutomationID)
+		}
+		if workerID == "" || len(workerID) > 256 {
+			automationV2Error(w, errors.New("worker_id required"))
+			return
+		}
+		workspaceID := strings.TrimSpace(req.WorkspaceID)
+		var title string
+		if record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, workspaceID, workerID); err == nil && ok {
+			title = record.Document.Title
+		} else if workspaceID != "" {
+			if record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, "", workerID); err == nil && ok {
+				title = record.Document.Title
+			}
+		}
+		if title == "" {
+			title = workerID
+		}
+		if s.security == nil {
+			automationV2Error(w, errors.New("security service not configured"))
+			return
+		}
+		rawToken, tokenRecord, err := s.security.CreateScopedToken(
+			"Worker: "+title,
+			[]string{"automations:trigger"},
+			p.AccountScopeID,
+			p.UserID,
+			0,
+			workerID,
+			title,
+		)
+		if err != nil {
+			automationV2Error(w, err)
+			return
+		}
+		msg := "Deploy token minted for this worker."
+		saved := false
+		if req.SaveToSecrets == nil || *req.SaveToSecrets {
+			_ = security.SetLocalSecret("SWARM_TRIGGER_TOKEN", rawToken)
+			_ = os.Setenv("SWARM_TRIGGER_TOKEN", rawToken)
+			msg = "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker."
+			saved = true
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":          true,
+			"token":       rawToken,
+			"record":      tokenRecord,
+			"worker_id":   workerID,
+			"token_path":  security.SecretsFilePath(),
+			"token_saved": saved,
+			"message":     msg,
+		})
 		return
 	}
 	var req automationV2Request
@@ -296,15 +390,15 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, err)
 			return
 		}
-		isTrigger := (record.Document.WorkerV2 != nil && record.Document.WorkerV2.Schedule.Kind == "trigger") ||
-			(record.Document.AutomationV2 != nil && record.Document.AutomationV2.Schedule.Kind == "trigger")
-		if isTrigger {
+		if isTriggerWorker(record.Document) {
+			var rawToken string
 			if s.security != nil {
 				tokenName := "Trigger Worker: " + record.Document.Title
 				if strings.TrimSpace(record.Document.Title) == "" {
 					tokenName = "Trigger Worker: " + record.AutomationID
 				}
-				rawToken, _, err := s.security.CreateScopedToken(
+				var err error
+				rawToken, _, err = s.security.CreateScopedToken(
 					tokenName,
 					[]string{"automations:trigger"},
 					p.AccountScopeID,
@@ -322,11 +416,16 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				"ok":           true,
 				"record":       record,
 				"token_minted": true,
+				"token":        rawToken,
 				"token_path":   security.SecretsFilePath(),
 				"message":      "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker.",
 			}
 		} else {
-			response = map[string]any{"ok": true, "record": record}
+			response = map[string]any{
+				"ok":           true,
+				"record":       record,
+				"token_minted": false,
+			}
 		}
 	}
 	// The foundation committed its durable outbox before returning. Wake the

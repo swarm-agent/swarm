@@ -965,11 +965,11 @@ func TestAutomationV2MultiWorkspaceScoping(t *testing.T) {
 			ActivateOnAccept: true,
 		},
 		Checkpoints: []store.SessionPlanCheckpoint{{
-			ID:     "step1",
-			Title:  "Step 1",
-			Status: "pending",
-			Order:  1,
-			Tasks:  []string{"Check both workspaces"},
+			ID:                 "step1",
+			Title:              "Step 1",
+			Status:             "pending",
+			Order:              1,
+			Tasks:              []string{"Check both workspaces"},
 			AcceptanceCriteria: []string{"Done"},
 		}},
 	}
