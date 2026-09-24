@@ -26,7 +26,7 @@ export interface AutomationV2Document extends Record<string, unknown> {
 }
 export interface AutomationV2Review { proposal_id: string; revision: number; digest: string }
 export interface AutomationV2Proposal extends AutomationV2Review {
-  account_id: string; workspace_id: string; session_id: string; document: AutomationV2Document; base_generation?: number
+  account_id: string; workspace_id: string; workspace_ids?: string[]; session_id: string; document: AutomationV2Document; base_generation?: number
 }
 export interface AutomationV2Record extends AutomationV2Proposal {
   automation_id: string; generation: number; enabled: boolean; cancelled: boolean; accepted_at: number

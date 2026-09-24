@@ -55,7 +55,9 @@ export class DesktopAutomationV2Runtime {
     const promise: Promise<void> = this.deps.read(input).then(data => {
       if (this.flights.get(key) !== promise) return
       const records = [...(data.records ?? []), ...(data.record ? [data.record] : []), ...(data.proposal ? [data.proposal] : []), ...(data.progress ? [data.progress.record, ...data.progress.occurrences.map(occurrence => occurrence.accepted)] : [])]
-      if (records.some(r => r.workspace_id !== input.workspace_id || (input.session_id && r.session_id !== input.session_id)) || (data.progress && data.progress.timezone !== input.timezone)) throw new Error('Automation response scope mismatch')
+      const matchesRecordWorkspace = (r: { workspace_id: string; workspace_ids?: string[] }, wid?: string) =>
+        !wid || r.workspace_id === wid || (Array.isArray(r.workspace_ids) && r.workspace_ids.includes(wid))
+      if (records.some(r => !matchesRecordWorkspace(r, input.workspace_id) || (input.session_id && r.session_id !== input.session_id)) || (data.progress && data.progress.timezone !== input.timezone)) throw new Error('Automation response scope mismatch')
       this.deps.dispatch({ type: 'automationV2.finish', key, requestId, generation, data })
     }).catch(error => {
       if (this.flights.get(key) === promise) this.deps.dispatch({ type: 'automationV2.finish', key, requestId, generation, error: error instanceof Error ? error.message : 'Automation request failed' })

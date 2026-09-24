@@ -35,9 +35,11 @@ test('V2 runtime rejects obsolete and foreign pages and ignores unrelated chatte
   assert.equal(reads, 2); assert.equal(pages[key].data, undefined)
   const repair = runtime.refresh(input); pending.shift()!({ records: [], next_cursor: 'current' }); await repair
   assert.equal(pages[key].data?.next_cursor, 'current')
+  const multiWorkspace = runtime.refresh(input); pending.shift()!({ records: [{ workspace_id: 'other', workspace_ids: ['other', 'workspace'] }], next_cursor: 'multi' }); await multiWorkspace
+  assert.equal(pages[key].error, undefined); assert.equal(pages[key].data?.next_cursor, 'multi')
   const foreign = runtime.refresh(input); pending.shift()!({ records: [{ workspace_id: 'foreign' }] }); await foreign
-  assert.equal(pages[key].error, 'Automation response scope mismatch'); assert.equal(pages[key].data?.next_cursor, 'current')
-  lease.release(); runtime.invalidate(); assert.equal(reads, 3); assert.equal(pages[key], undefined)
+  assert.equal(pages[key].error, 'Automation response scope mismatch'); assert.equal(pages[key].data?.next_cursor, 'multi')
+  lease.release(); runtime.invalidate(); assert.equal(reads, 4); assert.equal(pages[key], undefined)
 })
 // Requirement: pending review is labeled before an automation record exists;
 // rejection removes only pending identity and accepted binding survives reload.
