@@ -66,7 +66,12 @@ func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, str
 			return current, g.WorkspaceID, nil
 		}
 	}
-	return current, "", errors.New("available primary workspace required")
+	for _, g := range current.WorkspaceGrants {
+		if g.Available != nil && *g.Available {
+			return current, g.WorkspaceID, nil
+		}
+	}
+	return current, "", nil
 }
 
 func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, error) {
@@ -99,9 +104,18 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, 
 			}
 		}
 	}
-	current, workspace, err := s.automationV2ToolSession(id)
+	current, defaultWorkspace, err := s.automationV2ToolSession(id)
 	if err != nil {
 		return "", err
+	}
+	targetWorkspace := defaultWorkspace
+	if doc.WorkerV2 != nil && strings.TrimSpace(doc.WorkerV2.WorkspaceID) != "" {
+		targetWorkspace = strings.TrimSpace(doc.WorkerV2.WorkspaceID)
+	} else if doc.AutomationV2 != nil && strings.TrimSpace(doc.AutomationV2.WorkspaceID) != "" {
+		targetWorkspace = strings.TrimSpace(doc.AutomationV2.WorkspaceID)
+	}
+	if targetWorkspace == "" {
+		return "", errors.New("target workspace required")
 	}
 	var review store.AutomationV2Review
 	if raw, ok := args["worker_review"]; ok {
@@ -109,7 +123,7 @@ func (s *Service) executeWorkerProposalTool(id string, call tool.Call) (string, 
 			return "", err
 		}
 	}
-	p, err := s.sessions.ProposeAutomationV2(current.AccountScopeID, current.UserID, workspace, id, doc, review)
+	p, err := s.sessions.ProposeAutomationV2(current.AccountScopeID, current.UserID, targetWorkspace, id, doc, review)
 	if err != nil {
 		return "", err
 	}
@@ -140,8 +154,8 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 		return "", err
 	}
 	for k := range args {
-		if k != "action" && k != "cursor" && k != "limit" && k != "timezone" {
-			return "", errors.New("V2 reads accept only action, cursor and limit; submit edits through the canonical plan review")
+		if k != "action" && k != "cursor" && k != "limit" && k != "timezone" && k != "workspace_id" {
+			return "", errors.New("V2 reads accept only action, cursor, limit, timezone and workspace_id; submit edits through the canonical plan review")
 		}
 	}
 	readID := id
@@ -155,9 +169,16 @@ func (s *Service) executeManageAutomationV2Tool(id, arguments string) (string, e
 		}
 		readID = parentID
 	}
-	current, workspace, err := s.automationV2ToolSession(readID)
+	current, defaultWorkspace, err := s.automationV2ToolSession(readID)
 	if err != nil {
 		return "", err
+	}
+	workspace := defaultWorkspace
+	if wsID := mapString(args, "workspace_id"); wsID != "" {
+		workspace = wsID
+	}
+	if workspace == "" {
+		return "", errors.New("target workspace required")
 	}
 	id = readID
 	var out any

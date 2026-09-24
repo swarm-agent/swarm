@@ -203,6 +203,60 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 func automationV2Key(kind, account, session string) string {
 	return fmt.Sprintf("automation/v2/%s/%x/%x", kind, account, session)
 }
+
+func automationV2ProposalKey(account, proposalID string) string {
+	return fmt.Sprintf("automation/v2/proposal_id/%x/%x", account, proposalID)
+}
+
+func automationV2SessionProposalKey(account, sessionID, proposalID string) string {
+	return fmt.Sprintf("automation/v2/session_proposal/%x/%x/%x", account, sessionID, proposalID)
+}
+
+func automationV2SessionWorkerKey(account, sessionID, automationID string) string {
+	return fmt.Sprintf("automation/v2/session_workers/%x/%x/%x", account, sessionID, automationID)
+}
+
+func (s *SessionStore) findAcceptedWorker(account, user, workspace, targetID, sessionID string) (AutomationV2Record, bool, error) {
+	if targetID == "" && sessionID == "" {
+		return AutomationV2Record{}, false, nil
+	}
+	var r AutomationV2Record
+	if targetID != "" {
+		if ok, err := s.store.GetJSON(automationV2Key("accepted", account, targetID), &r); err == nil && ok {
+			if r.AutomationID != "" && (user == "" || r.AcceptedBy == user) && (workspace == "" || r.WorkspaceID == workspace) {
+				return r, true, nil
+			}
+		}
+	}
+	if sessionID != "" {
+		if ok, err := s.store.GetJSON(automationV2Key("accepted", account, sessionID), &r); err == nil && ok {
+			if r.AutomationID != "" && (user == "" || r.AcceptedBy == user) && (workspace == "" || r.WorkspaceID == workspace) {
+				if targetID == "" || r.AutomationID == targetID || r.ProposalID == targetID || r.SessionID == targetID {
+					return r, true, nil
+				}
+			}
+		}
+	}
+	prefix := fmt.Sprintf("automation/v2/accepted/%x/", account)
+	iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	if err != nil {
+		return AutomationV2Record{}, false, err
+	}
+	defer iter.Close()
+	for valid := iter.First(); valid; valid = iter.Next() {
+		var rec AutomationV2Record
+		if err := json.Unmarshal(iter.Value(), &rec); err != nil {
+			continue
+		}
+		if (user != "" && rec.AcceptedBy != user) || (workspace != "" && rec.WorkspaceID != workspace) {
+			continue
+		}
+		if rec.AutomationID == targetID || rec.ProposalID == targetID || rec.SessionID == targetID || (sessionID != "" && rec.SessionID == sessionID) {
+			return rec, true, nil
+		}
+	}
+	return AutomationV2Record{}, false, nil
+}
 func automationV2ID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -256,16 +310,10 @@ func (s *SessionStore) automationV2OwnerStatus(account, user, workspace, id stri
 	if !ok || account == "" || user == "" || workspace == "" || current.AccountScopeID != account || current.UserID != user {
 		return current, false, 0, ErrAutomationV2Conflict
 	}
-	entry, err := s.automationV2WorkspaceOwner(account, user, workspace)
-	if err != nil {
+	if _, err := s.automationV2WorkspaceOwner(account, user, workspace); err != nil {
 		return current, false, 0, err
 	}
-	for _, g := range current.WorkspaceGrants {
-		if g.WorkspaceID == workspace && g.Kind == WorkspaceGrantPrimary && g.Available != nil && *g.Available && g.Path == entry.Path {
-			return current, isArchived, archivedAt, nil
-		}
-	}
-	return current, false, 0, ErrAutomationV2Conflict
+	return current, isArchived, archivedAt, nil
 }
 
 func (s *SessionStore) automationV2Owner(account, user, workspace, id string) (SessionSnapshot, error) {
@@ -296,58 +344,60 @@ func (s *SessionStore) automationV2WorkspaceOwner(account, user, workspace strin
 	return entry, nil
 }
 func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id string) (AutomationV2Proposal, bool, error) {
-	if _, err := s.automationV2Owner(account, user, workspace, id); err != nil {
-		return AutomationV2Proposal{}, false, err
-	}
 	var p AutomationV2Proposal
-	ok, err := s.store.GetJSON(automationV2Key("proposal", account, id), &p)
-	if err != nil {
+	found := false
+	if ok, err := s.store.GetJSON(automationV2Key("proposal", account, id), &p); err == nil && ok {
+		found = true
+	} else if ok, err := s.store.GetJSON(automationV2ProposalKey(account, id), &p); err == nil && ok {
+		found = true
+	}
+	if !found {
+		prefix := fmt.Sprintf("automation/v2/session_proposal/%x/%x/", account, id)
+		if iter, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")}); err == nil {
+			for valid := iter.Last(); valid; valid = false {
+				if err := json.Unmarshal(iter.Value(), &p); err == nil {
+					found = true
+				}
+			}
+			iter.Close()
+		}
+	}
+	if !found {
+		return AutomationV2Proposal{}, false, nil
+	}
+	if _, err := s.automationV2Owner(account, user, p.WorkspaceID, p.SessionID); err != nil {
 		return AutomationV2Proposal{}, false, err
 	}
-	if ok {
-		if err := validateAutomationV2Integrity(p, account, user, workspace, id); err != nil {
-			return AutomationV2Proposal{}, false, err
-		}
-		ps := NewPermissionStore(s.store)
-		if perm, found, err := ps.GetPermission(id, AutomationV2PermissionID(p.ProposalID)); err == nil && found {
-			if perm.Status == PermissionStatusDenied || perm.Status == PermissionStatusCancelled {
-				return AutomationV2Proposal{}, false, nil
-			}
+	if err := validateAutomationV2Integrity(p, account, user, workspace, id); err != nil {
+		return AutomationV2Proposal{}, false, err
+	}
+	ps := NewPermissionStore(s.store)
+	if perm, permFound, err := ps.GetPermission(p.SessionID, AutomationV2PermissionID(p.ProposalID)); err == nil && permFound {
+		if perm.Status == PermissionStatusDenied || perm.Status == PermissionStatusCancelled {
+			return AutomationV2Proposal{}, false, nil
 		}
 	}
-	return p, ok, err
+	return p, true, nil
 }
 func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string) (AutomationV2Record, bool, error) {
-	_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, workspace, id)
-	if err == nil {
-		var r AutomationV2Record
-		ok, err := s.store.GetJSON(automationV2Key("accepted", account, id), &r)
-		if err != nil {
-			return AutomationV2Record{}, false, err
-		}
-		if ok {
-			if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, workspace, id); err != nil {
-				return AutomationV2Record{}, false, err
+	var r AutomationV2Record
+	if ok, err := s.store.GetJSON(automationV2Key("accepted", account, id), &r); err == nil && ok {
+		if r.AutomationID != "" && (user == "" || r.AcceptedBy == user) && (workspace == "" || r.WorkspaceID == workspace) {
+			_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, r.WorkspaceID, r.SessionID)
+			if err == nil {
+				r.Archived = isArchived
+				r.ArchivedAt = archivedAt
+				return r, true, nil
 			}
-			if r.AutomationID == "" || r.AcceptedBy != user || r.AcceptedAt <= 0 || r.Authorization != r.Document.AutomationV2.Expiration {
-				return AutomationV2Record{}, false, ErrAutomationV2Conflict
-			}
-			r.Archived = isArchived
-			r.ArchivedAt = archivedAt
-			return r, true, nil
 		}
 	}
-	// If lookup by session ID does not match, search by AutomationID in this workspace
 	records, _, listErr := s.ListAutomationV2Records(account, user, workspace, "", 100, "include")
 	if listErr == nil {
 		for _, rec := range records {
-			if rec.AutomationID == id {
+			if rec.AutomationID == id || rec.SessionID == id || rec.ProposalID == id {
 				return rec, true, nil
 			}
 		}
-	}
-	if err != nil {
-		return AutomationV2Record{}, false, err
 	}
 	return AutomationV2Record{}, false, nil
 }
@@ -356,7 +406,10 @@ func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, worksp
 	if p.Document.AutomationV2 == nil && p.Document.WorkerV2 != nil {
 		p.Document.AutomationV2 = p.Document.WorkerV2
 	}
-	if p.AccountID != account || p.UserID != user || p.WorkspaceID != workspace || p.SessionID != id || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil {
+	if p.AccountID != account || p.UserID != user || (workspace != "" && p.WorkspaceID != workspace) || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil {
+		return ErrAutomationV2Conflict
+	}
+	if id != "" && p.SessionID != id && p.ProposalID != id {
 		return ErrAutomationV2Conflict
 	}
 	digest, err := AutomationV2DocumentDigest(p.Document)
@@ -427,10 +480,12 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 		return AutomationV2Proposal{}, err
 	}
 	baseGeneration := uint64(0)
-	if current, found, err := s.GetAutomationV2Record(account, user, workspace, id); err != nil {
-		return AutomationV2Proposal{}, err
-	} else if found {
-		baseGeneration = current.Generation
+	if expected != (AutomationV2Review{}) {
+		if prev, found, err := s.findAcceptedWorker(account, user, workspace, expected.ProposalID, id); err != nil {
+			return AutomationV2Proposal{}, err
+		} else if found {
+			baseGeneration = prev.Generation
+		}
 	}
 	var workspaceIDs []string
 	if doc.AutomationV2 != nil {
@@ -464,7 +519,10 @@ func (s *SessionStore) ProposeAutomationV2(account, user, workspace, id string, 
 		return AutomationV2Proposal{}, err
 	}
 	// Never regenerate a replay's timestamp or return an obsolete revision as head.
-	persisted, ok, err := s.GetAutomationV2Proposal(account, user, workspace, id)
+	persisted, ok, err := s.GetAutomationV2Proposal(account, user, workspace, p.ProposalID)
+	if !ok {
+		persisted, ok, err = s.GetAutomationV2Proposal(account, user, workspace, id)
+	}
 	if err != nil {
 		return AutomationV2Proposal{}, err
 	}
@@ -478,6 +536,12 @@ func (s *SessionStore) AcceptAutomationV2(account, user, workspace, id string, r
 	if err != nil {
 		return AutomationV2Record{}, err
 	}
+	if !ok && review.ProposalID != "" {
+		p, ok, err = s.GetAutomationV2Proposal(account, user, workspace, review.ProposalID)
+		if err != nil {
+			return AutomationV2Record{}, err
+		}
+	}
 	if !ok || p.AutomationV2Review != review {
 		return AutomationV2Record{}, ErrAutomationV2Conflict
 	}
@@ -486,7 +550,10 @@ func (s *SessionStore) AcceptAutomationV2(account, user, workspace, id string, r
 	if err != nil {
 		return AutomationV2Record{}, err
 	}
-	r, ok, err := s.GetAutomationV2Record(account, user, workspace, id)
+	r, ok, err := s.GetAutomationV2Record(account, user, workspace, m.record.AutomationID)
+	if err == nil && !ok {
+		r, ok, err = s.GetAutomationV2Record(account, user, workspace, id)
+	}
 	if err == nil && !ok {
 		err = errors.New("automation acceptance receipt missing")
 	}
@@ -496,6 +563,12 @@ func (s *SessionStore) DeclineAutomationV2(account, user, workspace, id string, 
 	p, ok, err := s.GetAutomationV2Proposal(account, user, workspace, id)
 	if err != nil {
 		return err
+	}
+	if !ok && review.ProposalID != "" {
+		p, ok, err = s.GetAutomationV2Proposal(account, user, workspace, review.ProposalID)
+		if err != nil {
+			return err
+		}
 	}
 	if !ok || p.AutomationV2Review != review {
 		return ErrAutomationV2Conflict
@@ -518,9 +591,16 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 		// Declining an exact pending worker review does not stop the authoring
 		// conversation or its active run.
 		var prior AutomationV2Proposal
-		found, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior)
-		if err != nil {
-			return err
+		found := false
+		if m.expected.ProposalID != "" {
+			if ok, err := s.store.GetJSON(automationV2ProposalKey(p.AccountID, m.expected.ProposalID), &prior); err == nil && ok {
+				found = true
+			}
+		}
+		if !found {
+			if ok, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior); err == nil && ok && (m.expected.ProposalID == "" || prior.ProposalID == m.expected.ProposalID) {
+				found = true
+			}
 		}
 		if !found || prior.AutomationV2Review != m.expected {
 			return ErrAutomationV2Conflict
@@ -545,31 +625,39 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 	if current.Automation != nil {
 		return ErrAutomationV2Conflict
 	}
-	var active AutomationV2Record
-	if found, err := s.store.GetJSON(automationV2Key("accepted", p.AccountID, p.SessionID), &active); err != nil {
-		return err
-	} else if found {
-		if active.Cancelled || active.Generation != p.BaseGeneration {
-			return ErrAutomationV2Conflict
-		}
-	} else if p.BaseGeneration != 0 {
-		return ErrAutomationV2Conflict
-	}
-	// A worker review is proposed by an authoring run. The user may accept it
-	// while that same run is still finishing; the exact review and ownership
-	// checks below, not run idleness, authorize acceptance.
-	var prior AutomationV2Proposal
-	found, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior)
-	if err != nil {
-		return err
-	}
-	if found {
-		if err := validateAutomationV2Integrity(prior, in.AccountScopeID, in.UserID, p.WorkspaceID, in.SessionID); err != nil {
+	if p.BaseGeneration != 0 {
+		active, found, err := s.findAcceptedWorker(p.AccountID, in.UserID, p.WorkspaceID, m.expected.ProposalID, p.SessionID)
+		if err != nil {
 			return err
 		}
+		if !found || active.Cancelled || active.Generation != p.BaseGeneration {
+			return ErrAutomationV2Conflict
+		}
 	}
-	if (found && prior.AutomationV2Review != m.expected) || (!found && m.expected != (AutomationV2Review{})) {
-		return ErrAutomationV2Conflict
+	var prior AutomationV2Proposal
+	found := false
+	if m.expected != (AutomationV2Review{}) {
+		if m.expected.ProposalID != "" {
+			if ok, err := s.store.GetJSON(automationV2ProposalKey(p.AccountID, m.expected.ProposalID), &prior); err == nil && ok {
+				found = true
+			} else if ok, err := s.store.GetJSON(automationV2Key("proposal", p.AccountID, p.SessionID), &prior); err == nil && ok && prior.ProposalID == m.expected.ProposalID {
+				found = true
+			} else if rec, recFound, _ := s.findAcceptedWorker(p.AccountID, in.UserID, p.WorkspaceID, m.expected.ProposalID, p.SessionID); recFound {
+				prior = rec.AutomationV2Proposal
+				found = true
+			}
+		}
+		if !found || prior.AutomationV2Review != m.expected {
+			return ErrAutomationV2Conflict
+		}
+		if err := validateAutomationV2Integrity(prior, in.AccountScopeID, in.UserID, prior.WorkspaceID, prior.SessionID); err != nil {
+			return err
+		}
+	} else {
+		// New proposal without expected review: no prior review to match
+		if ok, err := s.store.GetJSON(automationV2ProposalKey(p.AccountID, p.ProposalID), &prior); err == nil && ok {
+			found = true
+		}
 	}
 	if m.accept {
 		if !found || prior.AutomationV2Review != p.AutomationV2Review || ValidateAutomationV2Settings(prior.Document.AutomationV2, time.Now().UnixMilli()) != nil {
@@ -581,10 +669,16 @@ func (s *SessionStore) prepareAutomationV2(in *V3SessionMutationInput) error {
 		}
 		generation := uint64(1)
 		var previous AutomationV2Record
-		if exists, err := s.store.GetJSON(automationV2Key("accepted", p.AccountID, p.SessionID), &previous); err != nil {
-			return err
-		} else if exists {
-			if err := validateAutomationV2Integrity(previous.AutomationV2Proposal, p.AccountID, p.UserID, p.WorkspaceID, p.SessionID); err != nil {
+		if p.BaseGeneration != 0 {
+			prev, prevFound, prevErr := s.findAcceptedWorker(p.AccountID, in.UserID, p.WorkspaceID, m.expected.ProposalID, p.SessionID)
+			if prevErr != nil {
+				return prevErr
+			}
+			if !prevFound {
+				return ErrAutomationV2Conflict
+			}
+			previous = prev
+			if err := validateAutomationV2Integrity(previous.AutomationV2Proposal, p.AccountID, p.UserID, p.WorkspaceID, previous.SessionID); err != nil {
 				return err
 			}
 			if previous.Cancelled || previous.Revision >= prior.Revision {
@@ -622,9 +716,9 @@ func (s *SessionStore) setAutomationV2InBatch(batch *pebble.Batch, in V3SessionM
 	}
 	p := m.proposal
 	if m.decline {
-		if err := batch.Delete([]byte(automationV2Key("proposal", p.AccountID, p.SessionID)), nil); err != nil {
-			return err
-		}
+		_ = batch.Delete([]byte(automationV2Key("proposal", p.AccountID, p.SessionID)), nil)
+		_ = batch.Delete([]byte(automationV2ProposalKey(p.AccountID, p.ProposalID)), nil)
+		_ = batch.Delete([]byte(automationV2SessionProposalKey(p.AccountID, p.SessionID, p.ProposalID)), nil)
 		plan := SessionPlanSnapshot{ID: p.ProposalID, SessionID: p.SessionID, AccountScopeID: p.AccountID, UserID: p.UserID, Title: p.Document.Title, Status: "declined", ApprovalState: "declined", Version: int(p.Revision), Document: &p.Document, CreatedAt: p.CreatedAt, UpdatedAt: time.Now().UnixMilli()}
 		if err := setPlanAcceptancePlanInBatch(batch, plan, nil); err != nil {
 			return err
@@ -632,16 +726,33 @@ func (s *SessionStore) setAutomationV2InBatch(batch *pebble.Batch, in V3SessionM
 		return s.setAutomationV2PermissionInBatch(batch, m)
 	}
 	var value any = p
-	kind := "proposal"
 	if m.accept {
-		kind, value = "accepted", m.record
+		value = m.record
 	}
 	b, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	if err := batch.Set([]byte(automationV2Key(kind, p.AccountID, p.SessionID)), b, nil); err != nil {
-		return err
+	if !m.accept {
+		if err := batch.Set([]byte(automationV2ProposalKey(p.AccountID, p.ProposalID)), b, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(automationV2SessionProposalKey(p.AccountID, p.SessionID, p.ProposalID)), b, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(automationV2Key("proposal", p.AccountID, p.SessionID)), b, nil); err != nil {
+			return err
+		}
+	} else {
+		if err := batch.Set([]byte(automationV2Key("accepted", p.AccountID, m.record.AutomationID)), b, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(automationV2SessionWorkerKey(p.AccountID, p.SessionID, m.record.AutomationID)), b, nil); err != nil {
+			return err
+		}
+		if err := batch.Set([]byte(automationV2Key("accepted", p.AccountID, p.SessionID)), b, nil); err != nil {
+			return err
+		}
 	}
 	if m.accept {
 		// Approve the durable executable snapshot without an ordinary active-plan
@@ -708,6 +819,7 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 	out := []AutomationV2Record{}
 	next := ""
 	bytes := 0
+	seen := make(map[string]bool)
 	for visited, valid := 0, iter.First(); valid; valid = iter.Next() {
 		if visited >= 100 || len(out) >= limit || bytes >= 1024*1024 {
 			return out, next, nil
@@ -718,16 +830,20 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		if err := json.Unmarshal(iter.Value(), &r); err != nil {
 			return nil, "", err
 		}
-		if r.UserID != user || r.WorkspaceID != workspace {
+		if seen[r.AutomationID] {
 			continue
 		}
-		if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, workspace, r.SessionID); err != nil {
+		if r.UserID != user || (workspace != "" && r.WorkspaceID != workspace) {
+			continue
+		}
+		if err := validateAutomationV2Integrity(r.AutomationV2Proposal, account, user, r.WorkspaceID, r.SessionID); err != nil {
 			return nil, "", err
 		}
-		_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, workspace, r.SessionID)
+		_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, r.WorkspaceID, r.SessionID)
 		if err != nil {
 			continue
 		}
+		seen[r.AutomationID] = true
 		r.Archived = isArchived
 		r.ArchivedAt = archivedAt
 		if mode == "exclude" && isArchived {

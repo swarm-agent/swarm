@@ -58,6 +58,12 @@ func (s *Service) ProposeAutomationV2(account, user, workspace, sessionID string
 	return s.store.ProposeAutomationV2(account, user, workspace, sessionID, doc, expected, validateAutomationV2Proposal)
 }
 func validateAutomationV2Proposal(doc *pebblestore.SessionPlanDocument) error {
+	if doc.AutomationV2 == nil && doc.WorkerV2 != nil {
+		doc.AutomationV2 = doc.WorkerV2
+	}
+	if doc.WorkerV2 == nil && doc.AutomationV2 != nil {
+		doc.WorkerV2 = doc.AutomationV2
+	}
 	if err := ValidateExecutablePlanDocument(doc); err != nil {
 		return err
 	}

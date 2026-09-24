@@ -59,7 +59,10 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 		return err
 	}
 	db := s.sessions.store
-	r, found, err := db.GetAutomationV2Record(ref.AccountID, ref.UserID, ref.WorkspaceID, ref.SessionID)
+	r, found, err := db.GetAutomationV2Record(ref.AccountID, ref.UserID, ref.WorkspaceID, ref.AutomationID)
+	if !found {
+		r, found, err = db.GetAutomationV2Record(ref.AccountID, ref.UserID, ref.WorkspaceID, ref.SessionID)
+	}
 	if err != nil {
 		return err
 	}
@@ -83,7 +86,10 @@ func (s *AutomationV2Scheduler) Tick(ctx context.Context, ref store.AutomationV2
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		current, _, err := db.GetAutomationV2Record(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID)
+		current, _, err := db.GetAutomationV2Record(r.AccountID, r.UserID, r.WorkspaceID, r.AutomationID)
+		if err != nil || current.AutomationID == "" {
+			current, _, err = db.GetAutomationV2Record(r.AccountID, r.UserID, r.WorkspaceID, r.SessionID)
+		}
 		if err != nil {
 			failures = append(failures, err)
 			continue

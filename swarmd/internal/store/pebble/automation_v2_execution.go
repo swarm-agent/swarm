@@ -156,6 +156,7 @@ func (s *SessionStore) ScanAutomationV2Accepted(after string) ([]AutomationV2Rec
 	rows := []AutomationV2Record{}
 	next := ""
 	size := 0
+	seen := make(map[string]bool)
 	for valid := it.First(); valid; valid = it.Next() {
 		if len(rows) >= 10 || size >= 1024*1024 {
 			return rows, next, nil
@@ -164,6 +165,10 @@ func (s *SessionStore) ScanAutomationV2Accepted(after string) ([]AutomationV2Rec
 		if err := json.Unmarshal(it.Value(), &r); err != nil {
 			return nil, "", err
 		}
+		if seen[r.AutomationID] {
+			continue
+		}
+		seen[r.AutomationID] = true
 		rows = append(rows, r)
 		next = string(it.Key())
 		size += len(it.Value())
@@ -227,7 +232,10 @@ func (s *SessionStore) ListAutomationV2Occurrences(account, user, workspace, ses
 		if err := json.Unmarshal(it.Value(), &o); err != nil {
 			return nil, "", err
 		}
-		if err := validateAutomationV2Integrity(o.Record.AutomationV2Proposal, account, user, workspace, session); err != nil {
+		if workspace != "" && o.Record.WorkspaceID != workspace {
+			continue
+		}
+		if err := validateAutomationV2Integrity(o.Record.AutomationV2Proposal, account, user, o.Record.WorkspaceID, session); err != nil {
 			return nil, "", err
 		}
 		rows = append(rows, o)
@@ -659,12 +667,14 @@ func (s *SessionStore) setAutomationV2ExecutionInBatch(batch *pebble.Batch, in V
 	r := in.automationV2.record
 	if m.action != "observed" && m.action != "prepared" && m.action != "closing" {
 		if m.action == "delete_automation" {
-			if err := batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), nil); err != nil {
-				return err
-			}
+			_ = batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.AutomationID)), nil)
+			_ = batch.Delete([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), nil)
 		} else {
 			b, err := json.Marshal(r)
 			if err != nil {
+				return err
+			}
+			if err = batch.Set([]byte(automationV2Key("accepted", r.AccountID, r.AutomationID)), b, nil); err != nil {
 				return err
 			}
 			if err = batch.Set([]byte(automationV2Key("accepted", r.AccountID, r.SessionID)), b, nil); err != nil {

@@ -43,7 +43,7 @@ func automationV2Error(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, errors.New("automation ownership or review conflict"))
 		return
 	}
-	writeError(w, http.StatusBadRequest, fmt.Errorf("automation v2 operation rejected: %w", err))
+	writeError(w, http.StatusBadRequest, errors.New("automation v2 operation rejected"))
 }
 
 func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
