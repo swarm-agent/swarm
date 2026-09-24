@@ -132,8 +132,12 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 	if strings.TrimSpace(doc.Info.Goal) == "" {
 		add("info.goal", "plan goal is required")
 	}
+	isTriggerWorker := (doc.AutomationV2 != nil && (doc.AutomationV2.Schedule.Kind == "trigger" || doc.AutomationV2.Schedule.Kind == "")) ||
+		(doc.WorkerV2 != nil && (doc.WorkerV2.Schedule.Kind == "trigger" || doc.WorkerV2.Schedule.Kind == ""))
 	if len(doc.Checkpoints) == 0 {
-		add("checkpoints", "at least one checkpoint is required")
+		if !isTriggerWorker {
+			add("checkpoints", "at least one checkpoint is required")
+		}
 	}
 
 	for i, artifact := range doc.Artifacts {
@@ -197,17 +201,21 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		}
 	}
 
-	activeID := strings.TrimSpace(doc.ActiveCheckpointID)
-	if activeID == "" && firstPendingID != "" {
-		doc.ActiveCheckpointID = firstPendingID
-		activeID = firstPendingID
-	}
-	if firstPendingID == "" {
-		add("active_checkpoint_id", "a pending checkpoint is required for execution")
-	} else if activeID != "" {
-		if _, ok := pendingIDs[activeID]; !ok {
-			add("active_checkpoint_id", fmt.Sprintf("must identify a pending checkpoint; got %q", activeID))
+	if len(doc.Checkpoints) > 0 {
+		activeID := strings.TrimSpace(doc.ActiveCheckpointID)
+		if activeID == "" && firstPendingID != "" {
+			doc.ActiveCheckpointID = firstPendingID
+			activeID = firstPendingID
 		}
+		if firstPendingID == "" {
+			add("active_checkpoint_id", "a pending checkpoint is required for execution")
+		} else if activeID != "" {
+			if _, ok := pendingIDs[activeID]; !ok {
+				add("active_checkpoint_id", fmt.Sprintf("must identify a pending checkpoint; got %q", activeID))
+			}
+		}
+	} else if !isTriggerWorker {
+		add("active_checkpoint_id", "a pending checkpoint is required for execution")
 	} // An empty active id resolves deterministically to the first pending checkpoint.
 
 	if len(validationErr.Issues) > 0 {

@@ -91,6 +91,24 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 	if a == nil {
 		return nil
 	}
+	if a.Expiration.Kind == "" {
+		a.Expiration.Kind = "indefinite"
+	}
+	if a.Schedule.Kind == "" {
+		a.Schedule.Kind = "trigger"
+	}
+	if a.SchemaVersion == 0 {
+		a.SchemaVersion = 2
+	}
+	if !a.ActivateOnAccept {
+		a.ActivateOnAccept = true
+	}
+	if a.Missed == "" {
+		a.Missed = "skip"
+	}
+	if a.Overlap == "" {
+		a.Overlap = "serialize"
+	}
 	if a.SchemaVersion != 2 || !a.ActivateOnAccept || (a.Missed != "skip" && a.Missed != "coalesce") || (a.Overlap != "serialize" && a.Overlap != "independent") {
 		return errors.New("invalid automation v2 policy")
 	}
@@ -169,9 +187,12 @@ func ValidateAutomationV2Settings(a *AutomationV2Settings, now int64) error {
 		if fields[2] != "*" && fields[4] != "*" {
 			return errors.New("both cron day fields cannot be restricted")
 		}
-	case "trigger":
+	case "trigger", "":
 		if s.IntervalSeconds != 0 || s.Cron != "" {
 			return errors.New("trigger schedule must not declare interval_seconds or cron")
+		}
+		if a.Schedule.Kind == "" {
+			a.Schedule.Kind = "trigger"
 		}
 	default:
 		return errors.New("explicit schedule kind required")

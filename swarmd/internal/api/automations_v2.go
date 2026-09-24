@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -33,6 +34,7 @@ type automationV2TriggerRequest struct {
 	SessionID    string         `json:"session_id,omitempty"`
 	AutomationID string         `json:"automation_id,omitempty"`
 	WorkerID     string         `json:"worker_id,omitempty"`
+	Prompt       string         `json:"prompt,omitempty"`
 	Context      map[string]any `json:"context,omitempty"`
 }
 
@@ -41,7 +43,7 @@ func automationV2Error(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, errors.New("automation ownership or review conflict"))
 		return
 	}
-	writeError(w, http.StatusBadRequest, errors.New("automation v2 operation rejected"))
+	writeError(w, http.StatusBadRequest, fmt.Errorf("automation v2 operation rejected: %w", err))
 }
 
 func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +205,20 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, errors.New("target worker or session required"))
 			return
 		}
+		if strings.TrimSpace(req.Prompt) != "" {
+			if req.Context == nil {
+				req.Context = make(map[string]any)
+			}
+			req.Context["prompt"] = strings.TrimSpace(req.Prompt)
+		}
+		if record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID); err == nil && ok {
+			hasCheckpoints := len(record.Document.Checkpoints) > 0
+			hasPrompt := req.Context != nil && strings.TrimSpace(fmt.Sprint(req.Context["prompt"])) != "" && req.Context["prompt"] != nil
+			if !hasCheckpoints && !hasPrompt {
+				automationV2Error(w, errors.New("worker has no pre-configured jobs; dynamic prompt is required to trigger execution"))
+				return
+			}
+		}
 		occurrence, err := s.sessions.TriggerAutomationV2(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID, req.Context)
 		if err != nil {
 			automationV2Error(w, err)
@@ -254,6 +270,9 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 		}
 		response = map[string]any{"ok": true, "declined": true}
 	} else if r.URL.Path == AutomationsV2Path+"/proposal" {
+		if req.Action == "" {
+			req.Action = "propose_automation"
+		}
 		if req.Action != "propose_automation" || req.Document == nil {
 			automationV2Error(w, errors.New("proposal required"))
 			return
@@ -263,8 +282,11 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, err)
 			return
 		}
-		response = map[string]any{"proposal": proposal}
+		response = map[string]any{"ok": true, "proposal": proposal}
 	} else {
+		if req.Action == "" {
+			req.Action = "accept_automation"
+		}
 		if req.Action != "accept_automation" || req.Document != nil || req.Review.ProposalID == "" || req.Review.Revision == 0 || req.Review.Digest == "" {
 			automationV2Error(w, errors.New("exact acceptance required"))
 			return
@@ -297,13 +319,14 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			response = map[string]any{
+				"ok":           true,
 				"record":       record,
 				"token_minted": true,
 				"token_path":   security.SecretsFilePath(),
 				"message":      "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker.",
 			}
 		} else {
-			response = map[string]any{"record": record}
+			response = map[string]any{"ok": true, "record": record}
 		}
 	}
 	// The foundation committed its durable outbox before returning. Wake the

@@ -34,6 +34,21 @@ func (s *Service) ProposeAutomationV2(account, user, workspace, sessionID string
 	if doc.AutomationV2.Expiration == (pebblestore.AutomationV2Expiration{}) {
 		doc.AutomationV2.Expiration.Kind = "indefinite"
 	}
+	if doc.AutomationV2.Schedule.Kind == "" {
+		doc.AutomationV2.Schedule.Kind = "trigger"
+	}
+	if doc.AutomationV2.SchemaVersion == 0 {
+		doc.AutomationV2.SchemaVersion = 2
+	}
+	if !doc.AutomationV2.ActivateOnAccept {
+		doc.AutomationV2.ActivateOnAccept = true
+	}
+	if doc.AutomationV2.Missed == "" {
+		doc.AutomationV2.Missed = "skip"
+	}
+	if doc.AutomationV2.Overlap == "" {
+		doc.AutomationV2.Overlap = "serialize"
+	}
 	if err := validateAutomationV2Proposal(&doc); err != nil {
 		return pebblestore.AutomationV2Proposal{}, err
 	}

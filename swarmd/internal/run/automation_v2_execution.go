@@ -211,6 +211,42 @@ func (h *AutomationV2ExecutionHost) Start(ctx context.Context, o store.Automatio
 			// a single authorized execution copy, not another recurring definition.
 			doc.AutomationV2 = nil
 			doc.WorkerV2 = nil
+			var dynamicPrompt string
+			if promptVal, ok := o.TriggerContext["prompt"].(string); ok {
+				dynamicPrompt = strings.TrimSpace(promptVal)
+			}
+			if dynamicPrompt != "" || len(doc.Checkpoints) == 0 {
+				taskGoal := dynamicPrompt
+				if taskGoal == "" {
+					taskGoal = strings.TrimSpace(doc.Info.Goal)
+					if taskGoal == "" {
+						taskGoal = "Execute specialist task according to worker instructions and workspace context"
+					}
+				}
+				cpTitle := taskGoal
+				if len(cpTitle) > 80 {
+					cpTitle = cpTitle[:77] + "..."
+				}
+				cpID := "cp-1"
+				if strings.TrimSpace(doc.Title) == "" {
+					doc.Title = cpTitle
+				}
+				if strings.TrimSpace(doc.Info.Goal) == "" {
+					doc.Info.Goal = taskGoal
+				}
+				doc.Checkpoints = []store.SessionPlanCheckpoint{
+					{
+						ID:                 cpID,
+						Order:              1,
+						Title:              cpTitle,
+						Objective:          taskGoal,
+						Tasks:              []string{taskGoal},
+						AcceptanceCriteria: []string{"Task completed according to worker instructions and workspace context"},
+						Status:             sessions.PlanCheckpointStatusPending,
+					},
+				}
+				doc.ActiveCheckpointID = cpID
+			}
 			if len(o.TriggerContext) > 0 {
 				ctxBytes, _ := json.MarshalIndent(o.TriggerContext, "", "  ")
 				triggerContextBlock := fmt.Sprintf("\n\n[Trigger Event Context]\n%s\n", string(ctxBytes))
