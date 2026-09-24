@@ -9,29 +9,37 @@ export function AutomationToolPage() {
   const navigate = useNavigate()
   const { workspaces, loading } = useWorkspaceLauncher({ applyDocumentTheme: false, autoRefresh: false, browseDuringRefresh: false })
   if (loading) return <main role="status" className="p-6">Loading workspace…</main>
-  const workspace = resolveWorkspaceBySlug(workspaces, params.workspaceSlug ?? '')
-  if (!workspace?.workspaceId) return <main className="p-6"><h1>Workspace unavailable</h1><p>Choose an accessible workspace before opening workers.</p><a href="/">Workspaces</a></main>
+  const workspace = params.workspaceSlug ? resolveWorkspaceBySlug(workspaces, params.workspaceSlug) : undefined
   const targetWorkerId = (params.workerId || search?.workerId || search?.automationId || '').trim()
   return (
     <AutomationWorkspace
-      key={workspace.workspaceId}
-      workspaceId={workspace.workspaceId}
-      workspacePath={workspace.path}
-      workspaceName={workspace.workspaceName}
-      workspaceBindingId={workspace.localWorkspaceBindingId}
-      workspaceSlug={params.workspaceSlug!}
+      key={workspace?.workspaceId ?? 'global-workers'}
+      workspaceId={workspace?.workspaceId}
+      workspacePath={workspace?.path}
+      workspaceName={workspace?.workspaceName}
+      workspaceBindingId={workspace?.localWorkspaceBindingId}
+      workspaceSlug={params.workspaceSlug}
+      workspaces={workspaces}
       initialSessionId={targetWorkerId || undefined}
-      onOpenSession={(id) => {
-        if (params.workspaceSlug) {
-          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: params.workspaceSlug, sessionId: id } })
+      onOpenSession={(id, targetSlug) => {
+        const slug = targetSlug || params.workspaceSlug
+        if (slug) {
+          void navigate({ to: '/$workspaceSlug/$sessionId', params: { workspaceSlug: slug, sessionId: id } })
         }
       }}
-      onSelectWorker={(id) => {
-        if (params.workspaceSlug) {
+      onSelectWorker={(id, targetSlug) => {
+        const slug = targetSlug || params.workspaceSlug
+        if (slug) {
           if (id) {
-            void navigate({ to: '/$workspaceSlug/workers/$workerId', params: { workspaceSlug: params.workspaceSlug, workerId: id }, search: {} })
+            void navigate({ to: '/$workspaceSlug/workers/$workerId', params: { workspaceSlug: slug, workerId: id }, search: {} })
           } else {
-            void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: params.workspaceSlug }, search: {} })
+            void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: slug }, search: {} })
+          }
+        } else {
+          if (id) {
+            void navigate({ to: '/workers/$workerId', params: { workerId: id } as any, search: {} })
+          } else {
+            void navigate({ to: '/workers', search: {} })
           }
         }
       }}

@@ -888,6 +888,23 @@ func TestAutomationV2MultiWorkerAndCrossWorkspace(t *testing.T) {
 		t.Fatalf("unexpected w1 records: %v", w1Records)
 	}
 
+	// Verify account-wide listing across all workspaces when workspace is empty or "all"
+	allRecordsEmpty, _, err := s.ListAutomationV2Records("account", "owner", "", "", 10)
+	if err != nil {
+		t.Fatalf("failed to list all records with empty workspace: %v", err)
+	}
+	if len(allRecordsEmpty) != 2 {
+		t.Fatalf("expected 2 records across workspaces with empty workspace, got %d", len(allRecordsEmpty))
+	}
+
+	allRecordsAll, _, err := s.ListAutomationV2Records("account", "owner", "all", "", 10)
+	if err != nil {
+		t.Fatalf("failed to list all records with 'all' workspace: %v", err)
+	}
+	if len(allRecordsAll) != 2 {
+		t.Fatalf("expected 2 records across workspaces with 'all', got %d", len(allRecordsAll))
+	}
+
 	// 4. Edit worker 1 without affecting worker 2
 	revisedDoc1 := worker1Doc
 	revisedDoc1.Title = "Worker 1 Revised"

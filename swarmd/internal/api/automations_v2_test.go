@@ -207,6 +207,15 @@ func TestAutomationV2RegisteredReviewAcceptance(t *testing.T) {
 			if w.Code != 200 || !strings.Contains(w.Body.String(), first.AutomationID) {
 				t.Fatal("discovery missing accepted record", w.Body.String())
 			}
+			// Verify workspace_id omitted and "all" return records across workspaces
+			wEmptyWS := call(http.MethodGet, "?limit=1", "", "owner", false)
+			if wEmptyWS.Code != 200 || !strings.Contains(wEmptyWS.Body.String(), first.AutomationID) {
+				t.Fatal("discovery with omitted workspace_id failed", wEmptyWS.Code, wEmptyWS.Body.String())
+			}
+			wAllWS := call(http.MethodGet, "?workspace_id=all&limit=1", "", "owner", false)
+			if wAllWS.Code != 200 || !strings.Contains(wAllWS.Body.String(), first.AutomationID) {
+				t.Fatal("discovery with workspace_id=all failed", wAllWS.Code, wAllWS.Body.String())
+			}
 			// Requirement: registered management routes are user-only CAS changes;
 			// rejected principals/generations must leave the active policy intact.
 			control := automationV2Request{Action: "pause", WorkspaceID: workspaceID, SessionID: "conversation", Generation: first.Generation}

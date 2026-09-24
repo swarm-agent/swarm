@@ -199,7 +199,11 @@ func (s *Service) AutomationV2Progress(account, user, workspace, id, timezone, c
 	if !found {
 		return out, store.ErrAutomationV2Conflict
 	}
-	rows, next, err := s.store.ListAutomationV2Occurrences(account, user, workspace, r.SessionID, cursor, false, 25)
+	effectiveWorkspace := workspace
+	if effectiveWorkspace == "" || effectiveWorkspace == "all" {
+		effectiveWorkspace = r.WorkspaceID
+	}
+	rows, next, err := s.store.ListAutomationV2Occurrences(account, user, effectiveWorkspace, r.SessionID, cursor, false, 25)
 	if err != nil {
 		return out, err
 	}

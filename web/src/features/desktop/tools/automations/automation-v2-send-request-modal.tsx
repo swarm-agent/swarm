@@ -20,7 +20,7 @@ export interface AutomationV2SendRequestModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   record: AutomationV2Record | null
-  workspaceId: string
+  workspaceId?: string
   workspaceSlug?: string
   onOpenSession?: (sessionId: string) => void
 }
@@ -69,7 +69,7 @@ export function AutomationV2SendRequestModal({
       const trimmedPrompt = prompt.trim()
 
       const res = await desktopAutomationV2.trigger({
-        workspace_id: record.workspace_id || workspaceId,
+        workspace_id: record.workspace_id || workspaceId || '',
         worker_id: targetWorkerId,
         session_id: record.session_id,
         prompt: trimmedPrompt || undefined,

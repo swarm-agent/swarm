@@ -56,7 +56,7 @@ export class DesktopAutomationV2Runtime {
       if (this.flights.get(key) !== promise) return
       const records = [...(data.records ?? []), ...(data.record ? [data.record] : []), ...(data.proposal ? [data.proposal] : []), ...(data.progress ? [data.progress.record, ...data.progress.occurrences.map(occurrence => occurrence.accepted)] : [])]
       const matchesRecordWorkspace = (r: { workspace_id: string; workspace_ids?: string[] }, wid?: string) =>
-        !wid || r.workspace_id === wid || (Array.isArray(r.workspace_ids) && r.workspace_ids.includes(wid))
+        !wid || wid === 'all' || r.workspace_id === wid || (Array.isArray(r.workspace_ids) && r.workspace_ids.includes(wid))
       if (records.some(r => !matchesRecordWorkspace(r, input.workspace_id) || (input.session_id && r.session_id !== input.session_id)) || (data.progress && data.progress.timezone !== input.timezone)) throw new Error('Automation response scope mismatch')
       this.deps.dispatch({ type: 'automationV2.finish', key, requestId, generation, data })
     }).catch(error => {
@@ -71,7 +71,7 @@ export class DesktopAutomationV2Runtime {
   }
   invalidate(workspaceId?: string, sessionId?: string) {
     this.deps.dispatch({ type: 'automationV2.invalidate', workspaceId, sessionId })
-    for (const { input } of this.demand.values()) if ((!workspaceId || input.workspace_id === workspaceId) && (!sessionId || !input.session_id || input.session_id === sessionId)) void this.refresh(input)
+    for (const { input } of this.demand.values()) if ((!workspaceId || !input.workspace_id || input.workspace_id === 'all' || input.workspace_id === workspaceId) && (!sessionId || !input.session_id || input.session_id === sessionId)) void this.refresh(input)
   }
   acceptFrame(frame: { kind: string; [key: string]: unknown }) {
     if (['cursor.error', 'rehydrate.required'].includes(frame.kind)) { this.invalidate(); return }

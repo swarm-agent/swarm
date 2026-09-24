@@ -76,5 +76,7 @@ This document records the exact, comprehensive list of problems discovered durin
   - Allow running and review-pending worker execution sessions to appear in `in_progress` / `needs_review` in Desktop sidebar.
 - [ ] **Phase 4: Concurrency & Queue Alignment**
   - Implement durable queueing or accurate UI messaging for overlapping triggers.
-- [ ] **Phase 5: Global Account-Level Worker View**
-  - Support listing workers across all workspaces.
+- [x] **Phase 5: Global Account-Level Worker View**
+  - Backend automations v2 list API, progress, proposal, and Pebble store support listing and querying workers across all workspaces when `workspace_id` is omitted or `"all"`.
+  - Added global top-level routes `/workers` and `/workers/$workerId` in Desktop router so users can view all workers without requiring an active or compulsory workspace selection.
+  - Workers overview page supports flat overview across all workspaces (default) with workspace attribution badges, grouping by workspace with collapsible/identifiable workspace sections, and an optional workspace filter dropdown.

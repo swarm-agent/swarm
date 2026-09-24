@@ -319,6 +319,20 @@ const workspaceAutomationsRoute = createRoute({
   component: () => null,
 })
 
+const globalWorkersRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/workers',
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
+const globalWorkersDetailRoute = createRoute({
+  getParentRoute: () => conversationRoute,
+  path: '/workers/$workerId',
+  validateSearch: validateWorkspaceSessionSearch,
+  component: AutomationToolPage,
+})
+
 const workspaceTaskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/task',
@@ -453,7 +467,7 @@ const routeTree = rootRoute.addChildren([
   workspaceEnvironmentsRoute,
   usageRoute,
   workspaceUsageRoute,
-  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceWorkersDetailRoute, workspaceWorkerDetailRoute, workspaceAutomationsRoute]),
+  conversationRoute.addChildren([workspaceRoute, workspaceSessionRoute, workspaceWorkersRoute, workspaceWorkersDetailRoute, workspaceWorkerDetailRoute, workspaceAutomationsRoute, globalWorkersRoute, globalWorkersDetailRoute]),
   workspaceVideoSessionRoute,
   workspaceTaskRoute,
   workspaceWorktreeRoute,

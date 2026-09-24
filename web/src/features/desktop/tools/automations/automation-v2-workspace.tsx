@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertCircle,
   AlertTriangle,
@@ -16,9 +16,12 @@ import {
   Copy,
   ExternalLink,
   FileText,
+  Folder,
   GitBranch,
   Inbox,
   KeyRound,
+  Layers,
+  List,
   LoaderCircle,
   MessageSquare,
   Pause,
@@ -215,7 +218,7 @@ export function AutomationCardPulse({
   cancelled,
   nextDueAt,
 }: {
-  workspaceId: string
+  workspaceId?: string
   sessionId: string
   timezone?: string
   enabled: boolean
@@ -223,7 +226,7 @@ export function AutomationCardPulse({
   nextDueAt?: number
 }) {
   const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
-  const input = useMemo(() => ({ action: 'progress' as const, workspace_id: workspaceId, session_id: sessionId, timezone: tz }), [workspaceId, sessionId, tz])
+  const input = useMemo(() => ({ action: 'progress' as const, workspace_id: workspaceId || '', session_id: sessionId, timezone: tz }), [workspaceId, sessionId, tz])
   const page = useAutomationV2Page(input)
   const progress = page?.data?.progress
   const occurrences = progress?.occurrences
@@ -540,7 +543,7 @@ export function PendingAutomationCard({
   workspaceSlug,
 }: {
   proposal: AutomationV2Proposal
-  workspaceId: string
+  workspaceId?: string
   isSelected: boolean
   isExpanded: boolean
   onToggleExpand: () => void
@@ -568,7 +571,7 @@ export function PendingAutomationCard({
     try {
       const response = await desktopAutomationV2.mutate({
         action: 'accept_automation',
-        workspace_id: workspaceId || proposal.workspace_id,
+        workspace_id: workspaceId || proposal.workspace_id || '',
         session_id: proposal.session_id,
         review: automationV2Review(proposal),
       })
@@ -591,7 +594,7 @@ export function PendingAutomationCard({
     try {
       await desktopAutomationV2.mutate({
         action: 'decline_automation',
-        workspace_id: workspaceId || proposal.workspace_id,
+        workspace_id: workspaceId || proposal.workspace_id || '',
         session_id: proposal.session_id,
         review: automationV2Review(proposal),
       })
@@ -846,18 +849,20 @@ export function AutomationV2Workspace({
   workspaceName,
   workspaceBindingId,
   workspaceSlug,
+  workspaces,
   initialSessionId,
   onOpenSession,
   onSelectWorker,
 }: {
-  workspaceId: string
-  workspacePath: string
-  workspaceName: string
+  workspaceId?: string
+  workspacePath?: string
+  workspaceName?: string
   workspaceBindingId?: string
   workspaceSlug?: string
+  workspaces?: Array<{ workspaceId?: string; workspaceName: string; path: string; slug?: string }>
   initialSessionId?: string
-  onOpenSession?: (id: string) => void
-  onSelectWorker?: (id?: string) => void
+  onOpenSession?: (id: string, targetSlug?: string) => void
+  onSelectWorker?: (id?: string, targetSlug?: string) => void
 }) {
   const [cursor, setCursor] = useState<string>()
   const [selected, setSelected] = useState(initialSessionId || '')
@@ -870,6 +875,8 @@ export function AutomationV2Workspace({
   const [draftPrompt, setDraftPrompt] = useState<string | undefined>()
   const [searchQuery, setSearchQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'enabled' | 'paused' | 'archived'>('all')
+  const [selectedWorkspaceFilter, setSelectedWorkspaceFilter] = useState<string>(workspaceId || 'all')
+  const [organizationMode, setOrganizationMode] = useState<'flat' | 'by_workspace'>('flat')
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null)
   const [deleteConfirmRecord, setDeleteConfirmRecord] = useState<AutomationV2Record | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
@@ -877,6 +884,33 @@ export function AutomationV2Workspace({
   const [workspaceMode, setWorkspaceMode] = useState<'workers' | 'inbox' | 'split'>('workers')
   const [inboxWorkerFilter, setInboxWorkerFilter] = useState<string>('all')
   const [inboxHighlightId, setInboxHighlightId] = useState<string | undefined>()
+
+  const knownWorkspaces = useMemo(() => {
+    const list: Array<{ id: string; name: string }> = []
+    if (workspaces && workspaces.length > 0) {
+      for (const w of workspaces) {
+        const id = w.workspaceId || w.path || w.slug
+        if (id) {
+          list.push({ id, name: w.workspaceName || w.slug || id })
+        }
+      }
+    }
+    return list
+  }, [workspaces])
+
+  const getWorkspaceDisplayName = useCallback((wsId?: string) => {
+    if (!wsId || wsId === 'all') return 'All Workspaces'
+    const match = workspaces?.find((w) => w.workspaceId === wsId || w.slug === wsId || w.path === wsId)
+    if (match) return match.workspaceName || match.slug || wsId
+    if (wsId === workspaceId && workspaceName) return workspaceName
+    return wsId
+  }, [workspaces, workspaceId, workspaceName])
+
+  useEffect(() => {
+    if (workspaceId) {
+      setSelectedWorkspaceFilter(workspaceId)
+    }
+  }, [workspaceId])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -899,12 +933,13 @@ export function AutomationV2Workspace({
   }, [])
 
   const isArchivedTab = statusFilter === 'archived'
-  const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: !isArchivedTab ? cursor : undefined }), [workspaceId, cursor, isArchivedTab])
+  const queryWorkspaceId = selectedWorkspaceFilter === 'all' ? undefined : selectedWorkspaceFilter
+  const activeInput = useMemo(() => ({ action: 'list' as const, workspace_id: queryWorkspaceId, cursor: !isArchivedTab ? cursor : undefined }), [queryWorkspaceId, cursor, isArchivedTab])
   const activePage = useAutomationV2Page(activeInput)
   const rawActiveRecords = activePage?.data?.records ?? []
   const activeRecords = useMemo(() => deduplicateWorkerRecords(rawActiveRecords), [rawActiveRecords])
 
-  const archivedInput = useMemo(() => ({ action: 'list' as const, workspace_id: workspaceId, cursor: isArchivedTab ? cursor : undefined, archived_mode: 'only' as const }), [workspaceId, cursor, isArchivedTab])
+  const archivedInput = useMemo(() => ({ action: 'list' as const, workspace_id: queryWorkspaceId, cursor: isArchivedTab ? cursor : undefined, archived_mode: 'only' as const }), [queryWorkspaceId, cursor, isArchivedTab])
   const archivedPage = useAutomationV2Page(archivedInput)
   const rawArchivedRecords = archivedPage?.data?.records ?? []
   const archivedRecords = useMemo(() => deduplicateWorkerRecords(rawArchivedRecords), [rawArchivedRecords])
@@ -913,7 +948,7 @@ export function AutomationV2Workspace({
   const records = isArchivedTab ? archivedRecords : activeRecords
 
   const pendingProposals = useDesktopV3CacheSelector((state) =>
-    selectPendingAutomationV2Proposals(state, workspaceId)
+    selectPendingAutomationV2Proposals(state, queryWorkspaceId)
   )
 
   const pendingProposalBySessionId = useMemo(() => {
@@ -978,8 +1013,9 @@ export function AutomationV2Workspace({
 
   // Discover and reconcile automation management conversations
   useEffect(() => {
+    if (!workspaceId) return
     let cancelled = false
-    void loadAutomationConversations(workspaceId, workspacePath).then((page) => {
+    void loadAutomationConversations(workspaceId, workspacePath || '').then((page) => {
       if (cancelled) return
       for (const id of page.session_order) {
         const snapshot = getDesktopV3CacheSnapshot()
@@ -1225,6 +1261,25 @@ export function AutomationV2Workspace({
   const time = (ms: number, tz?: string) =>
     formatScheduleDateTime(ms, tz || primaryTimezone)
 
+  const workspaceGroups = useMemo(() => {
+    const groups = new Map<string, { workspaceId: string; workspaceName: string; records: AutomationV2Record[]; proposals: AutomationV2Proposal[] }>()
+    for (const p of filteredPendingProposals) {
+      const wsId = p.workspace_id || 'default'
+      if (!groups.has(wsId)) {
+        groups.set(wsId, { workspaceId: wsId, workspaceName: getWorkspaceDisplayName(wsId), records: [], proposals: [] })
+      }
+      groups.get(wsId)!.proposals.push(p)
+    }
+    for (const r of filteredRecords) {
+      const wsId = r.workspace_id || 'default'
+      if (!groups.has(wsId)) {
+        groups.set(wsId, { workspaceId: wsId, workspaceName: getWorkspaceDisplayName(wsId), records: [], proposals: [] })
+      }
+      groups.get(wsId)!.records.push(r)
+    }
+    return Array.from(groups.values())
+  }, [filteredPendingProposals, filteredRecords, getWorkspaceDisplayName])
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[var(--app-bg)] text-sm text-[var(--app-text)]">
       {/* Top Header */}
@@ -1232,7 +1287,11 @@ export function AutomationV2Workspace({
         <div className="flex min-w-0 items-center gap-3">
           <RefreshCcw size={16} className="text-[var(--app-primary)]" />
           <h1 className="font-semibold">Workers</h1>
-          <span className="truncate text-xs text-[var(--app-text-muted)]">{workspaceName}</span>
+          <span className="truncate text-xs text-[var(--app-text-muted)]">
+            {selectedWorkspaceFilter === 'all'
+              ? 'All Workspaces (Account-Wide)'
+              : (workspaceName || getWorkspaceDisplayName(selectedWorkspaceFilter))}
+          </span>
 
           <div className="ml-3 flex items-center rounded-xl bg-[var(--app-surface-hover)] p-0.5 text-xs">
             <button
@@ -1460,11 +1519,13 @@ export function AutomationV2Workspace({
                 for (const id of unhydratedPendingSessionIds) {
                   void desktopAutomationV2.reconcileSession(id).catch(() => {})
                 }
-                void loadAutomationConversations(workspaceId, workspacePath).then((p) => {
-                  for (const id of p.session_order) {
-                    void desktopAutomationV2.reconcileSession(id).catch(() => {})
-                  }
-                }).catch(() => {})
+                if (workspaceId) {
+                  void loadAutomationConversations(workspaceId, workspacePath || '').then((p) => {
+                    for (const id of p.session_order) {
+                      void desktopAutomationV2.reconcileSession(id).catch(() => {})
+                    }
+                  }).catch(() => {})
+                }
               }}
             >
               <RefreshCcw size={13} />
@@ -1599,19 +1660,76 @@ export function AutomationV2Workspace({
                   Archived ({archivedCount})
                 </button>
               </div>
+
+              <div className="flex items-center gap-2">
+                {/* Workspace Filter Dropdown */}
+                <div className="flex items-center gap-1.5" data-testid="workers-workspace-filter">
+                  <Folder size={12} className="text-[var(--app-text-muted)] shrink-0" />
+                  <select
+                    aria-label="Filter by workspace"
+                    data-testid="workspace-filter-select"
+                    value={selectedWorkspaceFilter}
+                    onChange={(e) => setSelectedWorkspaceFilter(e.target.value)}
+                    className="h-8 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-2.5 text-xs text-[var(--app-text)] outline-none focus:border-[var(--app-primary)] cursor-pointer"
+                  >
+                    <option value="all">All Workspaces</option>
+                    {knownWorkspaces.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* View Mode Toggle (Flat vs By Workspace) */}
+                <div className="flex items-center rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-0.5 text-xs" data-testid="workers-view-mode-toggle">
+                  <button
+                    type="button"
+                    data-testid="view-mode-flat"
+                    className={cn(
+                      "px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5",
+                      organizationMode === 'flat'
+                        ? "bg-[var(--app-surface-hover)] text-[var(--app-text)] font-semibold"
+                        : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                    )}
+                    onClick={() => setOrganizationMode('flat')}
+                    title="Flat list of all workers"
+                    aria-label="Flat view"
+                  >
+                    <List size={12} />
+                    <span>Flat</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="view-mode-by-workspace"
+                    className={cn(
+                      "px-2.5 py-1 rounded-md text-xs font-medium transition-colors flex items-center gap-1.5",
+                      organizationMode === 'by_workspace'
+                        ? "bg-[var(--app-surface-hover)] text-[var(--app-text)] font-semibold"
+                        : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                    )}
+                    onClick={() => setOrganizationMode('by_workspace')}
+                    title="Group workers by workspace"
+                    aria-label="Group by workspace"
+                  >
+                    <Layers size={12} />
+                    <span>By Workspace</span>
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
-          {/* Flat Overview of All Automations */}
-          <div className="space-y-4" data-testid="automations-flat-overview">
-            {filteredPendingProposals.map((proposal) => {
+          {/* Flat Overview or Grouped by Workspace Overview of All Automations */}
+          {(() => {
+            const renderPendingCard = (proposal: AutomationV2Proposal) => {
               const isSelected = selected === proposal.session_id
               const isExpanded = Boolean(expandedIds[proposal.session_id])
               return (
                 <PendingAutomationCard
                   key={`pending-${proposal.proposal_id}-${proposal.revision}`}
                   proposal={proposal}
-                  workspaceId={workspaceId}
+                  workspaceId={proposal.workspace_id || workspaceId}
                   isSelected={isSelected}
                   isExpanded={isExpanded}
                   onToggleExpand={() => toggleExpanded(proposal.session_id)}
@@ -1620,8 +1738,9 @@ export function AutomationV2Workspace({
                   workspaceSlug={workspaceSlug}
                 />
               )
-            })}
-            {filteredRecords.map((record) => {
+            }
+
+            const renderWorkerCard = (record: AutomationV2Record) => {
               const docAny = record.document as Record<string, any> | undefined
               const schedule = (docAny?.automation_v2?.schedule ||
                 docAny?.worker_v2?.schedule) as AutomationSchedule | undefined
@@ -1682,6 +1801,12 @@ export function AutomationV2Workspace({
                         )}
                         <span>{statusText}</span>
                       </span>
+                      {selectedWorkspaceFilter === 'all' && record.workspace_id && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-[var(--app-surface-hover)] border border-[var(--app-border)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-text-muted)]" data-testid="worker-workspace-badge">
+                          <Folder size={11} className="text-[var(--app-primary)] shrink-0" />
+                          <span className="max-w-[120px] truncate">{getWorkspaceDisplayName(record.workspace_id)}</span>
+                        </span>
+                      )}
                       {pendingProposal && (
                         <span className="inline-flex items-center gap-1 rounded-md border border-[var(--app-warning-border,rgba(245,158,11,0.3))] bg-[var(--app-warning-bg,rgba(245,158,11,0.12))] px-2 py-0.5 text-[10.5px] font-medium text-[var(--app-warning)]">
                           Revision {pendingProposal.revision} pending approval
@@ -1923,8 +2048,40 @@ export function AutomationV2Workspace({
                   )}
                 </article>
               )
-            })}
-          </div>
+            }
+
+            return (
+              <div className="space-y-4" data-testid="automations-flat-overview">
+                {organizationMode === 'by_workspace' ? (
+                  workspaceGroups.map((group) => {
+                    const groupPending = filteredPendingProposals.filter((p) => (p.workspace_id || 'default') === group.workspaceId)
+                    const groupRecords = filteredRecords.filter((r) => (r.workspace_id || 'default') === group.workspaceId)
+                    if (groupPending.length === 0 && groupRecords.length === 0) return null
+                    return (
+                      <div key={group.workspaceId} className="space-y-3" data-testid="workspace-group-section" data-workspace-id={group.workspaceId}>
+                        <div className="flex items-center gap-2 border-b border-[var(--app-border)]/70 pb-1.5 pt-3">
+                          <Folder size={14} className="text-[var(--app-primary)]" />
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--app-text)]">{group.workspaceName}</h3>
+                          <span className="rounded-full bg-[var(--app-surface-hover)] px-2 py-0.5 text-[10px] text-[var(--app-text-muted)] font-medium">
+                            {groupRecords.length + groupPending.length} {groupRecords.length + groupPending.length === 1 ? 'worker' : 'workers'}
+                          </span>
+                        </div>
+                        <div className="space-y-4">
+                          {groupPending.map(renderPendingCard)}
+                          {groupRecords.map(renderWorkerCard)}
+                        </div>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <>
+                    {filteredPendingProposals.map(renderPendingCard)}
+                    {filteredRecords.map(renderWorkerCard)}
+                  </>
+                )}
+              </div>
+            )
+          })()}
 
           {/* Dedicated Request Box & Lifecycle Tracker for Outside /workers Page */}
           <AutomationV2OverviewRequestBox
@@ -2192,7 +2349,8 @@ function AutomationV2OverviewRequestBox({
   onViewMailbox,
 }: {
   records: AutomationV2Record[]
-  workspaceId: string
+  workspaceId?: string
+  workspacePath?: string
   workspaceSlug?: string
   onOpenSession?: (id: string) => void
   onControlRecord?: (record: AutomationV2Record, action: 'pause' | 'resume') => void
@@ -2219,7 +2377,7 @@ function AutomationV2OverviewRequestBox({
   const progressInput = useMemo(
     () => ({
       action: 'progress' as const,
-      workspace_id: selectedRecord?.workspace_id || workspaceId,
+      workspace_id: selectedRecord?.workspace_id || workspaceId || '',
       session_id: selectedSessionId || 'default',
       timezone: 'UTC',
     }),
@@ -2239,7 +2397,7 @@ function AutomationV2OverviewRequestBox({
     setSubmittedOcc(null)
     try {
       const occ = await desktopAutomationV2.trigger({
-        workspace_id: selectedRecord.workspace_id || workspaceId,
+        workspace_id: selectedRecord.workspace_id || workspaceId || '',
         worker_id: selectedRecord.automation_id || selectedRecord.session_id,
         session_id: selectedRecord.session_id,
         prompt: trimmed,
@@ -2691,8 +2849,8 @@ export function AutomationV2WorkerDetailPage({
   onDeleteRecord,
   actionLoadingId,
 }: {
-  workspaceId: string
-  workspacePath: string
+  workspaceId?: string
+  workspacePath?: string
   workspaceSlug?: string
   record: AutomationV2Record
   pendingProposal?: AutomationV2Proposal
@@ -2719,7 +2877,7 @@ export function AutomationV2WorkerDetailPage({
     setInlineSuccessOcc(null)
     try {
       const res = await desktopAutomationV2.trigger({
-        workspace_id: liveRecord.workspace_id || record.workspace_id || workspaceId,
+        workspace_id: liveRecord.workspace_id || record.workspace_id || workspaceId || '',
         worker_id: workerIdentifier,
         session_id: liveRecord.session_id || record.session_id,
         prompt: inlinePrompt.trim(),
@@ -2755,7 +2913,7 @@ export function AutomationV2WorkerDetailPage({
     setDeploySecretError(null)
     try {
       const res = await mintAutomationV2Token({
-        workspace_id: workspaceId,
+        workspace_id: workspaceId || record.workspace_id || '',
         worker_id: workerIdentifier,
         save_to_secrets: saveToSecretsEnv,
       })
@@ -2787,11 +2945,11 @@ export function AutomationV2WorkerDetailPage({
 
   const input = useMemo(() => ({
     action: 'progress' as const,
-    workspace_id: workspaceId,
+    workspace_id: workspaceId || record.workspace_id || '',
     session_id: record.session_id,
     timezone,
     cursor,
-  }), [workspaceId, record.session_id, timezone, cursor])
+  }), [workspaceId, record.workspace_id, record.session_id, timezone, cursor])
 
   const page = useAutomationV2Page(input)
   const progress = page?.data?.progress
@@ -3588,7 +3746,7 @@ export function AutomationV2Detail({
   workspaceSlug,
   onOpenSession,
 }: {
-  workspaceId: string
+  workspaceId?: string
   sessionId: string
   onChat?: (id: string) => void
   workspaceSlug?: string
@@ -3602,7 +3760,7 @@ export function AutomationV2Detail({
   const lock = useRef(false)
   const input = useMemo(() => ({
     action: 'progress' as const,
-    workspace_id: workspaceId,
+    workspace_id: workspaceId || '',
     session_id: sessionId,
     timezone,
     cursor,
@@ -3616,7 +3774,7 @@ export function AutomationV2Detail({
   async function control(action: 'pause' | 'resume' | 'cancel_future' | 'cancel_all') {
     if (lock.current || disabled || !record) return
     lock.current = true; setBusy(true); setError('')
-    try { await desktopAutomationV2.mutate({ workspace_id: workspaceId, session_id: sessionId, generation: record.generation, action } as AutomationV2Mutation) }
+    try { await desktopAutomationV2.mutate({ workspace_id: workspaceId || '', session_id: sessionId, generation: record.generation, action } as AutomationV2Mutation) }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Control failed') }
     finally { lock.current = false; setBusy(false) }
   }

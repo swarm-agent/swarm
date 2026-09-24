@@ -107,9 +107,9 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if q.Get("workspace_id") == "" {
-			automationV2Error(w, errors.New("workspace required"))
-			return
+		workspaceID := q.Get("workspace_id")
+		if workspaceID == "all" {
+			workspaceID = ""
 		}
 		if r.URL.Path == AutomationsV2Path+"/progress" {
 			targetID := q.Get("session_id")
@@ -123,7 +123,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				automationV2Error(w, errors.New("invalid progress query"))
 				return
 			}
-			progress, err := s.sessions.AutomationV2Progress(p.AccountScopeID, p.UserID, q.Get("workspace_id"), targetID, q.Get("timezone"), q.Get("cursor"), time.Now().UnixMilli())
+			progress, err := s.sessions.AutomationV2Progress(p.AccountScopeID, p.UserID, workspaceID, targetID, q.Get("timezone"), q.Get("cursor"), time.Now().UnixMilli())
 			if err != nil {
 				automationV2Error(w, err)
 				return
@@ -151,7 +151,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 				automationV2Error(w, errors.New("invalid review query"))
 				return
 			}
-			proposal, found, err := s.sessions.GetAutomationV2Proposal(p.AccountScopeID, p.UserID, q.Get("workspace_id"), targetID)
+			proposal, found, err := s.sessions.GetAutomationV2Proposal(p.AccountScopeID, p.UserID, workspaceID, targetID)
 			if err != nil {
 				automationV2Error(w, err)
 				return
@@ -180,7 +180,7 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, errors.New("invalid discovery query"))
 			return
 		}
-		records, next, err := s.sessions.ListAutomationV2Records(p.AccountScopeID, p.UserID, q.Get("workspace_id"), q.Get("cursor"), limit, archivedMode)
+		records, next, err := s.sessions.ListAutomationV2Records(p.AccountScopeID, p.UserID, workspaceID, q.Get("cursor"), limit, archivedMode)
 		if err != nil {
 			automationV2Error(w, err)
 			return

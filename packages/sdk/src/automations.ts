@@ -40,13 +40,13 @@ export class SwarmAutomationsNamespace {
   /**
    * Lists all automations/workers in the specified workspace.
    */
-  async list(params: AutomationV2ListParams): Promise<AutomationV2Record[]> {
+  async list(params?: AutomationV2ListParams): Promise<AutomationV2Record[]> {
     const q = new URLSearchParams();
-    q.set('workspace_id', params.workspace_id);
+    if (params?.workspace_id) q.set('workspace_id', params.workspace_id);
     q.set('action', 'list');
-    if (params.archived_mode) q.set('archived_mode', params.archived_mode);
-    if (params.cursor) q.set('cursor', params.cursor);
-    if (params.limit) q.set('limit', params.limit.toString());
+    if (params?.archived_mode) q.set('archived_mode', params.archived_mode);
+    if (params?.cursor) q.set('cursor', params.cursor);
+    if (params?.limit) q.set('limit', params.limit.toString());
 
     const res = await this.transport.request<{ records?: AutomationV2Record[] }>(
       `/v3/automations/v2?${q.toString()}`,

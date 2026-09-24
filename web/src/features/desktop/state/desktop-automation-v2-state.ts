@@ -63,7 +63,7 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
            sessionRec.session.metadata?.swarm_v3_purpose_workspace_id)
         : undefined
       const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
-      if (workspaceId && effectiveWorkspaceId !== workspaceId) continue
+      if (workspaceId && workspaceId !== 'all' && effectiveWorkspaceId !== workspaceId) continue
       if (seenProposalIds.has(proposal.proposal_id)) continue
       seenProposalIds.add(proposal.proposal_id)
       proposals.push(proposal)
@@ -82,7 +82,7 @@ export function selectPendingAutomationV2Proposals(state: DesktopV3CacheState, w
            sessionRec.session.metadata?.swarm_v3_purpose_workspace_id)
         : undefined
       const effectiveWorkspaceId = proposal.workspace_id || sessionWorkspaceId
-      if (workspaceId && effectiveWorkspaceId !== workspaceId) continue
+      if (workspaceId && workspaceId !== 'all' && effectiveWorkspaceId !== workspaceId) continue
       if (seenProposalIds.has(proposal.proposal_id)) continue
       const permRecord = (state.permissionsBySession?.[proposal.session_id] ?? []).find(
         p => p.id === 'permission_' + proposal.proposal_id ||

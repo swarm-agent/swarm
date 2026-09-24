@@ -390,12 +390,16 @@ func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id stri
 }
 func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string) (AutomationV2Record, bool, error) {
 	var r AutomationV2Record
+	targetWorkspace := workspace
+	if targetWorkspace == "all" {
+		targetWorkspace = ""
+	}
 	if ok, err := s.store.GetJSON(automationV2Key("accepted", account, id), &r); err == nil && ok {
 		if r.AutomationID != "" && (user == "" || r.AcceptedBy == user) {
-			wsMatch := workspace == "" || r.WorkspaceID == workspace
+			wsMatch := targetWorkspace == "" || r.WorkspaceID == targetWorkspace
 			if !wsMatch && len(r.WorkspaceIDs) > 0 {
 				for _, wid := range r.WorkspaceIDs {
-					if wid == workspace {
+					if wid == targetWorkspace {
 						wsMatch = true
 						break
 					}
@@ -411,7 +415,7 @@ func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string
 			}
 		}
 	}
-	records, _, listErr := s.ListAutomationV2Records(account, user, workspace, "", 100, "include")
+	records, _, listErr := s.ListAutomationV2Records(account, user, targetWorkspace, "", 100, "include")
 	if listErr == nil {
 		for _, rec := range records {
 			if rec.AutomationID == id || rec.SessionID == id || rec.ProposalID == id {
@@ -419,7 +423,7 @@ func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string
 			}
 		}
 	}
-	if workspace != "" {
+	if targetWorkspace != "" {
 		allRecords, _, allErr := s.ListAutomationV2Records(account, user, "", "", 100, "include")
 		if allErr == nil {
 			for _, rec := range allRecords {
@@ -436,7 +440,11 @@ func validateAutomationV2Integrity(p AutomationV2Proposal, account, user, worksp
 	if p.Document.AutomationV2 == nil && p.Document.WorkerV2 != nil {
 		p.Document.AutomationV2 = p.Document.WorkerV2
 	}
-	if p.AccountID != account || p.UserID != user || (workspace != "" && p.WorkspaceID != workspace) || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil {
+	targetWorkspace := workspace
+	if targetWorkspace == "all" {
+		targetWorkspace = ""
+	}
+	if p.AccountID != account || p.UserID != user || (targetWorkspace != "" && p.WorkspaceID != targetWorkspace) || p.ProposalID == "" || p.Revision == 0 || p.Document.AutomationV2 == nil || p.Document.Automation != nil {
 		return ErrAutomationV2Conflict
 	}
 	if id != "" && p.SessionID != id && p.ProposalID != id {
@@ -834,11 +842,25 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 	if mode != "exclude" && mode != "include" && mode != "only" {
 		return nil, "", ErrAutomationV2Conflict
 	}
-	if account == "" || user == "" || workspace == "" || limit < 1 || limit > 100 {
+	if account == "" || user == "" || limit < 1 || limit > 100 {
 		return nil, "", ErrAutomationV2Conflict
 	}
-	if _, err := s.automationV2WorkspaceOwner(account, user, workspace); err != nil {
-		return nil, "", err
+	targetWorkspace := workspace
+	if targetWorkspace == "all" {
+		targetWorkspace = ""
+	}
+	if targetWorkspace != "" {
+		if _, err := s.automationV2WorkspaceOwner(account, user, targetWorkspace); err != nil {
+			return nil, "", err
+		}
+	} else {
+		member, exists, err := NewIdentityStore(s.store).GetAccountUser(account, user)
+		if err != nil {
+			return nil, "", err
+		}
+		if !exists || member.Status != "active" || member.AccountScopeID != account || member.UserID != user {
+			return nil, "", ErrAutomationV2Conflict
+		}
 	}
 	prefix := fmt.Sprintf("automation/v2/accepted/%x/", account)
 	if after != "" && !strings.HasPrefix(after, prefix) {
@@ -870,10 +892,10 @@ func (s *SessionStore) ListAutomationV2Records(account, user, workspace, after s
 		if seenID[r.AutomationID] {
 			continue
 		}
-		matchesWorkspace := workspace == "" || r.WorkspaceID == workspace
+		matchesWorkspace := targetWorkspace == "" || r.WorkspaceID == targetWorkspace
 		if !matchesWorkspace {
 			for _, wid := range r.WorkspaceIDs {
-				if wid == workspace {
+				if wid == targetWorkspace {
 					matchesWorkspace = true
 					break
 				}

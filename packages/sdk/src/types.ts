@@ -177,7 +177,7 @@ export interface AutomationV2Progress {
 }
 
 export interface AutomationV2ListParams {
-  workspace_id: string;
+  workspace_id?: string;
   archived_mode?: 'exclude' | 'include' | 'only';
   cursor?: string;
   limit?: number;

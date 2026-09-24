@@ -53,7 +53,7 @@ import {
 } from '../../state/desktop-deliverables-api'
 
 export interface DeliverablesInboxProps {
-  workspaceId: string
+  workspaceId?: string
   workspacePath?: string
   workspaceSlug?: string
   onOpenSession?: (id: string) => void

@@ -72,7 +72,7 @@ export interface AutomationV2Progress {
   no_next_reason?: string; complete: boolean; next_cursor?: string
   occurrences: AutomationV2Occurrence[]
 }
-export interface AutomationV2Read { workspace_id: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string; archived_mode?: 'exclude' | 'include' | 'only' }
+export interface AutomationV2Read { workspace_id?: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string; archived_mode?: 'exclude' | 'include' | 'only' }
 export interface AutomationV2Response {
   records?: AutomationV2Record[];
   next_cursor?: string;
@@ -137,7 +137,8 @@ export function validateAutomationV2(settings: AutomationV2Settings, now = Date.
   } else throw new Error('Choose an elapsed timer, wall-clock schedule, or on-demand trigger.')
 }
 export async function readAutomationV2(input: AutomationV2Read): Promise<AutomationV2Response> {
-  const query = new URLSearchParams({ workspace_id: input.workspace_id })
+  const query = new URLSearchParams()
+  if (input.workspace_id && input.workspace_id !== 'all') query.set('workspace_id', input.workspace_id)
   if (input.session_id) query.set('session_id', input.session_id)
   if (input.timezone) query.set('timezone', input.timezone)
   if (input.cursor) query.set('cursor', input.cursor)

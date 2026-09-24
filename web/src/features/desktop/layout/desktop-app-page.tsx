@@ -2808,7 +2808,9 @@ export function DesktopAppPage() {
   const workspaceWorkersDetailMatch = matchRoute({ to: '/$workspaceSlug/workers/$workerId', fuzzy: false })
   const workspaceWorkerDetailMatch = matchRoute({ to: '/$workspaceSlug/worker/$workerId', fuzzy: false })
   const workspaceAutomationsMatch = matchRoute({ to: '/$workspaceSlug/automations', fuzzy: false })
-  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch)
+  const globalWorkersMatch = matchRoute({ to: '/workers', fuzzy: false })
+  const globalWorkersDetailMatch = matchRoute({ to: '/workers/$workerId', fuzzy: false })
+  const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch || globalWorkersMatch || globalWorkersDetailMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
   const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
@@ -2827,7 +2829,7 @@ export function DesktopAppPage() {
       : workspaceMatch
         ? workspaceMatch.workspaceSlug
         : '').trim()
-  const routeWorkerId = (workspaceWorkersDetailMatch ? workspaceWorkersDetailMatch.workerId : workspaceWorkerDetailMatch ? workspaceWorkerDetailMatch.workerId : '').trim()
+  const routeWorkerId = (workspaceWorkersDetailMatch ? workspaceWorkersDetailMatch.workerId : workspaceWorkerDetailMatch ? workspaceWorkerDetailMatch.workerId : globalWorkersDetailMatch ? (globalWorkersDetailMatch as any).workerId : '').trim()
   const mobileCreationPage = workspaceTaskMatch ? 'task' : null
   const routeSessionId = mobileCreationPage || isWorkersRoute
     ? ''
@@ -4876,10 +4878,10 @@ export function DesktopAppPage() {
     gitBehindCount: topWorkspaceGitBehindCount,
     gitDirtyCount: topWorkspaceGitDirtyCount,
     onOpenGit: () => openMainWorktreeGitPanel(topWorkspacePath, topWorkspaceLabel),
-    onOpenAutomations: topWorkspaceSlug ? () => {
+    onOpenAutomations: () => {
       setMobileSidebarOpen(false)
-      void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
-    } : undefined,
+      void navigate({ to: '/workers', search: {} })
+    },
     onToggleReviewCleanup: () => setNeedsReviewCleanupOpen((open) => !open),
     onToggleGroupCollapsed: handleToggleSidebarGroupCollapsed,
     onToggleGroupOverflow: handleToggleSidebarGroupOverflow,
@@ -5727,11 +5729,9 @@ export function DesktopAppPage() {
                       type="button"
                       className="grid min-h-[28px] w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2 rounded-md px-2 text-left font-inherit text-[11px] text-[var(--app-text-subtle)] hover:bg-[var(--app-surface-hover)] hover:text-[var(--app-text-muted)] disabled:cursor-not-allowed disabled:opacity-50"
                       onClick={() => {
-                        if (!topWorkspaceSlug) return
                         setMobileSidebarOpen(false)
-                        void navigate({ to: '/$workspaceSlug/workers', params: { workspaceSlug: topWorkspaceSlug }, search: {} })
+                        void navigate({ to: '/workers', search: {} })
                       }}
-                      disabled={!topWorkspaceSlug}
                       aria-label="Open Workers"
                       aria-current={isWorkersRoute ? 'page' : undefined}
                       title="Workers"

@@ -51,8 +51,8 @@ export function formatAutomationSessionTitle(session: SessionSnapshot): string {
 }
 
 export interface AutomationV2SidecarProps {
-  workspaceId: string
-  workspacePath: string
+  workspaceId?: string
+  workspacePath?: string
   workspaceBindingId?: string
   selectedAutomation?: AutomationV2Record | null
   activeSessionId?: string
@@ -94,9 +94,14 @@ export function AutomationV2Sidecar({
 
   // Load prior automation management conversations for this workspace
   const refreshConversations = useCallback(async (signal?: AbortSignal) => {
+    if (!workspaceId) {
+      setConversations([])
+      setLoading(false)
+      return []
+    }
     try {
       setLoading(true)
-      const page = await loadAutomationConversations(workspaceId, workspacePath, undefined, signal)
+      const page = await loadAutomationConversations(workspaceId, workspacePath || '', undefined, signal)
       if (!mountedRef.current) return
       const list = page.session_order
         .map((id) => page.sessions_by_id[id])
@@ -163,7 +168,7 @@ export function AutomationV2Sidecar({
     setCreating(true)
     try {
       const clientRequestId = crypto.randomUUID()
-      const newSession = await createAutomationConversation(workspacePath, clientRequestId, workspaceId, undefined, workspaceBindingId)
+      const newSession = await createAutomationConversation(workspacePath || '', clientRequestId, workspaceId || '', undefined, workspaceBindingId)
       if (!mountedRef.current) return
       setConversations((prev) => [newSession, ...prev.filter((s) => s.id !== newSession.id)])
       setDirectSessionId(newSession.id)
@@ -445,13 +450,13 @@ export function AutomationV2Sidecar({
                 automation_v2: true,
                 automation_id: selectedAutomation.automation_id,
                 automation_revision: selectedAutomation.revision,
-                workspace_id: workspaceId,
+                workspace_id: workspaceId || selectedAutomation.workspace_id || '',
               }
             : {
                 automation_v2: true,
                 automation_id: '',
                 automation_revision: 0,
-                workspace_id: workspaceId,
+                workspace_id: workspaceId || '',
               }
         }
         title={title}
