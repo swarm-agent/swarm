@@ -1,17 +1,21 @@
 export type OrchestrateThemeId =
-  // 5 Minimal Consumer Creator Variations (Dark Warm Peach & Automation)
+  // 5 Minimal Apple Dark Warm Peach Themes
+  | 'apple_peach'
+  | 'vision_glass'
+  | 'studio_obsidian'
+  | 'cupertino_mono'
+  | 'sunset_titanium'
+  // Compatibility aliases
   | 'creator_apricot'
   | 'creator_operator'
   | 'creator_sunset'
   | 'creator_linear'
   | 'creator_espresso'
-  // Architectural styles
   | 'apple_glass'
   | 'swarm_tactical'
   | 'cyber_hud'
   | 'studio_synth'
   | 'minimalist_craft'
-  // Legacy aliases for backward compatibility
   | 'obsidian'
   | 'cyberpunk'
   | 'emerald'

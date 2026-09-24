@@ -11,7 +11,7 @@ export function OrchestratePage({
     <OrchestrateView
       workspaceSlug={workspaceSlug}
       onNavigateHome={onNavigateHome}
-      initialThemeId="apple_glass"
+      initialThemeId="apple_peach"
     />
   )
 }
