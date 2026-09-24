@@ -7,7 +7,7 @@ import type { AgentProfileRecord } from '../../../../desktop/chat/types/chat'
 import { Badge } from '../../../../../components/ui/badge'
 import { Button } from '../../../../../components/ui/button'
 import { Input } from '../../../../../components/ui/input'
-import { Plus, Check, LogIn, Trash2, Key, ChevronDown } from 'lucide-react'
+import { Plus, Check, LogIn, Trash2, Key, ChevronDown, Copy } from 'lucide-react'
 import { Textarea } from '../../../../../components/ui/textarea'
 import { cn } from '../../../../../lib/cn'
 import { completeCodexOAuth } from '../../mutations/complete-codex-oauth'
@@ -18,6 +18,9 @@ import { upsertAuthCredential } from '../../mutations/upsert-auth-credential'
 import { verifyAuthCredential } from '../../mutations/verify-auth-credential'
 import { getCodexOAuthStatus } from '../../queries/get-codex-oauth-status'
 import { listAuthCredentials } from '../../queries/list-auth-credentials'
+import { listScopedTokens } from '../../queries/list-scoped-tokens'
+import { revokeScopedToken } from '../../mutations/revoke-scoped-token'
+import { createScopedToken } from '../../mutations/create-scoped-token'
 import { listProviders } from '../../queries/list-providers'
 import type { AuthCredential, AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../types/auth'
 import { createPortal } from 'react-dom'
@@ -701,7 +704,284 @@ export function AuthSettingsPage() {
             )}
           </div>
         )}
+
+        <ScopedTokensSection />
       </div>
+    </div>
+  )
+}
+
+function ScopedTokensSection() {
+  const [copiedTokenId, setCopiedTokenId] = useState<string | null>(null)
+  const [mintOpen, setMintOpen] = useState(false)
+  const [mintName, setMintName] = useState('')
+  const [mintWorkerId, setMintWorkerId] = useState('')
+  const [mintWorkerName, setMintWorkerName] = useState('')
+  const [mintExpires, setMintExpires] = useState<'0' | '2592000' | '7776000' | '31536000'>('2592000')
+  const [mintResult, setMintResult] = useState<{ token: string; name: string } | null>(null)
+  const [minting, setMinting] = useState(false)
+  const [mintError, setMintError] = useState<string | null>(null)
+  const [revokingId, setRevokingId] = useState<string | null>(null)
+
+  const tokensQuery = useQuery({
+    queryKey: ['scoped-tokens'],
+    queryFn: () => listScopedTokens(),
+  })
+
+  const tokens = tokensQuery.data ?? []
+
+  const handleCopy = useCallback(async (text: string, id: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopiedTokenId(id)
+      setTimeout(() => setCopiedTokenId((curr) => (curr === id ? null : curr)), 2000)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const handleMint = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const name = mintName.trim()
+    if (!name) return
+    setMinting(true)
+    setMintError(null)
+    try {
+      const expiresInSeconds = parseInt(mintExpires, 10) || undefined
+      const res = await createScopedToken({
+        name,
+        scopes: ['automations:trigger'],
+        worker_id: mintWorkerId.trim() || undefined,
+        worker_name: mintWorkerName.trim() || undefined,
+        expires_in_seconds: expiresInSeconds,
+      })
+      setMintResult({ token: res.token, name: res.record.name })
+      setMintName('')
+      setMintWorkerId('')
+      setMintWorkerName('')
+      setMintOpen(false)
+      void queryClient.invalidateQueries({ queryKey: ['scoped-tokens'] })
+    } catch (err: any) {
+      setMintError(err?.message || 'Failed to mint token')
+    } finally {
+      setMinting(false)
+    }
+  }
+
+  const handleRevoke = async (tokenId: string, name: string) => {
+    if (typeof window !== 'undefined' && !window.confirm(`Revoke token "${name}"? External scripts using this key will immediately be denied.`)) {
+      return
+    }
+    setRevokingId(tokenId)
+    try {
+      await revokeScopedToken(tokenId)
+      void queryClient.invalidateQueries({ queryKey: ['scoped-tokens'] })
+    } finally {
+      setRevokingId(null)
+    }
+  }
+
+  return (
+    <div className="mt-8 border-t border-[var(--app-border)] pt-8">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <div>
+          <h3 className="text-base font-semibold text-[var(--app-text)] flex items-center gap-2">
+            <Key size={16} className="text-[var(--app-primary)]" />
+            Worker Trigger & Deploy Tokens
+          </h3>
+          <p className="text-xs text-[var(--app-text-muted)] mt-1">
+            Scoped API keys for external scripts, webhooks, or SDK automation triggers. See which worker each key is tied to.
+          </p>
+        </div>
+        <Button
+          onClick={() => { setMintOpen(true); setMintResult(null); }}
+          className="h-8 text-xs shrink-0 flex items-center gap-1.5"
+        >
+          <Plus size={14} />
+          Mint Token
+        </Button>
+      </div>
+
+      {mintResult && (
+        <div className="mb-4 rounded-xl border border-[var(--app-success-border,var(--app-border))] bg-[var(--app-success-bg,var(--app-surface-subtle))] p-4 text-xs">
+          <div className="font-semibold text-[var(--app-success,var(--app-text))] flex items-center justify-between">
+            <span>New Token Minted: {mintResult.name}</span>
+            <button
+              type="button"
+              onClick={() => handleCopy(mintResult.token, 'newly-minted')}
+              className="flex items-center gap-1 font-mono font-normal text-[var(--app-primary)] hover:underline"
+            >
+              {copiedTokenId === 'newly-minted' ? <Check size={13} /> : <Copy size={13} />}
+              {copiedTokenId === 'newly-minted' ? 'Copied' : 'Copy Key'}
+            </button>
+          </div>
+          <p className="text-[var(--app-text-muted)] mt-1">
+            Save this key now. For your security, it will not be displayed again.
+          </p>
+          <div className="mt-2 flex items-center gap-2 rounded bg-[var(--app-surface)] p-2 font-mono text-[11px] select-all break-all border border-[var(--app-border)]">
+            <span className="flex-1">{mintResult.token}</span>
+          </div>
+        </div>
+      )}
+
+      {mintOpen && (
+        <form onSubmit={handleMint} className="mb-4 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-4 text-xs space-y-3">
+          <div className="font-semibold text-sm">Mint New Scoped Token</div>
+          {mintError && (
+            <div className="text-[var(--app-danger)]">{mintError}</div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-medium text-[var(--app-text-muted)] mb-1">
+                Token Name *
+              </label>
+              <Input
+                value={mintName}
+                onChange={(e) => setMintName(e.target.value)}
+                placeholder="e.g. GitHub Actions Trigger"
+                required
+                className="h-8 text-xs"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-[var(--app-text-muted)] mb-1">
+                Expiration
+              </label>
+              <select
+                value={mintExpires}
+                onChange={(e: any) => setMintExpires(e.target.value)}
+                className="h-8 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-2 text-xs text-[var(--app-text)]"
+              >
+                <option value="2592000">30 days</option>
+                <option value="7776000">90 days</option>
+                <option value="31536000">1 year</option>
+                <option value="0">Never expires</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-medium text-[var(--app-text-muted)] mb-1">
+                Tied Worker ID (optional)
+              </label>
+              <Input
+                value={mintWorkerId}
+                onChange={(e) => setMintWorkerId(e.target.value)}
+                placeholder="e.g. av2_917413f8ec6cd78da065d321515f4058"
+                className="h-8 text-xs font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-[var(--app-text-muted)] mb-1">
+                Worker Display Name (optional)
+              </label>
+              <Input
+                value={mintWorkerName}
+                onChange={(e) => setMintWorkerName(e.target.value)}
+                placeholder="e.g. Mailbox Notifier"
+                className="h-8 text-xs"
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setMintOpen(false)}
+              className="h-8 text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={minting || !mintName.trim()}
+              className="h-8 text-xs"
+            >
+              {minting ? 'Minting...' : 'Mint Scoped Key'}
+            </Button>
+          </div>
+        </form>
+      )}
+
+      {tokensQuery.isLoading ? (
+        <div className="py-6 text-center text-xs text-[var(--app-text-muted)]">Loading tokens...</div>
+      ) : tokens.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-[var(--app-border)] p-6 text-center text-xs text-[var(--app-text-muted)]">
+          No scoped deploy tokens minted yet. Mint a key to trigger Worker V2 executions externally.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {tokens.map((token) => {
+            const isRevoked = token.revoked === true
+            const isRevoking = revokingId === token.id
+            const expiresDate = token.expires_at ? new Date(token.expires_at).toLocaleDateString() : 'Never'
+            const isExpired = token.expires_at ? token.expires_at < Date.now() : false
+            const isCopied = copiedTokenId === token.id
+
+            return (
+              <div
+                key={token.id}
+                className={cn(
+                  'rounded-xl border p-3.5 transition-all text-xs',
+                  isRevoked || isExpired
+                    ? 'border-[var(--app-border)] bg-[var(--app-surface-subtle)]/40 opacity-60'
+                    : 'border-[var(--app-border)] bg-[var(--app-surface)] shadow-xs'
+                )}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-[var(--app-text)]">{token.name}</span>
+                      <span className="font-mono text-[11px] text-[var(--app-text-muted)] bg-[var(--app-surface-subtle)] px-1.5 py-0.5 rounded border border-[var(--app-border)]">
+                        {token.token_hint}
+                      </span>
+                      {isRevoked ? (
+                        <Badge tone="danger" className="text-[10px] px-1.5 py-0">Revoked</Badge>
+                      ) : isExpired ? (
+                        <Badge tone="warning" className="text-[10px] px-1.5 py-0">Expired</Badge>
+                      ) : (
+                        <Badge tone="live" className="text-[10px] px-1.5 py-0 text-[var(--app-success)] border-[var(--app-success)]/40">Active</Badge>
+                      )}
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-3 text-[11px] text-[var(--app-text-muted)] flex-wrap">
+                      <span>
+                        Tied Job: <span className="font-medium text-[var(--app-text)]">{token.worker_name || token.worker_id || 'All / Unbound'}</span>
+                      </span>
+                      <span>•</span>
+                      <span>Scopes: <span className="font-mono text-[10px]">{token.scopes.join(', ')}</span></span>
+                      <span>•</span>
+                      <span>Expires: {expiresDate}</span>
+                    </div>
+                  </div>
+                  {!isRevoked && (
+                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(token.token_hint, token.id)}
+                        className="h-7 px-2 rounded-md border border-[var(--app-border)] text-[11px] text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] transition-colors flex items-center gap-1"
+                        title="Copy token hint"
+                      >
+                        {isCopied ? <Check size={12} className="text-[var(--app-success)]" /> : <Copy size={12} />}
+                        {isCopied ? 'Copied' : 'Hint'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRevoke(token.id, token.name)}
+                        disabled={isRevoking}
+                        className="h-7 px-2 rounded-md border border-[var(--app-danger-border,var(--app-border))] text-[11px] text-[var(--app-danger)] hover:bg-[var(--app-danger-bg)] transition-colors flex items-center gap-1 disabled:opacity-50"
+                        title="Revoke Token"
+                      >
+                        <Trash2 size={12} />
+                        {isRevoking ? 'Revoking...' : 'Revoke'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

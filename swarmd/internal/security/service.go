@@ -127,7 +127,7 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 	_, _ = s.events.Append("system:security", "security.attach.denied", "attach", payload, "", "")
 }
 
-func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration) (string, pebblestore.ScopedTokenRecord, error) {
+func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
 	if s == nil || s.authStore == nil {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
 	}
@@ -172,6 +172,8 @@ func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID
 		Scopes:         cleanScopes,
 		AccountScopeID: accountScopeID,
 		UserID:         userID,
+		WorkerID:       strings.TrimSpace(workerID),
+		WorkerName:     strings.TrimSpace(workerName),
 		CreatedAt:      now,
 		ExpiresAt:      expiresAt,
 		Revoked:        false,

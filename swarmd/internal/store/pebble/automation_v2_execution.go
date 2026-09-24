@@ -715,11 +715,17 @@ func (s *SessionStore) PersistAutomationV2ClosingState(o AutomationV2Occurrence,
 		o.Detail = detail
 	}
 
-	if (closingState == "deliverable_ready" || closingState == "attention_alert" || len(deliverables) > 0) && o.Record.AccountID != "" {
+	isTrigger := (o.Record.Document.WorkerV2 != nil && o.Record.Document.WorkerV2.Schedule.Kind == "trigger") || (o.Record.Document.AutomationV2 != nil && o.Record.Document.AutomationV2.Schedule.Kind == "trigger") || len(o.TriggerContext) > 0
+	shouldDeliver := closingState == "deliverable_ready" || closingState == "attention_alert" || len(deliverables) > 0 || (isTrigger && (report != "" || result != "" || summary != ""))
+	if shouldDeliver && o.Record.AccountID != "" {
 		kind := "report"
 		title := o.Record.Document.Title
 		if title == "" {
-			title = "Worker Deliverable"
+			if isTrigger {
+				title = "Worker Trigger Deliverable"
+			} else {
+				title = "Worker Deliverable"
+			}
 		}
 		if closingState == "attention_alert" {
 			kind = "alert"

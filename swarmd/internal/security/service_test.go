@@ -20,7 +20,7 @@ func TestSecurityServiceScopedTokenLifecycle(t *testing.T) {
 	svc := NewService(authStore, nil)
 
 	// Create scoped token
-	rawToken, record, err := svc.CreateScopedToken("GitHub Actions", []string{"automations:trigger", "sessions:read"}, "acct_main", "user_admin", time.Hour)
+	rawToken, record, err := svc.CreateScopedToken("GitHub Actions", []string{"automations:trigger", "sessions:read"}, "acct_main", "user_admin", time.Hour, "", "")
 	if err != nil {
 		t.Fatalf("CreateScopedToken failed: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestSecurityServiceScopedTokenLifecycle(t *testing.T) {
 	}
 
 	// Create expired token
-	rawExpired, _, err := svc.CreateScopedToken("Expired Token", []string{"admin"}, "acct_main", "user_admin", -time.Second)
+	rawExpired, _, err := svc.CreateScopedToken("Expired Token", []string{"admin"}, "acct_main", "user_admin", -time.Second, "", "")
 	if err != nil {
 		t.Fatalf("create expired token: %v", err)
 	}

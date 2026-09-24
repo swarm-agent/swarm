@@ -88,6 +88,7 @@ import { sessionWorkspaceBindingId } from '../services/session-workspace'
 import type { V3SessionRunIntent, WorkspaceUsageProjection } from '../state/desktop-v3-cache-types'
 import { normalizeDesktopV3RoutedSessionStartResponse, postDesktopV3BackgroundRouterSessionStart } from '../session-v3/write-api'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3VideoStudioMetadata, isDesktopV3VideoStudioRecord } from '../state/desktop-v3-session-visibility'
+import { isAutomationExecutionSession } from '../state/desktop-automation-purpose'
 import { clearNotifications, updateNotification } from '../notifications/api'
 import { DesktopNotificationsModal } from '../notifications/components/desktop-notifications-modal'
 import { DESKTOP_V3_RUN_TIMER_TOOLTIP } from '../chat/components/desktop-v3-run-status'
@@ -3319,9 +3320,13 @@ export function DesktopAppPage() {
   }, [workspaceLayout])
 
   const desktopInitialHydrate = useDesktopV3CacheSelector((state) => state.desktopInitialHydrate)
-  const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => (
-    routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
-  ))
+  const routeSessionNavigationHidden = useDesktopV3CacheSelector((state) => {
+    const record = routeSessionId ? state.sessionsById[routeSessionId] : undefined
+    if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
+      return false
+    }
+    return routeSessionId ? isDesktopV3NavigationHiddenRecord(state.sessionsById[routeSessionId]) : false
+  })
   const routeSessionIsVideoStudio = useDesktopV3CacheSelector((state) => (
     routeSessionId ? isDesktopV3VideoStudioRecord(state.sessionsById[routeSessionId]) : false
   ))

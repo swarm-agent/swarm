@@ -58,6 +58,8 @@ export class SwarmAuthNamespace {
       body: {
         name: params.name,
         scopes: params.scopes,
+        worker_id: params.worker_id,
+        worker_name: params.worker_name,
         expires_in_seconds: params.expires_in_seconds,
       },
     });

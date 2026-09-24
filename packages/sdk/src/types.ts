@@ -41,6 +41,8 @@ export interface ScopedTokenRecord {
   name: string;
   token_hint: string;
   scopes: TokenScope[];
+  worker_id?: string;
+  worker_name?: string;
   expires_at?: number;
   last_used_at?: number;
   created_at: number;
@@ -51,6 +53,8 @@ export interface ScopedTokenRecord {
 export interface CreateScopedTokenParams {
   name: string;
   scopes: TokenScope[];
+  worker_id?: string;
+  worker_name?: string;
   expires_in_seconds?: number;
 }
 

@@ -112,6 +112,8 @@ type ScopedTokenRecord struct {
 	Scopes         []string `json:"scopes"`
 	AccountScopeID string   `json:"account_scope_id"`
 	UserID         string   `json:"user_id"`
+	WorkerID       string   `json:"worker_id,omitempty"`
+	WorkerName     string   `json:"worker_name,omitempty"`
 	CreatedAt      int64    `json:"created_at"`
 	ExpiresAt      int64    `json:"expires_at"` // 0 = never
 	Revoked        bool     `json:"revoked"`

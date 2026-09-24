@@ -14,6 +14,8 @@ type createScopedTokenRequest struct {
 	Name             string   `json:"name"`
 	Scopes           []string `json:"scopes"`
 	ExpiresInSeconds int64    `json:"expires_in_seconds,omitempty"`
+	WorkerID         string   `json:"worker_id,omitempty"`
+	WorkerName       string   `json:"worker_name,omitempty"`
 }
 
 func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +79,7 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			expiresIn = time.Duration(req.ExpiresInSeconds) * time.Second
 		}
 
-		rawToken, record, err := s.security.CreateScopedToken(req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn)
+		rawToken, record, err := s.security.CreateScopedToken(req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn, req.WorkerID, req.WorkerName)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
