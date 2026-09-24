@@ -6,11 +6,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"swarm/packages/swarmd/internal/automation"
+	"swarm/packages/swarmd/internal/security"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/webhook"
 )
@@ -272,7 +274,37 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			automationV2Error(w, err)
 			return
 		}
-		response = map[string]any{"record": record}
+		isTrigger := (record.Document.WorkerV2 != nil && record.Document.WorkerV2.Schedule.Kind == "trigger") ||
+			(record.Document.AutomationV2 != nil && record.Document.AutomationV2.Schedule.Kind == "trigger")
+		if isTrigger {
+			if s.security != nil {
+				tokenName := "Trigger Worker: " + record.Document.Title
+				if strings.TrimSpace(record.Document.Title) == "" {
+					tokenName = "Trigger Worker: " + record.AutomationID
+				}
+				rawToken, _, err := s.security.CreateScopedToken(
+					tokenName,
+					[]string{"automations:trigger"},
+					p.AccountScopeID,
+					p.UserID,
+					0,
+					record.AutomationID,
+					record.Document.Title,
+				)
+				if err == nil {
+					_ = security.SetLocalSecret("SWARM_TRIGGER_TOKEN", rawToken)
+					_ = os.Setenv("SWARM_TRIGGER_TOKEN", rawToken)
+				}
+			}
+			response = map[string]any{
+				"record":       record,
+				"token_minted": true,
+				"token_path":   security.SecretsFilePath(),
+				"message":      "Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker.",
+			}
+		} else {
+			response = map[string]any{"record": record}
+		}
 	}
 	// The foundation committed its durable outbox before returning. Wake the
 	// canonical scoped stream; a delivery error never rolls back acceptance.

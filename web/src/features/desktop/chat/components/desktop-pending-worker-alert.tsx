@@ -11,7 +11,7 @@ import { normalizeStructuredPlanDocument, StructuredPlanReviewView } from './str
 /** A permissioned worker request remains in the authoring chat until resolved. */
 export function DesktopPendingWorkerAlert({ permission, onAccepted }: {
   permission: DesktopPermissionRecord;
-  onAccepted: (title: string, workerId: string) => void;
+  onAccepted: (title: string, workerId: string, message?: string) => void;
 }) {
   const proposal = automationV2PermissionProposal(permission);
   const [open, setOpen] = useState(false);
@@ -28,7 +28,7 @@ export function DesktopPendingWorkerAlert({ permission, onAccepted }: {
         getDesktopV3CacheSnapshot(), permission.id, proposal.revision, proposal.digest,
         'accept_automation', input => desktopAutomationV2.mutate(input),
       );
-      onAccepted(proposal.document.title, response.record!.automation_id);
+      onAccepted(proposal.document.title, response.record!.automation_id, response.message);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Worker acceptance failed. Refresh before retrying.');
     } finally {
@@ -57,9 +57,10 @@ export function DesktopPendingWorkerAlert({ permission, onAccepted }: {
   </section>;
 }
 
-export function DesktopAcceptedWorkerCard({ title, workerId }: { title: string; workerId: string }) {
+export function DesktopAcceptedWorkerCard({ title, workerId, message }: { title: string; workerId: string; message?: string }) {
   return <section role="status" data-testid="accepted-worker-card" className="rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 text-sm">
     <p className="font-semibold text-[var(--app-text)]">{title}</p>
     <p className="text-[var(--app-primary)]">Worker accepted · {workerId}</p>
+    {message ? <p className="mt-1 text-xs text-[var(--app-muted)]">{message}</p> : null}
   </section>;
 }

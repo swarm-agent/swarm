@@ -1852,7 +1852,7 @@ export function DesktopV3ExistingConversationPane({
   const selectedPermission = pendingModalPermissions[0] ?? null;
   const pendingPlanPermission = pendingPlanPermissions[0] ?? null;
   const pendingWorkerPermissions = pendingPermissions.filter(isAutomationPermission);
-  const [acceptedWorker, setAcceptedWorker] = useState<{ sessionId: string; title: string; workerId: string } | null>(null);
+  const [acceptedWorker, setAcceptedWorker] = useState<{ sessionId: string; title: string; workerId: string; message?: string } | null>(null);
   const pendingPlanDocument = useMemo(
     () => pendingPlanPermission
       ? structuredPlanDocumentFromPermission(pendingPlanPermission)
@@ -3483,10 +3483,10 @@ export function DesktopV3ExistingConversationPane({
                   <DesktopPendingWorkerAlert
                     key={permission.id}
                     permission={permission}
-                    onAccepted={(title, workerId) => setAcceptedWorker({ sessionId: normalizedSessionId, title, workerId })}
+                    onAccepted={(title, workerId, message) => setAcceptedWorker({ sessionId: normalizedSessionId, title, workerId, message })}
                   />
                 ))}
-                {acceptedWorker?.sessionId === normalizedSessionId && !pendingWorkerPermissions.length ? <DesktopAcceptedWorkerCard title={acceptedWorker.title} workerId={acceptedWorker.workerId} /> : null}
+                {acceptedWorker?.sessionId === normalizedSessionId && !pendingWorkerPermissions.length ? <DesktopAcceptedWorkerCard title={acceptedWorker.title} workerId={acceptedWorker.workerId} message={acceptedWorker.message} /> : null}
                 {visiblePlanPermissions.map((permission, index) => (
                   <DesktopInlinePlanReviewCard
                     key={permission.id}

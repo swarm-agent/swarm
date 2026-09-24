@@ -49,7 +49,7 @@ test('SwarmSessionsNamespace: creates session with generated client_request_id a
     const sessions = new SwarmSessionsNamespace(transport);
     const session = await sessions.create({
       title: 'Analyze Code Reliability',
-      workspace_path: '/home/roy/swarm-go',
+      workspace_path: '/test/workspaces/swarm-go',
     });
 
     assert.equal(session.id, 'sess_created_9999');

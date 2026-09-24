@@ -90,8 +90,8 @@ func TestScopedAuthTokenLifecycleAndPermissions(t *testing.T) {
 	}
 
 	var created struct {
-		OK     bool                        `json:"ok"`
-		Token  string                      `json:"token"`
+		OK     bool                          `json:"ok"`
+		Token  string                        `json:"token"`
 		Record pebblestore.ScopedTokenRecord `json:"record"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
@@ -112,7 +112,7 @@ func TestScopedAuthTokenLifecycleAndPermissions(t *testing.T) {
 		t.Fatalf("GET /v3/auth/tokens status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var listed struct {
-		OK     bool                          `json:"ok"`
+		OK     bool                            `json:"ok"`
 		Tokens []pebblestore.ScopedTokenRecord `json:"tokens"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
@@ -246,7 +246,7 @@ func TestScopedTokenGranularScopesAndPurge(t *testing.T) {
 		t.Fatalf("POST /v3/auth/tokens status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var created struct {
-		Token  string                      `json:"token"`
+		Token  string                        `json:"token"`
 		Record pebblestore.ScopedTokenRecord `json:"record"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)

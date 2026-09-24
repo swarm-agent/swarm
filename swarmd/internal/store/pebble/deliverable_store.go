@@ -35,7 +35,7 @@ type DeliverableRecord struct {
 	OccurrenceID     string                         `json:"occurrence_id,omitempty"`
 	SessionID        string                         `json:"session_id,omitempty"`
 	Title            string                         `json:"title"`
-	Kind             string                         `json:"kind"` // "social_post", "alert", "report", "pr_patch", "media_bundle", "custom"
+	Kind             string                         `json:"kind"`   // "social_post", "alert", "report", "pr_patch", "media_bundle", "custom"
 	Status           string                         `json:"status"` // "pending_review", "approved", "rejected", "published", "dismissed", "needs_revision"
 	Summary          string                         `json:"summary,omitempty"`
 	Payload          map[string]any                 `json:"payload,omitempty"` // posts, tweets, report text, diffs, etc.

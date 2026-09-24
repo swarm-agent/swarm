@@ -138,13 +138,13 @@ func TestWebhookDeliverSyncAndVerification(t *testing.T) {
 	defer dispatcher.Close()
 
 	event := WebhookEvent{
-		Type:         EventOccurrenceSucceeded,
-		WorkerID:     "auto_123",
-		WorkerTitle:  "CI Worker",
-		State:        "succeeded",
-		Detail:       "clean run",
-		Timestamp:    time.Now().UnixMilli(),
-		AccountID:    "acct_test",
+		Type:        EventOccurrenceSucceeded,
+		WorkerID:    "auto_123",
+		WorkerTitle: "CI Worker",
+		State:       "succeeded",
+		Detail:      "clean run",
+		Timestamp:   time.Now().UnixMilli(),
+		AccountID:   "acct_test",
 	}
 
 	dest := Destination{

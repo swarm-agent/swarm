@@ -41,7 +41,7 @@ test('SwarmClient: workspaces and system health methods work end-to-end', async 
             {
               workspace_id: 'ws_test_1',
               name: 'swarm-go',
-              path: '/home/roy/swarm-go',
+              path: '/test/workspaces/swarm-go',
               is_default: true,
             },
           ],

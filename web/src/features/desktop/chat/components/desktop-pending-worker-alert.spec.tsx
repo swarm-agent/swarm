@@ -27,7 +27,8 @@ test('worker request and accepted result are visible as distinct desktop cards',
   assert.match(markup, /Trigger audit/);
   assert.match(markup, /Review worker/);
   assert.doesNotMatch(markup, /Accept worker/); // review must be opened before accepting
-  const accepted = renderToStaticMarkup(<DesktopAcceptedWorkerCard title="Trigger audit" workerId="worker-1" />);
+  const accepted = renderToStaticMarkup(<DesktopAcceptedWorkerCard title="Trigger audit" workerId="worker-1" message="Deploy token minted and saved to ~/.config/swarm/secrets.env for this worker." />);
   assert.match(accepted, /Worker accepted/);
   assert.match(accepted, /worker-1/);
+  assert.match(accepted, /Deploy token minted and saved to ~\/\.config\/swarm\/secrets\.env for this worker\./);
 });

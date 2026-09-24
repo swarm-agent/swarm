@@ -72,7 +72,16 @@ export interface AutomationV2Progress {
   occurrences: AutomationV2Occurrence[]
 }
 export interface AutomationV2Read { workspace_id: string; action: 'list' | 'review' | 'progress'; session_id?: string; timezone?: string; cursor?: string; archived_mode?: 'exclude' | 'include' | 'only' }
-export interface AutomationV2Response { records?: AutomationV2Record[]; next_cursor?: string; proposal?: AutomationV2Proposal; record?: AutomationV2Record; progress?: AutomationV2Progress }
+export interface AutomationV2Response {
+  records?: AutomationV2Record[];
+  next_cursor?: string;
+  proposal?: AutomationV2Proposal;
+  record?: AutomationV2Record;
+  progress?: AutomationV2Progress;
+  token_minted?: boolean;
+  token_path?: string;
+  message?: string;
+}
 export type AutomationV2Mutation = { workspace_id: string; session_id: string } & (
   | { action: 'propose_automation'; document: AutomationV2Document; review: AutomationV2Review }
   | { action: 'accept_automation'; review: AutomationV2Review }

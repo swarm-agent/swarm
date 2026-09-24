@@ -17,26 +17,26 @@ import (
 // AutomationV2Occurrence is an immutable accepted instruction snapshot plus a
 // durable execution receipt. Authoring sessions are never execution sessions.
 type AutomationV2Occurrence struct {
-	ID           string                         `json:"id"`
-	Record       AutomationV2Record             `json:"accepted"`
-	DueAt        int64                          `json:"due_at"`
-	AdmittedAt   int64                          `json:"admitted_at"`
-	SessionID    string                         `json:"session_id"`
-	RunID        string                         `json:"run_id"`
-	State        string                         `json:"state"`
-	Version      uint64                         `json:"version"`
-	ObservedAt   int64                          `json:"observed_at"`
-	Detail       string                         `json:"detail,omitempty"`
-	Preparation  *SessionSnapshot               `json:"preparation,omitempty"`
-	ClosingState string                         `json:"closing_state,omitempty"`
-	Summary      string                         `json:"summary,omitempty"`
-	Deliverables []SessionPlanArtifactReference `json:"deliverables,omitempty"`
-	Artifacts    []SessionPlanArtifactReference `json:"artifacts,omitempty"`
-	Result       string                         `json:"result,omitempty"`
-	Report       string                         `json:"report,omitempty"`
-	AttemptCount int                            `json:"attempt_count,omitempty"`
-	NextRetryAt  int64                          `json:"next_retry_at,omitempty"`
-	TriggerContext map[string]any               `json:"trigger_context,omitempty"`
+	ID             string                         `json:"id"`
+	Record         AutomationV2Record             `json:"accepted"`
+	DueAt          int64                          `json:"due_at"`
+	AdmittedAt     int64                          `json:"admitted_at"`
+	SessionID      string                         `json:"session_id"`
+	RunID          string                         `json:"run_id"`
+	State          string                         `json:"state"`
+	Version        uint64                         `json:"version"`
+	ObservedAt     int64                          `json:"observed_at"`
+	Detail         string                         `json:"detail,omitempty"`
+	Preparation    *SessionSnapshot               `json:"preparation,omitempty"`
+	ClosingState   string                         `json:"closing_state,omitempty"`
+	Summary        string                         `json:"summary,omitempty"`
+	Deliverables   []SessionPlanArtifactReference `json:"deliverables,omitempty"`
+	Artifacts      []SessionPlanArtifactReference `json:"artifacts,omitempty"`
+	Result         string                         `json:"result,omitempty"`
+	Report         string                         `json:"report,omitempty"`
+	AttemptCount   int                            `json:"attempt_count,omitempty"`
+	NextRetryAt    int64                          `json:"next_retry_at,omitempty"`
+	TriggerContext map[string]any                 `json:"trigger_context,omitempty"`
 }
 
 type automationV2ExecutionMutation struct {
