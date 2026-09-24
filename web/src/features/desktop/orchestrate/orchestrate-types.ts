@@ -1,10 +1,23 @@
-export type OrchestrateThemeId = 'obsidian' | 'cyberpunk' | 'emerald' | 'midnight' | 'amber'
+export type OrchestrateThemeId =
+  | 'apple_glass'
+  | 'swarm_tactical'
+  | 'cyber_hud'
+  | 'studio_synth'
+  | 'minimalist_craft'
+  // Legacy aliases for backward compatibility
+  | 'obsidian'
+  | 'cyberpunk'
+  | 'emerald'
+  | 'midnight'
+  | 'amber'
 
 export interface OrchestrateTheme {
   id: OrchestrateThemeId
   name: string
+  category: string
   subtitle: string
   accentColor: string
+  secondaryColor?: string
   bgClass: string
   panelBgClass: string
   borderClass: string
@@ -14,7 +27,22 @@ export interface OrchestrateTheme {
   accentTextClass: string
   glowClass: string
   cardBgClass: string
+  cardBorderClass?: string
+  cardHoverClass?: string
   tagClass: string
+  panelRadius: string
+  cardRadius: string
+  buttonRadius: string
+  fontFamily: string
+  features: {
+    hasAmbientGlow?: boolean
+    hasScanlines?: boolean
+    hasCornerScrews?: boolean
+    hasCornerBrackets?: boolean
+    hasVuMeters?: boolean
+    hasDotGrid?: boolean
+    hasNumberIndices?: boolean
+  }
   customVars: Record<string, string>
 }
 
