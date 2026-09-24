@@ -1,6 +1,14 @@
 import { OrchestrateTheme, OrchestrateThemeId } from './orchestrate-types'
 
-export const PRIMARY_THEME_IDS: OrchestrateThemeId[] = [
+export const CREATOR_THEME_IDS: OrchestrateThemeId[] = [
+  'creator_apricot',
+  'creator_operator',
+  'creator_sunset',
+  'creator_linear',
+  'creator_espresso',
+]
+
+export const ARCHITECTURAL_THEME_IDS: OrchestrateThemeId[] = [
   'apple_glass',
   'swarm_tactical',
   'cyber_hud',
@@ -8,7 +16,210 @@ export const PRIMARY_THEME_IDS: OrchestrateThemeId[] = [
   'minimalist_craft',
 ]
 
+export const PRIMARY_THEME_IDS: OrchestrateThemeId[] = [
+  ...CREATOR_THEME_IDS,
+  ...ARCHITECTURAL_THEME_IDS,
+]
+
 export const ORCHESTRATE_THEMES: Record<OrchestrateThemeId, OrchestrateTheme> = {
+  // ── 5 MINIMAL CONSUMER CREATOR VARIATIONS (DARK WARM PEACH & AUTOMATION) ──
+  creator_apricot: {
+    id: 'creator_apricot',
+    name: 'Studio Apricot',
+    category: 'Creator Studio Minimal',
+    subtitle: 'Clean desk & studio camera aesthetic with dark roasted peach accents',
+    accentColor: '#d97757',
+    secondaryColor: '#f4a261',
+    bgClass: 'bg-[#0b0b0e]',
+    panelBgClass:
+      'bg-[#131317]/90 backdrop-blur-xl border-white/[0.08] shadow-[inset_0_1px_1px_rgba(255,255,255,0.12),0_12px_32px_rgba(0,0,0,0.5)]',
+    borderClass: 'border-white/[0.08]',
+    cardBgClass:
+      'bg-[#18181f]/80 hover:bg-[#1f1f28] border-white/[0.07] hover:border-[#d97757]/40 shadow-[0_4px_16px_rgba(0,0,0,0.3)]',
+    cardBorderClass: 'border-white/[0.07]',
+    cardHoverClass: 'hover:border-[#d97757]/50 hover:shadow-[0_8px_24px_rgba(217,119,87,0.18)]',
+    textPrimaryClass: 'text-[#f7f7f8]',
+    textSecondaryClass: 'text-[#828696]',
+    accentBgClass:
+      'bg-gradient-to-r from-[#d97757] to-[#e78b6d] text-white shadow-[0_2px_12px_rgba(217,119,87,0.35)]',
+    accentTextClass: 'text-[#f4a261]',
+    glowClass: 'shadow-[0_0_24px_rgba(217,119,87,0.22)]',
+    tagClass: 'bg-[#d97757]/15 text-[#f4a261] border-[#d97757]/30 font-medium text-[10px]',
+    panelRadius: 'rounded-2xl',
+    cardRadius: 'rounded-xl',
+    buttonRadius: 'rounded-full',
+    fontFamily: 'font-sans',
+    features: {
+      hasEnginePill: true,
+      hasAmbientGlow: true,
+    },
+    customVars: {
+      '--orch-bg': '#0b0b0e',
+      '--orch-panel': '#131317',
+      '--orch-card': '#18181f',
+      '--orch-border': 'rgba(255, 255, 255, 0.08)',
+      '--orch-accent': '#d97757',
+      '--orch-accent-subtle': 'rgba(217, 119, 87, 0.15)',
+      '--orch-specular': 'rgba(255, 255, 255, 0.15)',
+    },
+  },
+
+  creator_operator: {
+    id: 'creator_operator',
+    name: 'Teenage Operator',
+    category: 'Tactile Pocket Minimal',
+    subtitle: 'Tactile pocket-synth minimalism with punchy signal apricot keys',
+    accentColor: '#e07a5f',
+    secondaryColor: '#f4f1de',
+    bgClass: 'bg-[#101114]',
+    panelBgClass: 'bg-[#17181d] border-[#292b34] shadow-[0_4px_20px_rgba(0,0,0,0.6)]',
+    borderClass: 'border-[#292b34]',
+    cardBgClass:
+      'bg-[#1e1f26] hover:bg-[#252630] border-[#2f323e] hover:border-[#e07a5f]/60 shadow-[0_2px_8px_rgba(0,0,0,0.5)]',
+    cardBorderClass: 'border-[#2f323e]',
+    cardHoverClass: 'hover:border-[#e07a5f]/60',
+    textPrimaryClass: 'text-[#f2f2f4]',
+    textSecondaryClass: 'text-[#7d8292]',
+    accentBgClass: 'bg-[#e07a5f] text-black font-bold shadow-[0_2px_10px_rgba(224,122,95,0.4)]',
+    accentTextClass: 'text-[#e07a5f]',
+    glowClass: 'shadow-[0_0_20px_rgba(224,122,95,0.25)]',
+    tagClass:
+      'bg-[#242120] text-[#e07a5f] border-[#e07a5f]/40 font-mono text-[9px] uppercase tracking-wider',
+    panelRadius: 'rounded-md',
+    cardRadius: 'rounded',
+    buttonRadius: 'rounded-sm',
+    fontFamily: 'font-mono',
+    features: {
+      hasTapeReel: true,
+    },
+    customVars: {
+      '--orch-bg': '#101114',
+      '--orch-panel': '#17181d',
+      '--orch-card': '#1e1f26',
+      '--orch-border': '#292b34',
+      '--orch-accent': '#e07a5f',
+      '--orch-accent-subtle': '#3a1d15',
+    },
+  },
+
+  creator_sunset: {
+    id: 'creator_sunset',
+    name: 'Sunset Obsidian',
+    category: 'visionOS Sunset Glass',
+    subtitle: 'Translucent glassmorphism floating over ambient dark sunset radiance',
+    accentColor: '#e58c6a',
+    secondaryColor: '#c86d51',
+    bgClass: 'bg-[#07080b]',
+    panelBgClass:
+      'bg-white/[0.04] backdrop-blur-2xl border-white/[0.12] shadow-[inset_0_1px_1px_rgba(255,255,255,0.25),0_20px_45px_rgba(0,0,0,0.6)]',
+    borderClass: 'border-white/[0.12]',
+    cardBgClass:
+      'bg-white/[0.05] hover:bg-white/[0.09] backdrop-blur-xl border-white/[0.1] shadow-[0_8px_30px_rgba(0,0,0,0.3)]',
+    cardBorderClass: 'border-white/[0.1]',
+    cardHoverClass: 'hover:border-[#e58c6a]/40 hover:shadow-[0_10px_30px_rgba(229,140,106,0.2)]',
+    textPrimaryClass: 'text-white',
+    textSecondaryClass: 'text-zinc-400',
+    accentBgClass:
+      'bg-gradient-to-r from-[#e58c6a] to-[#d97757] text-white shadow-[0_4px_16px_rgba(229,140,106,0.4)]',
+    accentTextClass: 'text-[#e58c6a]',
+    glowClass: 'shadow-[0_0_32px_rgba(229,140,106,0.3)]',
+    tagClass: 'bg-white/10 text-[#fbd5c6] border-white/20 backdrop-blur-md text-[10px]',
+    panelRadius: 'rounded-3xl',
+    cardRadius: 'rounded-2xl',
+    buttonRadius: 'rounded-full',
+    fontFamily: 'font-sans',
+    features: {
+      hasDynamicIsland: true,
+      hasAmbientGlow: true,
+    },
+    customVars: {
+      '--orch-bg': '#07080b',
+      '--orch-panel': 'rgba(255, 255, 255, 0.04)',
+      '--orch-card': 'rgba(255, 255, 255, 0.05)',
+      '--orch-border': 'rgba(255, 255, 255, 0.12)',
+      '--orch-accent': '#e58c6a',
+      '--orch-accent-subtle': 'rgba(229, 140, 106, 0.2)',
+      '--orch-specular': 'rgba(255, 255, 255, 0.25)',
+    },
+  },
+
+  creator_linear: {
+    id: 'creator_linear',
+    name: 'Linear Monolith',
+    category: 'Surgical Monolith',
+    subtitle: 'Distraction-free high-craft dark mode with 1px hairline dividers',
+    accentColor: '#e26d5c',
+    secondaryColor: '#eceef2',
+    bgClass: 'bg-[#0e0f12]',
+    panelBgClass: 'bg-[#14151a] border-white/[0.07] shadow-[0_4px_24px_rgba(0,0,0,0.45)]',
+    borderClass: 'border-white/[0.07]',
+    cardBgClass:
+      'bg-[#191a22] border-white/[0.06] hover:border-white/[0.18] hover:bg-[#1d1f29] shadow-[0_4px_16px_rgba(0,0,0,0.4)]',
+    cardBorderClass: 'border-white/[0.06]',
+    cardHoverClass: 'hover:border-[#e26d5c]/40 hover:bg-[#1d1f29]',
+    textPrimaryClass: 'text-[#eceef2]',
+    textSecondaryClass: 'text-[#888c99]',
+    accentBgClass:
+      'bg-[#e26d5c] text-white font-medium hover:bg-[#e77a6b] shadow-[0_2px_12px_rgba(226,109,92,0.35)]',
+    accentTextClass: 'text-[#e26d5c]',
+    glowClass: 'shadow-[0_0_20px_rgba(226,109,92,0.2)]',
+    tagClass: 'bg-[#e26d5c]/10 text-[#f5a89e] border-[#e26d5c]/25 text-[10px] font-medium',
+    panelRadius: 'rounded-xl',
+    cardRadius: 'rounded-lg',
+    buttonRadius: 'rounded-md',
+    fontFamily: 'font-sans',
+    features: {
+      hasStatusChips: true,
+    },
+    customVars: {
+      '--orch-bg': '#0e0f12',
+      '--orch-panel': '#14151a',
+      '--orch-card': '#191a22',
+      '--orch-border': 'rgba(255, 255, 255, 0.07)',
+      '--orch-accent': '#e26d5c',
+      '--orch-accent-subtle': '#381a17',
+    },
+  },
+
+  creator_espresso: {
+    id: 'creator_espresso',
+    name: 'Amber Espresso',
+    category: 'Warm Studio Sanctuary',
+    subtitle: 'Warm low-eye-strain studio sanctuary with toasted apricot glow',
+    accentColor: '#f38563',
+    secondaryColor: '#d4c5b9',
+    bgClass: 'bg-[#0c0a09]',
+    panelBgClass: 'bg-[#141110] border-[#29221f] shadow-[0_6px_20px_rgba(0,0,0,0.65)]',
+    borderClass: 'border-[#29221f]',
+    cardBgClass:
+      'bg-[#1b1715] hover:bg-[#221d1a] border-[#332b27] hover:border-[#f38563]/50 shadow-[0_4px_12px_rgba(0,0,0,0.5)]',
+    cardBorderClass: 'border-[#332b27]',
+    cardHoverClass: 'hover:border-[#f38563]/50 hover:shadow-[0_4px_16px_rgba(243,133,99,0.2)]',
+    textPrimaryClass: 'text-[#f4ede6]',
+    textSecondaryClass: 'text-[#9e9086]',
+    accentBgClass:
+      'bg-gradient-to-r from-[#f38563] to-[#e67552] text-black font-semibold shadow-[0_2px_12px_rgba(243,133,99,0.4)]',
+    accentTextClass: 'text-[#f38563]',
+    glowClass: 'shadow-[0_0_24px_rgba(243,133,99,0.25)]',
+    tagClass: 'bg-[#281e1a] text-[#f7a88f] border-[#f38563]/30 font-serif text-[10px]',
+    panelRadius: 'rounded-2xl',
+    cardRadius: 'rounded-xl',
+    buttonRadius: 'rounded-xl',
+    fontFamily: 'font-sans',
+    features: {
+      hasFilamentPip: true,
+    },
+    customVars: {
+      '--orch-bg': '#0c0a09',
+      '--orch-panel': '#141110',
+      '--orch-card': '#1b1715',
+      '--orch-border': '#29221f',
+      '--orch-accent': '#f38563',
+      '--orch-accent-subtle': '#441d13',
+    },
+  },
+
+  // ── ARCHITECTURAL STYLES ──
   apple_glass: {
     id: 'apple_glass',
     name: 'Apple Glass',

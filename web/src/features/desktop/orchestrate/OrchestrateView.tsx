@@ -35,7 +35,11 @@ import {
   MOCK_PROJECTS,
   MOCK_RUNNING_TASKS,
 } from './orchestrate-mock-data'
-import { ORCHESTRATE_THEMES, PRIMARY_THEME_IDS } from './orchestrate-themes'
+import {
+  ARCHITECTURAL_THEME_IDS,
+  CREATOR_THEME_IDS,
+  ORCHESTRATE_THEMES,
+} from './orchestrate-themes'
 import {
   MediaDeliverable,
   OrchestrateThemeId,
@@ -150,10 +154,11 @@ export interface OrchestrateViewProps {
 export function OrchestrateView({
   workspaceSlug: _workspaceSlug,
   onNavigateHome,
-  initialThemeId = 'apple_glass',
+  initialThemeId = 'creator_apricot',
 }: OrchestrateViewProps) {
   const [currentThemeId, setCurrentThemeId] = useState<OrchestrateThemeId>(initialThemeId)
-  const theme = ORCHESTRATE_THEMES[currentThemeId] || ORCHESTRATE_THEMES.apple_glass
+  const [themeCategory, setThemeCategory] = useState<'creator' | 'architectural'>('creator')
+  const theme = ORCHESTRATE_THEMES[currentThemeId] || ORCHESTRATE_THEMES.creator_apricot
 
   const [projects] = useState<ProjectSummary[]>(MOCK_PROJECTS)
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0].id)
@@ -290,8 +295,14 @@ export function OrchestrateView({
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // RENDER HELPERS BASED ON ARCHITECTURAL STYLE
+  // RENDER HELPERS BASED ON ARCHITECTURAL STYLE & CREATOR VARIATIONS
   // ───────────────────────────────────────────────────────────────────────────
+
+  const isApricot = theme.id === 'creator_apricot'
+  const isOperator = theme.id === 'creator_operator'
+  const isSunset = theme.id === 'creator_sunset'
+  const isLinear = theme.id === 'creator_linear'
+  const isEspresso = theme.id === 'creator_espresso'
 
   const isApple = theme.id === 'apple_glass'
   const isSwarm = theme.id === 'swarm_tactical'
@@ -309,6 +320,39 @@ export function OrchestrateView({
       {/* ─────────────────────────────────────────────────────────────
           1. BACKGROUND ATMOSPHERE ACCORDING TO STYLE
          ───────────────────────────────────────────────────────────── */}
+      {/* Studio Apricot: Subtle warm roasted peach / apricot studio ambience */}
+      {isApricot && (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-32 -right-32 h-[34rem] w-[34rem] rounded-full bg-[#d97757]/10 blur-[130px]" />
+          <div className="absolute -bottom-32 left-1/4 h-[30rem] w-[30rem] rounded-full bg-[#f4a261]/8 blur-[120px]" />
+        </div>
+      )}
+
+      {/* Sunset Obsidian: Luminous ambient sunset radiance */}
+      {isSunset && (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-24 -left-20 h-[38rem] w-[38rem] rounded-full bg-[#e58c6a]/15 blur-[140px] animate-pulse" />
+          <div className="absolute -bottom-20 right-10 h-[32rem] w-[32rem] rounded-full bg-[#c86d51]/12 blur-[130px]" />
+        </div>
+      )}
+
+      {/* Amber Espresso: Warm vintage studio coffee glow */}
+      {isEspresso && (
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-[#f38563]/10 via-transparent to-black/85" />
+      )}
+
+      {/* Teenage Operator: Clean micro-grid for pocket synth */}
+      {isOperator && (
+        <div
+          className="pointer-events-none absolute inset-0 opacity-20"
+          style={{
+            backgroundImage:
+              'radial-gradient(rgba(224, 122, 95, 0.25) 1px, transparent 1px)',
+            backgroundSize: '24px 24px',
+          }}
+        />
+      )}
+
       {/* Apple Glass: Floating iridescent ambient orbs */}
       {isApple && (
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
@@ -366,14 +410,20 @@ export function OrchestrateView({
          ───────────────────────────────────────────────────────────── */}
       <header
         className={`relative z-30 flex flex-shrink-0 items-center justify-between transition-all duration-300 ${
-          isApple
+          isApple || isSunset
             ? 'mx-4 mt-3 mb-2 rounded-2xl border px-4 py-2.5 backdrop-blur-2xl bg-white/[0.06] border-white/20 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4),0_8px_32px_rgba(0,0,0,0.37)]'
             : isCyber
             ? 'border-b px-4 py-2 bg-[#080e22]/95 border-cyan-500/50 shadow-[0_0_20px_rgba(0,243,255,0.25)]'
             : isSynth
             ? 'border-b-2 px-5 py-2.5 bg-[#151921] border-[#293140] shadow-[inset_0_2px_4px_rgba(0,0,0,0.8),0_4px_12px_rgba(0,0,0,0.6)]'
-            : isCraft
+            : isCraft || isLinear
             ? 'border-b px-6 py-2.5 bg-[#12141a] border-white/[0.08]'
+            : isApricot
+            ? 'border-b px-5 py-2.5 bg-[#121216]/95 border-white/[0.08] shadow-[0_4px_20px_rgba(0,0,0,0.5)]'
+            : isOperator
+            ? 'border-b px-4 py-2 bg-[#14151a] border-[#292b34] shadow-[0_2px_10px_rgba(0,0,0,0.5)]'
+            : isEspresso
+            ? 'border-b px-5 py-2.5 bg-[#13100f] border-[#29221f] shadow-[0_4px_16px_rgba(0,0,0,0.6)]'
             : 'border-b px-4 py-2 bg-[#0e1117] border-amber-500/30'
         }`}
       >
@@ -388,6 +438,16 @@ export function OrchestrateView({
               className={`flex items-center justify-center transition-all ${
                 isApple
                   ? 'h-8 w-8 rounded-xl bg-gradient-to-tr from-blue-500 to-indigo-500 text-white shadow-[0_2px_12px_rgba(10,132,255,0.5)]'
+                  : isSunset
+                  ? 'h-8 w-8 rounded-xl bg-gradient-to-tr from-[#e58c6a] to-[#d97757] text-white shadow-[0_2px_12px_rgba(229,140,106,0.5)]'
+                  : isApricot
+                  ? 'h-8 w-8 rounded-xl bg-gradient-to-tr from-[#d97757] to-[#f4a261] text-white shadow-[0_2px_12px_rgba(217,119,87,0.4)]'
+                  : isOperator
+                  ? 'h-8 w-8 rounded-none border border-[#e07a5f]/60 bg-[#241a16] text-[#e07a5f] shadow-[0_0_10px_rgba(224,122,95,0.3)]'
+                  : isLinear
+                  ? 'h-8 w-8 rounded-lg bg-[#e26d5c]/15 text-[#e26d5c] border border-[#e26d5c]/30'
+                  : isEspresso
+                  ? 'h-8 w-8 rounded-xl bg-[#241a16] text-[#f38563] border border-[#f38563]/30 shadow-[0_0_10px_rgba(243,133,99,0.2)]'
                   : isCyber
                   ? 'h-8 w-8 rounded-none border border-cyan-400 bg-cyan-950 text-cyan-300 shadow-[0_0_15px_rgba(0,243,255,0.5)]'
                   : isSynth
@@ -397,15 +457,39 @@ export function OrchestrateView({
                   : 'h-8 w-8 rounded-none border border-amber-500/60 bg-amber-950/60 text-amber-400'
               }`}
             >
-              {isSynth ? <Sliders size={16} /> : isCyber ? <Zap size={16} /> : <Cpu size={16} />}
+              {isApricot ? (
+                <Sparkles size={16} />
+              ) : isOperator ? (
+                <Sliders size={16} />
+              ) : isSunset ? (
+                <Zap size={16} />
+              ) : isLinear ? (
+                <Terminal size={16} />
+              ) : isEspresso ? (
+                <Radio size={16} />
+              ) : isSynth ? (
+                <Sliders size={16} />
+              ) : isCyber ? (
+                <Zap size={16} />
+              ) : (
+                <Cpu size={16} />
+              )}
             </div>
 
             <div className="flex flex-col">
               <div className="flex items-center gap-2">
                 <span
                   className={`font-black tracking-tight ${
-                    isApple
+                    isApple || isSunset
                       ? 'text-sm font-semibold tracking-normal text-white'
+                      : isApricot
+                      ? 'text-sm font-semibold tracking-tight text-[#f7f7f8]'
+                      : isOperator
+                      ? 'text-xs uppercase font-mono tracking-wider text-[#e07a5f]'
+                      : isLinear
+                      ? 'text-xs font-semibold tracking-tight text-[#eceef2]'
+                      : isEspresso
+                      ? 'text-sm font-serif tracking-normal text-[#f4ede6]'
                       : isCyber
                       ? 'text-xs uppercase tracking-widest text-cyan-400'
                       : isSynth
@@ -415,7 +499,17 @@ export function OrchestrateView({
                       : 'text-xs uppercase font-mono tracking-wider text-amber-400'
                   }`}
                 >
-                  {isSwarm
+                  {isApricot
+                    ? 'Studio Apricot'
+                    : isOperator
+                    ? 'TEENAGE//OP-1'
+                    : isSunset
+                    ? 'Sunset Studio'
+                    : isLinear
+                    ? 'Linear Monolith'
+                    : isEspresso
+                    ? 'Amber Espresso'
+                    : isSwarm
                     ? '[SWARM.ORCHESTRATE]'
                     : isCyber
                     ? 'CYBER//ORCHESTRATE'
@@ -487,6 +581,42 @@ export function OrchestrateView({
             </span>
           </div>
 
+          {/* Subtle Live Background Automation Indicators */}
+          {theme.features.hasEnginePill && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#d97757]/15 border border-[#d97757]/30 text-[#f4a261] text-xs font-medium">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#f4a261] animate-pulse" />
+              <span>Live Engine Active · 3 workers humming</span>
+            </div>
+          )}
+
+          {theme.features.hasTapeReel && (
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-black/60 border border-[#e07a5f]/40 text-[#e07a5f] text-[10px] font-mono">
+              <Radio size={11} className="animate-spin text-[#e07a5f]" />
+              <span>TRK-01 AUTO [REC]</span>
+            </div>
+          )}
+
+          {theme.features.hasDynamicIsland && (
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 backdrop-blur-xl border border-white/20 text-[#fbd5c6] text-xs shadow-lg">
+              <Sparkles size={12} className="text-[#e58c6a] animate-pulse" />
+              <span>Automations Quietly Syncing</span>
+            </div>
+          )}
+
+          {theme.features.hasStatusChips && (
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#e26d5c]/10 border border-[#e26d5c]/25 text-[#f5a89e] text-[10px]">
+              <CheckCircle2 size={11} className="text-[#e26d5c]" />
+              <span>All systems synced · auto-worker idle</span>
+            </div>
+          )}
+
+          {theme.features.hasFilamentPip && (
+            <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#241a16] border border-[#f38563]/30 text-[#f38563] text-xs">
+              <span className="h-2 w-2 rounded-full bg-[#f38563] shadow-[0_0_8px_#f38563]" />
+              <span className="font-serif text-[11px]">Studio Automation Standby</span>
+            </div>
+          )}
+
           {/* Swarm Tactical / Studio Radio status */}
           {isSwarm && (
             <div className="flex items-center gap-1.5 px-2 py-0.5 border border-amber-500/40 text-amber-400 text-[10px] font-mono">
@@ -507,27 +637,57 @@ export function OrchestrateView({
                   ? 'text-amber-400'
                   : isCraft
                   ? 'text-zinc-400'
+                  : isApricot || isSunset || isOperator || isLinear || isEspresso
+                  ? 'text-[#f4a261]'
                   : 'text-slate-400'
               }`}
             >
-              {isCraft ? '00 / STYLE' : 'Style Variations:'}
+              {isCraft ? '00 / STYLE' : 'Variations:'}
             </span>
+
+            {/* Category toggle: Creator Minimal vs Architectural */}
+            <div className="flex items-center rounded-lg bg-black/40 p-0.5 border border-white/10 text-[10px] font-medium mr-1">
+              <button
+                onClick={() => setThemeCategory('creator')}
+                className={`px-2 py-0.5 rounded transition-all ${
+                  themeCategory === 'creator'
+                    ? 'bg-[#d97757] text-white shadow-sm font-semibold'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                Creator Minimal (Peach)
+              </button>
+              <button
+                onClick={() => setThemeCategory('architectural')}
+                className={`px-2 py-0.5 rounded transition-all ${
+                  themeCategory === 'architectural'
+                    ? 'bg-white/20 text-white shadow-sm font-semibold'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                Architectural
+              </button>
+            </div>
 
             {/* The 5-variant dock with distinctive visual treatments */}
             <div
               className={`flex items-center gap-1 p-1 transition-all ${
-                isApple
+                isApple || isSunset
                   ? 'rounded-full bg-white/[0.08] backdrop-blur-2xl border border-white/20 shadow-[inset_0_1px_1px_rgba(255,255,255,0.25)]'
                   : isCyber
                   ? 'rounded-none bg-[#0a1024] border border-cyan-500/60 shadow-[0_0_15px_rgba(0,243,255,0.3)]'
                   : isSynth
                   ? 'rounded-lg bg-[#0e1218] border border-[#2a3240] shadow-[inset_0_2px_4px_rgba(0,0,0,0.8)]'
-                  : isCraft
+                  : isCraft || isLinear
                   ? 'rounded-xl bg-white/[0.03] border border-white/[0.08]'
+                  : isApricot || isEspresso
+                  ? 'rounded-full bg-[#18181f]/80 backdrop-blur-xl border border-white/10 shadow-[0_4px_16px_rgba(0,0,0,0.4)]'
+                  : isOperator
+                  ? 'rounded-md bg-[#18191e] border border-[#2e313a]'
                   : 'rounded-none bg-black/60 border border-amber-500/40 font-mono'
               }`}
             >
-              {PRIMARY_THEME_IDS.map((tId, idx) => {
+              {(themeCategory === 'creator' ? CREATOR_THEME_IDS : ARCHITECTURAL_THEME_IDS).map((tId, idx) => {
                 const t = ORCHESTRATE_THEMES[tId]
                 const isActive = tId === currentThemeId
                 return (
@@ -535,11 +695,35 @@ export function OrchestrateView({
                     key={tId}
                     onClick={() => setCurrentThemeId(tId)}
                     className={`group relative flex items-center gap-1.5 px-3 py-1.5 text-xs transition-all ${
-                      isApple
+                      isApple || isSunset
                         ? `rounded-full ${
                             isActive
                               ? 'bg-white text-slate-900 font-semibold shadow-[0_2px_12px_rgba(255,255,255,0.4)]'
                               : 'text-slate-300 hover:text-white hover:bg-white/10'
+                          }`
+                        : isApricot
+                        ? `rounded-full ${
+                            isActive
+                              ? 'bg-[#d97757] text-white font-semibold shadow-[0_2px_12px_rgba(217,119,87,0.5)]'
+                              : 'text-zinc-300 hover:text-white hover:bg-white/10'
+                          }`
+                        : isOperator
+                        ? `rounded-sm uppercase font-mono text-[11px] ${
+                            isActive
+                              ? 'bg-[#e07a5f] text-black font-bold shadow-[0_0_10px_rgba(224,122,95,0.5)]'
+                              : 'text-zinc-300 hover:text-white hover:bg-white/5'
+                          }`
+                        : isLinear
+                        ? `rounded-md text-[11px] font-medium ${
+                            isActive
+                              ? 'bg-[#e26d5c] text-white font-semibold shadow-sm'
+                              : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]'
+                          }`
+                        : isEspresso
+                        ? `rounded-xl font-serif text-[11px] ${
+                            isActive
+                              ? 'bg-[#f38563] text-black font-semibold shadow-[0_2px_10px_rgba(243,133,99,0.4)]'
+                              : 'text-[#d4c5b9] hover:text-white hover:bg-white/5'
                           }`
                         : isCyber
                         ? `rounded-none uppercase font-bold text-[11px] ${
@@ -570,14 +754,16 @@ export function OrchestrateView({
                     {/* Unique Icon / Indicator per style */}
                     <span
                       className={`h-2 w-2 transition-all ${
-                        isApple
+                        isApple || isSunset || isApricot
                           ? 'rounded-full'
                           : isCyber
                           ? 'rounded-none rotate-45'
                           : isSynth
                           ? 'rounded-full shadow-[0_0_6px_currentColor]'
-                          : isCraft
+                          : isCraft || isLinear
                           ? 'rounded-sm'
+                          : isEspresso
+                          ? 'rounded-full shadow-[0_0_6px_#f38563]'
                           : 'rounded-none'
                       }`}
                       style={{ backgroundColor: t.accentColor }}

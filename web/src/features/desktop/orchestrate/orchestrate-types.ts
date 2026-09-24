@@ -1,4 +1,11 @@
 export type OrchestrateThemeId =
+  // 5 Minimal Consumer Creator Variations (Dark Warm Peach & Automation)
+  | 'creator_apricot'
+  | 'creator_operator'
+  | 'creator_sunset'
+  | 'creator_linear'
+  | 'creator_espresso'
+  // Architectural styles
   | 'apple_glass'
   | 'swarm_tactical'
   | 'cyber_hud'
@@ -42,6 +49,11 @@ export interface OrchestrateTheme {
     hasVuMeters?: boolean
     hasDotGrid?: boolean
     hasNumberIndices?: boolean
+    hasEnginePill?: boolean
+    hasTapeReel?: boolean
+    hasDynamicIsland?: boolean
+    hasStatusChips?: boolean
+    hasFilamentPip?: boolean
   }
   customVars: Record<string, string>
 }
