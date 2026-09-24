@@ -124,7 +124,14 @@ export function AutomationV2PlanReview({
   modalMode?: boolean
 }) {
   const [reviewed, setReviewed] = useState(proposal)
-  const [draft, setDraft] = useState<AutomationV2Document>(() => ({ ...proposal.document, automation_v2: { ...proposal.document.automation_v2, expiration: proposal.document.automation_v2.expiration ?? { kind: 'indefinite' } } }))
+  const [draft, setDraft] = useState<AutomationV2Document>(() => ({
+    ...proposal.document,
+    checkpoints: Array.isArray(proposal.document.checkpoints) ? proposal.document.checkpoints : [],
+    automation_v2: {
+      ...proposal.document.automation_v2,
+      expiration: proposal.document.automation_v2.expiration ?? { kind: 'indefinite' },
+    },
+  }))
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [accepted, setAccepted] = useState<AutomationV2Record | null>(null)
@@ -142,6 +149,7 @@ export function AutomationV2PlanReview({
       setReviewed(proposal)
       setDraft({
         ...proposal.document,
+        checkpoints: Array.isArray(proposal.document.checkpoints) ? proposal.document.checkpoints : [],
         automation_v2: {
           ...proposal.document.automation_v2,
           expiration: proposal.document.automation_v2.expiration ?? { kind: 'indefinite' },
@@ -214,7 +222,7 @@ export function AutomationV2PlanReview({
     ? "min-w-0 space-y-3.5 font-sans"
     : "min-w-0 space-y-4 rounded-2xl border border-[var(--app-primary-border)] bg-[var(--app-surface)] p-4 font-sans"
 
-  const activeClosingState = draft.checkpoints.length > 0 ? getCheckpointClosingState(draft.checkpoints[0]) : 'routine_clean'
+  const activeClosingState = (draft.checkpoints?.length ?? 0) > 0 ? getCheckpointClosingState(draft.checkpoints[0]) : 'routine_clean'
   const activePresetId: AutomationIntentPresetId | null =
     activeClosingState === 'deliverable_ready'
       ? 'deliverable_output'
@@ -293,7 +301,7 @@ export function AutomationV2PlanReview({
       <p className="text-[11px] text-[var(--app-text-muted)]">
         The AI proposes how to classify completed runs and when to trigger an alert. You can customize the expected outcome state and alert criteria below.
       </p>
-      {draft.checkpoints.map((checkpoint, cpIndex) => {
+      {(draft.checkpoints ?? []).map((checkpoint, cpIndex) => {
         const closingState = getCheckpointClosingState(checkpoint)
         const alertConditions = getCheckpointAlertConditions(checkpoint)
         return (
@@ -302,7 +310,7 @@ export function AutomationV2PlanReview({
             className="rounded-lg border border-[var(--app-border)] bg-[var(--app-bg-alt)] p-3 space-y-2.5"
             data-testid={`checkpoint-closing-state-${checkpoint.id || cpIndex}`}
           >
-            {draft.checkpoints.length > 1 && (
+            {(draft.checkpoints?.length ?? 0) > 1 && (
               <div className="text-[11px] font-semibold text-[var(--app-text)]">
                 Step {cpIndex + 1}: {checkpoint.title}
               </div>
@@ -361,7 +369,7 @@ export function AutomationV2PlanReview({
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-[var(--app-text)]">
-              What Swarm will do · {draft.checkpoints.length} {draft.checkpoints.length === 1 ? 'step' : 'steps'}
+              What Swarm will do · {draft.checkpoints?.length ?? 0} {(draft.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'}
             </h3>
             <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-0.5 text-xs text-[var(--app-text-muted)]">
               Full plan
@@ -372,7 +380,7 @@ export function AutomationV2PlanReview({
           </div>
         </section>
       ) : (
-        <details className="rounded-xl border border-[var(--app-border)]/60 p-3"><summary className="cursor-pointer text-sm font-medium">What Swarm will do · {draft.checkpoints.length} {draft.checkpoints.length === 1 ? 'step' : 'steps'}</summary><div className="mt-3"><StructuredPlanReviewView document={display} /></div></details>
+        <details className="rounded-xl border border-[var(--app-border)]/60 p-3"><summary className="cursor-pointer text-sm font-medium">What Swarm will do · {draft.checkpoints?.length ?? 0} {(draft.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'}</summary><div className="mt-3"><StructuredPlanReviewView document={display} /></div></details>
       )
     )}
 
@@ -383,7 +391,7 @@ export function AutomationV2PlanReview({
           Goal
           <textarea className={field} value={draft.info.goal} onChange={e => setDraft({ ...draft, info: { ...draft.info, goal: e.target.value } })} />
         </label>
-        {draft.checkpoints.map((checkpoint, index) => (
+        {(draft.checkpoints ?? []).map((checkpoint, index) => (
           <div key={checkpoint.id} className="space-y-2 border-t border-[var(--app-border)]/40 pt-2">
             <label className="block text-xs">
               {checkpoint.title} · tasks (one per line)

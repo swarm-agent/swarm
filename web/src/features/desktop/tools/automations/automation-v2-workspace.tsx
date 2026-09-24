@@ -648,7 +648,7 @@ export function PendingAutomationCard({
             {scheduleFrequency(schedule)}
           </span>
           <span className="text-[11px] text-[var(--app-text-muted)]">
-            {proposal.document.checkpoints.length} {proposal.document.checkpoints.length === 1 ? 'step' : 'steps'} · Rev {proposal.revision}
+            {(proposal.document.checkpoints?.length ?? 0)} {(proposal.document.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'} · Rev {proposal.revision}
           </span>
         </div>
         <div className="text-xs font-medium text-[var(--app-warning)]">
@@ -1647,7 +1647,7 @@ export function AutomationV2Workspace({
                         {scheduleFrequency(schedule)}
                       </span>
                       <span className="text-[11px] text-[var(--app-text-muted)]">
-                        {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'} · Rev {record.revision}
+                        {(record.document.checkpoints?.length ?? 0)} {(record.document.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'} · Rev {record.revision}
                       </span>
                     </div>
                     <div className="text-xs font-medium text-[var(--app-text-muted)]">
@@ -2511,11 +2511,11 @@ export function AutomationV2WorkerDetailPage({
             </h3>
           </div>
           <span className="text-xs text-[var(--app-text-muted)] font-medium">
-            {liveRecord.document.checkpoints.length} {liveRecord.document.checkpoints.length === 1 ? 'checkpoint step' : 'checkpoint steps'} · Revision {liveRecord.revision}
+            {(liveRecord.document.checkpoints?.length ?? 0)} {(liveRecord.document.checkpoints?.length ?? 0) === 1 ? 'checkpoint step' : 'checkpoint steps'} · Revision {liveRecord.revision}
           </span>
         </div>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {liveRecord.document.checkpoints.map((cp, idx) => (
+          {(liveRecord.document.checkpoints ?? []).map((cp, idx) => (
             <div key={cp.id} className="rounded-xl border border-[var(--app-border)]/60 bg-[var(--app-bg-alt)]/50 p-3.5 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-[10px] font-mono font-semibold text-[var(--app-primary)] uppercase">Step {idx + 1}</span>
@@ -2804,7 +2804,7 @@ export function AutomationV2Detail({
     <header className="border-b border-[var(--app-border)]/60 pb-2">
       <div className="flex items-center justify-between gap-2"><span className={`${eyebrow} text-[var(--app-primary)]`}>Worker</span><Button size="sm" variant="ghost" className="h-6 w-6 p-0" aria-label="Refresh progress" title="Refresh progress" disabled={busy || page?.loading} onClick={() => void desktopAutomationV2.refresh(input)}><RefreshCcw size={12} /></Button></div>
       <h2 className="mt-1 line-clamp-2 break-words text-sm font-semibold leading-5" title={record?.document.title}>{record?.document.title ?? 'Loading worker…'}</h2>
-      <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{record ? `${record.document.checkpoints.length} ${record.document.checkpoints.length === 1 ? 'step' : 'steps'} · Deployed worker` : 'Loading schedule'}</p>
+      <p className="mt-1 text-[10px] text-[var(--app-text-subtle)]">{record ? `${record.document.checkpoints?.length ?? 0} ${(record.document.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'} · Deployed worker` : 'Loading schedule'}</p>
     </header>
     {(page?.loading || page?.stale) && <p role="status" className="text-[11px] text-[var(--app-text-muted)]">Updating schedule…</p>}{(error || page?.error) && <p role="alert" className="text-[var(--app-danger)]">{error || page?.error}</p>}
     {record && schedule && <section aria-label="Worker schedule handoff">
@@ -2816,7 +2816,7 @@ export function AutomationV2Detail({
       <div className="grid grid-cols-2 gap-2"><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => setEditing(v => !v)} aria-expanded={editing}>Edit worker</Button><Button size="sm" variant="outline" className="h-8 rounded-xl text-xs" disabled={disabled || record.cancelled} onClick={() => void control(record.enabled ? 'pause' : 'resume')}>{record.enabled ? 'Pause schedule' : 'Resume schedule'}</Button></div>
       <p className="text-[11px] leading-4 text-[var(--app-text-subtle)]">{record.authorization.kind === 'indefinite' ? 'Repeats until stopped.' : `Ends ${time(record.authorization.expires_at!)}.`} Pausing leaves admitted work unchanged.</p>
       {editing && <AutomationV2Edit record={record} />}
-      <details className="rounded-xl bg-[var(--app-bg-alt)] p-2.5"><summary className={disclosure}>Instructions · {record.document.checkpoints.length} {record.document.checkpoints.length === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{record.document.checkpoints.map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
+      <details className="rounded-xl bg-[var(--app-bg-alt)] p-2.5"><summary className={disclosure}>Instructions · {record.document.checkpoints?.length ?? 0} {(record.document.checkpoints?.length ?? 0) === 1 ? 'step' : 'steps'}</summary><p className="mt-2 leading-5">{record.document.info.goal}</p><ol className="mt-2 space-y-2">{(record.document.checkpoints ?? []).map(c => <li key={c.id}><p className="font-medium">{c.title}</p><ul className="mt-1 list-inside list-disc text-[var(--app-text-muted)]">{(c.tasks ?? [c.objective ?? '']).filter(Boolean).map((task, i) => <li key={i}>{task}</li>)}</ul></li>)}</ol></details>
     </>}
     {todayStats && (
       <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2.5 flex flex-wrap items-center justify-between gap-2" data-testid="today-executive-strip">
