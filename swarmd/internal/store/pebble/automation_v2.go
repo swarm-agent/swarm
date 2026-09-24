@@ -391,12 +391,23 @@ func (s *SessionStore) GetAutomationV2Proposal(account, user, workspace, id stri
 func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string) (AutomationV2Record, bool, error) {
 	var r AutomationV2Record
 	if ok, err := s.store.GetJSON(automationV2Key("accepted", account, id), &r); err == nil && ok {
-		if r.AutomationID != "" && (user == "" || r.AcceptedBy == user) && (workspace == "" || r.WorkspaceID == workspace) {
-			_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, r.WorkspaceID, r.SessionID)
-			if err == nil {
-				r.Archived = isArchived
-				r.ArchivedAt = archivedAt
-				return r, true, nil
+		if r.AutomationID != "" && (user == "" || r.AcceptedBy == user) {
+			wsMatch := workspace == "" || r.WorkspaceID == workspace
+			if !wsMatch && len(r.WorkspaceIDs) > 0 {
+				for _, wid := range r.WorkspaceIDs {
+					if wid == workspace {
+						wsMatch = true
+						break
+					}
+				}
+			}
+			if wsMatch {
+				_, isArchived, archivedAt, err := s.automationV2OwnerStatus(account, user, r.WorkspaceID, r.SessionID)
+				if err == nil {
+					r.Archived = isArchived
+					r.ArchivedAt = archivedAt
+					return r, true, nil
+				}
 			}
 		}
 	}
@@ -405,6 +416,16 @@ func (s *SessionStore) GetAutomationV2Record(account, user, workspace, id string
 		for _, rec := range records {
 			if rec.AutomationID == id || rec.SessionID == id || rec.ProposalID == id {
 				return rec, true, nil
+			}
+		}
+	}
+	if workspace != "" {
+		allRecords, _, allErr := s.ListAutomationV2Records(account, user, "", "", 100, "include")
+		if allErr == nil {
+			for _, rec := range allRecords {
+				if rec.AutomationID == id || rec.SessionID == id || rec.ProposalID == id {
+					return rec, true, nil
+				}
 			}
 		}
 	}

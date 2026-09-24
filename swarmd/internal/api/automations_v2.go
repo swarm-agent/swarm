@@ -60,6 +60,15 @@ func automationV2Error(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, errors.New("automation ownership or review conflict"))
 		return
 	}
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "paused") || strings.Contains(msg, "cancelled") || strings.Contains(msg, "archived") ||
+			strings.Contains(msg, "expired") || strings.Contains(msg, "serialize") || strings.Contains(msg, "pre-configured jobs") ||
+			strings.Contains(msg, "daily run cap") || strings.Contains(msg, "workspace required") || strings.Contains(msg, "target worker") {
+			writeError(w, http.StatusBadRequest, errors.New(msg))
+			return
+		}
+	}
 	writeError(w, http.StatusBadRequest, errors.New("automation v2 operation rejected"))
 }
 
@@ -234,8 +243,18 @@ func (s *Server) handleAutomationsV2(w http.ResponseWriter, r *http.Request) {
 			}
 			req.Context["prompt"] = strings.TrimSpace(req.Prompt)
 		}
-		if record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID); err == nil && ok {
-			hasCheckpoints := len(record.Document.Checkpoints) > 0
+		var targetRecord store.AutomationV2Record
+		record, ok, err := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, req.WorkspaceID, targetID)
+		if !ok || err != nil {
+			if acctRec, acctOk, acctErr := s.sessions.GetAutomationV2Record(p.AccountScopeID, p.UserID, "", targetID); acctErr == nil && acctOk {
+				record = acctRec
+				ok = true
+				req.WorkspaceID = acctRec.WorkspaceID
+			}
+		}
+		if ok {
+			targetRecord = record
+			hasCheckpoints := len(targetRecord.Document.Checkpoints) > 0
 			hasPrompt := req.Context != nil && strings.TrimSpace(fmt.Sprint(req.Context["prompt"])) != "" && req.Context["prompt"] != nil
 			if !hasCheckpoints && !hasPrompt {
 				automationV2Error(w, errors.New("worker has no pre-configured jobs; dynamic prompt is required to trigger execution"))

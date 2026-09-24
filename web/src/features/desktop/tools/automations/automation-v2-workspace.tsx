@@ -1900,6 +1900,7 @@ export function AutomationV2Workspace({
             workspaceId={workspaceId}
             workspaceSlug={workspaceSlug}
             onOpenSession={onOpenSession}
+            onControlRecord={handleControlRecord}
             onViewMailbox={(workerId) => {
               setWorkspaceMode('inbox')
               if (workerId) setInboxWorkerFilter(workerId)
@@ -2155,17 +2156,20 @@ function AutomationV2OverviewRequestBox({
   workspaceId,
   workspaceSlug: _workspaceSlug,
   onOpenSession,
+  onControlRecord,
   onViewMailbox,
 }: {
   records: AutomationV2Record[]
   workspaceId: string
   workspaceSlug?: string
   onOpenSession?: (id: string) => void
+  onControlRecord?: (record: AutomationV2Record, action: 'pause' | 'resume') => void
   onViewMailbox?: (workerId?: string) => void
 }) {
   const [selectedSessionId, setSelectedSessionId] = useState<string>(() => records[0]?.session_id || '')
   const [prompt, setPrompt] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const [submittedOcc, setSubmittedOcc] = useState<AutomationV2Occurrence | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -2183,11 +2187,11 @@ function AutomationV2OverviewRequestBox({
   const progressInput = useMemo(
     () => ({
       action: 'progress' as const,
-      workspace_id: workspaceId,
+      workspace_id: selectedRecord?.workspace_id || workspaceId,
       session_id: selectedSessionId || 'default',
       timezone: 'UTC',
     }),
-    [workspaceId, selectedSessionId]
+    [selectedRecord?.workspace_id, workspaceId, selectedSessionId]
   )
   const progressPage = useAutomationV2Page(progressInput)
   const occurrences = useMemo(
@@ -2203,7 +2207,8 @@ function AutomationV2OverviewRequestBox({
     setSubmittedOcc(null)
     try {
       const occ = await desktopAutomationV2.trigger({
-        workspace_id: workspaceId,
+        workspace_id: selectedRecord.workspace_id || workspaceId,
+        worker_id: selectedRecord.automation_id || selectedRecord.session_id,
         session_id: selectedRecord.session_id,
         prompt: trimmed,
       })
@@ -2217,10 +2222,31 @@ function AutomationV2OverviewRequestBox({
     }
   }
 
+  const handleResumeWorker = async () => {
+    if (!selectedRecord || !onControlRecord) return
+    setResuming(true)
+    setError(null)
+    try {
+      await onControlRecord(selectedRecord, 'resume')
+      void desktopAutomationV2.refresh(progressInput)
+    } catch (err: any) {
+      setError(err?.message || 'Failed to resume worker')
+    } finally {
+      setResuming(false)
+    }
+  }
+
   if (records.length === 0) return null
 
   const workerTitle = selectedRecord?.document?.title || selectedRecord?.automation_id || 'Worker'
+  const workerIdentifier = selectedRecord?.automation_id || selectedRecord?.session_id || 'unknown'
+  const isPaused = selectedRecord ? !selectedRecord.enabled : false
+  const docAny = selectedRecord?.document as Record<string, any> | undefined
+  const rawSchedule = (docAny?.automation_v2?.schedule || docAny?.worker_v2?.schedule) as AutomationSchedule | undefined
+  const scheduleKind = rawSchedule?.kind || 'trigger'
+  const scheduleText = rawSchedule ? scheduleLabel(rawSchedule) : 'On demand'
   const recentOccurrences = occurrences.slice(0, 5)
+  const hasActiveOcc = occurrences.some((o) => o.state === 'running' || o.state === 'admitted')
 
   return (
     <section
@@ -2228,6 +2254,7 @@ function AutomationV2OverviewRequestBox({
       className="rounded-2xl border border-[var(--app-primary-border)]/80 bg-[var(--app-surface)] p-5 shadow-xs space-y-4"
       data-testid="workers-overview-request-box"
     >
+      {/* Box Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-[var(--app-primary)] text-white shadow-2xs">
@@ -2238,7 +2265,7 @@ function AutomationV2OverviewRequestBox({
               Send Request to Worker
             </h3>
             <p className="text-xs text-[var(--app-text-muted)] mt-0.5">
-              Dispatch an on-demand prompt or task to any deployed worker. Track the request and its full lifecycle in real time below.
+              Dispatch on-demand prompts or tasks directly to any deployed worker. Track progress and deliverables in real time.
             </p>
           </div>
         </div>
@@ -2250,26 +2277,128 @@ function AutomationV2OverviewRequestBox({
         )}
       </div>
 
+      {/* Prominent Active Worker Card Banner */}
+      <div
+        className={cn(
+          "rounded-xl border p-3.5 space-y-2 transition-all",
+          isPaused
+            ? "border-[var(--app-warning-border,rgba(245,158,11,0.4))] bg-[var(--app-warning-bg,rgba(245,158,11,0.06))]"
+            : "border-[var(--app-border)] bg-[var(--app-surface-subtle)]"
+        )}
+        data-testid="active-target-worker-banner"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className={cn(
+              "relative flex size-8 shrink-0 items-center justify-center rounded-lg border text-xs font-semibold shadow-2xs",
+              isPaused
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                : "border-[var(--app-primary)]/30 bg-[var(--app-primary-soft)] text-[var(--app-primary)]"
+            )}>
+              <Bot size={16} />
+              <span
+                className={cn(
+                  "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--app-surface)]",
+                  isPaused ? "bg-amber-500" : "bg-emerald-500"
+                )}
+                title={isPaused ? "Worker is Paused" : "Worker is Active"}
+              />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-[var(--app-text-muted)]">Target Worker:</span>
+                <span className="text-sm font-bold text-[var(--app-text)] truncate" data-testid="target-worker-title">
+                  {workerTitle}
+                </span>
+                <span className={cn(
+                  "rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider",
+                  isPaused
+                    ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                    : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                )}>
+                  {isPaused ? 'Paused' : 'Active'}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 pt-0.5 text-[11px] text-[var(--app-text-muted)] font-mono">
+                <span>ID: {workerIdentifier}</span>
+                <span>•</span>
+                <span className="inline-flex items-center gap-1 font-sans">
+                  <Clock3 size={11} />
+                  {scheduleText || (scheduleKind === 'trigger' ? 'On demand' : scheduleKind)}
+                </span>
+                {selectedRecord?.workspace_id && (
+                  <>
+                    <span>•</span>
+                    <span className="font-sans">Workspace: {selectedRecord.workspace_id}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Quick unpause / status notice */}
+          {isPaused && onControlRecord && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleResumeWorker}
+              disabled={resuming}
+              className="h-7 gap-1 rounded-lg text-xs font-semibold text-amber-700 dark:text-amber-300 border-amber-500/40 hover:bg-amber-500/10"
+              data-testid="overview-resume-worker-btn"
+            >
+              {resuming ? <LoaderCircle size={11} className="animate-spin" /> : <RefreshCcw size={11} />}
+              <span>Resume Worker</span>
+            </Button>
+          )}
+        </div>
+
+        {isPaused && (
+          <p className="text-[11px] text-amber-700 dark:text-amber-300">
+            ⚠️ This worker is currently paused. Resume it to allow delegated requests to execute.
+          </p>
+        )}
+        {hasActiveOcc && !isPaused && (
+          <p className="text-[11px] text-[var(--app-primary)]">
+            ℹ️ Worker is currently running a task. Additional requests will serialize and execute cleanly in order.
+          </p>
+        )}
+      </div>
+
+      {/* Target Worker Selector Pills (when multiple workers exist) */}
       {records.length > 1 && (
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <span className="text-xs font-medium text-[var(--app-text-muted)]">Target Worker:</span>
-          <div className="flex flex-wrap gap-1.5">
+        <div className="space-y-1.5 pt-0.5">
+          <div className="flex items-center justify-between text-xs text-[var(--app-text-muted)]">
+            <span className="font-medium">Switch Target Worker ({records.length} available):</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5" data-testid="workers-selector-pills">
             {records.map((r) => {
               const isTarget = r.session_id === selectedRecord?.session_id
+              const rTitle = r.document?.title || r.automation_id || 'Worker'
+              const rId = r.automation_id || r.session_id
+              const rPaused = !r.enabled
               return (
                 <button
                   key={r.session_id}
                   type="button"
-                  onClick={() => setSelectedSessionId(r.session_id)}
+                  onClick={() => {
+                    setSelectedSessionId(r.session_id)
+                    setError(null)
+                  }}
                   className={cn(
-                    "rounded-lg px-2.5 py-1 text-xs font-medium transition-colors border",
+                    "flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-all border text-left",
                     isTarget
-                      ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)] font-semibold shadow-2xs"
-                      : "border-[var(--app-border)] bg-[var(--app-surface-hover)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                      ? "border-[var(--app-primary)] bg-[var(--app-primary-soft)] text-[var(--app-primary)] font-semibold shadow-2xs ring-1 ring-[var(--app-primary)]/20"
+                      : "border-[var(--app-border)] bg-[var(--app-surface-hover)] text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:border-[var(--app-border-strong)]"
                   )}
+                  data-testid={`worker-pill-${rId}`}
                 >
-                  <Bot size={12} className="inline mr-1 opacity-70" />
-                  {r.document?.title || r.automation_id}
+                  <Bot size={13} className={isTarget ? "text-[var(--app-primary)]" : "opacity-60"} />
+                  <span className="truncate max-w-[180px]">{rTitle}</span>
+                  {rPaused ? (
+                    <span className="size-1.5 rounded-full bg-amber-500 shrink-0" title="Paused" />
+                  ) : (
+                    <span className="size-1.5 rounded-full bg-emerald-500 shrink-0" title="Active" />
+                  )}
                 </button>
               )
             })}
@@ -2277,24 +2406,32 @@ function AutomationV2OverviewRequestBox({
         </div>
       )}
 
-      <div className="space-y-3">
+      {/* Prompt Input Form */}
+      <div className="space-y-2.5">
+        <label htmlFor="overview-worker-prompt" className="text-xs font-medium text-[var(--app-text)] flex items-center justify-between">
+          <span>Task instructions for <strong className="text-[var(--app-primary)]">{workerTitle}</strong>:</span>
+          <span className="text-[10px] text-[var(--app-text-muted)]">{prompt.length} / 4000</span>
+        </label>
         <textarea
+          id="overview-worker-prompt"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder={`Type a prompt or instructions for ${workerTitle} (e.g. generate a graphic, audit repo, create post)...`}
+          placeholder={`Type a prompt or instructions for ${workerTitle} (e.g. generate graphics, analyze pull requests, run diagnostics)...`}
           rows={2}
+          maxLength={4000}
           className="w-full resize-none rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-3 text-xs text-[var(--app-text)] outline-hidden focus:border-[var(--app-primary)] transition-colors"
           data-testid="overview-request-prompt-input"
         />
         {error && (
-          <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 p-2.5 text-xs text-[var(--app-danger)]">
-            {error}
+          <div className="rounded-xl border border-[var(--app-danger)]/40 bg-[var(--app-danger)]/10 p-2.5 text-xs text-[var(--app-danger)] flex items-start gap-2" role="alert">
+            <AlertCircle size={14} className="shrink-0 mt-0.5" />
+            <p className="flex-1">{error}</p>
           </div>
         )}
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-[var(--app-text-muted)]">
-              Targeting: <strong className="text-[var(--app-text)]">{workerTitle}</strong> • Isolated session worktree
+              Delegating to: <strong className="text-[var(--app-text)]">{workerTitle}</strong> (<span className="font-mono">{workerIdentifier}</span>) • Worktree isolated
             </span>
           </div>
           <Button
@@ -2312,7 +2449,7 @@ function AutomationV2OverviewRequestBox({
             ) : (
               <>
                 <SendHorizontal size={13} />
-                <span>Send request</span>
+                <span>Send request to {workerTitle}</span>
               </>
             )}
           </Button>
@@ -2550,8 +2687,9 @@ export function AutomationV2WorkerDetailPage({
     setInlineSuccessOcc(null)
     try {
       const res = await desktopAutomationV2.trigger({
-        workspace_id: workspaceId || record.workspace_id,
+        workspace_id: liveRecord.workspace_id || record.workspace_id || workspaceId,
         worker_id: workerIdentifier,
+        session_id: liveRecord.session_id || record.session_id,
         prompt: inlinePrompt.trim(),
       })
       if (res.ok && res.occurrence) {

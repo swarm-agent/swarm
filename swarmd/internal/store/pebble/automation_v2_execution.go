@@ -271,7 +271,13 @@ func (s *SessionStore) TriggerAutomationV2(account, user, workspace, targetID st
 		return AutomationV2Occurrence{}, err
 	}
 	if !ok {
-		return AutomationV2Occurrence{}, ErrAutomationV2Conflict
+		r, ok, err = s.GetAutomationV2Record(account, user, "", targetID)
+		if err != nil {
+			return AutomationV2Occurrence{}, err
+		}
+		if !ok {
+			return AutomationV2Occurrence{}, ErrAutomationV2Conflict
+		}
 	}
 	m := &automationV2ExecutionMutation{action: "triggered", expected: r, now: now, triggerContext: triggerContext}
 	err = s.automationV2ExecutionApply(m)
@@ -448,8 +454,17 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			m.occurrence = AutomationV2Occurrence{ID: id, Record: admittedSnapshot, DueAt: due, AdmittedAt: now, SessionID: "av2-execution-" + id, RunID: "av2-run:" + id, State: "admitted", Version: 1, ObservedAt: now}
 		}
 	case "triggered":
-		if !r.Enabled || r.Cancelled || r.Archived || (r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt) {
-			return ErrAutomationV2Conflict
+		if !r.Enabled {
+			return fmt.Errorf("worker %q is currently paused; resume the worker before sending requests", r.AutomationID)
+		}
+		if r.Cancelled {
+			return fmt.Errorf("worker %q has been cancelled", r.AutomationID)
+		}
+		if r.Archived {
+			return fmt.Errorf("worker %q is archived; unarchive before sending requests", r.AutomationID)
+		}
+		if r.Authorization.Kind == "at" && now >= r.Authorization.ExpiresAt {
+			return fmt.Errorf("worker %q authorization has expired", r.AutomationID)
 		}
 		if r.Document.AutomationV2 == nil && r.Document.WorkerV2 != nil {
 			r.Document.AutomationV2 = r.Document.WorkerV2
@@ -464,7 +479,7 @@ func (s *SessionStore) prepareAutomationV2Execution(in *V3SessionMutationInput) 
 			}
 			for _, row := range rows {
 				if row.State == "admitted" || row.State == "running" || (row.State == "unavailable" && row.NextRetryAt > now) {
-					return ErrAutomationV2Conflict
+					return fmt.Errorf("worker %q is currently executing a task; serialize policy is active", r.AutomationID)
 				}
 			}
 		}

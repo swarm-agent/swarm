@@ -119,4 +119,8 @@ test('AutomationV2Workspace flat overview renders Send request to worker on work
   assert.match(markup, /data-testid="send-request-to-worker-btn"/)
   assert.match(markup, /Send request to worker/)
   assert.match(markup, /Discuss with Swarm/)
+  assert.match(markup, /data-testid="workers-overview-request-box"/)
+  assert.match(markup, /data-testid="active-target-worker-banner"/)
+  assert.match(markup, /data-testid="target-worker-title"/)
+  assert.match(markup, /data-testid="overview-request-send-btn"/)
 })

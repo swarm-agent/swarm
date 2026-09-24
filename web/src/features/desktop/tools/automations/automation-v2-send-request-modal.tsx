@@ -69,8 +69,9 @@ export function AutomationV2SendRequestModal({
       const trimmedPrompt = prompt.trim()
 
       const res = await desktopAutomationV2.trigger({
-        workspace_id: workspaceId || record.workspace_id,
+        workspace_id: record.workspace_id || workspaceId,
         worker_id: targetWorkerId,
+        session_id: record.session_id,
         prompt: trimmedPrompt || undefined,
       })
 
