@@ -18,8 +18,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
-    "test": "node --import tsx --test ./src/__tests__/**/*.spec.ts"
+    "build": "tsc || ../../web/node_modules/.bin/tsc",
+    "test": "tsx --test ./src/__tests__/**/*.spec.ts || ../../web/node_modules/.bin/tsx --test ./src/__tests__/**/*.spec.ts"
   },
   "keywords": [
     "swarm",

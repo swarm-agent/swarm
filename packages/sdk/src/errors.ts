@@ -72,3 +72,14 @@ export class SwarmTimeoutError extends SwarmError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+export class SwarmValidationError extends SwarmError {
+  readonly details?: unknown;
+
+  constructor(message: string, details?: unknown) {
+    super(message);
+    this.name = 'SwarmValidationError';
+    this.details = details;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}

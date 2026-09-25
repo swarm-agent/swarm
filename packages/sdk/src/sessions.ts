@@ -195,9 +195,11 @@ export class SwarmSessionsNamespace {
 
     while (Date.now() < deadline) {
       const detail = await this.get(sessionId);
+      const raw = (detail.raw || {}) as Record<string, any>;
+      const activeRun = raw.active_run_intent;
       const state = (detail.state || '').toLowerCase();
-      // If no active run or completed state
-      if (!state.includes('running') && !state.includes('in_progress')) {
+      const isRunning = state.includes('running') || state.includes('in_progress') || !!activeRun;
+      if (!isRunning) {
         return detail;
       }
       await new Promise((r) => setTimeout(r, pollIntervalMs));

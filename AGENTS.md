@@ -218,3 +218,28 @@ Use each script’s `--help`. Do not manually reproduce a script’s contract, h
 - Scratch is never product storage or runtime authority. Remove throwaway artifacts and verify they are not staged before finishing.
 
 Keep Swarm local-first, V3-native, durable, permissioned, portable, and ready to publish.
+
+## Absolute Zero-Tolerance Ban on Synthetic/Mocked Benchmarks & Fabricated Telemetry
+
+Fabricating benchmark results, simulating agent workloads with `time.sleep()`, or presenting synthetic process stress tests as live AI agent runs is a catastrophic breach of engineering integrity and is strictly prohibited across all repositories and workspaces.
+
+### Strict Invariants:
+1. **NEVER MOCK, SIMULATE, OR SLEEP-STUB BENCHMARKS**:
+   - It is strictly forbidden to use `time.sleep()`, mock delays, synthetic loops, dummy stub processes, or fake workloads to simulate AI agent turns, LLM reasoning, code generation, or tool execution.
+   - Every benchmark, test run, qualification test, and telemetry report MUST run real, un-mocked software: the compiled Swarm Go daemon (`swarmd`), real sessions (`/v3/sessions`), real tool invocations, and live API calls to configured LLM providers (e.g. Google Gemini, Anthropic Claude, OpenAI).
+   - If the operator asks to benchmark 100, 500, or 1,000 agents, the system must either run real agents through the daemon against real models, or if quotas/infrastructure do not permit it, state the exact technical limitation honestly and refuse to fake it. NEVER substitute a fake Python script.
+
+2. **NEVER FABRICATE METRICS, TOKEN COUNTS, OR COSTS**:
+   - It is strictly forbidden to calculate token counts, API costs, latency figures, or success rates using hardcoded formulas or synthetic math (e.g. `token_cost = round(tasks * 0.002808, 4)`).
+   - All reported tokens, costs, latencies, and tool invocations MUST originate directly from real provider API response bodies, real session events (`/v3/sessions/:id/events`), and real daemon database records (`Pebble V3` store).
+
+3. **NEVER AUTHOR OR PUBLISH CONTENT BASED ON MOCKED RUNS**:
+   - Never write articles, documentation, benchmark cards, changelogs, marketing copy, or public reports claiming a scale, speed, cost, or capability that was not verified against live, un-mocked software.
+   - If a test was an OS-level process stress test (e.g. testing Linux kernel process scaling or OOM thresholds), it MUST be labeled explicitly as an OS process stress test—it must NEVER be described as "AI agents running in parallel" or "AI models generating code".
+
+4. **MANDATORY AUDIT PROOF REQUIRED BEFORE CLAIMING ANY BENCHMARK**:
+   Before presenting benchmark results or publishing any benchmark report, the AI must verify and document:
+   - The exact daemon binary path, commit SHA, and PID.
+   - Real session IDs created in the daemon's durable store.
+   - Real HTTP request logs and token usage receipts returned by the LLM provider.
+   - Real artifact outputs produced by LLMs (not pre-baked or string-templated files).
