@@ -411,7 +411,9 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 	staticInstructions, dynamicContext := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
 	if dynamicContext != "" && len(contents) > 0 {
 		lastIdx := len(contents) - 1
-		contents[lastIdx].Parts = append(contents[lastIdx].Parts, googlePart{Text: dynamicContext})
+		if contents[lastIdx].Role == "user" && !isGoogleToolResponse(contents[lastIdx]) {
+			contents[lastIdx].Parts = append(contents[lastIdx].Parts, googlePart{Text: dynamicContext})
+		}
 	}
 	out := googleRequest{Contents: contents, ServiceTier: googleServiceTierForRequest(req)}
 	if strings.TrimSpace(staticInstructions) != "" {
@@ -457,6 +459,15 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 		return optimizeGoogleMediaPayloadSize(out, mediaLocations, maxInlineRequestBytes)
 	}
 	return out, nil
+}
+
+func isGoogleToolResponse(content googleContent) bool {
+	for _, part := range content.Parts {
+		if part.FunctionResponse != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func googleServiceTierForRequest(req provideriface.Request) string {

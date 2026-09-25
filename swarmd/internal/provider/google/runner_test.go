@@ -1725,3 +1725,48 @@ func TestBuildGoogleRequestPrefixFreezingAcrossTurns(t *testing.T) {
 			built2.Contents[0].Parts[0].Text, built1.Contents[0].Parts[0].Text)
 	}
 }
+
+func TestBuildGoogleRequestDoesNotInjectDynamicContextIntoToolResponses(t *testing.T) {
+	// Purpose:
+	// - Invariant: Dynamic runtime context must ONLY be appended to real user messages,
+	//   NEVER to function_call_output / tool responses.
+	// - Boundary/authority: buildGoogleRequest in swarmd/internal/provider/google/runner.go.
+	// - Threat/regression: Injecting dynamic context into tool response parts pollutes tool output,
+	//   derails model execution during intermediate tool loops, and destroys KV cache prefix stability.
+
+	staticPrompt := "You are Swarm, the primary orchestration agent."
+	instructionsWithDynamic := staticPrompt + "\n\n<system_runtime_telemetry>\nDurable run state:\n{\"current_run_id\":\"run-1\"}\n</system_runtime_telemetry>\n\n[request-runtime-context]\n- current_utc_time: 2026-09-25T12:00:00Z"
+
+	reqToolTurn := provideriface.Request{
+		Model:        "gemini-3.8-flash",
+		Instructions: instructionsWithDynamic,
+		Input: []map[string]any{
+			{"role": "user", "content": "Run tests"},
+			{"type": "function_call", "call_id": "call-1", "name": "bash", "arguments": `{"command":"go test"}`},
+			{"type": "function_call_output", "call_id": "call-1", "output": "PASS"},
+		},
+	}
+
+	built, err := buildGoogleRequest(reqToolTurn)
+	if err != nil {
+		t.Fatalf("buildGoogleRequest failed: %v", err)
+	}
+
+	if len(built.Contents) == 0 {
+		t.Fatal("built.Contents is empty")
+	}
+
+	lastTurn := built.Contents[len(built.Contents)-1]
+	if lastTurn.Role != "user" {
+		t.Fatalf("lastTurn role = %q, want user", lastTurn.Role)
+	}
+
+	for _, part := range lastTurn.Parts {
+		if part.FunctionResponse == nil {
+			t.Fatalf("tool response turn contains non-functionResponse part: %+v", part)
+		}
+		if strings.Contains(part.Text, "system_runtime_telemetry") || strings.Contains(part.Text, "current_utc_time") {
+			t.Fatalf("tool response turn was injected with dynamic context: %q", part.Text)
+		}
+	}
+}

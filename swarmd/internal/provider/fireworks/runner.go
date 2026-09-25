@@ -317,34 +317,20 @@ func buildChatCompletionMessages(req provideriface.Request) ([]map[string]any, e
 			"content": content,
 		})
 	}
-	if dynamicContext != "" {
-		lastUserIdx := -1
-		for i := len(messages) - 1; i >= 0; i-- {
-			if role, ok := messages[i]["role"].(string); ok && role == "user" {
-				lastUserIdx = i
-				break
-			}
-		}
-		if lastUserIdx >= 0 {
-			switch c := messages[lastUserIdx]["content"].(type) {
+	if dynamicContext != "" && len(messages) > 0 {
+		lastIdx := len(messages) - 1
+		if role, ok := messages[lastIdx]["role"].(string); ok && role == "user" {
+			switch c := messages[lastIdx]["content"].(type) {
 			case string:
-				messages[lastUserIdx]["content"] = c + "\n\n" + dynamicContext
+				messages[lastIdx]["content"] = c + "\n\n" + dynamicContext
 			case []map[string]any:
-				messages[lastUserIdx]["content"] = append(c, map[string]any{
+				messages[lastIdx]["content"] = append(c, map[string]any{
 					"type": "text",
 					"text": dynamicContext,
 				})
 			default:
-				messages = append(messages, map[string]any{
-					"role":    "user",
-					"content": dynamicContext,
-				})
+				messages[lastIdx]["content"] = dynamicContext
 			}
-		} else {
-			messages = append(messages, map[string]any{
-				"role":    "user",
-				"content": dynamicContext,
-			})
 		}
 	}
 	return messages, nil

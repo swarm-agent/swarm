@@ -264,6 +264,7 @@ func SplitStaticInstructionsAndDynamicContext(instructions string) (string, stri
 	}
 
 	markers := []string{
+		"<system_runtime_telemetry>",
 		"Durable run state (authoritative;",
 		"[request-runtime-context]",
 	}
