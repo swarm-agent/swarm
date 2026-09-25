@@ -17,6 +17,7 @@ import (
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	taskrouter "swarm/packages/swarmd/internal/taskrouter"
 )
 
 const ProjectsPath = "/v3/projects"
@@ -462,6 +463,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				LastError           string                               `json:"last_error,omitempty"`
 				DeploySession       bool                                 `json:"deploy_session,omitempty"`
 				Prompt              string                               `json:"prompt,omitempty"`
+				Intent              string                               `json:"intent,omitempty"`
+				AspectRatio         string                               `json:"aspect_ratio,omitempty"`
+				VariantCount        int                                  `json:"variant_count,omitempty"`
+				ScenesCount         int                                  `json:"scenes_count,omitempty"`
+				Soundtrack          string                               `json:"soundtrack,omitempty"`
+				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
 			}
 			if err := json.Unmarshal(body, &req); err != nil {
 				writeError(w, http.StatusBadRequest, errors.New("invalid JSON payload"))
@@ -483,7 +490,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				prompt = strings.TrimSpace(req.Title)
 			}
 
-			routed := routeAndPlanProjectTask(prompt, req.WorkspacePath, proj.ProjectContext, proj.Workspaces, "", "")
+			taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
+				res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
+				if err != nil {
+					return "", err
+				}
+				return res.Text, nil
+			})
+			routed := taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
+				Prompt:             prompt,
+				RequestedWorkspace: req.WorkspacePath,
+				Intent:             req.Intent,
+				AspectRatio:        req.AspectRatio,
+				VariantCount:       req.VariantCount,
+				ScenesCount:        req.ScenesCount,
+				Soundtrack:         req.Soundtrack,
+				AutoApprove:        req.AutoApprove,
+				Project:            proj,
+			})
 
 			title := strings.TrimSpace(req.Title)
 			if title == "" {
@@ -540,7 +564,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 
 			taskStatus := strings.TrimSpace(req.Status)
 			if taskStatus == "" {
-				taskStatus = "pending_approval"
+				if req.AutoApprove {
+					taskStatus = "in_progress"
+				} else {
+					taskStatus = "pending_approval"
+				}
 			}
 
 			task := pebblestore.ProjectTaskRecord{
@@ -563,21 +591,34 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				CurrentStageIndex:   req.CurrentStageIndex,
 				Deliverables:        deliverables,
 				WorkspacesInvolved:  workspacesInvolved,
+				ContextPoolSummary:  routed.ContextPoolSummary,
 				PlanSummary:         planSummary,
 				FullPlanMarkdown:    fullPlanMarkdown,
 				Tier:                tier,
 				Revision:            revision,
 				LastError:           strings.TrimSpace(req.LastError),
+				AspectRatio:         routed.AspectRatio,
+				VariantCount:        routed.VariantCount,
+				Scenes:              routed.Scenes,
+				Soundtrack:          routed.Soundtrack,
+				AutoApprove:         req.AutoApprove,
+				RouterAlert:         routed.RouterAlert,
 			}
 
 			// Deploy session whenever task is created so the session exists and can be viewed immediately in chat
 			{
-				wsPath := strings.TrimSpace(req.WorkspacePath)
+				wsPath := strings.TrimSpace(task.WorkspacePath)
+				if wsPath == "" && len(task.WorkspacesInvolved) > 0 {
+					wsPath = task.WorkspacesInvolved[0]
+					task.WorkspacePath = wsPath
+				}
 				if wsPath == "" && len(proj.Workspaces) > 0 {
 					wsPath = proj.Workspaces[0].Path
+					task.WorkspacePath = wsPath
 				}
 				if wsPath == "" {
 					wsPath = "."
+					task.WorkspacePath = wsPath
 				}
 
 				createOpts := sessionruntime.CreateSessionOptions{
@@ -592,22 +633,33 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						Thinking: "low",
 					},
 					Metadata: map[string]any{
-						"project_id":          projectID,
-						"task_id":             task.ID,
-						"task_title":          task.Title,
-						"agent":               agentName,
-						"role":                "project_task",
-						"workspaces_involved": task.WorkspacesInvolved,
-						"plan_summary":        task.PlanSummary,
-						"full_plan_markdown":  task.FullPlanMarkdown,
-						"tier":                task.Tier,
-						"revision":            task.Revision,
+						"project_id":           projectID,
+						"task_id":              task.ID,
+						"task_title":           task.Title,
+						"agent":                agentName,
+						"role":                 "project_task",
+						"workspaces_involved":  task.WorkspacesInvolved,
+						"context_pool_summary": task.ContextPoolSummary,
+						"plan_summary":         task.PlanSummary,
+						"full_plan_markdown":   task.FullPlanMarkdown,
+						"tier":                 task.Tier,
+						"revision":             task.Revision,
 					},
 				}
 
 				sessionSnapshot, _, createErr := s.sessions.CreateSessionWithOptions(createOpts)
 				if createErr == nil && sessionSnapshot.ID != "" {
 					task.SessionID = sessionSnapshot.ID
+
+					// Seed the session conversation transcript with the complete context pool & plan!
+					seedMsg := taskRouter.BuildAgentSeedPrompt(&task, proj)
+					_, _, _, _ = s.sessions.AppendMessage(sessionSnapshot.ID, "user", seedMsg, map[string]any{
+						"role":                 "project_context_seed",
+						"task_id":              task.ID,
+						"project_id":           projectID,
+						"context_pool_summary": task.ContextPoolSummary,
+					})
+
 					if taskStatus == "in_progress" && prompt != "" {
 						s.EnqueueSessionRun(p, sessionSnapshot.ID, "run-"+sessionSnapshot.ID, proj.PrimarySessionID)
 					}
@@ -961,14 +1013,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		fb := strings.TrimSpace(rReq.Feedback)
+		errSum := strings.TrimSpace(rReq.ErrorSummary)
+
 		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.Revision <= 0 {
 				t.Revision = 1
 			}
 			t.Revision++
 
-			fb := strings.TrimSpace(rReq.Feedback)
-			errSum := strings.TrimSpace(rReq.ErrorSummary)
 			if fb != "" {
 				t.FeedbackHistory = append(t.FeedbackHistory, fb)
 			}
@@ -982,7 +1035,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			if seedPrompt == "" {
 				seedPrompt = t.Title
 			}
-			routed := routeAndPlanProjectTask(seedPrompt, t.WorkspacePath, proj.ProjectContext, proj.Workspaces, fb, t.LastError)
+			taskRouter := taskrouter.NewService(func(ctx context.Context, instructions, input string) (string, error) {
+				res, err := s.invokeConfiguredRouterOnce(ctx, p, instructions, input, 64<<10)
+				if err != nil {
+					return "", err
+				}
+				return res.Text, nil
+			})
+			routed := taskRouter.RefineTask(r.Context(), taskrouter.TaskRouteOptions{
+				Prompt:             seedPrompt,
+				RequestedWorkspace: t.WorkspacePath,
+				Intent:             t.OutcomeType,
+				AspectRatio:        t.AspectRatio,
+				VariantCount:       t.VariantCount,
+				ScenesCount:        len(t.Scenes),
+				Soundtrack:         t.Soundtrack,
+				Feedback:           fb,
+				LastError:          t.LastError,
+				Project:            proj,
+			})
 
 			t.Agent = routed.Agent
 			t.OutcomeType = routed.OutcomeType
@@ -990,9 +1061,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			t.PipelineStages = routed.Stages
 			t.Deliverables = routed.Deliverables
 			t.WorkspacesInvolved = routed.WorkspacesInvolved
+			t.ContextPoolSummary = routed.ContextPoolSummary
 			t.PlanSummary = routed.PlanSummary
 			t.FullPlanMarkdown = routed.FullPlanMarkdown
 			t.Tier = routed.Tier
+			t.AspectRatio = routed.AspectRatio
+			t.VariantCount = routed.VariantCount
+			t.Scenes = routed.Scenes
+			t.Soundtrack = routed.Soundtrack
+			t.RouterAlert = routed.RouterAlert
 			t.Status = "pending_approval"
 			t.ActionNeeded = fmt.Sprintf("Review revised plan (Rev %d) and click Approve", t.Revision)
 			if fb != "" {
@@ -1005,6 +1082,14 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
+		}
+		if updated != nil && updated.SessionID != "" {
+			refineMsg := fmt.Sprintf("## Plan Refined (Revision %d)\n\n**User Directives:** %s\n\n**Context Pool:** %s\n\n**Updated Plan:**\n%s", updated.Revision, fb, updated.ContextPoolSummary, updated.FullPlanMarkdown)
+			_, _, _, _ = s.sessions.AppendMessage(updated.SessionID, "user", refineMsg, map[string]any{
+				"role":                 "project_plan_refine",
+				"revision":             updated.Revision,
+				"context_pool_summary": updated.ContextPoolSummary,
+			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "refined",

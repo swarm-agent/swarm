@@ -365,9 +365,11 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			PipelineStages:     stages,
 			Deliverables:       routed.Deliverables,
 			WorkspacesInvolved: routed.WorkspacesInvolved,
+			ContextPoolSummary: routed.ContextPoolSummary,
 			PlanSummary:        routed.PlanSummary,
 			FullPlanMarkdown:   routed.FullPlanMarkdown,
 			Tier:               routed.Tier,
+			RouterAlert:        routed.RouterAlert,
 			Revision:           1,
 		}
 		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
@@ -520,9 +522,11 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			t.PipelineStages = routed.Stages
 			t.Deliverables = routed.Deliverables
 			t.WorkspacesInvolved = routed.WorkspacesInvolved
+			t.ContextPoolSummary = routed.ContextPoolSummary
 			t.PlanSummary = routed.PlanSummary
 			t.FullPlanMarkdown = routed.FullPlanMarkdown
 			t.Tier = routed.Tier
+			t.RouterAlert = routed.RouterAlert
 			t.Status = "pending_approval"
 			t.ActionNeeded = fmt.Sprintf("Review revised plan (Rev %d) and click Approve", t.Revision)
 			if feedback != "" {

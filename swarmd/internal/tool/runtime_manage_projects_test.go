@@ -216,7 +216,7 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 		t.Fatalf("unexpected create_task response: %v", taskResp)
 	}
 
-	// 5b. Propose task with plain English prompt (Task Router test)
+	// 5b. Propose task with plain English prompt (Fallback to Swarm default with alert)
 	propTaskOut, err := execTool(scope, "call-5b", `{
 		"action": "propose_task",
 		"project_id": "proj_test_1",
@@ -230,14 +230,17 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	propTask, _ := propTaskResp["task"].(map[string]any)
-	if propTask["tier"] != "discovery" {
-		t.Fatalf("expected discovery tier, got %v", propTask["tier"])
+	if propTask["tier"] != "direct" {
+		t.Fatalf("expected direct tier, got %v", propTask["tier"])
 	}
-	if propTask["agent"] != "finder" {
-		t.Fatalf("expected finder agent, got %v", propTask["agent"])
+	if propTask["agent"] != "swarm" {
+		t.Fatalf("expected swarm agent, got %v", propTask["agent"])
 	}
 	if propTask["status"] != "pending_approval" {
 		t.Fatalf("expected pending_approval status, got %v", propTask["status"])
+	}
+	if propTask["router_alert"] == nil || propTask["router_alert"] == "" {
+		t.Fatalf("expected router_alert on proposed task fallback")
 	}
 
 	// 6. List tasks

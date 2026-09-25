@@ -2729,7 +2729,51 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - `tsc -b` and full production Vite build (`npm run build`) succeeded in 749ms with 0 errors.
   - `run-critical-tests.sh fast` passes all 80 tests.
 
-### Project-Aware Task Router & Plan Refinement Loop (2026-09-25)
+### Real AI Task Router, Media Story Intake Compiler & Visual Auto-Approve Policy (2026-09-25)
+- **Real AI Router Model Integration & Graceful Swarm Default Fallback with Alerts (`swarmd/internal/taskrouter/service.go`, `swarmd/internal/api/projects.go`, `web/src/features/desktop/orchestrate/`):**
+  - Upgraded `taskrouter.Service` with `LLMInvoker` bridging directly to `s.invokeConfiguredRouterOnce`: routes user task requests through the configured Router LLM agent (`system-router`) with a strict JSON contract, analyzing user intent, project guidelines (`PROJECT.md`), and candidate workspaces.
+  - Eliminated fragile keyword-scoring heuristic router in fallback: when the AI Router fails, times out, or is unavailable, the system defaults directly to the canonical Swarm system agent (`agent="swarm"`, `tier="direct"`) without brittle string-scoring heuristics.
+  - Added `RouterAlert` field to `TaskRouteResult`, `ProjectTaskRecord`, and API responses to track router agent errors or offline state.
+  - Added visible `Router Agent Failure Alert` warning banner and alert badge in `OrchestrateView.tsx` (`MinimalTaskCard`) so the user clearly sees when the router agent failed and execution defaulted to Swarm.
+  - Injected `Router Agent Warning` directly into the session's seed prompt and execution plan markdown when router fallback is active.
+  - Implemented multi-scene video story compilation: translates video prompts into structured `ProjectTaskScene` sequences with duration, visual prompt, camera direction, and soundtrack specification.
+  - Implemented image aspect ratio (`16:9`, `1:1`, `9:16`, `4:3`) and variant iteration count locks in `ProjectTaskRecord`.
+- **Approval-First & Auto-Approve Execution Policy (`swarmd/internal/api/projects.go`, `web/src/features/desktop/orchestrate/`):**
+  - By default, tasks compile and stage into `pending_approval` on the project canvas, preventing unreviewed credit spend or unwanted agent runs.
+  - Added user-controlled `auto_approve` toggle: when enabled, the router compiles the blueprint and immediately transitions task status to `in_progress`, enqueuing the session run via `s.EnqueueSessionRun`.
+- **Expressive Desktop Task Intake Modal & Media Blueprint Cards (`web/src/features/desktop/orchestrate/`):**
+  - Redesigned "Deploy Autonomous Task" modal with intent category tabs: `[Code / Feature]`, `[Image Gen]`, `[Video Story]`, `[Audit / Finder]`.
+  - Added visual selector controls: Aspect Ratio chips, Variant counts, Timeline Scenes count, and Soundtrack mood presets.
+  - Added `auto-approve` switch (`⚡ Auto-start immediately upon routing`) with explanatory safety guidance.
+  - Enhanced `MinimalTaskCard` to render the compiled **Multi-Scene Video Blueprint** (scene cards with timestamps, visual directions, and soundtrack), Image Spec chips, and `Auto-Approved` status badges.
+- **Validation:**
+  - `TestService_RouteTask_FallbackSwarmDefault`, `TestService_RouteTask_RouterInvokerError_FallbackSwarmWithAlert`, `TestService_RouteTask_WithAIRouterInvoker`, and `TestService_BuildAgentSeedPrompt` in `swarmd/internal/taskrouter` pass cleanly.
+  - `TestRouteAndPlanProjectTask`, `TestProjectStoreCRUD`, and `TestProjectTaskStoreCRUD` in `swarmd/internal/store/pebble` pass.
+  - `TestProjectsAPIEndpoints` and `TestManageProjectsToolExecutionAndIsolation` pass.
+  - `tsc -b` and full production Vite build (`npm run build`) succeeded in 803ms with 0 errors.
+  - `./scripts/check-precommit.sh` and `run-critical-tests.sh fast` pass all 80 tests.
+
+
+- **Dedicated Task Router Service (`swarmd/internal/taskrouter/service.go`):**
+  - Created package `swarmd/internal/taskrouter` with `Service` decoupling task intake, multi-workspace routing, and prompt synthesis from raw HTTP/store boundaries.
+  - Implemented `RouteTask`, `RefineTask`, and `BuildAgentSeedPrompt`: scores project workspaces against user plain-English prompt and roles (desktop/web, backend/primary_code, ops, testing) to auto-detect the Hero workspace when not specified, eliminating workspace cognitive load.
+  - Formulates `ContextPoolSummary`: tracks primary workspace, secondary dependency workspaces, injected `PROJECT.md` context, and outcome deliverable contracts.
+  - Automatically routes single-workspace tasks to Tier 1 Direct quick-route, exploratory questions to Tier 2 Discovery (Finder), and cross-workspace initiatives to Tier 3 Complex Plan (with Finder Stage 1 discovery).
+- **Direct Context Pool Injection into Session Agents (`swarmd/internal/api/projects.go`):**
+  - Upon task and session creation via `s.sessions.CreateSessionWithOptions`, invokes `taskRouter.BuildAgentSeedPrompt` and calls `s.sessions.AppendMessage` with role `project_context_seed`.
+  - Ensures the executing worker session agent begins with the full user objective, injected context pool, workspace boundaries, outcome type, and complete execution plan in its conversation history.
+  - On plan refinement (`POST /v3/projects/{id}/tasks/{taskId}/refine`), appends a structured refinement update directly into the session conversation.
+- **Desktop UI Context Pool Badges & Planning States (`web/src/features/desktop/orchestrate/`):**
+  - Updated `MinimalTaskCard` to display `✓ Context Pool` badge with auto-detection indicators (`✓ Auto-Detected Workspace Injected (Tier 1)` vs `✓ N Workspaces Injected (Tier 3)`).
+  - Added visual `[Hero]` chip tag for primary workspace and support for `status: 'planning'`.
+  - Updated `New Task` modal with auto-detect default option (`✨ Auto-detect from prompt & project context`) and descriptive helper text.
+- **Validation:**
+  - `TestService_RouteTask_AutoDetectHeroWorkspace`, `TestService_RouteTask_ComplexCrossWorkspace`, and `TestService_BuildAgentSeedPrompt` in `swarmd/internal/taskrouter` pass cleanly.
+  - `TestRouteAndPlanProjectTask` and `TestProjectTaskStoreCRUD` in `swarmd/internal/store/pebble` pass.
+  - `TestProjectsAPIEndpoints` and `TestManageProjectsToolExecutionAndIsolation` pass.
+  - `tsc -b` and full production Vite build (`npm run build`) succeeded with 0 errors.
+
+
 - **Task Router Architecture & Workspace Awareness (`swarmd/internal/api/projects.go`):**
   - Added `routeAndPlanProjectTask`: inspects bound project workspaces (`ProjectWorkspaceRef`), user prompt, feedback, and prior execution error to classify tasks into Tier 1 (Direct), Tier 2 (Discovery/Finder), or Tier 3 (Complex cross-workspace plan).
   - Automatically derives `workspaces_involved`, `plan_summary` (plain-English multi-step overview), `full_plan_markdown` (technical spec with stages and acceptance criteria), and target worktree branch.

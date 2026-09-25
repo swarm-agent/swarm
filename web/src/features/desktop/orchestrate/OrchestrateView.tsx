@@ -19,6 +19,7 @@ import {
   FolderPlus,
   GitBranch,
   Home,
+  Image as ImageIcon,
   Layers,
   ListFilter,
   Maximize2,
@@ -167,6 +168,7 @@ function MinimalTaskCard({
   const [isRefineOpen, setIsRefineOpen] = useState(false)
   const [refineFeedback, setRefineFeedback] = useState('')
 
+  const isPlanning = task.status === 'planning'
   const isPendingApproval = task.status === 'pending_approval' || task.status === 'queued'
   const isRunning = task.status === 'running' || task.status === 'in_progress'
   const isNeedsReview = task.status === 'needs_review'
@@ -188,7 +190,9 @@ function MinimalTaskCard({
           <div className="flex items-center gap-2">
             <span
               className={`font-mono text-[9px] uppercase font-bold px-2 py-0.5 rounded border ${
-                task.agentType === 'designer' || task.agentType === 'video'
+                task.agentType === 'swarm'
+                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                  : task.agentType === 'designer' || task.agentType === 'video'
                   ? 'bg-blue-500/10 text-blue-400 border-blue-500/25'
                   : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/25'
               }`}
@@ -200,6 +204,12 @@ function MinimalTaskCard({
                 {task.outcomeType.replace('_', ' ')}
               </span>
             )}
+            {(task.routerAlert || (task as any).router_alert) && (
+              <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 flex items-center gap-1 font-bold">
+                <AlertTriangle size={9} />
+                <span>Router Alert</span>
+              </span>
+            )}
           </div>
           <h3 className="text-xs font-bold text-white tracking-tight leading-snug truncate">
             {task.title}
@@ -209,17 +219,33 @@ function MinimalTaskCard({
               <span className="font-mono text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Workspaces:</span>
               {task.workspacesInvolved.map((ws, i) => {
                 const wsLabel = ws.split('/').filter(Boolean).pop() || ws
+                const isHero = i === 0
                 return (
                   <span
                     key={i}
-                    className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-500/30 flex items-center gap-1"
-                    title={ws}
+                    className={`font-mono text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 border ${
+                      isHero
+                        ? 'bg-blue-950/80 text-blue-200 border-blue-400/50 font-bold'
+                        : 'bg-slate-900/60 text-slate-300 border-slate-700/50'
+                    }`}
+                    title={isHero ? `Primary Hero Workspace: ${ws}` : `Involved Context Workspace: ${ws}`}
                   >
                     <FolderGit2 size={9} />
                     <span>{wsLabel}</span>
+                    {isHero && <span className="text-[8px] uppercase tracking-wider text-blue-400 ml-0.5 font-normal">[Hero]</span>}
                   </span>
                 )
               })}
+            </div>
+          )}
+          {task.contextPoolSummary && (
+            <div className="flex items-center gap-1.5 pt-0.5 text-[9px] font-mono text-slate-400">
+              <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                <span>✓ Context Pool:</span>
+              </span>
+              <span className="truncate text-slate-300" title={task.contextPoolSummary}>
+                {task.contextPoolSummary}
+              </span>
             </div>
           )}
         </div>
@@ -227,7 +253,9 @@ function MinimalTaskCard({
         <div className="flex items-center gap-2 flex-shrink-0">
           <div
             className={`font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isPendingApproval
+              isPlanning
+                ? 'bg-indigo-950/40 text-indigo-300 border-indigo-500/40'
+                : isPendingApproval
                 ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
                 : isRunning
                 ? 'bg-blue-950/40 text-blue-400 border-blue-500/40'
@@ -240,7 +268,9 @@ function MinimalTaskCard({
           >
             <span
               className={`h-1.5 w-1.5 rounded-sm ${
-                isPendingApproval
+                isPlanning
+                  ? 'bg-indigo-400 animate-spin'
+                  : isPendingApproval
                   ? 'bg-amber-400'
                   : isRunning
                   ? 'bg-blue-400 animate-pulse'
@@ -273,6 +303,44 @@ function MinimalTaskCard({
         </div>
       </div>
 
+      {/* ROUTER AGENT FAILURE ALERT BANNER */}
+      {(task.routerAlert || (task as any).router_alert) && (
+        <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
+          <AlertTriangle size={15} className="text-amber-400 flex-shrink-0 mt-0.5" />
+          <div className="flex flex-col gap-1 min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="font-bold text-[10px] uppercase tracking-wider text-amber-300 font-mono">
+                ⚠️ Router Agent Failure Alert
+              </span>
+              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-amber-900/60 text-amber-300 border border-amber-500/40 font-bold">
+                Swarm Default Agent
+              </span>
+            </div>
+            <p className="text-[11px] text-amber-200/90 leading-relaxed font-mono">
+              {task.routerAlert || (task as any).router_alert}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* PLANNING STATE BANNER */}
+      {isPlanning && (
+        <div className="flex flex-col p-3 rounded-lg bg-indigo-950/30 border border-indigo-500/40 space-y-2 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="font-bold text-indigo-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
+              <Sparkles size={12} className="animate-spin text-indigo-300" />
+              <span>AI Task Router Planning...</span>
+            </span>
+            <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-900/40 text-indigo-300 border border-indigo-500/30 animate-pulse">
+              Analyzing Workspaces
+            </span>
+          </div>
+          <p className="text-slate-300 text-xs leading-relaxed">
+            The AI Router is analyzing project boundaries, detecting target workspaces, and formulating a multi-tier mission plan...
+          </p>
+        </div>
+      )}
+
       {/* 2. PENDING APPROVAL MISSION PROPOSAL BANNER */}
       {isPendingApproval && (
         <div className="flex flex-col p-3 rounded-lg bg-blue-950/20 border border-blue-500/40 space-y-2.5 text-xs">
@@ -288,6 +356,12 @@ function MinimalTaskCard({
               {task.revision && task.revision > 1 && (
                 <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-500/30 font-bold">
                   Rev {task.revision}
+                </span>
+              )}
+              {task.autoApprove && (
+                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 font-bold">
+                  <Zap size={9} />
+                  <span>Auto-Approved</span>
                 </span>
               )}
             </div>
@@ -307,6 +381,53 @@ function MinimalTaskCard({
                 Execution Overview
               </div>
               {task.planSummary}
+            </div>
+          )}
+
+          {/* Multi-Scene Video Production Script */}
+          {task.scenes && task.scenes.length > 0 && (
+            <div className="flex flex-col p-2.5 rounded bg-slate-900/90 border border-slate-800 space-y-2 text-xs">
+              <div className="flex items-center justify-between text-[10px] font-mono">
+                <span className="font-bold text-blue-400 flex items-center gap-1.5 uppercase">
+                  <Film size={11} />
+                  <span>Multi-Scene Video Blueprint ({task.aspectRatio || '16:9'})</span>
+                </span>
+                <span className="text-slate-400">{task.scenes.length} Scenes</span>
+              </div>
+              <div className="space-y-1.5">
+                {task.scenes.map((sc, idx) => (
+                  <div key={idx} className="p-2 rounded bg-slate-950/80 border border-slate-800/80 text-[11px] font-mono text-slate-300">
+                    <div className="flex items-center justify-between font-bold text-slate-200 mb-0.5">
+                      <span className="text-indigo-300">{sc.title}</span>
+                      <span className="text-[10px] text-slate-500 font-normal">{sc.duration_sec}s</span>
+                    </div>
+                    <p className="text-slate-400 text-[10px] leading-relaxed">{sc.prompt}</p>
+                    {sc.visual_notes && (
+                      <p className="text-[9px] text-blue-400/80 italic mt-0.5">Camera: {sc.visual_notes}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {task.soundtrack && (
+                <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 pt-1 border-t border-slate-800">
+                  <Volume2 size={11} className="text-emerald-400 flex-shrink-0" />
+                  <span className="text-slate-300 truncate" title={task.soundtrack}>Soundtrack: {task.soundtrack}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Image Spec */}
+          {task.aspectRatio && (!task.scenes || task.scenes.length === 0) && (
+            <div className="flex items-center gap-2 p-2 rounded bg-slate-900/80 border border-slate-800 text-[10px] font-mono text-slate-300">
+              <ImageIcon size={11} className="text-blue-400" />
+              <span>Aspect Ratio: <strong className="text-white">{task.aspectRatio}</strong></span>
+              {task.variantCount ? (
+                <>
+                  <span>•</span>
+                  <span>Iterations: <strong className="text-white">{task.variantCount} variants</strong></span>
+                </>
+              ) : null}
             </div>
           )}
 
@@ -811,10 +932,16 @@ export function OrchestrateView({
   // Navigation tab state
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
 
-  // Deploy Task Modal State (Plain English Prompt)
+  // Deploy Task Modal State
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
+  const [taskIntent, setTaskIntent] = useState<'code' | 'image' | 'video' | 'audit'>('code')
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
+  const [imageAspectRatio, setImageAspectRatio] = useState<'1:1' | '16:9' | '9:16' | '4:3'>('16:9')
+  const [imageVariants, setImageVariants] = useState<number>(3)
+  const [videoScenes, setVideoScenes] = useState<number>(3)
+  const [videoSoundtrack, setVideoSoundtrack] = useState<string>('Driving cinematic synthwave, 120 BPM')
+  const [autoApproveTask, setAutoApproveTask] = useState<boolean>(false)
   const [isDeployingTask, setIsDeployingTask] = useState(false)
 
   // Active task object derived from activeTaskId
@@ -929,7 +1056,7 @@ export function OrchestrateView({
           id: t.id,
           title: t.title,
           subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
-          agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' ? t.agent : 'coder') as any,
+          agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' || t.agent === 'swarm' ? t.agent : 'coder') as any,
           status: (t.status === 'in_progress' ? 'running' : t.status) || 'queued',
           outcomeType: t.outcome_type,
           workspaceTarget: t.workspace_path || t.project_id,
@@ -948,6 +1075,12 @@ export function OrchestrateView({
           revision: t.revision || 1,
           lastError: t.last_error,
           feedbackHistory: t.feedback_history,
+          aspectRatio: t.aspect_ratio,
+          variantCount: t.variant_count,
+          scenes: t.scenes,
+          soundtrack: t.soundtrack,
+          autoApprove: t.auto_approve,
+          routerAlert: t.router_alert,
           elapsed: t.created_at ? `${Math.max(1, Math.round((Date.now() - t.created_at) / 60000))}m` : 'Just now',
           workerName: t.worker_name || `@${t.agent || 'Coder'} Worker`,
           priority: 'high',
@@ -1081,7 +1214,7 @@ export function OrchestrateView({
     return list.slice(0, 12)
   }, [sessionsById])
 
-  // Submit Plain English Task Proposal
+  // Submit Task Proposal with Intent, Visual Controls & Auto-Approve Policy
   const handleDeployModalSubmit = async () => {
     const prompt = newTaskPrompt.trim()
     if (!prompt || !selectedProject?.id) return
@@ -1093,6 +1226,12 @@ export function OrchestrateView({
         body: JSON.stringify({
           prompt,
           workspace_path: newTaskWorkspace || selectedProject.repoPath || '.',
+          intent: taskIntent,
+          aspect_ratio: taskIntent === 'image' || taskIntent === 'video' ? imageAspectRatio : undefined,
+          variant_count: taskIntent === 'image' ? imageVariants : undefined,
+          scenes_count: taskIntent === 'video' ? videoScenes : undefined,
+          soundtrack: taskIntent === 'video' ? videoSoundtrack : undefined,
+          auto_approve: autoApproveTask,
           deploy_session: true,
         }),
       })
@@ -2616,15 +2755,16 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          MODAL: NEW TASK (PLAIN ENGLISH PROPOSAL)
+          MODAL: NEW TASK (VISUAL INTENT, MEDIA & AUTO-APPROVE)
          ───────────────────────────────────────────────────────────── */}
       {isDeployModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
-          <div className="relative flex max-w-lg w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+          <div className="relative flex max-w-xl w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+            {/* Header */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
                 <Sparkles size={16} className="text-blue-400" />
-                <h3 className="text-sm font-bold text-white">New Task</h3>
+                <h3 className="text-sm font-bold text-white">Deploy Autonomous Task</h3>
               </div>
               <button
                 onClick={() => setIsDeployModalOpen(false)}
@@ -2634,30 +2774,201 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <p className="text-[11px] text-slate-400 leading-relaxed">
-                Describe what you want to achieve in plain English. The AI will inspect your request, synthesize the mission, and present it on the task card for your approval.
-              </p>
+            {/* Intent Category Tabs */}
+            <div className="grid grid-cols-4 gap-1 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px] font-mono">
+              <button
+                type="button"
+                onClick={() => setTaskIntent('code')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
+                  taskIntent === 'code'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Code size={12} />
+                <span>Code / Feature</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaskIntent('image')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
+                  taskIntent === 'image'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <ImageIcon size={12} />
+                <span>Image Gen</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaskIntent('video')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
+                  taskIntent === 'video'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Film size={12} />
+                <span>Video Story</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setTaskIntent('audit')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all ${
+                  taskIntent === 'audit'
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-900'
+                }`}
+              >
+                <Search size={12} />
+                <span>Audit / Finder</span>
+              </button>
+            </div>
 
+            {/* Form inputs */}
+            <div className="space-y-3 text-xs">
               <div>
+                <label className="block text-[11px] text-slate-400 font-medium mb-1">
+                  {taskIntent === 'code' && 'Plain English Instructions'}
+                  {taskIntent === 'image' && 'Visual Concept & Composition Details'}
+                  {taskIntent === 'video' && 'Video Story Concept & Narrative'}
+                  {taskIntent === 'audit' && 'Investigation Objective & Target Questions'}
+                </label>
                 <textarea
                   value={newTaskPrompt}
                   onChange={(e) => setNewTaskPrompt(e.target.value)}
-                  rows={4}
+                  rows={3}
                   autoFocus
-                  placeholder="e.g. Add GitHub OAuth login and make sure it has unit test coverage, or generate 3 promotional video cuts for the product launch..."
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none text-xs leading-relaxed"
+                  placeholder={
+                    taskIntent === 'code'
+                      ? 'e.g. fix the sidebar layout and theme colors, or add OAuth login with test coverage...'
+                      : taskIntent === 'image'
+                      ? 'e.g. futuristic neon AI developer workstation in isometric pixel art with dark mood lighting...'
+                      : taskIntent === 'video'
+                      ? 'e.g. high-energy launch trailer showcasing Swarm multi-agent orchestrator with dynamic transitions...'
+                      : 'e.g. investigate why pebble database locks on restart and audit connection pool handling...'
+                  }
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none text-xs leading-relaxed font-sans"
                 />
               </div>
 
-              {selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 1 && (
+              {/* Visual Selectors for Image Intent */}
+              {taskIntent === 'image' && (
+                <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                  <div>
+                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
+                    <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
+                      {(['1:1', '16:9', '9:16', '4:3'] as const).map((ar) => (
+                        <button
+                          key={ar}
+                          type="button"
+                          onClick={() => setImageAspectRatio(ar)}
+                          className={`py-1 rounded border text-center font-bold transition-all ${
+                            imageAspectRatio === ar
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {ar}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Variants Count</label>
+                    <div className="grid grid-cols-4 gap-1 font-mono text-[10px]">
+                      {[1, 2, 3, 4].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => setImageVariants(v)}
+                          className={`py-1 rounded border text-center font-bold transition-all ${
+                            imageVariants === v
+                              ? 'bg-blue-600 border-blue-400 text-white'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {v} {v === 3 ? '★' : ''}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Visual Selectors for Video Intent */}
+              {taskIntent === 'video' && (
+                <div className="space-y-2.5 p-3 rounded-lg bg-slate-950/70 border border-slate-800">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Aspect Ratio</label>
+                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                        {(['16:9', '9:16', '1:1'] as const).map((ar) => (
+                          <button
+                            key={ar}
+                            type="button"
+                            onClick={() => setImageAspectRatio(ar)}
+                            className={`py-1 rounded border text-center font-bold transition-all ${
+                              imageAspectRatio === ar
+                                ? 'bg-blue-600 border-blue-400 text-white'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {ar}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1.5">Timeline Scenes</label>
+                      <div className="grid grid-cols-3 gap-1 font-mono text-[10px]">
+                        {[2, 3, 4].map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            onClick={() => setVideoScenes(s)}
+                            className={`py-1 rounded border text-center font-bold transition-all ${
+                              videoScenes === s
+                                ? 'bg-blue-600 border-blue-400 text-white'
+                                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {s} Scenes
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-slate-400 font-mono uppercase font-bold mb-1">Soundtrack Mood / Direction</label>
+                    <select
+                      value={videoSoundtrack}
+                      onChange={(e) => setVideoSoundtrack(e.target.value)}
+                      className="w-full rounded bg-slate-900 border border-slate-800 px-2.5 py-1.5 text-white text-[11px] font-mono focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="Driving cinematic synthwave, 120 BPM, punchy bassline">Driving Cinematic Synthwave (120 BPM)</option>
+                      <option value="Ambient atmospheric lo-fi chillout with gentle vinyl warmth">Ambient Lo-Fi Chillout</option>
+                      <option value="High-energy electronic beats with modern drop">High-Energy Electronic Beats</option>
+                      <option value="Dramatic orchestral strings and epic brass swells">Dramatic Orchestral Trailer</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {/* Workspace Selector for Code Intent */}
+              {taskIntent === 'code' && selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 1 && (
                 <div>
-                  <label className="text-[11px] text-slate-400 mb-1 block font-medium">Target Workspace</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] text-slate-400 font-medium">Hero Workspace</label>
+                    <span className="text-[10px] text-blue-400 font-mono">Auto-detected if left empty</span>
+                  </div>
                   <select
-                    value={newTaskWorkspace || selectedProject.repoPath}
+                    value={newTaskWorkspace}
                     onChange={(e) => setNewTaskWorkspace(e.target.value)}
-                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60"
+                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
                   >
+                    <option value="">✨ Auto-detect from prompt & project context</option>
                     {selectedProject.linkedWorkspaces.map((ws) => (
                       <option key={ws} value={ws}>
                         {ws}
@@ -2666,8 +2977,31 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </select>
                 </div>
               )}
+
+              {/* Auto-Approve Permission Policy Toggle */}
+              <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+                <input
+                  type="checkbox"
+                  id="auto-approve-toggle"
+                  checked={autoApproveTask}
+                  onChange={(e) => setAutoApproveTask(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 bg-slate-900 text-blue-600 focus:ring-0 cursor-pointer"
+                />
+                <label htmlFor="auto-approve-toggle" className="flex flex-col cursor-pointer select-none">
+                  <span className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
+                    <Zap size={11} className={autoApproveTask ? "text-amber-400" : "text-slate-500"} />
+                    <span>Auto-approve & launch immediately upon routing</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 leading-snug">
+                    {autoApproveTask
+                      ? '⚡ Skips pending review: session and media swarms start executing immediately.'
+                      : '🔒 Pending Review (Default): The router stages the blueprint for your inspection and approval before launching.'}
+                  </span>
+                </label>
+              </div>
             </div>
 
+            {/* Actions */}
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
               <button
                 type="button"
@@ -2683,7 +3017,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Plus size={13} />
-                <span>{isDeployingTask ? 'Organizing Mission...' : 'Create Task'}</span>
+                <span>
+                  {isDeployingTask
+                    ? 'Routing & Compiling...'
+                    : autoApproveTask
+                    ? 'Deploy & Start'
+                    : 'Create Pending Task'}
+                </span>
               </button>
             </div>
           </div>

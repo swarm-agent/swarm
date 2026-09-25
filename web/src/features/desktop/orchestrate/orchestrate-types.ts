@@ -145,14 +145,22 @@ export interface DeployedWorker {
   assignedTaskIds: string[]
 }
 
-export type TaskOutcomeType = 'code_pr' | 'media_bundle' | 'bug_patch' | 'audit_report'
+export type TaskOutcomeType = 'code_pr' | 'media_bundle' | 'bug_patch' | 'audit_report' | 'video_story'
+
+export interface ProjectTaskScene {
+  scene_number: number
+  title: string
+  duration_sec: number
+  prompt: string
+  visual_notes?: string
+}
 
 export interface RunningTask {
   id: string
   title: string
   subtitle?: string
   agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video'
-  status: 'running' | 'in_progress' | 'completed' | 'needs_review' | 'blocked' | 'queued' | 'pending_approval'
+  status: 'running' | 'in_progress' | 'completed' | 'needs_review' | 'blocked' | 'queued' | 'pending_approval' | 'planning'
   outcomeType?: TaskOutcomeType
   workspaceTarget: string
   elapsed: string
@@ -182,12 +190,20 @@ export interface RunningTask {
 
   // Router, Tiered Planning & Refinement Fields
   workspacesInvolved?: string[]
+  contextPoolSummary?: string
   planSummary?: string
   fullPlanMarkdown?: string
   tier?: 'direct' | 'discovery' | 'complex'
   revision?: number
   lastError?: string
   feedbackHistory?: string[]
+  aspectRatio?: string
+  variantCount?: number
+  scenes?: ProjectTaskScene[]
+  soundtrack?: string
+  autoApprove?: boolean
+  routerAlert?: string
+  router_alert?: string
 }
 
 export interface VideoProgressCard {

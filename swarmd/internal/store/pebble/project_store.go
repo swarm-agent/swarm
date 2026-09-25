@@ -196,6 +196,15 @@ type ProjectTaskDeliverable struct {
 	CodeDiff    string `json:"code_diff,omitempty"`
 }
 
+// ProjectTaskScene represents a single scene in a compiled multi-scene video story.
+type ProjectTaskScene struct {
+	SceneNumber int    `json:"scene_number"`
+	Title       string `json:"title"`
+	DurationSec int    `json:"duration_sec"`
+	Prompt      string `json:"prompt"`
+	VisualNotes string `json:"visual_notes,omitempty"`
+}
+
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
 	ID                  string                   `json:"id"`
@@ -203,11 +212,11 @@ type ProjectTaskRecord struct {
 	AccountID           string                   `json:"account_id"`
 	Title               string                   `json:"title"`
 	Description         string                   `json:"description,omitempty"`
-	Status              string                   `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed"
+	Status              string                   `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed" | "pending_approval" | "planning"
 	SessionID           string                   `json:"session_id,omitempty"`
 	Agent               string                   `json:"agent,omitempty"`
 	WorkerName          string                   `json:"worker_name,omitempty"`
-	OutcomeType         string                   `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report"
+	OutcomeType         string                   `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
 	WorkspacePath       string                   `json:"workspace_path,omitempty"`
 	WorktreeBranch      string                   `json:"worktree_branch,omitempty"`
 	UnintegratedCommits int                      `json:"unintegrated_commits,omitempty"`
@@ -220,12 +229,19 @@ type ProjectTaskRecord struct {
 	CurrentStageIndex   int                      `json:"current_stage_index"`
 	Deliverables        []ProjectTaskDeliverable `json:"deliverables,omitempty"`
 	WorkspacesInvolved  []string                 `json:"workspaces_involved,omitempty"`
+	ContextPoolSummary  string                   `json:"context_pool_summary,omitempty"`
 	PlanSummary         string                   `json:"plan_summary,omitempty"`
 	FullPlanMarkdown    string                   `json:"full_plan_markdown,omitempty"`
 	Tier                string                   `json:"tier,omitempty"` // "direct" | "discovery" | "complex"
 	Revision            int                      `json:"revision,omitempty"`
 	LastError           string                   `json:"last_error,omitempty"`
 	FeedbackHistory     []string                 `json:"feedback_history,omitempty"`
+	AspectRatio         string                   `json:"aspect_ratio,omitempty"`
+	VariantCount        int                      `json:"variant_count,omitempty"`
+	Scenes              []ProjectTaskScene       `json:"scenes,omitempty"`
+	Soundtrack          string                   `json:"soundtrack,omitempty"`
+	AutoApprove         bool                     `json:"auto_approve,omitempty"`
+	RouterAlert         string                   `json:"router_alert,omitempty"`
 	CreatedAt           int64                    `json:"created_at"`
 	UpdatedAt           int64                    `json:"updated_at"`
 }

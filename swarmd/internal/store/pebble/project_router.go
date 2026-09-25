@@ -9,17 +9,38 @@ import (
 
 // TaskRouteResult represents the synthesized routing and planning output.
 type TaskRouteResult struct {
-	Title              string
-	Agent              string
-	OutcomeType        string
-	Branch             string
-	Mission            string
-	Stages             []string
-	Deliverables       []ProjectTaskDeliverable
-	WorkspacesInvolved []string
-	PlanSummary        string
-	FullPlanMarkdown   string
-	Tier               string
+	Title              string                   `json:"title"`
+	Agent              string                   `json:"agent"`
+	OutcomeType        string                   `json:"outcome_type"`
+	Branch             string                   `json:"branch"`
+	Mission            string                   `json:"mission"`
+	Stages             []string                 `json:"stages"`
+	Deliverables       []ProjectTaskDeliverable `json:"deliverables"`
+	WorkspacesInvolved []string                 `json:"workspaces_involved"`
+	ContextPoolSummary string                   `json:"context_pool_summary"`
+	PlanSummary        string                   `json:"plan_summary"`
+	FullPlanMarkdown   string                   `json:"full_plan_markdown"`
+	Tier               string                   `json:"tier"`
+	AspectRatio        string                   `json:"aspect_ratio,omitempty"`
+	VariantCount       int                      `json:"variant_count,omitempty"`
+	Scenes             []ProjectTaskScene       `json:"scenes,omitempty"`
+	Soundtrack         string                   `json:"soundtrack,omitempty"`
+	RouterAlert        string                   `json:"router_alert,omitempty"`
+}
+
+// TaskPlanOptions encapsulates all inputs for task routing and compilation.
+type TaskPlanOptions struct {
+	Prompt             string
+	RequestedWorkspace string
+	ProjectContext     string
+	Workspaces         []ProjectWorkspaceRef
+	Feedback           string
+	LastError          string
+	Intent             string // "code", "image", "video", "audit"
+	AspectRatio        string // "16:9", "1:1", "9:16", "4:3"
+	VariantCount       int    // 1, 2, 4
+	ScenesCount        int    // 2, 3, 4
+	Soundtrack         string // soundtrack prompt or mood
 }
 
 func appendIfMissing(slice []string, val string) []string {
@@ -50,157 +71,85 @@ func tierNumber(tier string) string {
 	}
 }
 
-// RouteAndPlanProjectTask uses project workspaces, prompt, feedback, and error context to route and plan a task.
+// RouteAndPlanProjectTask is the backward-compatible entrypoint.
 func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string, workspaces []ProjectWorkspaceRef, feedback string, lastError string) TaskRouteResult {
-	prompt = strings.TrimSpace(prompt)
-	feedback = strings.TrimSpace(feedback)
-	lastError = strings.TrimSpace(lastError)
-	combined := strings.ToLower(prompt + " " + feedback + " " + lastError)
+	return RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+		Prompt:             prompt,
+		RequestedWorkspace: wsPath,
+		ProjectContext:     projectContext,
+		Workspaces:         workspaces,
+		Feedback:           feedback,
+		LastError:          lastError,
+	})
+}
 
-	var detected []string
-	for _, w := range workspaces {
-		wName := strings.ToLower(filepath.Base(w.Path))
-		wLabel := strings.ToLower(w.Label)
-		if (wName != "" && strings.Contains(combined, wName)) || (wLabel != "" && strings.Contains(combined, wLabel)) {
-			detected = appendIfMissing(detected, w.Path)
-		}
-	}
+// RouteAndPlanProjectTaskWithOptions synthesizes the fallback execution plan when the AI Task Router
+// is unavailable or fails. It defaults directly to the canonical Swarm system agent without fragile
+// keyword scoring heuristics, and sets RouterAlert so the system and user interface clearly alert
+// the user to the router agent failure.
+func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
+	prompt := strings.TrimSpace(opts.Prompt)
+	feedback := strings.TrimSpace(opts.Feedback)
+	lastError := strings.TrimSpace(opts.LastError)
 
-	frontendKeywords := []string{"sidebar", "nav", "navbar", "css", "theme", "tailwind", "color", "modal", "dialog", "button", "toast", "layout", "chat", "panel", "desktop", "ui", "tsx", "jsx", "react", "view", "component", "canvas"}
-	backendKeywords := []string{"daemon", "api", "route", "endpoint", "pebble", "database", "store", "event", "outbox", "sync", "realtime", "auth", "token", "runner", "grpc", "http", "server", "sessions", "mutation"}
-	opsKeywords := []string{"gcp", "cloud run", "lease", "broker", "secret", "federation", "critical"}
-	testKeywords := []string{"testbench", "nspawn", "benchmark", "matrix"}
-
-	hasFrontend := false
-	for _, k := range frontendKeywords {
-		if strings.Contains(combined, k) {
-			hasFrontend = true
-			break
-		}
-	}
-	hasBackend := false
-	for _, k := range backendKeywords {
-		if strings.Contains(combined, k) {
-			hasBackend = true
-			break
-		}
-	}
-	hasOps := false
-	for _, k := range opsKeywords {
-		if strings.Contains(combined, k) {
-			hasOps = true
-			break
-		}
-	}
-	hasTest := false
-	for _, k := range testKeywords {
-		if strings.Contains(combined, k) {
-			hasTest = true
-			break
-		}
-	}
-
-	for _, w := range workspaces {
-		wPathLower := strings.ToLower(w.Path)
-		isWeb := strings.Contains(wPathLower, "web") || strings.Contains(wPathLower, "ui") || w.Role == "desktop"
-		isBackend := strings.Contains(wPathLower, "swarmd") || strings.Contains(wPathLower, "swarm-go") || w.Role == "primary_code"
-		isOps := strings.Contains(wPathLower, "crit") || w.Role == "ops"
-		isTest := strings.Contains(wPathLower, "work") || strings.Contains(wPathLower, "test") || w.Role == "testing"
-
-		if hasFrontend && isWeb {
-			detected = appendIfMissing(detected, w.Path)
-		}
-		if hasBackend && isBackend {
-			detected = appendIfMissing(detected, w.Path)
-		}
-		if hasOps && isOps {
-			detected = appendIfMissing(detected, w.Path)
-		}
-		if hasTest && isTest {
-			detected = appendIfMissing(detected, w.Path)
-		}
-	}
-
-	// Feedback overrides: e.g. "don't touch backend" or "only web"
-	if strings.Contains(strings.ToLower(feedback), "don't touch backend") || strings.Contains(strings.ToLower(feedback), "only web") || strings.Contains(strings.ToLower(feedback), "only frontend") {
-		var filtered []string
-		for _, p := range detected {
-			if strings.Contains(strings.ToLower(p), "web") || strings.Contains(strings.ToLower(p), "ui") {
-				filtered = append(filtered, p)
-			}
-		}
-		if len(filtered) > 0 {
-			detected = filtered
-		}
-	}
-
-	if len(detected) == 0 {
-		if wsPath != "" {
-			detected = append(detected, wsPath)
-		} else if len(workspaces) > 0 {
-			detected = append(detected, workspaces[0].Path)
+	// Primary workspace resolution: use requested workspace if supplied; otherwise first project workspace or "."
+	heroWorkspace := strings.TrimSpace(opts.RequestedWorkspace)
+	if heroWorkspace == "" {
+		if len(opts.Workspaces) > 0 {
+			heroWorkspace = opts.Workspaces[0].Path
 		} else {
-			detected = append(detected, ".")
+			heroWorkspace = "."
 		}
 	}
+	detected := []string{heroWorkspace}
 
-	var tier string
-	var agent string
-	var outcomeType string
-	var stages []string
+	// Always default to canonical Swarm system agent when router fails or is bypassed
+	agent := "swarm"
+	tier := "direct"
+
+	// Basic intent categorization based only on explicit intent options
+	intent := strings.ToLower(strings.TrimSpace(opts.Intent))
+	outcomeType := "general"
+	if intent == "image" {
+		outcomeType = "media_bundle"
+	} else if intent == "video" {
+		outcomeType = "video_story"
+	} else if intent == "audit" {
+		outcomeType = "audit_report"
+	} else if intent == "code" {
+		outcomeType = "code_pr"
+	}
+
+	aspectRatio := opts.AspectRatio
+	variantCount := opts.VariantCount
+	var scenes []ProjectTaskScene
+	soundtrack := opts.Soundtrack
+
+	// Build default single-phase Swarm execution stage
+	stages := []string{"Swarm Execution"}
 	var deliverables []ProjectTaskDeliverable
 
-	isDiscovery := strings.Contains(combined, "figure out") || strings.Contains(combined, "why does") || strings.Contains(combined, "is there") || strings.Contains(combined, "audit") || strings.Contains(combined, "investigate") || strings.Contains(combined, "inspect") || strings.Contains(combined, "benchmark") || strings.Contains(combined, "security") || strings.Contains(combined, "find out")
-	isMedia := strings.Contains(combined, "video") || strings.Contains(combined, "render") || strings.Contains(combined, "teaser") || strings.Contains(combined, "animation") || strings.Contains(combined, "clip") || strings.Contains(combined, "trailer")
-	isBug := strings.Contains(combined, "bug") || strings.Contains(combined, "fix") || strings.Contains(combined, "broken") || strings.Contains(combined, "crash") || strings.Contains(combined, "reproduce") || strings.Contains(combined, "error") || lastError != ""
-
-	if isDiscovery {
-		tier = "discovery"
-		agent = "finder"
-		outcomeType = "audit_report"
-		stages = []string{"Discovery & Scope", "Analyze Invariants", "Compile Findings Report", "Review & Recommendations"}
-		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_report", Title: "Technical Audit Findings Ledger", Kind: "report", Status: "pending"},
+	if intent == "image" {
+		if aspectRatio == "" {
+			aspectRatio = "1:1"
 		}
-	} else if isMedia {
-		tier = "direct"
-		agent = "designer"
-		outcomeType = "media_bundle"
-		stages = []string{"Script & Storyboard", "Scene Generation", "Soundtrack Ingestion", "Final Review"}
-		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_1", Title: "Cut 1: Launch Teaser (15s)", Kind: "video", Status: "pending", Duration: "0:15", Thumbnail: "cyber_lattice"},
-			{ID: "deliv_2", Title: "Cut 2: Architecture Deep Dive (15s)", Kind: "video", Status: "pending", Duration: "0:15", Thumbnail: "neural_core"},
-			{ID: "deliv_3", Title: "Cut 3: Feature Callout (15s)", Kind: "video", Status: "pending", Duration: "0:15", Thumbnail: "orbital_data"},
+		if variantCount <= 0 {
+			variantCount = 3
 		}
-	} else if len(detected) > 1 || strings.Contains(combined, "plan") || strings.Contains(combined, "refactor") || strings.Contains(combined, "architecture") || strings.Contains(combined, "overhaul") || strings.Contains(combined, "redesign") {
-		tier = "complex"
-		agent = "coder"
-		outcomeType = "code_pr"
-		stages = []string{"Cross-Workspace Analysis", "Implement Protocol & State", "Implement UI & Handlers", "Cross-Workspace Verification"}
 		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_pr", Title: "Cross-Workspace Feature PR & Integration Tests", Kind: "pr", Status: "pending"},
+			{ID: "deliv_img", Title: fmt.Sprintf("%d Images (%s)", variantCount, aspectRatio), Kind: "image", Status: "pending"},
 		}
-	} else if isBug {
-		tier = "direct"
-		agent = "coder"
-		outcomeType = "bug_patch"
-		stages = []string{"Reproduce with Test", "Author Minimal Fix", "Run Regression Gate", "Review & Integrate"}
+	} else if intent == "video" {
+		if aspectRatio == "" {
+			aspectRatio = "16:9"
+		}
 		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_patch", Title: "Regression Test & Minimal Patch", Kind: "patch", Status: "pending"},
+			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
 		}
 	} else {
-		tier = "direct"
-		agent = "coder"
-		outcomeType = "code_pr"
-		stages = []string{"Inspect Architecture", "Implement Feature", "Run Critical Testbench", "Review & Land"}
 		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_pr", Title: "Feature Branch & Critical Tests", Kind: "pr", Status: "pending"},
+			{ID: "deliv_task", Title: "Completed Task & Verification", Kind: "pr", Status: "pending"},
 		}
-	}
-
-	if lastError != "" {
-		tier = "complex"
-		stages = append([]string{"Diagnose Failure: " + truncateString(lastError, 40)}, stages...)
 	}
 
 	clean := prompt
@@ -243,23 +192,30 @@ func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string
 		slug = fmt.Sprintf("task-%d", time.Now().Unix()%10000)
 	}
 	branch := fmt.Sprintf("agent/%s", slug)
-	mission := fmt.Sprintf("Autonomous %s mission: %s. Operates in isolated worktree %s.", agent, prompt, branch)
+	mission := fmt.Sprintf("Autonomous %s mission: %s. Target: %s.", agent, prompt, branch)
 
-	wsLabels := make([]string, 0, len(detected))
-	for _, p := range detected {
-		wsLabels = append(wsLabels, filepath.Base(p))
+	var heroLabel string
+	for _, w := range opts.Workspaces {
+		if w.Path == heroWorkspace {
+			heroLabel = w.Label
+			break
+		}
 	}
-	wsJoined := strings.Join(wsLabels, ", ")
-
-	var planSummary string
-	if tier == "discovery" {
-		planSummary = fmt.Sprintf("1. Read-only discovery across [%s]\n2. Analyze relevant invariants & architectural constraints\n3. Return structured findings report without workspace edits", wsJoined)
-	} else if tier == "complex" {
-		planSummary = fmt.Sprintf("1. Multi-phase execution coordinating [%s]\n2. Implement component and state changes in isolated worktree\n3. Run cross-workspace validation gate before integration", wsJoined)
-	} else {
-		planSummary = fmt.Sprintf("1. Direct scoped implementation in [%s]\n2. Execute minimal verified patch\n3. Review deliverable and integrate into branch", wsJoined)
+	if heroLabel == "" {
+		heroLabel = filepath.Base(heroWorkspace)
 	}
 
+	var cpParts []string
+	cpParts = append(cpParts, fmt.Sprintf("Primary: %s", heroLabel))
+	if opts.ProjectContext != "" {
+		cpParts = append(cpParts, "PROJECT.md guidelines injected")
+	}
+	cpParts = append(cpParts, "Swarm Default Agent")
+	contextPoolSummary := strings.Join(cpParts, " • ")
+
+	routerAlert := "Router agent failed or unavailable. Defaulted to Swarm system agent."
+
+	planSummary := fmt.Sprintf("1. Direct Swarm agent execution in [%s]\n2. Execute requested objective\n3. Verify results and deliver", heroLabel)
 	if feedback != "" {
 		planSummary += "\n[Refined]: Plan adjusted to incorporate user instructions."
 	}
@@ -269,10 +225,18 @@ func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string
 
 	var fullPlan strings.Builder
 	fullPlan.WriteString(fmt.Sprintf("### Task Mission: %s\n\n", title))
-	fullPlan.WriteString(fmt.Sprintf("- **Tier**: `%s` (Tier %s)\n", strings.ToUpper(tier[:1])+tier[1:], tierNumber(tier)))
-	fullPlan.WriteString(fmt.Sprintf("- **Assigned Agent**: `@%s`\n", agent))
+	fullPlan.WriteString(fmt.Sprintf("> ⚠️ **Router Agent Alert**: %s\n\n", routerAlert))
+	fullPlan.WriteString(fmt.Sprintf("- **Assigned Agent**: `@%s` (Swarm Default)\n", agent))
+	fullPlan.WriteString(fmt.Sprintf("- **Tier**: `Direct`\n"))
 	fullPlan.WriteString(fmt.Sprintf("- **Expected Outcome**: `%s`\n", outcomeType))
-	fullPlan.WriteString(fmt.Sprintf("- **Workspaces Involved**: %s\n", strings.Join(wsLabels, ", ")))
+	if aspectRatio != "" {
+		fullPlan.WriteString(fmt.Sprintf("- **Aspect Ratio**: `%s`\n", aspectRatio))
+	}
+	if variantCount > 0 && intent == "image" {
+		fullPlan.WriteString(fmt.Sprintf("- **Variant Count**: `%d`\n", variantCount))
+	}
+	fullPlan.WriteString(fmt.Sprintf("- **Context Pool**: %s\n", contextPoolSummary))
+	fullPlan.WriteString(fmt.Sprintf("- **Workspace**: %s\n", heroLabel))
 	fullPlan.WriteString(fmt.Sprintf("- **Target Worktree Branch**: `%s`\n\n", branch))
 
 	fullPlan.WriteString("#### Execution Pipeline Stages\n")
@@ -305,8 +269,14 @@ func RouteAndPlanProjectTask(prompt string, wsPath string, projectContext string
 		Stages:             stages,
 		Deliverables:       deliverables,
 		WorkspacesInvolved: detected,
+		ContextPoolSummary: contextPoolSummary,
 		PlanSummary:        planSummary,
 		FullPlanMarkdown:   fullPlan.String(),
 		Tier:               tier,
+		AspectRatio:        aspectRatio,
+		VariantCount:       variantCount,
+		Scenes:             scenes,
+		Soundtrack:         soundtrack,
+		RouterAlert:        routerAlert,
 	}
 }
