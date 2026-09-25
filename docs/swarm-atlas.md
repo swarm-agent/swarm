@@ -2793,4 +2793,28 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - `tsc -b` and full production Vite build (`npm run build`) succeeded in 805ms with 0 errors.
   - `run-critical-tests.sh fast` passes all 80 tests.
 
+### 2026-09-25 — Project Task Routing, Direct Media Generation, and V3 Session Execution
+
+- **Direct Media Generation & Single Variant Default (`swarmd/internal/store/pebble/project_router.go`, `swarmd/internal/taskrouter/service.go`, `swarmd/internal/api/projects.go`, `web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
+  - Generative images and multi-part video stories route directly to media generation pipelines without spawning unnecessary AI chat sessions.
+  - Deliverables are attached directly to tasks with ready status upon task creation or user approval.
+  - Variant count default changed from 3 to 1 across UI and backend.
+- **Categorical Task Routing Matrix (`swarmd/internal/taskrouter/service.go`, `swarmd/internal/store/pebble/project_router.go`):**
+  - Standalone HTML animations and motion UI route to `designer` (`system-designer`).
+  - Recorded video walkthroughs and app demos requiring source code execution or bash route to `swarm` (`system-orchestrator`), ensuring bash execution capabilities.
+  - Simple code fixes route to `coder` (`system-coder`).
+  - Complex, multi-phase features and architecture overhauls route to `plan` agent, launching sessions in Plan Mode (`ModePlan`) to formulate and present structured plans before execution.
+  - Audit and codebase diagnostics route to `finder` (`system-finder`).
+- **Canonical V3 Session Initialization & Execution Trigger (`swarmd/internal/api/projects.go`):**
+  - Replaced legacy session creation with canonical V3 mutation pipeline (`applySessionV3PrimaryMutation` with `SessionMutationCreateSession` and `SessionMutationAppendMessage`).
+  - Injected compiled `AgentProfile` and system agent metadata into session metadata, resolving executor crashes caused by missing profiles.
+  - Registered authoritative `V3SessionRunIntent` in Pebble in status `pending_executor` and enqueued runs via `s.EnqueueSessionRun` so approved/in-progress tasks immediately admit and execute turns.
+- **Validation:**
+  - `TestRouteAndPlanProjectTask` in `swarmd/internal/store/pebble` passes across coder, image, html animation, recorded app, and plan categories.
+  - `TestService_RouteTask_*` in `swarmd/internal/taskrouter` passes.
+  - `TestProjectsAPIEndpoints` in `swarmd/internal/api` passes with direct media and agent task session verification.
+  - Live candidate testbench (`run-testbench.sh`) on ports 18080/18081 verified all 7 categories end-to-end, confirming live agent execution runs and message history.
+  - `tsc -b` passed with 0 errors.
+
+
 

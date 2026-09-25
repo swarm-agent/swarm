@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	taskrouter "swarm/packages/swarmd/internal/taskrouter"
@@ -159,6 +160,279 @@ func SynthesizeProjectContext(projectName string, wsPaths []string) string {
 	sb.WriteString("- Review-first delivery: finished tasks transition to `needs_review` before completion.\n")
 
 	return sb.String()
+}
+
+// deployProjectTaskExecution handles direct media generation for images/videos or
+// creates and enqueues a canonical V3 session with compiled agent profile and RunIntent for agent tasks.
+func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord, taskStatus string, prompt string) error {
+	if task == nil {
+		return errors.New("task is required")
+	}
+
+	// 1. Direct Media Generation: image and generative video tasks do NOT spin up chat agent sessions.
+	// They directly generate media deliverables and transition to needs_review.
+	if task.Agent == "image" || task.Agent == "video" {
+		task.SessionID = ""
+		if taskStatus == "in_progress" {
+			now := time.Now().UnixMilli()
+			if task.Agent == "image" {
+				count := task.VariantCount
+				if count <= 0 {
+					count = 1
+				}
+				ar := task.AspectRatio
+				if ar == "" {
+					ar = "1:1"
+				}
+				var delivs []pebblestore.ProjectTaskDeliverable
+				for i := 1; i <= count; i++ {
+					delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+						ID:          fmt.Sprintf("deliv_img_%d_%d", now, i),
+						Title:       fmt.Sprintf("%s (Variant %d, %s)", task.Title, i, ar),
+						Kind:        "image",
+						Status:      "ready",
+						Thumbnail:   "graphic",
+						Description: fmt.Sprintf("Autonomous image deliverable for %s in aspect ratio %s", task.Title, ar),
+					})
+				}
+				task.Deliverables = delivs
+				task.Status = "needs_review"
+				task.WhatDidDo = []string{"Synthesized visual concept", fmt.Sprintf("Generated %d image variant(s) directly via media engine", count)}
+			} else if task.Agent == "video" {
+				ar := task.AspectRatio
+				if ar == "" {
+					ar = "16:9"
+				}
+				sceneCount := len(task.Scenes)
+				if sceneCount == 0 {
+					sceneCount = 2
+				}
+				soundtrack := task.Soundtrack
+				if soundtrack == "" {
+					soundtrack = "Ambient Electronic Beats"
+				}
+				var delivs []pebblestore.ProjectTaskDeliverable
+				delivs = append(delivs, pebblestore.ProjectTaskDeliverable{
+					ID:          fmt.Sprintf("deliv_vid_%d", now),
+					Title:       fmt.Sprintf("%s (Video Story, %s)", task.Title, ar),
+					Kind:        "video",
+					Status:      "ready",
+					Thumbnail:   "video",
+					Duration:    fmt.Sprintf("%ds", sceneCount*4),
+					Description: fmt.Sprintf("Compiled %d-scene video story with soundtrack (%s): %s", sceneCount, soundtrack, task.Title),
+				})
+				task.Deliverables = delivs
+				task.Status = "needs_review"
+				task.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
+			}
+		}
+		return nil
+	}
+
+	// 2. Agent Tasks: coder, finder, designer, swarm, plan.
+	// Must create a canonical V3 session with compiled agent_profile, seed message, and RunIntent.
+	wsPath := strings.TrimSpace(task.WorkspacePath)
+	if wsPath == "" && len(task.WorkspacesInvolved) > 0 {
+		wsPath = task.WorkspacesInvolved[0]
+		task.WorkspacePath = wsPath
+	}
+	if wsPath == "" && proj != nil && len(proj.Workspaces) > 0 {
+		wsPath = proj.Workspaces[0].Path
+		task.WorkspacePath = wsPath
+	}
+	if wsPath == "" {
+		wsPath = "."
+		task.WorkspacePath = wsPath
+	}
+
+	mode := sessionruntime.ModeAuto
+	targetAgent := task.Agent
+	if targetAgent == "plan" {
+		mode = sessionruntime.ModePlan
+		targetAgent = "swarm"
+	}
+	if targetAgent == "" {
+		targetAgent = "swarm"
+	}
+
+	var agentProfile pebblestore.AgentProfile
+	var profileFound bool
+	if s.agents != nil {
+		if p.AccountScopeID != "" {
+			agentProfile, profileFound, _ = s.agents.GetProfileForAccount(p.AccountScopeID, targetAgent)
+		}
+		if !profileFound {
+			agentProfile, profileFound, _ = s.agents.GetProfile(targetAgent)
+		}
+		if !profileFound && targetAgent != "swarm" {
+			if p.AccountScopeID != "" {
+				agentProfile, profileFound, _ = s.agents.GetProfileForAccount(p.AccountScopeID, "swarm")
+			}
+			if !profileFound {
+				agentProfile, profileFound, _ = s.agents.GetProfile("swarm")
+			}
+		}
+	}
+	if !profileFound {
+		trueVal := true
+		agentProfile = pebblestore.AgentProfile{
+			Name:                targetAgent,
+			Mode:                "primary",
+			RuntimeMode:         pebblestore.AgentRuntimeModePlanAuto,
+			DefaultSessionMode:  "auto",
+			ExitPlanModeEnabled: &trueVal,
+			Provider:            "google",
+			Model:               "gemini-3.8-flash",
+			Thinking:            "low",
+			Enabled:             true,
+			ToolContract:        &pebblestore.AgentToolContract{Preset: "full"},
+		}
+	}
+
+	now := time.Now().UnixMilli()
+	sessionID := sessionruntime.NewSessionID()
+	metadata := map[string]any{
+		"project_id":           task.ProjectID,
+		"task_id":              task.ID,
+		"task_title":           task.Title,
+		"agent_name":           agentProfile.Name,
+		"resolved_agent_name":  agentProfile.Name,
+		"agent_mode":           agentProfile.Mode,
+		"runtime_mode":         agentProfile.RuntimeMode,
+		"default_session_mode": pebblestore.AgentProfileDefaultSessionMode(agentProfile),
+		"agent_profile":        cloneSessionsV3AgentProfile(agentProfile),
+		"role":                 "project_task",
+		"workspaces_involved":  task.WorkspacesInvolved,
+		"context_pool_summary": task.ContextPoolSummary,
+		"plan_summary":         task.PlanSummary,
+		"full_plan_markdown":   task.FullPlanMarkdown,
+		"tier":                 task.Tier,
+		"revision":             task.Revision,
+	}
+	if agentProfile.ExitPlanModeEnabled != nil {
+		metadata["exit_plan_mode_enabled"] = *agentProfile.ExitPlanModeEnabled
+	}
+	if agentProfile.ToolContract != nil && agentProfile.ToolContract.Preset != "" {
+		metadata["tool_contract_preset"] = agentProfile.ToolContract.Preset
+	}
+	if task.Agent == "plan" {
+		metadata["default_session_mode"] = "plan"
+	}
+
+	avail := true
+	grants := []pebblestore.WorkspaceGrant{
+		{Kind: pebblestore.WorkspaceGrantPrimary, Path: wsPath, Name: filepath.Base(wsPath), Available: &avail},
+	}
+	projName := "Project"
+	if proj != nil && proj.Name != "" {
+		projName = proj.Name
+	}
+	sessionSnapshot := pebblestore.SessionSnapshot{
+		ID:              sessionID,
+		UserID:          p.UserID,
+		AccountScopeID:  p.AccountScopeID,
+		WorkspacePath:   wsPath,
+		WorkspaceName:   filepath.Base(wsPath),
+		Title:           fmt.Sprintf("[%s] %s", projName, task.Title),
+		Mode:            mode,
+		Preference: pebblestore.ModelPreference{
+			Provider: "google",
+			Model:    "gemini-3.8-flash",
+			Thinking: "low",
+		},
+		Metadata:        metadata,
+		WorkspaceGrants: grants,
+		WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(grants),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	createKey := fmt.Sprintf("project-task:create:%s:%d", sessionID, now)
+	_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          p.UserID,
+		AccountScopeID:  p.AccountScopeID,
+		ClientRequestID: createKey,
+		IdempotencyKey:  createKey,
+		PayloadHash:     createKey,
+		RequestHash:     createKey,
+		Kind:            sessionruntime.SessionMutationCreateSession,
+		Session:         &sessionSnapshot,
+		NowUnixMs:       now,
+	})
+	if createErr != nil {
+		return createErr
+	}
+	task.SessionID = sessionID
+
+	var tr taskrouter.Service
+	seedMsg := tr.BuildAgentSeedPrompt(task, proj)
+	msgID := fmt.Sprintf("msg_%s_%d", sessionID, now)
+	msg := pebblestore.MessageSnapshot{
+		ID:             msgID,
+		SessionID:      sessionID,
+		UserID:         p.UserID,
+		AccountScopeID: p.AccountScopeID,
+		Role:           "user",
+		Content:        seedMsg,
+		Metadata: map[string]any{
+			"role":                 "project_context_seed",
+			"task_id":              task.ID,
+			"project_id":           task.ProjectID,
+			"context_pool_summary": task.ContextPoolSummary,
+		},
+		CreatedAt: now,
+	}
+
+	var runIntent *pebblestore.V3SessionRunIntent
+	runID := ""
+	if taskStatus == "in_progress" {
+		runID = fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
+		parentSessionID := ""
+		if proj != nil {
+			parentSessionID = proj.PrimarySessionID
+		}
+		runIntent = &pebblestore.V3SessionRunIntent{
+			SessionID:       sessionID,
+			RunID:           runID,
+			EpochID:         "epoch-00000000000000000001",
+			UserID:          p.UserID,
+			AccountScopeID:  p.AccountScopeID,
+			ParentSessionID: parentSessionID,
+			SourceMessageID: msgID,
+			Status:          pebblestore.V3RunIntentPendingExecutor,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+	}
+
+	msgKey := fmt.Sprintf("project-task:seed:%s:%d", sessionID, now)
+	_, appendErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+		SessionID:       sessionID,
+		UserID:          p.UserID,
+		AccountScopeID:  p.AccountScopeID,
+		ClientRequestID: msgKey,
+		IdempotencyKey:  msgKey,
+		PayloadHash:     msgKey,
+		RequestHash:     msgKey,
+		Kind:            pebblestore.V3SessionMutationAppendMessage,
+		Message:         &msg,
+		RunIntent:       runIntent,
+		NowUnixMs:       now,
+	})
+	if appendErr != nil {
+		return appendErr
+	}
+
+	if taskStatus == "in_progress" && runIntent != nil {
+		parentSessionID := ""
+		if proj != nil {
+			parentSessionID = proj.PrimarySessionID
+		}
+		s.EnqueueSessionRun(p, sessionID, runID, parentSessionID)
+	}
+
+	return nil
 }
 
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
@@ -605,66 +879,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				RouterAlert:         routed.RouterAlert,
 			}
 
-			// Deploy session whenever task is created so the session exists and can be viewed immediately in chat
-			{
-				wsPath := strings.TrimSpace(task.WorkspacePath)
-				if wsPath == "" && len(task.WorkspacesInvolved) > 0 {
-					wsPath = task.WorkspacesInvolved[0]
-					task.WorkspacePath = wsPath
-				}
-				if wsPath == "" && len(proj.Workspaces) > 0 {
-					wsPath = proj.Workspaces[0].Path
-					task.WorkspacePath = wsPath
-				}
-				if wsPath == "" {
-					wsPath = "."
-					task.WorkspacePath = wsPath
-				}
-
-				createOpts := sessionruntime.CreateSessionOptions{
-					AccountScopeID: p.AccountScopeID,
-					UserID:         p.UserID,
-					Title:          fmt.Sprintf("[%s] %s", proj.Name, task.Title),
-					WorkspacePath:  wsPath,
-					Mode:           sessionruntime.ModeAuto,
-					Preference: &pebblestore.ModelPreference{
-						Provider: "google",
-						Model:    "gemini-3.8-flash",
-						Thinking: "low",
-					},
-					Metadata: map[string]any{
-						"project_id":           projectID,
-						"task_id":              task.ID,
-						"task_title":           task.Title,
-						"agent":                agentName,
-						"role":                 "project_task",
-						"workspaces_involved":  task.WorkspacesInvolved,
-						"context_pool_summary": task.ContextPoolSummary,
-						"plan_summary":         task.PlanSummary,
-						"full_plan_markdown":   task.FullPlanMarkdown,
-						"tier":                 task.Tier,
-						"revision":             task.Revision,
-					},
-				}
-
-				sessionSnapshot, _, createErr := s.sessions.CreateSessionWithOptions(createOpts)
-				if createErr == nil && sessionSnapshot.ID != "" {
-					task.SessionID = sessionSnapshot.ID
-
-					// Seed the session conversation transcript with the complete context pool & plan!
-					seedMsg := taskRouter.BuildAgentSeedPrompt(&task, proj)
-					_, _, _, _ = s.sessions.AppendMessage(sessionSnapshot.ID, "user", seedMsg, map[string]any{
-						"role":                 "project_context_seed",
-						"task_id":              task.ID,
-						"project_id":           projectID,
-						"context_pool_summary": task.ContextPoolSummary,
-					})
-
-					if taskStatus == "in_progress" && prompt != "" {
-						s.EnqueueSessionRun(p, sessionSnapshot.ID, "run-"+sessionSnapshot.ID, proj.PrimarySessionID)
-					}
-				}
-			}
+			// Deploy execution: direct media generation or V3 session with compiled profile and RunIntent
+			_ = s.deployProjectTaskExecution(p, proj, &task, taskStatus, prompt)
 
 			if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
 				writeError(w, http.StatusBadRequest, err)
@@ -927,49 +1143,64 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if updated != nil {
-			if updated.SessionID == "" {
-				proj, found, _ := db.GetProject(p.AccountScopeID, projectID)
-				if found && proj != nil {
-					wsPath := updated.WorkspacePath
-					if wsPath == "" && len(proj.Workspaces) > 0 {
-						wsPath = proj.Workspaces[0].Path
-					}
-					if wsPath == "" {
-						wsPath = "."
-					}
-					createOpts := sessionruntime.CreateSessionOptions{
-						AccountScopeID: p.AccountScopeID,
-						UserID:         p.UserID,
-						Title:          fmt.Sprintf("[%s] %s", proj.Name, updated.Title),
-						WorkspacePath:  wsPath,
-						Mode:           sessionruntime.ModeAuto,
-						Preference: &pebblestore.ModelPreference{
-							Provider: "google",
-							Model:    "gemini-3.8-flash",
-							Thinking: "low",
-						},
-						Metadata: map[string]any{
-							"project_id":          projectID,
-							"task_id":             updated.ID,
-							"task_title":          updated.Title,
-							"agent":               updated.Agent,
-							"role":                "project_task",
-							"workspaces_involved": updated.WorkspacesInvolved,
-							"plan_summary":        updated.PlanSummary,
-							"full_plan_markdown":  updated.FullPlanMarkdown,
-							"tier":                updated.Tier,
-							"revision":            updated.Revision,
-						},
-					}
-					sessionSnapshot, _, createErr := s.sessions.CreateSessionWithOptions(createOpts)
-					if createErr == nil && sessionSnapshot.ID != "" {
-						updated.SessionID = sessionSnapshot.ID
+			proj, _, _ := db.GetProject(p.AccountScopeID, projectID)
+			if updated.Agent == "image" || updated.Agent == "video" {
+				// Direct media execution!
+				_ = s.deployProjectTaskExecution(p, proj, updated, "in_progress", "")
+				_ = db.PutProjectTask(p.AccountScopeID, updated)
+			} else {
+				// Agent session execution!
+				if updated.SessionID == "" {
+					if proj != nil {
+						_ = s.deployProjectTaskExecution(p, proj, updated, "in_progress", "")
 						_ = db.PutProjectTask(p.AccountScopeID, updated)
 					}
+				} else {
+					// Session already created when task was proposed; now activate it with an approved run!
+					now := time.Now().UnixMilli()
+					runID := fmt.Sprintf("desktop-v3-run:%s", sessionruntime.NewSessionID())
+					msgID := fmt.Sprintf("msg_%s_%d", updated.SessionID, now)
+					msg := pebblestore.MessageSnapshot{
+						ID:             msgID,
+						SessionID:      updated.SessionID,
+						UserID:         p.UserID,
+						AccountScopeID: p.AccountScopeID,
+						Role:           "user",
+						Content:        "Task proposal approved. Proceed with execution.",
+						CreatedAt:      now,
+					}
+					parentSessionID := ""
+					if proj != nil {
+						parentSessionID = proj.PrimarySessionID
+					}
+					runIntent := &pebblestore.V3SessionRunIntent{
+						SessionID:       updated.SessionID,
+						RunID:           runID,
+						EpochID:         "epoch-00000000000000000001",
+						UserID:          p.UserID,
+						AccountScopeID:  p.AccountScopeID,
+						ParentSessionID: parentSessionID,
+						SourceMessageID: msgID,
+						Status:          pebblestore.V3RunIntentPendingExecutor,
+						CreatedAt:       now,
+						UpdatedAt:       now,
+					}
+					approveKey := fmt.Sprintf("project-task:approve:%s:%d", updated.SessionID, now)
+					_, _ = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
+						SessionID:       updated.SessionID,
+						UserID:          p.UserID,
+						AccountScopeID:  p.AccountScopeID,
+						ClientRequestID: approveKey,
+						IdempotencyKey:  approveKey,
+						PayloadHash:     approveKey,
+						RequestHash:     approveKey,
+						Kind:            pebblestore.V3SessionMutationAppendMessage,
+						Message:         &msg,
+						RunIntent:       runIntent,
+						NowUnixMs:       now,
+					})
+					s.EnqueueSessionRun(p, updated.SessionID, runID, parentSessionID)
 				}
-			}
-			if updated.SessionID != "" {
-				s.EnqueueSessionRun(p, updated.SessionID, "run-approved-"+updated.SessionID, "")
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{

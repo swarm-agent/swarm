@@ -425,7 +425,7 @@ function MinimalTaskCard({
               {task.variantCount ? (
                 <>
                   <span>•</span>
-                  <span>Iterations: <strong className="text-white">{task.variantCount} variants</strong></span>
+                  <span>Iterations: <strong className="text-white">{task.variantCount} {task.variantCount === 1 ? 'variant' : 'variants'}</strong></span>
                 </>
               ) : null}
             </div>
@@ -938,7 +938,7 @@ export function OrchestrateView({
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
   const [imageAspectRatio, setImageAspectRatio] = useState<'1:1' | '16:9' | '9:16' | '4:3'>('16:9')
-  const [imageVariants, setImageVariants] = useState<number>(3)
+  const [imageVariants, setImageVariants] = useState<number>(1)
   const [videoScenes, setVideoScenes] = useState<number>(3)
   const [videoSoundtrack, setVideoSoundtrack] = useState<string>('Driving cinematic synthwave, 120 BPM')
   const [autoApproveTask, setAutoApproveTask] = useState<boolean>(false)
@@ -2889,7 +2889,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
                           }`}
                         >
-                          {v} {v === 3 ? '★' : ''}
+                          {v}
                         </button>
                       ))}
                     </div>

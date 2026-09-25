@@ -9,13 +9,13 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-func TestService_RouteTask_FallbackSwarmDefault(t *testing.T) {
+func TestService_RouteTask_FallbackRoutingWithAlert(t *testing.T) {
 	// Purpose:
 	// - Invariant: When the AI Router is not configured (offline / unit tests), RouteTask
-	//   must route directly to the default "swarm" system agent at Tier 1 Direct,
-	//   without keyword heuristics, and set RouterAlert.
+	//   routes through the deterministic classifier, accurately targeting coder, finder, image,
+	//   video, plan, or swarm, and attaches RouterAlert.
 	// - Boundary/authority: Service.RouteTask in taskrouter/service.go.
-	// - Threat/regression: Running brittle keyword heuristic fallback produces incorrect multi-workspace plans.
+	// - Threat/regression: Forcing all fallbacks to blind swarm breaks media generation and agent specialization.
 
 	svc := NewService() // No invoker
 	project := &pebblestore.ProjectRecord{
@@ -33,8 +33,8 @@ func TestService_RouteTask_FallbackSwarmDefault(t *testing.T) {
 		RequestedWorkspace: "/workspace/web",
 		Project:            project,
 	})
-	if res.Agent != "swarm" {
-		t.Fatalf("expected default agent swarm on fallback, got %q", res.Agent)
+	if res.Agent != "coder" {
+		t.Fatalf("expected agent coder on fallback for code fix, got %q", res.Agent)
 	}
 	if res.Tier != "direct" {
 		t.Fatalf("expected direct tier for fallback, got %q", res.Tier)
@@ -50,12 +50,12 @@ func TestService_RouteTask_FallbackSwarmDefault(t *testing.T) {
 	}
 }
 
-func TestService_RouteTask_RouterInvokerError_FallbackSwarmWithAlert(t *testing.T) {
+func TestService_RouteTask_RouterInvokerError_FallbackWithAlert(t *testing.T) {
 	// Purpose:
 	// - Invariant: When the AI Router invoker fails (times out, returns error, or fails to parse),
-	//   RouteTask must cleanly fall back to the "swarm" default agent and attach a clear RouterAlert.
+	//   RouteTask must cleanly fall back to deterministic routing and attach a clear RouterAlert.
 	// - Boundary/authority: Service.RouteTask in taskrouter/service.go.
-	// - Threat/regression: Failing router causing uncaught error or unhelpful crash instead of graceful Swarm fallback.
+	// - Threat/regression: Failing router causing uncaught error or unhelpful crash instead of graceful fallback.
 
 	failingInvoker := func(ctx context.Context, instructions string, input string) (string, error) {
 		return "", errors.New("upstream LLM timeout (504)")
@@ -66,8 +66,8 @@ func TestService_RouteTask_RouterInvokerError_FallbackSwarmWithAlert(t *testing.
 		Prompt: "Implement distributed locking for pebble store",
 	})
 
-	if res.Agent != "swarm" {
-		t.Fatalf("expected agent swarm on router error, got %q", res.Agent)
+	if res.Agent != "coder" {
+		t.Fatalf("expected agent coder on router error, got %q", res.Agent)
 	}
 	if res.Tier != "direct" {
 		t.Fatalf("expected direct tier on router error, got %q", res.Tier)

@@ -265,7 +265,7 @@ func (t *ProjectTaskRecord) Validate() error {
 		t.Tier = "direct"
 	}
 	if t.OutcomeType == "" {
-		if t.Agent == "designer" || t.Agent == "video" {
+		if t.Agent == "designer" || t.Agent == "video" || t.Agent == "image" {
 			t.OutcomeType = "media_bundle"
 		} else if strings.Contains(strings.ToLower(t.Title), "fix") || strings.Contains(strings.ToLower(t.Title), "bug") {
 			t.OutcomeType = "bug_patch"

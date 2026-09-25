@@ -19,13 +19,13 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 		{Path: "/workspace/ops", Label: "Critical Operations", Role: "ops"},
 	}
 
-	t.Run("fallback routes directly to swarm agent with alert", func(t *testing.T) {
+	t.Run("fallback routes code prompt directly to coder agent with alert", func(t *testing.T) {
 		prompt := "Update Desktop UI navigation bar modal styling"
 		hero := "/workspace/backend"
 		result := RouteAndPlanProjectTask(prompt, hero, "", workspaces, "", "")
 
-		if result.Agent != "swarm" {
-			t.Fatalf("expected default agent swarm, got %q", result.Agent)
+		if result.Agent != "coder" {
+			t.Fatalf("expected agent coder, got %q", result.Agent)
 		}
 		if result.Tier != "direct" {
 			t.Fatalf("expected direct tier for fallback, got %q", result.Tier)
@@ -56,7 +56,7 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 		}
 	})
 
-	t.Run("fallback preserves image options while routing to swarm with alert", func(t *testing.T) {
+	t.Run("fallback preserves image options while routing to direct image generation", func(t *testing.T) {
 		result := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:             "Make 3 promotional banner images for social media",
 			RequestedWorkspace: "/workspace/web",
@@ -66,8 +66,8 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 			VariantCount:       4,
 		})
 
-		if result.Agent != "swarm" {
-			t.Fatalf("expected agent swarm, got %q", result.Agent)
+		if result.Agent != "image" {
+			t.Fatalf("expected agent image, got %q", result.Agent)
 		}
 		if result.OutcomeType != "media_bundle" {
 			t.Fatalf("expected outcome media_bundle, got %q", result.OutcomeType)
@@ -80,6 +80,45 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 		}
 		if result.RouterAlert == "" {
 			t.Fatalf("expected RouterAlert to be set")
+		}
+	})
+
+	t.Run("fallback routes html animation to designer and recorded app to swarm", func(t *testing.T) {
+		htmlRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Build interactive HTML motion UI card animation",
+			Intent: "video",
+		})
+		if htmlRes.Agent != "designer" {
+			t.Fatalf("expected designer for HTML animation, got %q", htmlRes.Agent)
+		}
+
+		demoRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Record live app demo walkthrough of desktop client",
+			Intent: "video",
+		})
+		if demoRes.Agent != "swarm" {
+			t.Fatalf("expected swarm for recorded app demo, got %q", demoRes.Agent)
+		}
+
+		genVidRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Cinematic drone flyover teaser",
+			Intent: "video",
+		})
+		if genVidRes.Agent != "video" {
+			t.Fatalf("expected video for generative video, got %q", genVidRes.Agent)
+		}
+	})
+
+	t.Run("fallback routes complex features to plan agent", func(t *testing.T) {
+		planRes := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
+			Prompt: "Architect and implement an end-to-end multi-phase data pipeline overhaul",
+			Intent: "code",
+		})
+		if planRes.Agent != "plan" {
+			t.Fatalf("expected plan agent for complex code, got %q", planRes.Agent)
+		}
+		if planRes.Tier != "complex" {
+			t.Fatalf("expected complex tier, got %q", planRes.Tier)
 		}
 	})
 }

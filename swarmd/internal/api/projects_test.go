@@ -191,8 +191,12 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	approvedTask := approveResp["task"].(map[string]any)
-	if approvedTask["status"] != "in_progress" {
-		t.Fatalf("expected approved task status in_progress, got %v", approvedTask["status"])
+	if approvedTask["status"] != "needs_review" {
+		t.Fatalf("expected approved media task status needs_review, got %v", approvedTask["status"])
+	}
+	delivs, ok := approvedTask["deliverables"].([]any)
+	if !ok || len(delivs) == 0 {
+		t.Fatalf("expected deliverables populated on approved media task, got %v", approvedTask["deliverables"])
 	}
 
 	// 8c. Project Task: POST /v3/projects/{id}/tasks/{taskId}/refine (User feedback refinement)
@@ -229,6 +233,33 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 	}
 	if rev, ok := errRefinedTask["revision"].(float64); !ok || rev < 3 {
 		t.Fatalf("expected task revision >= 3, got %v", errRefinedTask["revision"])
+	}
+
+	// 8e. Project Task: Agent Task (Coder) creates a valid V3 session with compiled agent_profile
+	coderTaskBody := `{
+		"title": "Fix memory leak in pebble iterator",
+		"description": "Close iterators on error",
+		"agent": "coder"
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", coderTaskBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on coder task create, got %d: %s", w.Code, w.Body.String())
+	}
+	var coderTaskResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &coderTaskResp); err != nil {
+		t.Fatal(err)
+	}
+	coderTask := coderTaskResp["task"].(map[string]any)
+	coderSessID, _ := coderTask["session_id"].(string)
+	if coderSessID == "" {
+		t.Fatalf("expected session_id to be created for agent task")
+	}
+	sessSnap, found, err := ss.GetSession(coderSessID)
+	if err != nil || !found {
+		t.Fatalf("expected session %s to exist in store: %v", coderSessID, err)
+	}
+	if sessSnap.Metadata["agent_profile"] == nil {
+		t.Fatalf("expected session metadata to contain agent_profile")
 	}
 
 	// 9. Project Task: DELETE /v3/projects/{id}/tasks/{taskId}

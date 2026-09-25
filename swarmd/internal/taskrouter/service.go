@@ -94,19 +94,22 @@ func (s *Service) invokeAIRouter(ctx context.Context, opts TaskRouteOptions, pla
 	instructions := strings.TrimSpace(`You are the Swarm AI Task Router. Your role is to analyze user requests, project guidelines (PROJECT.md), and project workspaces to produce an authoritative, high-context execution plan and routing contract.
 
 Rules:
-1. Intent Classification:
-   - "code": Software features, bug fixes, refactoring.
-     * If 1 workspace affected: tier="direct", agent="coder", outcome_type="code_pr" (or "bug_patch" if bug).
-     * If multiple workspaces affected: tier="complex", agent="coder", stage 1="Cross-Workspace Discovery (Finder)".
-   - "audit": Investigation, architecture questions, diagnostics. tier="discovery", agent="finder", outcome_type="audit_report".
-   - "image": Visual assets, UI designs, mockups. tier="direct", agent="designer", outcome_type="media_bundle".
-   - "video": Multi-part video stories, demos, teasers. tier="direct", agent="video", outcome_type="video_story". Compile 2-4 scenes with durations, visual prompts, camera directions, and soundtrack.
+1. Intent Classification & Agent Routing:
+   - "image": Generative visual assets, illustrations, photo generation. tier="direct", agent="image", outcome_type="media_bundle". (Direct generation without an LLM chat session).
+   - "video":
+     * Generative multi-part video stories, teasers, or AI video clips: tier="direct", agent="video", outcome_type="video_story". Compile 2-4 scenes with durations, visual prompts, camera directions, and soundtrack. (Direct generation without an LLM chat session).
+     * Standalone HTML/motion UI animations (Canvas, SVG, CSS animations without project source/running app): tier="direct", agent="designer", outcome_type="media_bundle".
+     * Recorded video / App demo / Recording live app or requiring project source/bash execution: tier="direct", agent="swarm", outcome_type="video_story". (Designers have no bash/source execution and cannot run or record local running applications; Swarm executes with full bash tools).
+   - "code":
+     * Simple, bounded bug fix, typo, or single component/file: tier="direct", agent="coder", outcome_type="code_pr" (or "bug_patch" if bug).
+     * Complex, multi-stage, high-risk, broad, or architectural features/refactors: tier="complex", agent="plan", outcome_type="plan_spec", stages=["Plan & Architecture Formulation", "Plan Execution"]. (Requires Swarm in Plan mode to propose a structured plan before execution).
+   - "audit": Investigation, architecture questions, diagnostics, codebase exploration. tier="discovery", agent="finder", outcome_type="audit_report".
 2. Return ONLY one JSON object matching this schema:
 {
   "title": "string",
-  "agent": "coder|finder|designer|video",
+  "agent": "coder|plan|finder|designer|swarm|image|video",
   "tier": "direct|discovery|complex",
-  "outcome_type": "code_pr|bug_patch|audit_report|media_bundle|video_story",
+  "outcome_type": "code_pr|bug_patch|audit_report|media_bundle|video_story|plan_spec",
   "hero_workspace": "string",
   "workspaces_involved": ["string"],
   "branch": "string",
@@ -203,6 +206,46 @@ Rules:
 	}
 	cpParts = append(cpParts, fmt.Sprintf("Contract: %s", output.OutcomeType))
 
+	variantCount := opts.VariantCount
+	if variantCount <= 0 {
+		variantCount = 1
+	}
+	aspectRatio := opts.AspectRatio
+	if aspectRatio == "" {
+		if output.Agent == "image" {
+			aspectRatio = "1:1"
+		} else {
+			aspectRatio = "16:9"
+		}
+	}
+	var deliverables []pebblestore.ProjectTaskDeliverable
+	switch output.Agent {
+	case "image":
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_img", Title: fmt.Sprintf("%d Image(s) (%s)", variantCount, aspectRatio), Kind: "image", Status: "pending"},
+		}
+	case "video":
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
+		}
+	case "designer":
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+		}
+	case "finder":
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"},
+		}
+	case "plan":
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_plan", Title: "Structured Execution Plan", Kind: "report", Status: "pending"},
+		}
+	default:
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_task", Title: "Completed Task & Verification", Kind: "pr", Status: "pending"},
+		}
+	}
+
 	return pebblestore.TaskRouteResult{
 		Title:              output.Title,
 		Agent:              output.Agent,
@@ -210,13 +253,14 @@ Rules:
 		Branch:             output.Branch,
 		Mission:            output.Mission,
 		Stages:             output.Stages,
+		Deliverables:       deliverables,
 		WorkspacesInvolved: wsInvolved,
 		ContextPoolSummary: strings.Join(cpParts, " • "),
 		PlanSummary:        output.PlanSummary,
 		FullPlanMarkdown:   output.FullPlanMarkdown,
 		Tier:               output.Tier,
-		AspectRatio:        opts.AspectRatio,
-		VariantCount:       opts.VariantCount,
+		AspectRatio:        aspectRatio,
+		VariantCount:       variantCount,
 		Scenes:             output.Scenes,
 		Soundtrack:         output.Soundtrack,
 	}, nil

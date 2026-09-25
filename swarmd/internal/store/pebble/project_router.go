@@ -103,50 +103,126 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	}
 	detected := []string{heroWorkspace}
 
-	// Always default to canonical Swarm system agent when router fails or is bypassed
+	// Intent and agent resolution
+	intent := strings.ToLower(strings.TrimSpace(opts.Intent))
+	promptLower := strings.ToLower(prompt)
+
 	agent := "swarm"
 	tier := "direct"
-
-	// Basic intent categorization based only on explicit intent options
-	intent := strings.ToLower(strings.TrimSpace(opts.Intent))
 	outcomeType := "general"
-	if intent == "image" {
+
+	isRecordedApp := strings.Contains(promptLower, "record") || strings.Contains(promptLower, "screen record") ||
+		strings.Contains(promptLower, "demo app") || strings.Contains(promptLower, "app demo") ||
+		strings.Contains(promptLower, "live app")
+	isHTMLAnimation := strings.Contains(promptLower, "html") || strings.Contains(promptLower, "motion ui") ||
+		strings.Contains(promptLower, "canvas") || strings.Contains(promptLower, "svg animation")
+	isComplexCode := strings.Contains(promptLower, "complex") || strings.Contains(promptLower, "overhaul") ||
+		strings.Contains(promptLower, "architect") || strings.Contains(promptLower, "multi-phase") ||
+		strings.Contains(promptLower, "pipeline") || strings.Contains(promptLower, "platform") ||
+		strings.Contains(promptLower, "redesign") || strings.Contains(promptLower, "system architecture")
+
+	switch {
+	case intent == "image" || (intent == "" && (strings.Contains(promptLower, "image") || strings.Contains(promptLower, "photo") || strings.Contains(promptLower, "logo") || strings.Contains(promptLower, "graphic") || strings.Contains(promptLower, "illustration"))):
+		agent = "image"
+		tier = "direct"
 		outcomeType = "media_bundle"
-	} else if intent == "video" {
-		outcomeType = "video_story"
-	} else if intent == "audit" {
+	case intent == "video" || (intent == "" && (strings.Contains(promptLower, "video") || strings.Contains(promptLower, "trailer") || strings.Contains(promptLower, "teaser"))):
+		if isRecordedApp {
+			agent = "swarm"
+			tier = "direct"
+			outcomeType = "video_story"
+		} else if isHTMLAnimation {
+			agent = "designer"
+			tier = "direct"
+			outcomeType = "media_bundle"
+		} else {
+			agent = "video"
+			tier = "direct"
+			outcomeType = "video_story"
+		}
+	case intent == "audit" || (intent == "" && (strings.Contains(promptLower, "audit") || strings.Contains(promptLower, "investigate") || strings.Contains(promptLower, "inspect") || strings.Contains(promptLower, "diagnose"))):
+		agent = "finder"
+		tier = "discovery"
 		outcomeType = "audit_report"
-	} else if intent == "code" {
-		outcomeType = "code_pr"
+	case intent == "code" || (intent == "" && (strings.Contains(promptLower, "fix") || strings.Contains(promptLower, "bug") || strings.Contains(promptLower, "implement") || strings.Contains(promptLower, "add") || strings.Contains(promptLower, "update") || strings.Contains(promptLower, "create") || strings.Contains(promptLower, "patch"))):
+		if isComplexCode {
+			agent = "plan"
+			tier = "complex"
+			outcomeType = "plan_spec"
+		} else {
+			agent = "coder"
+			tier = "direct"
+			outcomeType = "code_pr"
+		}
+	default:
+		agent = "swarm"
+		tier = "direct"
+		outcomeType = "general"
 	}
 
 	aspectRatio := opts.AspectRatio
 	variantCount := opts.VariantCount
+	if variantCount <= 0 {
+		variantCount = 1
+	}
 	var scenes []ProjectTaskScene
 	soundtrack := opts.Soundtrack
 
-	// Build default single-phase Swarm execution stage
-	stages := []string{"Swarm Execution"}
+	var stages []string
 	var deliverables []ProjectTaskDeliverable
 
-	if intent == "image" {
+	switch agent {
+	case "image":
 		if aspectRatio == "" {
 			aspectRatio = "1:1"
 		}
-		if variantCount <= 0 {
-			variantCount = 3
-		}
+		stages = []string{"Visual Concept Formulation", "Media Generation Pipeline"}
 		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_img", Title: fmt.Sprintf("%d Images (%s)", variantCount, aspectRatio), Kind: "image", Status: "pending"},
+			{ID: "deliv_img", Title: fmt.Sprintf("%d Image(s) (%s)", variantCount, aspectRatio), Kind: "image", Status: "pending"},
 		}
-	} else if intent == "video" {
+	case "video":
 		if aspectRatio == "" {
 			aspectRatio = "16:9"
+		}
+		sceneCount := opts.ScenesCount
+		if sceneCount <= 0 {
+			sceneCount = 2
+		}
+		stages = []string{"Scene & Storyboard Compilation", "Synchronized Video & Audio Synthesis"}
+		for s := 1; s <= sceneCount; s++ {
+			scenes = append(scenes, ProjectTaskScene{
+				SceneNumber: s,
+				Title:       fmt.Sprintf("Scene %d", s),
+				DurationSec: 4,
+				Prompt:      fmt.Sprintf("%s - Scene %d", prompt, s),
+				VisualNotes: "Cinematic lighting, smooth camera movement",
+			})
 		}
 		deliverables = []ProjectTaskDeliverable{
 			{ID: "deliv_vid", Title: fmt.Sprintf("Video Story (%s)", aspectRatio), Kind: "video", Status: "pending"},
 		}
-	} else {
+	case "designer":
+		stages = []string{"HTML & Animation Design", "Artifact Compilation"}
+		deliverables = []ProjectTaskDeliverable{
+			{ID: "deliv_design", Title: "Interactive HTML / Motion UI Artifact", Kind: "artifact", Status: "pending"},
+		}
+	case "finder":
+		stages = []string{"Codebase Investigation", "Audit Report Synthesis"}
+		deliverables = []ProjectTaskDeliverable{
+			{ID: "deliv_audit", Title: "Comprehensive Audit Report", Kind: "report", Status: "pending"},
+		}
+	case "coder":
+		stages = []string{"Code Implementation", "Verification & Pull Request"}
+		deliverables = []ProjectTaskDeliverable{
+			{ID: "deliv_code", Title: "Code Changes & Verified Tests", Kind: "pr", Status: "pending"},
+		}
+	case "plan":
+		stages = []string{"Plan & Architecture Formulation", "Plan Review & Checkpoint Execution"}
+		deliverables = []ProjectTaskDeliverable{
+			{ID: "deliv_plan", Title: "Structured Execution Plan", Kind: "report", Status: "pending"},
+		}
+	default:
+		stages = []string{"Swarm Execution", "Verification"}
 		deliverables = []ProjectTaskDeliverable{
 			{ID: "deliv_task", Title: "Completed Task & Verification", Kind: "pr", Status: "pending"},
 		}
@@ -213,9 +289,9 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	cpParts = append(cpParts, "Swarm Default Agent")
 	contextPoolSummary := strings.Join(cpParts, " • ")
 
-	routerAlert := "Router agent failed or unavailable. Defaulted to Swarm system agent."
+	routerAlert := fmt.Sprintf("Router agent failed or unavailable. Defaulted to %s route (@%s).", outcomeType, agent)
 
-	planSummary := fmt.Sprintf("1. Direct Swarm agent execution in [%s]\n2. Execute requested objective\n3. Verify results and deliver", heroLabel)
+	planSummary := fmt.Sprintf("1. Execute %s route (@%s) in [%s]\n2. Deliver outcome: %s\n3. Verify results and review deliverables", outcomeType, agent, heroLabel, outcomeType)
 	if feedback != "" {
 		planSummary += "\n[Refined]: Plan adjusted to incorporate user instructions."
 	}
