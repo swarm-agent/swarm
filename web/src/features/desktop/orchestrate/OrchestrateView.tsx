@@ -1,8 +1,7 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   Activity,
   ArrowRight,
-  ArrowUp,
   Bot,
   Check,
   CheckCircle2,
@@ -32,7 +31,9 @@ import {
 } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { fetchSessionMessages, sendSessionMessage } from '../chat/queries/chat-queries'
+import { DesktopV3ExistingConversationPane } from '../chat/components/desktop-v3-existing-conversation-pane'
+import { isDesktopV3SessionTailReady, selectRenderedSessionMessages } from '../state/desktop-v3-cache-selectors'
+import { selectAndHydrateDesktopV3Session } from '../state/desktop-v3-session-hydrator'
 import { ORCHESTRATE_THEME_IDS, ORCHESTRATE_THEMES } from './orchestrate-themes'
 import {
   DeployedWorker,
@@ -146,6 +147,97 @@ function DeliverableThumbnail({
   )
 }
 
+function OrchestratorChatSidebar({
+  sessionId,
+  project,
+}: {
+  sessionId: string
+  project?: ProjectSummary
+}) {
+  const [error, setError] = useState(false)
+  const [attempt, setAttempt] = useState(0)
+
+  const messages = useDesktopV3CacheSelector(
+    useCallback((state) => selectRenderedSessionMessages(state, sessionId), [sessionId]),
+    (left, right) =>
+      left.committed === right.committed &&
+      left.pendingUser === right.pendingUser &&
+      left.liveRuns === right.liveRuns &&
+      left.runIntents === right.runIntents &&
+      left.currentRunIntent === right.currentRunIntent &&
+      left.latestRunIntent === right.latestRunIntent
+  )
+  const ready = useDesktopV3CacheSelector(
+    useCallback((state) => isDesktopV3SessionTailReady(state, sessionId), [sessionId])
+  )
+  const count = useDesktopV3CacheSelector(
+    useCallback((state) => state.messagesBySession[sessionId]?.items.length ?? 0, [sessionId])
+  )
+  const hydrating = useDesktopV3CacheSelector(
+    useCallback((state) => (state.hydrateInFlightBySession[sessionId] ?? 0) > 0, [sessionId])
+  )
+
+  useEffect(() => {
+    let active = true
+    setError(false)
+    void selectAndHydrateDesktopV3Session(sessionId).catch(() => {
+      if (active) setError(true)
+    })
+    return () => {
+      active = false
+    }
+  }, [sessionId, attempt])
+
+  return (
+    <aside
+      aria-label="Swarm Orchestrator AI Chat"
+      className="relative flex w-[440px] flex-shrink-0 flex-col overflow-hidden rounded-3xl border border-slate-800/80 bg-[#0d121f] shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]"
+      style={{
+        '--app-bg': '#0d121f',
+        '--app-bg-alt': '#090d16',
+        '--app-surface': '#111728',
+        '--app-surface-subtle': '#0a0f1d',
+        '--app-border': 'rgba(255, 255, 255, 0.08)',
+        '--app-border-muted': 'rgba(255, 255, 255, 0.05)',
+      } as React.CSSProperties}
+    >
+      {error && (
+        <div className="flex items-center justify-between p-3 bg-red-950/40 border-b border-red-500/30 text-xs text-red-200">
+          <span>Failed to load orchestrator session.</span>
+          <button
+            onClick={() => setAttempt((a) => a + 1)}
+            className="px-2 py-0.5 rounded bg-red-800 text-white font-medium hover:bg-red-700"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      <DesktopV3ExistingConversationPane
+        presentation="sidebar"
+        sessionId={sessionId}
+        initialHydrateStatus={error ? 'error' : hydrating ? 'loading' : ready ? 'ready' : 'loading'}
+        renderedMessages={messages}
+        messagesLoaded={ready}
+        loadedMessageCount={count}
+        contextChip={
+          project
+            ? {
+                id: project.id,
+                label: project.name,
+                kind: 'project',
+                description: `Executive Orchestrator for ${project.name} (${project.linkedWorkspaces.length} workspace(s) bound)`,
+              }
+            : null
+        }
+        metadata={{
+          orchestrate_view: true,
+          ...(project ? { project_id: project.id } : {}),
+        }}
+      />
+    </aside>
+  )
+}
+
 export function OrchestrateView({
   workspaceSlug: _workspaceSlug,
   onNavigateHome,
@@ -180,7 +272,6 @@ export function OrchestrateView({
 
   // Live Pebble V3 cache state for real-time orchestrator sessions and tasks
   const sessionsById = useDesktopV3CacheSelector((s) => s.sessionsById)
-  const messagesBySession = useDesktopV3CacheSelector((s) => s.messagesBySession)
   const plansBySession = useDesktopV3CacheSelector((s) => s.plansBySession)
   const [activeSessionId, setActiveSessionId] = useState<string>('')
 
@@ -208,9 +299,6 @@ export function OrchestrateView({
   const [isMuted, setIsMuted] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
 
-  // Chat state
-  const [inputText, setInputText] = useState('')
-  const [isTyping, setIsTyping] = useState(false)
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
 
   // Deploy Task Modal State
@@ -220,8 +308,6 @@ export function OrchestrateView({
   const [newTaskAgent, setNewTaskAgent] = useState<'coder' | 'finder' | 'designer' | 'video'>('coder')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
   const [isDeployingTask, setIsDeployingTask] = useState(false)
-
-  const chatBottomRef = useRef<HTMLDivElement>(null)
 
   // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
   useEffect(() => {
@@ -434,28 +520,10 @@ export function OrchestrateView({
 
     if (selectedProject.primarySessionId) {
       setActiveSessionId(selectedProject.primarySessionId)
-      void fetchSessionMessages(selectedProject.primarySessionId, undefined, 0, { sessionApi: 'v3', tail: true, limit: 100 }).catch(() => {})
     } else {
       void ensureOrchestratorSession(selectedProject)
     }
   }, [selectedProject?.id, isOnboardingActive, fetchProjectTasks, ensureOrchestratorSession])
-
-  // Real-time messages for active session from V3 cache
-  const liveSessionMessages = useMemo(() => {
-    if (!activeSessionId || !messagesBySession[activeSessionId]) return null
-    return (messagesBySession[activeSessionId].items || []).filter(
-      (m: any) => m.role === 'user' || m.role === 'assistant' || m.role === 'system'
-    )
-  }, [activeSessionId, messagesBySession])
-
-  const activeRecord = activeSessionId ? sessionsById[activeSessionId] : undefined
-  const activeSession = activeRecord?.kind === 'full' ? activeRecord.session : undefined
-  const isLiveSessionRunning = !!(activeSession && (activeSession.lifecycle as any)?.active)
-
-  // Auto scroll chat to bottom when new messages arrive
-  useEffect(() => {
-    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [liveSessionMessages, isTyping])
 
   // Derive real active workers from V3 sessions
   const deployedWorkers = useMemo<DeployedWorker[]>(() => {
@@ -604,31 +672,7 @@ export function OrchestrateView({
     )
   }
 
-  // Real message sending to Swarm Orchestrator session
-  const handleSendMessage = async (textToSend?: string) => {
-    const text = (textToSend || inputText).trim()
-    if (!text) return
 
-    if (!textToSend) setInputText('')
-    setIsTyping(true)
-
-    let targetSid = activeSessionId
-    if (!targetSid && selectedProject) {
-      targetSid = (await ensureOrchestratorSession(selectedProject)) || ''
-    }
-
-    if (targetSid) {
-      try {
-        await sendSessionMessage(targetSid, 'user', text)
-      } catch (err) {
-        console.warn('Failed to send message to orchestrator session:', err)
-      } finally {
-        setIsTyping(false)
-      }
-    } else {
-      setIsTyping(false)
-    }
-  }
 
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -2067,166 +2111,25 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       </main>
 
       {/* ─────────────────────────────────────────────────────────────
-          PANEL 3: RIGHT PANEL (SWARM ORCHESTRATOR CHAT & DISPATCH)
+          PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
-      <aside className="relative flex w-80 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
-        {/* Chat Header */}
-        <div className="flex items-center justify-between p-3.5 border-b border-slate-800/80 bg-[#0a0f1d]/50">
-          <div className="flex items-center gap-2.5">
-            <div className="relative flex h-7 w-7 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
-              <Bot size={15} />
-              <span
-                className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 ${
-                  isLiveSessionRunning ? 'bg-blue-400 animate-pulse' : activeSessionId ? 'bg-emerald-400' : 'bg-amber-400'
-                }`}
-              />
-            </div>
-            <div>
-              <div className="text-xs font-bold text-white">Swarm Orchestrator</div>
-              <div className="text-[10px] text-slate-400 truncate max-w-[150px]">
-                {selectedProject?.name || 'Project Executive'}
-              </div>
-            </div>
+      {activeSessionId ? (
+        <OrchestratorChatSidebar
+          key={activeSessionId}
+          sessionId={activeSessionId}
+          project={selectedProject}
+        />
+      ) : (
+        <aside className="relative flex w-[440px] flex-shrink-0 flex-col items-center justify-center p-6 text-center rounded-3xl border border-slate-800/80 bg-[#0d121f] text-xs text-slate-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
+          <div className="h-12 w-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-600/10">
+            <Bot size={22} />
           </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
-                isLiveSessionRunning
-                  ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
-                  : 'border-slate-700 bg-slate-800 text-slate-300'
-              }`}
-            >
-              {isLiveSessionRunning ? 'Thinking...' : activeSessionId ? 'Connected' : 'Initializing'}
-            </span>
-          </div>
-        </div>
-
-        {/* Chat Messages Stream */}
-        <div className="flex-1 space-y-3.5 overflow-y-auto p-3.5 text-xs">
-          {liveSessionMessages && liveSessionMessages.length > 0 ? (
-            liveSessionMessages.map((msg: any) => {
-              const isUser = msg.role === 'user'
-              const isSystem = msg.role === 'system'
-              return (
-                <div
-                  key={msg.id}
-                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-                >
-                  {!isUser && !isSystem && (
-                    <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium text-slate-400">
-                      <Bot size={12} className="text-blue-400" />
-                      <span>Swarm Orchestrator</span>
-                    </div>
-                  )}
-                  {isSystem && (
-                    <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium text-amber-400">
-                      <Zap size={12} className="text-amber-400" />
-                      <span>System Event</span>
-                    </div>
-                  )}
-                  <div
-                    className={`max-w-[95%] p-3 text-xs leading-relaxed transition-all ${
-                      isUser
-                        ? 'rounded-2xl rounded-tr-sm bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_2px_12px_rgba(37,99,235,0.25)]'
-                        : isSystem
-                        ? 'rounded-2xl rounded-tl-sm bg-amber-950/20 border border-amber-500/30 text-amber-200 whitespace-pre-wrap font-mono text-[11px]'
-                        : 'rounded-2xl rounded-tl-sm bg-[#090d16] border border-slate-800/80 text-slate-200 whitespace-pre-wrap'
-                    }`}
-                  >
-                    <p className="whitespace-pre-line">{msg.content}</p>
-                  </div>
-                  <span className="mt-1 text-[9px] text-slate-500">
-                    {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                  </span>
-                </div>
-              )
-            })
-          ) : (
-            <div className="flex flex-col items-center justify-center text-center p-4 my-auto space-y-3">
-              <div className="h-10 w-10 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 shadow-lg shadow-blue-600/10">
-                <Sparkles size={18} />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-white">Swarm Project Orchestrator</h4>
-                <p className="text-[11px] text-slate-400 mt-1 max-w-xs leading-relaxed">
-                  Active for <strong className="text-slate-200">{selectedProject?.name || 'Project'}</strong>.
-                  Ask for cross-workspace coordination, architecture reviews, or dispatching tasks to autonomous workers.
-                </p>
-              </div>
-              <div className="w-full space-y-1.5 pt-2">
-                {[
-                  'What is the architecture and charter of this project?',
-                  'Deploy a verification task to check repository health',
-                  'What tasks are currently queued or running?',
-                ].map((prompt) => (
-                  <button
-                    key={prompt}
-                    onClick={() => handleSendMessage(prompt)}
-                    className="w-full text-left p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-[11px] text-slate-300 transition-colors"
-                  >
-                    → {prompt}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {(isTyping || isLiveSessionRunning) && (
-            <div className="flex items-center gap-1.5 text-xs text-slate-400">
-              <Sparkles size={12} className="animate-spin text-blue-400" />
-              <span>Swarm Orchestrator is executing...</span>
-            </div>
-          )}
-          <div ref={chatBottomRef} />
-        </div>
-
-        {/* Chat Input Bar */}
-        <div className="p-3 border-t border-slate-800/80 bg-[#0a0f1d]/70">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              void handleSendMessage()
-            }}
-            className="flex flex-col gap-2 rounded-2xl border border-slate-800 bg-[#070b14] p-2 focus-within:border-blue-500/50 transition-all"
-          >
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Instruct orchestrator or dispatch tasks..."
-              className="w-full bg-transparent px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none"
-            />
-            <div className="flex items-center justify-between border-t border-slate-800/60 pt-1.5 text-slate-400">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsDeployModalOpen(true)}
-                  className="hover:text-slate-200 transition-colors p-0.5"
-                  title="Deploy new task"
-                >
-                  <Plus size={14} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSendMessage('Review project architecture')}
-                  className="hover:text-slate-200 transition-colors p-0.5"
-                  title="Prompt assist"
-                >
-                  <Sparkles size={14} />
-                </button>
-              </div>
-
-              <button
-                type="submit"
-                disabled={!inputText.trim() || isTyping}
-                className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition-all disabled:opacity-40"
-              >
-                <ArrowUp size={14} />
-              </button>
-            </div>
-          </form>
-        </div>
-      </aside>
+          <h3 className="font-bold text-sm text-white mb-1">Swarm Project Orchestrator</h3>
+          <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
+            {selectedProject ? 'Connecting executive orchestrator session...' : 'Select or create a project to activate the executive AI orchestrator.'}
+          </p>
+        </aside>
+      )}
 
       {/* ─────────────────────────────────────────────────────────────
           MODAL: DEPLOY AUTONOMOUS TASK MODAL
