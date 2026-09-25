@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -191,8 +192,8 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	approvedTask := approveResp["task"].(map[string]any)
-	if approvedTask["status"] != "needs_review" {
-		t.Fatalf("expected approved media task status needs_review, got %v", approvedTask["status"])
+	if approvedTask["status"] != "needs_review" && approvedTask["status"] != "in_progress" {
+		t.Fatalf("expected approved media task status needs_review or in_progress, got %v", approvedTask["status"])
 	}
 	delivs, ok := approvedTask["deliverables"].([]any)
 	if !ok || len(delivs) == 0 {
@@ -278,5 +279,133 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 	w = call(http.MethodGet, "/"+projID, "", []string{"sessions:read"})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 after delete, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDirectMediaTaskLifecycle(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ss := store.NewSessionStore(db)
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
+	h := s.apiMux()
+
+	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, ProjectsPath+path, strings.NewReader(body))
+		p := identity.Principal{Type: "user", UserID: "owner", AccountScopeID: "account"}
+		ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+		if len(scopes) > 0 {
+			tokenRec := &store.ScopedTokenRecord{
+				AccountScopeID: "account",
+				UserID:         "owner",
+				Scopes:         scopes,
+			}
+			ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, tokenRec)
+		}
+		r = r.WithContext(ctx)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	// 1. Create project
+	w := call(http.MethodPost, "", `{"name":"Media Test Project","workspaces":[{"path":"/tmp/ws","role":"primary_code"}]}`, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create project: %d", w.Code)
+	}
+	var projResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &projResp)
+	projID := projResp["project"].(map[string]any)["id"].(string)
+
+	// 2. Propose 3 image variants (pending_approval)
+	imgTaskBody := `{
+		"title": "Generate Panda Images",
+		"description": "make 3 cute panda images",
+		"agent": "image",
+		"aspect_ratio": "16:9",
+		"variant_count": 3
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", imgTaskBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create image task: %d %s", w.Code, w.Body.String())
+	}
+	var taskResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &taskResp)
+	taskObj := taskResp["task"].(map[string]any)
+	taskID := taskObj["id"].(string)
+
+	if taskObj["status"] != "pending_approval" {
+		t.Fatalf("expected pending_approval status, got %v", taskObj["status"])
+	}
+
+	delivs, ok := taskObj["deliverables"].([]any)
+	if !ok || len(delivs) != 3 {
+		t.Fatalf("expected 3 deliverable slots in pending status, got %v", delivs)
+	}
+	for i, d := range delivs {
+		dm := d.(map[string]any)
+		if dm["status"] != "pending" {
+			t.Fatalf("expected deliverable slot %d to have status pending, got %v", i+1, dm["status"])
+		}
+	}
+
+	// 3. Approve task: should transition task to in_progress and deliverables to generating
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("approve task: %d %s", w.Code, w.Body.String())
+	}
+	var approveResp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &approveResp)
+	approvedTask := approveResp["task"].(map[string]any)
+
+	appDelivs := approvedTask["deliverables"].([]any)
+	if len(appDelivs) != 3 {
+		t.Fatalf("expected 3 deliverables on approved task, got %d", len(appDelivs))
+	}
+	firstDeliv := appDelivs[0].(map[string]any)
+	if firstDeliv["status"] != "generating" && firstDeliv["status"] != "ready" {
+		t.Fatalf("expected first deliverable to be generating or ready, got %v", firstDeliv["status"])
+	}
+
+	// 4. Wait for background generation to complete all 3 deliverables
+	deadline := time.Now().Add(5 * time.Second)
+	var finalTask map[string]any
+	for time.Now().Before(deadline) {
+		time.Sleep(150 * time.Millisecond)
+		w = call(http.MethodGet, "/"+projID+"/tasks/"+taskID, "", []string{"sessions:read"})
+		if w.Code == http.StatusOK {
+			var getResp map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &getResp)
+			finalTask = getResp["task"].(map[string]any)
+			if finalTask["status"] == "needs_review" {
+				break
+			}
+		}
+	}
+
+	if finalTask == nil || finalTask["status"] != "needs_review" {
+		t.Fatalf("expected task to transition to needs_review after background generation, got %v", finalTask)
+	}
+
+	finalDelivs := finalTask["deliverables"].([]any)
+	if len(finalDelivs) != 3 {
+		t.Fatalf("expected 3 final deliverables, got %d", len(finalDelivs))
+	}
+	for i, d := range finalDelivs {
+		dm := d.(map[string]any)
+		if dm["status"] != "ready" {
+			t.Fatalf("expected deliverable %d to be ready, got %v", i+1, dm["status"])
+		}
+		mediaURL, _ := dm["media_url"].(string)
+		if !strings.HasPrefix(mediaURL, "data:image/") {
+			t.Fatalf("expected deliverable %d to have valid image data URL, got %q", i+1, mediaURL)
+		}
 	}
 }

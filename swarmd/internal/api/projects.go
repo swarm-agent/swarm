@@ -190,14 +190,14 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 						ID:          fmt.Sprintf("deliv_img_%d_%d", now, i),
 						Title:       fmt.Sprintf("%s (Variant %d, %s)", task.Title, i, ar),
 						Kind:        "image",
-						Status:      "ready",
-						Thumbnail:   "graphic",
+						Status:      "generating",
 						Description: fmt.Sprintf("Autonomous image deliverable for %s in aspect ratio %s", task.Title, ar),
 					})
 				}
 				task.Deliverables = delivs
-				task.Status = "needs_review"
-				task.WhatDidDo = []string{"Synthesized visual concept", fmt.Sprintf("Generated %d image variant(s) directly via media engine", count)}
+				task.Status = "in_progress"
+				task.ActionNeeded = fmt.Sprintf("Generating %d image variant(s)...", count)
+				task.WhatDidDo = []string{"Approved mission", "Generating media assets"}
 			} else if task.Agent == "video" {
 				ar := task.AspectRatio
 				if ar == "" {
@@ -216,15 +216,17 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 					ID:          fmt.Sprintf("deliv_vid_%d", now),
 					Title:       fmt.Sprintf("%s (Video Story, %s)", task.Title, ar),
 					Kind:        "video",
-					Status:      "ready",
+					Status:      "generating",
 					Thumbnail:   "video",
 					Duration:    fmt.Sprintf("%ds", sceneCount*4),
 					Description: fmt.Sprintf("Compiled %d-scene video story with soundtrack (%s): %s", sceneCount, soundtrack, task.Title),
 				})
 				task.Deliverables = delivs
-				task.Status = "needs_review"
-				task.WhatDidDo = []string{"Compiled multi-scene video blueprint", "Rendered video sequence with synchronized soundtrack"}
+				task.Status = "in_progress"
+				task.ActionNeeded = "Rendering video story sequence..."
+				task.WhatDidDo = []string{"Approved mission", "Rendering video sequence"}
 			}
+			go s.executeDirectMediaTask(p, proj, task)
 		}
 		return nil
 	}
@@ -679,7 +681,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						tasks[i].WorkspacePath = ws
 					}
 				}
-				if ws != "" {
+				if ws != "" && tasks[i].Agent != "image" && tasks[i].Agent != "video" {
 					unintegrated, diff, dirty := inspectTaskGitState(ws, tasks[i].WorktreeBranch)
 					if unintegrated > 0 || diff != "" || dirty {
 						tasks[i].UnintegratedCommits = unintegrated
@@ -740,6 +742,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				Intent              string                               `json:"intent,omitempty"`
 				AspectRatio         string                               `json:"aspect_ratio,omitempty"`
 				VariantCount        int                                  `json:"variant_count,omitempty"`
+				DeliverableCount    int                                  `json:"deliverable_count,omitempty"`
 				ScenesCount         int                                  `json:"scenes_count,omitempty"`
 				Soundtrack          string                               `json:"soundtrack,omitempty"`
 				AutoApprove         bool                                 `json:"auto_approve,omitempty"`
@@ -771,6 +774,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				return res.Text, nil
 			})
+			if req.VariantCount <= 0 && req.DeliverableCount > 0 {
+				req.VariantCount = req.DeliverableCount
+			}
 			routed := taskRouter.RouteTask(r.Context(), taskrouter.TaskRouteOptions{
 				Prompt:             prompt,
 				RequestedWorkspace: req.WorkspacePath,
@@ -924,7 +930,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, errors.New("project task not found"))
 				return
 			}
-			if task.WorkspacePath != "" {
+			if task.WorkspacePath != "" && task.Agent != "image" && task.Agent != "video" {
 				unintegrated, diff, dirty := inspectTaskGitState(task.WorkspacePath, task.WorktreeBranch)
 				if unintegrated > 0 || diff != "" || dirty {
 					task.UnintegratedCommits = unintegrated
@@ -1120,8 +1126,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Approve task session: POST /v3/projects/{id}/tasks/{taskId}/approve
-	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "approve" {
+	// 7. Approve task session: POST /v3/projects/{id}/tasks/{taskId}/approve (or /accept)
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "approve" || segments[3] == "accept") {
 		taskID := segments[2]
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))

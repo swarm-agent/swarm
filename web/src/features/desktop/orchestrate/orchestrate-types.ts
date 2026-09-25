@@ -103,10 +103,11 @@ export interface MediaDeliverable {
   title: string
   type: 'video' | 'image' | 'audio' | 'code' | 'report'
   previewUrl?: string
+  mediaUrl?: string
   thumbnailType?: DeliverableThumbnailType
   videoAspect?: '16:9' | '9:16' | '1:1'
   duration?: string
-  status: 'ready' | 'generating' | 'accepted' | 'rejected'
+  status: 'ready' | 'generating' | 'pending' | 'accepted' | 'rejected'
   createdAt: string
   author: string
   prompt?: string
@@ -159,7 +160,7 @@ export interface RunningTask {
   id: string
   title: string
   subtitle?: string
-  agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video'
+  agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video' | 'image' | 'plan'
   status: 'running' | 'in_progress' | 'completed' | 'needs_review' | 'blocked' | 'queued' | 'pending_approval' | 'planning'
   outcomeType?: TaskOutcomeType
   workspaceTarget: string

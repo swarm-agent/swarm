@@ -221,8 +221,20 @@ Rules:
 	var deliverables []pebblestore.ProjectTaskDeliverable
 	switch output.Agent {
 	case "image":
-		deliverables = []pebblestore.ProjectTaskDeliverable{
-			{ID: "deliv_img", Title: fmt.Sprintf("%d Image(s) (%s)", variantCount, aspectRatio), Kind: "image", Status: "pending"},
+		if variantCount <= 0 {
+			variantCount = 1
+		}
+		if aspectRatio == "" {
+			aspectRatio = "1:1"
+		}
+		for i := 1; i <= variantCount; i++ {
+			deliverables = append(deliverables, pebblestore.ProjectTaskDeliverable{
+				ID:          fmt.Sprintf("deliv_img_slot_%d", i),
+				Title:       fmt.Sprintf("%s (Variant %d, %s)", output.Title, i, aspectRatio),
+				Kind:        "image",
+				Status:      "pending",
+				Description: fmt.Sprintf("Autonomous image deliverable for %s in aspect ratio %s", output.Title, aspectRatio),
+			})
 		}
 	case "video":
 		deliverables = []pebblestore.ProjectTaskDeliverable{

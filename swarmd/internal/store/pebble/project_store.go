@@ -194,6 +194,7 @@ type ProjectTaskDeliverable struct {
 	Description string `json:"description,omitempty"`
 	ArtifactRef string `json:"artifact_ref,omitempty"`
 	CodeDiff    string `json:"code_diff,omitempty"`
+	MediaURL    string `json:"media_url,omitempty"`
 }
 
 // ProjectTaskScene represents a single scene in a compiled multi-scene video story.

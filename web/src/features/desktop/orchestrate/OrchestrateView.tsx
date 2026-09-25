@@ -12,6 +12,8 @@ import {
   Code,
   Columns3,
   Edit3,
+  Download,
+  Eye,
   FileText,
   Film,
   Folder,
@@ -22,6 +24,7 @@ import {
   Image as ImageIcon,
   Layers,
   ListFilter,
+  Loader2,
   Maximize2,
   MessageSquare,
   MoreHorizontal,
@@ -65,12 +68,51 @@ export interface OrchestrateViewProps {
 function DeliverableThumbnail({
   type,
   duration,
+  previewUrl,
+  status,
   onPlay,
 }: {
   type?: string
   duration?: string
+  previewUrl?: string
+  status?: string
   onPlay?: () => void
 }) {
+  if (status === 'generating') {
+    return (
+      <div className="relative aspect-video w-full rounded-lg border border-blue-500/40 bg-blue-950/20 flex flex-col items-center justify-center p-3 animate-pulse space-y-1.5">
+        <Loader2 size={18} className="animate-spin text-blue-400" />
+        <span className="text-[10px] font-mono text-blue-300 font-semibold tracking-wider uppercase">Generating Media...</span>
+      </div>
+    )
+  }
+
+  if (status === 'pending') {
+    return (
+      <div className="relative aspect-video w-full rounded-lg border-2 border-dashed border-slate-700/60 bg-slate-900/30 flex flex-col items-center justify-center p-3 space-y-1 text-center">
+        <ImageIcon size={18} className="text-slate-500" />
+        <span className="text-[10px] font-mono text-slate-400">Empty Slot • Pending</span>
+      </div>
+    )
+  }
+
+  const src = previewUrl || (type && (type.startsWith('data:') || type.startsWith('http') || type.startsWith('/')) ? type : undefined)
+  if (src) {
+    return (
+      <div
+        onClick={onPlay}
+        className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-lg border border-slate-800/80 bg-[#090d16] transition-all hover:border-blue-500/40"
+      >
+        <img src={src} alt="Deliverable" className="w-full h-full object-cover transition-transform group-hover/thumb:scale-105 duration-300" />
+        {duration && (
+          <span className="absolute bottom-1 right-1 z-20 rounded bg-black/80 px-1 py-0.5 font-mono text-[9px] font-semibold text-slate-300 backdrop-blur-sm border border-white/10">
+            {duration}
+          </span>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div
       onClick={onPlay}
@@ -174,6 +216,16 @@ function MinimalTaskCard({
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
   const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
+
+  const variantSlots = useMemo(() => {
+    const count =
+      task.variantCount && task.variantCount > 0
+        ? task.variantCount
+        : task.deliverables && task.deliverables.length > 0
+        ? task.deliverables.length
+        : 1
+    return Array.from({ length: count }, (_, i) => i + 1)
+  }, [task.variantCount, task.deliverables])
 
   return (
     <div
@@ -431,6 +483,41 @@ function MinimalTaskCard({
             </div>
           )}
 
+          {/* Visual Deliverable Blueprint / Placeholders (Empty boxes before acceptance) */}
+          {(task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story') && (
+            <div className="flex flex-col space-y-2 pt-2 pb-1 border-t border-blue-500/20">
+              <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                <span className="font-bold uppercase tracking-wider text-blue-400 flex items-center gap-1.5">
+                  <Sparkles size={11} />
+                  <span>Deliverable Blueprint ({variantSlots.length} {variantSlots.length === 1 ? 'Slot' : 'Slots'})</span>
+                </span>
+                <span className="text-slate-500">Empty placeholder until accepted</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                {variantSlots.map((slotNum) => (
+                  <div
+                    key={slotNum}
+                    className={`relative flex flex-col items-center justify-center p-4 rounded-xl border-2 border-dashed border-blue-500/30 bg-blue-950/10 hover:border-blue-500/50 transition-colors ${
+                      task.aspectRatio === '1:1' ? 'aspect-square' : task.aspectRatio === '9:16' ? 'aspect-[9/16]' : 'aspect-video'
+                    }`}
+                  >
+                    <div className="flex flex-col items-center text-center space-y-1.5">
+                      <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                        {task.agentType === 'video' ? <Film size={16} /> : <ImageIcon size={16} />}
+                      </div>
+                      <span className="text-[11px] font-mono font-bold text-slate-200">
+                        Slot {slotNum}: {task.aspectRatio || (task.agentType === 'video' ? '16:9' : '1:1')} {task.agentType === 'video' ? 'Video Story' : 'Image'}
+                      </span>
+                      <span className="text-[9px] font-mono text-blue-400/80 bg-blue-950/40 px-2 py-0.5 rounded border border-blue-500/20">
+                        Pending Acceptance
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Expandable Full Plan */}
           {task.fullPlanMarkdown && (
             <div className="border border-slate-800/80 rounded bg-[#070b14]/90 overflow-hidden">
@@ -461,7 +548,20 @@ function MinimalTaskCard({
             <div className="flex items-center justify-between text-[11px] gap-2 flex-wrap">
               <div className="flex items-center gap-2">
                 <span className="text-slate-400 font-mono text-[10px]">
-                  Expected: <strong className="text-white">{task.outcomeType === 'media_bundle' ? '3 Videos (1080p MP4)' : task.outcomeType === 'bug_patch' ? 'Regression Test & Fix Diff' : task.outcomeType === 'audit_report' ? 'Findings Ledger Report' : '1 Branch PR + Test Suite'}</strong>
+                  Expected:{' '}
+                  <strong className="text-white">
+                    {task.agentType === 'image'
+                      ? `${task.variantCount || 1} Image ${task.variantCount === 1 ? 'Variant' : 'Variants'} (${task.aspectRatio || '1:1'})`
+                      : task.agentType === 'video'
+                      ? `${task.scenes?.length || 2}-Scene Video Story (${task.aspectRatio || '16:9'})`
+                      : task.outcomeType === 'media_bundle'
+                      ? `${task.variantCount || 1} Media Asset(s)`
+                      : task.outcomeType === 'bug_patch'
+                      ? 'Regression Test & Fix Diff'
+                      : task.outcomeType === 'audit_report'
+                      ? 'Findings Ledger Report'
+                      : '1 Branch PR + Test Suite'}
+                  </strong>
                 </span>
                 {onRefine && (
                   <button
@@ -501,8 +601,12 @@ function MinimalTaskCard({
                     }}
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all active:scale-95"
                   >
-                    <Play size={11} fill="currentColor" />
-                    <span>Approve & Start Session</span>
+                    <Sparkles size={11} />
+                    <span>
+                      {task.agentType === 'image' || task.agentType === 'video' || task.outcomeType === 'media_bundle' || task.outcomeType === 'video_story'
+                        ? `Approve & Generate (${variantSlots.length} ${variantSlots.length === 1 ? 'Variant' : 'Variants'})`
+                        : 'Approve & Start Session'}
+                    </span>
                   </button>
                 )}
               </div>
@@ -664,21 +768,64 @@ function MinimalTaskCard({
             </span>
             <span className="font-mono text-[9px]">Contract: {task.outcomeType || 'media'}</span>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
             {task.deliverables.map((d) => (
               <div
                 key={d.id}
                 onClick={(e) => {
                   e.stopPropagation()
-                  onPreviewDeliverable?.(d)
+                  if (d.status === 'ready' || d.status === 'accepted') {
+                    onPreviewDeliverable?.(d)
+                  }
                 }}
-                className="p-2 rounded-lg border border-slate-800 bg-[#070b14] hover:border-blue-500/40 cursor-pointer space-y-1 transition-colors"
+                className={`p-2 rounded-xl border transition-all ${
+                  d.status === 'generating'
+                    ? 'border-blue-500/40 bg-blue-950/20 animate-pulse'
+                    : d.status === 'pending'
+                    ? 'border-dashed border-slate-800 bg-slate-950/40'
+                    : 'border-slate-800 bg-[#070b14] hover:border-blue-500/50 cursor-pointer shadow-sm hover:shadow-md'
+                }`}
               >
-                <div className="text-[11px] font-semibold text-white truncate">{d.title}</div>
-                <div className="flex items-center justify-between text-[9px] text-blue-400 font-mono">
-                  <span>{d.type}</span>
-                  <span className="text-slate-400">{d.status}</span>
-                </div>
+                {d.status === 'generating' ? (
+                  <div className="flex flex-col items-center justify-center p-3 text-center space-y-1.5 min-h-[90px]">
+                    <Loader2 size={16} className="animate-spin text-blue-400" />
+                    <span className="text-[11px] font-mono font-semibold text-blue-200 truncate w-full px-1">{d.title}</span>
+                    <span className="text-[9px] font-mono text-blue-400/80 uppercase tracking-wider">Generating media...</span>
+                  </div>
+                ) : d.status === 'pending' ? (
+                  <div className="flex flex-col items-center justify-center p-3 text-center space-y-1 min-h-[90px]">
+                    {d.type === 'video' ? <Film size={16} className="text-slate-500" /> : <ImageIcon size={16} className="text-slate-500" />}
+                    <span className="text-[11px] font-mono font-semibold text-slate-300 truncate w-full px-1">{d.title}</span>
+                    <span className="text-[9px] font-mono text-slate-500">Pending Acceptance</span>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-black/80 flex items-center justify-center">
+                      {d.previewUrl || d.mediaUrl || (d.thumbnailType && d.thumbnailType.startsWith('data:')) ? (
+                        <img
+                          src={d.previewUrl || d.mediaUrl || d.thumbnailType}
+                          alt={d.title}
+                          className="w-full h-full object-cover transition-transform group-hover:scale-105 duration-300"
+                        />
+                      ) : (
+                        <DeliverableThumbnail type={d.thumbnailType} duration={d.duration} />
+                      )}
+                      <div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center transition-opacity">
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-black/80 text-[10px] font-mono font-bold text-white border border-white/20">
+                          <Eye size={10} /> Preview
+                        </span>
+                      </div>
+                      <span className="absolute top-1 right-1 z-10 px-1 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-[8px] font-mono uppercase font-bold">
+                        Ready
+                      </span>
+                    </div>
+                    <div className="text-[11px] font-semibold text-white truncate px-0.5" title={d.title}>{d.title}</div>
+                    <div className="flex items-center justify-between text-[9px] text-slate-400 font-mono px-0.5">
+                      <span className="text-blue-400 uppercase">{d.type}</span>
+                      <span className="text-slate-500 group-hover:text-slate-300">Click to view</span>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1056,7 +1203,7 @@ export function OrchestrateView({
           id: t.id,
           title: t.title,
           subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
-          agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' || t.agent === 'swarm' ? t.agent : 'coder') as any,
+          agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' || t.agent === 'swarm' || t.agent === 'image' || t.agent === 'plan' ? t.agent : 'coder') as any,
           status: (t.status === 'in_progress' ? 'running' : t.status) || 'queued',
           outcomeType: t.outcome_type,
           workspaceTarget: t.workspace_path || t.project_id,
@@ -1096,10 +1243,14 @@ export function OrchestrateView({
           deliverables: (t.deliverables || []).map((d: any) => ({
             id: d.id,
             title: d.title,
-            type: d.kind || 'video',
-            status: d.status || 'ready',
+            type: d.kind || 'image',
+            status: d.status || 'pending',
             duration: d.duration || '0:15',
+            previewUrl: d.media_url || d.preview_url || (d.thumbnail && (d.thumbnail.startsWith('data:') || d.thumbnail.startsWith('http') || d.thumbnail.startsWith('/')) ? d.thumbnail : undefined),
+            mediaUrl: d.media_url,
             thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
+            videoAspect: t.aspect_ratio || '16:9',
+            prompt: t.subtitle || t.title,
             createdAt: 'Just now',
             author: t.worker_name || 'Orchestrator',
           })),
@@ -1117,6 +1268,21 @@ export function OrchestrateView({
         setTasks([])
       })
   }, [selectedTaskId])
+
+  // Real-time polling for in-progress tasks or generating media deliverables
+  useEffect(() => {
+    if (!selectedProjectId) return
+    const hasRunningTasks = tasks.some(
+      (t) => t.status === 'in_progress' || t.status === 'running' || t.deliverables?.some((d) => d.status === 'generating')
+    )
+    if (!hasRunningTasks) return
+
+    const interval = setInterval(() => {
+      fetchProjectTasks(selectedProjectId)
+    }, 1500)
+
+    return () => clearInterval(interval)
+  }, [selectedProjectId, tasks, fetchProjectTasks])
 
   // Helper to ensure an active orchestrator session exists for a project
   const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
@@ -1252,6 +1418,28 @@ export function OrchestrateView({
   // Approve pending task and start execution run
   const handleApproveTask = async (taskId: string) => {
     if (!selectedProject?.id) return
+    // Optimistic loading state: immediately mark task as in_progress and all deliverables as generating
+    setTasks((prev) =>
+      prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              status: 'in_progress' as const,
+              deliverables: (t.deliverables && t.deliverables.length > 0
+                ? t.deliverables
+                : Array.from({ length: t.variantCount || 1 }, (_, i) => ({
+                    id: `deliv_${t.id}_${i + 1}`,
+                    title: `${t.title} (Variant ${i + 1})`,
+                    type: (t.agentType === 'video' ? 'video' : 'image') as any,
+                    status: 'generating' as const,
+                    createdAt: 'Just now',
+                    author: t.workerName || 'Orchestrator',
+                  }))
+              ).map((d) => ({ ...d, status: 'generating' as const })),
+            }
+          : t
+      )
+    )
     try {
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/approve`, {
         method: 'POST',
@@ -1264,6 +1452,7 @@ export function OrchestrateView({
       }
     } catch (err) {
       console.warn('Approve task failed:', err)
+      fetchProjectTasks(selectedProject.id)
     }
   }
 
@@ -2106,16 +2295,44 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {liveTasks.flatMap((t) => t.deliverables || []).length > 0 ? (
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {liveTasks.flatMap((t) => t.deliverables || []).map((d) => (
-                  <div key={d.id} className="rounded-2xl border border-slate-800 bg-[#0a0f1d] p-3 space-y-2">
+                  <div
+                    key={d.id}
+                    onClick={() => {
+                      if (d.status === 'ready' || d.status === 'accepted') {
+                        setActiveVideoPreview(d)
+                      }
+                    }}
+                    className={`rounded-2xl border p-3 space-y-2 transition-all ${
+                      d.status === 'generating'
+                        ? 'border-blue-500/40 bg-blue-950/20 animate-pulse'
+                        : d.status === 'pending'
+                        ? 'border-dashed border-slate-800 bg-[#0a0f1d]'
+                        : 'border-slate-800 bg-[#0a0f1d] hover:border-blue-500/50 cursor-pointer shadow-sm'
+                    }`}
+                  >
                     <DeliverableThumbnail
                       type={d.thumbnailType}
+                      previewUrl={d.previewUrl || d.mediaUrl}
                       duration={d.duration}
-                      onPlay={() => setActiveVideoPreview(d)}
+                      status={d.status}
+                      onPlay={() => {
+                        if (d.status === 'ready' || d.status === 'accepted') {
+                          setActiveVideoPreview(d)
+                        }
+                      }}
                     />
-                    <div className="text-xs font-semibold text-white truncate">{d.title}</div>
+                    <div className="text-xs font-semibold text-white truncate" title={d.title}>{d.title}</div>
                     <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                      <span>{d.type}</span>
-                      <span className="text-blue-400">{d.status}</span>
+                      <span className="text-blue-400 uppercase">{d.type}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-bold ${
+                        d.status === 'ready' || d.status === 'accepted'
+                          ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-500/30'
+                          : d.status === 'generating'
+                          ? 'bg-blue-950/60 text-blue-300 border border-blue-500/30'
+                          : 'bg-slate-900 text-slate-500 border border-slate-800'
+                      }`}>
+                        {d.status}
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -3031,14 +3248,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          MODAL: VIDEO DELIVERABLE PREVIEW DIALOG
+          MODAL: MEDIA DELIVERABLE PREVIEW DIALOG (IMAGES & VIDEO)
          ───────────────────────────────────────────────────────────── */}
       {activeVideoPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
           <div className="relative flex max-w-2xl w-full flex-col p-5 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
-                <Film size={16} className="text-blue-400" />
+                {activeVideoPreview.type === 'image' || activeVideoPreview.previewUrl?.startsWith('data:image') ? (
+                  <ImageIcon size={16} className="text-blue-400" />
+                ) : (
+                  <Film size={16} className="text-blue-400" />
+                )}
                 <h3 className="text-sm font-bold text-white">{activeVideoPreview.title}</h3>
               </div>
               <div className="flex items-center gap-2">
@@ -3061,41 +3282,65 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             </div>
 
-            <div className="relative my-4 aspect-video w-full overflow-hidden flex items-center justify-center rounded-xl border border-slate-800 bg-black">
-              <DeliverableThumbnail type={activeVideoPreview.thumbnailType} />
-              <div className="absolute inset-0 flex flex-col items-center justify-center z-30">
-                <button
-                  onClick={() => setIsPlayingVideo(!isPlayingVideo)}
-                  className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-2xl transition-transform hover:scale-105 active:scale-95"
-                >
-                  {isPlayingVideo ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}
-                </button>
-                <span className="mt-2 text-xs font-mono text-slate-200 font-semibold bg-black/60 px-2 py-0.5 rounded">
-                  {isPlayingVideo ? 'Playing Video Stream...' : 'Click to Play Render Preview'}
-                </span>
+            {activeVideoPreview.type === 'image' || (activeVideoPreview.previewUrl && activeVideoPreview.previewUrl.startsWith('data:image')) ? (
+              <div className="relative my-4 max-h-[65vh] w-full overflow-hidden flex items-center justify-center rounded-xl border border-slate-800 bg-black/80 p-2">
+                <img
+                  src={activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl}
+                  alt={activeVideoPreview.title}
+                  className="max-h-[60vh] max-w-full object-contain rounded-lg shadow-2xl"
+                />
               </div>
-              <button
-                onClick={() => setIsMuted(!isMuted)}
-                className="absolute bottom-2 left-2 z-40 rounded-full bg-black/70 p-1.5 text-slate-300 hover:text-white"
-                title={isMuted ? 'Unmute' : 'Mute'}
-              >
-                <Volume2 size={13} className={isMuted ? 'opacity-40' : ''} />
-              </button>
-            </div>
+            ) : (
+              <div className="relative my-4 aspect-video w-full overflow-hidden flex items-center justify-center rounded-xl border border-slate-800 bg-black">
+                <DeliverableThumbnail
+                  type={activeVideoPreview.thumbnailType}
+                  previewUrl={activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl}
+                />
+                <div className="absolute inset-0 flex flex-col items-center justify-center z-30">
+                  <button
+                    onClick={() => setIsPlayingVideo(!isPlayingVideo)}
+                    className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-white shadow-2xl transition-transform hover:scale-105 active:scale-95"
+                  >
+                    {isPlayingVideo ? <Pause size={20} /> : <Play size={20} fill="currentColor" />}
+                  </button>
+                  <span className="mt-2 text-xs font-mono text-slate-200 font-semibold bg-black/60 px-2 py-0.5 rounded">
+                    {isPlayingVideo ? 'Playing Video Stream...' : 'Click to Play Render Preview'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => setIsMuted(!isMuted)}
+                  className="absolute bottom-2 left-2 z-40 rounded-full bg-black/70 p-1.5 text-slate-300 hover:text-white"
+                  title={isMuted ? 'Unmute' : 'Mute'}
+                >
+                  <Volume2 size={13} className={isMuted ? 'opacity-40' : ''} />
+                </button>
+              </div>
+            )}
 
             <div className="space-y-1.5 text-xs">
               <div>
-                <span className="text-slate-400 font-semibold">Worker Prompt: </span>
-                <span className="text-slate-200">{activeVideoPreview.prompt || 'Generated by autonomous video worker'}</span>
+                <span className="text-slate-400 font-semibold">Prompt: </span>
+                <span className="text-slate-200">{activeVideoPreview.prompt || 'Generated by autonomous media engine'}</span>
               </div>
               <div className="flex items-center gap-4 text-slate-400 font-mono text-[11px]">
-                <span>Duration: {activeVideoPreview.duration || '0:15'}</span>
+                {activeVideoPreview.duration && <span>Duration: {activeVideoPreview.duration}</span>}
                 <span>Aspect: {activeVideoPreview.videoAspect || '16:9'}</span>
-                <span>Render Time: {activeVideoPreview.metrics?.renderTime || '14.2s'}</span>
+                <span>Type: {activeVideoPreview.type.toUpperCase()}</span>
+                <span>Status: <strong className="text-emerald-400 font-semibold">{activeVideoPreview.status.toUpperCase()}</strong></span>
               </div>
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-800 pt-3">
+              {(activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl) && (
+                <a
+                  href={activeVideoPreview.previewUrl || activeVideoPreview.mediaUrl}
+                  download={`${activeVideoPreview.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${activeVideoPreview.type === 'image' || activeVideoPreview.previewUrl?.startsWith('data:image') ? 'png' : 'mp4'}`}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors"
+                >
+                  <Download size={13} />
+                  <span>Download Media</span>
+                </a>
+              )}
               <button
                 onClick={() => {
                   const parentTask = tasks.find((t) =>
@@ -3117,7 +3362,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   }
                   setActiveVideoPreview(null)
                 }}
-                className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white rounded-lg bg-blue-600 hover:bg-blue-500 shadow-md transition-all active:scale-95"
+                className="flex items-center gap-2 px-5 py-2 text-xs font-bold text-white rounded-lg bg-emerald-600 hover:bg-emerald-500 shadow-md transition-all active:scale-95"
               >
                 <CheckCircle2 size={14} />
                 <span>Accept Deliverable</span>

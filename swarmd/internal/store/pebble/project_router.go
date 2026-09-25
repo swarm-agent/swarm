@@ -168,6 +168,24 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 	var scenes []ProjectTaskScene
 	soundtrack := opts.Soundtrack
 
+	clean := prompt
+	if clean == "" && feedback != "" {
+		clean = feedback
+	}
+	if len(clean) > 80 {
+		clean = clean[:80]
+		if idx := strings.LastIndex(clean, " "); idx > 40 {
+			clean = clean[:idx]
+		}
+	}
+	clean = strings.TrimSpace(clean)
+	var title string
+	if len(clean) > 0 {
+		title = strings.ToUpper(clean[:1]) + clean[1:]
+	} else {
+		title = "Autonomous Task"
+	}
+
 	var stages []string
 	var deliverables []ProjectTaskDeliverable
 
@@ -176,9 +194,18 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		if aspectRatio == "" {
 			aspectRatio = "1:1"
 		}
+		if variantCount <= 0 {
+			variantCount = 1
+		}
 		stages = []string{"Visual Concept Formulation", "Media Generation Pipeline"}
-		deliverables = []ProjectTaskDeliverable{
-			{ID: "deliv_img", Title: fmt.Sprintf("%d Image(s) (%s)", variantCount, aspectRatio), Kind: "image", Status: "pending"},
+		for i := 1; i <= variantCount; i++ {
+			deliverables = append(deliverables, ProjectTaskDeliverable{
+				ID:          fmt.Sprintf("deliv_img_slot_%d", i),
+				Title:       fmt.Sprintf("%s (Variant %d, %s)", title, i, aspectRatio),
+				Kind:        "image",
+				Status:      "pending",
+				Description: fmt.Sprintf("Autonomous image deliverable for %s in aspect ratio %s", title, aspectRatio),
+			})
 		}
 	case "video":
 		if aspectRatio == "" {
@@ -226,24 +253,6 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) TaskRouteResult {
 		deliverables = []ProjectTaskDeliverable{
 			{ID: "deliv_task", Title: "Completed Task & Verification", Kind: "pr", Status: "pending"},
 		}
-	}
-
-	clean := prompt
-	if clean == "" && feedback != "" {
-		clean = feedback
-	}
-	if len(clean) > 80 {
-		clean = clean[:80]
-		if idx := strings.LastIndex(clean, " "); idx > 40 {
-			clean = clean[:idx]
-		}
-	}
-	clean = strings.TrimSpace(clean)
-	var title string
-	if len(clean) > 0 {
-		title = strings.ToUpper(clean[:1]) + clean[1:]
-	} else {
-		title = "Autonomous Task"
 	}
 
 	var slugParts []string
