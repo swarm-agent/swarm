@@ -216,6 +216,30 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 		t.Fatalf("unexpected create_task response: %v", taskResp)
 	}
 
+	// 5b. Propose task with plain English prompt (Task Router test)
+	propTaskOut, err := execTool(scope, "call-5b", `{
+		"action": "propose_task",
+		"project_id": "proj_test_1",
+		"prompt": "Investigate and figure out why onboarding fails in web"
+	}`)
+	if err != nil {
+		t.Fatalf("propose_task failed: %v", err)
+	}
+	var propTaskResp map[string]any
+	if err := json.Unmarshal([]byte(propTaskOut), &propTaskResp); err != nil {
+		t.Fatal(err)
+	}
+	propTask, _ := propTaskResp["task"].(map[string]any)
+	if propTask["tier"] != "discovery" {
+		t.Fatalf("expected discovery tier, got %v", propTask["tier"])
+	}
+	if propTask["agent"] != "finder" {
+		t.Fatalf("expected finder agent, got %v", propTask["agent"])
+	}
+	if propTask["status"] != "pending_approval" {
+		t.Fatalf("expected pending_approval status, got %v", propTask["status"])
+	}
+
 	// 6. List tasks
 	listTasksOut, err := execTool(scope, "call-6", `{"action":"list_tasks","project_id":"proj_test_1"}`)
 	if err != nil {

@@ -264,16 +264,53 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		}
 		title := strings.TrimSpace(asString(args["title"]))
 		if title == "" {
+			title = strings.TrimSpace(asString(args["prompt"]))
+		}
+		if title == "" {
 			return "", errors.New("manage_projects propose_task requires title")
 		}
+
+		proj, found, _ := r.projects.GetProject(accountScopeID, projectID)
+		var projectContext string
+		var workspaces []pebblestore.ProjectWorkspaceRef
+		if found && proj != nil {
+			projectContext = proj.ProjectContext
+			workspaces = proj.Workspaces
+		}
+
+		prompt := strings.TrimSpace(asString(args["prompt"]))
+		if prompt == "" {
+			prompt = strings.TrimSpace(asString(args["description"]))
+		}
+		if prompt == "" {
+			prompt = title
+		}
+		wsPath := strings.TrimSpace(asString(args["workspace_path"]))
+		routed := pebblestore.RouteAndPlanProjectTask(prompt, wsPath, projectContext, workspaces, "", "")
+
 		agentName := strings.TrimSpace(asString(args["agent"]))
 		if agentName == "" {
-			agentName = "coder"
+			agentName = routed.Agent
 		}
 		workerName := strings.TrimSpace(asString(args["worker_name"]))
+		if workerName == "" {
+			workerName = fmt.Sprintf("@%s Worker", strings.Title(agentName))
+		}
 		status := strings.TrimSpace(asString(args["status"]))
-		if status == "" {
-			status = "queued"
+		if status == "" || status == "queued" {
+			status = "pending_approval"
+		}
+		outcomeType := strings.TrimSpace(asString(args["outcome_type"]))
+		if outcomeType == "" {
+			outcomeType = routed.OutcomeType
+		}
+		worktreeBranch := strings.TrimSpace(asString(args["worktree_branch"]))
+		if worktreeBranch == "" {
+			worktreeBranch = routed.Branch
+		}
+		description := strings.TrimSpace(asString(args["description"]))
+		if description == "" {
+			description = routed.Mission
 		}
 
 		var stages []string
@@ -283,6 +320,9 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 					stages = append(stages, s)
 				}
 			}
+		}
+		if len(stages) == 0 {
+			stages = routed.Stages
 		}
 
 		var whatDid []string
@@ -303,38 +343,63 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			}
 		}
 
+		actionNeeded := strings.TrimSpace(asString(args["action_needed"]))
+		if actionNeeded == "" && status == "pending_approval" {
+			actionNeeded = "Review plan and click Approve"
+		}
+
 		task := pebblestore.ProjectTaskRecord{
-			ProjectID:      projectID,
-			Title:          title,
-			Description:    strings.TrimSpace(asString(args["description"])),
-			Status:         status,
-			Agent:          agentName,
-			WorkerName:     workerName,
-			OutcomeType:    strings.TrimSpace(asString(args["outcome_type"])),
-			WorkspacePath:  strings.TrimSpace(asString(args["workspace_path"])),
-			WorktreeBranch: strings.TrimSpace(asString(args["worktree_branch"])),
-			ActionNeeded:   strings.TrimSpace(asString(args["action_needed"])),
-			WhatDidDo:      whatDid,
-			WhatNotDone:    whatNot,
-			DiffSummary:    strings.TrimSpace(asString(args["diff_summary"])),
-			PipelineStages: stages,
+			ProjectID:          projectID,
+			Title:              title,
+			Description:        description,
+			Status:             status,
+			Agent:              agentName,
+			WorkerName:         workerName,
+			OutcomeType:        outcomeType,
+			WorkspacePath:      wsPath,
+			WorktreeBranch:     worktreeBranch,
+			ActionNeeded:       actionNeeded,
+			WhatDidDo:          whatDid,
+			WhatNotDone:        whatNot,
+			DiffSummary:        strings.TrimSpace(asString(args["diff_summary"])),
+			PipelineStages:     stages,
+			Deliverables:       routed.Deliverables,
+			WorkspacesInvolved: routed.WorkspacesInvolved,
+			PlanSummary:        routed.PlanSummary,
+			FullPlanMarkdown:   routed.FullPlanMarkdown,
+			Tier:               routed.Tier,
+			Revision:           1,
 		}
 		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
 			return "", err
 		}
+		if found && proj != nil {
+			_, _ = r.projects.UpdateProject(accountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+				for _, tid := range p.ActiveTaskIDs {
+					if tid == task.ID {
+						return nil
+					}
+				}
+				p.ActiveTaskIDs = append(p.ActiveTaskIDs, task.ID)
+				return nil
+			})
+		}
 		response["task"] = task
 		response["task_id"] = task.ID
 		response["proposal"] = map[string]any{
-			"task_id":         task.ID,
-			"project_id":      projectID,
-			"title":           task.Title,
-			"agent":           task.Agent,
-			"outcome_type":    task.OutcomeType,
-			"workspace_path":  task.WorkspacePath,
-			"worktree_branch": task.WorktreeBranch,
-			"pipeline_stages": task.PipelineStages,
-			"action_needed":   task.ActionNeeded,
-			"status":          task.Status,
+			"task_id":             task.ID,
+			"project_id":          projectID,
+			"title":               task.Title,
+			"agent":               task.Agent,
+			"outcome_type":        task.OutcomeType,
+			"workspace_path":      task.WorkspacePath,
+			"worktree_branch":     task.WorktreeBranch,
+			"pipeline_stages":     task.PipelineStages,
+			"workspaces_involved": task.WorkspacesInvolved,
+			"plan_summary":        task.PlanSummary,
+			"tier":                task.Tier,
+			"action_needed":       task.ActionNeeded,
+			"status":              task.Status,
 		}
 
 	case "list_tasks":
@@ -422,6 +487,14 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		feedback := strings.TrimSpace(asString(args["feedback"]))
 		errorSummary := strings.TrimSpace(asString(args["error_summary"]))
 
+		proj, found, _ := r.projects.GetProject(accountScopeID, projectID)
+		var projCtx string
+		var projWs []pebblestore.ProjectWorkspaceRef
+		if found && proj != nil {
+			projCtx = proj.ProjectContext
+			projWs = proj.Workspaces
+		}
+
 		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.Revision <= 0 {
 				t.Revision = 1
@@ -435,10 +508,25 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			} else if feedback != "" && t.LastError != "" {
 				t.LastError = ""
 			}
+
+			seedPrompt := t.Description
+			if seedPrompt == "" {
+				seedPrompt = t.Title
+			}
+			routed := pebblestore.RouteAndPlanProjectTask(seedPrompt, t.WorkspacePath, projCtx, projWs, feedback, t.LastError)
+			t.Agent = routed.Agent
+			t.OutcomeType = routed.OutcomeType
+			t.Description = routed.Mission
+			t.PipelineStages = routed.Stages
+			t.Deliverables = routed.Deliverables
+			t.WorkspacesInvolved = routed.WorkspacesInvolved
+			t.PlanSummary = routed.PlanSummary
+			t.FullPlanMarkdown = routed.FullPlanMarkdown
+			t.Tier = routed.Tier
 			t.Status = "pending_approval"
 			t.ActionNeeded = fmt.Sprintf("Review revised plan (Rev %d) and click Approve", t.Revision)
 			if feedback != "" {
-				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Revised plan (Rev %d) per user feedback: %s", t.Revision, feedback))
+				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Revised plan (Rev %d) based on: %s", t.Revision, feedback))
 			} else if t.LastError != "" {
 				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Re-planned error recovery strategy (Rev %d)", t.Revision))
 			}
