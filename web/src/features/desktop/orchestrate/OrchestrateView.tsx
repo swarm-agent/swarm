@@ -1,16 +1,15 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
 import {
   Activity,
   ArrowRight,
   ArrowUp,
-  AtSign,
   Bot,
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronRight,
   Code,
   Columns3,
+  Edit3,
   Film,
   Folder,
   FolderPlus,
@@ -19,35 +18,26 @@ import {
   ListFilter,
   Maximize2,
   MoreHorizontal,
-  Paperclip,
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Settings,
   Sparkles,
-  SplitSquareVertical,
   Volume2,
   X,
   Zap,
 } from 'lucide-react'
 import { requestJson } from '../../../app/api'
 import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import { sendSessionMessage } from '../chat/queries/chat-queries'
-import {
-  MOCK_AUTOMATIONS,
-  MOCK_CHAT_MESSAGES,
-  MOCK_DEPLOYED_WORKERS,
-  MOCK_PROJECTS,
-  MOCK_100_TASKS,
-} from './orchestrate-mock-data'
+import { fetchSessionMessages, sendSessionMessage } from '../chat/queries/chat-queries'
 import { ORCHESTRATE_THEME_IDS, ORCHESTRATE_THEMES } from './orchestrate-themes'
 import {
   DeployedWorker,
   MediaDeliverable,
   MiddleCanvasVariant,
   OrchestrateThemeId,
-  OrchestratorMessage,
   ProjectSummary,
   RunningAutomation,
   RunningTask,
@@ -60,7 +50,7 @@ export interface OrchestrateViewProps {
 }
 
 /**
- * Thumbnail graphic renderer for the video deliverables with modern high-craft aesthetics
+ * Thumbnail graphic renderer for the video and media deliverables
  */
 function DeliverableThumbnail({
   type,
@@ -163,38 +153,29 @@ export function OrchestrateView({
   const [currentThemeId, setCurrentThemeId] = useState<OrchestrateThemeId>(initialThemeId)
   const theme = ORCHESTRATE_THEMES[currentThemeId] || ORCHESTRATE_THEMES.modern_navy
 
-  const [projects, setProjects] = useState<ProjectSummary[]>(MOCK_PROJECTS)
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0]?.id || '')
+  // Real user profile from /v1/auth/desktop/session
+  const [userProfile, setUserProfile] = useState<{ id: string; name: string; email: string }>({
+    id: '',
+    name: 'Operator',
+    email: 'local operator',
+  })
+
+  // Projects State - empty initially until loaded from Pebble
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
+  const [_isLoadingProjects, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
 
-  // Project Onboarding Dual-Mode State
+  // Project Onboarding & Creation State
   const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(false)
   const [onboardingName, setOnboardingName] = useState('Swarm Platform')
-  const [onboardingDescription, setOnboardingDescription] = useState('Core Go daemon, desktop client, and video production pipeline')
-  const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ path: string; label: string; role: 'primary_code' | 'auxiliary' | 'docs'; selected: boolean }>>([
-    { path: '~/swarm-go', label: 'Core Engine & Daemon', role: 'primary_code', selected: true },
-    { path: '~/swarm-social', label: 'Video & Media Studio', role: 'auxiliary', selected: true },
-    { path: '~/work', label: 'Testbenches & Scripts', role: 'auxiliary', selected: false },
-    { path: '~/swarmcrit', label: 'Critical Operations', role: 'auxiliary', selected: false },
-  ])
+  const [onboardingDescription, setOnboardingDescription] = useState('Core daemon, desktop client, and multi-workspace initiative')
+  const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }>>([])
   const [customFolderPath, setCustomFolderPath] = useState('')
   const [isEditingContext, setIsEditingContext] = useState(false)
   const [isSynthesizing, setIsSynthesizing] = useState(false)
   const [isActivating, setIsActivating] = useState(false)
-  const [onboardingContext, setOnboardingContext] = useState(`# Swarm Platform
-
-## Overview
-Core daemon, desktop client, and video production pipeline.
-
-## Subsystems & Workspaces
-- \`~/swarm-go\`: Core Engine & Daemon (\`primary_code\`)
-- \`~/swarm-social\`: Video & Media Studio (\`auxiliary\`)
-
-## Directives
-- Local-first architecture; all session and project records persist to Pebble database.
-- Subagents (Coder/Designer/Finder) execute inside isolated Git worktrees.
-- Strict tool isolation: raw multimedia and environment tools are excluded from executive orchestrator prompt.
-- Verification gate: all pull requests and deliverables require user review before promotion.`)
+  const [onboardingContext, setOnboardingContext] = useState('')
 
   // Live Pebble V3 cache state for real-time orchestrator sessions and tasks
   const sessionsById = useDesktopV3CacheSelector((s) => s.sessionsById)
@@ -202,25 +183,116 @@ Core daemon, desktop client, and video production pipeline.
   const plansBySession = useDesktopV3CacheSelector((s) => s.plansBySession)
   const [activeSessionId, setActiveSessionId] = useState<string>('')
 
-  // Initial load from live /v3/projects if available
+  // Tasks State - empty initially until loaded from /v3/projects/{id}/tasks
+  const [tasks, setTasks] = useState<RunningTask[]>([])
+  const [automations, setAutomations] = useState<RunningAutomation[]>([])
+
+  // Middle canvas layout variant state
+  const [middleVariant, setMiddleVariant] = useState<MiddleCanvasVariant>('matrix')
+
+  // Search & Filters
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
+  const [selectedTag] = useState<string>('all')
+
+  // Matrix expandable drawer state
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null)
+
+  // Split Studio selected task state
+  const [selectedTaskId, setSelectedTaskId] = useState<string>('')
+
+  // Video preview modal
+  const [activeVideoPreview, setActiveVideoPreview] = useState<MediaDeliverable | null>(null)
+  const [isPlayingVideo, setIsPlayingVideo] = useState(false)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  // Chat state
+  const [inputText, setInputText] = useState('')
+  const [isTyping, setIsTyping] = useState(false)
+  const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
+
+  // Deploy Task Modal State
+  const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
+  const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [newTaskPrompt, setNewTaskPrompt] = useState('')
+  const [newTaskAgent, setNewTaskAgent] = useState<'coder' | 'finder' | 'designer' | 'video'>('coder')
+  const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
+  const [isDeployingTask, setIsDeployingTask] = useState(false)
+
+  const chatBottomRef = useRef<HTMLDivElement>(null)
+
+  // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
   useEffect(() => {
     let cancelled = false
-    requestJson<{ projects: Array<{ id: string; name: string; description?: string; workspaces?: Array<{ path: string; label?: string; role?: string }>; project_context?: string; primary_session_id?: string }> }>('/v3/projects')
-      .then((res) => {
+
+    async function bootstrap() {
+      // 1. User Session
+      try {
+        const auth = await requestJson<{ ok: boolean; user_id?: string; account_scope_id?: string }>('/v1/auth/desktop/session')
+        if (auth?.user_id && !cancelled) {
+          const rawId = auth.user_id
+          setUserProfile({
+            id: rawId,
+            name: rawId.startsWith('user_') ? `Operator (${rawId.slice(5, 11)})` : rawId,
+            email: auth.account_scope_id || 'authenticated session',
+          })
+        }
+      } catch {}
+
+      // 2. Discover Registered Workspaces
+      let detectedWorkspaces: Array<{ path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }> = []
+      try {
+        const wsRes = await requestJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200')
+        if (wsRes?.workspaces && wsRes.workspaces.length > 0) {
+          detectedWorkspaces = wsRes.workspaces.map((w, idx) => ({
+            path: w.path,
+            label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
+            role: (idx === 0 ? 'primary_code' : 'auxiliary') as 'primary_code' | 'auxiliary',
+            selected: true,
+          }))
+          if (!cancelled) {
+            setOnboardingWorkspaces(detectedWorkspaces)
+          }
+        }
+      } catch {}
+
+      // 3. Automations
+      try {
+        const autoRes = await requestJson<{ records?: any[] }>('/v3/automations/v2?action=list')
+        if (autoRes?.records && !cancelled) {
+          const mapped: RunningAutomation[] = autoRes.records.map((r: any) => ({
+            id: r.id || 'automation',
+            name: r.worker_v2?.name || r.name || 'Worker Automation',
+            kind: (r.worker_v2?.kind || r.schedule?.kind || 'trigger') as any,
+            status: (r.status || (r.paused ? 'idle' : 'running')) as any,
+            nextRun: r.schedule?.cron || r.schedule?.interval || 'On demand',
+            lastRun: r.last_run_at ? new Date(r.last_run_at).toLocaleTimeString() : 'Never',
+            outputSummary: r.description || r.worker_v2?.definition?.goal || 'Automated background task',
+            totalRuns: r.run_count || 0,
+          }))
+          setAutomations(mapped)
+        }
+      } catch {}
+
+      // 4. Projects from Pebble
+      try {
+        const res = await requestJson<{ projects?: any[] }>('/v3/projects')
         if (cancelled) return
-        if (res.projects && res.projects.length > 0) {
+
+        if (res?.projects && res.projects.length > 0) {
           const loaded: ProjectSummary[] = res.projects.map((p) => ({
             id: p.id,
             name: p.name,
             slug: p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
             description: p.description || '',
-            repoPath: p.workspaces?.[0]?.path || '~/workspace',
+            repoPath: p.workspaces?.[0]?.path || '.',
             branch: 'dev',
             gitStatus: 'clean',
-            linkedWorkspaces: p.workspaces?.map((w) => w.path) || [],
-            activeWorkersCount: 4,
-            pendingDeliverablesCount: 3,
-            runningTasksCount: 100,
+            linkedWorkspaces: p.workspaces?.map((w: any) => w.path) || [],
+            activeWorkersCount: 0,
+            pendingDeliverablesCount: 0,
+            runningTasksCount: 0,
             projectContext: p.project_context,
             primarySessionId: p.primary_session_id,
           }))
@@ -229,63 +301,417 @@ Core daemon, desktop client, and video production pipeline.
           if (loaded[0].primarySessionId) {
             setActiveSessionId(loaded[0].primarySessionId)
           }
+          fetchProjectTasks(loaded[0].id)
+        } else if (detectedWorkspaces.length > 0) {
+          // No projects stored in Pebble yet. Auto-initialize the default project from registered workspaces!
+          const primaryWs = detectedWorkspaces[0]
+          const projectName = primaryWs.label === 'Workspace' ? 'Swarm Platform' : primaryWs.label
+          const wsPaths = detectedWorkspaces.map((w) => w.path)
+
+          let context = ''
+          try {
+            const synRes = await requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: projectName, workspaces: wsPaths }),
+            })
+            context = synRes?.project_context || ''
+          } catch {}
+
+          const payload = {
+            name: projectName,
+            description: `Multi-workspace project across ${detectedWorkspaces.length} workspace(s) managed by Swarm Orchestrator`,
+            workspaces: detectedWorkspaces.map((w) => ({ path: w.path, role: w.role, label: w.label })),
+            project_context: context,
+          }
+
+          let newId = `proj_${Date.now()}`
+          try {
+            const createRes = await requestJson<{ project: { id: string } }>('/v3/projects', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+            if (createRes?.project?.id) {
+              newId = createRes.project.id
+            }
+          } catch {}
+
+          let orchSessionId = ''
+          try {
+            const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title: `Project Orchestrator: ${projectName}`,
+                workspace_path: primaryWs.path,
+                agent_name: 'system-orchestrator',
+                metadata: {
+                  project_id: newId,
+                  role: 'project_orchestrator',
+                },
+              }),
+            })
+            if (sessRes?.session?.id) {
+              orchSessionId = sessRes.session.id
+              await requestJson(`/v3/projects/${newId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ primary_session_id: orchSessionId }),
+              }).catch(() => {})
+            }
+          } catch {}
+
+          const autoProject: ProjectSummary = {
+            id: newId,
+            name: projectName,
+            slug: projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+            description: payload.description,
+            repoPath: primaryWs.path,
+            branch: 'dev',
+            gitStatus: 'clean',
+            linkedWorkspaces: wsPaths,
+            activeWorkersCount: 0,
+            pendingDeliverablesCount: 0,
+            runningTasksCount: 0,
+            projectContext: context,
+            primarySessionId: orchSessionId,
+          }
+
+          if (!cancelled) {
+            setProjects([autoProject])
+            setSelectedProjectId(autoProject.id)
+            if (orchSessionId) {
+              setActiveSessionId(orchSessionId)
+            }
+            fetchProjectTasks(autoProject.id)
+          }
+        } else {
+          // No workspaces detected, open onboarding
+          if (!cancelled) {
+            setIsOnboardingActive(true)
+          }
         }
-      })
-      .catch(() => {
-        // Fall back gracefully to mock projects when offline
-      })
+      } catch (err) {
+        console.warn('Failed to load projects from Pebble:', err)
+      } finally {
+        if (!cancelled) {
+          setIsLoadingProjects(false)
+        }
+      }
+    }
+
+    void bootstrap()
+
     return () => {
       cancelled = true
     }
   }, [])
 
-  const fetchProjectTasks = (projectId: string) => {
-    requestJson<{ tasks: any[] }>(`/v3/projects/${projectId}/tasks`)
+  // Fetch project tasks for a given project from Pebble
+  const fetchProjectTasks = useCallback((projectId: string) => {
+    if (!projectId) return
+    requestJson<{ tasks?: any[] }>(`/v3/projects/${projectId}/tasks`)
       .then((res) => {
-        if (res.tasks && res.tasks.length > 0) {
-          const backendTasks: RunningTask[] = res.tasks.map((t) => ({
-            id: t.id,
-            title: t.title,
-            subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
-            agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' ? t.agent : 'coder') as any,
-            status: (t.status === 'in_progress' ? 'running' : t.status) as any,
-            workspaceTarget: t.project_id,
-            elapsed: 'Just now',
-            workerName: t.worker_name || `@${t.agent || 'Coder'} Verifier`,
-            priority: 'high',
-            sessionId: t.session_id,
-            createdAt: t.created_at,
-            stageIndex: t.current_stage_index,
-            totalStages: t.pipeline_stages?.length || 4,
-            stepTimeline: t.pipeline_stages?.map((st: string, idx: number) => ({
-              step: idx + 1,
-              label: st,
-              status: idx < (t.current_stage_index || 0) ? 'complete' : (idx === t.current_stage_index ? 'processing' : 'pending'),
-            })),
-            deliverables: t.deliverables?.map((d: any) => ({
-              id: d.id,
-              title: d.title,
-              type: d.kind || 'video',
-              status: d.status || 'ready',
-              duration: d.duration || '0:15',
-              thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
-              createdAt: 'Just now',
-              author: t.worker_name || 'Orchestrator',
-            })),
-            subtasks: [
-              { id: '1', title: 'Verify task scope', completed: true },
-              { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
-            ],
-          }))
-          setTasks((prev) => {
-            const nonBackend = prev.filter((p) => !p.id.startsWith('task_'))
-            return [...backendTasks, ...nonBackend]
-          })
+        const backendTasks: RunningTask[] = (res.tasks || []).map((t) => ({
+          id: t.id,
+          title: t.title,
+          subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
+          agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' ? t.agent : 'coder') as any,
+          status: (t.status === 'in_progress' ? 'running' : t.status) || 'queued',
+          workspaceTarget: t.workspace_path || t.project_id,
+          elapsed: t.created_at ? `${Math.max(1, Math.round((Date.now() - t.created_at) / 60000))}m` : 'Just now',
+          workerName: t.worker_name || `@${t.agent || 'Coder'} Worker`,
+          priority: 'high',
+          sessionId: t.session_id,
+          createdAt: t.created_at,
+          stageIndex: t.current_stage_index,
+          totalStages: t.pipeline_stages?.length || 4,
+          stepTimeline: (t.pipeline_stages || ['Inspect', 'Implement', 'Verify', 'Review']).map((st: string, idx: number) => ({
+            step: idx + 1,
+            label: st,
+            status: idx < (t.current_stage_index || 0) ? 'complete' : (idx === t.current_stage_index ? 'processing' : 'pending'),
+          })),
+          deliverables: (t.deliverables || []).map((d: any) => ({
+            id: d.id,
+            title: d.title,
+            type: d.kind || 'video',
+            status: d.status || 'ready',
+            duration: d.duration || '0:15',
+            thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
+            createdAt: 'Just now',
+            author: t.worker_name || 'Orchestrator',
+          })),
+          subtasks: [
+            { id: '1', title: 'Verify task scope', completed: true },
+            { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
+          ],
+        }))
+        setTasks(backendTasks)
+        if (backendTasks.length > 0 && !selectedTaskId) {
+          setSelectedTaskId(backendTasks[0].id)
         }
       })
-      .catch(() => {})
+      .catch(() => {
+        setTasks([])
+      })
+  }, [selectedTaskId])
+
+  // Synchronize active orchestrator session and project tasks with selected project
+  useEffect(() => {
+    if (!selectedProject || isOnboardingActive) return
+
+    fetchProjectTasks(selectedProject.id)
+
+    if (selectedProject.primarySessionId) {
+      setActiveSessionId(selectedProject.primarySessionId)
+      void fetchSessionMessages(selectedProject.primarySessionId, undefined, 0, { sessionApi: 'v3', tail: true, limit: 100 }).catch(() => {})
+    } else {
+      // Spawn primary orchestrator session for this project
+      requestJson<{ session: { id: string } }>('/v3/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `Project Orchestrator: ${selectedProject.name}`,
+          workspace_path: selectedProject.repoPath || '.',
+          agent_name: 'system-orchestrator',
+          metadata: {
+            project_id: selectedProject.id,
+            role: 'project_orchestrator',
+          },
+        }),
+      })
+        .then((sessRes) => {
+          if (sessRes?.session?.id) {
+            const sid = sessRes.session.id
+            setActiveSessionId(sid)
+            requestJson(`/v3/projects/${selectedProject.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ primary_session_id: sid }),
+            }).catch(() => {})
+          }
+        })
+        .catch((e) => {
+          console.warn('Failed to ensure orchestrator session:', e)
+        })
+    }
+  }, [selectedProject?.id, isOnboardingActive, fetchProjectTasks])
+
+  // Real-time messages for active session from V3 cache
+  const liveSessionMessages = useMemo(() => {
+    if (!activeSessionId || !messagesBySession[activeSessionId]) return null
+    return (messagesBySession[activeSessionId].items || []).filter(
+      (m: any) => m.role === 'user' || m.role === 'assistant'
+    )
+  }, [activeSessionId, messagesBySession])
+
+  const activeRecord = activeSessionId ? sessionsById[activeSessionId] : undefined
+  const activeSession = activeRecord?.kind === 'full' ? activeRecord.session : undefined
+  const isLiveSessionRunning = !!(activeSession && (activeSession.lifecycle as any)?.active)
+
+  // Auto scroll chat to bottom when new messages arrive
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [liveSessionMessages, isTyping])
+
+  // Derive real active workers from V3 sessions
+  const deployedWorkers = useMemo<DeployedWorker[]>(() => {
+    const list: DeployedWorker[] = []
+    const allRecords = Object.values(sessionsById)
+    for (const rec of allRecords) {
+      if (rec.kind !== 'full' || !rec.session) continue
+      const sess = rec.session
+      const isActive = !!(sess.lifecycle as any)?.active
+      const agent = (sess as any).agent_name || (sess as any).agent?.name || 'swarm'
+      if (isActive || agent !== 'swarm' || (sess.message_count ?? 0) > 1) {
+        list.push({
+          id: sess.id,
+          name: sess.title || `@${agent}`,
+          role: `${agent.toUpperCase()} Agent • ${sess.workspace_name || 'Workspace'}`,
+          triggerKind: 'trigger',
+          scheduleLabel: isActive ? 'Executing Live Run' : 'Idle / Ready',
+          activeJobsCount: isActive ? 1 : 0,
+          completedJobsCount: (sess.message_count ?? 0) > 2 ? 1 : 0,
+          status: isActive ? 'active' : 'idle',
+          currentJobTitle: sess.title,
+          assignedTaskIds: [],
+        })
+      }
+    }
+    return list.slice(0, 12)
+  }, [sessionsById])
+
+  // Deploy task to project & spawn worker session
+  const handleDeployTask = async (
+    title: string,
+    agent: string = 'coder',
+    workerName: string = '@Coder Worker',
+    prompt?: string,
+    pipelineStages?: string[],
+    workspacePath?: string
+  ) => {
+    if (!selectedProject?.id) return
+    try {
+      const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          agent,
+          worker_name: workerName,
+          workspace_path: workspacePath || selectedProject.repoPath || '.',
+          pipeline_stages: pipelineStages || ['Inspect', 'Implement', 'Verify', 'Review'],
+          deploy_session: true,
+          prompt: prompt || title,
+        }),
+      })
+      if (res?.task) {
+        fetchProjectTasks(selectedProject.id)
+      }
+    } catch (err) {
+      console.warn('Deploy task failed:', err)
+    }
   }
 
+  const handleDeployModalSubmit = async () => {
+    if (!newTaskTitle.trim() || !selectedProject?.id) return
+    setIsDeployingTask(true)
+    try {
+      await handleDeployTask(
+        newTaskTitle.trim(),
+        newTaskAgent,
+        `@${newTaskAgent.charAt(0).toUpperCase() + newTaskAgent.slice(1)} Worker`,
+        newTaskPrompt.trim() || newTaskTitle.trim(),
+        ['Inspect', 'Implement', 'Verify', 'Review'],
+        newTaskWorkspace || selectedProject.repoPath
+      )
+      setIsDeployModalOpen(false)
+      setNewTaskTitle('')
+      setNewTaskPrompt('')
+    } finally {
+      setIsDeployingTask(false)
+    }
+  }
+
+  // Real-time status transitions linked to V3 session lifecycles
+  const liveTasks = useMemo(() => {
+    return tasks.map((task) => {
+      if (!task.sessionId || !sessionsById[task.sessionId]) {
+        return task
+      }
+      const record = sessionsById[task.sessionId]
+      const sess = record?.kind === 'full' ? record.session : undefined
+      const plan = plansBySession[task.sessionId] as any
+      if (!sess) {
+        return task
+      }
+      const lifecycle = sess.lifecycle as any
+      let status = task.status
+      if (lifecycle?.active) {
+        status = 'running'
+      }
+      const hasWaitingReview = plan?.document?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
+      if (hasWaitingReview || lifecycle?.phase === 'needs_review') {
+        status = 'needs_review'
+      } else if (!lifecycle?.active && (sess.message_count ?? 0) > 1) {
+        status = 'completed'
+      }
+      return {
+        ...task,
+        status,
+        elapsed: sess.updated_at ? `${Math.max(1, Math.round((Date.now() - (sess.created_at ?? Date.now())) / 60000))}m` : task.elapsed,
+      }
+    })
+  }, [tasks, sessionsById, plansBySession])
+
+  // Filtered tasks
+  const filteredTasks = useMemo(() => {
+    return liveTasks.filter((task) => {
+      const matchesSearch =
+        searchQuery === '' ||
+        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.subtitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.id.toLowerCase().includes(searchQuery.toLowerCase())
+
+      const matchesStatus = statusFilter === 'all' || task.status === statusFilter
+      const matchesTag = selectedTag === 'all' || task.tags?.includes(selectedTag)
+
+      return matchesSearch && matchesStatus && matchesTag
+    })
+  }, [liveTasks, searchQuery, statusFilter, selectedTag])
+
+  const selectedTaskForSplit = useMemo(() => {
+    return liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]
+  }, [liveTasks, selectedTaskId])
+
+  const handleAcceptDeliverable = (taskId: string, deliverableId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    setTasks((prev) =>
+      prev.map((task) => {
+        if (task.id !== taskId && !task.deliverables?.some((d) => d.id === deliverableId)) {
+          return task
+        }
+        return {
+          ...task,
+          deliverables: task.deliverables?.map((d) =>
+            d.id === deliverableId ? { ...d, status: 'accepted' as const } : d
+          ),
+        }
+      })
+    )
+  }
+
+  // Real message sending to Swarm Orchestrator session
+  const handleSendMessage = async (textToSend?: string) => {
+    const text = (textToSend || inputText).trim()
+    if (!text) return
+
+    if (!textToSend) setInputText('')
+    setIsTyping(true)
+
+    if (activeSessionId) {
+      try {
+        await sendSessionMessage(activeSessionId, 'user', text)
+      } catch (err) {
+        console.warn('Failed to send message to orchestrator session:', err)
+      } finally {
+        setIsTyping(false)
+      }
+    } else if (selectedProject?.id) {
+      try {
+        const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: `Project Orchestrator: ${selectedProject.name}`,
+            workspace_path: selectedProject.repoPath || '.',
+            agent_name: 'system-orchestrator',
+            metadata: {
+              project_id: selectedProject.id,
+              role: 'project_orchestrator',
+            },
+          }),
+        })
+        if (sessRes?.session?.id) {
+          const sid = sessRes.session.id
+          setActiveSessionId(sid)
+          await requestJson(`/v3/projects/${selectedProject.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ primary_session_id: sid }),
+          }).catch(() => {})
+          await sendSessionMessage(sid, 'user', text)
+        }
+      } catch (err) {
+        console.warn('Failed to spawn orchestrator session:', err)
+      } finally {
+        setIsTyping(false)
+      }
+    }
+  }
+
+  // Workspaces toggling for project onboarding
   const handleToggleWorkspace = (path: string) => {
     setOnboardingWorkspaces((prev) =>
       prev.map((w) => (w.path === path ? { ...w, selected: !w.selected } : w))
@@ -325,7 +751,7 @@ Core daemon, desktop client, and video production pipeline.
         setOnboardingContext(res.project_context)
       }
     } catch (err) {
-      console.warn('Backend context synthesis failed, falling back:', err)
+      console.warn('Context synthesis failed, generating local fallback:', err)
       const selectedWs = onboardingWorkspaces.filter((w) => w.selected)
       const synthesized = `# ${onboardingName.trim() || 'Project Architecture'}
 
@@ -335,11 +761,11 @@ ${onboardingDescription.trim() || 'Multi-workspace software initiative managed b
 ## Subsystems & Workspaces
 ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
-## Directives
-- Local-first architecture; all session and project records persist to Pebble database.
+## Operational Directives
+- Local-first operation; session records persist to Pebble database.
 - Subagents (Coder/Designer/Finder) execute inside isolated Git worktrees.
-- Strict tool isolation: raw multimedia and environment tools are excluded from executive orchestrator prompt.
-- Verification gate: all pull requests and deliverables require user review before promotion.
+- Strict tool isolation: raw multimedia and environment tools excluded from executive orchestrator prompt.
+- Verification gate: all pull requests and deliverables require review before promotion.
 `
       setOnboardingContext(synthesized)
     } finally {
@@ -369,14 +795,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
-      if (res.project?.id) {
+      if (res?.project?.id) {
         newId = res.project.id
       }
     } catch (err) {
-      console.warn('Backend /v3/projects offline, activating project in local state:', err)
+      console.warn('Backend /v3/projects save failed:', err)
     }
 
-    // Automatically spawn the primary orchestrator session for this newly created project
+    // Spawn primary orchestrator session
     let orchSessionId = ''
     try {
       const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
@@ -398,7 +824,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ primary_session_id: orchSessionId }),
-        })
+        }).catch(() => {})
       }
     } catch (e) {
       console.warn('Failed to spawn initial orchestrator session:', e)
@@ -409,11 +835,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       name: payload.name,
       slug: payload.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
       description: payload.description,
-      repoPath: selectedWs[0]?.path || '~/workspace',
+      repoPath: selectedWs[0]?.path || '.',
       branch: 'dev',
       gitStatus: 'clean',
       linkedWorkspaces: selectedWs.map((w) => w.path),
-      activeWorkersCount: 4,
+      activeWorkersCount: 0,
       pendingDeliverablesCount: 0,
       runningTasksCount: 0,
       projectContext: payload.project_context,
@@ -427,306 +853,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     }
     setIsOnboardingActive(false)
     setIsActivating(false)
-
-    // Append confirmation in chat
-    const confirmMsg: OrchestratorMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'orchestrator',
-      text: `🎉 Project "${newProject.name}" has been created and activated!\n\nBound Workspaces:\n${selectedWs.map((w) => `• ${w.path} (${w.label})`).join('\n')}\n\nYou can now deploy autonomous workers or dispatch your first task with the Swarm Orchestrator.`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    }
-    setMessages((prev) => [...prev, confirmMsg])
-  }
-
-  // Middle canvas layout variant state (5 distinct variants - Selected Canonical Default: Variant 3 Worker Fleet)
-  const [middleVariant, setMiddleVariant] = useState<MiddleCanvasVariant>('fleet')
-
-  // Search & Filters for 100+ tasks
-  const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
-  const [selectedTag] = useState<string>('all')
-
-  // Matrix expandable drawer state
-  const [expandedTaskId, setExpandedTaskId] = useState<string | null>('task-101')
-
-  // Split Studio selected task state
-  const [selectedTaskId, setSelectedTaskId] = useState<string>('task-101')
-
-  // Automations & Workers state
-  const [automations] = useState<RunningAutomation[]>(MOCK_AUTOMATIONS)
-  const [deployedWorkers] = useState<DeployedWorker[]>(MOCK_DEPLOYED_WORKERS)
-  const [tasks, setTasks] = useState<RunningTask[]>(MOCK_100_TASKS)
-
-  // Video preview modal
-  const [activeVideoPreview, setActiveVideoPreview] = useState<MediaDeliverable | null>(null)
-  const [isPlayingVideo, setIsPlayingVideo] = useState(false)
-  const [isMuted, setIsMuted] = useState(false)
-  const [isFullscreen, setIsFullscreen] = useState(false)
-
-  // Chat state
-  const [messages, setMessages] = useState<OrchestratorMessage[]>(MOCK_CHAT_MESSAGES)
-  const [inputText, setInputText] = useState('')
-  const [isTyping, setIsTyping] = useState(false)
-  const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
-
-  // Derived live tasks with real-time status from linked V3 sessions
-  const liveTasks = useMemo(() => {
-    return tasks.map((task) => {
-      if (!task.sessionId || !sessionsById[task.sessionId]) {
-        return task
-      }
-      const record = sessionsById[task.sessionId]
-      const sess = record?.kind === 'full' ? record.session : undefined
-      const plan = plansBySession[task.sessionId] as any
-      if (!sess) {
-        return task
-      }
-      const lifecycle = sess.lifecycle as any
-      let status = task.status
-      if (lifecycle?.active) {
-        status = 'running'
-      }
-      const hasWaitingReview = plan?.document?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
-      if (hasWaitingReview || lifecycle?.phase === 'needs_review') {
-        status = 'needs_review'
-      } else if (!lifecycle?.active && (sess.message_count ?? 0) > 1) {
-        status = 'completed'
-      }
-      return {
-        ...task,
-        status,
-        elapsed: sess.updated_at ? `${Math.max(1, Math.round((Date.now() - (sess.created_at ?? Date.now())) / 60000))}m` : task.elapsed,
-      }
-    })
-  }, [tasks, sessionsById, plansBySession])
-
-  // Synchronize active orchestrator session and project tasks with selected project
-  useEffect(() => {
-    if (!selectedProject || isOnboardingActive) return
-
-    fetchProjectTasks(selectedProject.id)
-
-    if (selectedProject.primarySessionId) {
-      setActiveSessionId(selectedProject.primarySessionId)
-    } else {
-      requestJson<{ session: { id: string } }>('/v3/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: `Project Orchestrator: ${selectedProject.name}`,
-          workspace_path: selectedProject.repoPath || '.',
-          agent_name: 'system-orchestrator',
-          metadata: {
-            project_id: selectedProject.id,
-            role: 'project_orchestrator',
-          },
-        }),
-      })
-        .then((sessRes) => {
-          if (sessRes?.session?.id) {
-            const sid = sessRes.session.id
-            setActiveSessionId(sid)
-            requestJson(`/v3/projects/${selectedProject.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ primary_session_id: sid }),
-            }).catch(() => {})
-          }
-        })
-        .catch((e) => {
-          console.warn('Failed to ensure orchestrator session:', e)
-        })
-    }
-  }, [selectedProject?.id, isOnboardingActive])
-
-  const liveSessionMessages = useMemo(() => {
-    if (!activeSessionId || !messagesBySession[activeSessionId]) return null
-    return (messagesBySession[activeSessionId].items || []).filter(
-      (m: any) => m.role === 'user' || m.role === 'assistant'
-    )
-  }, [activeSessionId, messagesBySession])
-
-  const activeRecord = activeSessionId ? sessionsById[activeSessionId] : undefined
-  const activeSession = activeRecord?.kind === 'full' ? activeRecord.session : undefined
-  const isLiveSessionRunning = !!(activeSession && (activeSession.lifecycle as any)?.active)
-
-  const handleDeployTask = async (
-    title: string,
-    agent: string = 'coder',
-    workerName: string = '@Code Verifier',
-    prompt?: string,
-    pipelineStages?: string[]
-  ) => {
-    if (!selectedProject?.id) return
-    try {
-      const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title,
-          agent,
-          worker_name: workerName,
-          pipeline_stages: pipelineStages || ['Inspect', 'Implement', 'Verify', 'Review'],
-          deploy_session: true,
-          prompt: prompt || title,
-        }),
-      })
-      if (res?.task) {
-        fetchProjectTasks(selectedProject.id)
-      }
-    } catch (err) {
-      console.warn('Deploy task failed:', err)
-    }
-  }
-
-  // Derived filtered tasks for 100-task handling
-  const filteredTasks = useMemo(() => {
-    return liveTasks.filter((task) => {
-      const matchesSearch =
-        searchQuery === '' ||
-        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.subtitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.id.toLowerCase().includes(searchQuery.toLowerCase())
-
-      const matchesStatus = statusFilter === 'all' || task.status === statusFilter
-      const matchesTag = selectedTag === 'all' || task.tags?.includes(selectedTag)
-
-      return matchesSearch && matchesStatus && matchesTag
-    })
-  }, [liveTasks, searchQuery, statusFilter, selectedTag])
-
-  const selectedTaskForSplit = useMemo(() => {
-    return liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]
-  }, [liveTasks, selectedTaskId])
-
-  const handleAcceptDeliverable = (taskId: string, deliverableId: string, e?: React.MouseEvent) => {
-    e?.stopPropagation()
-    setTasks((prev) =>
-      prev.map((task) => {
-        if (task.id !== taskId && !task.deliverables?.some((d) => d.id === deliverableId)) {
-          return task
-        }
-        return {
-          ...task,
-          deliverables: task.deliverables?.map((d) =>
-            d.id === deliverableId ? { ...d, status: 'accepted' as const } : d
-          ),
-        }
-      })
-    )
-  }
-
-  const handleSendMessage = async (textToSend?: string) => {
-    const text = (textToSend || inputText).trim()
-    if (!text) return
-
-    const userMsg: OrchestratorMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'user',
-      text: text.trim(),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    }
-
-    setMessages((prev) => [...prev, userMsg])
-    if (!textToSend) setInputText('')
-    setIsTyping(true)
-
-    if (isOnboardingActive) {
-      setTimeout(() => {
-        const lower = text.toLowerCase()
-        let reply = ''
-        if (lower.includes('bundle') || lower.includes('both') || lower.includes('swarm-social')) {
-          setOnboardingWorkspaces((prev) =>
-            prev.map((w) => (w.path.includes('swarm') ? { ...w, selected: true } : w))
-          )
-          reply = "I've selected both `~/swarm-go` and `~/swarm-social` on your canvas. Shall I generate the synthesized `project.md` architecture now?"
-        } else if (lower.includes('work') || lower.includes('scripts')) {
-          setOnboardingWorkspaces((prev) =>
-            prev.map((w) => (w.path.includes('work') ? { ...w, selected: true } : w))
-          )
-          reply = "I've added and selected `~/work` as an auxiliary workspace in your project list."
-        } else if (lower.includes('synthesize') || lower.includes('generate') || lower.includes('context')) {
-          handleSynthesizeContext()
-          reply = "I've analyzed your selected repositories and generated the synthesized `project.md` context card in the middle canvas. You can review or edit it directly."
-        } else if (lower.includes('create') || lower.includes('activate') || lower.includes('confirm') || lower.includes('looks good')) {
-          void handleCreateAndActivateProject()
-          return
-        } else if (lower.startsWith('name ') || lower.startsWith('call it ')) {
-          const newName = text.replace(/^(name|call it)\s+/i, '').trim()
-          if (newName) {
-            setOnboardingName(newName)
-            reply = `Updated project name to "${newName}".`
-          }
-        } else {
-          reply = `I'm facilitating onboarding for your new project. You can check/uncheck workspaces on the canvas, click "Generate with AI" for project.md, or click "Create & Activate Project" when ready.`
-        }
-
-        const botMsg: OrchestratorMessage = {
-          id: `msg-reply-${Date.now()}`,
-          sender: 'orchestrator',
-          text: reply,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
-        setMessages((prev) => [...prev, botMsg])
-        setIsTyping(false)
-      }, 500)
-      return
-    }
-
-    if (activeSessionId) {
-      setIsTyping(true)
-      try {
-        await sendSessionMessage(activeSessionId, 'user', text)
-      } catch (err) {
-        console.warn('Failed to send live message to orchestrator session:', err)
-        const botMsg: OrchestratorMessage = {
-          id: `msg-reply-${Date.now()}`,
-          sender: 'orchestrator',
-          text: `Message dispatched to project orchestrator. Tracking active work units in canvas.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        }
-        setMessages((prev) => [...prev, botMsg])
-      } finally {
-        setIsTyping(false)
-      }
-      return
-    }
-
-    setTimeout(() => {
-      let replyText = `Understood. Analyzing project context for "${selectedProject.name}"...`
-      let videoProgress: OrchestratorMessage['videoProgressCard']
-      let actionBtn: OrchestratorMessage['actionButton']
-
-      if (text.toLowerCase().includes('video')) {
-        replyText =
-          "I've initiated the video swarm generation sequence for your feature launch. 3 initial clips are already rendering."
-        videoProgress = {
-          title: 'Video generation in progress...',
-          progressPercent: 75,
-          clipsLabel: '7/10 clips',
-        }
-        actionBtn = {
-          label: 'Preview all clips',
-          action: 'preview_videos',
-        }
-      } else if (text.toLowerCase().includes('test') || text.toLowerCase().includes('testbench')) {
-        replyText = `Acquiring systemd-nspawn testbench lease for "${selectedProject.repoPath}". Critical suites will execute in isolation.`
-      } else {
-        replyText = `Task registered and assigned to "${selectedProject.name}". Tracking attached deliverables in your Project Canvas.`
-      }
-
-      const botMsg: OrchestratorMessage = {
-        id: `msg-reply-${Date.now()}`,
-        sender: 'orchestrator',
-        text: replyText,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        videoProgressCard: videoProgress,
-        actionButton: actionBtn,
-      }
-
-      setMessages((prev) => [...prev, botMsg])
-      setIsTyping(false)
-    }, 700)
+    fetchProjectTasks(newId)
   }
 
   // Count summaries
@@ -744,47 +871,47 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 1: LEFT SIDEBAR (NAVIGATION, PROJECTS & USER HUD)
          ───────────────────────────────────────────────────────────── */}
       <aside className="relative flex w-72 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
-        {/* macOS Window Traffic Lights & App Brand Capsule */}
+        {/* App Branding & Header */}
         <div className="p-3.5 border-b border-slate-800/80">
-          {/* Traffic Lights */}
-          <div className="flex items-center justify-between pb-3">
-            <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-[#ff5f56] border border-[#e0443e]" />
-              <span className="h-3 w-3 rounded-full bg-[#ffbd2e] border border-[#dea123]" />
-              <span className="h-3 w-3 rounded-full bg-[#27c93f] border border-[#1aab29]" />
+          <div className="flex items-center justify-between pb-2">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 shadow-[0_2px_8px_rgba(37,99,235,0.3)]">
+                <Sparkles size={14} />
+              </div>
+              <div>
+                <div className="text-xs font-bold tracking-tight text-white">Swarm Orchestrate</div>
+                <div className="text-[10px] text-slate-400">Autonomous Multi-Agent System</div>
+              </div>
             </div>
 
             {onNavigateHome && (
               <button
                 onClick={onNavigateHome}
-                className="rounded-full px-2 py-0.5 text-[10px] font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all border border-slate-700/60"
-                title="Exit Mockup"
+                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition-all border border-slate-700/60"
+                title="Back to Sessions"
               >
-                Exit
+                <X size={13} />
               </button>
             )}
           </div>
 
-          {/* App Branding */}
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30 shadow-[0_2px_8px_rgba(37,99,235,0.3)]">
-              <Sparkles size={14} />
-            </div>
-            <div>
-              <div className="text-xs font-bold tracking-tight text-white">Swarm Orchestrate</div>
-              <div className="text-[10px] text-slate-400">Build. Orchestrate. Create.</div>
-            </div>
-          </div>
-
-          {/* Search Input Bar with ⌘K Badge */}
-          <div className="mt-3.5 flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#090d16] border border-slate-800 text-xs text-slate-400">
+          {/* Search Bar */}
+          <div className="mt-2.5 flex items-center justify-between px-3 py-1.5 rounded-xl bg-[#090d16] border border-slate-800 text-xs text-slate-400">
             <div className="flex items-center gap-2">
               <Search size={13} className="text-slate-500" />
-              <span className="text-slate-500 text-[11px]">Search...</span>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search tasks & projects..."
+                className="bg-transparent border-none text-[11px] text-slate-200 placeholder-slate-500 focus:outline-none w-full"
+              />
             </div>
-            <kbd className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[9px] text-slate-400 border border-slate-700/60">
-              ⌘K
-            </kbd>
+            {searchQuery && (
+              <button onClick={() => setSearchQuery('')} className="text-slate-500 hover:text-slate-300">
+                <X size={11} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -799,7 +926,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             }`}
           >
             <Home size={15} />
-            <span>Home</span>
+            <span>Tasks & Canvas</span>
           </button>
           <button
             onClick={() => setActiveNavTab('projects')}
@@ -810,7 +937,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             }`}
           >
             <Folder size={15} />
-            <span>Projects</span>
+            <span>Projects ({projects.length})</span>
           </button>
           <button
             onClick={() => setActiveNavTab('automations')}
@@ -821,7 +948,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             }`}
           >
             <Zap size={15} />
-            <span>Automations</span>
+            <span>Automations ({automations.length})</span>
           </button>
           <button
             onClick={() => setActiveNavTab('deliverables')}
@@ -832,7 +959,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             }`}
           >
             <Layers size={15} />
-            <span>Deliverables</span>
+            <span>Deliverables ({liveTasks.flatMap((t) => t.deliverables || []).length})</span>
           </button>
           <button
             onClick={() => setActiveNavTab('settings')}
@@ -843,7 +970,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             }`}
           >
             <Settings size={15} />
-            <span>Settings</span>
+            <span>Project Charter</span>
           </button>
         </div>
 
@@ -854,7 +981,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               Projects
             </span>
             <button
-              onClick={() => setIsOnboardingActive(true)}
+              onClick={() => {
+                setIsOnboardingActive(true)
+                setActiveNavTab('home')
+              }}
               className={`flex h-5 w-5 items-center justify-center rounded-lg transition-all border ${
                 isOnboardingActive
                   ? 'bg-blue-600 text-white border-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]'
@@ -897,45 +1027,57 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div
-                      className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg ${
+                      className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg border transition-all ${
                         isSelected
-                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30'
-                          : 'bg-slate-800 text-slate-400'
+                          ? 'bg-blue-600/20 text-blue-400 border-blue-500/30 shadow-[0_1px_6px_rgba(37,99,235,0.2)]'
+                          : 'bg-slate-800/60 text-slate-500 border-slate-700/50 group-hover:text-slate-300'
                       }`}
                     >
                       <Folder size={12} />
                     </div>
-                    <span className="text-xs font-medium truncate">{proj.name}</span>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-semibold truncate">{proj.name}</span>
+                      <span className="text-[10px] text-slate-500 truncate font-mono">
+                        {proj.linkedWorkspaces.length} workspace{proj.linkedWorkspaces.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
                   </div>
                   {isSelected && (
-                    <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.9)]" />
+                    <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.6)] flex-shrink-0" />
                   )}
                 </button>
               )
             })}
+            {projects.length === 0 && !isOnboardingActive && (
+              <div className="p-3 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl">
+                No projects saved.
+              </div>
+            )}
           </div>
         </div>
 
-        {/* 5 Themes Selector */}
-        <div className="px-3 pt-2 pb-1 border-b border-slate-800/80">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 pb-1.5 flex items-center justify-between">
-            <span>Theme</span>
-            <span className="font-mono text-[9px] text-slate-400">{theme.name}</span>
+        {/* Theme Picker */}
+        <div className="p-3 border-b border-slate-800/80">
+          <div className="flex items-center justify-between pb-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+              Palette Theme
+            </span>
+            <span className="text-[10px] font-mono text-slate-400">{theme.name}</span>
           </div>
-          <div className="grid grid-cols-5 gap-1 rounded-xl bg-[#090d16] p-1 border border-slate-800">
-            {ORCHESTRATE_THEME_IDS.map((tId) => {
+          <div className="grid grid-cols-5 gap-1.5">
+            {ORCHESTRATE_THEME_IDS.slice(0, 5).map((tId) => {
               const t = ORCHESTRATE_THEMES[tId]
-              const isActive = tId === currentThemeId
+              const isActive = currentThemeId === tId
               return (
                 <button
                   key={tId}
                   onClick={() => setCurrentThemeId(tId)}
-                  className={`flex flex-col items-center justify-center py-1 text-[9px] transition-all rounded-lg ${
+                  className={`flex flex-col items-center justify-center p-1 rounded-lg border text-[9px] transition-all ${
                     isActive
-                      ? 'bg-slate-800 text-white font-semibold shadow-sm border border-slate-700'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      ? 'border-blue-500 bg-blue-500/10 text-white font-bold'
+                      : 'border-slate-800 bg-[#090d16] text-slate-400 hover:text-slate-200'
                   }`}
-                  title={`${t.name}: ${t.subtitle}`}
+                  title={t.name}
                 >
                   <span
                     className={`h-1.5 w-1.5 rounded-full mb-0.5 ${isActive ? 'scale-125' : 'opacity-60'}`}
@@ -948,15 +1090,15 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           </div>
         </div>
 
-        {/* User HUD */}
+        {/* Real User HUD */}
         <div className="p-3 border-t border-slate-800/80 flex items-center justify-between bg-[#0a0f1d]/50">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-800 text-slate-200 font-bold text-[10px] border border-slate-700">
-              JD
+            <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-blue-600/20 text-blue-400 font-bold text-[10px] border border-blue-500/30">
+              {userProfile.name.slice(0, 2).toUpperCase()}
             </div>
             <div className="flex flex-col min-w-0">
-              <span className="text-xs font-semibold text-slate-200 truncate">Jordan Diaz</span>
-              <span className="text-[10px] text-slate-500 truncate">jordan@swarmagent.dev</span>
+              <span className="text-xs font-semibold text-slate-200 truncate">{userProfile.name}</span>
+              <span className="text-[10px] text-slate-500 truncate">{userProfile.email}</span>
             </div>
           </div>
           <button className="text-slate-400 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800/60 transition-colors">
@@ -966,7 +1108,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       </aside>
 
       {/* ─────────────────────────────────────────────────────────────
-          PANEL 2: MIDDLE SECTION (5 INTERACTIVE CANVAS VARIANTS)
+          PANEL 2: MIDDLE SECTION (CANVAS / TASKS / VIEWS)
          ───────────────────────────────────────────────────────────── */}
       <main className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         {isOnboardingActive ? (
@@ -976,18 +1118,21 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <div>
                 <div className="flex items-center gap-2 text-blue-400 font-semibold text-xs uppercase tracking-wider mb-1">
                   <Sparkles size={14} className="text-blue-400 animate-pulse" />
-                  <span>Facilitating Project Onboarding</span>
+                  <span>Project Setup & Architecture Synthesis</span>
                 </div>
                 <h1 className="text-xl font-bold text-white tracking-tight">Create Your Project</h1>
                 <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                  A Project elevates raw repository folders and background automations into a cohesive, goal-driven executive space managed by the Swarm Orchestrator.
+                  A Project elevates your local workspaces into an executive space coordinated by the Swarm Orchestrator.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-slate-500 font-mono bg-slate-800/60 px-2.5 py-1 rounded-full border border-slate-700/50">
-                  Milestone 1 Preview
-                </span>
-              </div>
+              {projects.length > 0 && (
+                <button
+                  onClick={() => setIsOnboardingActive(false)}
+                  className="text-xs text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-xl border border-slate-800 hover:bg-slate-800 transition-colors"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
 
             {/* Project Identity Inputs */}
@@ -1068,51 +1213,46 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   type="text"
                   value={customFolderPath}
                   onChange={(e) => setCustomFolderPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      handleAddCustomFolder()
-                    }
-                  }}
-                  placeholder="Enter path to another folder (e.g. ~/web, ~/docs)..."
-                  className="flex-1 text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 transition-all font-mono"
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddCustomFolder()}
+                  placeholder="Enter path to another workspace folder on this machine..."
+                  className="flex-1 text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-mono"
                 />
                 <button
                   type="button"
                   onClick={handleAddCustomFolder}
-                  className="px-3 py-2 rounded-xl bg-slate-800 text-xs font-medium text-slate-200 hover:bg-slate-700 hover:text-white border border-slate-700/80 transition-all flex items-center gap-1.5 shrink-0"
+                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-all"
                 >
-                  <Plus size={13} />
-                  <span>Add Folder</span>
+                  Add Folder
                 </button>
               </div>
             </div>
 
-            {/* Section 2: Synthesized project.md Context Card */}
+            {/* Section 2: AI Context Synthesis */}
             <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-xs font-semibold text-slate-300">2. Project Context & Directives (project.md)</div>
+                  <div className="text-xs font-semibold text-slate-300">2. Authoritative Project Context (project.md)</div>
                   <p className="text-[11px] text-slate-500">
-                    High-level executive blueprint loaded into the Swarm Orchestrator context (raw AGENTS.md files are excluded to prevent prompt bloat).
+                    Synthesizes architectural boundaries from selected workspaces to inject into Swarm Orchestrator.
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={handleSynthesizeContext}
-                    disabled={isSynthesizing}
-                    className="px-2.5 py-1 rounded-lg bg-blue-600/10 text-blue-400 hover:bg-blue-600/20 border border-blue-500/30 text-xs font-medium transition-all flex items-center gap-1.5"
+                    disabled={isSynthesizing || onboardingWorkspaces.filter((w) => w.selected).length === 0}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-medium transition-all disabled:opacity-50"
                   >
-                    <Sparkles size={12} className={isSynthesizing ? "animate-spin" : ""} />
-                    <span>{isSynthesizing ? "Synthesizing..." : "Generate with AI"}</span>
+                    <Sparkles size={12} className={isSynthesizing ? 'animate-spin' : ''} />
+                    <span>{isSynthesizing ? 'Synthesizing...' : 'Generate with AI'}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setIsEditingContext(!isEditingContext)}
-                    className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-all"
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-all"
                   >
-                    {isEditingContext ? "Preview" : "Edit by Hand"}
+                    <Edit3 size={12} />
+                    <span>{isEditingContext ? 'Preview' : 'Edit'}</span>
                   </button>
                 </div>
               </div>
@@ -1121,22 +1261,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <textarea
                   value={onboardingContext}
                   onChange={(e) => setOnboardingContext(e.target.value)}
-                  rows={8}
-                  className="w-full text-xs font-mono rounded-xl bg-slate-950 border border-slate-800 p-3 text-slate-300 focus:outline-none focus:border-blue-500/60 transition-all"
+                  rows={10}
+                  className="w-full text-xs font-mono rounded-xl bg-slate-950/80 border border-slate-800 p-3 text-slate-200 focus:outline-none focus:border-blue-500/60 transition-all leading-relaxed"
                 />
               ) : (
-                <div className="rounded-xl border border-slate-800 bg-slate-950/80 p-3 max-h-56 overflow-y-auto">
-                  <pre className="text-[11px] font-mono text-slate-300 whitespace-pre-wrap leading-relaxed">
-                    {onboardingContext}
-                  </pre>
+                <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-3 max-h-56 overflow-y-auto font-mono text-[11px] text-slate-300 whitespace-pre-wrap leading-relaxed">
+                  {onboardingContext || 'Click "Generate with AI" to synthesize architecture from selected workspaces.'}
                 </div>
               )}
             </div>
 
-            {/* Section 3: Activation Button */}
-            <div className="pt-2 flex items-center justify-between border-t border-slate-800/80 pt-4">
+            {/* Submit Action */}
+            <div className="flex items-center justify-between pt-2">
               <div className="text-[11px] text-slate-500">
-                Clicking activate saves this project to Pebble DB and launches your executive Project Canvas.
+                Local-first • Saved securely in Swarm Pebble database
               </div>
               <button
                 type="button"
@@ -1144,587 +1282,652 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 disabled={isActivating || onboardingWorkspaces.filter((w) => w.selected).length === 0}
                 className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <span>{isActivating ? "Activating..." : "Create & Activate Project"}</span>
+                <span>{isActivating ? 'Activating...' : 'Create & Activate Project'}</span>
                 <ArrowRight size={14} />
               </button>
             </div>
           </div>
-        ) : (
-          <>
-            {/* TOP TOOLBAR: AUTOMATION OVERVIEW & 5-VARIANT SWITCHER DOCK */}
-        <div className="flex flex-col border-b border-slate-800/80 bg-[#0a0f1d]/60">
-          <div className="flex items-center justify-between p-3.5 pb-2.5">
-            <div className="flex items-center gap-3">
+        ) : activeNavTab === 'projects' ? (
+          /* PROJECTS OVERVIEW TAB */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
-                <div className="flex items-center gap-2">
-                  <h1 className="text-base font-bold tracking-tight text-white">Automation Overview</h1>
-                  <span className="rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
-                    100 Tasks Total
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Autonomous workers executing jobs across {selectedProject.name}
-                </p>
+                <h2 className="text-base font-bold text-white">Registered Projects</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Projects managed by Swarm Orchestrator with Pebble persistence</p>
               </div>
-            </div>
-
-            {/* Quick Action buttons */}
-            <div className="flex items-center gap-2">
               <button
-                onClick={() => handleDeployTask('Make 3 Social Media Videos for Feature Launch', 'video', '@Video Swarm Dispatcher', 'Generate 3 video teasers for the feature launch', ['Design', 'Generate', 'Polish', 'Deliver'])}
-                className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
+                onClick={() => setIsOnboardingActive(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
               >
                 <Plus size={13} />
-                <span>+ Deploy Task</span>
-              </button>
-              <button
-                onClick={() => handleDeployTask('Run Local Testbench Suite', 'coder', '@Code Verifier', 'Run critical test gate and inspect testbench health', ['Inspect', 'Execute', 'Analyze', 'Review'])}
-                className="flex items-center gap-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
-              >
-                <Play size={11} fill="currentColor" />
-                <span>Run Testbench</span>
+                <span>+ New Project</span>
               </button>
             </div>
-          </div>
-
-          {/* 5-VARIANT SELECTOR DOCK: Switch between 5 distinct middle layouts */}
-          <div className="px-3.5 pb-2.5 flex items-center justify-between border-t border-slate-800/50 pt-2 text-xs">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
-                Canvas View:
-              </span>
-              <div className="flex items-center gap-1 rounded-xl bg-[#080c16] p-1 border border-slate-800">
-                <button
-                  onClick={() => setMiddleVariant('matrix')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                    middleVariant === 'matrix'
-                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                  }`}
-                  title="Variant 1: High-Density Compact Matrix with Drawer (Built for 100+ tasks)"
-                >
-                  <ListFilter size={12} />
-                  <span>1. Compact Matrix</span>
-                </button>
-
-                <button
-                  onClick={() => setMiddleVariant('kanban')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                    middleVariant === 'kanban'
-                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                  }`}
-                  title="Variant 2: Mission Pipeline Kanban (Multi-column stage workflow)"
-                >
-                  <Columns3 size={12} />
-                  <span>2. Pipeline Kanban</span>
-                </button>
-
-                <button
-                  onClick={() => setMiddleVariant('fleet')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                    middleVariant === 'fleet'
-                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                  }`}
-                  title="Variant 3: Autonomous Worker Fleet (Workers deploying their own jobs)"
-                >
-                  <Bot size={12} />
-                  <span>3. Worker Fleet</span>
-                </button>
-
-                <button
-                  onClick={() => setMiddleVariant('split')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                    middleVariant === 'split'
-                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                  }`}
-                  title="Variant 4: Split Studio Console (Master-Detail 2-pane live inspector)"
-                >
-                  <SplitSquareVertical size={12} />
-                  <span>4. Split Studio</span>
-                </button>
-
-                <button
-                  onClick={() => setMiddleVariant('timeline')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
-                    middleVariant === 'timeline'
-                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                  }`}
-                  title="Variant 5: Timeline Activity Stream (Chronological progress & attachments)"
-                >
-                  <Activity size={12} />
-                  <span>5. Timeline Stream</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Quick status counter summary */}
-            <div className="flex items-center gap-2 font-mono text-[10px]">
-              <span className="text-blue-400">● {runningCount} Running</span>
-              <span className="text-amber-400">● {reviewCount} Review</span>
-              <span className="text-slate-500">● {queuedCount} Queued</span>
-              <span className="text-emerald-400">● {completedCount} Done</span>
-            </div>
-          </div>
-        </div>
-
-        {/* COMPACT ACTIVE AUTOMATION TICKER (Noiseless, tiny progress & attachments) */}
-        <div className="px-4 py-2 border-b border-slate-800/80 bg-[#080d19]/80 flex items-center justify-between gap-4 text-xs">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="flex h-2 w-2 rounded-full bg-blue-500 animate-pulse flex-shrink-0" />
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="font-semibold text-white truncate text-[11px]">
-                {automations[0].name}
-              </span>
-              <span className="text-[10px] text-slate-400 truncate">
-                • {automations[0].currentStep}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3 flex-shrink-0">
-            {/* Micro stage indicators */}
-            <div className="flex items-center gap-1 text-[10px] font-mono">
-              <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Themes ✓
-              </span>
-              <span className="text-slate-600">→</span>
-              <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold">
-                Generate 60%
-              </span>
-              <span className="text-slate-600">→</span>
-              <span className="px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400">
-                Edit
-              </span>
-              <span className="text-slate-600">→</span>
-              <span className="px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400">
-                Deliver
-              </span>
-            </div>
-
-            {/* Media attachments chip */}
-            <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 text-[10px] font-semibold">
-              <Film size={11} />
-              <span>3 Videos Ready</span>
-            </div>
-          </div>
-        </div>
-
-        {/* MAIN BODY: 5 DISTINCT VARIANTS */}
-        <div className="flex-1 overflow-hidden flex flex-col">
-          {/* ─────────────────────────────────────────────────────────────
-              VARIANT 1: COMPACT MATRIX & DRAWER (High Density for 100+ tasks)
-             ───────────────────────────────────────────────────────────── */}
-          {middleVariant === 'matrix' && (
-            <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
-              {/* Search & Filter bar for 100+ tasks */}
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex-1 relative">
-                  <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search 100 tasks by title, worker, or tag..."
-                    className="w-full bg-[#080c16] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
-                  />
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
-                    <button
-                      key={st}
-                      onClick={() => setStatusFilter(st)}
-                      className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all ${
-                        statusFilter === st
-                          ? 'bg-slate-700 text-white shadow-sm'
-                          : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {st === 'all'
-                        ? `All (${tasks.length})`
-                        : st === 'running'
-                        ? `Running (${runningCount})`
-                        : st === 'needs_review'
-                        ? `Review (${reviewCount})`
-                        : st === 'queued'
-                        ? `Queued (${queuedCount})`
-                        : `Done (${completedCount})`}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* High-density task rows with expandable drawers */}
-              <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
-                {filteredTasks.map((t) => {
-                  const isExpanded = expandedTaskId === t.id
-                  return (
-                    <div
-                      key={t.id}
-                      className="rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 hover:border-slate-700/80 transition-all overflow-hidden"
-                    >
-                      {/* Compact Task Header Row */}
-                      <div
-                        onClick={() => setExpandedTaskId(isExpanded ? null : t.id)}
-                        className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-white/[0.02]"
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          <span
-                            className={`h-2 w-2 rounded-full flex-shrink-0 ${
-                              t.status === 'running'
-                                ? 'bg-blue-400 animate-pulse'
-                                : t.status === 'needs_review'
-                                ? 'bg-amber-400'
-                                : t.status === 'completed'
-                                ? 'bg-emerald-400'
-                                : 'bg-slate-600'
-                            }`}
-                          />
-                          <div className="flex h-5 w-5 items-center justify-center rounded-md bg-slate-800 text-slate-400 flex-shrink-0">
-                            {t.agentType === 'coder' ? (
-                              <Code size={11} />
-                            ) : t.agentType === 'designer' ? (
-                              <Film size={11} />
-                            ) : (
-                              <Bot size={11} />
-                            )}
-                          </div>
-                          <span className="font-semibold text-xs text-white truncate max-w-sm">
-                            {t.title}
-                          </span>
-                          {t.workerName && (
-                            <span className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 truncate">
-                              @{t.workerName}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Middle: Micro-stages stepper & media count */}
-                        <div className="flex items-center gap-3">
-                          {t.stepTimeline && (
-                            <div className="flex items-center gap-1 font-mono text-[9px]">
-                              {t.stepTimeline.map((step) => (
-                                <span
-                                  key={step.step}
-                                  className={`px-1 rounded ${
-                                    step.status === 'complete'
-                                      ? 'text-emerald-400 bg-emerald-500/10'
-                                      : step.status === 'processing'
-                                      ? 'text-blue-400 bg-blue-500/20 font-bold'
-                                      : 'text-slate-600'
-                                  }`}
-                                >
-                                  {step.label}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-
-                          {t.deliverables && t.deliverables.length > 0 && (
-                            <span className="flex items-center gap-1 rounded bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.5 text-[9px] font-semibold text-blue-300">
-                              <Film size={9} />
-                              {t.deliverables.length} clips
-                            </span>
-                          )}
-
-                          <span className="text-[10px] font-mono text-slate-500 min-w-[45px] text-right">
-                            {t.elapsed}
-                          </span>
-
-                          <span className="text-slate-500">
-                            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Expandable Drawer with Deliverables, Video Player, and Diff View */}
-                      {isExpanded && (
-                        <div className="border-t border-slate-800/80 bg-[#070b15] p-3 space-y-3">
-                          {t.deliverables && (
-                            <div>
-                              <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
-                                <span>Attached Video Deliverables ({t.deliverables.length})</span>
-                                <span className="text-[10px] text-slate-500 font-mono">
-                                  Click thumbnail to play full preview
-                                </span>
-                              </div>
-                              <div className="grid grid-cols-3 gap-2.5">
-                                {t.deliverables.map((item) => (
-                                  <div
-                                    key={item.id}
-                                    className="p-2 rounded-xl bg-[#0a0f1d] border border-slate-800"
-                                  >
-                                    <DeliverableThumbnail
-                                      type={item.thumbnailType}
-                                      duration={item.duration}
-                                      onPlay={() => setActiveVideoPreview(item)}
-                                    />
-                                    <div className="mt-2 text-xs font-bold text-white truncate">
-                                      {item.title}
-                                    </div>
-                                    <div className="mt-1 flex items-center justify-between pt-1 border-t border-slate-800/80">
-                                      <button
-                                        onClick={(e) => handleAcceptDeliverable(t.id, item.id, e)}
-                                        className="text-[10px] font-semibold text-emerald-400 hover:underline"
-                                      >
-                                        Accept
-                                      </button>
-                                      <button
-                                        onClick={() => setActiveVideoPreview(item)}
-                                        className="text-[10px] text-slate-400 hover:text-white"
-                                      >
-                                        Inspect
-                                      </button>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
-                          {t.diffLines && (
-                            <div>
-                              <div className="text-[11px] font-bold text-slate-300 mb-1.5">
-                                Code Changes Diff
-                              </div>
-                              <div className="p-2.5 rounded-xl bg-[#05070e] border border-slate-800 font-mono text-[10px] space-y-0.5">
-                                {t.diffLines.map((line, idx) => (
-                                  <div
-                                    key={idx}
-                                    className={`flex items-center gap-2 ${
-                                      line.type === 'del'
-                                        ? 'text-red-400'
-                                        : line.type === 'add'
-                                        ? 'text-emerald-400'
-                                        : 'text-slate-400'
-                                    }`}
-                                  >
-                                    <span className="w-4 text-slate-600 select-none">
-                                      {line.lineNum}
-                                    </span>
-                                    <span>{line.text}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              VARIANT 2: MISSION PIPELINE KANBAN (Multi-column Stage Workflow)
-             ───────────────────────────────────────────────────────────── */}
-          {middleVariant === 'kanban' && (
-            <div className="flex-1 flex overflow-x-auto p-3.5 gap-3">
-              {[
-                {
-                  id: 'queued',
-                  label: 'Queued Backlog',
-                  tasks: tasks.filter((t) => t.status === 'queued'),
-                  color: 'border-slate-800 text-slate-400',
-                },
-                {
-                  id: 'running',
-                  label: 'Active In-Flight',
-                  tasks: tasks.filter((t) => t.status === 'running'),
-                  color: 'border-blue-500/30 text-blue-400',
-                },
-                {
-                  id: 'needs_review',
-                  label: 'In Review / Deliverables',
-                  tasks: tasks.filter((t) => t.status === 'needs_review'),
-                  color: 'border-amber-500/30 text-amber-400',
-                },
-                {
-                  id: 'completed',
-                  label: 'Completed / Shipped',
-                  tasks: tasks.filter((t) => t.status === 'completed'),
-                  color: 'border-emerald-500/30 text-emerald-400',
-                },
-              ].map((col) => (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {projects.map((p) => (
                 <div
-                  key={col.id}
-                  className="flex-1 min-w-[240px] flex flex-col rounded-2xl bg-[#090d18] border border-slate-800/80 overflow-hidden"
+                  key={p.id}
+                  onClick={() => {
+                    setSelectedProjectId(p.id)
+                    setActiveNavTab('home')
+                  }}
+                  className={`p-4 rounded-2xl border transition-all cursor-pointer ${
+                    p.id === selectedProjectId
+                      ? 'bg-slate-800/80 border-blue-500/50 shadow-md'
+                      : 'bg-[#0a0f1d] border-slate-800 hover:border-slate-700'
+                  }`}
                 >
-                  <div className="p-3 border-b border-slate-800 flex items-center justify-between">
-                    <span className="text-xs font-bold text-white">{col.label}</span>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-800 ${col.color}`}>
-                      {col.tasks.length}
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Folder size={15} className="text-blue-400" />
+                      <span>{p.name}</span>
+                    </h3>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                      {p.branch || 'dev'}
                     </span>
                   </div>
-
-                  <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                    {col.tasks.map((task) => (
-                      <div
-                        key={task.id}
-                        className="p-3 rounded-xl border border-slate-800/90 bg-[#0d1222] hover:border-slate-700 transition-all space-y-2"
-                      >
-                        <div className="flex items-center justify-between text-[10px] text-slate-400">
-                          <span className="font-mono">#{task.id}</span>
-                          <span>{task.elapsed}</span>
-                        </div>
-                        <div className="text-xs font-semibold text-white leading-snug">
-                          {task.title}
-                        </div>
-                        {task.workerName && (
-                          <div className="text-[10px] font-mono text-slate-400 truncate">
-                            @{task.workerName}
-                          </div>
-                        )}
-                        {task.deliverables && (
-                          <div
-                            onClick={() => setActiveVideoPreview(task.deliverables![0])}
-                            className="flex items-center gap-1.5 p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 text-[10px] cursor-pointer hover:bg-blue-500/20"
-                          >
-                            <Film size={11} />
-                            <span>Preview {task.deliverables.length} Media Deliverables</span>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                  <p className="text-xs text-slate-400 mb-3">{p.description || 'No description'}</p>
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider block">
+                      Bound Workspaces:
+                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      {p.linkedWorkspaces.map((ws) => (
+                        <span key={ws} className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                          {ws}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              VARIANT 3: AUTONOMOUS WORKER FLEET (Workers Deploying Jobs)
-             ───────────────────────────────────────────────────────────── */}
-          {middleVariant === 'fleet' && (
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-bold text-white">Deployed Autonomous Workers</h3>
-                  <p className="text-[11px] text-slate-400">
-                    Workers running scheduled & on-demand task jobs
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleSendMessage('deploy worker')}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
-                >
-                  <Plus size={12} />
-                  <span>New Worker</span>
-                </button>
+          </div>
+        ) : activeNavTab === 'automations' ? (
+          /* AUTOMATIONS OVERVIEW TAB */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div>
+                <h2 className="text-base font-bold text-white">Registered Automations</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Worker V2 schedules and background automations</p>
               </div>
-
-              {/* 4 Deployed Worker Cards */}
-              <div className="grid grid-cols-2 gap-3">
-                {deployedWorkers.map((worker) => (
-                  <div
-                    key={worker.id}
-                    className="p-3.5 rounded-2xl border border-slate-800/80 bg-[#0a0f1d] space-y-3"
-                  >
+            </div>
+            {automations.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {automations.map((a) => (
+                  <div key={a.id} className="p-4 rounded-2xl border border-slate-800 bg-[#0a0f1d] space-y-2">
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                          <Bot size={16} />
-                        </div>
-                        <div>
-                          <h4 className="text-xs font-bold text-white">{worker.name}</h4>
-                          <p className="text-[10px] text-slate-400">{worker.role}</p>
-                        </div>
-                      </div>
-                      <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold uppercase bg-slate-800 text-slate-300">
-                        {worker.triggerKind}
+                      <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                        <Zap size={14} className="text-amber-400" />
+                        <span>{a.name}</span>
+                      </h4>
+                      <span className="text-[9px] uppercase font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                        {a.kind}
                       </span>
                     </div>
-
-                    <div className="flex items-center justify-between text-[11px] border-t border-slate-800/80 pt-2 text-slate-400 font-mono">
-                      <span>Schedule: {worker.scheduleLabel}</span>
-                      <span className="text-blue-400 font-bold">{worker.activeJobsCount} active jobs</span>
+                    <p className="text-xs text-slate-400">{a.outputSummary}</p>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 pt-2 border-t border-slate-800/80">
+                      <span>Runs: {a.totalRuns}</span>
+                      <span>Next: {a.nextRun || 'On demand'}</span>
                     </div>
-
-                    {worker.currentJobTitle && (
-                      <div className="p-2 rounded-xl bg-[#060912] border border-slate-800 text-[10px] text-slate-300 flex items-center justify-between">
-                        <span className="truncate">Current: {worker.currentJobTitle}</span>
-                        <Play size={10} className="text-blue-400 flex-shrink-0" />
-                      </div>
-                    )}
                   </div>
                 ))}
               </div>
-
-              {/* Worker-Partitioned Tasks with Search, Filters & Expandable Drawers (100+ Task Scalability) */}
-              <div className="pt-2 space-y-3">
-                <div className="flex items-center justify-between">
+            ) : (
+              <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl">
+                <Zap size={24} className="mx-auto text-slate-600 mb-2" />
+                <h4 className="text-xs font-bold text-slate-300">No automations registered</h4>
+                <p className="text-[11px] text-slate-500 mt-1">Use Worker V2 or the Automations tab to create scheduled triggers.</p>
+              </div>
+            )}
+          </div>
+        ) : activeNavTab === 'deliverables' ? (
+          /* DELIVERABLES TAB */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div>
+                <h2 className="text-base font-bold text-white">Project Deliverables</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Media assets, reports, and code deliverables produced by autonomous workers</p>
+              </div>
+            </div>
+            {liveTasks.flatMap((t) => t.deliverables || []).length > 0 ? (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                {liveTasks.flatMap((t) => t.deliverables || []).map((d) => (
+                  <div key={d.id} className="rounded-2xl border border-slate-800 bg-[#0a0f1d] p-3 space-y-2">
+                    <DeliverableThumbnail
+                      type={d.thumbnailType}
+                      duration={d.duration}
+                      onPlay={() => setActiveVideoPreview(d)}
+                    />
+                    <div className="text-xs font-semibold text-white truncate">{d.title}</div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                      <span>{d.type}</span>
+                      <span className="text-blue-400">{d.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl">
+                <Layers size={24} className="mx-auto text-slate-600 mb-2" />
+                <h4 className="text-xs font-bold text-slate-300">No deliverables yet</h4>
+                <p className="text-[11px] text-slate-500 mt-1">Deploy tasks generating video or designs to view deliverables here.</p>
+              </div>
+            )}
+          </div>
+        ) : activeNavTab === 'settings' ? (
+          /* PROJECT CHARTER / SETTINGS TAB */
+          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div>
+                <h2 className="text-base font-bold text-white">Project Charter: {selectedProject?.name}</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Authoritative project.md context injected into Swarm Orchestrator prompt
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  if (selectedProject?.linkedWorkspaces) {
+                    setIsSynthesizing(true)
+                    requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        name: selectedProject.name,
+                        workspaces: selectedProject.linkedWorkspaces,
+                      }),
+                    })
+                      .then((res) => {
+                        if (res?.project_context) {
+                          requestJson(`/v3/projects/${selectedProject.id}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ project_context: res.project_context }),
+                          }).then(() => {
+                            setProjects((prev) =>
+                              prev.map((p) => (p.id === selectedProject.id ? { ...p, projectContext: res.project_context } : p))
+                            )
+                          })
+                        }
+                      })
+                      .finally(() => setIsSynthesizing(false))
+                  }
+                }}
+                disabled={isSynthesizing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition-all disabled:opacity-50"
+              >
+                <RefreshCw size={12} className={isSynthesizing ? 'animate-spin' : ''} />
+                <span>{isSynthesizing ? 'Synthesizing...' : 'Re-synthesize Context'}</span>
+              </button>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+              <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed overflow-x-auto">
+                {selectedProject?.projectContext || 'No synthesized context available. Click "Re-synthesize Context" to scan bound repositories.'}
+              </pre>
+            </div>
+          </div>
+        ) : (
+          /* HOME: 5-VARIANT TASK MANAGEMENT CANVAS */
+          <>
+            {/* TOP TOOLBAR: AUTOMATION OVERVIEW & 5-VARIANT SWITCHER DOCK */}
+            <div className="flex flex-col border-b border-slate-800/80 bg-[#0a0f1d]/60">
+              <div className="flex items-center justify-between p-3.5 pb-2.5">
+                <div className="flex items-center gap-3">
                   <div>
-                    <h4 className="text-xs font-bold text-white">Worker Task Assignment Queues</h4>
-                    <p className="text-[10px] text-slate-400">
-                      Real-time jobs dispatched and owned across your autonomous workers
+                    <div className="flex items-center gap-2">
+                      <h1 className="text-base font-bold tracking-tight text-white">
+                        {selectedProject?.name || 'Automation Overview'}
+                      </h1>
+                      <span className="rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
+                        {liveTasks.length} {liveTasks.length === 1 ? 'Task' : 'Tasks'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Autonomous workers executing jobs across {selectedProject?.name || 'workspace'}
                     </p>
                   </div>
-                  <span className="rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[9px] font-semibold text-blue-400">
-                    Selected Canonical View • Variant 3
+                </div>
+
+                {/* Quick Action buttons */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setIsDeployModalOpen(true)}
+                    className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
+                  >
+                    <Plus size={13} />
+                    <span>+ Deploy Task</span>
+                  </button>
+                  <button
+                    onClick={() =>
+                      handleDeployTask(
+                        'Run Local Testbench Suite',
+                        'coder',
+                        '@Code Verifier',
+                        'Run critical test gate and inspect testbench health',
+                        ['Inspect', 'Execute', 'Analyze', 'Review']
+                      )
+                    }
+                    className="flex items-center gap-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
+                  >
+                    <Play size={11} fill="currentColor" />
+                    <span>Run Testbench</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 5-VARIANT SELECTOR DOCK: Switch between 5 distinct middle layouts */}
+              <div className="px-3.5 pb-2.5 flex items-center justify-between border-t border-slate-800/50 pt-2 text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
+                    Canvas View:
+                  </span>
+                  <div className="flex items-center gap-1 rounded-xl bg-[#080c16] p-1 border border-slate-800">
+                    <button
+                      onClick={() => setMiddleVariant('matrix')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                        middleVariant === 'matrix'
+                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                      title="Compact Matrix: Dense table view with expandable drawers"
+                    >
+                      <ListFilter size={12} />
+                      <span>1. Compact Matrix</span>
+                    </button>
+
+                    <button
+                      onClick={() => setMiddleVariant('kanban')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                        middleVariant === 'kanban'
+                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                      title="Pipeline Kanban: Stage workflow by task status"
+                    >
+                      <Columns3 size={12} />
+                      <span>2. Pipeline Kanban</span>
+                    </button>
+
+                    <button
+                      onClick={() => setMiddleVariant('fleet')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                        middleVariant === 'fleet'
+                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                      title="Worker Fleet: Active agent sessions and their jobs"
+                    >
+                      <Bot size={12} />
+                      <span>3. Worker Fleet</span>
+                    </button>
+
+                    <button
+                      onClick={() => setMiddleVariant('split')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                        middleVariant === 'split'
+                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                      title="Split Studio: Master list on left, live inspector on right"
+                    >
+                      <Layers size={12} />
+                      <span>4. Split Studio</span>
+                    </button>
+
+                    <button
+                      onClick={() => setMiddleVariant('timeline')}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                        middleVariant === 'timeline'
+                          ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                      title="Timeline Stream: Chronological progress & history"
+                    >
+                      <Activity size={12} />
+                      <span>5. Timeline Stream</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick status counter summary */}
+                <div className="flex items-center gap-2 font-mono text-[10px]">
+                  <span className="text-blue-400">● {runningCount} Running</span>
+                  <span className="text-amber-400">● {reviewCount} Review</span>
+                  <span className="text-slate-500">● {queuedCount} Queued</span>
+                  <span className="text-emerald-400">● {completedCount} Done</span>
+                </div>
+              </div>
+            </div>
+
+            {/* STATUS / AUTOMATION TICKER */}
+            <div className="px-4 py-2 border-b border-slate-800/80 bg-[#080d19]/80 flex items-center justify-between gap-4 text-xs">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="flex h-2 w-2 rounded-full bg-emerald-400 flex-shrink-0" />
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-semibold text-white truncate text-[11px]">
+                    {selectedProject?.name || 'Project Orchestrator'}
+                  </span>
+                  <span className="text-[10px] text-slate-400 truncate">
+                    • System Orchestrator Active • {selectedProject?.linkedWorkspaces?.length || 0} Bound Workspace{selectedProject?.linkedWorkspaces?.length === 1 ? '' : 's'}
                   </span>
                 </div>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
+                <span>Branch: {selectedProject?.branch || 'dev'}</span>
+                <span>•</span>
+                <span className="text-emerald-400">Pebble DB Synced</span>
+              </div>
+            </div>
 
-                {/* Filter bar inside Worker Fleet View */}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex-1 relative">
-                    <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search tasks across workers..."
-                      className="w-full bg-[#080c16] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
-                    />
+            {/* MAIN BODY: 5 DISTINCT VARIANTS */}
+            <div className="flex-1 overflow-hidden flex flex-col">
+              {/* ─────────────────────────────────────────────────────────────
+                  VARIANT 1: COMPACT MATRIX & DRAWER
+                 ───────────────────────────────────────────────────────────── */}
+              {middleVariant === 'matrix' && (
+                <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
+                  {/* Search & Filter bar */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex-1 relative">
+                      <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search tasks by title, worker, or tag..."
+                        className="w-full bg-[#080c16] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
+                        <button
+                          key={st}
+                          onClick={() => setStatusFilter(st)}
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                            statusFilter === st
+                              ? 'bg-slate-700 text-white shadow-sm'
+                              : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {st === 'all'
+                            ? `All (${liveTasks.length})`
+                            : st === 'running'
+                            ? `Running (${runningCount})`
+                            : st === 'needs_review'
+                            ? `Review (${reviewCount})`
+                            : st === 'queued'
+                            ? `Queued (${queuedCount})`
+                            : `Done (${completedCount})`}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => setStatusFilter(st)}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all ${
-                          statusFilter === st
-                            ? 'bg-slate-700 text-white shadow-sm'
-                            : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        {st === 'all'
-                          ? `All (${tasks.length})`
-                          : st === 'running'
-                          ? `Running (${runningCount})`
-                          : st === 'needs_review'
-                          ? `Review (${reviewCount})`
-                          : st === 'queued'
-                          ? `Queued (${queuedCount})`
-                          : `Done (${completedCount})`}
-                      </button>
-                    ))}
+                  {/* Task rows */}
+                  <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                    {filteredTasks.length > 0 ? (
+                      filteredTasks.map((t) => {
+                        const isExpanded = expandedTaskId === t.id
+                        return (
+                          <div
+                            key={t.id}
+                            className="rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 hover:border-slate-700/80 transition-all overflow-hidden"
+                          >
+                            <div
+                              onClick={() => setExpandedTaskId(isExpanded ? null : t.id)}
+                              className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-white/[0.02]"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                <span
+                                  className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                                    t.status === 'running'
+                                      ? 'bg-blue-400 animate-pulse'
+                                      : t.status === 'needs_review'
+                                      ? 'bg-amber-400'
+                                      : t.status === 'completed'
+                                      ? 'bg-emerald-400'
+                                      : 'bg-slate-600'
+                                  }`}
+                                />
+                                <span className="font-mono text-[10px] text-slate-500 w-16">{t.id.slice(0, 8)}</span>
+                                <span className="text-xs font-semibold text-slate-200 truncate">{t.title}</span>
+                                <span className="text-[10px] text-slate-400 truncate hidden md:inline">
+                                  {t.subtitle}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-3 flex-shrink-0">
+                                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                                  {t.workerName}
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-mono">{t.elapsed}</span>
+                                <ChevronDown
+                                  size={13}
+                                  className={`text-slate-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                                />
+                              </div>
+                            </div>
+
+                            {/* Drawer Content */}
+                            {isExpanded && (
+                              <div className="p-3 border-t border-slate-800/60 bg-[#070b14] space-y-3 text-xs">
+                                <div className="flex items-center justify-between">
+                                  <div className="text-slate-400 font-medium">Pipeline Execution Progress</div>
+                                  {t.sessionId && (
+                                    <span className="font-mono text-[10px] text-blue-400">
+                                      Session: {t.sessionId.slice(0, 12)}...
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-4 gap-2">
+                                  {t.stepTimeline?.map((st) => (
+                                    <div
+                                      key={st.step}
+                                      className={`p-2 rounded-xl border text-[11px] ${
+                                        st.status === 'complete'
+                                          ? 'border-emerald-500/30 bg-emerald-950/20 text-emerald-300'
+                                          : st.status === 'processing'
+                                          ? 'border-blue-500/40 bg-blue-950/30 text-blue-300'
+                                          : 'border-slate-800 bg-slate-900/40 text-slate-500'
+                                      }`}
+                                    >
+                                      <div className="font-mono text-[9px] uppercase">Stage {st.step}</div>
+                                      <div className="font-semibold">{st.label}</div>
+                                    </div>
+                                  ))}
+                                </div>
+
+                                {t.deliverables && t.deliverables.length > 0 && (
+                                  <div>
+                                    <div className="text-slate-400 font-medium mb-1.5">Deliverables</div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                      {t.deliverables.map((d) => (
+                                        <div
+                                          key={d.id}
+                                          onClick={() => setActiveVideoPreview(d)}
+                                          className="p-2 rounded-xl border border-slate-800 bg-[#0a0f1d] hover:border-blue-500/40 cursor-pointer space-y-1"
+                                        >
+                                          <div className="text-xs font-semibold text-white truncate">{d.title}</div>
+                                          <div className="text-[10px] text-blue-400 font-mono flex items-center justify-between">
+                                            <span>{d.type}</span>
+                                            <span>{d.status}</span>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center border border-dashed border-slate-800 rounded-2xl bg-[#080c16]/50">
+                        <Code size={20} className="text-slate-600 mb-2" />
+                        <h4 className="text-xs font-bold text-slate-300">No tasks active</h4>
+                        <p className="text-[11px] text-slate-500 mt-1 mb-4">
+                          Deploy an autonomous task or prompt the orchestrator to begin work across your workspaces.
+                        </p>
+                        <button
+                          onClick={() => setIsDeployModalOpen(true)}
+                          className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/20 transition-all flex items-center gap-1.5"
+                        >
+                          <Plus size={13} />
+                          <span>Deploy First Task</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
+              )}
 
-                {/* Task Rows with Expandable Drawers */}
-                <div className="space-y-1.5">
-                  {filteredTasks.map((task) => {
-                    const isExpanded = expandedTaskId === task.id
+              {/* ─────────────────────────────────────────────────────────────
+                  VARIANT 2: MISSION PIPELINE KANBAN
+                 ───────────────────────────────────────────────────────────── */}
+              {middleVariant === 'kanban' && (
+                <div className="flex-1 flex overflow-x-auto p-4 gap-3">
+                  {(
+                    [
+                      { key: 'queued', label: 'Queued', color: 'slate' },
+                      { key: 'running', label: 'In Progress', color: 'blue' },
+                      { key: 'needs_review', label: 'Needs Review', color: 'amber' },
+                      { key: 'completed', label: 'Completed', color: 'emerald' },
+                    ] as const
+                  ).map((col) => {
+                    const colTasks = liveTasks.filter((t) => t.status === col.key)
                     return (
                       <div
-                        key={task.id}
-                        className="rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 hover:border-slate-700/80 transition-all overflow-hidden"
+                        key={col.key}
+                        className="w-72 flex-shrink-0 flex flex-col rounded-2xl border border-slate-800/80 bg-[#090d16]/70 p-3 space-y-2.5 overflow-hidden"
                       >
-                        {/* Header Row */}
-                        <div
-                          onClick={() => setExpandedTaskId(isExpanded ? null : task.id)}
-                          className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-white/[0.02]"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className="flex items-center justify-between pb-1.5 border-b border-slate-800/60">
+                          <span className="text-xs font-bold text-white flex items-center gap-1.5">
                             <span
-                              className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                              className={`h-2 w-2 rounded-full ${
+                                col.color === 'blue'
+                                  ? 'bg-blue-400'
+                                  : col.color === 'amber'
+                                  ? 'bg-amber-400'
+                                  : col.color === 'emerald'
+                                  ? 'bg-emerald-400'
+                                  : 'bg-slate-500'
+                              }`}
+                            />
+                            <span>{col.label}</span>
+                          </span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                            {colTasks.length}
+                          </span>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto space-y-2 pr-0.5">
+                          {colTasks.map((t) => (
+                            <div
+                              key={t.id}
+                              onClick={() => {
+                                setSelectedTaskId(t.id)
+                                setMiddleVariant('split')
+                              }}
+                              className="p-3 rounded-xl border border-slate-800 bg-[#0d121f] hover:border-slate-700 cursor-pointer space-y-2 shadow-sm transition-all"
+                            >
+                              <div className="text-xs font-semibold text-white leading-snug">{t.title}</div>
+                              <p className="text-[10px] text-slate-400 line-clamp-2">{t.subtitle}</p>
+                              <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 pt-1.5 border-t border-slate-800/80">
+                                <span>{t.workerName}</span>
+                                <span>{t.elapsed}</span>
+                              </div>
+                            </div>
+                          ))}
+                          {colTasks.length === 0 && (
+                            <div className="p-4 text-center text-[10px] text-slate-600 border border-dashed border-slate-850 rounded-xl">
+                              No {col.label.toLowerCase()} tasks
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {/* ─────────────────────────────────────────────────────────────
+                  VARIANT 3: AUTONOMOUS WORKER FLEET
+                 ───────────────────────────────────────────────────────────── */}
+              {middleVariant === 'fleet' && (
+                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Active Worker Sessions</h3>
+                      <p className="text-[11px] text-slate-400">
+                        Autonomous worker sessions executing across your repositories
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setIsDeployModalOpen(true)}
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
+                    >
+                      <Plus size={12} />
+                      <span>Deploy Worker</span>
+                    </button>
+                  </div>
+
+                  {deployedWorkers.length > 0 ? (
+                    <div className="grid grid-cols-2 gap-3">
+                      {deployedWorkers.map((worker) => (
+                        <div
+                          key={worker.id}
+                          className="p-3.5 rounded-2xl border border-slate-800/80 bg-[#0a0f1d] space-y-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                              <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                <Bot size={16} />
+                              </div>
+                              <div>
+                                <h4 className="text-xs font-bold text-white truncate max-w-[180px]">{worker.name}</h4>
+                                <p className="text-[10px] text-slate-400 truncate max-w-[180px]">{worker.role}</p>
+                              </div>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold uppercase ${
+                                worker.status === 'active'
+                                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                                  : 'bg-slate-800 text-slate-400'
+                              }`}
+                            >
+                              {worker.status}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[11px] border-t border-slate-800/80 pt-2 text-slate-400 font-mono">
+                            <span>{worker.scheduleLabel}</span>
+                            <span className="text-blue-400 font-bold">{worker.activeJobsCount} active</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl">
+                      <Bot size={24} className="mx-auto text-slate-600 mb-2" />
+                      <h4 className="text-xs font-bold text-slate-300">No active worker sessions</h4>
+                      <p className="text-[11px] text-slate-500 mt-1">Deploy a task to launch an autonomous worker session.</p>
+                    </div>
+                  )}
+
+                  {/* Tasks List in Fleet */}
+                  <div className="pt-2 space-y-3">
+                    <h4 className="text-xs font-bold text-white">Project Tasks ({liveTasks.length})</h4>
+                    <div className="space-y-1.5">
+                      {liveTasks.map((task) => (
+                        <div
+                          key={task.id}
+                          className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 text-xs"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`h-2 w-2 rounded-full ${
                                 task.status === 'running'
                                   ? 'bg-blue-400 animate-pulse'
                                   : task.status === 'needs_review'
@@ -1734,311 +1937,186 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   : 'bg-slate-600'
                               }`}
                             />
-                            <div className="flex h-5 w-5 items-center justify-center rounded-md bg-slate-800 text-slate-400 flex-shrink-0">
-                              {task.agentType === 'coder' ? (
-                                <Code size={11} />
-                              ) : task.agentType === 'designer' ? (
-                                <Film size={11} />
-                              ) : (
-                                <Bot size={11} />
-                              )}
-                            </div>
-                            <span className="font-semibold text-xs text-white truncate max-w-sm">
-                              {task.title}
-                            </span>
-                            {task.workerName && (
-                              <span className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 truncate">
-                                @{task.workerName}
-                              </span>
-                            )}
+                            <span className="font-semibold text-slate-200">{task.title}</span>
                           </div>
-
-                          <div className="flex items-center gap-3">
-                            {task.stepTimeline && (
-                              <div className="flex items-center gap-1 font-mono text-[9px]">
-                                {task.stepTimeline.map((step) => (
-                                  <span
-                                    key={step.step}
-                                    className={`px-1 rounded ${
-                                      step.status === 'complete'
-                                        ? 'text-emerald-400 bg-emerald-500/10'
-                                        : step.status === 'processing'
-                                        ? 'text-blue-400 bg-blue-500/20 font-bold'
-                                        : 'text-slate-600'
-                                    }`}
-                                  >
-                                    {step.label}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-
-                            {task.deliverables && task.deliverables.length > 0 && (
-                              <span className="flex items-center gap-1 rounded bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.5 text-[9px] font-semibold text-blue-300">
-                                <Film size={9} />
-                                {task.deliverables.length} clips
-                              </span>
-                            )}
-
-                            <span className="text-[10px] font-mono text-slate-500 min-w-[45px] text-right">
-                              {task.elapsed}
-                            </span>
-
-                            <span className="text-slate-500">
-                              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Expandable Drawer with Deliverables & Diffs */}
-                        {isExpanded && (
-                          <div className="border-t border-slate-800/80 bg-[#070b15] p-3 space-y-3">
-                            {task.deliverables && (
-                              <div>
-                                <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
-                                  <span>Attached Video Deliverables ({task.deliverables.length})</span>
-                                  <span className="text-[10px] text-slate-500 font-mono">
-                                    Click thumbnail to play full preview
-                                  </span>
-                                </div>
-                                <div className="grid grid-cols-3 gap-2.5">
-                                  {task.deliverables.map((item) => (
-                                    <div
-                                      key={item.id}
-                                      className="p-2 rounded-xl bg-[#0a0f1d] border border-slate-800"
-                                    >
-                                      <DeliverableThumbnail
-                                        type={item.thumbnailType}
-                                        duration={item.duration}
-                                        onPlay={() => setActiveVideoPreview(item)}
-                                      />
-                                      <div className="mt-2 text-xs font-bold text-white truncate">
-                                        {item.title}
-                                      </div>
-                                      <div className="mt-1 flex items-center justify-between pt-1 border-t border-slate-800/80">
-                                        <button
-                                          onClick={(e) => handleAcceptDeliverable(task.id, item.id, e)}
-                                          className="text-[10px] font-semibold text-emerald-400 hover:underline"
-                                        >
-                                          Accept
-                                        </button>
-                                        <button
-                                          onClick={() => setActiveVideoPreview(item)}
-                                          className="text-[10px] text-slate-400 hover:text-white"
-                                        >
-                                          Inspect
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-
-                            {task.diffLines && (
-                              <div>
-                                <div className="text-[11px] font-bold text-slate-300 mb-1.5">
-                                  Code Changes Diff
-                                </div>
-                                <div className="p-2.5 rounded-xl bg-[#05070e] border border-slate-800 font-mono text-[10px] space-y-0.5">
-                                  {task.diffLines.map((line, idx) => (
-                                    <div
-                                      key={idx}
-                                      className={`flex items-center gap-2 ${
-                                        line.type === 'del'
-                                          ? 'text-red-400'
-                                          : line.type === 'add'
-                                          ? 'text-emerald-400'
-                                          : 'text-slate-400'
-                                      }`}
-                                    >
-                                      <span className="w-4 text-slate-600 select-none">
-                                        {line.lineNum}
-                                      </span>
-                                      <span>{line.text}</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              VARIANT 4: SPLIT STUDIO CONSOLE (Master-Detail Live Inspector)
-             ───────────────────────────────────────────────────────────── */}
-          {middleVariant === 'split' && (
-            <div className="flex-1 flex overflow-hidden">
-              {/* Left Pane: High-Density 100-Task List */}
-              <div className="w-[42%] border-r border-slate-800/80 flex flex-col p-3 overflow-hidden space-y-2">
-                <div className="relative">
-                  <Search size={12} className="absolute left-2.5 top-2 text-slate-500" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search tasks..."
-                    className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-7 pr-2 py-1 text-xs text-white placeholder-slate-500 focus:outline-none"
-                  />
-                </div>
-
-                <div className="flex-1 overflow-y-auto space-y-1 pr-1">
-                  {filteredTasks.map((t) => {
-                    const isSelected = t.id === selectedTaskId
-                    return (
-                      <div
-                        key={t.id}
-                        onClick={() => setSelectedTaskId(t.id)}
-                        className={`p-2 rounded-xl cursor-pointer transition-all border ${
-                          isSelected
-                            ? 'bg-blue-600/15 border-blue-500/40 text-white shadow-sm'
-                            : 'bg-[#0a0f1d] border-slate-800/70 hover:border-slate-700 text-slate-300'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between text-[11px] font-bold">
-                          <span className="truncate">{t.title}</span>
-                          <span className="font-mono text-[9px] text-slate-400">{t.elapsed}</span>
-                        </div>
-                        <div className="flex items-center justify-between mt-1 text-[9px] text-slate-400">
-                          <span>@{t.workerName || 'Unassigned'}</span>
-                          <span className="uppercase font-semibold">{t.status}</span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-
-              {/* Right Pane: Live Session & Deliverable Inspector */}
-              <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-[#090d18]/50">
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                  <div>
-                    <h3 className="text-sm font-bold text-white">{selectedTaskForSplit.title}</h3>
-                    <p className="text-xs text-slate-400">{selectedTaskForSplit.subtitle}</p>
-                  </div>
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                    {selectedTaskForSplit.status}
-                  </span>
-                </div>
-
-                {/* 4-Step Stepper */}
-                <div className="p-3 rounded-2xl bg-[#0a0f1d] border border-slate-800">
-                  <div className="text-xs font-bold text-slate-300 mb-2">Execution Stages</div>
-                  <div className="grid grid-cols-4 gap-2 text-center text-xs">
-                    {['Init Worktree', 'Agent Exec', 'Audit Diff', 'Deliver'].map((stage, idx) => (
-                      <div key={idx} className="p-2 rounded-xl bg-[#070b16] border border-slate-800">
-                        <span className="text-[10px] font-mono text-slate-500">Stage {idx + 1}</span>
-                        <div className="font-semibold text-white text-[11px] truncate mt-0.5">{stage}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Attached Deliverables Gallery */}
-                {selectedTaskForSplit.deliverables && (
-                  <div className="space-y-2">
-                    <div className="text-xs font-bold text-slate-300">Generated Media Deliverables</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {selectedTaskForSplit.deliverables.map((deliv) => (
-                        <div key={deliv.id} className="p-3 rounded-2xl bg-[#0a0f1d] border border-slate-800">
-                          <DeliverableThumbnail
-                            type={deliv.thumbnailType}
-                            duration={deliv.duration}
-                            onPlay={() => setActiveVideoPreview(deliv)}
-                          />
-                          <div className="mt-2 text-xs font-bold text-white truncate">{deliv.title}</div>
-                          <button
-                            onClick={() => setActiveVideoPreview(deliv)}
-                            className="mt-2 w-full py-1 text-center text-xs font-semibold bg-blue-600 rounded-lg text-white"
-                          >
-                            Inspect Video
-                          </button>
+                          <span className="text-[10px] font-mono text-slate-500">{task.elapsed}</span>
                         </div>
                       ))}
                     </div>
                   </div>
-                )}
-              </div>
-            </div>
-          )}
+                </div>
+              )}
 
-          {/* ─────────────────────────────────────────────────────────────
-              VARIANT 5: TIMELINE ACTIVITY STREAM (Chronological Flow)
-             ───────────────────────────────────────────────────────────── */}
-          {middleVariant === 'timeline' && (
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-                Active Right Now
-              </div>
-
-              <div className="relative pl-6 border-l-2 border-blue-500/40 space-y-4">
-                {tasks.slice(0, 5).map((t) => (
-                  <div
-                    key={t.id}
-                    className="relative p-3 rounded-2xl border border-slate-800/80 bg-[#0a0f1d] space-y-2"
-                  >
-                    <span className="absolute -left-[31px] top-3 h-3 w-3 rounded-full bg-blue-500 ring-4 ring-blue-500/20" />
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-white">{t.title}</span>
-                      <span className="text-[10px] font-mono text-blue-400">{t.elapsed}</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400">{t.subtitle}</p>
-
-                    {t.deliverables && (
-                      <div className="flex gap-2 pt-1 overflow-x-auto">
-                        {t.deliverables.map((d) => (
-                          <div
-                            key={d.id}
-                            onClick={() => setActiveVideoPreview(d)}
-                            className="w-36 flex-shrink-0 cursor-pointer"
-                          >
-                            <DeliverableThumbnail type={d.thumbnailType} duration={d.duration} />
-                            <div className="text-[10px] font-medium text-white truncate mt-1">
-                              {d.title}
-                            </div>
+              {/* ─────────────────────────────────────────────────────────────
+                  VARIANT 4: SPLIT STUDIO CONSOLE
+                 ───────────────────────────────────────────────────────────── */}
+              {middleVariant === 'split' && (
+                <div className="flex-1 flex overflow-hidden">
+                  {/* Left Column: Tasks List */}
+                  <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
+                    <div className="text-xs font-bold text-white pb-1">Tasks ({liveTasks.length})</div>
+                    {liveTasks.map((t) => {
+                      const isSel = selectedTaskId === t.id
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => setSelectedTaskId(t.id)}
+                          className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                            isSel
+                              ? 'bg-blue-950/20 border-blue-500/50 text-white shadow-sm'
+                              : 'bg-[#0a0f1d] border-slate-800/80 hover:border-slate-700 text-slate-300'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold leading-snug">{t.title}</div>
+                          <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 mt-2">
+                            <span>{t.workerName}</span>
+                            <span className="text-blue-400 font-bold">{t.status}</span>
                           </div>
-                        ))}
+                        </div>
+                      )
+                    })}
+                    {liveTasks.length === 0 && (
+                      <div className="p-6 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl">
+                        No tasks found.
                       </div>
                     )}
                   </div>
-                ))}
-              </div>
+
+                  {/* Right Column: Live Inspector */}
+                  <div className="w-1/2 flex flex-col p-4 overflow-y-auto space-y-4">
+                    {selectedTaskForSplit ? (
+                      <>
+                        <div>
+                          <span className="text-[9px] font-mono uppercase px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                            {selectedTaskForSplit.agentType}
+                          </span>
+                          <h3 className="text-sm font-bold text-white mt-1.5">{selectedTaskForSplit.title}</h3>
+                          <p className="text-xs text-slate-400 mt-1">{selectedTaskForSplit.subtitle}</p>
+                        </div>
+
+                        <div className="p-3 rounded-xl border border-slate-800 bg-[#090d16] space-y-2 text-xs">
+                          <div className="text-slate-400 font-medium">Pipeline Stages</div>
+                          <div className="space-y-1.5">
+                            {selectedTaskForSplit.stepTimeline?.map((st) => (
+                              <div key={st.step} className="flex items-center justify-between text-[11px] font-mono">
+                                <span className="text-slate-300">
+                                  {st.step}. {st.label}
+                                </span>
+                                <span
+                                  className={`px-1.5 py-0.2 rounded text-[9px] ${
+                                    st.status === 'complete'
+                                      ? 'text-emerald-400'
+                                      : st.status === 'processing'
+                                      ? 'text-blue-400'
+                                      : 'text-slate-500'
+                                  }`}
+                                >
+                                  {st.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {selectedTaskForSplit.deliverables && selectedTaskForSplit.deliverables.length > 0 && (
+                          <div className="space-y-2">
+                            <div className="text-xs font-bold text-white">Attached Deliverables</div>
+                            {selectedTaskForSplit.deliverables.map((d) => (
+                              <div
+                                key={d.id}
+                                onClick={() => setActiveVideoPreview(d)}
+                                className="p-3 rounded-xl border border-slate-800 bg-[#090d16] hover:border-blue-500/40 cursor-pointer space-y-1.5"
+                              >
+                                <div className="text-xs font-semibold text-white">{d.title}</div>
+                                <div className="flex items-center justify-between text-[10px] text-blue-400 font-mono">
+                                  <span>{d.type}</span>
+                                  <span>{d.duration}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex-1 flex items-center justify-center text-xs text-slate-500">
+                        Select a task to inspect details
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ─────────────────────────────────────────────────────────────
+                  VARIANT 5: TIMELINE ACTIVITY STREAM
+                 ───────────────────────────────────────────────────────────── */}
+              {middleVariant === 'timeline' && (
+                <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  <div className="text-xs font-bold text-white pb-1">Activity Stream</div>
+                  {liveTasks.map((t, idx) => (
+                    <div key={t.id} className="flex items-start gap-3 p-3 rounded-xl border border-slate-800/80 bg-[#0a0f1d] text-xs">
+                      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 font-mono text-[10px] font-bold">
+                        {idx + 1}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-white truncate">{t.title}</span>
+                          <span className="text-[10px] font-mono text-slate-500">{t.elapsed}</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">{t.subtitle}</p>
+                        <div className="flex items-center gap-2 mt-2">
+                          <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                            {t.workerName}
+                          </span>
+                          <span className="text-[9px] font-mono text-blue-400">{t.status}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {liveTasks.length === 0 && (
+                    <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl text-xs text-slate-500">
+                      No task activity recorded yet.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        </>
+          </>
         )}
       </main>
 
       {/* ─────────────────────────────────────────────────────────────
-          PANEL 3: RIGHT SIDEBAR (SWARM ORCHESTRATOR AI CHAT)
+          PANEL 3: RIGHT PANEL (SWARM ORCHESTRATOR CHAT & DISPATCH)
          ───────────────────────────────────────────────────────────── */}
       <aside className="relative flex w-80 flex-shrink-0 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
-        {/* Header */}
-        <div className="p-3.5 border-b border-slate-800/80 flex items-center justify-between">
+        {/* Chat Header */}
+        <div className="flex items-center justify-between p-3.5 border-b border-slate-800/80 bg-[#0a0f1d]/50">
           <div className="flex items-center gap-2.5">
-            <div className="flex h-7 w-7 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
-              <Sparkles size={14} />
+            <div className="relative flex h-7 w-7 items-center justify-center rounded-xl bg-blue-600/20 text-blue-400 border border-blue-500/30">
+              <Bot size={15} />
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-slate-900 ${
+                  isLiveSessionRunning ? 'bg-blue-400 animate-pulse' : activeSessionId ? 'bg-emerald-400' : 'bg-amber-400'
+                }`}
+              />
             </div>
             <div>
               <div className="text-xs font-bold text-white">Swarm Orchestrator</div>
-              <div className="text-[10px] text-slate-400 flex items-center gap-1">
-                <span className={`h-1.5 w-1.5 rounded-full ${isOnboardingActive ? 'bg-blue-400 animate-pulse' : 'bg-emerald-400'}`} />
-                <span>{isOnboardingActive ? 'Facilitating Onboarding' : 'Online • Ready to help'}</span>
+              <div className="text-[10px] text-slate-400 truncate max-w-[150px]">
+                {selectedProject?.name || 'Project Executive'}
               </div>
             </div>
           </div>
-
-          <button className="text-slate-400 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800/60 transition-colors">
-            <Maximize2 size={13} />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <span
+              className={`text-[9px] font-mono px-2 py-0.5 rounded-full border ${
+                isLiveSessionRunning
+                  ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
+                  : 'border-slate-700 bg-slate-800 text-slate-300'
+              }`}
+            >
+              {isLiveSessionRunning ? 'Thinking...' : activeSessionId ? 'Connected' : 'Initializing'}
+            </span>
+          </div>
         </div>
 
         {/* Chat Messages Stream */}
@@ -2067,73 +2145,39 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     <p className="whitespace-pre-line">{msg.content}</p>
                   </div>
                   <span className="mt-1 text-[9px] text-slate-500">
-                    {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {msg.created_at ? new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                   </span>
                 </div>
               )
             })
           ) : (
-            messages.map((msg) => {
-              const isUser = msg.sender === 'user'
-              return (
-                <div
-                  key={msg.id}
-                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-                >
-                  <div
-                    className={`max-w-[95%] p-3 text-xs leading-relaxed transition-all ${
-                      isUser
-                        ? 'rounded-2xl rounded-tr-sm bg-slate-800 text-slate-100 border border-slate-700/60'
-                        : 'rounded-2xl rounded-tl-sm bg-[#090d16] border border-slate-800/80 text-slate-200 space-y-2.5'
-                    }`}
+            <div className="flex flex-col items-center justify-center text-center p-4 my-auto space-y-3">
+              <div className="h-10 w-10 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 shadow-lg shadow-blue-600/10">
+                <Sparkles size={18} />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-white">Swarm Project Orchestrator</h4>
+                <p className="text-[11px] text-slate-400 mt-1 max-w-xs leading-relaxed">
+                  Active for <strong className="text-slate-200">{selectedProject?.name || 'Project'}</strong>.
+                  Ask for cross-workspace coordination, architecture reviews, or dispatching tasks to autonomous workers.
+                </p>
+              </div>
+              <div className="w-full space-y-1.5 pt-2">
+                {[
+                  'What is the architecture and charter of this project?',
+                  'Deploy a verification task to check repository health',
+                  'What tasks are currently queued or running?',
+                ].map((prompt) => (
+                  <button
+                    key={prompt}
+                    onClick={() => handleSendMessage(prompt)}
+                    className="w-full text-left p-2 rounded-xl bg-slate-900/80 hover:bg-slate-800/80 border border-slate-800 hover:border-slate-700 text-[11px] text-slate-300 transition-colors"
                   >
-                    <p className="whitespace-pre-line">{msg.text}</p>
-
-                    {/* Embedded Video Generation Card in Assistant Message */}
-                    {msg.videoProgressCard && (
-                      <div className="rounded-xl overflow-hidden border border-slate-800 bg-[#060911] p-2 space-y-2">
-                        <DeliverableThumbnail type="orbital_data" />
-                        <div className="space-y-1 pt-1">
-                          <div className="flex items-center justify-between text-[10px] text-slate-400">
-                            <span className="text-slate-300 font-medium">
-                              {msg.videoProgressCard.title}
-                            </span>
-                            <span className="font-mono text-slate-400">
-                              {msg.videoProgressCard.clipsLabel}
-                            </span>
-                          </div>
-                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-                            <div
-                              className="h-full bg-gradient-to-r from-blue-600 to-indigo-400 rounded-full"
-                              style={{ width: `${msg.videoProgressCard.progressPercent}%` }}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Embedded Action Button in Assistant Message */}
-                    {msg.actionButton && (
-                      <button
-                        onClick={() => {
-                          const target = liveTasks[0]?.deliverables?.[0]
-                          if (target) setActiveVideoPreview(target)
-                        }}
-                        className="w-full flex items-center justify-between p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/60 text-xs font-semibold transition-colors mt-2"
-                      >
-                        <div className="flex items-center gap-1.5">
-                          <Play size={10} fill="currentColor" />
-                          <span>{msg.actionButton.label}</span>
-                        </div>
-                        <ArrowRight size={12} />
-                      </button>
-                    )}
-                  </div>
-
-                  <span className="mt-1 text-[9px] text-slate-500">{msg.timestamp}</span>
-                </div>
-              )
-            })
+                    → {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
 
           {(isTyping || isLiveSessionRunning) && (
@@ -2142,76 +2186,38 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <span>Swarm Orchestrator is executing...</span>
             </div>
           )}
+          <div ref={chatBottomRef} />
         </div>
 
-        {/* Onboarding Quick Action Chips (Non-blocking) */}
-        {isOnboardingActive && (
-          <div className="px-3 py-2 flex flex-wrap gap-1.5 border-t border-slate-800/80 bg-[#080c16]/70">
-            <button
-              type="button"
-              onClick={() => handleSendMessage('Bundle ~/swarm-go & ~/swarm-social')}
-              className="text-[10px] rounded-lg bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 px-2 py-1 transition-all flex items-center gap-1 font-medium"
-            >
-              <span>✦ Select Both Repos</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSendMessage('Synthesize project.md context')}
-              className="text-[10px] rounded-lg bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 px-2 py-1 transition-all flex items-center gap-1 font-medium"
-            >
-              <span>✦ Synthesize project.md</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSendMessage('Add ~/work to project')}
-              className="text-[10px] rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 px-2 py-1 transition-all font-medium"
-            >
-              <span>+ Add ~/work</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleCreateAndActivateProject()}
-              className="text-[10px] rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold px-2.5 py-1 transition-all shadow-sm"
-            >
-              <span>✓ Activate Project →</span>
-            </button>
-          </div>
-        )}
-
-        {/* Chat Input Box Composer */}
-        <div className="p-3 border-t border-slate-800/80">
+        {/* Chat Input Bar */}
+        <div className="p-3 border-t border-slate-800/80 bg-[#0a0f1d]/70">
           <form
             onSubmit={(e) => {
               e.preventDefault()
-              handleSendMessage()
+              void handleSendMessage()
             }}
-            className="flex flex-col gap-2 p-2.5 rounded-2xl bg-[#090d16] border border-slate-800"
+            className="flex flex-col gap-2 rounded-2xl border border-slate-800 bg-[#070b14] p-2 focus-within:border-blue-500/50 transition-all"
           >
             <input
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder="Message Swarm Orchestrator..."
-              className="w-full bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
+              placeholder="Instruct orchestrator or dispatch tasks..."
+              className="w-full bg-transparent px-2 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none"
             />
-            <div className="flex items-center justify-between pt-1">
-              <div className="flex items-center gap-2 text-slate-400">
+            <div className="flex items-center justify-between border-t border-slate-800/60 pt-1.5 text-slate-400">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  onClick={() => setIsDeployModalOpen(true)}
                   className="hover:text-slate-200 transition-colors p-0.5"
-                  title="Attach file"
+                  title="Deploy new task"
                 >
-                  <Paperclip size={14} />
+                  <Plus size={14} />
                 </button>
                 <button
                   type="button"
-                  className="hover:text-slate-200 transition-colors p-0.5"
-                  title="Mention agent or workspace"
-                >
-                  <AtSign size={14} />
-                </button>
-                <button
-                  type="button"
+                  onClick={() => handleSendMessage('Review project architecture')}
                   className="hover:text-slate-200 transition-colors p-0.5"
                   title="Prompt assist"
                 >
@@ -2221,7 +2227,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
               <button
                 type="submit"
-                disabled={!inputText.trim()}
+                disabled={!inputText.trim() || isTyping}
                 className="flex h-7 w-7 items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition-all disabled:opacity-40"
               >
                 <ArrowUp size={14} />
@@ -2232,7 +2238,109 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       </aside>
 
       {/* ─────────────────────────────────────────────────────────────
-          MODAL: VIDEO DELIVERABLE PREVIEW DIALOG (DARK NAVY GLASS)
+          MODAL: DEPLOY AUTONOMOUS TASK MODAL
+         ───────────────────────────────────────────────────────────── */}
+      {isDeployModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
+          <div className="relative flex max-w-lg w-full flex-col p-6 rounded-3xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Code size={16} className="text-blue-400" />
+                <h3 className="text-sm font-bold text-white">Deploy Autonomous Task</h3>
+              </div>
+              <button
+                onClick={() => setIsDeployModalOpen(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-800 hover:text-white transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="text-[11px] text-slate-400 mb-1 block font-medium">Task Title</label>
+                <input
+                  type="text"
+                  value={newTaskTitle}
+                  onChange={(e) => setNewTaskTitle(e.target.value)}
+                  placeholder="e.g. Run testbench suite & verify stability"
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 mb-1 block font-medium">Agent Type</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['coder', 'finder', 'designer', 'video'] as const).map((ag) => (
+                    <button
+                      key={ag}
+                      type="button"
+                      onClick={() => setNewTaskAgent(ag)}
+                      className={`py-2 px-3 rounded-xl border text-xs font-semibold capitalize transition-all ${
+                        newTaskAgent === ag
+                          ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
+                          : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {ag}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-slate-400 mb-1 block font-medium">Prompt / Instructions</label>
+                <textarea
+                  value={newTaskPrompt}
+                  onChange={(e) => setNewTaskPrompt(e.target.value)}
+                  rows={3}
+                  placeholder="Describe what the worker should accomplish..."
+                  className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none"
+                />
+              </div>
+
+              {selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 0 && (
+                <div>
+                  <label className="text-[11px] text-slate-400 mb-1 block font-medium">Target Workspace</label>
+                  <select
+                    value={newTaskWorkspace || selectedProject.repoPath}
+                    onChange={(e) => setNewTaskWorkspace(e.target.value)}
+                    className="w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60"
+                  >
+                    {selectedProject.linkedWorkspaces.map((ws) => (
+                      <option key={ws} value={ws}>
+                        {ws}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsDeployModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!newTaskTitle.trim() || isDeployingTask}
+                onClick={handleDeployModalSubmit}
+                className="flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Plus size={13} />
+                <span>{isDeployingTask ? 'Deploying...' : 'Deploy Task'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─────────────────────────────────────────────────────────────
+          MODAL: VIDEO DELIVERABLE PREVIEW DIALOG
          ───────────────────────────────────────────────────────────── */}
       {activeVideoPreview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
@@ -2275,7 +2383,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {isPlayingVideo ? 'Playing Video Stream...' : 'Click to Play Render Preview'}
                 </span>
               </div>
-
               <button
                 onClick={() => setIsMuted(!isMuted)}
                 className="absolute bottom-2 left-2 z-40 rounded-full bg-black/70 p-1.5 text-slate-300 hover:text-white"

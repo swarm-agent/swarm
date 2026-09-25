@@ -149,7 +149,7 @@ export interface RunningTask {
   id: string
   title: string
   subtitle?: string
-  agentType: 'coder' | 'finder' | 'designer' | 'swarm'
+  agentType: 'coder' | 'finder' | 'designer' | 'swarm' | 'video'
   status: 'running' | 'completed' | 'needs_review' | 'blocked' | 'queued'
   workspaceTarget: string
   elapsed: string
