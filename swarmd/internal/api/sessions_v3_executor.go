@@ -5561,14 +5561,14 @@ func buildSessionV3TitleConversation(messages []pebblestore.MessageSnapshot) str
 }
 
 func resolveSessionV3EffectivePreference(session pebblestore.SessionSnapshot, agentProfile pebblestore.AgentProfile) (pebblestore.ModelPreference, error) {
-	if session.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
+	if session.ModelProfile != nil && (strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID)) {
 		preference, err := sessionV3ModelProfilePreferenceForMode(*session.ModelProfile, session.Mode)
 		if err != nil {
 			return pebblestore.ModelPreference{}, err
 		}
 		return preference, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) {
+	if strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) {
 		return normalizeSessionsV3ModelPreference(session.Preference), nil
 	}
 	return applySessionV3AgentPreferenceOverrides(session.Preference, agentProfile), nil

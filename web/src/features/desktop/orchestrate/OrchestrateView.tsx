@@ -25,6 +25,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  Trash2,
   Volume2,
   X,
   Zap,
@@ -302,93 +303,12 @@ export function OrchestrateView({
             setActiveSessionId(loaded[0].primarySessionId)
           }
           fetchProjectTasks(loaded[0].id)
-        } else if (detectedWorkspaces.length > 0) {
-          // No projects stored in Pebble yet. Auto-initialize the default project from registered workspaces!
-          const primaryWs = detectedWorkspaces[0]
-          const projectName = primaryWs.label === 'Workspace' ? 'Swarm Platform' : primaryWs.label
-          const wsPaths = detectedWorkspaces.map((w) => w.path)
-
-          let context = ''
-          try {
-            const synRes = await requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: projectName, workspaces: wsPaths }),
-            })
-            context = synRes?.project_context || ''
-          } catch {}
-
-          const payload = {
-            name: projectName,
-            description: `Multi-workspace project across ${detectedWorkspaces.length} workspace(s) managed by Swarm Orchestrator`,
-            workspaces: detectedWorkspaces.map((w) => ({ path: w.path, role: w.role, label: w.label })),
-            project_context: context,
-          }
-
-          let newId = `proj_${Date.now()}`
-          try {
-            const createRes = await requestJson<{ project: { id: string } }>('/v3/projects', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            })
-            if (createRes?.project?.id) {
-              newId = createRes.project.id
-            }
-          } catch {}
-
-          let orchSessionId = ''
-          try {
-            const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                title: `Project Orchestrator: ${projectName}`,
-                workspace_path: primaryWs.path,
-                agent_name: 'system-orchestrator',
-                metadata: {
-                  project_id: newId,
-                  role: 'project_orchestrator',
-                },
-              }),
-            })
-            if (sessRes?.session?.id) {
-              orchSessionId = sessRes.session.id
-              await requestJson(`/v3/projects/${newId}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ primary_session_id: orchSessionId }),
-              }).catch(() => {})
-            }
-          } catch {}
-
-          const autoProject: ProjectSummary = {
-            id: newId,
-            name: projectName,
-            slug: projectName.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-            description: payload.description,
-            repoPath: primaryWs.path,
-            branch: 'dev',
-            gitStatus: 'clean',
-            linkedWorkspaces: wsPaths,
-            activeWorkersCount: 0,
-            pendingDeliverablesCount: 0,
-            runningTasksCount: 0,
-            projectContext: context,
-            primarySessionId: orchSessionId,
-          }
-
-          if (!cancelled) {
-            setProjects([autoProject])
-            setSelectedProjectId(autoProject.id)
-            if (orchSessionId) {
-              setActiveSessionId(orchSessionId)
-            }
-            fetchProjectTasks(autoProject.id)
-          }
         } else {
-          // No workspaces detected, open onboarding
+          // No projects in Pebble. Do not auto-create projects without user action.
           if (!cancelled) {
+            setProjects([])
+            setSelectedProjectId('')
+            setActiveSessionId('')
             setIsOnboardingActive(true)
           }
         }
@@ -457,6 +377,55 @@ export function OrchestrateView({
       })
   }, [selectedTaskId])
 
+  // Helper to ensure an active orchestrator session exists for a project
+  const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
+    if (project.primarySessionId) {
+      setActiveSessionId(project.primarySessionId)
+      return project.primarySessionId
+    }
+    const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
+    try {
+      const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': clientRequestId,
+        },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          title: `Project Orchestrator: ${project.name}`,
+          workspace_path: project.repoPath || '.',
+          agent_name: 'system-orchestrator',
+          preference: {
+            provider: 'google',
+            model: 'gemini-3.8-flash',
+            thinking: 'low',
+          },
+          metadata: {
+            project_id: project.id,
+            role: 'project_orchestrator',
+          },
+        }),
+      })
+      if (sessRes?.session?.id) {
+        const sid = sessRes.session.id
+        setActiveSessionId(sid)
+        await requestJson(`/v3/projects/${project.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ primary_session_id: sid }),
+        }).catch(() => {})
+        setProjects((prev) =>
+          prev.map((p) => (p.id === project.id ? { ...p, primarySessionId: sid } : p))
+        )
+        return sid
+      }
+    } catch (err) {
+      console.warn('Failed to spawn orchestrator session:', err)
+    }
+    return null
+  }, [])
+
   // Synchronize active orchestrator session and project tasks with selected project
   useEffect(() => {
     if (!selectedProject || isOnboardingActive) return
@@ -467,42 +436,15 @@ export function OrchestrateView({
       setActiveSessionId(selectedProject.primarySessionId)
       void fetchSessionMessages(selectedProject.primarySessionId, undefined, 0, { sessionApi: 'v3', tail: true, limit: 100 }).catch(() => {})
     } else {
-      // Spawn primary orchestrator session for this project
-      requestJson<{ session: { id: string } }>('/v3/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: `Project Orchestrator: ${selectedProject.name}`,
-          workspace_path: selectedProject.repoPath || '.',
-          agent_name: 'system-orchestrator',
-          metadata: {
-            project_id: selectedProject.id,
-            role: 'project_orchestrator',
-          },
-        }),
-      })
-        .then((sessRes) => {
-          if (sessRes?.session?.id) {
-            const sid = sessRes.session.id
-            setActiveSessionId(sid)
-            requestJson(`/v3/projects/${selectedProject.id}`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ primary_session_id: sid }),
-            }).catch(() => {})
-          }
-        })
-        .catch((e) => {
-          console.warn('Failed to ensure orchestrator session:', e)
-        })
+      void ensureOrchestratorSession(selectedProject)
     }
-  }, [selectedProject?.id, isOnboardingActive, fetchProjectTasks])
+  }, [selectedProject?.id, isOnboardingActive, fetchProjectTasks, ensureOrchestratorSession])
 
   // Real-time messages for active session from V3 cache
   const liveSessionMessages = useMemo(() => {
     if (!activeSessionId || !messagesBySession[activeSessionId]) return null
     return (messagesBySession[activeSessionId].items || []).filter(
-      (m: any) => m.role === 'user' || m.role === 'assistant'
+      (m: any) => m.role === 'user' || m.role === 'assistant' || m.role === 'system'
     )
   }, [activeSessionId, messagesBySession])
 
@@ -670,44 +612,41 @@ export function OrchestrateView({
     if (!textToSend) setInputText('')
     setIsTyping(true)
 
-    if (activeSessionId) {
+    let targetSid = activeSessionId
+    if (!targetSid && selectedProject) {
+      targetSid = (await ensureOrchestratorSession(selectedProject)) || ''
+    }
+
+    if (targetSid) {
       try {
-        await sendSessionMessage(activeSessionId, 'user', text)
+        await sendSessionMessage(targetSid, 'user', text)
       } catch (err) {
         console.warn('Failed to send message to orchestrator session:', err)
       } finally {
         setIsTyping(false)
       }
-    } else if (selectedProject?.id) {
-      try {
-        const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: `Project Orchestrator: ${selectedProject.name}`,
-            workspace_path: selectedProject.repoPath || '.',
-            agent_name: 'system-orchestrator',
-            metadata: {
-              project_id: selectedProject.id,
-              role: 'project_orchestrator',
-            },
-          }),
-        })
-        if (sessRes?.session?.id) {
-          const sid = sessRes.session.id
-          setActiveSessionId(sid)
-          await requestJson(`/v3/projects/${selectedProject.id}`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ primary_session_id: sid }),
-          }).catch(() => {})
-          await sendSessionMessage(sid, 'user', text)
+    } else {
+      setIsTyping(false)
+    }
+  }
+
+  const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    try {
+      await requestJson(`/v3/projects/${projectId}`, { method: 'DELETE' })
+      setProjects((prev) => prev.filter((p) => p.id !== projectId))
+      if (selectedProjectId === projectId) {
+        const remaining = projects.filter((p) => p.id !== projectId)
+        if (remaining.length > 0) {
+          setSelectedProjectId(remaining[0].id)
+        } else {
+          setSelectedProjectId('')
+          setActiveSessionId('')
+          setIsOnboardingActive(true)
         }
-      } catch (err) {
-        console.warn('Failed to spawn orchestrator session:', err)
-      } finally {
-        setIsTyping(false)
       }
+    } catch (err) {
+      console.warn('Failed to delete project:', err)
     }
   }
 
@@ -804,14 +743,24 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
     // Spawn primary orchestrator session
     let orchSessionId = ''
+    const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
     try {
       const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': clientRequestId,
+        },
         body: JSON.stringify({
+          client_request_id: clientRequestId,
           title: `Project Orchestrator: ${payload.name}`,
           workspace_path: selectedWs[0]?.path || '.',
           agent_name: 'system-orchestrator',
+          preference: {
+            provider: 'google',
+            model: 'gemini-3.8-flash',
+            thinking: 'low',
+          },
           metadata: {
             project_id: newId,
             role: 'project_orchestrator',
@@ -1013,19 +962,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {projects.map((proj) => {
               const isSelected = !isOnboardingActive && proj.id === selectedProjectId
               return (
-                <button
+                <div
                   key={proj.id}
                   onClick={() => {
                     setSelectedProjectId(proj.id)
                     setIsOnboardingActive(false)
                   }}
-                  className={`group flex items-center justify-between p-2 text-left rounded-xl transition-all ${
+                  className={`group flex items-center justify-between p-2 text-left rounded-xl transition-all cursor-pointer ${
                     isSelected
                       ? 'bg-slate-800/90 border border-slate-700/80 text-white shadow-sm'
                       : 'border border-transparent hover:bg-slate-800/40 text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     <div
                       className={`flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-lg border transition-all ${
                         isSelected
@@ -1042,10 +991,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       </span>
                     </div>
                   </div>
-                  {isSelected && (
-                    <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.6)] flex-shrink-0" />
-                  )}
-                </button>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {isSelected && (
+                      <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_6px_rgba(59,130,246,0.6)]" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteProject(proj.id, e)}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded-md transition-all hover:bg-rose-500/10"
+                      title="Delete Project"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
               )
             })}
             {projects.length === 0 && !isOnboardingActive && (
@@ -1322,9 +1281,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       <Folder size={15} className="text-blue-400" />
                       <span>{p.name}</span>
                     </h3>
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
-                      {p.branch || 'dev'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                        {p.branch || 'dev'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => handleDeleteProject(p.id, e)}
+                        className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-rose-400 rounded-md hover:bg-rose-500/10 transition-all"
+                        title="Delete Project"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xs text-slate-400 mb-3">{p.description || 'No description'}</p>
                   <div className="space-y-1">
@@ -1425,8 +1394,20 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   Authoritative project.md context injected into Swarm Orchestrator prompt
                 </p>
               </div>
-              <button
-                onClick={() => {
+              <div className="flex items-center gap-2">
+                {selectedProject && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteProject(selectedProject.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 text-xs font-semibold transition-all"
+                  >
+                    <Trash2 size={12} />
+                    <span>Delete Project</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
                   if (selectedProject?.linkedWorkspaces) {
                     setIsSynthesizing(true)
                     requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
@@ -1460,7 +1441,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span>{isSynthesizing ? 'Synthesizing...' : 'Re-synthesize Context'}</span>
               </button>
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
               <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed overflow-x-auto">
                 {selectedProject?.projectContext || 'No synthesized context available. Click "Re-synthesize Context" to scan bound repositories.'}
               </pre>
@@ -2124,21 +2106,30 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           {liveSessionMessages && liveSessionMessages.length > 0 ? (
             liveSessionMessages.map((msg: any) => {
               const isUser = msg.role === 'user'
+              const isSystem = msg.role === 'system'
               return (
                 <div
                   key={msg.id}
                   className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
                 >
-                  {!isUser && (
+                  {!isUser && !isSystem && (
                     <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium text-slate-400">
                       <Bot size={12} className="text-blue-400" />
                       <span>Swarm Orchestrator</span>
+                    </div>
+                  )}
+                  {isSystem && (
+                    <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium text-amber-400">
+                      <Zap size={12} className="text-amber-400" />
+                      <span>System Event</span>
                     </div>
                   )}
                   <div
                     className={`max-w-[95%] p-3 text-xs leading-relaxed transition-all ${
                       isUser
                         ? 'rounded-2xl rounded-tr-sm bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_2px_12px_rgba(37,99,235,0.25)]'
+                        : isSystem
+                        ? 'rounded-2xl rounded-tl-sm bg-amber-950/20 border border-amber-500/30 text-amber-200 whitespace-pre-wrap font-mono text-[11px]'
                         : 'rounded-2xl rounded-tl-sm bg-[#090d16] border border-slate-800/80 text-slate-200 whitespace-pre-wrap'
                     }`}
                   >
