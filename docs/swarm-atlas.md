@@ -2658,9 +2658,27 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - Added UI in Desktop Workers view (`AutomationV2WorkerDetailPage` in `web/src/features/desktop/tools/automations/automation-v2-workspace.tsx`):
     - Top header "Deploy secret" action button.
     - Dedicated `worker-deploy-secret-section` with "Generate Deploy Secret", read-only bearer token input, "Copy" button, copyable cURL example for off-site triggering, and optional sync to `~/.config/swarm/secrets.env`.
+### Project Onboarding, /v3/projects Persistence & Orchestrator Toolset (2026-09-25)
+
+- **Pebble Project Persistence (`swarmd/internal/store/pebble/project_store.go`, `keys.go`):**
+  - Added Pebble key prefix `project/by_account/` (`KeyProjectAccountPrefix`) and account-scoped CRUD methods on `SessionStore` (`PutProject`, `GetProject`, `ListProjects`, `UpdateProject`, `DeleteProject`).
+  - Enforced strict account scoping, ID generation, validation, and JSON serialization for `ProjectRecord`.
+- **REST Endpoints (`/v3/projects` & `/v3/projects/{id}` in `swarmd/internal/api/projects.go`, `server_routes.go`):**
+  - Implemented authenticated `GET`, `POST`, `PATCH`, `DELETE` handlers for project collections and individual project resources.
+  - Validates user principals and scopes (`projects:read`, `projects:write` with `sessions:*` fallback).
+- **System Agent & Isolated Toolset (`swarmd/internal/agent/system_agent_registry.go`, `swarmd/internal/tool/`):**
+  - Registered `system-orchestrator` (`SwarmOrchestratorAgentID`, `@orchestrator`) with high-level prompt directives and pruned executive toolset (`task`, `manage_projects`, `manage_workers`, `manage_automation`, `plan_manage`, `read`, `search`, `find`, `list`, `bash`).
+  - Implemented isolated `manage_projects` tool in `runtime_manage_projects.go` supporting `list`, `get`, `create`, `update`, `delete`, and `synthesize_context`.
+  - Excluded `manage_projects` from the primary `swarm` agent tool contract and excluded raw multimedia/environment tools from `system-orchestrator`.
+- **Desktop Facilitating Project Onboarding (`web/src/features/desktop/orchestrate/OrchestrateView.tsx`):**
+  - Dual-mode Project Onboarding: middle canvas takeover with workspace selection checkboxes, inline folder addition, and editable `project.md` context review card.
+  - Non-blocking conversational facilitation in right AI chat with interactive action chips.
+  - Seamless activation connecting to `/v3/projects` and transitioning into canonical Variant 3 (Autonomous Worker Fleet).
 - **Verification & Tests:**
-  - `swarmd/internal/api/automations_v2_test.go`: updated `TestAutomationV2TriggerWorkerAcceptanceMintsToken` and added `TestAutomationV2StableWorkerDoesNotMintTokenAndAllowsPostAcceptanceMint` verifying trigger workers auto-mint, stable workers do not auto-mint on acceptance, and on-demand token minting succeeds.
-  - `web/src/features/desktop/tools/automations/worker-id-page.spec.tsx`: added unit test verifying `AutomationV2WorkerDetailPage` renders the Deploy secret button and UI.
-  - Verified with `./scripts/check-precommit.sh` and `bash scripts/check-atlas-sync.sh`.
+  - `TestProjectStoreCRUD`: validates Pebble CRUD, sorting, and cross-account isolation.
+  - `TestProjectsAPIEndpoints`: validates REST HTTP handlers, status codes, and JSON contracts.
+  - `TestBuiltinSystemAgentRegistryIsCompleteAndUnique` & `TestBuiltinSystemAgentRegistryUserVisibleIDs`: validates system agent registration.
+  - `TestManageProjectsToolExecutionAndIsolation` & `TestOrchestratorToolIsolationContract`: validates tool execution and isolation.
+  - `tsc -b` and full production Vite build (`npm run build`) completed with 0 errors.
 
 

@@ -31,6 +31,8 @@ const (
 	IdeaAgentName                = "Idea"
 	SwarmAgentID                 = "swarm"
 	SwarmAgentName               = "Swarm"
+	SwarmOrchestratorAgentID     = "system-orchestrator"
+	SwarmOrchestratorAgentName   = "Swarm Orchestrator"
 	AITaskPreparerAgentID        = "system-ai-task-preparer"
 	AITaskPreparerAgentName      = "AI Task Preparer"
 	ReviewCommitAgentID          = "system-review-commit"
@@ -211,6 +213,13 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileSwarmAgentProfile,
 	},
 	{
+		ID:          SwarmOrchestratorAgentID,
+		DisplayName: SwarmOrchestratorAgentName,
+		UserVisible: false,
+		Materialize: SwarmOrchestratorAgentProfileForContext,
+		Reconcile:   reconcileSwarmOrchestratorAgentProfile,
+	},
+	{
 		ID:                       PlanSidechatAgentID,
 		DisplayName:              PlanSidechatAgentName,
 		SidechatKind:             SystemSidechatKindPlan,
@@ -358,8 +367,59 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_memory":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
 			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_projects":     {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
+}
+
+func SwarmOrchestratorAgentPrompt() string {
+	return strings.TrimSpace(`You are Swarm Orchestrator, the executive project management and coordination agent.
+
+Your role is to orchestrate complex multi-workspace software initiatives, manage autonomous background workers, and supervise delegated tasks.
+- Elevate from raw files to cohesive Projects: maintain project architecture and context in project.md.
+- Delegate implementation work: do not write extensive code or raw multimedia files directly. Dispatch specialized Coders, Designers, Finders, or swarms via the task tool.
+- Facilitate project onboarding: help users select workspaces, add folders, and synthesize high-level project architecture without blocking chat interactions.
+- Respect workspace boundaries and tool isolation: operate at the strategic executive level.`)
+}
+
+func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
+	return &pebblestore.AgentToolContract{
+		Preset: "custom",
+		Tools: map[string]pebblestore.AgentToolConfig{
+			"read":              {Enabled: pebblestore.BoolPtr(true)},
+			"search":            {Enabled: pebblestore.BoolPtr(true)},
+			"find":              {Enabled: pebblestore.BoolPtr(true)},
+			"list":              {Enabled: pebblestore.BoolPtr(true)},
+			"bash":              {Enabled: pebblestore.BoolPtr(true)},
+			"task":              {Enabled: pebblestore.BoolPtr(true)},
+			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
+			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":       {Enabled: pebblestore.BoolPtr(true)},
+			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(true)},
+		},
+	}
+}
+
+func SwarmOrchestratorAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
+		Name: SwarmOrchestratorAgentID, Mode: ModePrimary, Description: "Executive project orchestrator",
+		Prompt: SwarmOrchestratorAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModeAuto),
+		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmOrchestratorAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
+	})
+	profile.Protected = true
+	return profile
+}
+
+func reconcileSwarmOrchestratorAgentProfile(snapshot pebblestore.AgentProfile) pebblestore.AgentProfile {
+	profile := SwarmOrchestratorAgentProfileForContext(snapshot)
+	profile.Provider, profile.Model, profile.Thinking = snapshot.Provider, snapshot.Model, snapshot.Thinking
+	profile.AutoServiceTier = strings.TrimSpace(snapshot.AutoServiceTier)
+	if strings.TrimSpace(snapshot.Prompt) != "" {
+		profile.Prompt = strings.TrimSpace(snapshot.Prompt)
+	}
+	return profile
 }
 
 func PlanSidechatAgentPrompt() string {
@@ -673,10 +733,21 @@ func CanonicalSystemAgentID(name string) (string, bool) {
 		return VideoAgentID, true
 	case IsIdeaAgentName(name):
 		return IdeaAgentID, true
+	case IsOrchestratorAgentName(name):
+		return SwarmOrchestratorAgentID, true
 	case name == "ai sidechat":
 		return AISidechatAgentID, true
 	default:
 		return "", false
+	}
+}
+
+func IsOrchestratorAgentName(name string) bool {
+	switch normalizeName(name) {
+	case "orchestrator", "@orchestrator", "swarm-orchestrator", "system/swarm-orchestrator", SwarmOrchestratorAgentID:
+		return true
+	default:
+		return false
 	}
 }
 

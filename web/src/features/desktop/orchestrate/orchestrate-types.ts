@@ -79,6 +79,7 @@ export interface ProjectSummary {
   activeWorkersCount: number
   pendingDeliverablesCount: number
   runningTasksCount: number
+  projectContext?: string
 }
 
 export interface RunningAutomation {

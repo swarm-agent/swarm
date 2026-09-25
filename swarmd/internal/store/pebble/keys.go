@@ -18,6 +18,7 @@ const (
 	KeyDeliverableAccountPrefix                    = "deliverable/by_account/"
 	KeyDeliverableStatusPrefix                     = "deliverable/index_status/"
 	KeyDeliverableWorkerPrefix                     = "deliverable/index_worker/"
+	KeyProjectAccountPrefix                        = "project/by_account/"
 	KeyAuthVaultMeta                               = "auth/vault/meta" // legacy singleton key; retained for explicit migration only.
 	KeyAuthVaultMetaAccountPrefix                  = "auth/vault/meta_by_account/"
 	KeyAuthCredentialPrefix                        = "auth/credential/"
@@ -827,6 +828,18 @@ func DeliverableWorkerIndexPrefix(accountScopeID, workerID string) string {
 		return fmt.Sprintf("%s%s/", KeyDeliverableWorkerPrefix, accountPart)
 	}
 	return fmt.Sprintf("%s%s/%s/", KeyDeliverableWorkerPrefix, accountPart, workerPart)
+}
+
+func KeyProject(accountScopeID, projectID string) string {
+	return fmt.Sprintf("%s%s/%s", KeyProjectAccountPrefix, keyPart(accountScopeID), keyPart(projectID))
+}
+
+func ProjectPrefix(accountScopeID string) string {
+	accountPart := keyPart(accountScopeID)
+	if accountPart == "" {
+		return KeyProjectAccountPrefix
+	}
+	return fmt.Sprintf("%s%s/", KeyProjectAccountPrefix, accountPart)
 }
 
 func AuthCredentialPrefix() string {

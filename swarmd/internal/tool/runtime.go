@@ -206,6 +206,7 @@ type Runtime struct {
 	deploymentManager     manageDeploymentLifecycleService
 	workspaceSettings     manageWorkspaceSettingsStore
 	providerRegistry      *provider.Registry
+	projects              manageProjectStore
 }
 
 type manageSessionController interface {
@@ -1503,6 +1504,7 @@ func (r *Runtime) Definitions() []Definition {
 			},
 		},
 		manageActionsDefinition(),
+		manageProjectsDefinition(),
 		manageConnectionsDefinition(),
 		manageEnvironmentsDefinition(),
 		manageWorkersV2Definition(),
@@ -2087,6 +2089,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", errors.New("manage_workers V2 requires canonical session run dispatch; legacy execution is retired")
 	case "manage-actions", "manage_actions":
 		return r.executeManageActions(scope, args)
+	case "manage-projects", "manage_projects":
+		return r.executeManageProjects(scope, args)
 	case "manage-connections", "manage_connections":
 		return r.executeManageConnections(ctx, scope, args)
 	case "manage-environments", "manage_environments":
@@ -9410,6 +9414,8 @@ func manageAgentCanonicalToolName(name string) string {
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-projects", "manage_projects":
+		return "manage_projects"
 	case "manage-connections", "manage_connections":
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
@@ -10003,6 +10009,8 @@ func canonicalStubToolName(raw string) string {
 		return "manage_automation"
 	case "manage-actions", "manage_actions":
 		return "manage_actions"
+	case "manage-projects", "manage_projects":
+		return "manage_projects"
 	case "manage-connections", "manage_connections":
 		return "manage_connections"
 	case "manage-environments", "manage_environments":
@@ -10537,6 +10545,8 @@ func toolPathID(name string) string {
 		return "tool.manage-automation.v1"
 	case "manage-actions", "manage_actions":
 		return "tool.manage-actions.v1"
+	case "manage-projects", "manage_projects":
+		return "tool.manage-projects.v1"
 	case "manage-connections", "manage_connections":
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":

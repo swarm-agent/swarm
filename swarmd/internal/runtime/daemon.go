@@ -490,6 +490,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageOrchestrationPolicyService(permissionSvc)
 	toolRuntime.SetManageTodoService(todoSvc)
 	toolRuntime.SetManageActionService(actionSvc)
+	toolRuntime.SetManageProjectStore(sessionSvc.Store())
 	automationApproval, err := automation.NewPolicyApproval(store, sessionSvc.Store(), automationAccess{workspaces: workspaceSvc, sessions: sessionSvc, members: pebblestore.NewIdentityStore(store)}, automation.RuntimeApprovalIdentity(), time.Now)
 	if err != nil {
 		_ = secretStore.Close()
