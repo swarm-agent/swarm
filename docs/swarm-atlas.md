@@ -391,6 +391,7 @@ All listed routes are registered by the eight `register*Routes` methods called b
 | `/v3/automations/v2`, `/v3/automations/v2/{proposal,review,accept,decline,control,progress,token}` | `server_routes.go` → `handleAutomationsV2` → session `ProposeAutomationV2` / `AcceptAutomationV2` / `DeclineAutomationV2` → private V2 participant in `ApplyV3SessionMutation`; AI primary Plan/Auto consumers through `run/automation_v2_tools.go`; Desktop V2 review/card, modal, canonical cache/runtime and Automation workspace via `desktop-automation-v2-api.ts`, `desktop-automation-v2.ts`, `automation-v2-plan-review.tsx`, `automation-v2-workspace.tsx` | authenticated user/account + active membership + live workspace catalog + available primary grant; complete canonical executable document, exact review CAS/digest; atomic accepted snapshot/authorization/session binding and `session.automation_v2.accepted` / `session.automation_v2.declined` outbox; on worker acceptance, automatically mints scoped deploy token (`automations:trigger`) tied to worker ID only for trigger workers (`schedule.kind == "trigger"`), persists to `~/.config/swarm/secrets.env` (0600) as `SWARM_TRIGGER_TOKEN`, and returns confirmation message; stable/harness workers (cron, interval) do not auto-mint tokens on acceptance; on-demand token minting and off-site deploy secrets are supported via `POST /v3/automations/v2/token` and Desktop UI; **V2 backend current; Desktop integration current**; supports `archived_mode` (`exclude` default, `include`, `only`) on discovery, clean tombstone/archived session handling without `ErrAutomationV2Conflict`, and `archived: true` / `archived_at` on records; controls use exact generation and explicit user action; progress requires display timezone and returns bounded forecast/observed receipts | `automations_v2_test.go`, session/store `automation_v2_test.go`: real-store zero-to-one, trigger worker acceptance token minting and secrets.env persistence (`TestAutomationV2TriggerWorkerAcceptanceMintsToken`), stable worker acceptance without token minting and post-acceptance token minting (`TestAutomationV2StableWorkerDoesNotMintTokenAndAllowsPostAcceptanceMint`), edited settings, finite/indefinite expiry, stale/foreign/runtime-agent rejection, decline/deny proposal deletion and permission denial, concurrent/restart replay and injected rollback, archived/deleted session lifecycle and `archived_mode` discovery; focused execution, not live/provider proof |
 | `/v3/automations`, `/v3/automations/approve`, `/v3/automations/revoke` | `api/automations.go:handleAutomations`; existing Desktop V1 clients remain replacement targets | **V1 read compatibility only**; authenticated mutations return 410, records preserved; daemon no longer installs V1 tool/approval/execution/context or starts its scheduler | `automations_test.go` now asserts retired mutation/event/approval paths create nothing and preserve legacy definitions; historical V1 tests below are not current execution evidence |
 | `/v3/artifacts` | session artifact handler; Desktop artifact gallery/tools | principal/session lineage; **current** | `sessions_v3_artifacts_test.go`, artifact contract tests |
+| `/v3/projects`, `/v3/projects/{id}`, `/v3/projects/synthesize-context`, `/v3/projects/{id}/tasks`, `/v3/projects/{id}/tasks/{taskId}` | `handleProjects` in `api/projects.go` -> `SessionStore` project and project task CRUD (`PutProject`, `GetProject`, `ListProjects`, `UpdateProject`, `DeleteProject`, `PutProjectTask`, `GetProjectTask`, `ListProjectTasks`, `UpdateProjectTask`, `DeleteProjectTask`); Desktop Orchestrate mode (`OrchestrateView.tsx`) | authenticated user, scopes `projects:read`/`projects:write` (fallback `sessions:*`); **current** | `api/projects_test.go`, `store/pebble/project_store_test.go` |
 | `/v3/sessions:workset`, `/v3/tui/sessions:workset`, `/v3/tui/sessions*` | legacy workset/TUI handlers | **compatibility; explicit removal gates** | `sessions_v3_sync_contract_test.go`, `sessions_v3_workset_test.go`, `sessions_v3_tui_test.go` |
 | `/v1/sessions`, `/v1/sessions/` | legacy handlers | **compatibility; not V3 rendering authority** | legacy API tests; V3 contract guards |
 
@@ -2679,6 +2680,33 @@ no scratch/logs or private identifiers were added to tracked documentation.
   - `TestProjectsAPIEndpoints`: validates REST HTTP handlers, status codes, and JSON contracts.
   - `TestBuiltinSystemAgentRegistryIsCompleteAndUnique` & `TestBuiltinSystemAgentRegistryUserVisibleIDs`: validates system agent registration.
   - `TestManageProjectsToolExecutionAndIsolation` & `TestOrchestratorToolIsolationContract`: validates tool execution and isolation.
+  - `tsc -b` and full production Vite build (`npm run build`) completed with 0 errors.
+
+### Project Orchestrator project.md Prompt Injection, Live V3 Session & Real-Time Project Tasks (2026-09-25)
+
+- **Prompt Composition & AGENTS.md Suppression (`swarmd/internal/run/service_prompt.go`):**
+  - Updated `composeInstructionsForScopeWithDiscoveryRoots` so that when `agentProfile.Name` is `system-orchestrator` (`agentruntime.SwarmOrchestratorAgentID`), scanning and injection of workspace `AGENTS.md` rules is suppressed.
+  - Implemented `projectContextPromptBlock`: fetches bound project from Pebble store (via `sessionSnapshot.Metadata["project_id"]`, `PrimarySessionID`, or workspace matching) and injects the authoritative `project.md` context stored in Swarm. Subagents (`coder`, `designer`, `finder`) retain full workspace `AGENTS.md` discovery.
+- **Pebble Project Tasks Persistence (`swarmd/internal/store/pebble/project_store.go`, `keys.go`):**
+  - Added Pebble key prefix `project_task/by_account/` (`KeyProjectTaskAccountPrefix`) and key generators `KeyProjectTask` and `ProjectTaskPrefix`.
+  - Added `ProjectTaskRecord` and `ProjectTaskDeliverable` schemas.
+  - Implemented CRUD methods on `SessionStore`: `PutProjectTask`, `GetProjectTask`, `ListProjectTasks`, `UpdateProjectTask`, `DeleteProjectTask`.
+- **REST Endpoints & Context Synthesis (`swarmd/internal/api/projects.go`):**
+  - Added `POST /v3/projects/synthesize-context`: reads `AGENTS.md` and `README.md` across selected workspaces and synthesizes an authoritative `project.md`.
+  - Added `GET /v3/projects/{id}/tasks` and `POST /v3/projects/{id}/tasks` (supporting automated V3 session deployment with agent profile and prompt dispatch).
+  - Added `GET`, `PATCH`, and `DELETE` on `/v3/projects/{id}/tasks/{taskId}` for real-time task lifecycle transitions.
+- **Executive Toolset Enhancement (`swarmd/internal/tool/runtime_manage_projects.go`):**
+  - Extended `manage_projects` tool with actions: `create_task`, `list_tasks`, and `update_task`.
+- **Desktop Orchestrate Mode Live Integration (`web/src/features/desktop/orchestrate/`):**
+  - Integrated `useDesktopV3CacheSelector` to subscribe to `sessionsById`, `messagesBySession`, and `plansBySession`.
+  - Linked Orchestrate chat panel to live durable V3 session using `system-orchestrator` agent and dispatches messages via `sendSessionMessage`.
+  - Connected `[✨ Generate with AI]` context synthesis to live `POST /v3/projects/synthesize-context`.
+  - Connected middle canvas tasks to live project tasks with real-time status derivations (`queued` -> `running` -> `needs_review` -> `completed`) driven by linked V3 sessions and checkpoint review states.
+- **Verification & Tests:**
+  - `TestOrchestratorPromptInjectsProjectContextAndSuppressesAgentsMD`: verifies that `system-orchestrator` suppresses `AGENTS.md` rules and injects `project.md`, while subagents receive `AGENTS.md` normally.
+  - `TestProjectTaskStoreCRUD`: verifies Pebble CRUD, sorting, and isolation for project tasks.
+  - `TestProjectsAPIEndpoints`: verifies `/v3/projects/synthesize-context`, task creation, listing, patching, and deletion.
+  - `TestManageProjectsToolExecutionAndIsolation`: verifies `create_task`, `list_tasks`, `update_task` execution.
   - `tsc -b` and full production Vite build (`npm run build`) completed with 0 errors.
 
 

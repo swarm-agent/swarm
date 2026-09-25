@@ -80,6 +80,7 @@ export interface ProjectSummary {
   pendingDeliverablesCount: number
   runningTasksCount: number
   projectContext?: string
+  primarySessionId?: string
 }
 
 export interface RunningAutomation {
@@ -163,6 +164,8 @@ export interface RunningTask {
   diffPreview?: string
   diffLines?: DiffLine[]
   deliverables?: MediaDeliverable[]
+  sessionId?: string
+  createdAt?: number
 }
 
 export interface VideoProgressCard {

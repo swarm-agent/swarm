@@ -182,3 +182,183 @@ func (s *SessionStore) UpdateProject(accountScopeID, id string, mutate func(*Pro
 	}
 	return record, nil
 }
+
+// ProjectTaskDeliverable represents an artifact, video, code diff, or report produced by a task.
+type ProjectTaskDeliverable struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Kind        string `json:"kind"`   // "video" | "code_diff" | "artifact" | "report"
+	Status      string `json:"status"` // "ready" | "accepted" | "in_progress"
+	Duration    string `json:"duration,omitempty"`
+	Thumbnail   string `json:"thumbnail,omitempty"`
+	Description string `json:"description,omitempty"`
+	ArtifactRef string `json:"artifact_ref,omitempty"`
+	CodeDiff    string `json:"code_diff,omitempty"`
+}
+
+// ProjectTaskRecord represents an autonomous task unit in a project.
+type ProjectTaskRecord struct {
+	ID                string                   `json:"id"`
+	ProjectID         string                   `json:"project_id"`
+	AccountID         string                   `json:"account_id"`
+	Title             string                   `json:"title"`
+	Description       string                   `json:"description,omitempty"`
+	Status            string                   `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed"
+	SessionID         string                   `json:"session_id,omitempty"`
+	Agent             string                   `json:"agent,omitempty"`
+	WorkerName        string                   `json:"worker_name,omitempty"`
+	PipelineStages    []string                 `json:"pipeline_stages,omitempty"`
+	CurrentStageIndex int                      `json:"current_stage_index"`
+	Deliverables      []ProjectTaskDeliverable `json:"deliverables,omitempty"`
+	CreatedAt         int64                    `json:"created_at"`
+	UpdatedAt         int64                    `json:"updated_at"`
+}
+
+func (t *ProjectTaskRecord) Validate() error {
+	t.ProjectID = strings.TrimSpace(t.ProjectID)
+	if t.ProjectID == "" {
+		return errors.New("project id is required")
+	}
+	t.Title = strings.TrimSpace(t.Title)
+	if t.Title == "" {
+		return errors.New("task title is required")
+	}
+	if t.Status == "" {
+		t.Status = "queued"
+	}
+	return nil
+}
+
+// PutProjectTask stores or updates a task for a project.
+func (s *SessionStore) PutProjectTask(accountScopeID string, task *ProjectTaskRecord) error {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return errors.New("database not available")
+	}
+	if task == nil {
+		return errors.New("project task definition required")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return errors.New("account scope id is required")
+	}
+	task.AccountID = accountScopeID
+	if err := task.Validate(); err != nil {
+		return err
+	}
+	now := time.Now().UnixMilli()
+	if task.ID == "" {
+		b := make([]byte, 8)
+		_, _ = rand.Read(b)
+		task.ID = "task_" + hex.EncodeToString(b)
+	}
+	if task.CreatedAt == 0 {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
+	raw, err := json.Marshal(task)
+	if err != nil {
+		return err
+	}
+	key := []byte(KeyProjectTask(accountScopeID, task.ProjectID, task.ID))
+	return s.store.db.Set(key, raw, pebble.Sync)
+}
+
+// GetProjectTask fetches a project task by ID.
+func (s *SessionStore) GetProjectTask(accountScopeID, projectID, taskID string) (*ProjectTaskRecord, bool, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, false, errors.New("database not available")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	projectID = strings.TrimSpace(projectID)
+	taskID = strings.TrimSpace(taskID)
+	if accountScopeID == "" || projectID == "" || taskID == "" {
+		return nil, false, errors.New("account scope id, project id, and task id are required")
+	}
+	key := []byte(KeyProjectTask(accountScopeID, projectID, taskID))
+	val, closer, err := s.store.db.Get(key)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	defer closer.Close()
+	var rec ProjectTaskRecord
+	if err := json.Unmarshal(val, &rec); err != nil {
+		return nil, false, err
+	}
+	return &rec, true, nil
+}
+
+// ListProjectTasks lists all tasks for a project.
+func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit int) ([]ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	projectID = strings.TrimSpace(projectID)
+	if accountScopeID == "" || projectID == "" {
+		return nil, errors.New("account scope id and project id are required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+
+	var tasks []ProjectTaskRecord
+	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10000, func(_ string, value []byte) error {
+		var rec ProjectTaskRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return nil
+		}
+		if rec.AccountID == accountScopeID && rec.ProjectID == projectID {
+			tasks = append(tasks, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].CreatedAt < tasks[j].CreatedAt
+	})
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+	return tasks, nil
+}
+
+// UpdateProjectTask mutates a task atomically.
+func (s *SessionStore) UpdateProjectTask(accountScopeID, projectID, taskID string, mutate func(*ProjectTaskRecord) error) (*ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	record, found, err := s.GetProjectTask(accountScopeID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || record == nil {
+		return nil, errors.New("project task not found")
+	}
+	if err := mutate(record); err != nil {
+		return nil, err
+	}
+	if err := s.PutProjectTask(accountScopeID, record); err != nil {
+		return nil, err
+	}
+	return record, nil
+}
+
+// DeleteProjectTask deletes a task record.
+func (s *SessionStore) DeleteProjectTask(accountScopeID, projectID, taskID string) error {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return errors.New("database not available")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	projectID = strings.TrimSpace(projectID)
+	taskID = strings.TrimSpace(taskID)
+	if accountScopeID == "" || projectID == "" || taskID == "" {
+		return errors.New("account scope id, project id, and task id are required")
+	}
+	return s.store.db.Delete([]byte(KeyProjectTask(accountScopeID, projectID, taskID)), pebble.Sync)
+}

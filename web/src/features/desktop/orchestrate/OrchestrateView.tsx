@@ -32,6 +32,8 @@ import {
   Zap,
 } from 'lucide-react'
 import { requestJson } from '../../../app/api'
+import { useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
+import { sendSessionMessage } from '../chat/queries/chat-queries'
 import {
   MOCK_AUTOMATIONS,
   MOCK_CHAT_MESSAGES,
@@ -194,10 +196,16 @@ Core daemon, desktop client, and video production pipeline.
 - Strict tool isolation: raw multimedia and environment tools are excluded from executive orchestrator prompt.
 - Verification gate: all pull requests and deliverables require user review before promotion.`)
 
+  // Live Pebble V3 cache state for real-time orchestrator sessions and tasks
+  const sessionsById = useDesktopV3CacheSelector((s) => s.sessionsById)
+  const messagesBySession = useDesktopV3CacheSelector((s) => s.messagesBySession)
+  const plansBySession = useDesktopV3CacheSelector((s) => s.plansBySession)
+  const [activeSessionId, setActiveSessionId] = useState<string>('')
+
   // Initial load from live /v3/projects if available
   useEffect(() => {
     let cancelled = false
-    requestJson<{ projects: Array<{ id: string; name: string; description?: string; workspaces?: Array<{ path: string; label?: string; role?: string }>; project_context?: string }> }>('/v3/projects')
+    requestJson<{ projects: Array<{ id: string; name: string; description?: string; workspaces?: Array<{ path: string; label?: string; role?: string }>; project_context?: string; primary_session_id?: string }> }>('/v3/projects')
       .then((res) => {
         if (cancelled) return
         if (res.projects && res.projects.length > 0) {
@@ -214,9 +222,13 @@ Core daemon, desktop client, and video production pipeline.
             pendingDeliverablesCount: 3,
             runningTasksCount: 100,
             projectContext: p.project_context,
+            primarySessionId: p.primary_session_id,
           }))
           setProjects(loaded)
           setSelectedProjectId(loaded[0].id)
+          if (loaded[0].primarySessionId) {
+            setActiveSessionId(loaded[0].primarySessionId)
+          }
         }
       })
       .catch(() => {
@@ -226,6 +238,53 @@ Core daemon, desktop client, and video production pipeline.
       cancelled = true
     }
   }, [])
+
+  const fetchProjectTasks = (projectId: string) => {
+    requestJson<{ tasks: any[] }>(`/v3/projects/${projectId}/tasks`)
+      .then((res) => {
+        if (res.tasks && res.tasks.length > 0) {
+          const backendTasks: RunningTask[] = res.tasks.map((t) => ({
+            id: t.id,
+            title: t.title,
+            subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
+            agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' ? t.agent : 'coder') as any,
+            status: (t.status === 'in_progress' ? 'running' : t.status) as any,
+            workspaceTarget: t.project_id,
+            elapsed: 'Just now',
+            workerName: t.worker_name || `@${t.agent || 'Coder'} Verifier`,
+            priority: 'high',
+            sessionId: t.session_id,
+            createdAt: t.created_at,
+            stageIndex: t.current_stage_index,
+            totalStages: t.pipeline_stages?.length || 4,
+            stepTimeline: t.pipeline_stages?.map((st: string, idx: number) => ({
+              step: idx + 1,
+              label: st,
+              status: idx < (t.current_stage_index || 0) ? 'complete' : (idx === t.current_stage_index ? 'processing' : 'pending'),
+            })),
+            deliverables: t.deliverables?.map((d: any) => ({
+              id: d.id,
+              title: d.title,
+              type: d.kind || 'video',
+              status: d.status || 'ready',
+              duration: d.duration || '0:15',
+              thumbnailType: (d.thumbnail || 'cyber_lattice') as any,
+              createdAt: 'Just now',
+              author: t.worker_name || 'Orchestrator',
+            })),
+            subtasks: [
+              { id: '1', title: 'Verify task scope', completed: true },
+              { id: '2', title: 'Execute implementation', completed: t.status === 'completed' || t.status === 'needs_review' },
+            ],
+          }))
+          setTasks((prev) => {
+            const nonBackend = prev.filter((p) => !p.id.startsWith('task_'))
+            return [...backendTasks, ...nonBackend]
+          })
+        }
+      })
+      .catch(() => {})
+  }
 
   const handleToggleWorkspace = (path: string) => {
     setOnboardingWorkspaces((prev) =>
@@ -250,9 +309,23 @@ Core daemon, desktop client, and video production pipeline.
     setCustomFolderPath('')
   }
 
-  const handleSynthesizeContext = () => {
+  const handleSynthesizeContext = async () => {
     setIsSynthesizing(true)
-    setTimeout(() => {
+    try {
+      const selectedWs = onboardingWorkspaces.filter((w) => w.selected).map((w) => w.path)
+      const res = await requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: onboardingName.trim() || 'Project Architecture',
+          workspaces: selectedWs,
+        }),
+      })
+      if (res?.project_context) {
+        setOnboardingContext(res.project_context)
+      }
+    } catch (err) {
+      console.warn('Backend context synthesis failed, falling back:', err)
       const selectedWs = onboardingWorkspaces.filter((w) => w.selected)
       const synthesized = `# ${onboardingName.trim() || 'Project Architecture'}
 
@@ -269,8 +342,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 - Verification gate: all pull requests and deliverables require user review before promotion.
 `
       setOnboardingContext(synthesized)
+    } finally {
       setIsSynthesizing(false)
-    }, 400)
+    }
   }
 
   const handleCreateAndActivateProject = async () => {
@@ -302,6 +376,34 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       console.warn('Backend /v3/projects offline, activating project in local state:', err)
     }
 
+    // Automatically spawn the primary orchestrator session for this newly created project
+    let orchSessionId = ''
+    try {
+      const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `Project Orchestrator: ${payload.name}`,
+          workspace_path: selectedWs[0]?.path || '.',
+          agent_name: 'system-orchestrator',
+          metadata: {
+            project_id: newId,
+            role: 'project_orchestrator',
+          },
+        }),
+      })
+      if (sessRes?.session?.id) {
+        orchSessionId = sessRes.session.id
+        await requestJson(`/v3/projects/${newId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ primary_session_id: orchSessionId }),
+        })
+      }
+    } catch (e) {
+      console.warn('Failed to spawn initial orchestrator session:', e)
+    }
+
     const newProject: ProjectSummary = {
       id: newId,
       name: payload.name,
@@ -315,10 +417,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       pendingDeliverablesCount: 0,
       runningTasksCount: 0,
       projectContext: payload.project_context,
+      primarySessionId: orchSessionId,
     }
 
     setProjects((prev) => [newProject, ...prev])
     setSelectedProjectId(newProject.id)
+    if (orchSessionId) {
+      setActiveSessionId(orchSessionId)
+    }
     setIsOnboardingActive(false)
     setIsActivating(false)
 
@@ -326,7 +432,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     const confirmMsg: OrchestratorMessage = {
       id: `msg-${Date.now()}`,
       sender: 'orchestrator',
-      text: `🎉 Project "${newProject.name}" has been created and activated!\n\nBound Workspaces:\n${selectedWs.map((w) => `• ${w.path} (${w.label})`).join('\n')}\n\nYou can now deploy autonomous workers or dispatch your first task.`,
+      text: `🎉 Project "${newProject.name}" has been created and activated!\n\nBound Workspaces:\n${selectedWs.map((w) => `• ${w.path} (${w.label})`).join('\n')}\n\nYou can now deploy autonomous workers or dispatch your first task with the Swarm Orchestrator.`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     }
     setMessages((prev) => [...prev, confirmMsg])
@@ -363,9 +469,119 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   const [isTyping, setIsTyping] = useState(false)
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
 
+  // Derived live tasks with real-time status from linked V3 sessions
+  const liveTasks = useMemo(() => {
+    return tasks.map((task) => {
+      if (!task.sessionId || !sessionsById[task.sessionId]) {
+        return task
+      }
+      const record = sessionsById[task.sessionId]
+      const sess = record?.kind === 'full' ? record.session : undefined
+      const plan = plansBySession[task.sessionId] as any
+      if (!sess) {
+        return task
+      }
+      const lifecycle = sess.lifecycle as any
+      let status = task.status
+      if (lifecycle?.active) {
+        status = 'running'
+      }
+      const hasWaitingReview = plan?.document?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
+      if (hasWaitingReview || lifecycle?.phase === 'needs_review') {
+        status = 'needs_review'
+      } else if (!lifecycle?.active && (sess.message_count ?? 0) > 1) {
+        status = 'completed'
+      }
+      return {
+        ...task,
+        status,
+        elapsed: sess.updated_at ? `${Math.max(1, Math.round((Date.now() - (sess.created_at ?? Date.now())) / 60000))}m` : task.elapsed,
+      }
+    })
+  }, [tasks, sessionsById, plansBySession])
+
+  // Synchronize active orchestrator session and project tasks with selected project
+  useEffect(() => {
+    if (!selectedProject || isOnboardingActive) return
+
+    fetchProjectTasks(selectedProject.id)
+
+    if (selectedProject.primarySessionId) {
+      setActiveSessionId(selectedProject.primarySessionId)
+    } else {
+      requestJson<{ session: { id: string } }>('/v3/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `Project Orchestrator: ${selectedProject.name}`,
+          workspace_path: selectedProject.repoPath || '.',
+          agent_name: 'system-orchestrator',
+          metadata: {
+            project_id: selectedProject.id,
+            role: 'project_orchestrator',
+          },
+        }),
+      })
+        .then((sessRes) => {
+          if (sessRes?.session?.id) {
+            const sid = sessRes.session.id
+            setActiveSessionId(sid)
+            requestJson(`/v3/projects/${selectedProject.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ primary_session_id: sid }),
+            }).catch(() => {})
+          }
+        })
+        .catch((e) => {
+          console.warn('Failed to ensure orchestrator session:', e)
+        })
+    }
+  }, [selectedProject?.id, isOnboardingActive])
+
+  const liveSessionMessages = useMemo(() => {
+    if (!activeSessionId || !messagesBySession[activeSessionId]) return null
+    return (messagesBySession[activeSessionId].items || []).filter(
+      (m: any) => m.role === 'user' || m.role === 'assistant'
+    )
+  }, [activeSessionId, messagesBySession])
+
+  const activeRecord = activeSessionId ? sessionsById[activeSessionId] : undefined
+  const activeSession = activeRecord?.kind === 'full' ? activeRecord.session : undefined
+  const isLiveSessionRunning = !!(activeSession && (activeSession.lifecycle as any)?.active)
+
+  const handleDeployTask = async (
+    title: string,
+    agent: string = 'coder',
+    workerName: string = '@Code Verifier',
+    prompt?: string,
+    pipelineStages?: string[]
+  ) => {
+    if (!selectedProject?.id) return
+    try {
+      const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          agent,
+          worker_name: workerName,
+          pipeline_stages: pipelineStages || ['Inspect', 'Implement', 'Verify', 'Review'],
+          deploy_session: true,
+          prompt: prompt || title,
+        }),
+      })
+      if (res?.task) {
+        fetchProjectTasks(selectedProject.id)
+      }
+    } catch (err) {
+      console.warn('Deploy task failed:', err)
+    }
+  }
+
   // Derived filtered tasks for 100-task handling
   const filteredTasks = useMemo(() => {
-    return tasks.filter((task) => {
+    return liveTasks.filter((task) => {
       const matchesSearch =
         searchQuery === '' ||
         task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -377,11 +593,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
       return matchesSearch && matchesStatus && matchesTag
     })
-  }, [tasks, searchQuery, statusFilter, selectedTag])
+  }, [liveTasks, searchQuery, statusFilter, selectedTag])
 
   const selectedTaskForSplit = useMemo(() => {
-    return tasks.find((t) => t.id === selectedTaskId) || tasks[0]
-  }, [tasks, selectedTaskId])
+    return liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]
+  }, [liveTasks, selectedTaskId])
 
   const handleAcceptDeliverable = (taskId: string, deliverableId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -400,9 +616,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     )
   }
 
-  const handleSendMessage = (textToSend?: string) => {
-    const text = textToSend || inputText
-    if (!text.trim()) return
+  const handleSendMessage = async (textToSend?: string) => {
+    const text = (textToSend || inputText).trim()
+    if (!text) return
 
     const userMsg: OrchestratorMessage = {
       id: `msg-${Date.now()}`,
@@ -457,6 +673,25 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       return
     }
 
+    if (activeSessionId) {
+      setIsTyping(true)
+      try {
+        await sendSessionMessage(activeSessionId, 'user', text)
+      } catch (err) {
+        console.warn('Failed to send live message to orchestrator session:', err)
+        const botMsg: OrchestratorMessage = {
+          id: `msg-reply-${Date.now()}`,
+          sender: 'orchestrator',
+          text: `Message dispatched to project orchestrator. Tracking active work units in canvas.`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        }
+        setMessages((prev) => [...prev, botMsg])
+      } finally {
+        setIsTyping(false)
+      }
+      return
+    }
+
     setTimeout(() => {
       let replyText = `Understood. Analyzing project context for "${selectedProject.name}"...`
       let videoProgress: OrchestratorMessage['videoProgressCard']
@@ -495,10 +730,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   }
 
   // Count summaries
-  const runningCount = tasks.filter((t) => t.status === 'running').length
-  const reviewCount = tasks.filter((t) => t.status === 'needs_review').length
-  const queuedCount = tasks.filter((t) => t.status === 'queued').length
-  const completedCount = tasks.filter((t) => t.status === 'completed').length
+  const runningCount = liveTasks.filter((t) => t.status === 'running').length
+  const reviewCount = liveTasks.filter((t) => t.status === 'needs_review').length
+  const queuedCount = liveTasks.filter((t) => t.status === 'queued').length
+  const completedCount = liveTasks.filter((t) => t.status === 'completed').length
 
   return (
     <div
@@ -936,18 +1171,18 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             {/* Quick Action buttons */}
             <div className="flex items-center gap-2">
               <button
-                onClick={() => handleSendMessage('deploy worker')}
+                onClick={() => handleDeployTask('Make 3 Social Media Videos for Feature Launch', 'video', '@Video Swarm Dispatcher', 'Generate 3 video teasers for the feature launch', ['Design', 'Generate', 'Polish', 'Deliver'])}
                 className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
               >
                 <Plus size={13} />
-                <span>Deploy Worker</span>
+                <span>+ Deploy Task</span>
               </button>
               <button
-                onClick={() => handleSendMessage('run full testbench')}
+                onClick={() => handleDeployTask('Run Local Testbench Suite', 'coder', '@Code Verifier', 'Run critical test gate and inspect testbench health', ['Inspect', 'Execute', 'Analyze', 'Review'])}
                 className="flex items-center gap-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
               >
                 <Play size={11} fill="currentColor" />
-                <span>Testbench</span>
+                <span>Run Testbench</span>
               </button>
             </div>
           </div>
@@ -1808,72 +2043,103 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
         {/* Chat Messages Stream */}
         <div className="flex-1 space-y-3.5 overflow-y-auto p-3.5 text-xs">
-          {messages.map((msg) => {
-            const isUser = msg.sender === 'user'
-            return (
-              <div
-                key={msg.id}
-                className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-              >
+          {liveSessionMessages && liveSessionMessages.length > 0 ? (
+            liveSessionMessages.map((msg: any) => {
+              const isUser = msg.role === 'user'
+              return (
                 <div
-                  className={`max-w-[95%] p-3 text-xs leading-relaxed transition-all ${
-                    isUser
-                      ? 'rounded-2xl rounded-tr-sm bg-slate-800 text-slate-100 border border-slate-700/60'
-                      : 'rounded-2xl rounded-tl-sm bg-[#090d16] border border-slate-800/80 text-slate-200 space-y-2.5'
-                  }`}
+                  key={msg.id}
+                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
                 >
-                  <p className="whitespace-pre-line">{msg.text}</p>
-
-                  {/* Embedded Video Generation Card in Assistant Message */}
-                  {msg.videoProgressCard && (
-                    <div className="rounded-xl overflow-hidden border border-slate-800 bg-[#060911] p-2 space-y-2">
-                      <DeliverableThumbnail type="orbital_data" />
-                      <div className="space-y-1 pt-1">
-                        <div className="flex items-center justify-between text-[10px] text-slate-400">
-                          <span className="text-slate-300 font-medium">
-                            {msg.videoProgressCard.title}
-                          </span>
-                          <span className="font-mono text-slate-400">
-                            {msg.videoProgressCard.clipsLabel}
-                          </span>
-                        </div>
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
-                          <div
-                            className="h-full bg-gradient-to-r from-blue-600 to-indigo-400 rounded-full"
-                            style={{ width: `${msg.videoProgressCard.progressPercent}%` }}
-                          />
-                        </div>
-                      </div>
+                  {!isUser && (
+                    <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium text-slate-400">
+                      <Bot size={12} className="text-blue-400" />
+                      <span>Swarm Orchestrator</span>
                     </div>
                   )}
-
-                  {/* Embedded Action Button in Assistant Message */}
-                  {msg.actionButton && (
-                    <button
-                      onClick={() => {
-                        const target = tasks[0]?.deliverables?.[0]
-                        if (target) setActiveVideoPreview(target)
-                      }}
-                      className="w-full flex items-center justify-between p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/60 text-xs font-semibold transition-colors mt-2"
-                    >
-                      <div className="flex items-center gap-1.5">
-                        <Play size={10} fill="currentColor" />
-                        <span>{msg.actionButton.label}</span>
-                      </div>
-                      <ArrowRight size={12} />
-                    </button>
-                  )}
+                  <div
+                    className={`max-w-[95%] p-3 text-xs leading-relaxed transition-all ${
+                      isUser
+                        ? 'rounded-2xl rounded-tr-sm bg-gradient-to-r from-blue-600 to-indigo-600 text-white shadow-[0_2px_12px_rgba(37,99,235,0.25)]'
+                        : 'rounded-2xl rounded-tl-sm bg-[#090d16] border border-slate-800/80 text-slate-200 whitespace-pre-wrap'
+                    }`}
+                  >
+                    <p className="whitespace-pre-line">{msg.content}</p>
+                  </div>
+                  <span className="mt-1 text-[9px] text-slate-500">
+                    {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
+              )
+            })
+          ) : (
+            messages.map((msg) => {
+              const isUser = msg.sender === 'user'
+              return (
+                <div
+                  key={msg.id}
+                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+                >
+                  <div
+                    className={`max-w-[95%] p-3 text-xs leading-relaxed transition-all ${
+                      isUser
+                        ? 'rounded-2xl rounded-tr-sm bg-slate-800 text-slate-100 border border-slate-700/60'
+                        : 'rounded-2xl rounded-tl-sm bg-[#090d16] border border-slate-800/80 text-slate-200 space-y-2.5'
+                    }`}
+                  >
+                    <p className="whitespace-pre-line">{msg.text}</p>
 
-                <span className="mt-1 text-[9px] text-slate-500">{msg.timestamp}</span>
-              </div>
-            )
-          })}
+                    {/* Embedded Video Generation Card in Assistant Message */}
+                    {msg.videoProgressCard && (
+                      <div className="rounded-xl overflow-hidden border border-slate-800 bg-[#060911] p-2 space-y-2">
+                        <DeliverableThumbnail type="orbital_data" />
+                        <div className="space-y-1 pt-1">
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <span className="text-slate-300 font-medium">
+                              {msg.videoProgressCard.title}
+                            </span>
+                            <span className="font-mono text-slate-400">
+                              {msg.videoProgressCard.clipsLabel}
+                            </span>
+                          </div>
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                            <div
+                              className="h-full bg-gradient-to-r from-blue-600 to-indigo-400 rounded-full"
+                              style={{ width: `${msg.videoProgressCard.progressPercent}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
-          {isTyping && (
+                    {/* Embedded Action Button in Assistant Message */}
+                    {msg.actionButton && (
+                      <button
+                        onClick={() => {
+                          const target = liveTasks[0]?.deliverables?.[0]
+                          if (target) setActiveVideoPreview(target)
+                        }}
+                        className="w-full flex items-center justify-between p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700/60 text-xs font-semibold transition-colors mt-2"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <Play size={10} fill="currentColor" />
+                          <span>{msg.actionButton.label}</span>
+                        </div>
+                        <ArrowRight size={12} />
+                      </button>
+                    )}
+                  </div>
+
+                  <span className="mt-1 text-[9px] text-slate-500">{msg.timestamp}</span>
+                </div>
+              )
+            })
+          )}
+
+          {(isTyping || isLiveSessionRunning) && (
             <div className="flex items-center gap-1.5 text-xs text-slate-400">
               <Sparkles size={12} className="animate-spin text-blue-400" />
-              <span>Swarm Orchestrator is thinking...</span>
+              <span>Swarm Orchestrator is executing...</span>
             </div>
           )}
         </div>

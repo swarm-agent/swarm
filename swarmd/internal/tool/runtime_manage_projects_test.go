@@ -12,10 +12,14 @@ import (
 
 type mockProjectStore struct {
 	projects map[string]*pebblestore.ProjectRecord
+	tasks    map[string]*pebblestore.ProjectTaskRecord
 }
 
 func newMockProjectStore() *mockProjectStore {
-	return &mockProjectStore{projects: make(map[string]*pebblestore.ProjectRecord)}
+	return &mockProjectStore{
+		projects: make(map[string]*pebblestore.ProjectRecord),
+		tasks:    make(map[string]*pebblestore.ProjectTaskRecord),
+	}
 }
 
 func (m *mockProjectStore) PutProject(accountScopeID string, proj *pebblestore.ProjectRecord) error {
@@ -59,6 +63,49 @@ func (m *mockProjectStore) UpdateProject(accountScopeID, id string, mutate func(
 		return nil, err
 	}
 	return p, nil
+}
+
+func (m *mockProjectStore) PutProjectTask(accountScopeID string, task *pebblestore.ProjectTaskRecord) error {
+	if task.ID == "" {
+		task.ID = "task_test_1"
+	}
+	task.AccountID = accountScopeID
+	m.tasks[task.ID] = task
+	return nil
+}
+
+func (m *mockProjectStore) GetProjectTask(accountScopeID, projectID, taskID string) (*pebblestore.ProjectTaskRecord, bool, error) {
+	t, ok := m.tasks[taskID]
+	if !ok || t.AccountID != accountScopeID || t.ProjectID != projectID {
+		return nil, false, nil
+	}
+	return t, true, nil
+}
+
+func (m *mockProjectStore) ListProjectTasks(accountScopeID, projectID string, limit int) ([]pebblestore.ProjectTaskRecord, error) {
+	var list []pebblestore.ProjectTaskRecord
+	for _, t := range m.tasks {
+		if t.AccountID == accountScopeID && t.ProjectID == projectID {
+			list = append(list, *t)
+		}
+	}
+	return list, nil
+}
+
+func (m *mockProjectStore) UpdateProjectTask(accountScopeID, projectID, taskID string, mutate func(*pebblestore.ProjectTaskRecord) error) (*pebblestore.ProjectTaskRecord, error) {
+	t, ok := m.tasks[taskID]
+	if !ok || t.AccountID != accountScopeID || t.ProjectID != projectID {
+		return nil, nil
+	}
+	if err := mutate(t); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (m *mockProjectStore) DeleteProjectTask(accountScopeID, projectID, taskID string) error {
+	delete(m.tasks, taskID)
+	return nil
 }
 
 func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
@@ -149,8 +196,60 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 		t.Fatal("expected non-empty synthesized_context")
 	}
 
-	// 5. Delete project
-	delOut, err := execTool(scope, "call-5", `{"action":"delete","id":"proj_test_1"}`)
+	// 5. Create task for project
+	createTaskOut, err := execTool(scope, "call-5", `{
+		"action": "create_task",
+		"project_id": "proj_test_1",
+		"title": "First Project Task",
+		"description": "Inspect and verify onboarding",
+		"agent": "coder",
+		"worker_name": "@Code Verifier"
+	}`)
+	if err != nil {
+		t.Fatalf("create_task failed: %v", err)
+	}
+	var taskResp map[string]any
+	if err := json.Unmarshal([]byte(createTaskOut), &taskResp); err != nil {
+		t.Fatal(err)
+	}
+	if taskResp["status"] != "ok" || taskResp["task_id"] == "" {
+		t.Fatalf("unexpected create_task response: %v", taskResp)
+	}
+
+	// 6. List tasks
+	listTasksOut, err := execTool(scope, "call-6", `{"action":"list_tasks","project_id":"proj_test_1"}`)
+	if err != nil {
+		t.Fatalf("list_tasks failed: %v", err)
+	}
+	var listTasksResp map[string]any
+	if err := json.Unmarshal([]byte(listTasksOut), &listTasksResp); err != nil {
+		t.Fatal(err)
+	}
+	if listTasksResp["count"].(float64) != 1 {
+		t.Fatalf("expected 1 task, got %v", listTasksResp["count"])
+	}
+
+	// 7. Update task
+	updateTaskOut, err := execTool(scope, "call-7", `{
+		"action": "update_task",
+		"project_id": "proj_test_1",
+		"task_id": "task_test_1",
+		"status": "needs_review"
+	}`)
+	if err != nil {
+		t.Fatalf("update_task failed: %v", err)
+	}
+	var updateTaskResp map[string]any
+	if err := json.Unmarshal([]byte(updateTaskOut), &updateTaskResp); err != nil {
+		t.Fatal(err)
+	}
+	taskObj, _ := updateTaskResp["task"].(map[string]any)
+	if taskObj["status"] != "needs_review" {
+		t.Fatalf("expected updated status needs_review, got %v", taskObj["status"])
+	}
+
+	// 8. Delete project
+	delOut, err := execTool(scope, "call-8", `{"action":"delete","id":"proj_test_1"}`)
 	if err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}

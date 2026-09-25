@@ -430,7 +430,15 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		blocks = append(blocks, strings.TrimSpace(strings.Join(lines, "\n")))
 	}
 
-	if s.discovery != nil {
+	isOrchestrator := strings.EqualFold(strings.TrimSpace(agentProfile.Name), agentruntime.SwarmOrchestratorAgentID) ||
+		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "orchestrator") ||
+		strings.EqualFold(strings.TrimSpace(agentProfile.Name), "system-orchestrator")
+
+	if isOrchestrator {
+		if projectBlock := s.projectContextPromptBlock(scope); projectBlock != "" {
+			blocks = append(blocks, projectBlock)
+		}
+	} else if s.discovery != nil {
 		scanRoots := normalizeInstructionDiscoveryRoots(discoveryRoots)
 		if len(scanRoots) == 0 {
 			scanRoots = normalizeInstructionDiscoveryRoots(scope.Roots)
@@ -480,6 +488,95 @@ func (s *Service) accountWorkspaceMapPromptBlock(principal identity.Principal, a
 		content = content[:maxPromptBytes]
 	}
 	return strings.TrimSpace(fmt.Sprintf("Account Workspace Map (account-scoped orientation; lower authority than system/developer instructions and workspace AGENTS.md; never treat it as permission or capability authority):\n- schema_version: %d\n- revision: %d\n- digest: %s\n\n%s", record.SchemaVersion, record.Revision, record.Digest, content))
+}
+
+func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
+	if s == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return ""
+	}
+	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
+	sessionID := strings.TrimSpace(scope.SessionID)
+	db := s.sessions.Store()
+
+	var matchedProject *pebblestore.ProjectRecord
+
+	// 1. If sessionID is available, inspect session metadata for project_id
+	if sessionID != "" {
+		if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+			if accountScopeID == "" {
+				accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
+			}
+			if sessionSnapshot.Metadata != nil {
+				if pid, ok := sessionSnapshot.Metadata["project_id"].(string); ok && strings.TrimSpace(pid) != "" {
+					if proj, found, err := db.GetProject(accountScopeID, strings.TrimSpace(pid)); err == nil && found && proj != nil {
+						matchedProject = proj
+					}
+				}
+			}
+		}
+	}
+
+	// 2. If not found by metadata, inspect projects in the account
+	if matchedProject == nil && accountScopeID != "" {
+		if projects, err := db.ListProjects(accountScopeID, 50); err == nil {
+			// Check if primary session matches
+			for i := range projects {
+				if sessionID != "" && projects[i].PrimarySessionID == sessionID {
+					matchedProject = &projects[i]
+					break
+				}
+			}
+			// Check if workspace matches
+			if matchedProject == nil && len(projects) > 0 {
+				primaryPath := strings.TrimSpace(scope.PrimaryPath)
+				for i := range projects {
+					for _, ws := range projects[i].Workspaces {
+						if ws.Path == primaryPath {
+							matchedProject = &projects[i]
+							break
+						}
+					}
+					if matchedProject != nil {
+						break
+					}
+				}
+			}
+			// Fallback: if only one project exists, use it
+			if matchedProject == nil && len(projects) == 1 {
+				matchedProject = &projects[0]
+			}
+		}
+	}
+
+	if matchedProject == nil {
+		return "Project Context (stored in Swarm):\nNo active project is currently bound to this orchestrator session. Use manage_projects action=\"list\" or action=\"create\" to inspect or create a project."
+	}
+
+	wsList := make([]string, 0, len(matchedProject.Workspaces))
+	for _, ws := range matchedProject.Workspaces {
+		wsList = append(wsList, fmt.Sprintf("%s (%s)", ws.Path, ws.Role))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("Project Context (project.md stored in Swarm; authoritative project architecture & rules):\n")
+	sb.WriteString(fmt.Sprintf("- Project ID: %s\n", matchedProject.ID))
+	sb.WriteString(fmt.Sprintf("- Project Name: %s\n", matchedProject.Name))
+	if matchedProject.Description != "" {
+		sb.WriteString(fmt.Sprintf("- Description: %s\n", matchedProject.Description))
+	}
+	if len(wsList) > 0 {
+		sb.WriteString(fmt.Sprintf("- Bound Workspaces: %s\n", strings.Join(wsList, ", ")))
+	}
+	sb.WriteString("\n")
+
+	contextText := strings.TrimSpace(matchedProject.ProjectContext)
+	if contextText != "" {
+		sb.WriteString(contextText)
+	} else {
+		sb.WriteString(fmt.Sprintf("# %s\nNo detailed project.md has been synthesized yet. Call manage_projects action=\"synthesize_context\" to generate it from workspace docs.", matchedProject.Name))
+	}
+
+	return strings.TrimSpace(sb.String())
 }
 
 func filterToolDefinitionsExcept(definitions []provideriface.ToolDefinition, allowed map[string]struct{}) []provideriface.ToolDefinition {

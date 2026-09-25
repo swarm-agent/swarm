@@ -118,13 +118,78 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 		t.Fatalf("expected name Swarm Platform V3, got %v", patchedProj["name"])
 	}
 
-	// 5. DELETE /v3/projects/{id}
+	// 5. Context synthesis: POST /v3/projects/synthesize-context
+	synthBody := `{
+		"name": "Platform AI",
+		"workspaces": ["/path/to/repo"]
+	}`
+	w = call(http.MethodPost, "/synthesize-context", synthBody, []string{"sessions:read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on synthesize-context, got %d: %s", w.Code, w.Body.String())
+	}
+	var synthResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &synthResp); err != nil {
+		t.Fatal(err)
+	}
+	if ctxStr, _ := synthResp["project_context"].(string); !strings.Contains(ctxStr, "Platform AI") {
+		t.Fatalf("expected project_context to contain project name, got %q", ctxStr)
+	}
+
+	// 6. Project Tasks: POST /v3/projects/{id}/tasks
+	taskCreateBody := `{
+		"title": "Make 3 Video Clips",
+		"description": "Generate video teasers",
+		"agent": "video",
+		"worker_name": "@Video Swarm",
+		"pipeline_stages": ["Design", "Generate", "Deliver"]
+	}`
+	w = call(http.MethodPost, "/"+projID+"/tasks", taskCreateBody, []string{"sessions:write"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201 on task create, got %d: %s", w.Code, w.Body.String())
+	}
+	var taskCreateResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &taskCreateResp); err != nil {
+		t.Fatal(err)
+	}
+	taskObj := taskCreateResp["task"].(map[string]any)
+	taskID := taskObj["id"].(string)
+	if taskID == "" {
+		t.Fatal("expected task ID")
+	}
+
+	// 7. Project Tasks: GET /v3/projects/{id}/tasks
+	w = call(http.MethodGet, "/"+projID+"/tasks", "", []string{"sessions:read"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on list tasks, got %d: %s", w.Code, w.Body.String())
+	}
+	var listTasksResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &listTasksResp); err != nil {
+		t.Fatal(err)
+	}
+	if listTasksResp["count"].(float64) != 1 {
+		t.Fatalf("expected 1 task in project, got %v", listTasksResp["count"])
+	}
+
+	// 8. Project Task: PATCH /v3/projects/{id}/tasks/{taskId}
+	patchTaskBody := `{"status": "needs_review", "current_stage_index": 2}`
+	w = call(http.MethodPatch, "/"+projID+"/tasks/"+taskID, patchTaskBody, []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task patch, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 9. Project Task: DELETE /v3/projects/{id}/tasks/{taskId}
+	w = call(http.MethodDelete, "/"+projID+"/tasks/"+taskID, "", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task delete, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 10. DELETE /v3/projects/{id}
 	w = call(http.MethodDelete, "/"+projID, "", []string{"sessions:write"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 on delete, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// 6. Verify 404 after delete
+	// 11. Verify 404 after delete
 	w = call(http.MethodGet, "/"+projID, "", []string{"sessions:read"})
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 after delete, got %d: %s", w.Code, w.Body.String())

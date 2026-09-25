@@ -17,13 +17,18 @@ type manageProjectStore interface {
 	ListProjects(accountScopeID string, limit int) ([]pebblestore.ProjectRecord, error)
 	DeleteProject(accountScopeID, id string) error
 	UpdateProject(accountScopeID, id string, mutate func(*pebblestore.ProjectRecord) error) (*pebblestore.ProjectRecord, error)
+	PutProjectTask(accountScopeID string, task *pebblestore.ProjectTaskRecord) error
+	GetProjectTask(accountScopeID, projectID, taskID string) (*pebblestore.ProjectTaskRecord, bool, error)
+	ListProjectTasks(accountScopeID, projectID string, limit int) ([]pebblestore.ProjectTaskRecord, error)
+	UpdateProjectTask(accountScopeID, projectID, taskID string, mutate func(*pebblestore.ProjectTaskRecord) error) (*pebblestore.ProjectTaskRecord, error)
+	DeleteProjectTask(accountScopeID, projectID, taskID string) error
 }
 
 func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, create_task, list_tasks, update_task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -248,6 +253,103 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		sb.WriteString("\n## Operating Rules\n- Local-first architecture; durable V3 sessions.\n- Keep changes minimal, tested, and high-craft.\n")
 
 		response["synthesized_context"] = sb.String()
+
+	case "create_task":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		if projectID == "" {
+			return "", errors.New("manage_projects create_task requires project_id")
+		}
+		title := strings.TrimSpace(asString(args["title"]))
+		if title == "" {
+			return "", errors.New("manage_projects create_task requires title")
+		}
+		agentName := strings.TrimSpace(asString(args["agent"]))
+		if agentName == "" {
+			agentName = "coder"
+		}
+		workerName := strings.TrimSpace(asString(args["worker_name"]))
+		status := strings.TrimSpace(asString(args["status"]))
+		if status == "" {
+			status = "queued"
+		}
+
+		var stages []string
+		if rawStages, ok := args["pipeline_stages"].([]any); ok {
+			for _, st := range rawStages {
+				if s := strings.TrimSpace(asString(st)); s != "" {
+					stages = append(stages, s)
+				}
+			}
+		}
+
+		task := pebblestore.ProjectTaskRecord{
+			ProjectID:      projectID,
+			Title:          title,
+			Description:    strings.TrimSpace(asString(args["description"])),
+			Status:         status,
+			Agent:          agentName,
+			WorkerName:     workerName,
+			PipelineStages: stages,
+		}
+		if err := r.projects.PutProjectTask(accountScopeID, &task); err != nil {
+			return "", err
+		}
+		response["task"] = task
+		response["task_id"] = task.ID
+
+	case "list_tasks":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		if projectID == "" {
+			return "", errors.New("manage_projects list_tasks requires project_id")
+		}
+		limit := 100
+		if l, ok := args["limit"].(float64); ok && l > 0 {
+			limit = int(l)
+		}
+		tasks, err := r.projects.ListProjectTasks(accountScopeID, projectID, limit)
+		if err != nil {
+			return "", err
+		}
+		response["tasks"] = tasks
+		response["count"] = len(tasks)
+
+	case "update_task":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		taskID := strings.TrimSpace(asString(args["task_id"]))
+		if projectID == "" || taskID == "" {
+			return "", errors.New("manage_projects update_task requires project_id and task_id")
+		}
+		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if v := strings.TrimSpace(asString(args["title"])); v != "" {
+				t.Title = v
+			}
+			if v := strings.TrimSpace(asString(args["description"])); v != "" {
+				t.Description = v
+			}
+			if v := strings.TrimSpace(asString(args["status"])); v != "" {
+				t.Status = v
+			}
+			if v := strings.TrimSpace(asString(args["worker_name"])); v != "" {
+				t.WorkerName = v
+			}
+			if stage, ok := args["current_stage_index"].(float64); ok {
+				t.CurrentStageIndex = int(stage)
+			}
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		response["task"] = updated
 
 	default:
 		return "", fmt.Errorf("unknown manage_projects action: %q", actionName)
