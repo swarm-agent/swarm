@@ -248,6 +248,25 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 		t.Fatalf("expected updated status needs_review, got %v", taskObj["status"])
 	}
 
+	// 7b. Refine task (Router refinement loop)
+	refineTaskOut, err := execTool(scope, "call-7b", `{
+		"action": "refine_task",
+		"project_id": "proj_test_1",
+		"task_id": "task_test_1",
+		"feedback": "make sure it uses tailwind tokens only"
+	}`)
+	if err != nil {
+		t.Fatalf("refine_task failed: %v", err)
+	}
+	var refineTaskResp map[string]any
+	if err := json.Unmarshal([]byte(refineTaskOut), &refineTaskResp); err != nil {
+		t.Fatal(err)
+	}
+	refinedObj, _ := refineTaskResp["task"].(map[string]any)
+	if refinedObj["status"] != "pending_approval" {
+		t.Fatalf("expected refined task status pending_approval, got %v", refinedObj["status"])
+	}
+
 	// 8. Delete project
 	delOut, err := execTool(scope, "call-8", `{"action":"delete","id":"proj_test_1"}`)
 	if err != nil {

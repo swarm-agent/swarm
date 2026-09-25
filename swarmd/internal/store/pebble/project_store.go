@@ -219,6 +219,13 @@ type ProjectTaskRecord struct {
 	PipelineStages      []string                 `json:"pipeline_stages,omitempty"`
 	CurrentStageIndex   int                      `json:"current_stage_index"`
 	Deliverables        []ProjectTaskDeliverable `json:"deliverables,omitempty"`
+	WorkspacesInvolved  []string                 `json:"workspaces_involved,omitempty"`
+	PlanSummary         string                   `json:"plan_summary,omitempty"`
+	FullPlanMarkdown    string                   `json:"full_plan_markdown,omitempty"`
+	Tier                string                   `json:"tier,omitempty"` // "direct" | "discovery" | "complex"
+	Revision            int                      `json:"revision,omitempty"`
+	LastError           string                   `json:"last_error,omitempty"`
+	FeedbackHistory     []string                 `json:"feedback_history,omitempty"`
 	CreatedAt           int64                    `json:"created_at"`
 	UpdatedAt           int64                    `json:"updated_at"`
 }
@@ -234,6 +241,12 @@ func (t *ProjectTaskRecord) Validate() error {
 	}
 	if t.Status == "" {
 		t.Status = "queued"
+	}
+	if t.Revision <= 0 {
+		t.Revision = 1
+	}
+	if t.Tier == "" {
+		t.Tier = "direct"
 	}
 	if t.OutcomeType == "" {
 		if t.Agent == "designer" || t.Agent == "video" {

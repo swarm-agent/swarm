@@ -179,6 +179,15 @@ export interface RunningTask {
   actionNeeded?: string
   whatDidDo?: string[]
   whatNotDone?: string[]
+
+  // Router, Tiered Planning & Refinement Fields
+  workspacesInvolved?: string[]
+  planSummary?: string
+  fullPlanMarkdown?: string
+  tier?: 'direct' | 'discovery' | 'complex'
+  revision?: number
+  lastError?: string
+  feedbackHistory?: string[]
 }
 
 export interface VideoProgressCard {

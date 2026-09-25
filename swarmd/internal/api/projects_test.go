@@ -195,6 +195,42 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 		t.Fatalf("expected approved task status in_progress, got %v", approvedTask["status"])
 	}
 
+	// 8c. Project Task: POST /v3/projects/{id}/tasks/{taskId}/refine (User feedback refinement)
+	refineBody := `{"feedback": "keep all changes only in web workspace, do not touch daemon"}`
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/refine", refineBody, []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task refine, got %d: %s", w.Code, w.Body.String())
+	}
+	var refineResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &refineResp); err != nil {
+		t.Fatal(err)
+	}
+	refinedTask := refineResp["task"].(map[string]any)
+	if refinedTask["status"] != "pending_approval" {
+		t.Fatalf("expected refined task status pending_approval, got %v", refinedTask["status"])
+	}
+	if rev, ok := refinedTask["revision"].(float64); !ok || rev < 2 {
+		t.Fatalf("expected task revision >= 2, got %v", refinedTask["revision"])
+	}
+
+	// 8d. Project Task: POST /v3/projects/{id}/tasks/{taskId}/refine (Error recovery re-plan)
+	errorRefineBody := `{"error_summary": "TS2322: Type 'string' is not assignable to type 'number'"}`
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/refine", errorRefineBody, []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on error refine, got %d: %s", w.Code, w.Body.String())
+	}
+	var errRefineResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &errRefineResp); err != nil {
+		t.Fatal(err)
+	}
+	errRefinedTask := errRefineResp["task"].(map[string]any)
+	if errRefinedTask["last_error"] != "TS2322: Type 'string' is not assignable to type 'number'" {
+		t.Fatalf("expected last_error to be recorded, got %v", errRefinedTask["last_error"])
+	}
+	if rev, ok := errRefinedTask["revision"].(float64); !ok || rev < 3 {
+		t.Fatalf("expected task revision >= 3, got %v", errRefinedTask["revision"])
+	}
+
 	// 9. Project Task: DELETE /v3/projects/{id}/tasks/{taskId}
 	w = call(http.MethodDelete, "/"+projID+"/tasks/"+taskID, "", []string{"sessions:write"})
 	if w.Code != http.StatusOK {

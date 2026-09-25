@@ -1,17 +1,21 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Bot,
   Check,
   CheckCircle2,
   ChevronDown,
+  ChevronUp,
   Code,
   Columns3,
   Edit3,
+  FileText,
   Film,
   Folder,
+  FolderGit2,
   FolderPlus,
   GitBranch,
   Home,
@@ -146,6 +150,7 @@ function MinimalTaskCard({
   onApprove,
   onIntegrate,
   onDelete,
+  onRefine,
   onPreviewDeliverable,
 }: {
   task: RunningTask
@@ -155,8 +160,13 @@ function MinimalTaskCard({
   onApprove?: () => void
   onIntegrate?: () => void
   onDelete?: () => void
+  onRefine?: (feedback?: string, errorSummary?: string) => void
   onPreviewDeliverable?: (d: MediaDeliverable) => void
 }) {
+  const [isFullPlanOpen, setIsFullPlanOpen] = useState(false)
+  const [isRefineOpen, setIsRefineOpen] = useState(false)
+  const [refineFeedback, setRefineFeedback] = useState('')
+
   const isPendingApproval = task.status === 'pending_approval' || task.status === 'queued'
   const isRunning = task.status === 'running' || task.status === 'in_progress'
   const isNeedsReview = task.status === 'needs_review'
@@ -194,6 +204,24 @@ function MinimalTaskCard({
           <h3 className="text-xs font-bold text-white tracking-tight leading-snug truncate">
             {task.title}
           </h3>
+          {task.workspacesInvolved && task.workspacesInvolved.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+              <span className="font-mono text-[9px] uppercase tracking-wider text-slate-500 font-semibold">Workspaces:</span>
+              {task.workspacesInvolved.map((ws, i) => {
+                const wsLabel = ws.split('/').filter(Boolean).pop() || ws
+                return (
+                  <span
+                    key={i}
+                    className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-blue-950/60 text-blue-300 border border-blue-500/30 flex items-center gap-1"
+                    title={ws}
+                  >
+                    <FolderGit2 size={9} />
+                    <span>{wsLabel}</span>
+                  </span>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
@@ -247,12 +275,22 @@ function MinimalTaskCard({
 
       {/* 2. PENDING APPROVAL MISSION PROPOSAL BANNER */}
       {isPendingApproval && (
-        <div className="flex flex-col p-3 rounded-lg bg-blue-950/20 border border-blue-500/40 space-y-2 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="font-bold text-blue-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
-              <Sparkles size={12} />
-              <span>AI Mission Proposal</span>
-            </span>
+        <div className="flex flex-col p-3 rounded-lg bg-blue-950/20 border border-blue-500/40 space-y-2.5 text-xs">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-blue-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
+                <Sparkles size={12} />
+                <span>AI Mission Proposal</span>
+              </span>
+              <span className="font-mono text-[9px] uppercase px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-500/30">
+                {task.tier === 'discovery' ? 'Tier 2: Discovery' : task.tier === 'complex' ? 'Tier 3: Complex Plan' : 'Tier 1: Direct'}
+              </span>
+              {task.revision && task.revision > 1 && (
+                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300 border border-indigo-500/30 font-bold">
+                  Rev {task.revision}
+                </span>
+              )}
+            </div>
             <span className="text-[10px] font-mono text-slate-400">
               Branch: <span className="text-indigo-300 font-semibold">{task.worktreeBranch || 'agent/worktree'}</span>
             </span>
@@ -262,38 +300,157 @@ function MinimalTaskCard({
             {task.subtitle || task.title}
           </p>
 
-          <div className="flex items-center justify-between pt-1 border-t border-blue-500/20 text-[11px]">
-            <span className="text-slate-400 font-mono text-[10px]">
-              Expected: <strong className="text-white">{task.outcomeType === 'media_bundle' ? '3 Videos (1080p MP4)' : task.outcomeType === 'bug_patch' ? 'Regression Test & Fix Diff' : '1 Branch PR + Test Suite'}</strong>
-            </span>
-            <div className="flex items-center gap-2">
-              {onDelete && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onDelete()
-                  }}
-                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 text-[10px] font-medium transition-colors"
-                >
-                  Discard
-                </button>
-              )}
-              {onApprove && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onApprove()
-                  }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all active:scale-95"
-                >
-                  <Play size={11} fill="currentColor" />
-                  <span>Approve & Start Session</span>
-                </button>
+          {/* Plan Summary */}
+          {task.planSummary && (
+            <div className="p-2.5 rounded bg-slate-900/80 border border-slate-800 text-[11px] font-mono text-slate-300 whitespace-pre-line leading-relaxed">
+              <div className="text-[9px] uppercase tracking-wider text-blue-400 font-bold mb-1">
+                Execution Overview
+              </div>
+              {task.planSummary}
+            </div>
+          )}
+
+          {/* Expandable Full Plan */}
+          {task.fullPlanMarkdown && (
+            <div className="border border-slate-800/80 rounded bg-[#070b14]/90 overflow-hidden">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setIsFullPlanOpen(!isFullPlanOpen)
+                }}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
+              >
+                <span className="flex items-center gap-1.5 font-semibold">
+                  <FileText size={11} className="text-blue-400" />
+                  <span>{isFullPlanOpen ? 'Hide Full Plan Spec' : 'Read Full Plan Spec & Criteria'}</span>
+                </span>
+                {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+              </button>
+              {isFullPlanOpen && (
+                <div className="p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto bg-slate-950/60">
+                  {task.fullPlanMarkdown}
+                </div>
               )}
             </div>
+          )}
+
+          {/* Refine / Actions Bar */}
+          <div className="flex flex-col gap-2 pt-1 border-t border-blue-500/20">
+            <div className="flex items-center justify-between text-[11px] gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 font-mono text-[10px]">
+                  Expected: <strong className="text-white">{task.outcomeType === 'media_bundle' ? '3 Videos (1080p MP4)' : task.outcomeType === 'bug_patch' ? 'Regression Test & Fix Diff' : task.outcomeType === 'audit_report' ? 'Findings Ledger Report' : '1 Branch PR + Test Suite'}</strong>
+                </span>
+                {onRefine && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setIsRefineOpen(!isRefineOpen)
+                    }}
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
+                    title="Send instructions back to the Router / Plan Agent to adjust workspaces or plan"
+                  >
+                    <Sparkles size={10} className="text-indigo-400" />
+                    <span>{isRefineOpen ? 'Cancel' : 'Refine Plan'}</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onDelete()
+                    }}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 text-[10px] font-medium transition-colors"
+                  >
+                    Discard
+                  </button>
+                )}
+                {onApprove && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onApprove()
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all active:scale-95"
+                  >
+                    <Play size={11} fill="currentColor" />
+                    <span>Approve & Start Session</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Inline Refine Input */}
+            {isRefineOpen && onRefine && (
+              <div className="flex items-center gap-2 p-2 rounded bg-slate-900 border border-slate-800 animate-in fade-in duration-200">
+                <input
+                  type="text"
+                  value={refineFeedback}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => setRefineFeedback(e.target.value)}
+                  placeholder="e.g. Keep in web workspace only, don't touch daemon API..."
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && refineFeedback.trim()) {
+                      e.stopPropagation()
+                      onRefine(refineFeedback)
+                      setRefineFeedback('')
+                      setIsRefineOpen(false)
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={!refineFeedback.trim()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    if (refineFeedback.trim()) {
+                      onRefine(refineFeedback)
+                      setRefineFeedback('')
+                      setIsRefineOpen(false)
+                    }
+                  }}
+                  className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold text-[10px] transition-colors flex-shrink-0"
+                >
+                  Send to Router
+                </button>
+              </div>
+            )}
           </div>
+        </div>
+      )}
+
+      {/* Execution Error Recovery Banner */}
+      {task.lastError && (
+        <div className="flex items-start justify-between p-2.5 rounded-lg bg-rose-950/30 border border-rose-500/40 text-[11px] gap-2">
+          <div className="flex items-start gap-2 min-w-0">
+            <AlertTriangle size={13} className="text-rose-400 flex-shrink-0 mt-0.5" />
+            <div className="space-y-0.5 min-w-0">
+              <span className="font-bold text-rose-300 block">Execution Error / Test Failure:</span>
+              <span className="font-mono text-slate-300 text-[10px] break-all block">{task.lastError}</span>
+            </div>
+          </div>
+          {onRefine && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onRefine(undefined, task.lastError)
+              }}
+              className="flex-shrink-0 px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold text-[10px] transition-colors flex items-center gap-1 shadow"
+              title="Send this failure log to Plan Agent to generate an error recovery fix strategy"
+            >
+              <Sparkles size={10} />
+              <span>Re-Plan with Plan Agent</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -784,6 +941,13 @@ export function OrchestrateView({
           actionNeeded: t.action_needed,
           whatDidDo: t.what_did_do,
           whatNotDone: t.what_not_done,
+          workspacesInvolved: t.workspaces_involved || (t.workspace_path ? [t.workspace_path] : []),
+          planSummary: t.plan_summary,
+          fullPlanMarkdown: t.full_plan_markdown,
+          tier: t.tier || 'direct',
+          revision: t.revision || 1,
+          lastError: t.last_error,
+          feedbackHistory: t.feedback_history,
           elapsed: t.created_at ? `${Math.max(1, Math.round((Date.now() - t.created_at) / 60000))}m` : 'Just now',
           workerName: t.worker_name || `@${t.agent || 'Coder'} Worker`,
           priority: 'high',
@@ -990,6 +1154,24 @@ export function OrchestrateView({
       fetchProjectTasks(selectedProject.id)
     } catch (err) {
       console.warn('Integrate task failed:', err)
+    }
+  }
+
+  // Refine task with router or re-plan error
+  const handleRefineTask = async (taskId: string, feedback?: string, errorSummary?: string) => {
+    if (!selectedProject?.id) return
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/refine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          feedback: feedback?.trim() || undefined,
+          error_summary: errorSummary?.trim() || undefined,
+        }),
+      })
+      fetchProjectTasks(selectedProject.id)
+    } catch (err) {
+      console.warn('Refine task failed:', err)
     }
   }
 
@@ -2135,6 +2317,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   onApprove={() => handleApproveTask(t.id)}
                                   onIntegrate={() => handleIntegrateTask(t.id)}
                                   onDelete={() => handleDeleteTask(t.id)}
+                                  onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                                   onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                                 />
                               </div>
@@ -2216,6 +2399,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onApprove={() => handleApproveTask(t.id)}
                               onIntegrate={() => handleIntegrateTask(t.id)}
                               onDelete={() => handleDeleteTask(t.id)}
+                              onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                               onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                             />
                           ))}
@@ -2309,6 +2493,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onApprove={() => handleApproveTask(task.id)}
                           onIntegrate={() => handleIntegrateTask(task.id)}
                           onDelete={() => handleDeleteTask(task.id)}
+                          onRefine={(fb, err) => handleRefineTask(task.id, fb, err)}
                           onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                         />
                       ))}
@@ -2363,6 +2548,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onApprove={() => handleApproveTask(selectedTaskForSplit.id)}
                         onIntegrate={() => handleIntegrateTask(selectedTaskForSplit.id)}
                         onDelete={() => handleDeleteTask(selectedTaskForSplit.id)}
+                        onRefine={(fb, err) => handleRefineTask(selectedTaskForSplit.id, fb, err)}
                         onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                       />
                     ) : (
@@ -2390,6 +2576,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onApprove={() => handleApproveTask(t.id)}
                       onIntegrate={() => handleIntegrateTask(t.id)}
                       onDelete={() => handleDeleteTask(t.id)}
+                      onRefine={(fb, err) => handleRefineTask(t.id, fb, err)}
                       onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                     />
                   ))}

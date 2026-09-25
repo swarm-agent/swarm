@@ -28,13 +28,13 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, create_task, list_tasks, update_task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, propose_task, approve_task, refine_task, create_task, list_tasks, update_task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|create_task|list_tasks|update_task",
+					"description": "Action: list|get|create|update|delete|synthesize_context|propose_task|approve_task|refine_task|create_task|list_tasks|update_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -409,6 +409,46 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 			return "", err
 		}
 		response["task"] = updated
+
+	case "refine_task":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		taskID := strings.TrimSpace(asString(args["task_id"]))
+		if projectID == "" || taskID == "" {
+			return "", errors.New("manage_projects refine_task requires project_id and task_id")
+		}
+		feedback := strings.TrimSpace(asString(args["feedback"]))
+		errorSummary := strings.TrimSpace(asString(args["error_summary"]))
+
+		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			if t.Revision <= 0 {
+				t.Revision = 1
+			}
+			t.Revision++
+			if feedback != "" {
+				t.FeedbackHistory = append(t.FeedbackHistory, feedback)
+			}
+			if errorSummary != "" {
+				t.LastError = errorSummary
+			} else if feedback != "" && t.LastError != "" {
+				t.LastError = ""
+			}
+			t.Status = "pending_approval"
+			t.ActionNeeded = fmt.Sprintf("Review revised plan (Rev %d) and click Approve", t.Revision)
+			if feedback != "" {
+				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Revised plan (Rev %d) per user feedback: %s", t.Revision, feedback))
+			} else if t.LastError != "" {
+				t.WhatDidDo = append(t.WhatDidDo, fmt.Sprintf("Re-planned error recovery strategy (Rev %d)", t.Revision))
+			}
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		response["task"] = updated
+		response["status"] = "refined"
 
 	default:
 		return "", fmt.Errorf("unknown manage_projects action: %q", actionName)

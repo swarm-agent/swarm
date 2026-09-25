@@ -127,14 +127,21 @@ func TestProjectTaskStoreCRUD(t *testing.T) {
 	projectID := "proj_alpha"
 
 	task1 := &ProjectTaskRecord{
-		ProjectID:         projectID,
-		Title:             "Make 3 Video Variants",
-		Description:       "Produce promotional clips for launch",
-		Status:            "in_progress",
-		Agent:             "video",
-		WorkerName:        "@Video Swarm Dispatcher",
-		PipelineStages:    []string{"Design", "Generate", "Polish", "Deliver"},
-		CurrentStageIndex: 1,
+		ProjectID:          projectID,
+		Title:              "Make 3 Video Variants",
+		Description:        "Produce promotional clips for launch",
+		Status:             "in_progress",
+		Agent:              "video",
+		WorkerName:         "@Video Swarm Dispatcher",
+		PipelineStages:     []string{"Design", "Generate", "Polish", "Deliver"},
+		CurrentStageIndex:  1,
+		WorkspacesInvolved: []string{"web", "swarm-go"},
+		PlanSummary:        "1. Video generation\n2. Audio soundtrack\n3. Review",
+		FullPlanMarkdown:   "### Full Plan\n- Step 1: Script\n- Step 2: Render",
+		Tier:               "complex",
+		Revision:           2,
+		LastError:          "GPU allocation timeout (recovered)",
+		FeedbackHistory:    []string{"make it 15s instead of 30s"},
 		Deliverables: []ProjectTaskDeliverable{
 			{
 				ID:        "deliv_1",
@@ -175,6 +182,12 @@ func TestProjectTaskStoreCRUD(t *testing.T) {
 	}
 	if len(fetched.Deliverables) != 1 || fetched.Deliverables[0].ID != "deliv_1" {
 		t.Fatalf("expected 1 deliverable with ID deliv_1, got %#v", fetched.Deliverables)
+	}
+	if len(fetched.WorkspacesInvolved) != 2 || fetched.WorkspacesInvolved[0] != "web" {
+		t.Fatalf("expected WorkspacesInvolved [web, swarm-go], got %#v", fetched.WorkspacesInvolved)
+	}
+	if fetched.Revision != 2 || fetched.Tier != "complex" || fetched.LastError == "" {
+		t.Fatalf("expected revision 2, tier complex, got revision=%d, tier=%s, err=%s", fetched.Revision, fetched.Tier, fetched.LastError)
 	}
 
 	// 4. List tasks for project
