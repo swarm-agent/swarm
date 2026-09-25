@@ -1,18 +1,20 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
+  Activity,
   ArrowRight,
   ArrowUp,
   AtSign,
-  Check,
+  Bot,
   CheckCircle2,
-  Clock,
+  ChevronDown,
+  ChevronRight,
   Code,
-  Download,
+  Columns3,
   Film,
   Folder,
   Home,
-  Inbox,
   Layers,
+  ListFilter,
   Maximize2,
   MoreHorizontal,
   Paperclip,
@@ -22,6 +24,7 @@ import {
   Search,
   Settings,
   Sparkles,
+  SplitSquareVertical,
   Volume2,
   X,
   Zap,
@@ -29,12 +32,15 @@ import {
 import {
   MOCK_AUTOMATIONS,
   MOCK_CHAT_MESSAGES,
+  MOCK_DEPLOYED_WORKERS,
   MOCK_PROJECTS,
-  MOCK_RUNNING_TASKS,
+  MOCK_100_TASKS,
 } from './orchestrate-mock-data'
 import { ORCHESTRATE_THEME_IDS, ORCHESTRATE_THEMES } from './orchestrate-themes'
 import {
+  DeployedWorker,
   MediaDeliverable,
+  MiddleCanvasVariant,
   OrchestrateThemeId,
   OrchestratorMessage,
   ProjectSummary,
@@ -49,7 +55,7 @@ export interface OrchestrateViewProps {
 }
 
 /**
- * Thumbnail graphic renderer for the video deliverables with modern high-craft space/cyber aesthetics
+ * Thumbnail graphic renderer for the video deliverables with modern high-craft aesthetics
  */
 function DeliverableThumbnail({
   type,
@@ -65,7 +71,6 @@ function DeliverableThumbnail({
       onClick={onPlay}
       className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-xl border border-slate-800/80 bg-[#090d16] shadow-inner transition-all hover:border-blue-500/40"
     >
-      {/* Visual Canvas Artwork based on thumbnail type */}
       {type === 'cyber_lattice' && (
         <div className="absolute inset-0 bg-gradient-to-br from-[#0c162d] via-[#091024] to-[#040814] flex items-center justify-center">
           <svg className="absolute inset-0 h-full w-full opacity-60" viewBox="0 0 200 112">
@@ -75,7 +80,6 @@ function DeliverableThumbnail({
                 <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.3" />
               </linearGradient>
             </defs>
-            {/* Grid perspective */}
             <path
               d="M 100 20 L 0 112 M 100 20 L 50 112 M 100 20 L 100 112 M 100 20 L 150 112 M 100 20 L 200 112"
               stroke="#38bdf8"
@@ -88,7 +92,6 @@ function DeliverableThumbnail({
               strokeWidth="0.5"
               strokeOpacity="0.3"
             />
-            {/* Neon towers / nodes */}
             <rect x="25" y="45" width="12" height="60" fill="url(#cyber-grad)" rx="1" opacity="0.7" />
             <rect x="55" y="30" width="16" height="75" fill="url(#cyber-grad)" rx="1" opacity="0.9" />
             <rect x="135" y="35" width="15" height="70" fill="url(#cyber-grad)" rx="1" opacity="0.8" />
@@ -103,25 +106,12 @@ function DeliverableThumbnail({
       {type === 'neural_core' && (
         <div className="absolute inset-0 bg-gradient-to-br from-[#0a1226] via-[#070d1e] to-[#040711] flex items-center justify-center">
           <svg className="absolute inset-0 h-full w-full opacity-70" viewBox="0 0 200 112">
-            <defs>
-              <linearGradient id="cube-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#818cf8" stopOpacity="0.9" />
-                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.4" />
-              </linearGradient>
-            </defs>
-            {/* Energy radial glow */}
             <circle cx="100" cy="56" r="40" fill="#3b82f6" opacity="0.15" filter="blur(8px)" />
-            {/* Isometric Obsidian Cube */}
             <path d="M 100 32 L 128 48 L 100 64 L 72 48 Z" fill="#1e293b" stroke="#818cf8" strokeWidth="0.8" />
             <path d="M 72 48 L 100 64 L 100 94 L 72 78 Z" fill="#0f172a" stroke="#6366f1" strokeWidth="0.8" />
             <path d="M 128 48 L 100 64 L 100 94 L 128 78 Z" fill="#1e1b4b" stroke="#3b82f6" strokeWidth="0.8" />
-            {/* Neural filaments radiating */}
             <line x1="100" y1="32" x2="100" y2="15" stroke="#93c5fd" strokeWidth="0.8" strokeDasharray="2 2" />
-            <line x1="72" y1="48" x2="45" y2="35" stroke="#93c5fd" strokeWidth="0.8" strokeDasharray="2 2" />
-            <line x1="128" y1="48" x2="155" y2="35" stroke="#93c5fd" strokeWidth="0.8" strokeDasharray="2 2" />
             <circle cx="100" cy="14" r="2" fill="#bfdbfe" />
-            <circle cx="44" cy="34" r="2" fill="#bfdbfe" />
-            <circle cx="156" cy="34" r="2" fill="#bfdbfe" />
           </svg>
         </div>
       )}
@@ -129,54 +119,28 @@ function DeliverableThumbnail({
       {type === 'orbital_data' && (
         <div className="absolute inset-0 bg-gradient-to-b from-[#030712] via-[#081226] to-[#0d2247] flex items-center justify-center">
           <svg className="absolute inset-0 h-full w-full opacity-80" viewBox="0 0 200 112">
-            {/* Earth horizon curve */}
-            <path
-              d="M -20 120 Q 100 65 220 120 Z"
-              fill="#1e3a8a"
-              opacity="0.8"
-            />
-            <path
-              d="M -20 120 Q 100 64 220 120"
-              stroke="#60a5fa"
-              strokeWidth="1.5"
-              fill="none"
-              opacity="0.9"
-            />
-            {/* Atmosphere glow */}
-            <path
-              d="M -20 118 Q 100 61 220 118"
-              stroke="#93c5fd"
-              strokeWidth="3"
-              fill="none"
-              opacity="0.3"
-            />
-            {/* Star field */}
+            <path d="M -20 120 Q 100 65 220 120 Z" fill="#1e3a8a" opacity="0.8" />
+            <path d="M -20 120 Q 100 64 220 120" stroke="#60a5fa" strokeWidth="1.5" fill="none" opacity="0.9" />
             <circle cx="30" cy="20" r="0.8" fill="#fff" opacity="0.8" />
-            <circle cx="65" cy="15" r="0.6" fill="#fff" opacity="0.5" />
             <circle cx="140" cy="25" r="0.8" fill="#fff" opacity="0.7" />
-            <circle cx="175" cy="18" r="0.6" fill="#fff" opacity="0.6" />
-            <circle cx="110" cy="12" r="1" fill="#fff" opacity="0.9" />
-            {/* Orbital beam / satellite signal */}
             <line x1="80" y1="40" x2="120" y2="40" stroke="#38bdf8" strokeWidth="0.8" />
             <circle cx="100" cy="40" r="3" fill="#38bdf8" />
-            <line x1="100" y1="40" x2="115" y2="78" stroke="#38bdf8" strokeWidth="0.6" strokeDasharray="3 2" />
           </svg>
         </div>
       )}
 
-      {/* Default fallback backdrop if not custom */}
       {!['cyber_lattice', 'neural_core', 'orbital_data'].includes(type || '') && (
-        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 to-slate-950" />
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 to-slate-950 flex items-center justify-center">
+          <Film size={20} className="text-slate-600" />
+        </div>
       )}
 
-      {/* Center Play Button Overlay */}
       <div className="relative z-10 flex h-full w-full items-center justify-center">
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-900/80 text-white backdrop-blur-md border border-white/20 shadow-xl transition-transform group-hover/thumb:scale-110">
           <Play size={13} fill="currentColor" className="ml-0.5 text-white" />
         </div>
       </div>
 
-      {/* Duration Pill at bottom right */}
       {duration && (
         <span className="absolute bottom-1.5 right-1.5 z-20 rounded-md bg-black/80 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-slate-300 backdrop-blur-sm border border-white/10">
           {duration}
@@ -198,11 +162,24 @@ export function OrchestrateView({
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projects[0].id)
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
 
-  // Automations state
-  const [automations] = useState<RunningAutomation[]>(MOCK_AUTOMATIONS)
+  // Middle canvas layout variant state (5 distinct variants)
+  const [middleVariant, setMiddleVariant] = useState<MiddleCanvasVariant>('matrix')
 
-  // Tasks state (which encapsulate their attached deliverables)
-  const [tasks, setTasks] = useState<RunningTask[]>(MOCK_RUNNING_TASKS)
+  // Search & Filters for 100+ tasks
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
+  const [selectedTag] = useState<string>('all')
+
+  // Matrix expandable drawer state
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>('task-101')
+
+  // Split Studio selected task state
+  const [selectedTaskId, setSelectedTaskId] = useState<string>('task-101')
+
+  // Automations & Workers state
+  const [automations] = useState<RunningAutomation[]>(MOCK_AUTOMATIONS)
+  const [deployedWorkers] = useState<DeployedWorker[]>(MOCK_DEPLOYED_WORKERS)
+  const [tasks, setTasks] = useState<RunningTask[]>(MOCK_100_TASKS)
 
   // Video preview modal
   const [activeVideoPreview, setActiveVideoPreview] = useState<MediaDeliverable | null>(null)
@@ -215,6 +192,26 @@ export function OrchestrateView({
   const [inputText, setInputText] = useState('')
   const [isTyping, setIsTyping] = useState(false)
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
+
+  // Derived filtered tasks for 100-task handling
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((task) => {
+      const matchesSearch =
+        searchQuery === '' ||
+        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.subtitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.id.toLowerCase().includes(searchQuery.toLowerCase())
+
+      const matchesStatus = statusFilter === 'all' || task.status === statusFilter
+      const matchesTag = selectedTag === 'all' || task.tags?.includes(selectedTag)
+
+      return matchesSearch && matchesStatus && matchesTag
+    })
+  }, [tasks, searchQuery, statusFilter, selectedTag])
+
+  const selectedTaskForSplit = useMemo(() => {
+    return tasks.find((t) => t.id === selectedTaskId) || tasks[0]
+  }, [tasks, selectedTaskId])
 
   const handleAcceptDeliverable = (taskId: string, deliverableId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -284,6 +281,12 @@ export function OrchestrateView({
       setIsTyping(false)
     }, 700)
   }
+
+  // Count summaries
+  const runningCount = tasks.filter((t) => t.status === 'running').length
+  const reviewCount = tasks.filter((t) => t.status === 'needs_review').length
+  const queuedCount = tasks.filter((t) => t.status === 'queued').length
+  const completedCount = tasks.filter((t) => t.status === 'completed').length
 
   return (
     <div
@@ -445,7 +448,7 @@ export function OrchestrateView({
           </div>
         </div>
 
-        {/* 5 Modern Navy Themes Selector */}
+        {/* 5 Themes Selector */}
         <div className="px-3 pt-2 pb-1 border-b border-slate-800/80">
           <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 pb-1.5 flex items-center justify-between">
             <span>Theme</span>
@@ -477,23 +480,7 @@ export function OrchestrateView({
           </div>
         </div>
 
-        {/* Bottom Upgrade Promo Card ("Swarm moves faster together.") */}
-        <div className="p-3">
-          <div className="p-3.5 rounded-2xl bg-[#0a0f1d] border border-slate-800/80 shadow-md">
-            <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 mb-2">
-              <Sparkles size={13} />
-            </div>
-            <h5 className="text-xs font-bold text-white">Swarm moves faster together.</h5>
-            <p className="mt-1 text-[10px] text-slate-400 leading-relaxed">
-              Turn ideas into reality with autonomous AI teams.
-            </p>
-            <button className="mt-3 w-full py-1.5 text-center text-xs font-semibold text-slate-200 bg-slate-800/80 hover:bg-slate-700/80 rounded-xl border border-slate-700/60 transition-all">
-              Upgrade Plan
-            </button>
-          </div>
-        </div>
-
-        {/* Bottom User Profile HUD */}
+        {/* User HUD */}
         <div className="p-3 border-t border-slate-800/80 flex items-center justify-between bg-[#0a0f1d]/50">
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full bg-slate-800 text-slate-200 font-bold text-[10px] border border-slate-700">
@@ -501,7 +488,7 @@ export function OrchestrateView({
             </div>
             <div className="flex flex-col min-w-0">
               <span className="text-xs font-semibold text-slate-200 truncate">Jordan Diaz</span>
-              <span className="text-[10px] text-slate-500 truncate">jordan@swarm.dev</span>
+              <span className="text-[10px] text-slate-500 truncate">jordan@swarmagent.dev</span>
             </div>
           </div>
           <button className="text-slate-400 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800/60 transition-colors">
@@ -511,325 +498,676 @@ export function OrchestrateView({
       </aside>
 
       {/* ─────────────────────────────────────────────────────────────
-          PANEL 2: MIDDLE SECTION (AUTOMATION OVERVIEW & TASKS CANVAS)
+          PANEL 2: MIDDLE SECTION (5 INTERACTIVE CANVAS VARIANTS)
          ───────────────────────────────────────────────────────────── */}
       <main className="relative flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
-        {/* TOP: AUTOMATION OVERVIEW HEADER & ACTIONS */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-800/80">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-white">Automation Overview</h1>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Manage your autonomous workflows and creative production.
-            </p>
+        {/* TOP TOOLBAR: AUTOMATION OVERVIEW & 5-VARIANT SWITCHER DOCK */}
+        <div className="flex flex-col border-b border-slate-800/80 bg-[#0a0f1d]/60">
+          <div className="flex items-center justify-between p-3.5 pb-2.5">
+            <div className="flex items-center gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-base font-bold tracking-tight text-white">Automation Overview</h1>
+                  <span className="rounded-full bg-blue-500/10 border border-blue-500/30 px-2 py-0.5 text-[10px] font-semibold text-blue-400">
+                    100 Tasks Total
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Autonomous workers executing jobs across {selectedProject.name}
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Action buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleSendMessage('deploy worker')}
+                className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
+              >
+                <Plus size={13} />
+                <span>Deploy Worker</span>
+              </button>
+              <button
+                onClick={() => handleSendMessage('run full testbench')}
+                className="flex items-center gap-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
+              >
+                <Play size={11} fill="currentColor" />
+                <span>Testbench</span>
+              </button>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <button
-              onClick={() => handleSendMessage('make 3 social media videos')}
-              className="flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3.5 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
-            >
-              <Plus size={13} />
-              <span>Trigger Video Swarm</span>
-            </button>
-            <button
-              onClick={() => handleSendMessage('run full testbench')}
-              className="flex items-center gap-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/70 text-slate-200 text-xs px-3.5 py-1.5 transition-all active:scale-95"
-            >
-              <Play size={11} fill="currentColor" />
-              <span>Run Testbench</span>
-            </button>
+          {/* 5-VARIANT SELECTOR DOCK: Switch between 5 distinct middle layouts */}
+          <div className="px-3.5 pb-2.5 flex items-center justify-between border-t border-slate-800/50 pt-2 text-xs">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
+                Canvas View:
+              </span>
+              <div className="flex items-center gap-1 rounded-xl bg-[#080c16] p-1 border border-slate-800">
+                <button
+                  onClick={() => setMiddleVariant('matrix')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                    middleVariant === 'matrix'
+                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                  }`}
+                  title="Variant 1: High-Density Compact Matrix with Drawer (Built for 100+ tasks)"
+                >
+                  <ListFilter size={12} />
+                  <span>1. Compact Matrix</span>
+                </button>
+
+                <button
+                  onClick={() => setMiddleVariant('kanban')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                    middleVariant === 'kanban'
+                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                  }`}
+                  title="Variant 2: Mission Pipeline Kanban (Multi-column stage workflow)"
+                >
+                  <Columns3 size={12} />
+                  <span>2. Pipeline Kanban</span>
+                </button>
+
+                <button
+                  onClick={() => setMiddleVariant('fleet')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                    middleVariant === 'fleet'
+                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                  }`}
+                  title="Variant 3: Autonomous Worker Fleet (Workers deploying their own jobs)"
+                >
+                  <Bot size={12} />
+                  <span>3. Worker Fleet</span>
+                </button>
+
+                <button
+                  onClick={() => setMiddleVariant('split')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                    middleVariant === 'split'
+                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                  }`}
+                  title="Variant 4: Split Studio Console (Master-Detail 2-pane live inspector)"
+                >
+                  <SplitSquareVertical size={12} />
+                  <span>4. Split Studio</span>
+                </button>
+
+                <button
+                  onClick={() => setMiddleVariant('timeline')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                    middleVariant === 'timeline'
+                      ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 font-semibold shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                  }`}
+                  title="Variant 5: Timeline Activity Stream (Chronological progress & attachments)"
+                >
+                  <Activity size={12} />
+                  <span>5. Timeline Stream</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick status counter summary */}
+            <div className="flex items-center gap-2 font-mono text-[10px]">
+              <span className="text-blue-400">● {runningCount} Running</span>
+              <span className="text-amber-400">● {reviewCount} Review</span>
+              <span className="text-slate-500">● {queuedCount} Queued</span>
+              <span className="text-emerald-400">● {completedCount} Done</span>
+            </div>
           </div>
         </div>
 
-        {/* SCROLLABLE MAIN CONTENT: ACTIVE AUTOMATIONS + TASK CARDS */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* SECTION 1: ACTIVE AUTOMATIONS (STACKED ROWS) */}
-          <section className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-                  Active Automations
-                </h3>
-                <span className="rounded-full bg-slate-800/90 border border-slate-700/60 px-2 py-0.5 text-[10px] font-semibold text-slate-300">
-                  {automations.filter((a) => a.status === 'running').length} running
-                </span>
-              </div>
-              <button className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-200 transition-colors">
-                <span>View all</span>
-                <ArrowRight size={12} />
-              </button>
+        {/* COMPACT ACTIVE AUTOMATION TICKER (Noiseless, tiny progress & attachments) */}
+        <div className="px-4 py-2 border-b border-slate-800/80 bg-[#080d19]/80 flex items-center justify-between gap-4 text-xs">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="flex h-2 w-2 rounded-full bg-blue-500 animate-pulse flex-shrink-0" />
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-semibold text-white truncate text-[11px]">
+                {automations[0].name}
+              </span>
+              <span className="text-[10px] text-slate-400 truncate">
+                • {automations[0].currentStep}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {/* Micro stage indicators */}
+            <div className="flex items-center gap-1 text-[10px] font-mono">
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                Themes ✓
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 border border-blue-500/30 font-bold">
+                Generate 60%
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400">
+                Edit
+              </span>
+              <span className="text-slate-600">→</span>
+              <span className="px-1.5 py-0.5 rounded bg-slate-800/60 text-slate-400">
+                Deliver
+              </span>
             </div>
 
-            {/* Stacked Automation Items */}
-            <div className="flex flex-col gap-2">
-              {automations.map((auto) => (
-                <div
-                  key={auto.id}
-                  className="flex items-center justify-between p-2.5 text-xs rounded-2xl border border-slate-800/80 bg-[#0a0f1d]/70 hover:bg-[#0e1528] transition-all shadow-sm"
-                >
-                  {/* Left: Icon, Name, and Run Count */}
-                  <div className="flex items-center gap-3 min-w-[280px]">
-                    <div
-                      className={`flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full ${
-                        auto.status === 'running'
-                          ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                          : auto.status === 'scheduled'
-                          ? 'bg-slate-800 text-slate-400 border border-slate-700'
-                          : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+            {/* Media attachments chip */}
+            <div className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-500/10 text-blue-300 border border-blue-500/20 text-[10px] font-semibold">
+              <Film size={11} />
+              <span>3 Videos Ready</span>
+            </div>
+          </div>
+        </div>
+
+        {/* MAIN BODY: 5 DISTINCT VARIANTS */}
+        <div className="flex-1 overflow-hidden flex flex-col">
+          {/* ─────────────────────────────────────────────────────────────
+              VARIANT 1: COMPACT MATRIX & DRAWER (High Density for 100+ tasks)
+             ───────────────────────────────────────────────────────────── */}
+          {middleVariant === 'matrix' && (
+            <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
+              {/* Search & Filter bar for 100+ tasks */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex-1 relative">
+                  <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search 100 tasks by title, worker, or tag..."
+                    className="w-full bg-[#080c16] border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500/40"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {(['all', 'running', 'needs_review', 'queued', 'completed'] as const).map((st) => (
+                    <button
+                      key={st}
+                      onClick={() => setStatusFilter(st)}
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold uppercase tracking-wider transition-all ${
+                        statusFilter === st
+                          ? 'bg-slate-700 text-white shadow-sm'
+                          : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      {auto.status === 'running' ? (
-                        <Play size={11} fill="currentColor" />
-                      ) : auto.status === 'scheduled' ? (
-                        <Clock size={12} />
-                      ) : (
-                        <Check size={12} />
+                      {st === 'all'
+                        ? `All (${tasks.length})`
+                        : st === 'running'
+                        ? `Running (${runningCount})`
+                        : st === 'needs_review'
+                        ? `Review (${reviewCount})`
+                        : st === 'queued'
+                        ? `Queued (${queuedCount})`
+                        : `Done (${completedCount})`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* High-density task rows with expandable drawers */}
+              <div className="flex-1 overflow-y-auto space-y-1.5 pr-1">
+                {filteredTasks.map((t) => {
+                  const isExpanded = expandedTaskId === t.id
+                  return (
+                    <div
+                      key={t.id}
+                      className="rounded-xl border border-slate-800/80 bg-[#0a0f1d]/70 hover:border-slate-700/80 transition-all overflow-hidden"
+                    >
+                      {/* Compact Task Header Row */}
+                      <div
+                        onClick={() => setExpandedTaskId(isExpanded ? null : t.id)}
+                        className="flex items-center justify-between p-2.5 cursor-pointer hover:bg-white/[0.02]"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <span
+                            className={`h-2 w-2 rounded-full flex-shrink-0 ${
+                              t.status === 'running'
+                                ? 'bg-blue-400 animate-pulse'
+                                : t.status === 'needs_review'
+                                ? 'bg-amber-400'
+                                : t.status === 'completed'
+                                ? 'bg-emerald-400'
+                                : 'bg-slate-600'
+                            }`}
+                          />
+                          <div className="flex h-5 w-5 items-center justify-center rounded-md bg-slate-800 text-slate-400 flex-shrink-0">
+                            {t.agentType === 'coder' ? (
+                              <Code size={11} />
+                            ) : t.agentType === 'designer' ? (
+                              <Film size={11} />
+                            ) : (
+                              <Bot size={11} />
+                            )}
+                          </div>
+                          <span className="font-semibold text-xs text-white truncate max-w-sm">
+                            {t.title}
+                          </span>
+                          {t.workerName && (
+                            <span className="rounded bg-slate-800/80 px-1.5 py-0.5 text-[9px] font-mono text-slate-400 truncate">
+                              @{t.workerName}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Middle: Micro-stages stepper & media count */}
+                        <div className="flex items-center gap-3">
+                          {t.stepTimeline && (
+                            <div className="flex items-center gap-1 font-mono text-[9px]">
+                              {t.stepTimeline.map((step) => (
+                                <span
+                                  key={step.step}
+                                  className={`px-1 rounded ${
+                                    step.status === 'complete'
+                                      ? 'text-emerald-400 bg-emerald-500/10'
+                                      : step.status === 'processing'
+                                      ? 'text-blue-400 bg-blue-500/20 font-bold'
+                                      : 'text-slate-600'
+                                  }`}
+                                >
+                                  {step.label}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {t.deliverables && t.deliverables.length > 0 && (
+                            <span className="flex items-center gap-1 rounded bg-blue-500/15 border border-blue-500/30 px-1.5 py-0.5 text-[9px] font-semibold text-blue-300">
+                              <Film size={9} />
+                              {t.deliverables.length} clips
+                            </span>
+                          )}
+
+                          <span className="text-[10px] font-mono text-slate-500 min-w-[45px] text-right">
+                            {t.elapsed}
+                          </span>
+
+                          <span className="text-slate-500">
+                            {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Expandable Drawer with Deliverables, Video Player, and Diff View */}
+                      {isExpanded && (
+                        <div className="border-t border-slate-800/80 bg-[#070b15] p-3 space-y-3">
+                          {t.deliverables && (
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-300 mb-2 flex items-center justify-between">
+                                <span>Attached Video Deliverables ({t.deliverables.length})</span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  Click thumbnail to play full preview
+                                </span>
+                              </div>
+                              <div className="grid grid-cols-3 gap-2.5">
+                                {t.deliverables.map((item) => (
+                                  <div
+                                    key={item.id}
+                                    className="p-2 rounded-xl bg-[#0a0f1d] border border-slate-800"
+                                  >
+                                    <DeliverableThumbnail
+                                      type={item.thumbnailType}
+                                      duration={item.duration}
+                                      onPlay={() => setActiveVideoPreview(item)}
+                                    />
+                                    <div className="mt-2 text-xs font-bold text-white truncate">
+                                      {item.title}
+                                    </div>
+                                    <div className="mt-1 flex items-center justify-between pt-1 border-t border-slate-800/80">
+                                      <button
+                                        onClick={(e) => handleAcceptDeliverable(t.id, item.id, e)}
+                                        className="text-[10px] font-semibold text-emerald-400 hover:underline"
+                                      >
+                                        Accept
+                                      </button>
+                                      <button
+                                        onClick={() => setActiveVideoPreview(item)}
+                                        className="text-[10px] text-slate-400 hover:text-white"
+                                      >
+                                        Inspect
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {t.diffLines && (
+                            <div>
+                              <div className="text-[11px] font-bold text-slate-300 mb-1.5">
+                                Code Changes Diff
+                              </div>
+                              <div className="p-2.5 rounded-xl bg-[#05070e] border border-slate-800 font-mono text-[10px] space-y-0.5">
+                                {t.diffLines.map((line, idx) => (
+                                  <div
+                                    key={idx}
+                                    className={`flex items-center gap-2 ${
+                                      line.type === 'del'
+                                        ? 'text-red-400'
+                                        : line.type === 'add'
+                                        ? 'text-emerald-400'
+                                        : 'text-slate-400'
+                                    }`}
+                                  >
+                                    <span className="w-4 text-slate-600 select-none">
+                                      {line.lineNum}
+                                    </span>
+                                    <span>{line.text}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
-
-                    <div className="flex flex-col min-w-0">
-                      <span className="font-semibold text-white text-xs truncate">
-                        {auto.name}
-                      </span>
-                      <span className="text-[10px] text-slate-400">
-                        {auto.totalRuns} runs • Last run {auto.lastRun}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Middle: Status or Progress Bar */}
-                  <div className="flex-1 max-w-sm px-4">
-                    {auto.status === 'running' && auto.progressPercent !== undefined ? (
-                      <div className="flex items-center gap-3">
-                        <span className="text-[11px] text-slate-300 min-w-[90px] truncate">
-                          {auto.currentStep}
-                        </span>
-                        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
-                          <div
-                            className="h-full bg-gradient-to-r from-blue-600 to-indigo-400 rounded-full transition-all duration-500"
-                            style={{ width: `${auto.progressPercent}%` }}
-                          />
-                        </div>
-                        <span className="font-mono text-[11px] text-slate-400 min-w-[28px] text-right">
-                          {auto.progressPercent}%
-                        </span>
-                      </div>
-                    ) : (
-                      <span className="text-[11px] text-slate-400 font-mono">
-                        {auto.outputSummary}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Right: More menu */}
-                  <div className="flex items-center gap-2">
-                    <button className="text-slate-500 hover:text-slate-300 p-1 rounded-lg hover:bg-slate-800/60 transition-colors">
-                      <MoreHorizontal size={14} />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                  )
+                })}
+              </div>
             </div>
-          </section>
+          )}
 
-          {/* SECTION 2: TASK CARD 1 - MAKE 3 SOCIAL MEDIA VIDEOS WITH DELIVERABLES */}
-          {tasks
-            .filter((t) => t.id === 'task-101')
-            .map((task) => (
-              <div
-                key={task.id}
-                className="p-4 rounded-2xl border border-slate-800/80 bg-[#0a0f1d]/80 shadow-md space-y-4"
-              >
-                {/* Task Header */}
-                <div className="flex items-center justify-between pb-3 border-b border-slate-800/70">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                      <Inbox size={15} />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-white">{task.title}</h4>
-                      <p className="text-[11px] text-slate-400 font-medium">
-                        {task.subtitle || 'Design → Generate → Polish → Deliver'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono text-slate-400">{task.elapsed}</span>
-                    <span className="flex items-center gap-1.5 rounded-full bg-blue-500/15 border border-blue-500/30 px-2.5 py-0.5 text-xs font-semibold text-blue-300">
-                      <span className="h-1.5 w-1.5 rounded-full bg-blue-400 animate-pulse" />
-                      Running
+          {/* ─────────────────────────────────────────────────────────────
+              VARIANT 2: MISSION PIPELINE KANBAN (Multi-column Stage Workflow)
+             ───────────────────────────────────────────────────────────── */}
+          {middleVariant === 'kanban' && (
+            <div className="flex-1 flex overflow-x-auto p-3.5 gap-3">
+              {[
+                {
+                  id: 'queued',
+                  label: 'Queued Backlog',
+                  tasks: tasks.filter((t) => t.status === 'queued'),
+                  color: 'border-slate-800 text-slate-400',
+                },
+                {
+                  id: 'running',
+                  label: 'Active In-Flight',
+                  tasks: tasks.filter((t) => t.status === 'running'),
+                  color: 'border-blue-500/30 text-blue-400',
+                },
+                {
+                  id: 'needs_review',
+                  label: 'In Review / Deliverables',
+                  tasks: tasks.filter((t) => t.status === 'needs_review'),
+                  color: 'border-amber-500/30 text-amber-400',
+                },
+                {
+                  id: 'completed',
+                  label: 'Completed / Shipped',
+                  tasks: tasks.filter((t) => t.status === 'completed'),
+                  color: 'border-emerald-500/30 text-emerald-400',
+                },
+              ].map((col) => (
+                <div
+                  key={col.id}
+                  className="flex-1 min-w-[240px] flex flex-col rounded-2xl bg-[#090d18] border border-slate-800/80 overflow-hidden"
+                >
+                  <div className="p-3 border-b border-slate-800 flex items-center justify-between">
+                    <span className="text-xs font-bold text-white">{col.label}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-800 ${col.color}`}>
+                      {col.tasks.length}
                     </span>
                   </div>
-                </div>
 
-                {/* Step Timeline (Themes -> Generate -> Edit -> Deliver) */}
-                <div className="py-1">
-                  <div className="flex items-center justify-between">
-                    {/* Step 1: Themes */}
-                    <div className="flex flex-col items-center">
-                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-slate-950 font-bold text-xs shadow-sm">
-                        1
-                      </div>
-                      <span className="mt-1.5 text-xs font-semibold text-slate-200">Themes</span>
-                      <span className="text-[10px] text-slate-400">Complete</span>
-                    </div>
-
-                    <div className="h-0.5 flex-1 mx-2 bg-emerald-500/60" />
-
-                    {/* Step 2: Generate */}
-                    <div className="flex flex-col items-center">
-                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-white font-bold text-xs ring-4 ring-blue-500/20 shadow-sm">
-                        2
-                      </div>
-                      <span className="mt-1.5 text-xs font-semibold text-blue-400">Generate</span>
-                      <span className="text-[10px] text-blue-400 animate-pulse">Processing...</span>
-                    </div>
-
-                    <div className="h-0.5 flex-1 mx-2 bg-slate-800" />
-
-                    {/* Step 3: Edit */}
-                    <div className="flex flex-col items-center">
-                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-slate-500 font-bold text-xs border border-slate-700/60">
-                        3
-                      </div>
-                      <span className="mt-1.5 text-xs font-semibold text-slate-400">Edit</span>
-                      <span className="text-[10px] text-slate-500">Pending</span>
-                    </div>
-
-                    <div className="h-0.5 flex-1 mx-2 bg-slate-800" />
-
-                    {/* Step 4: Deliver */}
-                    <div className="flex flex-col items-center">
-                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-800 text-slate-500 font-bold text-xs border border-slate-700/60">
-                        4
-                      </div>
-                      <span className="mt-1.5 text-xs font-semibold text-slate-400">Deliver</span>
-                      <span className="text-[10px] text-slate-500">Pending</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Generated Deliverables (3) Grid */}
-                <div className="pt-2">
-                  <div className="text-xs font-bold text-slate-200 mb-2.5">
-                    Generated Deliverables ({task.deliverables?.length || 3})
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {task.deliverables?.map((item) => (
+                  <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                    {col.tasks.map((task) => (
                       <div
-                        key={item.id}
-                        className="flex flex-col p-3 rounded-xl border border-slate-800/80 bg-[#0e1424] hover:border-slate-700 transition-all shadow-sm"
+                        key={task.id}
+                        className="p-3 rounded-xl border border-slate-800/90 bg-[#0d1222] hover:border-slate-700 transition-all space-y-2"
                       >
-                        {/* Video Thumbnail */}
-                        <DeliverableThumbnail
-                          type={item.thumbnailType}
-                          duration={item.duration}
-                          onPlay={() => setActiveVideoPreview(item)}
-                        />
-
-                        {/* Title & Description */}
-                        <div className="mt-2.5 flex-1">
-                          <h5 className="text-xs font-bold text-white truncate">{item.title}</h5>
-                          <p className="mt-1 text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
-                            {item.prompt}
-                          </p>
+                        <div className="flex items-center justify-between text-[10px] text-slate-400">
+                          <span className="font-mono">#{task.id}</span>
+                          <span>{task.elapsed}</span>
                         </div>
-
-                        {/* Bottom Actions: Download, View, Menu */}
-                        <div className="mt-3 pt-2.5 border-t border-slate-800 flex items-center justify-between gap-1.5">
-                          <button
-                            onClick={() => handleAcceptDeliverable(task.id, item.id)}
-                            className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition-colors"
-                            title="Download Deliverable"
-                          >
-                            <Download size={13} />
-                          </button>
-
-                          <button
-                            onClick={() => setActiveVideoPreview(item)}
-                            className="flex-1 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/60 text-xs font-medium text-center transition-colors"
-                          >
-                            View
-                          </button>
-
-                          <button
-                            className="p-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition-colors"
-                            title="More Options"
-                          >
-                            <MoreHorizontal size={13} />
-                          </button>
+                        <div className="text-xs font-semibold text-white leading-snug">
+                          {task.title}
                         </div>
+                        {task.workerName && (
+                          <div className="text-[10px] font-mono text-slate-400 truncate">
+                            @{task.workerName}
+                          </div>
+                        )}
+                        {task.deliverables && (
+                          <div
+                            onClick={() => setActiveVideoPreview(task.deliverables![0])}
+                            className="flex items-center gap-1.5 p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 text-[10px] cursor-pointer hover:bg-blue-500/20"
+                          >
+                            <Film size={11} />
+                            <span>Preview {task.deliverables.length} Media Deliverables</span>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
                 </div>
+              ))}
+            </div>
+          )}
+
+          {/* ─────────────────────────────────────────────────────────────
+              VARIANT 3: AUTONOMOUS WORKER FLEET (Workers Deploying Jobs)
+             ───────────────────────────────────────────────────────────── */}
+          {middleVariant === 'fleet' && (
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white">Deployed Autonomous Workers</h3>
+                  <p className="text-[11px] text-slate-400">
+                    Workers running scheduled & on-demand task jobs
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleSendMessage('deploy worker')}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
+                >
+                  <Plus size={12} />
+                  <span>New Worker</span>
+                </button>
               </div>
-            ))}
 
-          {/* SECTION 3: TASK CARD 2 - FIX COMPOSER QUICK COMMAND (DIFF PREVIEW) */}
-          {tasks
-            .filter((t) => t.id === 'task-102')
-            .map((task) => (
-              <div
-                key={task.id}
-                className="p-4 rounded-2xl border border-slate-800/80 bg-[#0a0f1d]/80 shadow-md space-y-3"
-              >
-                {/* Task Header */}
-                <div className="flex items-center justify-between pb-3 border-b border-slate-800/70">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
-                      <Code size={15} />
+              {/* 4 Deployed Worker Cards */}
+              <div className="grid grid-cols-2 gap-3">
+                {deployedWorkers.map((worker) => (
+                  <div
+                    key={worker.id}
+                    className="p-3.5 rounded-2xl border border-slate-800/80 bg-[#0a0f1d] space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                          <Bot size={16} />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-bold text-white">{worker.name}</h4>
+                          <p className="text-[10px] text-slate-400">{worker.role}</p>
+                        </div>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold uppercase bg-slate-800 text-slate-300">
+                        {worker.triggerKind}
+                      </span>
                     </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-white">{task.title}</h4>
-                      <p className="text-[11px] text-slate-400 font-medium">
-                        {task.subtitle || 'Update keybinding logic and event handling.'}
-                      </p>
+
+                    <div className="flex items-center justify-between text-[11px] border-t border-slate-800/80 pt-2 text-slate-400 font-mono">
+                      <span>Schedule: {worker.scheduleLabel}</span>
+                      <span className="text-blue-400 font-bold">{worker.activeJobsCount} active jobs</span>
                     </div>
+
+                    {worker.currentJobTitle && (
+                      <div className="p-2 rounded-xl bg-[#060912] border border-slate-800 text-[10px] text-slate-300 flex items-center justify-between">
+                        <span className="truncate">Current: {worker.currentJobTitle}</span>
+                        <Play size={10} className="text-blue-400 flex-shrink-0" />
+                      </div>
+                    )}
                   </div>
+                ))}
+              </div>
 
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono text-slate-400">{task.elapsed}</span>
-                    <span className="rounded-full bg-amber-500/15 border border-amber-500/30 px-2.5 py-0.5 text-xs font-semibold text-amber-300">
-                      Needs Review
-                    </span>
+              {/* Worker-Partitioned Tasks */}
+              <div className="pt-2">
+                <h4 className="text-xs font-bold text-white mb-2">Worker Task Assignment Queues</h4>
+                <div className="space-y-2">
+                  {tasks.slice(0, 8).map((task) => (
+                    <div
+                      key={task.id}
+                      className="p-2.5 rounded-xl border border-slate-800 bg-[#090d17] flex items-center justify-between text-xs"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono text-[10px] text-slate-400">#{task.id}</span>
+                        <span className="font-semibold text-white truncate max-w-sm">{task.title}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400">@{task.workerName}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ─────────────────────────────────────────────────────────────
+              VARIANT 4: SPLIT STUDIO CONSOLE (Master-Detail Live Inspector)
+             ───────────────────────────────────────────────────────────── */}
+          {middleVariant === 'split' && (
+            <div className="flex-1 flex overflow-hidden">
+              {/* Left Pane: High-Density 100-Task List */}
+              <div className="w-[42%] border-r border-slate-800/80 flex flex-col p-3 overflow-hidden space-y-2">
+                <div className="relative">
+                  <Search size={12} className="absolute left-2.5 top-2 text-slate-500" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search tasks..."
+                    className="w-full bg-[#080c16] border border-slate-800 rounded-lg pl-7 pr-2 py-1 text-xs text-white placeholder-slate-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+                  {filteredTasks.map((t) => {
+                    const isSelected = t.id === selectedTaskId
+                    return (
+                      <div
+                        key={t.id}
+                        onClick={() => setSelectedTaskId(t.id)}
+                        className={`p-2 rounded-xl cursor-pointer transition-all border ${
+                          isSelected
+                            ? 'bg-blue-600/15 border-blue-500/40 text-white shadow-sm'
+                            : 'bg-[#0a0f1d] border-slate-800/70 hover:border-slate-700 text-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-[11px] font-bold">
+                          <span className="truncate">{t.title}</span>
+                          <span className="font-mono text-[9px] text-slate-400">{t.elapsed}</span>
+                        </div>
+                        <div className="flex items-center justify-between mt-1 text-[9px] text-slate-400">
+                          <span>@{t.workerName || 'Unassigned'}</span>
+                          <span className="uppercase font-semibold">{t.status}</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Right Pane: Live Session & Deliverable Inspector */}
+              <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-[#090d18]/50">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-white">{selectedTaskForSplit.title}</h3>
+                    <p className="text-xs text-slate-400">{selectedTaskForSplit.subtitle}</p>
+                  </div>
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                    {selectedTaskForSplit.status}
+                  </span>
+                </div>
+
+                {/* 4-Step Stepper */}
+                <div className="p-3 rounded-2xl bg-[#0a0f1d] border border-slate-800">
+                  <div className="text-xs font-bold text-slate-300 mb-2">Execution Stages</div>
+                  <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                    {['Init Worktree', 'Agent Exec', 'Audit Diff', 'Deliver'].map((stage, idx) => (
+                      <div key={idx} className="p-2 rounded-xl bg-[#070b16] border border-slate-800">
+                        <span className="text-[10px] font-mono text-slate-500">Stage {idx + 1}</span>
+                        <div className="font-semibold text-white text-[11px] truncate mt-0.5">{stage}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                {/* Code Diff Box with Line Numbers & "View changes →" button */}
-                <div className="flex items-center justify-between p-3 rounded-xl bg-[#060911] border border-slate-800/80 font-mono text-[11px] leading-relaxed">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-3 text-red-400">
-                      <span className="w-5 text-slate-600 select-none">12</span>
-                      <span className="font-bold select-none">-</span>
-                      <span>if (text.endsWith('/')) &#123;</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-emerald-400">
-                      <span className="w-5 text-slate-600 select-none">13</span>
-                      <span className="font-bold select-none">+</span>
-                      <span>if (text.endsWith('/')) &#123;</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-slate-300">
-                      <span className="w-5 text-slate-600 select-none">14</span>
-                      <span className="font-bold select-none opacity-0">+</span>
-                      <span className="text-slate-300 pl-4">setShowQuickCommands(true)</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-slate-400">
-                      <span className="w-5 text-slate-600 select-none">15</span>
-                      <span className="font-bold select-none opacity-0">+</span>
-                      <span>&#125;</span>
+                {/* Attached Deliverables Gallery */}
+                {selectedTaskForSplit.deliverables && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-bold text-slate-300">Generated Media Deliverables</div>
+                    <div className="grid grid-cols-2 gap-3">
+                      {selectedTaskForSplit.deliverables.map((deliv) => (
+                        <div key={deliv.id} className="p-3 rounded-2xl bg-[#0a0f1d] border border-slate-800">
+                          <DeliverableThumbnail
+                            type={deliv.thumbnailType}
+                            duration={deliv.duration}
+                            onPlay={() => setActiveVideoPreview(deliv)}
+                          />
+                          <div className="mt-2 text-xs font-bold text-white truncate">{deliv.title}</div>
+                          <button
+                            onClick={() => setActiveVideoPreview(deliv)}
+                            className="mt-2 w-full py-1 text-center text-xs font-semibold bg-blue-600 rounded-lg text-white"
+                          >
+                            Inspect Video
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
-
-                  <button className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition-all">
-                    <span>View changes</span>
-                    <ArrowRight size={12} />
-                  </button>
-                </div>
+                )}
               </div>
-            ))}
+            </div>
+          )}
+
+          {/* ─────────────────────────────────────────────────────────────
+              VARIANT 5: TIMELINE ACTIVITY STREAM (Chronological Flow)
+             ───────────────────────────────────────────────────────────── */}
+          {middleVariant === 'timeline' && (
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                Active Right Now
+              </div>
+
+              <div className="relative pl-6 border-l-2 border-blue-500/40 space-y-4">
+                {tasks.slice(0, 5).map((t) => (
+                  <div
+                    key={t.id}
+                    className="relative p-3 rounded-2xl border border-slate-800/80 bg-[#0a0f1d] space-y-2"
+                  >
+                    <span className="absolute -left-[31px] top-3 h-3 w-3 rounded-full bg-blue-500 ring-4 ring-blue-500/20" />
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-white">{t.title}</span>
+                      <span className="text-[10px] font-mono text-blue-400">{t.elapsed}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">{t.subtitle}</p>
+
+                    {t.deliverables && (
+                      <div className="flex gap-2 pt-1 overflow-x-auto">
+                        {t.deliverables.map((d) => (
+                          <div
+                            key={d.id}
+                            onClick={() => setActiveVideoPreview(d)}
+                            className="w-36 flex-shrink-0 cursor-pointer"
+                          >
+                            <DeliverableThumbnail type={d.thumbnailType} duration={d.duration} />
+                            <div className="text-[10px] font-medium text-white truncate mt-1">
+                              {d.title}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
@@ -878,10 +1216,7 @@ export function OrchestrateView({
                   {/* Embedded Video Generation Card in Assistant Message */}
                   {msg.videoProgressCard && (
                     <div className="rounded-xl overflow-hidden border border-slate-800 bg-[#060911] p-2 space-y-2">
-                      {/* Video graphic preview */}
                       <DeliverableThumbnail type="orbital_data" />
-
-                      {/* Progress bar */}
                       <div className="space-y-1 pt-1">
                         <div className="flex items-center justify-between text-[10px] text-slate-400">
                           <span className="text-slate-300 font-medium">
@@ -948,7 +1283,6 @@ export function OrchestrateView({
               placeholder="Message Swarm Orchestrator..."
               className="w-full bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
             />
-
             <div className="flex items-center justify-between pt-1">
               <div className="flex items-center gap-2 text-slate-400">
                 <button
@@ -1017,7 +1351,6 @@ export function OrchestrateView({
               </div>
             </div>
 
-            {/* Video Canvas Artwork Preview */}
             <div className="relative my-4 aspect-video w-full overflow-hidden flex items-center justify-center rounded-2xl border border-slate-800 bg-black">
               <DeliverableThumbnail type={activeVideoPreview.thumbnailType} />
               <div className="absolute inset-0 flex flex-col items-center justify-center z-30">
@@ -1041,7 +1374,6 @@ export function OrchestrateView({
               </button>
             </div>
 
-            {/* Prompt details */}
             <div className="space-y-1.5 text-xs">
               <div>
                 <span className="text-slate-400 font-semibold">Worker Prompt: </span>
@@ -1054,7 +1386,6 @@ export function OrchestrateView({
               </div>
             </div>
 
-            {/* Footer action buttons */}
             <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-800 pt-3">
               <button
                 onClick={(e) => {

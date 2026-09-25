@@ -123,14 +123,40 @@ export interface DiffLine {
   text: string
 }
 
+export type MiddleCanvasVariant =
+  | 'matrix' // Variant 1: Compact Matrix & Drawer (High-density 100+ tasks)
+  | 'kanban' // Variant 2: Mission Pipeline Kanban (Multi-column stage workflow)
+  | 'fleet' // Variant 3: Autonomous Worker Fleet (Worker-centric hierarchy)
+  | 'split' // Variant 4: Split Studio Console (Master list + Live Inspector)
+  | 'timeline' // Variant 5: Timeline Activity Stream (Temporal flow & telemetry)
+
+export interface DeployedWorker {
+  id: string
+  name: string
+  role: string
+  triggerKind: 'trigger' | 'cron' | 'interval'
+  scheduleLabel: string
+  activeJobsCount: number
+  completedJobsCount: number
+  status: 'active' | 'idle' | 'busy'
+  currentJobTitle?: string
+  assignedTaskIds: string[]
+}
+
 export interface RunningTask {
   id: string
   title: string
   subtitle?: string
   agentType: 'coder' | 'finder' | 'designer' | 'swarm'
-  status: 'running' | 'completed' | 'needs_review' | 'blocked'
+  status: 'running' | 'completed' | 'needs_review' | 'blocked' | 'queued'
   workspaceTarget: string
   elapsed: string
+  workerId?: string
+  workerName?: string
+  priority?: 'critical' | 'high' | 'medium' | 'low'
+  tags?: string[]
+  stageIndex?: number
+  totalStages?: number
   subtasks: { id: string; title: string; completed: boolean }[]
   stepTimeline?: TaskStep[]
   diffPreview?: string

@@ -1,4 +1,5 @@
 import {
+  DeployedWorker,
   MediaDeliverable,
   OrchestratorMessage,
   ProjectSummary,
@@ -134,7 +135,58 @@ export const MOCK_DELIVERABLES: MediaDeliverable[] = [
   },
 ]
 
-export const MOCK_RUNNING_TASKS: RunningTask[] = [
+export const MOCK_DEPLOYED_WORKERS: DeployedWorker[] = [
+  {
+    id: 'worker-video-swarm',
+    name: 'Video Swarm Dispatcher',
+    role: 'Multi-scene AI video story & media synthesizer',
+    triggerKind: 'trigger',
+    scheduleLabel: 'On-demand webhook & chat dispatch',
+    activeJobsCount: 3,
+    completedJobsCount: 42,
+    status: 'active',
+    currentJobTitle: 'Batch rendering 3/10 social launch clips',
+    assignedTaskIds: ['task-101'],
+  },
+  {
+    id: 'worker-pr-review',
+    name: 'Code Reviewer & Verifier',
+    role: 'AST inspection, test runner & diff auditor',
+    triggerKind: 'cron',
+    scheduleLabel: 'Hourly :00 + on commit push',
+    activeJobsCount: 1,
+    completedJobsCount: 184,
+    status: 'active',
+    currentJobTitle: 'Auditing composer quick command patch',
+    assignedTaskIds: ['task-102'],
+  },
+  {
+    id: 'worker-testbench',
+    name: 'Systemd-Nspawn Testbench Runner',
+    role: 'Hermetic container test pool executor',
+    triggerKind: 'cron',
+    scheduleLabel: 'Nightly 02:00 UTC',
+    activeJobsCount: 0,
+    completedJobsCount: 96,
+    status: 'idle',
+    assignedTaskIds: [],
+  },
+  {
+    id: 'worker-session-compactor',
+    name: 'Pebble Token Compactor',
+    role: 'Pebble V3 bloat & memory optimizer',
+    triggerKind: 'interval',
+    scheduleLabel: 'Every 30m interval',
+    activeJobsCount: 1,
+    completedJobsCount: 310,
+    status: 'busy',
+    currentJobTitle: 'Compacting event store logs & telemetry',
+    assignedTaskIds: [],
+  },
+]
+
+// Base tasks with rich attached deliverables
+const BASE_TASKS: RunningTask[] = [
   {
     id: 'task-101',
     title: 'Make 3 Social Media Videos for Feature Launch',
@@ -230,6 +282,116 @@ export const MOCK_RUNNING_TASKS: RunningTask[] = [
     ],
   },
 ]
+
+// Generate 100 realistic tasks for high-density testing & scalability
+function generate100MockTasks(): RunningTask[] {
+  const tasks: RunningTask[] = [
+    {
+      ...BASE_TASKS[0],
+      workerId: 'worker-video-swarm',
+      workerName: 'Video Swarm Dispatcher',
+      priority: 'high',
+      tags: ['video', 'creative', 'launch'],
+      stageIndex: 2,
+      totalStages: 4,
+    },
+    {
+      ...BASE_TASKS[1],
+      workerId: 'worker-pr-review',
+      workerName: 'Code Reviewer & Verifier',
+      priority: 'critical',
+      tags: ['code', 'ui', 'bugfix'],
+      stageIndex: 3,
+      totalStages: 3,
+    },
+  ]
+
+  const agentPool: Array<'coder' | 'designer' | 'finder' | 'swarm'> = ['coder', 'designer', 'finder', 'swarm']
+  const workspacePool = ['swarm-go', 'swarm-social', 'swarmcrit', 'work']
+  const workerPool = [
+    { id: 'worker-video-swarm', name: 'Video Swarm Dispatcher' },
+    { id: 'worker-pr-review', name: 'Code Reviewer & Verifier' },
+    { id: 'worker-testbench', name: 'Systemd-Nspawn Testbench Runner' },
+    { id: 'worker-session-compactor', name: 'Pebble Token Compactor' },
+  ]
+
+  const sampleTitles = [
+    { title: 'Optimize Pebble V3 transaction batching', cat: 'code', tags: ['db', 'perf'] },
+    { title: 'Generate 9:16 vertical TikTok promo stories', cat: 'video', tags: ['video', 'social'] },
+    { title: 'Run hermetic local-testbench fast test gate', cat: 'testbench', tags: ['ci', 'tests'] },
+    { title: 'Audit model token usage across child sessions', cat: 'audit', tags: ['tokens', 'metrics'] },
+    { title: 'Refactor desktop sidebar workspace navigation', cat: 'code', tags: ['ui', 'frontend'] },
+    { title: 'Generate 4K YouTube cinematic trailer intro', cat: 'video', tags: ['video', 'media'] },
+    { title: 'Validate Workload Identity Federation tokens', cat: 'security', tags: ['gcp', 'auth'] },
+    { title: 'Sync project workspace attachments into Git', cat: 'code', tags: ['git', 'storage'] },
+    { title: 'Evaluate Gemini 3.8 Flash low-thinking benchmark', cat: 'ai', tags: ['models', 'eval'] },
+    { title: 'Compact WebSocket realtime outbox records', cat: 'db', tags: ['realtime', 'memory'] },
+  ]
+
+  for (let i = 3; i <= 100; i++) {
+    const template = sampleTitles[(i - 3) % sampleTitles.length]
+    const assignedWorker = workerPool[i % workerPool.length]
+    let status: RunningTask['status'] = 'queued'
+    if (i <= 6) status = 'running'
+    else if (i <= 14) status = 'needs_review'
+    else if (i <= 28) status = 'completed'
+    else status = 'queued'
+
+    const stageIdx = status === 'completed' ? 4 : status === 'running' ? 2 : status === 'needs_review' ? 3 : 0
+    const agent = agentPool[i % agentPool.length]
+
+    tasks.push({
+      id: `task-${100 + i}`,
+      title: `${template.title} #${i}`,
+      subtitle: `Automated ${template.cat} execution pipeline for ${assignedWorker.name}`,
+      agentType: agent,
+      status,
+      workspaceTarget: workspacePool[i % workspacePool.length],
+      elapsed: status === 'queued' ? 'queued' : `${(i % 12) + 1}m ${(i * 7) % 60}s`,
+      workerId: assignedWorker.id,
+      workerName: assignedWorker.name,
+      priority: i % 10 === 0 ? 'critical' : i % 3 === 0 ? 'high' : 'medium',
+      tags: template.tags,
+      stageIndex: stageIdx,
+      totalStages: 4,
+      subtasks: [
+        { id: `st-${i}-1`, title: 'Initialize task worktree & dependencies', completed: stageIdx >= 1 },
+        { id: `st-${i}-2`, title: 'Execute primary agent sub-pipeline', completed: stageIdx >= 2 },
+        { id: `st-${i}-3`, title: 'Package deliverables & generate test diff', completed: stageIdx >= 3 },
+        { id: `st-${i}-4`, title: 'Verify integration barriers & ship', completed: stageIdx >= 4 },
+      ],
+      stepTimeline: [
+        { step: 1, label: 'Init', status: stageIdx >= 1 ? 'complete' : 'pending' },
+        { step: 2, label: 'Exec', status: stageIdx === 2 ? 'processing' : stageIdx > 2 ? 'complete' : 'pending' },
+        { step: 3, label: 'Audit', status: stageIdx === 3 ? 'processing' : stageIdx > 3 ? 'complete' : 'pending' },
+        { step: 4, label: 'Ship', status: stageIdx >= 4 ? 'complete' : 'pending' },
+      ],
+      deliverables:
+        template.cat === 'video'
+          ? [
+              {
+                id: `deliv-gen-${i}`,
+                title: `Asset Render #${i}`,
+                type: 'video',
+                thumbnailType: i % 2 === 0 ? 'cyber_lattice' : 'orbital_data',
+                videoAspect: '16:9',
+                duration: '0:15',
+                status: status === 'completed' ? 'accepted' : 'ready',
+                createdAt: `${i}m ago`,
+                author: assignedWorker.name,
+                prompt: `Automated cinematic render for ${template.title}`,
+                metrics: { renderTime: '34s', tokens: '1.1k' },
+              },
+            ]
+          : undefined,
+    })
+  }
+
+  return tasks
+}
+
+export const MOCK_RUNNING_TASKS: RunningTask[] = generate100MockTasks()
+export const MOCK_100_TASKS = MOCK_RUNNING_TASKS
 
 export const MOCK_CHAT_MESSAGES: OrchestratorMessage[] = [
   {
