@@ -28,7 +28,11 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 	defer db.Close()
 
 	ss := store.NewSessionStore(db)
-	s := &Server{sessions: sessionruntime.NewService(ss, nil)}
+	el, err := store.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{sessions: sessionruntime.NewService(ss, el)}
 	h := s.apiMux()
 
 	call := func(method, path, body string, scopes []string) *httptest.ResponseRecorder {
@@ -175,6 +179,20 @@ func TestProjectsAPIEndpoints(t *testing.T) {
 	w = call(http.MethodPatch, "/"+projID+"/tasks/"+taskID, patchTaskBody, []string{"sessions:write"})
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 on task patch, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 8b. Project Task: POST /v3/projects/{id}/tasks/{taskId}/approve
+	w = call(http.MethodPost, "/"+projID+"/tasks/"+taskID+"/approve", "", []string{"sessions:write"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on task approve, got %d: %s", w.Code, w.Body.String())
+	}
+	var approveResp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &approveResp); err != nil {
+		t.Fatal(err)
+	}
+	approvedTask := approveResp["task"].(map[string]any)
+	if approvedTask["status"] != "in_progress" {
+		t.Fatalf("expected approved task status in_progress, got %v", approvedTask["status"])
 	}
 
 	// 9. Project Task: DELETE /v3/projects/{id}/tasks/{taskId}

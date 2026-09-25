@@ -67,6 +67,83 @@ func inspectTaskGitState(workspacePath, branch string) (unintegratedCommits int,
 	return unintegratedCommits, diffSummary, isDirty
 }
 
+// organizeTaskFromEnglishPrompt synthesizes title, agent, outcome type, branch, mission, stages, and deliverables from plain English.
+func organizeTaskFromEnglishPrompt(prompt string, wsPath string) (title string, agent string, outcomeType string, branch string, mission string, stages []string, deliverables []pebblestore.ProjectTaskDeliverable) {
+	prompt = strings.TrimSpace(prompt)
+	lower := strings.ToLower(prompt)
+
+	if strings.Contains(lower, "video") || strings.Contains(lower, "render") || strings.Contains(lower, "teaser") || strings.Contains(lower, "animation") || strings.Contains(lower, "clip") || strings.Contains(lower, "trailer") {
+		agent = "designer"
+		outcomeType = "media_bundle"
+		stages = []string{"Script & Storyboard", "Scene Generation", "Soundtrack Ingestion", "Final Review"}
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_1", Title: "Cut 1: Launch Teaser (15s)", Kind: "video", Status: "pending", Duration: "0:15", Thumbnail: "cyber_lattice"},
+			{ID: "deliv_2", Title: "Cut 2: Architecture Deep Dive (15s)", Kind: "video", Status: "pending", Duration: "0:15", Thumbnail: "neural_core"},
+			{ID: "deliv_3", Title: "Cut 3: Feature Callout (15s)", Kind: "video", Status: "pending", Duration: "0:15", Thumbnail: "orbital_data"},
+		}
+	} else if strings.Contains(lower, "bug") || strings.Contains(lower, "fix") || strings.Contains(lower, "broken") || strings.Contains(lower, "crash") || strings.Contains(lower, "reproduce") || strings.Contains(lower, "error") {
+		agent = "coder"
+		outcomeType = "bug_patch"
+		stages = []string{"Reproduce with Test", "Author Minimal Fix", "Run Regression Gate", "Review & Integrate"}
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_patch", Title: "Regression Test & Minimal Patch", Kind: "patch", Status: "pending"},
+		}
+	} else if strings.Contains(lower, "audit") || strings.Contains(lower, "investigate") || strings.Contains(lower, "inspect") || strings.Contains(lower, "benchmark") || strings.Contains(lower, "security") || strings.Contains(lower, "review") {
+		agent = "finder"
+		outcomeType = "audit_report"
+		stages = []string{"Inspect Subsystems", "Analyze System Invariants", "Compile Findings Ledger", "Architectural Report"}
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_report", Title: "Technical Audit Findings Ledger", Kind: "report", Status: "pending"},
+		}
+	} else {
+		agent = "coder"
+		outcomeType = "code_pr"
+		stages = []string{"Inspect Architecture", "Implement Feature", "Run Critical Testbench", "Review & Land"}
+		deliverables = []pebblestore.ProjectTaskDeliverable{
+			{ID: "deliv_pr", Title: "Feature Branch & Critical Tests", Kind: "pr", Status: "pending"},
+		}
+	}
+
+	clean := prompt
+	if len(clean) > 80 {
+		clean = clean[:80]
+		if idx := strings.LastIndex(clean, " "); idx > 40 {
+			clean = clean[:idx]
+		}
+	}
+	clean = strings.TrimSpace(clean)
+	if len(clean) > 0 {
+		title = strings.ToUpper(clean[:1]) + clean[1:]
+	} else {
+		title = "Autonomous Task"
+	}
+
+	var slugParts []string
+	words := strings.Fields(strings.ToLower(prompt))
+	for _, w := range words {
+		var filtered strings.Builder
+		for _, r := range w {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+				filtered.WriteRune(r)
+			}
+		}
+		f := filtered.String()
+		if len(f) > 2 && f != "the" && f != "and" && f != "for" && f != "with" && f != "make" && f != "please" {
+			slugParts = append(slugParts, f)
+			if len(slugParts) >= 4 {
+				break
+			}
+		}
+	}
+	slug := strings.Join(slugParts, "-")
+	if slug == "" {
+		slug = fmt.Sprintf("task-%d", time.Now().Unix()%10000)
+	}
+	branch = fmt.Sprintf("agent/%s", slug)
+	mission = fmt.Sprintf("Autonomous %s mission: %s. Operates in isolated worktree %s.", agent, prompt, branch)
+	return
+}
+
 // SynthesizeProjectContext reads AGENTS.md and README.md from the provided workspace paths
 // and synthesizes an authoritative project.md document.
 func SynthesizeProjectContext(projectName string, wsPaths []string) string {
@@ -451,38 +528,74 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			prompt := strings.TrimSpace(req.Prompt)
+			if prompt == "" && strings.TrimSpace(req.Title) != "" {
+				prompt = strings.TrimSpace(req.Title)
+			}
+
+			sTitle, sAgent, sOutcome, sBranch, sMission, sStages, sDelivs := organizeTaskFromEnglishPrompt(prompt, req.WorkspacePath)
+
+			title := strings.TrimSpace(req.Title)
+			if title == "" {
+				title = sTitle
+			}
 			agentName := strings.TrimSpace(req.Agent)
 			if agentName == "" {
-				agentName = "coder"
+				agentName = sAgent
 			}
+			outcomeType := strings.TrimSpace(req.OutcomeType)
+			if outcomeType == "" {
+				outcomeType = sOutcome
+			}
+			worktreeBranch := strings.TrimSpace(req.WorktreeBranch)
+			if worktreeBranch == "" {
+				worktreeBranch = sBranch
+			}
+			description := strings.TrimSpace(req.Description)
+			if description == "" {
+				description = sMission
+			}
+			stages := req.PipelineStages
+			if len(stages) == 0 {
+				stages = sStages
+			}
+			deliverables := req.Deliverables
+			if len(deliverables) == 0 {
+				deliverables = sDelivs
+			}
+			workerName := strings.TrimSpace(req.WorkerName)
+			if workerName == "" {
+				workerName = fmt.Sprintf("@%s Worker", strings.Title(agentName))
+			}
+
 			taskStatus := strings.TrimSpace(req.Status)
 			if taskStatus == "" {
-				taskStatus = "queued"
+				taskStatus = "pending_approval"
 			}
 
 			task := pebblestore.ProjectTaskRecord{
 				ProjectID:           projectID,
-				Title:               strings.TrimSpace(req.Title),
-				Description:         strings.TrimSpace(req.Description),
+				Title:               title,
+				Description:         description,
 				Status:              taskStatus,
 				Agent:               agentName,
-				WorkerName:          strings.TrimSpace(req.WorkerName),
-				OutcomeType:         strings.TrimSpace(req.OutcomeType),
+				WorkerName:          workerName,
+				OutcomeType:         outcomeType,
 				WorkspacePath:       strings.TrimSpace(req.WorkspacePath),
-				WorktreeBranch:      strings.TrimSpace(req.WorktreeBranch),
+				WorktreeBranch:      worktreeBranch,
 				UnintegratedCommits: req.UnintegratedCommits,
 				DiffSummary:         strings.TrimSpace(req.DiffSummary),
 				IsDirty:             req.IsDirty,
 				ActionNeeded:        strings.TrimSpace(req.ActionNeeded),
 				WhatDidDo:           req.WhatDidDo,
 				WhatNotDone:         req.WhatNotDone,
-				PipelineStages:      req.PipelineStages,
+				PipelineStages:      stages,
 				CurrentStageIndex:   req.CurrentStageIndex,
-				Deliverables:        req.Deliverables,
+				Deliverables:        deliverables,
 			}
 
-			// Deploy session if requested or prompt provided
-			if req.DeploySession || strings.TrimSpace(req.Prompt) != "" {
+			// Deploy session whenever task is created so the session exists and can be viewed immediately in chat
+			{
 				wsPath := strings.TrimSpace(req.WorkspacePath)
 				if wsPath == "" && len(proj.Workspaces) > 0 {
 					wsPath = proj.Workspaces[0].Path
@@ -512,15 +625,11 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 
 				sessionSnapshot, _, createErr := s.sessions.CreateSessionWithOptions(createOpts)
-				if createErr != nil {
-					writeError(w, http.StatusInternalServerError, fmt.Errorf("failed to deploy task session: %w", createErr))
-					return
-				}
-				task.SessionID = sessionSnapshot.ID
-				task.Status = "in_progress"
-
-				if prompt := strings.TrimSpace(req.Prompt); prompt != "" {
-					s.EnqueueSessionRun(p, sessionSnapshot.ID, "run-"+sessionSnapshot.ID, proj.PrimarySessionID)
+				if createErr == nil && sessionSnapshot.ID != "" {
+					task.SessionID = sessionSnapshot.ID
+					if taskStatus == "in_progress" && prompt != "" {
+						s.EnqueueSessionRun(p, sessionSnapshot.ID, "run-"+sessionSnapshot.ID, proj.PrimarySessionID)
+					}
 				}
 			}
 
@@ -733,6 +842,42 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status": "integrated",
+			"task":   updated,
+		})
+		return
+	}
+
+	// 7. Approve task session: POST /v3/projects/{id}/tasks/{taskId}/approve
+	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "approve" {
+		taskID := segments[2]
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+			return
+		}
+		if !s.requireScopeAny(w, r, "projects:write", "sessions:write") {
+			return
+		}
+		updated, err := db.UpdateProjectTask(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "in_progress"
+			t.ActionNeeded = ""
+			if len(t.WhatDidDo) == 0 {
+				t.WhatDidDo = []string{"Mission approved by user", "Worktree session activated"}
+			}
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		if updated != nil && updated.SessionID != "" {
+			runPrompt := updated.Description
+			if runPrompt == "" {
+				runPrompt = updated.Title
+			}
+			s.EnqueueSessionRun(p, updated.SessionID, "run-approved-"+updated.SessionID, "")
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "approved",
 			"task":   updated,
 		})
 		return

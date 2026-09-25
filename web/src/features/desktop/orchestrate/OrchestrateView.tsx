@@ -7,9 +7,9 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  Code,
   Columns3,
   Edit3,
-  Code,
   Film,
   Folder,
   FolderPlus,
@@ -46,7 +46,6 @@ import {
   ProjectSummary,
   RunningAutomation,
   RunningTask,
-  TaskOutcomeType,
 } from './orchestrate-types'
 
 export interface OrchestrateViewProps {
@@ -144,17 +143,22 @@ function MinimalTaskCard({
   isSelected,
   onSelect,
   onOpenChat,
+  onApprove,
   onIntegrate,
+  onDelete,
   onPreviewDeliverable,
 }: {
   task: RunningTask
   isSelected?: boolean
   onSelect?: () => void
   onOpenChat?: () => void
+  onApprove?: () => void
   onIntegrate?: () => void
+  onDelete?: () => void
   onPreviewDeliverable?: (d: MediaDeliverable) => void
 }) {
-  const isRunning = task.status === 'running'
+  const isPendingApproval = task.status === 'pending_approval' || task.status === 'queued'
+  const isRunning = task.status === 'running' || task.status === 'in_progress'
   const isNeedsReview = task.status === 'needs_review'
   const isCompleted = task.status === 'completed'
   const hasUnintegrated = (task.unintegratedCommits ?? 0) > 0
@@ -168,7 +172,7 @@ function MinimalTaskCard({
           : 'bg-[#0a0f1d] border-slate-800/80 hover:border-slate-700/80 hover:bg-[#0c1222]'
       }`}
     >
-      {/* 1. Header: Agent Tag + Title + Status + Chat Button */}
+      {/* 1. Header: Agent Tag + Title + Status + Actions */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-1 min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -195,7 +199,9 @@ function MinimalTaskCard({
         <div className="flex items-center gap-2 flex-shrink-0">
           <div
             className={`font-mono text-[10px] font-bold uppercase px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isRunning
+              isPendingApproval
+                ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
+                : isRunning
                 ? 'bg-blue-950/40 text-blue-400 border-blue-500/40'
                 : isNeedsReview
                 ? 'bg-amber-950/40 text-amber-300 border-amber-500/40'
@@ -206,7 +212,9 @@ function MinimalTaskCard({
           >
             <span
               className={`h-1.5 w-1.5 rounded-sm ${
-                isRunning
+                isPendingApproval
+                  ? 'bg-amber-400'
+                  : isRunning
                   ? 'bg-blue-400 animate-pulse'
                   : isNeedsReview
                   ? 'bg-amber-400'
@@ -237,8 +245,60 @@ function MinimalTaskCard({
         </div>
       </div>
 
-      {/* 2. Action Needed Banner (if unintegrated or action needed) */}
-      {(task.actionNeeded || hasUnintegrated) && (
+      {/* 2. PENDING APPROVAL MISSION PROPOSAL BANNER */}
+      {isPendingApproval && (
+        <div className="flex flex-col p-3 rounded-lg bg-blue-950/20 border border-blue-500/40 space-y-2 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-blue-400 flex items-center gap-1.5 font-mono text-[10px] uppercase">
+              <Sparkles size={12} />
+              <span>AI Mission Proposal</span>
+            </span>
+            <span className="text-[10px] font-mono text-slate-400">
+              Branch: <span className="text-indigo-300 font-semibold">{task.worktreeBranch || 'agent/worktree'}</span>
+            </span>
+          </div>
+
+          <p className="text-slate-200 text-xs leading-relaxed">
+            {task.subtitle || task.title}
+          </p>
+
+          <div className="flex items-center justify-between pt-1 border-t border-blue-500/20 text-[11px]">
+            <span className="text-slate-400 font-mono text-[10px]">
+              Expected: <strong className="text-white">{task.outcomeType === 'media_bundle' ? '3 Videos (1080p MP4)' : task.outcomeType === 'bug_patch' ? 'Regression Test & Fix Diff' : '1 Branch PR + Test Suite'}</strong>
+            </span>
+            <div className="flex items-center gap-2">
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onDelete()
+                  }}
+                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-rose-400 text-[10px] font-medium transition-colors"
+                >
+                  Discard
+                </button>
+              )}
+              {onApprove && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onApprove()
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all active:scale-95"
+                >
+                  <Play size={11} fill="currentColor" />
+                  <span>Approve & Start Session</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Action Needed Banner (if unintegrated commits or action needed) */}
+      {!isPendingApproval && (task.actionNeeded || hasUnintegrated) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-amber-950/20 border border-amber-500/30 text-amber-200 text-[11px] gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="font-bold text-amber-400 flex-shrink-0">Action:</span>
@@ -261,7 +321,7 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 3. Worktree & Git Status Bar */}
+      {/* 4. Worktree & Git Status Bar */}
       {(task.worktreeBranch || task.diffSummary || hasUnintegrated) && (
         <div className="flex items-center justify-between p-2 rounded-lg bg-[#070b14] border border-slate-800/80 text-[10px] font-mono text-slate-400">
           <div className="flex items-center gap-2 truncate">
@@ -283,8 +343,8 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 4. Two-Column Ledger: "What did it do?" vs "What's not done yet?" */}
-      {((task.whatDidDo && task.whatDidDo.length > 0) || (task.whatNotDone && task.whatNotDone.length > 0)) && (
+      {/* 5. Two-Column Ledger: "What did it do?" vs "What's not done yet?" */}
+      {!isPendingApproval && ((task.whatDidDo && task.whatDidDo.length > 0) || (task.whatNotDone && task.whatNotDone.length > 0)) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px] p-2 rounded-lg bg-[#070b14]/70 border border-slate-800/60">
           <div className="space-y-1">
             <span className="font-mono text-[9px] uppercase font-bold text-slate-500 block">
@@ -317,7 +377,7 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 5. Expected Deliverables Slot Rendering */}
+      {/* 6. Expected Deliverables Slot Rendering */}
       {task.deliverables && task.deliverables.length > 0 && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-[10px] font-semibold text-slate-500">
@@ -347,7 +407,7 @@ function MinimalTaskCard({
         </div>
       )}
 
-      {/* 6. Pipeline Stepper & Footer */}
+      {/* 7. Pipeline Stepper & Footer */}
       <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px] font-mono text-slate-500">
         <div className="flex items-center gap-1.5 truncate">
           {task.stepTimeline?.map((st, idx) => (
@@ -594,13 +654,10 @@ export function OrchestrateView({
   // Navigation tab state
   const [activeNavTab, setActiveNavTab] = useState<'home' | 'projects' | 'automations' | 'deliverables' | 'settings'>('home')
 
-  // Deploy Task Modal State
+  // Deploy Task Modal State (Plain English Prompt)
   const [isDeployModalOpen, setIsDeployModalOpen] = useState(false)
-  const [newTaskTitle, setNewTaskTitle] = useState('')
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
-  const [newTaskAgent, setNewTaskAgent] = useState<'coder' | 'finder' | 'designer' | 'video'>('coder')
   const [newTaskWorkspace, setNewTaskWorkspace] = useState('')
-  const [newTaskOutcome, setNewTaskOutcome] = useState<TaskOutcomeType>('code_pr')
   const [isDeployingTask, setIsDeployingTask] = useState(false)
 
   // Active task object derived from activeTaskId
@@ -631,7 +688,7 @@ export function OrchestrateView({
           const detected = wsRes.workspaces.map((w, idx) => ({
             path: w.path,
             label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
-            role: (idx === 0 ? 'primary_code' : 'auxiliary') as 'primary_code' | 'auxiliary',
+            role: (idx === 0 ? ('primary_code' as const) : ('auxiliary' as const)),
             selected: true,
           }))
           setOnboardingWorkspaces(detected)
@@ -841,7 +898,7 @@ export function OrchestrateView({
       if (rec.kind !== 'full' || !rec.session) continue
       const sess = rec.session
       const isActive = !!(sess.lifecycle as any)?.active
-      const agent = (sess as any).agent_name || (sess as any).agent || 'swarm'
+      const agent = (sess as any).agent_name || 'swarm'
       if (isActive || agent !== 'swarm' || (sess.message_count ?? 0) > 1) {
         list.push({
           id: sess.id,
@@ -860,60 +917,66 @@ export function OrchestrateView({
     return list.slice(0, 12)
   }, [sessionsById])
 
-  // Deploy task to project & spawn worker session
-  const handleDeployTask = async (
-    title: string,
-    agent: string = 'coder',
-    workerName: string = '@Coder Worker',
-    prompt?: string,
-    pipelineStages?: string[],
-    workspacePath?: string,
-    outcomeType?: TaskOutcomeType
-  ) => {
-    if (!selectedProject?.id) return
-    const branchName = `agent/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32)}`
+  // Submit Plain English Task Proposal
+  const handleDeployModalSubmit = async () => {
+    const prompt = newTaskPrompt.trim()
+    if (!prompt || !selectedProject?.id) return
+    setIsDeployingTask(true)
     try {
       const res = await requestJson<{ task: any }>(`/v3/projects/${selectedProject.id}/tasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: title.trim(),
-          agent,
-          worker_name: workerName,
-          outcome_type: outcomeType || (agent === 'designer' || agent === 'video' ? 'media_bundle' : 'code_pr'),
-          workspace_path: workspacePath || selectedProject.repoPath || '.',
-          worktree_branch: branchName,
-          pipeline_stages: pipelineStages || ['Inspect', 'Implement', 'Verify', 'Review'],
+          prompt,
+          workspace_path: newTaskWorkspace || selectedProject.repoPath || '.',
           deploy_session: true,
-          prompt: prompt || title,
         }),
       })
       if (res?.task) {
         fetchProjectTasks(selectedProject.id)
+        if (res.task.session_id) {
+          setActiveSessionId(res.task.session_id)
+          setActiveTaskId(res.task.id)
+        }
       }
-    } catch (err) {
-      console.warn('Deploy task failed:', err)
-    }
-  }
-
-  const handleDeployModalSubmit = async () => {
-    if (!newTaskTitle.trim() || !selectedProject?.id) return
-    setIsDeployingTask(true)
-    try {
-      await handleDeployTask(
-        newTaskTitle.trim(),
-        newTaskAgent,
-        `@${newTaskAgent.charAt(0).toUpperCase() + newTaskAgent.slice(1)} Worker`,
-        newTaskPrompt.trim() || newTaskTitle.trim(),
-        ['Inspect', 'Implement', 'Verify', 'Review'],
-        newTaskWorkspace || selectedProject.repoPath,
-        newTaskOutcome
-      )
       setIsDeployModalOpen(false)
-      setNewTaskTitle('')
       setNewTaskPrompt('')
     } finally {
       setIsDeployingTask(false)
+    }
+  }
+
+  // Approve pending task and start execution run
+  const handleApproveTask = async (taskId: string) => {
+    if (!selectedProject?.id) return
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/approve`, {
+        method: 'POST',
+      })
+      fetchProjectTasks(selectedProject.id)
+      const approvedTask = tasks.find((t) => t.id === taskId)
+      if (approvedTask?.sessionId) {
+        setActiveSessionId(approvedTask.sessionId)
+        setActiveTaskId(approvedTask.id)
+      }
+    } catch (err) {
+      console.warn('Approve task failed:', err)
+    }
+  }
+
+  // Delete/discard task
+  const handleDeleteTask = async (taskId: string) => {
+    if (!selectedProject?.id) return
+    try {
+      await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}`, {
+        method: 'DELETE',
+      })
+      fetchProjectTasks(selectedProject.id)
+      if (activeTaskId === taskId) {
+        handleBackToOrchestrator()
+      }
+    } catch (err) {
+      console.warn('Delete task failed:', err)
     }
   }
 
@@ -944,14 +1007,18 @@ export function OrchestrateView({
       }
       const lifecycle = sess.lifecycle as any
       let status = task.status
-      if (lifecycle?.active) {
+      if (task.status === 'pending_approval') {
+        // Keep pending approval until explicitly approved
+        status = 'pending_approval'
+      } else if (lifecycle?.active) {
         status = 'running'
-      }
-      const hasWaitingReview = plan?.document?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
-      if (hasWaitingReview || lifecycle?.phase === 'needs_review') {
-        status = 'needs_review'
-      } else if (!lifecycle?.active && (sess.message_count ?? 0) > 1) {
-        status = 'completed'
+      } else {
+        const hasWaitingReview = plan?.document?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
+        if (hasWaitingReview || lifecycle?.phase === 'needs_review') {
+          status = 'needs_review'
+        } else if (!lifecycle?.active && (sess.message_count ?? 0) > 1) {
+          status = 'completed'
+        }
       }
       return {
         ...task,
@@ -980,23 +1047,6 @@ export function OrchestrateView({
   const selectedTaskForSplit = useMemo(() => {
     return liveTasks.find((t) => t.id === selectedTaskId) || liveTasks[0]
   }, [liveTasks, selectedTaskId])
-
-  const handleAcceptDeliverable = (taskId: string, deliverableId: string, e?: React.MouseEvent) => {
-    e?.stopPropagation()
-    setTasks((prev) =>
-      prev.map((task) => {
-        if (task.id !== taskId && !task.deliverables?.some((d) => d.id === deliverableId)) {
-          return task
-        }
-        return {
-          ...task,
-          deliverables: task.deliverables?.map((d) =>
-            d.id === deliverableId ? { ...d, status: 'accepted' as const } : d
-          ),
-        }
-      })
-    )
-  }
 
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -1180,7 +1230,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
   // Count summaries
   const runningCount = liveTasks.filter((t) => t.status === 'running').length
   const reviewCount = liveTasks.filter((t) => t.status === 'needs_review').length
-  const queuedCount = liveTasks.filter((t) => t.status === 'queued').length
+  const queuedCount = liveTasks.filter((t) => t.status === 'queued' || t.status === 'pending_approval').length
   const completedCount = liveTasks.filter((t) => t.status === 'completed').length
 
   return (
@@ -1849,20 +1899,13 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     className="flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs px-3 py-1.5 shadow-[0_2px_10px_rgba(37,99,235,0.3)] transition-all active:scale-95"
                   >
                     <Plus size={13} />
-                    <span>+ Deploy Task</span>
+                    <span>+ New Task</span>
                   </button>
                   <button
-                    onClick={() =>
-                      handleDeployTask(
-                        'Run Local Testbench Suite',
-                        'coder',
-                        '@Code Verifier',
-                        'Run critical test gate and inspect testbench health',
-                        ['Inspect', 'Execute', 'Analyze', 'Review'],
-                        selectedProject?.repoPath,
-                        'code_pr'
-                      )
-                    }
+                    onClick={() => {
+                      setNewTaskPrompt('Run local testbench suite: verify critical test gates and check repository stability')
+                      setIsDeployModalOpen(true)
+                    }}
                     className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs px-3 py-1.5 transition-all active:scale-95"
                   >
                     <Play size={11} fill="currentColor" />
@@ -2032,7 +2075,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               <div className="flex items-center gap-2.5 min-w-0 flex-1">
                                 <span
                                   className={`h-2 w-2 rounded-sm flex-shrink-0 ${
-                                    t.status === 'running'
+                                    t.status === 'pending_approval'
+                                      ? 'bg-amber-400'
+                                      : t.status === 'running'
                                       ? 'bg-blue-400 animate-pulse'
                                       : t.status === 'needs_review'
                                       ? 'bg-amber-400'
@@ -2087,7 +2132,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                   isSelected={selectedTaskId === t.id}
                                   onSelect={() => handleSelectTask(t)}
                                   onOpenChat={() => handleSelectTask(t)}
+                                  onApprove={() => handleApproveTask(t.id)}
                                   onIntegrate={() => handleIntegrateTask(t.id)}
+                                  onDelete={() => handleDeleteTask(t.id)}
                                   onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                                 />
                               </div>
@@ -2100,14 +2147,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         <Code size={20} className="text-slate-600 mb-2" />
                         <h4 className="text-xs font-bold text-slate-300">No tasks active</h4>
                         <p className="text-[11px] text-slate-500 mt-1 mb-4">
-                          Deploy an autonomous task or prompt the orchestrator to begin work across your workspaces.
+                          Propose a task in plain English to have the AI organize the mission and branch for approval.
                         </p>
                         <button
                           onClick={() => setIsDeployModalOpen(true)}
                           className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-md shadow-blue-600/20 transition-all flex items-center gap-1.5"
                         >
                           <Plus size={13} />
-                          <span>Deploy First Task</span>
+                          <span>+ New Task</span>
                         </button>
                       </div>
                     )}
@@ -2122,13 +2169,17 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <div className="flex-1 flex overflow-x-auto p-4 gap-3">
                   {(
                     [
-                      { key: 'queued', label: 'Queued', color: 'slate' },
+                      { key: 'queued', label: 'Pending Approval', color: 'amber' },
                       { key: 'running', label: 'In Progress', color: 'blue' },
                       { key: 'needs_review', label: 'Needs Review', color: 'amber' },
                       { key: 'completed', label: 'Completed', color: 'emerald' },
                     ] as const
                   ).map((col) => {
-                    const colTasks = liveTasks.filter((t) => t.status === col.key)
+                    const colTasks = liveTasks.filter((t) => {
+                      if (col.key === 'queued') return t.status === 'queued' || t.status === 'pending_approval'
+                      if (col.key === 'running') return t.status === 'running' || t.status === 'in_progress'
+                      return t.status === col.key
+                    })
                     return (
                       <div
                         key={col.key}
@@ -2162,7 +2213,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               isSelected={selectedTaskId === t.id}
                               onSelect={() => handleSelectTask(t)}
                               onOpenChat={() => handleSelectTask(t)}
+                              onApprove={() => handleApproveTask(t.id)}
                               onIntegrate={() => handleIntegrateTask(t.id)}
+                              onDelete={() => handleDeleteTask(t.id)}
                               onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                             />
                           ))}
@@ -2195,7 +2248,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium"
                     >
                       <Plus size={12} />
-                      <span>Deploy Worker</span>
+                      <span>+ New Task</span>
                     </button>
                   </div>
 
@@ -2238,7 +2291,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     <div className="p-6 text-center border border-dashed border-slate-800 rounded-xl">
                       <Bot size={22} className="mx-auto text-slate-600 mb-2" />
                       <h4 className="text-xs font-bold text-slate-300">No active worker sessions</h4>
-                      <p className="text-[11px] text-slate-500 mt-1">Deploy a task to launch an autonomous worker session.</p>
+                      <p className="text-[11px] text-slate-500 mt-1">Propose a task to launch an autonomous worker session.</p>
                     </div>
                   )}
 
@@ -2253,7 +2306,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           isSelected={selectedTaskId === task.id}
                           onSelect={() => handleSelectTask(task)}
                           onOpenChat={() => handleSelectTask(task)}
+                          onApprove={() => handleApproveTask(task.id)}
                           onIntegrate={() => handleIntegrateTask(task.id)}
+                          onDelete={() => handleDeleteTask(task.id)}
                           onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                         />
                       ))}
@@ -2275,13 +2330,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       return (
                         <div
                           key={t.id}
-                          onClick={() => {
-                            setSelectedTaskId(t.id)
-                            if (t.sessionId) {
-                              setActiveSessionId(t.sessionId)
-                              setActiveTaskId(t.id)
-                            }
-                          }}
+                          onClick={() => handleSelectTask(t)}
                           className={`p-3 rounded-lg border transition-all cursor-pointer ${
                             isSel
                               ? 'bg-blue-950/20 border-blue-500/50 text-white shadow-sm'
@@ -2311,7 +2360,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         isSelected={true}
                         onSelect={() => handleSelectTask(selectedTaskForSplit)}
                         onOpenChat={() => handleSelectTask(selectedTaskForSplit)}
+                        onApprove={() => handleApproveTask(selectedTaskForSplit.id)}
                         onIntegrate={() => handleIntegrateTask(selectedTaskForSplit.id)}
+                        onDelete={() => handleDeleteTask(selectedTaskForSplit.id)}
                         onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                       />
                     ) : (
@@ -2336,7 +2387,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       isSelected={selectedTaskId === t.id}
                       onSelect={() => handleSelectTask(t)}
                       onOpenChat={() => handleSelectTask(t)}
+                      onApprove={() => handleApproveTask(t.id)}
                       onIntegrate={() => handleIntegrateTask(t.id)}
+                      onDelete={() => handleDeleteTask(t.id)}
                       onPreviewDeliverable={(d) => setActiveVideoPreview(d)}
                     />
                   ))}
@@ -2376,15 +2429,15 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       )}
 
       {/* ─────────────────────────────────────────────────────────────
-          MODAL: DEPLOY AUTONOMOUS TASK MODAL
+          MODAL: NEW TASK (PLAIN ENGLISH PROPOSAL)
          ───────────────────────────────────────────────────────────── */}
       {isDeployModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6 backdrop-blur-md">
           <div className="relative flex max-w-lg w-full flex-col p-6 rounded-2xl border border-slate-800 bg-[#0d121f] shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div className="flex items-center gap-2">
-                <Code size={16} className="text-blue-400" />
-                <h3 className="text-sm font-bold text-white">Deploy Autonomous Task</h3>
+                <Sparkles size={16} className="text-blue-400" />
+                <h3 className="text-sm font-bold text-white">New Task</h3>
               </div>
               <button
                 onClick={() => setIsDeployModalOpen(false)}
@@ -2395,69 +2448,22 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
 
             <div className="space-y-3 text-xs">
-              <div>
-                <label className="text-[11px] text-slate-400 mb-1 block font-medium">Task Title</label>
-                <input
-                  type="text"
-                  value={newTaskTitle}
-                  onChange={(e) => setNewTaskTitle(e.target.value)}
-                  placeholder="e.g. Add GitHub OAuth provider and health route"
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-medium"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-slate-400 mb-1 block font-medium">Agent Type</label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {(['coder', 'designer', 'finder', 'video'] as const).map((ag) => (
-                      <button
-                        key={ag}
-                        type="button"
-                        onClick={() => {
-                          setNewTaskAgent(ag)
-                          if (ag === 'designer' || ag === 'video') setNewTaskOutcome('media_bundle')
-                          else setNewTaskOutcome('code_pr')
-                        }}
-                        className={`py-1.5 px-2 rounded-lg border text-xs font-semibold capitalize transition-all ${
-                          newTaskAgent === ag
-                            ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
-                            : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        {ag}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 mb-1 block font-medium">Outcome Deliverable</label>
-                  <select
-                    value={newTaskOutcome}
-                    onChange={(e) => setNewTaskOutcome(e.target.value as TaskOutcomeType)}
-                    className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60"
-                  >
-                    <option value="code_pr">Code PR (Branch + Test Suite)</option>
-                    <option value="media_bundle">Media Bundle (3 Video Cuts)</option>
-                    <option value="bug_patch">Bug Patch (Repro + Fix Diff)</option>
-                    <option value="audit_report">Audit Report (Findings Ledger)</option>
-                  </select>
-                </div>
-              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Describe what you want to achieve in plain English. The AI will inspect your request, synthesize the mission, and present it on the task card for your approval.
+              </p>
 
               <div>
-                <label className="text-[11px] text-slate-400 mb-1 block font-medium">Prompt / Instructions</label>
                 <textarea
                   value={newTaskPrompt}
                   onChange={(e) => setNewTaskPrompt(e.target.value)}
-                  rows={3}
-                  placeholder="Describe what the worker should accomplish..."
-                  className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none"
+                  rows={4}
+                  autoFocus
+                  placeholder="e.g. Add GitHub OAuth login and make sure it has unit test coverage, or generate 3 promotional video cuts for the product launch..."
+                  className="w-full rounded-lg bg-slate-950 border border-slate-800 p-3 text-white placeholder-slate-600 focus:outline-none focus:border-blue-500/60 resize-none text-xs leading-relaxed"
                 />
               </div>
 
-              {selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 0 && (
+              {selectedProject?.linkedWorkspaces && selectedProject.linkedWorkspaces.length > 1 && (
                 <div>
                   <label className="text-[11px] text-slate-400 mb-1 block font-medium">Target Workspace</label>
                   <select
@@ -2485,12 +2491,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
               <button
                 type="button"
-                disabled={!newTaskTitle.trim() || isDeployingTask}
+                disabled={!newTaskPrompt.trim() || isDeployingTask}
                 onClick={handleDeployModalSubmit}
                 className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Plus size={13} />
-                <span>{isDeployingTask ? 'Deploying...' : 'Deploy Task'}</span>
+                <span>{isDeployingTask ? 'Organizing Mission...' : 'Create Task'}</span>
               </button>
             </div>
           </div>
@@ -2564,12 +2570,23 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-800 pt-3">
               <button
-                onClick={(e) => {
+                onClick={() => {
                   const parentTask = tasks.find((t) =>
                     t.deliverables?.some((d) => d.id === activeVideoPreview.id)
                   )
                   if (parentTask) {
-                    handleAcceptDeliverable(parentTask.id, activeVideoPreview.id, e)
+                    setTasks((prev) =>
+                      prev.map((task) =>
+                        task.id === parentTask.id
+                          ? {
+                              ...task,
+                              deliverables: task.deliverables?.map((d) =>
+                                d.id === activeVideoPreview.id ? { ...d, status: 'accepted' as const } : d
+                              ),
+                            }
+                          : task
+                      )
+                    )
                   }
                   setActiveVideoPreview(null)
                 }}

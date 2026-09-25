@@ -388,6 +388,28 @@ func (r *Runtime) executeManageProjects(scope WorkspaceScope, args map[string]an
 		}
 		response["task"] = updated
 
+	case "approve_task":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			projectID = strings.TrimSpace(asString(args["id"]))
+		}
+		taskID := strings.TrimSpace(asString(args["task_id"]))
+		if projectID == "" || taskID == "" {
+			return "", errors.New("manage_projects approve_task requires project_id and task_id")
+		}
+		updated, err := r.projects.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+			t.Status = "in_progress"
+			t.ActionNeeded = ""
+			if len(t.WhatDidDo) == 0 {
+				t.WhatDidDo = []string{"Mission approved by user", "Worktree session activated"}
+			}
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		response["task"] = updated
+
 	default:
 		return "", fmt.Errorf("unknown manage_projects action: %q", actionName)
 	}
